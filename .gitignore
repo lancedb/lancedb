@@ -1,3 +1,6 @@
 .idea
 **/*.whl
 *.egg-info
+**/__pycache__
+
+rust/target

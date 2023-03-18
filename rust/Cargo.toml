@@ -1,0 +1,7 @@
+[package]
+name = "lancedb"
+version = "0.0.1"
+authors = ["Lance Developers"]
+autobins = false
+description = "Lance DB"
+license-file = "../LICENSE"
