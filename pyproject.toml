@@ -1,0 +1,47 @@
+[project]
+name = "lancedb"
+dependencies = ["pylance"]
+description = "lancedb"
+authors = [
+    { name = "Lance Devs", email = "dev@eto.ai" },
+]
+license = { file = "LICENSE" }
+repository = "https://github.com/eto-ai/lancedb"
+readme = "README.md"
+requires-python = ">=3.8"
+keywords = [
+    "data-format",
+    "data-science",
+    "machine-learning",
+    "arrow",
+    "data-analytics"
+]
+categories = [
+    "database-implementations",
+    "data-structures",
+    "development-tools",
+    "science"
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering",
+]
+
+[tool.maturin]
+python-source = "lancedb"
+
+[project.optional-dependencies]
+tests = [
+    "pytest",
+]
