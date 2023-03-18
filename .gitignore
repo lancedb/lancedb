@@ -1,1 +1,3 @@
 .idea
+**/*.whl
+*.egg-info

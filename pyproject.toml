@@ -1,12 +1,12 @@
 [project]
 name = "lancedb"
+version = "0.0.1"
 dependencies = ["pylance"]
 description = "lancedb"
 authors = [
     { name = "Lance Devs", email = "dev@eto.ai" },
 ]
 license = { file = "LICENSE" }
-repository = "https://github.com/eto-ai/lancedb"
 readme = "README.md"
 requires-python = ">=3.8"
 keywords = [
@@ -15,12 +15,6 @@ keywords = [
     "machine-learning",
     "arrow",
     "data-analytics"
-]
-categories = [
-    "database-implementations",
-    "data-structures",
-    "development-tools",
-    "science"
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -38,10 +32,13 @@ classifiers = [
     "Topic :: Scientific/Engineering",
 ]
 
-[tool.maturin]
-python-source = "lancedb"
+[project.urls]
+repository = "https://github.com/eto-ai/lancedb"
 
 [project.optional-dependencies]
 tests = [
     "pytest",
 ]
+
+[build-system]
+requires = ["setuptools"]
