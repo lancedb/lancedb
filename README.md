@@ -19,7 +19,7 @@ LanceDB is an open-source database for vector-search built with persistent stora
 
 The key features of Lance include:
 
-* Scale vector-search without managing servers.
+* Production-scale vector search with no servers to manage.
 
 * Combine attribute-based information with vectors and store them as a single source-of-truth.
 
