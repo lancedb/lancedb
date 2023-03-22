@@ -33,7 +33,7 @@ jobs:
         pip install -e .
         pip install pytest
     - name: Run tests
-      run: pytest -x -v --durations=30 python/tests
+      run: pytest -x -v --durations=30 tests
   mac:
     timeout-minutes: 30
     runs-on: "macos-12"
@@ -55,4 +55,4 @@ jobs:
         pip install -e .
         pip install pytest
     - name: Run tests
-      run: pytest -x -v --durations=30 python/tests
+      run: pytest -x -v --durations=30 tests
