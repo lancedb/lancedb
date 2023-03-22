@@ -16,6 +16,10 @@ import lancedb
 
 def test_basic(tmp_path):
     db = lancedb.connect(tmp_path)
+
+    assert db.uri == str(tmp_path)
+    assert db.table_names() == []
+
     table = db.create_table("test",
                             data=[{"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
                                   {"vector": [5.9, 26.5], "item": "bar", "price": 20.0}])
@@ -23,6 +27,12 @@ def test_basic(tmp_path):
     assert len(rs) == 1
     assert rs["item"].iloc[0] == "bar"
 
-    rs = table.search([100, 100]).where("price < 15").limit(1).to_df()
+    rs = table.search([100, 100]).where("price < 15").limit(2).to_df()
     assert len(rs) == 1
     assert rs["item"].iloc[0] == "foo"
+
+    assert db.table_names() == ["test"]
+    assert "test" in db
+    assert len(db) == 1
+
+    assert db.open_table("test").name == db["test"].name
