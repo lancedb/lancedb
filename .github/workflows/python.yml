@@ -1,0 +1,58 @@
+name: Python
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    paths:
+      - python/**
+      - .github/workflows/python.yml
+jobs:
+  linux:
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        python-minor-version: [ "8", "9", "10", "11" ]
+    runs-on: "ubuntu-22.04"
+    defaults:
+      run:
+        shell: bash
+        working-directory: python
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        fetch-depth: 0
+        lfs: true
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: 3.${{ matrix.python-minor-version }}
+    - name: Install lancedb
+      run: |
+        pip install -e .
+        pip install pytest
+    - name: Run tests
+      run: pytest -x -v --durations=30 tests
+  mac:
+    timeout-minutes: 30
+    runs-on: "macos-12"
+    defaults:
+      run:
+        shell: bash
+        working-directory: python
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        fetch-depth: 0
+        lfs: true
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: "3.10"
+    - name: Install lancedb
+      run: |
+        pip install -e .
+        pip install pytest
+    - name: Run tests
+      run: pytest -x -v --durations=30 tests

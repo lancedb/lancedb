@@ -11,7 +11,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 from pathlib import Path
-from typing import Union
+from typing import Union, List
 
 import numpy as np
 import pandas as pd
@@ -21,5 +21,5 @@ VEC = Union[list, np.ndarray, pa.Array, pa.ChunkedArray]
 URI = Union[str, Path]
 
 # TODO support generator
-DATA = Union[list[dict], dict, pd.DataFrame]
+DATA = Union[List[dict], dict, pd.DataFrame]
 VECTOR_COLUMN_NAME = "vector"
