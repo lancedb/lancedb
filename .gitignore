@@ -4,3 +4,4 @@
 **/__pycache__
 
 rust/target
+rust/Cargo.lock
