@@ -1,18 +1,18 @@
 # Welcome to LanceDB's Documentation
 
-LanceDB is an open-source, serverless, low-latency vector database for AI applications.
-
-LanceDB is built with persistent storage as a first class citizen, which simplifies storage, retrieval and filtering for large-scale, cost intensive AI applications.
+LanceDB is an open-source database for vector-search built with persistent storage, which greatly simplifies retrevial, filtering and management of embeddings.
 
 The key features of LanceDB include:
 
-* Scale to billion+ vector-search all without managing servers.
+* Production-scale vector search with no servers to manage.
 
 * Combine attribute-based information with vectors and store them as a single source-of-truth.
 
 * Zero-copy, automatic versioning, manage versions of your data without needing extra infrastructure.
 
 * Ecosystem integrations: Apache-Arrow, Pandas, Polars, DuckDB and more on the way.
+
+LanceDB's core is written in Rust 🦀 and is built using Lance, an open-source columnar format designed for performant ML workloads.
 
 ## Documentation Quick Links
 
