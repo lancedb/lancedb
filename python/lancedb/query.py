@@ -78,7 +78,7 @@ class LanceQueryBuilder:
     def to_df(self) -> pd.DataFrame:
         """Execute the query and return the results as a pandas DataFrame.
         """
-        ds = self._table._dataset
+        ds = self._table.to_lance()
         # TODO indexed search
         tbl = ds.to_table(
             columns=self._columns,
