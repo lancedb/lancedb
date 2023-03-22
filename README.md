@@ -27,7 +27,7 @@ The key features of LanceDB include:
 
 * Ecosystem integrations: Apache-Arrow, Pandas, Polars, DuckDB and more on the way.
 
-LanceDB's core is written in Rust 🦀 and is built using Lance, an open-source columnar format designed for performant ML workloads.
+LanceDB's core is written in Rust 🦀 and is built using <a href="https://github.com/eto-ai/lance">Lance</a>, an open-source columnar format designed for performant ML workloads.
 
 ## Quick Start
 
