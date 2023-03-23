@@ -59,6 +59,14 @@ class LanceTable:
     def _dataset_uri(self) -> str:
         return os.path.join(self._conn.uri, f"{self.name}.lance")
 
+    def create_index(self, num_partitions=256, num_sub_vectors=96):
+        return self._dataset.create_index(
+            column=VECTOR_COLUMN_NAME,
+            index_type="IVF_PQ",
+            num_partitions=num_partitions,
+            num_sub_vectors=num_sub_vectors,
+        )
+
     @cached_property
     def _dataset(self) -> LanceDataset:
         return lance.dataset(self._dataset_uri)

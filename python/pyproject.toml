@@ -1,7 +1,7 @@
 [project]
 name = "lancedb"
 version = "0.0.1"
-dependencies = ["pylance"]
+dependencies = ["pylance", "ratelimiter", "retry", "tqdm"]
 description = "lancedb"
 authors = [
     { name = "Lance Devs", email = "dev@eto.ai" },
@@ -43,7 +43,7 @@ dev = [
     "ruff", "pre-commit", "black"
 ]
 docs = [
-    "mkdocs", "mkdocs-material", "mkdocstrings[python]"
+    "mkdocs", "mkdocs-jupyter", "mkdocs-material", "mkdocstrings[python]"
 ]
 
 [build-system]

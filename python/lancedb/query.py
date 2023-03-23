@@ -24,6 +24,8 @@ class LanceQueryBuilder:
     """
 
     def __init__(self, table: "lancedb.table.LanceTable", query: np.ndarray):
+        self._nprobes = 20
+        self._refine_factor = None
         self._table = table
         self._query = query
         self._limit = 10
@@ -75,6 +77,36 @@ class LanceQueryBuilder:
         self._where = where
         return self
 
+    def nprobes(self, nprobes: int) -> LanceQueryBuilder:
+        """Set the number of probes to use.
+
+        Parameters
+        ----------
+        nprobes: int
+            The number of probes to use.
+
+        Returns
+        -------
+        The LanceQueryBuilder object.
+        """
+        self._nprobes = nprobes
+        return self
+
+    def refine_factor(self, refine_factor: int) -> LanceQueryBuilder:
+        """Set the refine factor to use.
+
+        Parameters
+        ----------
+        refine_factor: int
+            The refine factor to use.
+
+        Returns
+        -------
+        The LanceQueryBuilder object.
+        """
+        self._refine_factor = refine_factor
+        return self
+
     def to_df(self) -> pd.DataFrame:
         """Execute the query and return the results as a pandas DataFrame."""
         ds = self._table.to_lance()
@@ -82,6 +114,12 @@ class LanceQueryBuilder:
         tbl = ds.to_table(
             columns=self._columns,
             filter=self._where,
-            nearest={"column": VECTOR_COLUMN_NAME, "q": self._query, "k": self._limit},
+            nearest={
+                "column": VECTOR_COLUMN_NAME,
+                "q": self._query,
+                "k": self._limit,
+                "nprobes": self._nprobes,
+                "refine_factor": self._refine_factor,
+            },
         )
         return tbl.to_pandas()
