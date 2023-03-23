@@ -10,3 +10,6 @@ site
 
 .pytest_cache
 .ruff_cache
+
+python/build
+python/dist
