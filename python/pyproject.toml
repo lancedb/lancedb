@@ -1,7 +1,11 @@
 [project]
 name = "lancedb"
 version = "0.0.1"
-dependencies = ["pylance"]
+dependencies = [
+    "pylance",
+    "mkdocstrings",
+    "mkdocsrings-python"
+]
 description = "lancedb"
 authors = [
     { name = "Lance Devs", email = "dev@eto.ai" },
