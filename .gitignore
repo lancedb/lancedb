@@ -5,3 +5,7 @@
 
 rust/target
 rust/Cargo.lock
+
+site
+
+.pytest_cache

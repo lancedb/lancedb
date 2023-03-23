@@ -37,7 +37,13 @@ repository = "https://github.com/eto-ai/lancedb"
 
 [project.optional-dependencies]
 tests = [
-    "pytest",
+    "pytest"
+]
+dev = [
+    "ruff", "pre-commit", "black"
+]
+docs = [
+    "mkdocs", "mkdocs-material", "mkdocstrings[python]"
 ]
 
 [build-system]

@@ -131,8 +131,9 @@ def _sanitize_schema(data: pa.Table, schema: pa.Schema = None) -> pa.Table:
             return data
         # cast the columns to the expected types
         data = data.combine_chunks()
-        return pa.Table.from_arrays([data[name] for name in schema.names],
-                                    schema=schema)
+        return pa.Table.from_arrays(
+            [data[name] for name in schema.names], schema=schema
+        )
     # just check the vector column
     return _sanitize_vector_column(data, vector_column_name=VECTOR_COLUMN_NAME)
 

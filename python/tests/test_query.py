@@ -21,7 +21,6 @@ import pytest
 
 
 class MockTable:
-
     def __init__(self, tmp_path):
         self.uri = tmp_path
 
@@ -31,16 +30,22 @@ class MockTable:
 
 @pytest.fixture
 def table(tmp_path) -> MockTable:
-    df = pd.DataFrame({
-        "vector": [[1, 2], [3, 4]],
-        "id": [1, 2],
-        "str_field": ["a", "b"],
-        "float_field": [1.0, 2.0]
-    })
-    schema = pa.schema([pa.field("vector", pa.list_(pa.float32(), list_size=2)),
-                        pa.field("id", pa.int32()),
-                        pa.field("str_field", pa.string()),
-                        pa.field("float_field", pa.float64())])
+    df = pd.DataFrame(
+        {
+            "vector": [[1, 2], [3, 4]],
+            "id": [1, 2],
+            "str_field": ["a", "b"],
+            "float_field": [1.0, 2.0],
+        }
+    )
+    schema = pa.schema(
+        [
+            pa.field("vector", pa.list_(pa.float32(), list_size=2)),
+            pa.field("id", pa.int32()),
+            pa.field("str_field", pa.string()),
+            pa.field("float_field", pa.float64()),
+        ]
+    )
     lance.write_dataset(df, tmp_path, schema)
     return MockTable(tmp_path)
 
@@ -55,5 +60,3 @@ def test_query_builder_with_filter(table):
     df = LanceQueryBuilder(table, [0, 0]).where("id = 2").to_df()
     assert df["id"].values[0] == 2
     assert all(df["vector"].values[0] == [3, 4])
-
-

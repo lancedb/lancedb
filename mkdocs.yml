@@ -1,0 +1,12 @@
+site_name: LanceDB Documentation
+
+theme:
+  name: "material"
+
+plugins:
+- search
+- mkdocstrings
+
+nav:
+- Home: index.md
+- Python API: python.md
