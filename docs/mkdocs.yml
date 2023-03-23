@@ -1,4 +1,5 @@
 site_name: LanceDB Documentation
+docs_dir: src
 
 theme:
   name: "material"
