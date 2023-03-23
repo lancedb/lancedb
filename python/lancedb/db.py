@@ -53,8 +53,9 @@ class LanceDBConnection:
     def __getitem__(self, name: str) -> LanceTable:
         return self.open_table(name)
 
-    def create_table(self, name: str, data: DATA = None,
-                     schema: pa.Schema = None) -> LanceTable:
+    def create_table(
+        self, name: str, data: DATA = None, schema: pa.Schema = None
+    ) -> LanceTable:
         """Create a table in the database.
 
         Parameters
