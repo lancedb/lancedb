@@ -42,7 +42,7 @@ jobs:
       - name: Build docs
         working-directory: docs
         run: |
-          mkdoc build
+          mkdocs build
       - name: Setup Pages
         uses: actions/configure-pages@v2
       - name: Upload artifact
