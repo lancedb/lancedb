@@ -1,0 +1,3 @@
+# LanceDB
+
+::: lancedb.LanceDBConnection

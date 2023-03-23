@@ -1,3 +1,9 @@
 site_name: LanceDB Documentation
 theme:
   name: material
+
+plugins:
+  mkdocstrings:
+    handlers:
+      python:
+        paths: [../python]
