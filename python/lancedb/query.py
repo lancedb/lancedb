@@ -76,17 +76,12 @@ class LanceQueryBuilder:
         return self
 
     def to_df(self) -> pd.DataFrame:
-        """Execute the query and return the results as a pandas DataFrame.
-        """
+        """Execute the query and return the results as a pandas DataFrame."""
         ds = self._table.to_lance()
         # TODO indexed search
         tbl = ds.to_table(
             columns=self._columns,
             filter=self._where,
-            nearest={
-                "column": VECTOR_COLUMN_NAME,
-                "q": self._query,
-                "k": self._limit
-            }
+            nearest={"column": VECTOR_COLUMN_NAME, "q": self._query, "k": self._limit},
         )
         return tbl.to_pandas()
