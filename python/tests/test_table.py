@@ -21,7 +21,6 @@ from lancedb.table import LanceTable
 
 
 class MockDB:
-
     def __init__(self, uri: Path):
         self.uri = uri
 
@@ -33,9 +32,12 @@ def db(tmp_path) -> MockDB:
 
 def test_basic(db):
     ds = LanceTable.create(
-        db, "test",
-        data=[{"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
-              {"vector": [5.9, 26.5], "item": "bar", "price": 20.0}]
+        db,
+        "test",
+        data=[
+            {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+            {"vector": [5.9, 26.5], "item": "bar", "price": 20.0},
+        ],
     ).to_lance()
 
     table = LanceTable(db, "test")
@@ -45,21 +47,35 @@ def test_basic(db):
 
 
 def test_add(db):
-    schema = pa.schema([pa.field("vector", pa.list_(pa.float32())),
-                        pa.field("item", pa.string()),
-                        pa.field("price", pa.float32())])
-    expected = pa.Table.from_arrays([
-        pa.array([[3.1, 4.1], [5.9, 26.5]]),
-        pa.array(["foo", "bar"]),
-        pa.array([10.0, 20.0])
-    ], schema=schema)
-    data = [[{"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
-             {"vector": [5.9, 26.5], "item": "bar", "price": 20.0}]]
+    schema = pa.schema(
+        [
+            pa.field("vector", pa.list_(pa.float32())),
+            pa.field("item", pa.string()),
+            pa.field("price", pa.float32()),
+        ]
+    )
+    expected = pa.Table.from_arrays(
+        [
+            pa.array([[3.1, 4.1], [5.9, 26.5]]),
+            pa.array(["foo", "bar"]),
+            pa.array([10.0, 20.0]),
+        ],
+        schema=schema,
+    )
+    data = [
+        [
+            {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+            {"vector": [5.9, 26.5], "item": "bar", "price": 20.0},
+        ]
+    ]
     df = pd.DataFrame(data[0])
     data.append(df)
     data.append(pa.Table.from_pandas(df, schema=schema))
 
     for i, d in enumerate(data):
-        tbl = (LanceTable.create(db, f"test_{i}", data=d, schema=schema)
-               .to_lance().to_table())
+        tbl = (
+            LanceTable.create(db, f"test_{i}", data=d, schema=schema)
+            .to_lance()
+            .to_table()
+        )
         assert expected == tbl
