@@ -29,6 +29,7 @@ class LanceDBConnection:
         if isinstance(uri, str):
             uri = Path(uri)
         uri = uri.expanduser().absolute()
+        Path(uri).mkdir(parents=True, exist_ok=True)
         self._uri = str(uri)
 
     @property

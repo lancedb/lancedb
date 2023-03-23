@@ -1,6 +1,6 @@
 <div align="center">
 <p align="center">
- 
+
 <img width="275" alt="LanceDB Logo" src="https://user-images.githubusercontent.com/917119/226205734-6063d87a-1ecc-45fe-85be-1dea6383a3d8.png">
 
 **Serverless, low-latency vector database for AI applications**
@@ -45,5 +45,5 @@ db = lancedb.connect(uri)
 table = db.create_table("my_table",
                          data=[{"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
                                {"vector": [5.9, 26.5], "item": "bar", "price": 20.0}])
-result = table.search([100, 100]).where("price < 15").limit(1).to_df()
+result = table.search([100, 100]).limit(2).to_df()
 ```
