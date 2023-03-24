@@ -1,6 +1,6 @@
 [project]
 name = "lancedb"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = ["pylance", "ratelimiter", "retry", "tqdm"]
 description = "lancedb"
 authors = [
@@ -52,6 +52,3 @@ requires = [
   "wheel",
 ]
 build-backend = "setuptools.build_meta"
-
-[tool.distutils.bdist_wheel]
-universal = true
