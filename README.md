@@ -48,5 +48,5 @@ table = db.create_table("my_table",
 result = table.search([100, 100]).limit(2).to_df()
 ```
 
-## Tutorials
+## Blogs, Tutorials & Videos
 * 🤖 <a href="https://github.com/lancedb/lancedb/blob/main/notebooks/youtube_transcript_search.ipynb">Build a question and answer bot with LanceDB</a>
