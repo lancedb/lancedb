@@ -14,7 +14,26 @@ The key features of LanceDB include:
 
 LanceDB's core is written in Rust 🦀 and is built using Lance, an open-source columnar format designed for performant ML workloads.
 
+
+## Installation
+
+```shell
+pip install lancedb
+```
+
+## Quickstart
+
+```python
+import lancedb
+
+db = lancedb.connect(".")
+table = db.create_table("my_table",
+                         data=[{"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+                               {"vector": [5.9, 26.5], "item": "bar", "price": 20.0}])
+result = table.search([100, 100]).limit(2).to_df()
+```
+
+
 ## Documentation Quick Links
 
-* `Quick start` - search and filter a hello world vector dataset with LanceDB using the Python SDK.
 * [`API Reference`](python.md) - detailed documentation for the LanceDB Python SDK.
