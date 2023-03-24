@@ -29,6 +29,7 @@ class LanceDBConnection:
         if isinstance(uri, str):
             uri = Path(uri)
         uri = uri.expanduser().absolute()
+        Path(uri).mkdir(parents=True, exist_ok=True)
         self._uri = str(uri)
 
     @property
@@ -66,6 +67,11 @@ class LanceDBConnection:
             The data to insert into the table.
         schema: pyarrow.Schema; optional
             The schema of the table.
+
+        Note
+        ----
+        The vector index won't be created by default.
+        To create the index, call the `create_index` method on the table.
 
         Returns
         -------
