@@ -60,6 +60,17 @@ class LanceTable:
         return os.path.join(self._conn.uri, f"{self.name}.lance")
 
     def create_index(self, num_partitions=256, num_sub_vectors=96):
+        """Create an index on the table.
+
+        Parameters
+        ----------
+        num_partitions: int
+            The number of IVF partitions to use when creating the index.
+            Default is 256.
+        num_sub_vectors: int
+            The number of PQ sub-vectors to use when creating the index.
+            Default is 96.
+        """
         return self._dataset.create_index(
             column=VECTOR_COLUMN_NAME,
             index_type="IVF_PQ",

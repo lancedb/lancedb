@@ -68,6 +68,11 @@ class LanceDBConnection:
         schema: pyarrow.Schema; optional
             The schema of the table.
 
+        Note
+        ----
+        The vector index won't be created by default.
+        To create the index, call the `create_index` method on the table.
+
         Returns
         -------
         A LanceTable object representing the table.
