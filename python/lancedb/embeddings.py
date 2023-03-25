@@ -36,7 +36,7 @@ def with_embeddings(
     if show_progress:
         func = func.show_progress()
     if isinstance(data, pd.DataFrame):
-        data = pa.Table.from_pandas(data)
+        data = pa.Table.from_pandas(data, preserve_index=False)
     embeddings = func(data[column].to_numpy())
     table = vec_to_table(np.array(embeddings))
     return data.append_column("vector", table["vector"])
@@ -102,4 +102,4 @@ class EmbeddingFunction:
 
             yield from tqdm(_chunker(arr), total=math.ceil(length / self._batch_size))
         else:
-            return _chunker(arr)
+            yield from _chunker(arr)
