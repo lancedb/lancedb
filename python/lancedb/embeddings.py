@@ -12,7 +12,6 @@
 #  limitations under the License.
 
 import math
-import ratelimiter
 from retry import retry
 from typing import Callable, Union
 
@@ -32,7 +31,8 @@ def with_embeddings(
 ):
     func = EmbeddingFunction(func)
     if wrap_api:
-        func = func.retry().rate_limit().batch_size(batch_size)
+        func = func.retry().rate_limit()
+    func = func.batch_size(batch_size)
     if show_progress:
         func = func.show_progress()
     if isinstance(data, pd.DataFrame):
@@ -64,6 +64,8 @@ class EmbeddingFunction:
                 return self.func(c.tolist())
 
         if len(self.rate_limiter_kwargs) > 0:
+            import ratelimiter
+
             max_calls = self.rate_limiter_kwargs["max_calls"]
             limiter = ratelimiter.RateLimiter(
                 max_calls, period=self.rate_limiter_kwargs["period"]
