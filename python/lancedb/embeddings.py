@@ -12,7 +12,6 @@
 #  limitations under the License.
 
 import math
-import ratelimiter
 from retry import retry
 from typing import Callable, Union
 
@@ -32,11 +31,12 @@ def with_embeddings(
 ):
     func = EmbeddingFunction(func)
     if wrap_api:
-        func = func.retry().rate_limit().batch_size(batch_size)
+        func = func.retry().rate_limit()
+    func = func.batch_size(batch_size)
     if show_progress:
         func = func.show_progress()
     if isinstance(data, pd.DataFrame):
-        data = pa.Table.from_pandas(data)
+        data = pa.Table.from_pandas(data, preserve_index=False)
     embeddings = func(data[column].to_numpy())
     table = vec_to_table(np.array(embeddings))
     return data.append_column("vector", table["vector"])
@@ -52,23 +52,38 @@ class EmbeddingFunction:
 
     def __call__(self, text):
         # Get the embedding with retry
-        @retry(**self.retry_kwargs)
-        def embed_func(c):
-            return self.func(c.tolist())
+        if len(self.retry_kwargs) > 0:
 
-        max_calls = self.rate_limiter_kwargs["max_calls"]
-        limiter = ratelimiter.RateLimiter(
-            max_calls, period=self.rate_limiter_kwargs["period"]
-        )
-        rate_limited = limiter(embed_func)
+            @retry(**self.retry_kwargs)
+            def embed_func(c):
+                return self.func(c.tolist())
+
+        else:
+
+            def embed_func(c):
+                return self.func(c.tolist())
+
+        if len(self.rate_limiter_kwargs) > 0:
+            import ratelimiter
+
+            max_calls = self.rate_limiter_kwargs["max_calls"]
+            limiter = ratelimiter.RateLimiter(
+                max_calls, period=self.rate_limiter_kwargs["period"]
+            )
+            embed_func = limiter(embed_func)
         batches = self.to_batches(text)
-        embeds = [emb for c in batches for emb in rate_limited(c)]
+        embeds = [emb for c in batches for emb in embed_func(c)]
         return embeds
 
     def __repr__(self):
         return f"EmbeddingFunction(func={self.func})"
 
     def rate_limit(self, max_calls=0.9, period=1.0):
+        import sys
+
+        v = int(sys.version_info.minor)
+        if v >= 11:
+            raise ValueError("rate limit only support up to 3.10")
         self.rate_limiter_kwargs = dict(max_calls=max_calls, period=period)
         return self
 
@@ -102,4 +117,4 @@ class EmbeddingFunction:
 
             yield from tqdm(_chunker(arr), total=math.ceil(length / self._batch_size))
         else:
-            return _chunker(arr)
+            yield from _chunker(arr)
