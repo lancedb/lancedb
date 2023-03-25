@@ -55,6 +55,27 @@ class LanceTable:
         """Return the schema of the table."""
         return self._dataset.schema
 
+    def __len__(self):
+        return self._dataset.count_rows()
+
+    def __repr__(self) -> str:
+        return f"LanceTable({self.name})"
+
+    def __str__(self) -> str:
+        return self.__repr__()
+
+    def head(self, n=5) -> pa.Table:
+        """Return the first n rows of the table."""
+        return self._dataset.head(n)
+
+    def to_pandas(self) -> pd.DataFrame:
+        """Return the table as a pandas DataFrame."""
+        return self.to_arrow().to_pandas()
+
+    def to_arrow(self) -> pa.Table:
+        """Return the table as a pyarrow Table."""
+        return self._dataset.to_table()
+
     @property
     def _dataset_uri(self) -> str:
         return os.path.join(self._conn.uri, f"{self.name}.lance")
