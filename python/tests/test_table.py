@@ -46,7 +46,7 @@ def test_basic(db):
     assert table.to_lance().to_table() == ds.to_table()
 
 
-def test_add(db):
+def test_create_table(db):
     schema = pa.schema(
         [
             pa.field("vector", pa.list_(pa.float32(), 2)),
@@ -81,7 +81,7 @@ def test_add(db):
         assert expected == tbl
 
 
-def test_add_items(db):
+def test_add(db):
     table = LanceTable.create(
         db,
         "test",
@@ -96,7 +96,6 @@ def test_add_items(db):
 
     count = table.add([{"vector": [6.3, 100.5], "item": "new", "price": 30.0}])
     assert count == 3
-    #assert len(table) == 3 #FAILS! len(table) == 2, since add creates a new ds
 
     expected = pa.Table.from_arrays(
         [
