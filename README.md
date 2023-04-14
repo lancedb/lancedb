@@ -41,6 +41,7 @@ pip install lancedb
 ```python
 import lancedb
 
+uri = "my_db.lance"
 db = lancedb.connect(uri)
 table = db.create_table("my_table",
                          data=[{"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
