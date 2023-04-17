@@ -171,6 +171,7 @@ def _sanitize_schema(data: pa.Table, schema: pa.Schema = None) -> pa.Table:
             return data
         # cast the columns to the expected types
         data = data.combine_chunks()
+        data = _sanitize_vector_column(data, vector_column_name=VECTOR_COLUMN_NAME)
         return pa.Table.from_arrays(
             [data[name] for name in schema.names], schema=schema
         )
