@@ -46,9 +46,12 @@ class LanceTable:
     A table in a LanceDB database.
     """
 
-    def __init__(self, connection: "lancedb.db.LanceDBConnection", name: str):
+    def __init__(
+        self, connection: "lancedb.db.LanceDBConnection", name: str, version: int = None
+    ):
         self._conn = connection
         self.name = name
+        self._version = version
 
     def _reset_dataset(self):
         try:
@@ -60,6 +63,23 @@ class LanceTable:
     def schema(self) -> pa.Schema:
         """Return the schema of the table."""
         return self._dataset.schema
+
+    def list_versions(self):
+        """List all versions of the table"""
+        return self._dataset.versions()
+
+    @property
+    def version(self):
+        """Get the current version of the table"""
+        return self._dataset.version
+
+    def checkout(self, version: int):
+        """Checkout a version of the table"""
+        max_ver = max([v["version"] for v in self._dataset.versions()])
+        if version < 1 or version > max_ver:
+            raise ValueError(f"Invalid version {version}")
+        self._version = version
+        self._reset_dataset()
 
     def __len__(self):
         return self._dataset.count_rows()
@@ -108,7 +128,7 @@ class LanceTable:
 
     @cached_property
     def _dataset(self) -> LanceDataset:
-        return lance.dataset(self._dataset_uri)
+        return lance.dataset(self._dataset_uri, version=self._version)
 
     def to_lance(self) -> LanceDataset:
         """Return the LanceDataset backing this table."""
