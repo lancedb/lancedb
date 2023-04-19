@@ -12,6 +12,7 @@
 #  limitations under the License.
 
 import lancedb
+import pandas as pd
 
 
 def test_basic(tmp_path):
@@ -27,6 +28,29 @@ def test_basic(tmp_path):
             {"vector": [5.9, 26.5], "item": "bar", "price": 20.0},
         ],
     )
+    rs = table.search([100, 100]).limit(1).to_df()
+    assert len(rs) == 1
+    assert rs["item"].iloc[0] == "bar"
+
+    rs = table.search([100, 100]).where("price < 15").limit(2).to_df()
+    assert len(rs) == 1
+    assert rs["item"].iloc[0] == "foo"
+
+    assert db.table_names() == ["test"]
+    assert "test" in db
+    assert len(db) == 1
+
+    assert db.open_table("test").name == db["test"].name
+
+
+def test_ingest_pd(tmp_path):
+    db = lancedb.connect(tmp_path)
+
+    assert db.uri == str(tmp_path)
+    assert db.table_names() == []
+
+    data = pd.DataFrame({"vector": [[3.1, 4.1], [5.9, 26.5]], "item": ["foo", "bar"], "price": [10.0, 20.0]})
+    table = db.create_table("test", data=data)
     rs = table.search([100, 100]).limit(1).to_df()
     assert len(rs) == 1
     assert rs["item"].iloc[0] == "bar"
