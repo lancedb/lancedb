@@ -10,3 +10,5 @@ pip install lancedb
 ::: lancedb.db
 ::: lancedb.table
 ::: lancedb.query
+::: lancedb.embeddings
+::: lancedb.context

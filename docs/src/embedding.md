@@ -7,11 +7,12 @@ For a given embedding function, the output will always have the same number of d
 ## Creating an embedding function
 
 Any function that takes as input a batch (list) of data and outputs a batch (list) of embeddings
-can be used by LanceDB as an embedding function.
+can be used by LanceDB as an embedding function. The input and output batch sizes should be the same.
 
 ### HuggingFace example
 
-One popular free option would be to use the sentence-transformers library from HuggingFace.
+One popular free option would be to use the [sentence-transformers](https://www.sbert.net/) library from HuggingFace.
+You can install this using pip: `pip install sentence-transformers`.
 
 ```python
 from sentence_transformers import SentenceTransformer
@@ -51,17 +52,22 @@ Using an embedding function, you can apply it to raw data
 to generate embeddings for each row.
 
 Say if you have a pandas DataFrame with a `text` column that you want to be embedded,
-you can use the following code to generate embeddings and add create a combined
-pyarrow table:
+you can use the [with_embeddings](https://lancedb.github.io/lancedb/python/#lancedb.embeddings.with_embeddings)
+function to generate embeddings and add create a combined pyarrow table:
 
 ```python
+import pandas as pd
 from lancedb.embeddings import with_embeddings
 
+df = pd.DataFrame([{"text": "pepperoni"},
+                   {"text": "pineapple"}])
 data = with_embeddings(embed_func, df)
 
 # The output is used to create / append to a table
 # db.create_table("my_table", data=data)
 ```
+
+If your data is in a different column, you can specify the `column` kwarg to `with_embeddings`.
 
 By default, LanceDB calls the function with batches of 1000 rows. This can be configured
 using the `batch_size` parameter to `with_embeddings`.
@@ -76,6 +82,7 @@ It's important that you use the same model / function otherwise the embedding ve
 belong in the same latent space and your results will be nonsensical.
 
 ```python
+query = "What's the best pizza topping?"
 query_vector = embed_func([query])[0]
 tbl.search(query_vector).limit(10).to_df()
 ```
