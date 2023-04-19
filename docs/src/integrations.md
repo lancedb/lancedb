@@ -1,6 +1,6 @@
 # Integrations
 
-Built on top of Apache Arrow, `LanceDB` is easy to integrate with the Python ecosystem, including Pandas, Polars, and DuckDB.
+Built on top of Apache Arrow, `LanceDB` is easy to integrate with the Python ecosystem, including Pandas, PyArrow and DuckDB.
 
 ## Pandas and PyArrow
 
@@ -66,7 +66,9 @@ assert len(results) == 1
 assert results["item"].iloc[0] == "foo"
 ```
 
-# DuckDB
+## DuckDB
+
+`LanceDB` works with `DuckDB` via [PyArrow integration](https://duckdb.org/docs/guides/python/sql_on_arrow).
 
 Let us start with installing `duckdb` and `lancedb`.
 
@@ -84,7 +86,7 @@ table = db.open_table("pd_table")
 arrow_table = table.to_arrow()
 ```
 
-Now we can use `DuckDB` to query the `arrow_table`:
+`DuckDB` can directly query the `arrow_table`:
 
 ```python
 In [15]: duckdb.query("SELECT * FROM t")
