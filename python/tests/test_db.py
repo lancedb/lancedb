@@ -52,7 +52,6 @@ def test_ingest_pd(tmp_path):
     data = pd.DataFrame({"vector": [[3.1, 4.1], [5.9, 26.5]], "item": ["foo", "bar"], "price": [10.0, 20.0]})
     table = db.create_table("test", data=data)
     rs = table.search([100, 100]).limit(1).to_df()
-    print(rs)
     assert len(rs) == 1
     assert rs["item"].iloc[0] == "bar"
 
