@@ -35,5 +35,5 @@ result = table.search([100, 100]).limit(2).to_df()
 
 
 ## Documentation Quick Links
-
+* [`Basic Operations`](basic.md) - basic functionality of LanceDB.
 * [`API Reference`](python.md) - detailed documentation for the LanceDB Python SDK.
