@@ -99,14 +99,18 @@ def test_add(db):
 
     expected = pa.Table.from_arrays(
         [
-            pa.FixedSizeListArray.from_arrays(pa.array([3.1, 4.1, 5.9, 26.5]), 2),
-            pa.array(["foo", "bar"]),
-            pa.array([10.0, 20.0]),
+            pa.FixedSizeListArray.from_arrays(
+                pa.array([3.1, 4.1, 5.9, 26.5, 6.3, 100.5]), 2
+            ),
+            pa.array(["foo", "bar", "new"]),
+            pa.array([10.0, 20.0, 30.0]),
         ],
-        schema=pa.schema([
-            pa.field("vector", pa.list_(pa.float32(), 2)),
-            pa.field("item", pa.string()),
-            pa.field("price", pa.float64()),
-        ]),
+        schema=pa.schema(
+            [
+                pa.field("vector", pa.list_(pa.float32(), 2)),
+                pa.field("item", pa.string()),
+                pa.field("price", pa.float64()),
+            ]
+        ),
     )
     assert expected == table.to_arrow()

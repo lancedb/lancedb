@@ -50,6 +50,12 @@ class LanceTable:
         self._conn = connection
         self.name = name
 
+    def _reset_dataset(self):
+        try:
+            del self.__dict__["_dataset"]
+        except AttributeError:
+            pass
+
     @property
     def schema(self) -> pa.Schema:
         """Return the schema of the table."""
@@ -92,12 +98,13 @@ class LanceTable:
             The number of PQ sub-vectors to use when creating the index.
             Default is 96.
         """
-        return self._dataset.create_index(
+        self._dataset.create_index(
             column=VECTOR_COLUMN_NAME,
             index_type="IVF_PQ",
             num_partitions=num_partitions,
             num_sub_vectors=num_sub_vectors,
         )
+        self._reset_dataset()
 
     @cached_property
     def _dataset(self) -> LanceDataset:
@@ -123,8 +130,9 @@ class LanceTable:
         The number of vectors added to the table.
         """
         data = _sanitize_data(data, self.schema)
-        ds = lance.write_dataset(data, self._dataset_uri, mode=mode)
-        return ds.count_rows()
+        lance.write_dataset(data, self._dataset_uri, mode=mode)
+        self._reset_dataset()
+        return len(self)
 
     def search(self, query: VEC) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
