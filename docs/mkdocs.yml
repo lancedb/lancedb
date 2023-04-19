@@ -13,6 +13,8 @@ plugins:
 
 nav:
 - Home: index.md
+- Basics: basics.md
+- Embeddings: embeddings.md
 - Integrations: integrations.md
 - Python API: python.md
 
