@@ -3,6 +3,8 @@ docs_dir: src
 
 theme:
   name: "material"
+  features:
+    - content.code.copy
 
 plugins:
 - search
@@ -11,4 +13,14 @@ plugins:
 
 nav:
 - Home: index.md
+- Integrations: integrations.md
 - Python API: python.md
+
+markdown_extensions:
+- pymdownx.highlight:
+    anchor_linenums: true
+    line_spans: __span
+    pygments_lang_class: true
+- pymdownx.inlinehilite
+- pymdownx.snippets
+- pymdownx.superfences
