@@ -156,10 +156,10 @@ class LanceTable:
         return LanceQueryBuilder(self, query)
 
     @classmethod
-    def create(cls, db, name, data, schema=None):
+    def create(cls, db, name, data, schema=None, mode="create"):
         tbl = LanceTable(db, name)
         data = _sanitize_data(data, schema)
-        lance.write_dataset(data, tbl._dataset_uri, mode="create")
+        lance.write_dataset(data, tbl._dataset_uri, mode=mode)
         return tbl
 
 
