@@ -33,7 +33,14 @@ table = db.create_table("my_table",
 result = table.search([100, 100]).limit(2).to_df()
 ```
 
+## Complete Demos
+
+We will be adding completed demo apps built using LanceDB.
+- [YouTube Transcript Search](../notebooks/youtube_transcript_search.ipynb)
+
 
 ## Documentation Quick Links
 * [`Basic Operations`](basic.md) - basic functionality of LanceDB.
+* [`Embedding Functions`](embedding.md) - functions for working with embeddings.
+* [`Ecosystem Integrations`](integrations.md) - integrating LanceDB with python data tooling ecosystem.
 * [`API Reference`](python.md) - detailed documentation for the LanceDB Python SDK.
