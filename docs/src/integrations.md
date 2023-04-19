@@ -4,11 +4,7 @@ Built on top of Apache Arrow, `LanceDB` is easy to integrate with the Python eco
 
 ## Pandas and PyArrow
 
-``` sh
-pip install pandas lancedb
-```
-
-First, we need to connect to a LanceDB instance. This instance could be a local file directory.
+First, we need to connect to a `LanceDB` database.
 
 ``` py
 
@@ -17,7 +13,7 @@ import lancedb
 db = lancedb.connect("/tmp/lancedb")
 ```
 
-And write `Pandas DataFrame` to LanceDB directly.
+And write a `Pandas DataFrame` to LanceDB directly.
 
 ```py
 import pandas as pd
@@ -50,7 +46,8 @@ print(df)
 0  [5.9, 26.5]  bar   20.0  14257.05957
 ```
 
-We can apply the filter via `LancdDB`, or apply the filter on `pd.DataFrame` later.
+If you have a simple filter, it's faster to provide a where clause to `LanceDB`'s search query.
+If you have more complex criteria, you can always apply the filter to the resulting pandas `DataFrame` from the search query.
 
 ```python
 
