@@ -22,7 +22,7 @@ data = [{"vector": row, "item": f"item {i}"}
 tbl = db.create_table("my_vectors", data=data)
 
 # Create and train the index - you need to have enough data in the table for an effective training step
-tbl.create_index(num_partitions=256,num_sub_vectors=96)
+tbl.create_index(num_partitions=256, num_sub_vectors=96)
 ```
 
 Since `create_index` has a training step, it can take a few minutes to finish for large tables. You can control the index
