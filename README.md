@@ -8,7 +8,7 @@
 <a href="https://lancedb.github.io/lancedb/">Documentation</a> •
 <a href="https://blog.eto.ai/">Blog</a> •
 <a href="https://discord.gg/zMM32dvNtd">Discord</a> •
-<a href="https://twitter.com/etodotai">Twitter</a>
+<a href="https://twitter.com/lancedb">Twitter</a>
 
 </p>
 </div>
