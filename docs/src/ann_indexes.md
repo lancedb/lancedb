@@ -29,7 +29,7 @@ Since `create_index` has a training, it can take a couple of minutes to finish f
 creation by providing the following parameters:
 - **num_partitions**: The number of partitions of the index. A higher number leads to better search quality, but it makes index 
 generation slower.
-- **num_partitions**: The number of subvectors (M) that will be created during Product Quantization (PQ). A larger number makes
+- **num_sub_vectors**: The number of subvectors (M) that will be created during Product Quantization (PQ). A larger number makes
 search more accurate, but also makes the index larger and slower to build. 
 
 ## Querying an ANN Index
