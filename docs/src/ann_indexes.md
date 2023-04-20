@@ -1,12 +1,12 @@
 # ANN (Approximate Nearest Neighbor) Indexes
 
-In order to make vector search faster, you can create an index over your vector data. Vector indexes are faster but
-not as accurate as exhaustive search. LanceDB provide many parameters to fine tune the size of the index, the speed
-of queries and the accuracy of results.
+You can create an index over your vector data to make search faster. Vector indexes are faster but less 
+ accurate than exhaustive search. LanceDB provides many parameters to fine-tune the index's size, the speed of 
+queries, and the accuracy of results.
 
 ## Creating an ANN Index
 
-This is how you can create a vector index:
+Creating indexes is done via the [create_index](https://lancedb.github.io/lancedb/python/#lancedb.table.LanceTable.create_index) function.
 
 ```python
 import lancedb
@@ -25,13 +25,35 @@ tbl = db.create_table("my_vectors", data=data)
 tbl.create_index(num_partitions=256,num_sub_vectors=96)
 ```
 
-Since `create_index` has a training, it can take a couple of minutes to finish for large tables. You can control index
+Since `create_index` has a training step, it can take a few minutes to finish for large tables. You can control the index
 creation by providing the following parameters:
-- **num_partitions**: The number of partitions of the index. A higher number leads to better search quality, but it makes index 
+
+- **num_partitions**: The number of partitions of the index. A higher number leads to faster queries, but it makes index 
 generation slower.
 - **num_sub_vectors**: The number of subvectors (M) that will be created during Product Quantization (PQ). A larger number makes
 search more accurate, but also makes the index larger and slower to build. 
 
 ## Querying an ANN Index
 
-TODO
+Querying vector indexes is done via the [search](https://lancedb.github.io/lancedb/python/#lancedb.table.LanceTable.search) function.
+
+There are a couple of parameters that can be used to fine-tune the search:
+
+- **limit**: The amount of results that will be returned
+- **nprobes**: The number of probes used. A higher number makes search more accurate but also slower.
+- **refine_factor**: Refine the results by reading extra elements and re-ranking them in memory. A higher number makes 
+search more accurate but also slower.
+
+```python
+tbl.search(np.random.random((768))) \
+    .limit(2) \
+    .nprobes(20) \
+    .refine_factor(20) \
+    .to_df()
+
+                                              vector       item       score
+0  [0.44949695, 0.8444449, 0.06281311, 0.23338133...  item 1141  103.575333
+1  [0.48587373, 0.269207, 0.15095535, 0.65531915,...  item 3953  108.393867
+```
+
+The search will return the data requested in addition to the score of each item. The score is the distance between the query vector and the element. A lower number means that the result is more relevant.
