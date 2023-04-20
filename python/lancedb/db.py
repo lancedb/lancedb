@@ -55,7 +55,11 @@ class LanceDBConnection:
         return self.open_table(name)
 
     def create_table(
-        self, name: str, data: DATA = None, schema: pa.Schema = None
+        self,
+        name: str,
+        data: DATA = None,
+        schema: pa.Schema = None,
+        mode: str = "create",
     ) -> LanceTable:
         """Create a table in the database.
 
@@ -67,6 +71,10 @@ class LanceDBConnection:
             The data to insert into the table.
         schema: pyarrow.Schema; optional
             The schema of the table.
+        mode: str; default "create"
+            The mode to use when creating the table.
+            By default, if the table already exists, an exception is raised.
+            If you want to overwrite the table, use mode="overwrite".
 
         Note
         ----
@@ -78,7 +86,7 @@ class LanceDBConnection:
         A LanceTable object representing the table.
         """
         if data is not None:
-            tbl = LanceTable.create(self, name, data, schema)
+            tbl = LanceTable.create(self, name, data, schema, mode=mode)
         else:
             tbl = LanceTable(self, name)
         return tbl
