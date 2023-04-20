@@ -58,3 +58,23 @@ tbl.search(np.random.random((768))) \
 ```
 
 The search will return the data requested in addition to the score of each item. The score is the distance between the query vector and the element. A lower number means that the result is more relevant.
+
+### Filtering (where clause)
+
+You can further filter the elements returned by a search using a where clause.
+
+```python
+tbl.search(np.random.random((768))).where("item != 'item 1141'").to_df()
+```
+
+### Projections (select clause)
+
+You can select the columns returned by the query using a select clause.
+
+```python
+tbl.search(np.random.random((768))).select(["vector"]).to_df()
+                                              vector      score
+0  [0.30928212, 0.022668175, 0.1756372, 0.4911822...  93.971092
+1  [0.2525465, 0.01723831, 0.261568, 0.002007689,...  95.173485
+...
+```
