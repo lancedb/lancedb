@@ -114,3 +114,26 @@ def test_add(db):
         ),
     )
     assert expected == table.to_arrow()
+
+
+def test_versioning(db):
+    table = LanceTable.create(
+        db,
+        "test",
+        data=[
+            {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+            {"vector": [5.9, 26.5], "item": "bar", "price": 20.0},
+        ],
+    )
+
+    assert len(table.list_versions()) == 1
+    assert table.version == 1
+
+    table.add([{"vector": [6.3, 100.5], "item": "new", "price": 30.0}])
+    assert len(table.list_versions()) == 2
+    assert table.version == 2
+    assert len(table) == 3
+
+    table.checkout(1)
+    assert table.version == 1
+    assert len(table) == 2
