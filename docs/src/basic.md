@@ -25,6 +25,10 @@ tbl = db.create_table("my_table",
 Under the hood, LanceDB is converting the input data into an Apache Arrow table
 and persisting it to disk in [Lance format](github.com/eto-ai/lance).
 
+If the table already exists, LanceDB will raise an error by default.
+If you want to overwrite the table, you can pass in `mode="overwrite"`
+to the `create_table` method.
+
 You can also pass in a pandas DataFrame directly:
 ```python
 import pandas as pd

@@ -13,6 +13,7 @@
 
 import lancedb
 import pandas as pd
+import pytest
 
 
 def test_basic(tmp_path):
@@ -49,7 +50,13 @@ def test_ingest_pd(tmp_path):
     assert db.uri == str(tmp_path)
     assert db.table_names() == []
 
-    data = pd.DataFrame({"vector": [[3.1, 4.1], [5.9, 26.5]], "item": ["foo", "bar"], "price": [10.0, 20.0]})
+    data = pd.DataFrame(
+        {
+            "vector": [[3.1, 4.1], [5.9, 26.5]],
+            "item": ["foo", "bar"],
+            "price": [10.0, 20.0],
+        }
+    )
     table = db.create_table("test", data=data)
     rs = table.search([100, 100]).limit(1).to_df()
     assert len(rs) == 1
@@ -64,3 +71,28 @@ def test_ingest_pd(tmp_path):
     assert len(db) == 1
 
     assert db.open_table("test").name == db["test"].name
+
+
+def test_create_mode(tmp_path):
+    db = lancedb.connect(tmp_path)
+    data = pd.DataFrame(
+        {
+            "vector": [[3.1, 4.1], [5.9, 26.5]],
+            "item": ["foo", "bar"],
+            "price": [10.0, 20.0],
+        }
+    )
+    db.create_table("test", data=data)
+
+    with pytest.raises(Exception):
+        db.create_table("test", data=data)
+
+    new_data = pd.DataFrame(
+        {
+            "vector": [[3.1, 4.1], [5.9, 26.5]],
+            "item": ["fizz", "buzz"],
+            "price": [10.0, 20.0],
+        }
+    )
+    tbl = db.create_table("test", data=new_data, mode="overwrite")
+    assert tbl.to_pandas().item.tolist() == ["fizz", "buzz"]
