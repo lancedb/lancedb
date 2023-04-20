@@ -2,7 +2,7 @@
 
 In order to make vector search faster, you can create an index over your vector data. Vector indexes are faster but
 not as accurate as exhaustive search. LanceDB provide many parameters to fine tune the size of the index, the speed
-of queries and the accuracy for results
+of queries and the accuracy of results.
 
 ## Creating an ANN Index
 
