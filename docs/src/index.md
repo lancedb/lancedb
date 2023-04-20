@@ -42,5 +42,6 @@ We will be adding completed demo apps built using LanceDB.
 ## Documentation Quick Links
 * [`Basic Operations`](basic.md) - basic functionality of LanceDB.
 * [`Embedding Functions`](embedding.md) - functions for working with embeddings.
+* [`Indexing`](ann_indexes.md) - create vector indexes to speed up queries.
 * [`Ecosystem Integrations`](integrations.md) - integrating LanceDB with python data tooling ecosystem.
 * [`API Reference`](python.md) - detailed documentation for the LanceDB Python SDK.
