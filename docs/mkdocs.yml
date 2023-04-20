@@ -15,7 +15,7 @@ nav:
 - Home: index.md
 - Basics: basic.md
 - Embeddings: embedding.md
-- ANNIndexes: ann_indexes.md
+- Indexing: ann_indexes.md
 - Integrations: integrations.md
 - Python API: python.md
 
