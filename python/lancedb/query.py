@@ -24,7 +24,7 @@ class LanceQueryBuilder:
     """
 
     def __init__(self, table: "lancedb.table.LanceTable", query: np.ndarray):
-        self._metric = "l2"
+        self._metric = "L2"
         self._nprobes = 20
         self._refine_factor = None
         self._table = table
