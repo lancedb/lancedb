@@ -28,6 +28,7 @@ tbl.create_index(num_partitions=256, num_sub_vectors=96)
 Since `create_index` has a training step, it can take a few minutes to finish for large tables. You can control the index
 creation by providing the following parameters:
 
+- **metric** (default: "L2"): The distance metric to use. By default we use euclidean distance. We also support cosine distance.
 - **num_partitions** (default: 256): The number of partitions of the index. The number of partitions should be configured so each partition has 3-5K vectors. For example, a table
 with ~1M vectors should use 256 partitions. You can specify arbitrary number of partitions but powers of 2 is most conventional.
 A higher number leads to faster queries, but it makes index generation slower.
