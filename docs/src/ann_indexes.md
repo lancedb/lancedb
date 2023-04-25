@@ -41,7 +41,7 @@ Querying vector indexes is done via the [search](https://lancedb.github.io/lance
 There are a couple of parameters that can be used to fine-tune the search:
 
 - **limit** (default: 10): The amount of results that will be returned
-- **metric** (default: "l2"): The distance metric to use. By default we use euclidean distance. We also support cosine distance.
+- **metric** (default: "L2"): The distance metric to use. By default we use euclidean distance. We also support cosine distance.
 - **nprobes** (default: 20): The number of probes used. A higher number makes search more accurate but also slower.
 - **refine_factor** (default: None): Refine the results by reading extra elements and re-ranking them in memory. A higher number makes
 search more accurate but also slower.
