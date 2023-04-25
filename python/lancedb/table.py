@@ -166,6 +166,9 @@ class LanceTable:
         Returns
         -------
         A LanceQueryBuilder object representing the query.
+        Once executed, the query returns selected columns, the vector,
+        and also the "score" column which is the distance between the query
+        vector and the returned vector.
         """
         if isinstance(query, list):
             query = np.array(query)
