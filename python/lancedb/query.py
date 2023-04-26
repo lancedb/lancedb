@@ -24,6 +24,7 @@ class LanceQueryBuilder:
     """
 
     def __init__(self, table: "lancedb.table.LanceTable", query: np.ndarray):
+        self._metric = "L2"
         self._nprobes = 20
         self._refine_factor = None
         self._table = table
@@ -77,6 +78,21 @@ class LanceQueryBuilder:
         self._where = where
         return self
 
+    def metric(self, metric: str) -> LanceQueryBuilder:
+        """Set the distance metric to use.
+
+        Parameters
+        ----------
+        metric: str
+            The distance metric to use. By default "l2" is used.
+
+        Returns
+        -------
+        The LanceQueryBuilder object.
+        """
+        self._metric = metric
+        return self
+
     def nprobes(self, nprobes: int) -> LanceQueryBuilder:
         """Set the number of probes to use.
 
@@ -123,6 +139,7 @@ class LanceQueryBuilder:
                 "column": VECTOR_COLUMN_NAME,
                 "q": self._query,
                 "k": self._limit,
+                "metric": self._metric,
                 "nprobes": self._nprobes,
                 "refine_factor": self._refine_factor,
             },

@@ -106,11 +106,14 @@ class LanceTable:
     def _dataset_uri(self) -> str:
         return os.path.join(self._conn.uri, f"{self.name}.lance")
 
-    def create_index(self, num_partitions=256, num_sub_vectors=96):
+    def create_index(self, metric="L2", num_partitions=256, num_sub_vectors=96):
         """Create an index on the table.
 
         Parameters
         ----------
+        metric: str, default "L2"
+            The distance metric to use when creating the index. Valid values are "L2" or "cosine".
+            L2 is euclidean distance.
         num_partitions: int
             The number of IVF partitions to use when creating the index.
             Default is 256.
@@ -121,6 +124,7 @@ class LanceTable:
         self._dataset.create_index(
             column=VECTOR_COLUMN_NAME,
             index_type="IVF_PQ",
+            metric=metric,
             num_partitions=num_partitions,
             num_sub_vectors=num_sub_vectors,
         )
