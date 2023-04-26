@@ -2,6 +2,8 @@
 
 ## Store your data on S3 and use Lambda to compute embeddings and retrieve queries in production easily.
 
+## <img id="splash" width="1239" alt="s3-lambda" src="https://user-images.githubusercontent.com/917119/234653050-305a1e90-9305-40ab-b014-c823172a948c.png">
+
 This is a great option if you're wanting to scale with your use case and save effort and costs of maintenance.
 
 Let's walk through how to get a simple Lambda function that queries the SIFT dataset on S3.
