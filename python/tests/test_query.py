@@ -14,7 +14,9 @@
 import lance
 from lancedb.query import LanceQueryBuilder
 
+import numpy as np
 import pandas as pd
+import pandas.testing as tm
 import pyarrow as pa
 
 import pytest
@@ -60,3 +62,21 @@ def test_query_builder_with_filter(table):
     df = LanceQueryBuilder(table, [0, 0]).where("id = 2").to_df()
     assert df["id"].values[0] == 2
     assert all(df["vector"].values[0] == [3, 4])
+
+
+def test_query_builder_with_metric(table):
+    query = [4, 8]
+    df_default = LanceQueryBuilder(table, query).to_df()
+    df_l2 = LanceQueryBuilder(table, query).metric("l2").to_df()
+    tm.assert_frame_equal(df_default, df_l2)
+
+    df_cosine = LanceQueryBuilder(table, query).metric("cosine").limit(1).to_df()
+    assert df_cosine.score[0] == pytest.approx(
+        cosine_distance(query, df_cosine.vector[0]),
+        abs=1e-6,
+    )
+    assert 0 <= df_cosine.score[0] <= 1
+
+
+def cosine_distance(vec1, vec2):
+    return 1 - np.dot(vec1, vec2) / (np.linalg.norm(vec1) * np.linalg.norm(vec2))

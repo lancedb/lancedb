@@ -28,11 +28,12 @@ tbl.create_index(num_partitions=256, num_sub_vectors=96)
 Since `create_index` has a training step, it can take a few minutes to finish for large tables. You can control the index
 creation by providing the following parameters:
 
-- **num_partitions** (default: 256): The number of partitions of the index. The number of partitions should be configured so each partition has 3-5K vectors. For example, a table 
-with ~1M vectors should use 256 partitions. You can specify arbitrary number of partitions but powers of 2 is most conventional. 
-A higher number leads to faster queries, but it makes index generation slower. 
+- **metric** (default: "L2"): The distance metric to use. By default we use euclidean distance. We also support cosine distance.
+- **num_partitions** (default: 256): The number of partitions of the index. The number of partitions should be configured so each partition has 3-5K vectors. For example, a table
+with ~1M vectors should use 256 partitions. You can specify arbitrary number of partitions but powers of 2 is most conventional.
+A higher number leads to faster queries, but it makes index generation slower.
 - **num_sub_vectors** (default: 96): The number of subvectors (M) that will be created during Product Quantization (PQ). A larger number makes
-search more accurate, but also makes the index larger and slower to build. 
+search more accurate, but also makes the index larger and slower to build.
 
 ## Querying an ANN Index
 
@@ -41,8 +42,9 @@ Querying vector indexes is done via the [search](https://lancedb.github.io/lance
 There are a couple of parameters that can be used to fine-tune the search:
 
 - **limit** (default: 10): The amount of results that will be returned
+- **metric** (default: "L2"): The distance metric to use. By default we use euclidean distance. We also support cosine distance.
 - **nprobes** (default: 20): The number of probes used. A higher number makes search more accurate but also slower.
-- **refine_factor** (default: None): Refine the results by reading extra elements and re-ranking them in memory. A higher number makes 
+- **refine_factor** (default: None): Refine the results by reading extra elements and re-ranking them in memory. A higher number makes
 search more accurate but also slower.
 
 ```python
