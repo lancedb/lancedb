@@ -1,12 +1,18 @@
 # ANN (Approximate Nearest Neighbor) Indexes
 
-You can create an index over your vector data to make search faster. Vector indexes are faster but less accurate than exhaustive search. LanceDB provides many parameters to fine-tune the index's size, the speed of queries, and the accuracy of results.
+You can create an index over your vector data to make search faster.
+Vector indexes are faster but less accurate than exhaustive search.
+LanceDB provides many parameters to fine-tune the index's size, the speed of queries, and the accuracy of results.
 
-Currently, LanceDB does not automatically create the ANN index. In the future we will look to improve this experience and automate index creation and configuration.
+Currently, LanceDB does *not* automatically create the ANN index.
+LanceDB has optimized code for KNN as well. For many use-cases, datasets under 100K vectors won't require index creation at all.
+If you can live with <100ms latency, skipping index creation is a simpler workflow while guaranteeing 100% recall.
+
+In the future we will look to automatically create and configure the ANN index.
 
 ## Creating an ANN Index
 
-Creating indexes is done via the [create_index](https://lancedb.github.io/lancedb/python/#lancedb.table.LanceTable.create_index) function.
+Creating indexes is done via the [create_index](https://lancedb.github.io/lancedb/python/#lancedb.table.LanceTable.create_index) method.
 
 ```python
 import lancedb
@@ -42,16 +48,21 @@ Querying vector indexes is done via the [search](https://lancedb.github.io/lance
 There are a couple of parameters that can be used to fine-tune the search:
 
 - **limit** (default: 10): The amount of results that will be returned
-- **metric** (default: "L2"): The distance metric to use. By default we use euclidean distance. We also support cosine distance.
-- **nprobes** (default: 20): The number of probes used. A higher number makes search more accurate but also slower.
-- **refine_factor** (default: None): Refine the results by reading extra elements and re-ranking them in memory. A higher number makes
-search more accurate but also slower.
+- **nprobes** (default: 20): The number of probes used. A higher number makes search more accurate but also slower.<br/>
+  Most of the time, setting nprobes to cover 5-10% of the dataset should achieve high recall with low latency.<br/>
+  e.g., for 1M vectors divided up into 256 partitions, nprobes should be set to ~20-40.<br/>
+  Note: nprobes is only applicable if an ANN index is present. If specified on a table without an ANN index, it is ignored.
+- **refine_factor** (default: None): Refine the results by reading extra elements and re-ranking them in memory.<br/>
+  A higher number makes search more accurate but also slower. If you find the recall is less than idea, try refine_factor=10 to start.<br/>
+  e.g., for 1M vectors divided into 256 partitions, if you're looking for top 20, then refine_factor=200 reranks the whole partition.<br/>
+  Note: refine_factor is only applicable if an ANN index is present. If specified on a table without an ANN index, it is ignored.
+
 
 ```python
 tbl.search(np.random.random((768))) \
     .limit(2) \
     .nprobes(20) \
-    .refine_factor(20) \
+    .refine_factor(10) \
     .to_df()
 
                                               vector       item       score
@@ -59,7 +70,9 @@ tbl.search(np.random.random((768))) \
 1  [0.48587373, 0.269207, 0.15095535, 0.65531915,...  item 3953  108.393867
 ```
 
-The search will return the data requested in addition to the score of each item. The score is the distance between the query vector and the element. A lower number means that the result is more relevant.
+The search will return the data requested in addition to the score of each item.
+
+**Note:** The score is the distance between the query vector and the element. A lower number means that the result is more relevant.
 
 ### Filtering (where clause)
 

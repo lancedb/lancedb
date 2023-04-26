@@ -124,7 +124,12 @@ class LanceQueryBuilder:
         return self
 
     def to_df(self) -> pd.DataFrame:
-        """Execute the query and return the results as a pandas DataFrame."""
+        """
+        Execute the query and return the results as a pandas DataFrame.
+        In addition to the selected columns, LanceDB also returns a vector
+        and also the "score" column which is the distance between the query
+        vector and the returned vector.
+        """
         ds = self._table.to_lance()
         # TODO indexed search
         tbl = ds.to_table(
