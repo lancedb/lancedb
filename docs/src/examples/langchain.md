@@ -1,4 +1,4 @@
-# Lance + LangChain on Pandas 2.0
+# Code Documentation Q&A Bot
 
 ## simple Pandas 2.0 documentation Q&A answering bot using LangChain
 
