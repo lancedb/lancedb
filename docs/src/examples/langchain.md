@@ -1,6 +1,6 @@
-# Code Documentation Q&A Bot
+# Code Documentation Q&A Bot 2.0
 
-## simple Pandas 2.0 documentation Q&A answering bot using LangChain
+## Simple Pandas 2.0 documentation Q&A answering bot using LangChain
 
 <img id="splash" src="https://user-images.githubusercontent.com/917119/234710587-3b488467-e8a4-46ec-b377-fe24c17eecca.png"/>
 
