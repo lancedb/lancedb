@@ -1,4 +1,4 @@
-# S3, Lambda and Lance
+# Serverless LanceDB
 
 ## Store your data on S3 and use Lambda to compute embeddings and retrieve queries in production easily.
 
