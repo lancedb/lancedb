@@ -21,6 +21,10 @@ The key features of LanceDB include:
 
 * Production-scale vector search with no servers to manage.
 
+* Optimized for multi-modal data (text, images, videos, point clouds and more).
+
+* Native Python and Javascript/Typescript support (coming soon).
+
 * Combine attribute-based information with vectors and store them as a single source-of-truth.
 
 * Zero-copy, automatic versioning, manage versions of your data without needing extra infrastructure.
