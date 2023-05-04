@@ -21,8 +21,9 @@ def test_normalize_uri():
         "file:///absolute/path",
         "s3://bucket/path",
         "gs://bucket/path",
+        "c:\\windows\\path",
     ]
-    schemes = ["file", "file", "file", "s3", "gs"]
+    schemes = ["file", "file", "file", "s3", "gs", "file"]
 
     for uri, expected_scheme in zip(uris, schemes):
         parsed_scheme = get_uri_scheme(uri)
