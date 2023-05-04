@@ -35,4 +35,9 @@ def get_uri_scheme(uri: str) -> str:
         scheme = "file"
     elif scheme in ["s3a", "s3n"]:
         scheme = "s3"
+    elif len(scheme) == 1:
+        # Windows drive names are parsed as the scheme
+        # e.g. "c:\path" -> ParseResult(scheme="c", netloc="", path="/path", ...)
+        # So we add special handling here for schemes that are a single character
+        scheme = "file"
     return scheme
