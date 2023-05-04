@@ -18,6 +18,7 @@ import pyarrow as pa
 
 from .common import URI, DATA
 from .table import LanceTable
+from .util import get_uri_scheme
 
 
 class LanceDBConnection:
@@ -26,10 +27,12 @@ class LanceDBConnection:
     """
 
     def __init__(self, uri: URI):
-        if isinstance(uri, str):
-            uri = Path(uri)
-        uri = uri.expanduser().absolute()
-        Path(uri).mkdir(parents=True, exist_ok=True)
+        is_local = isinstance(uri, Path) or get_uri_scheme(uri) == "file"
+        if is_local:
+            if isinstance(uri, str):
+                uri = Path(uri)
+            uri = uri.expanduser().absolute()
+            Path(uri).mkdir(parents=True, exist_ok=True)
         self._uri = str(uri)
 
     @property
@@ -43,7 +46,11 @@ class LanceDBConnection:
         -------
         A list of table names.
         """
-        return [p.stem for p in Path(self.uri).glob("*.lance")]
+        if get_uri_scheme(self.uri) == "file":
+            return [p.stem for p in Path(self.uri).glob("*.lance")]
+        raise NotImplementedError(
+            "List table_names is only supported for local filesystem for now"
+        )
 
     def __len__(self) -> int:
         return len(self.table_names())
