@@ -3,7 +3,7 @@
 
 <img width="275" alt="LanceDB Logo" src="https://user-images.githubusercontent.com/917119/226205734-6063d87a-1ecc-45fe-85be-1dea6383a3d8.png">
 
-**Serverless, low-latency vector database for AI applications**
+**Developer-friendly, serverless vector database for AI applications**
 
 <a href="https://lancedb.github.io/lancedb/">Documentation</a> •
 <a href="https://blog.eto.ai/">Blog</a> •
