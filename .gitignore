@@ -15,3 +15,5 @@ python/build
 python/dist
 
 notebooks/.ipynb_checkpoints
+
+**/.hypothesis
