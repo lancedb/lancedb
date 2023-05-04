@@ -98,7 +98,20 @@ def test_add(db):
             {"vector": [5.9, 26.5], "item": "bar", "price": 20.0},
         ],
     )
+    _add(table)
 
+    # from empty table GH#54
+    table = LanceTable.create(db, "test2")
+    table.add(
+        data=[
+            {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+            {"vector": [5.9, 26.5], "item": "bar", "price": 20.0},
+        ],
+    )
+    _add(table)
+
+
+def _add(table):
     # table = LanceTable(db, "test")
     assert len(table) == 2
 

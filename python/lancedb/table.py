@@ -23,6 +23,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.compute as pc
 from lance import LanceDataset
+import pyarrow.fs
 from lance.vector import vec_to_table
 
 from .common import DATA, VEC, VECTOR_COLUMN_NAME
@@ -95,7 +96,8 @@ class LanceTable:
 
     def _reset_dataset(self):
         try:
-            del self.__dict__["_dataset"]
+            if "_dataset" in self.__dict__:
+                del self.__dict__["_dataset"]
         except AttributeError:
             pass
 
@@ -281,15 +283,24 @@ class LanceTable:
         int
             The number of vectors in the table.
         """
+        # TODO: manage table listing and metadata separately
+        schema = None if not self._has_data() else self.schema
         data = _sanitize_data(
-            data, self.schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value
+            data, schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value
         )
         lance.write_dataset(data, self._dataset_uri, mode=mode)
         self._reset_dataset()
         return len(self)
 
+    def _has_data(self):
+        try:
+            self._dataset
+            return True
+        except Exception:
+            return _has_latest_manifest(self._dataset_uri)
+
     def search(
-        self, query: Union[VEC, str], vector_column_name=VECTOR_COLUMN_NAME
+            self, query: Union[VEC, str], vector_column_name=VECTOR_COLUMN_NAME
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector.
@@ -368,11 +379,16 @@ class LanceTable:
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
         """
         tbl = LanceTable(db, name)
-        data = _sanitize_data(
-            data, schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value
-        )
+        if data is not None:
+            data = _sanitize_data(
+                data, schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value
+            )
+        else:
+            # If we're not writing data, we have to manually check that the table doesn't exist
+            if mode == "create" and _has_latest_manifest(tbl._dataset_uri):
+                raise ValueError(f"Table {name} already exists")
         lance.write_dataset(data, tbl._dataset_uri, mode=mode)
-        return tbl
+        return LanceTable(db, name)
 
     @classmethod
     def open(cls, db, name):
@@ -384,7 +400,6 @@ class LanceTable:
             raise FileNotFoundError(
                 f"Table {name} does not exist. Please first call db.create_table({name}, data)"
             )
-
         return tbl
 
     def delete(self, where: str):
@@ -416,12 +431,15 @@ class LanceTable:
         self._dataset.delete(where)
 
 
-def _sanitize_schema(
-    data: pa.Table,
-    schema: pa.Schema = None,
-    on_bad_vectors: str = "drop",
-    fill_value: float = 0.0,
-) -> pa.Table:
+def _has_latest_manifest(dataset_uri: str) -> bool:
+    fs, path = pa.fs.FileSystem.from_uri(dataset_uri)
+    finfo = fs.get_file_info(os.path.join(path, "_latest.manifest"))
+    return finfo.type != pa.fs.FileType.NotFound
+
+
+def _sanitize_schema(data: pa.Table, schema: pa.Schema = None,
+                     on_bad_vectors: str = "drop",
+                     fill_value: float = 0.0) -> pa.Table:
     """Ensure that the table has the expected schema.
 
     Parameters
