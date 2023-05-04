@@ -55,9 +55,7 @@ CMD [ "app.handler" ]
 Now let's make a simple Lambda function that queries the SIFT dataset in `app.py`.
 
 ```python    
-import time
 import json
-
 import numpy as np
 import lancedb
 
@@ -66,7 +64,6 @@ table = db.open_table("vector_example")
 
 def handler(event, context):
     status_code = 200
-    num_k = 10
 
     if event['query_vector'] is None:
         status_code = 404
