@@ -12,31 +12,57 @@ Before we start, you'll need to ensure you create a secure account access to AWS
 
 We'll also use a container to ship our Lambda code. This is a good option for Lambda as you don't have the space limits that you would otherwise by building a package yourself.
 
-First, let's create a new `Dockerfile` using the AWS python container base:
+# Initial setup: creating a LanceDB Table and storing it remotely on S3
+
+We'll use the SIFT vector dataset as an example. To make it easier, we've already made a Lance-format SIFT dataset publically available, which we can access and use to populate our LanceDB Table. 
+
+To do this, download the Lance files locally first from:
+
+```
+s3://eto-public/datasets/sift/vec_data.lance
+```
+
+Then, we can write a quick Python script to populate our LanceDB Table:
+
+```python
+import pylance
+sift_dataset = pylance.dataset("/path/to/local/vec_data.lance")
+df = sift_dataset.to_table().to_pandas()
+
+import lancedb
+db = lancedb.connect(".")
+table = db.create_table("vector_example", df)
+```
+
+Once we've created our Table, we are free to move this data over to S3 so we can remotely host it.
+
+# Building our Lambda app: a simple event handler for vector search
+
+Now that we've got a remotely hosted LanceDB Table, we'll want to be able to query it from Lambda. To do so, let's create a new `Dockerfile` using the AWS python container base:
 
 ```docker
 FROM public.ecr.aws/lambda/python:3.10
 
 RUN pip3 install --upgrade pip
 RUN pip3 install --no-cache-dir -U numpy --target "${LAMBDA_TASK_ROOT}"
-RUN pip3 install --no-cache-dir -U pylance --target "${LAMBDA_TASK_ROOT}"
+RUN pip3 install --no-cache-dir -U lancedb --target "${LAMBDA_TASK_ROOT}"
 
 COPY app.py ${LAMBDA_TASK_ROOT}
 
 CMD [ "app.handler" ]
 ```
 
-Now let's make a simple Lambda function that queries the SIFT dataset, and allows the user to enter a vector and change the nearest neighbour parameter in `app.py`.
+Now let's make a simple Lambda function that queries the SIFT dataset in `app.py`.
 
 ```python    
 import time
 import json
 
 import numpy as np
-import lance
-from lance.vector import vec_to_table
+import lancedb
 
-s3_dataset = lance.dataset("s3://eto-public/datasets/sift/vec_data.lance")
+db = lancedb.connect("s3://eto-public/tables")
+table = db.open_table("vector_example")
 
 def handler(event, context):
     status_code = 200
@@ -56,19 +82,28 @@ def handler(event, context):
     
     # Shape of SIFT is (128,1M), d=float32
     query_vector = np.array(event['query_vector'], dtype=np.float32)
-    
-    if event['num_k'] is not None:
-        num_k = event['num_k']
-    
-    if event['debug'] is not None:
-        rs = s3_dataset.to_table(nearest={"column": "vector", "k": num_k, "q": query_vector})
-    else:
-        rs = s3_dataset.to_table(nearest={"column": "vector", "k": num_k, "q": query_vector})
+
+    rs = table.search(query_vector).limit(2).to_df()
 
     return {
         "statusCode": status_code,
         "headers": {
             "Content-Type": "application/json"
         },
-        "body": rs.to_pandas().to_json()
+        "body": rs.to_json()
     }
+``` 
+
+# Deploying the container to EKS
+
+The next step is to build and push the container to EKS, where it can then be used to create a new Lambda function. 
+
+It's best to follow the official AWS documentation for how to do this, which you can view here:
+
+```
+https://docs.aws.amazon.com/lambda/latest/dg/images-create.html#images-upload
+```
+
+# Final step: setting up your Lambda function
+
+Once the container is pushed, you can create a Lambda function by selecting the container. 
