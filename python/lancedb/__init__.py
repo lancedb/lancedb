@@ -11,7 +11,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
-from .db import LanceDBConnection, URI
+from .db import URI, LanceDBConnection
 
 
 def connect(uri: URI) -> LanceDBConnection:

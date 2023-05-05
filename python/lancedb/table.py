@@ -19,12 +19,12 @@ from functools import cached_property
 import lance
 import numpy as np
 import pandas as pd
-from lance import LanceDataset
 import pyarrow as pa
+from lance import LanceDataset
 from lance.vector import vec_to_table
 
+from .common import DATA, VEC, VECTOR_COLUMN_NAME
 from .query import LanceQueryBuilder
-from .common import DATA, VECTOR_COLUMN_NAME, VEC
 
 
 def _sanitize_data(data, schema):

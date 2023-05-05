@@ -13,14 +13,13 @@
 
 import math
 import sys
-
-from retry import retry
 from typing import Callable, Union
 
-from lance.vector import vec_to_table
 import numpy as np
 import pandas as pd
 import pyarrow as pa
+from lance.vector import vec_to_table
+from retry import retry
 
 
 def with_embeddings(
@@ -68,7 +67,9 @@ class EmbeddingFunction:
         if len(self.rate_limiter_kwargs) > 0:
             v = int(sys.version_info.minor)
             if v >= 11:
-                print("WARNING: rate limit only support up to 3.10, proceeding without rate limiter")
+                print(
+                    "WARNING: rate limit only support up to 3.10, proceeding without rate limiter"
+                )
             else:
                 import ratelimiter
 

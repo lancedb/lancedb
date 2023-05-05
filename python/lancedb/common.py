@@ -11,7 +11,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 from pathlib import Path
-from typing import Union, List
+from typing import List, Union
 
 import numpy as np
 import pandas as pd

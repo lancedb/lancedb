@@ -14,9 +14,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+
 import pyarrow as pa
 
-from .common import URI, DATA
+from .common import DATA, URI
 from .table import LanceTable
 from .util import get_uri_scheme
 

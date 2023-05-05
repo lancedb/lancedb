@@ -11,9 +11,10 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
-import lancedb
 import pandas as pd
 import pytest
+
+import lancedb
 
 
 def test_basic(tmp_path):
