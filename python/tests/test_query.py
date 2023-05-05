@@ -12,14 +12,13 @@
 #  limitations under the License.
 
 import lance
-from lancedb.query import LanceQueryBuilder
-
 import numpy as np
 import pandas as pd
 import pandas.testing as tm
 import pyarrow as pa
-
 import pytest
+
+from lancedb.query import LanceQueryBuilder
 
 
 class MockTable:

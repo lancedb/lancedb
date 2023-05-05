@@ -1,10 +1,10 @@
 [project]
 name = "lancedb"
-version = "0.1.1"
-dependencies = ["pylance>=0.4.4", "ratelimiter", "retry", "tqdm"]
+version = "0.1.2"
+dependencies = ["pylance>=0.4.6", "ratelimiter", "retry", "tqdm"]
 description = "lancedb"
 authors = [
-    { name = "Lance Devs", email = "dev@eto.ai" },
+    { name = "LanceDB Devs", email = "dev@lancedb.com" },
 ]
 license = { file = "LICENSE" }
 readme = "README.md"
