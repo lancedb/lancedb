@@ -2,6 +2,7 @@
 **/*.whl
 *.egg-info
 **/__pycache__
+.DS_Store
 
 rust/target
 rust/Cargo.lock
