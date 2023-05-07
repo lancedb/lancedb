@@ -90,7 +90,7 @@ def populate_index(index: tantivy.Index, table: LanceTable, fields: List[str]) -
 
 def search_index(
     index: tantivy.Index, query: str, limit: int = 10
-) -> List[Tuple[int], Tuple[float]]:
+) -> Tuple[Tuple[int], Tuple[float]]:
     """
     Search an index for a query
 
@@ -113,7 +113,7 @@ def search_index(
     query = index.parse_query(query)
     # get top results
     results = searcher.search(query, limit)
-    return list(
+    return tuple(
         zip(
             *[
                 (searcher.doc(doc_address)["doc_id"][0], score)
