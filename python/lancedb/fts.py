@@ -12,7 +12,7 @@
 #  limitations under the License.
 
 """Full text search index using tantivy-py"""
-from typing import List
+from typing import List, Tuple
 
 import os
 import pyarrow as pa
@@ -90,7 +90,7 @@ def populate_index(index: tantivy.Index, table: LanceTable, fields: List[str]) -
 
 
 def search_index(index: tantivy.Index, query: str, limit: int = 10) \
-        -> list[tuple[int], tuple[float]]:
+        -> List[Tuple[int], Tuple[float]]:
     """
     Search an index for a query
 
