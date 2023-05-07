@@ -45,6 +45,9 @@ dev = [
 docs = [
     "mkdocs", "mkdocs-jupyter", "mkdocs-material", "mkdocstrings[python]"
 ]
+fts = [
+    "tantivy-py"
+]
 
 [build-system]
 requires = [
