@@ -74,19 +74,19 @@ def populate_index(index: tantivy.Index, table: LanceTable, fields: List[str]) -
     writer = index.writer()
     # write data into index
     dataset = table.to_lance()
-    count = 0
+    row_id = 0
     for b in dataset.to_batches(columns=fields):
         for i in range(b.num_rows):
             doc = tantivy.Document()
-            doc.add_integer("doc_id", i)
+            doc.add_integer("doc_id", row_id)
             for name in fields:
                 print(b[name][i].as_py())
                 doc.add_text(name, b[name][i].as_py())
             writer.add_document(doc)
-            count += 1
+            row_id += 1
     # commit changes
     writer.commit()
-    return count
+    return row_id
 
 
 def search_index(index: tantivy.Index, query: str, limit: int = 10) \
