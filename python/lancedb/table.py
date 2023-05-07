@@ -25,7 +25,7 @@ from lance import LanceDataset
 from lance.vector import vec_to_table
 
 from .common import DATA, VEC, VECTOR_COLUMN_NAME
-from .query import LanceQueryBuilder, LanceFtsQueryBuilder
+from .query import LanceFtsQueryBuilder, LanceQueryBuilder
 
 
 def _sanitize_data(data, schema):
@@ -140,6 +140,7 @@ class LanceTable:
             The name of the field to index.
         """
         from .fts import create_index, populate_index
+
         index = create_index(self._get_fts_index_path(), [field_name])
         populate_index(index, self, [field_name])
 

@@ -11,15 +11,15 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 import os
+import random
 
+import lancedb.fts
 import numpy as np
 import pandas as pd
 import pytest
-import random
+import tantivy
 
 import lancedb as ldb
-import lancedb.fts
-import tantivy
 
 
 @pytest.fixture
@@ -32,13 +32,19 @@ def table(tmp_path) -> ldb.table.LanceTable:
     adv = ("crazily.", "dutifully.", "foolishly.", "merrily.", "occasionally.")
     adj = ("adorable", "clueless", "dirty", "odd", "stupid")
     text = [
-        ' '.join([nouns[random.randrange(0, 5)],
-                  verbs[random.randrange(0, 5)],
-                  adv[random.randrange(0, 5)],
-                  adj[random.randrange(0, 5)]])
+        " ".join(
+            [
+                nouns[random.randrange(0, 5)],
+                verbs[random.randrange(0, 5)],
+                adv[random.randrange(0, 5)],
+                adj[random.randrange(0, 5)],
+            ]
+        )
         for _ in range(100)
     ]
-    table = db.create_table("test", data=pd.DataFrame({"vector": vectors, "text": text}))
+    table = db.create_table(
+        "test", data=pd.DataFrame({"vector": vectors, "text": text})
+    )
     return table
 
 
@@ -68,4 +74,3 @@ def test_create_index_from_table(tmp_path, table):
     df = table.search("puppy").limit(10).select(["text"]).to_df()
     assert len(df) == 10
     assert "text" in df.columns
-

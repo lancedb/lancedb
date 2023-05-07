@@ -12,9 +12,9 @@
 #  limitations under the License.
 
 """Full text search index using tantivy-py"""
+import os
 from typing import List, Tuple
 
-import os
 import pyarrow as pa
 import tantivy
 
@@ -66,8 +66,7 @@ def populate_index(index: tantivy.Index, table: LanceTable, fields: List[str]) -
     # first check the fields exist and are string or large string type
     for name in fields:
         f = table.schema.field(name)  # raises KeyError if not found
-        if (not pa.types.is_string(f.type) and
-                not pa.types.is_large_string(f.type)):
+        if not pa.types.is_string(f.type) and not pa.types.is_large_string(f.type):
             raise TypeError(f"Field {name} is not a string type")
 
     # create a tantivy writer
@@ -89,8 +88,9 @@ def populate_index(index: tantivy.Index, table: LanceTable, fields: List[str]) -
     return row_id
 
 
-def search_index(index: tantivy.Index, query: str, limit: int = 10) \
-        -> List[Tuple[int], Tuple[float]]:
+def search_index(
+    index: tantivy.Index, query: str, limit: int = 10
+) -> List[Tuple[int], Tuple[float]]:
     """
     Search an index for a query
 
@@ -113,5 +113,11 @@ def search_index(index: tantivy.Index, query: str, limit: int = 10) \
     query = index.parse_query(query)
     # get top results
     results = searcher.search(query, limit)
-    return list(zip(*[(searcher.doc(doc_address)["doc_id"][0], score)
-                      for score, doc_address in results.hits]))
+    return list(
+        zip(
+            *[
+                (searcher.doc(doc_address)["doc_id"][0], score)
+                for score, doc_address in results.hits
+            ]
+        )
+    )

@@ -149,10 +149,11 @@ class LanceQueryBuilder:
 
 
 class LanceFtsQueryBuilder(LanceQueryBuilder):
-
     def to_df(self) -> pd.DataFrame:
-        from .fts import search_index
         import tantivy
+
+        from .fts import search_index
+
         # get the index path
         index_path = self._table._get_fts_index_path()
         # open the index
@@ -163,4 +164,3 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         output_tbl = self._table.to_lance().take(row_ids, columns=self._columns)
         output_tbl = output_tbl.append_column("score", scores)
         return output_tbl.to_pandas()
-
