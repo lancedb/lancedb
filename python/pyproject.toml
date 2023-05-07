@@ -46,7 +46,7 @@ docs = [
     "mkdocs", "mkdocs-jupyter", "mkdocs-material", "mkdocstrings[python]"
 ]
 fts = [
-    "tantivy-py"
+    "tantivy"
 ]
 
 [build-system]

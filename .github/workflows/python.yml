@@ -28,6 +28,11 @@ jobs:
       uses: actions/setup-python@v4
       with:
         python-version: 3.${{ matrix.python-minor-version }}
+    - name: install tantivy from source
+      run: |        
+        git clone https://github.com/quickwit-oss/tantivy-py
+        cd tantivy-py
+        pip install -e .
     - name: Install lancedb
       run: |
         pip install -e ".[fts]"
@@ -49,7 +54,12 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
-        python-version: "3.10"
+        python-version: "3.11"
+    - name: install tantivy from source
+      run: |        
+        git clone https://github.com/quickwit-oss/tantivy-py
+        cd tantivy-py
+        pip install -e .
     - name: Install lancedb
       run: |
         pip install -e ".[fts]"
