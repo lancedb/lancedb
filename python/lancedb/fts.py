@@ -110,8 +110,8 @@ def search_index(index: tantivy.Index, query: str, limit: int = 10) \
         and the second containing the scores
     """
     searcher = index.searcher()
-    query = index.parse_query(query, ["text"])
+    query = index.parse_query(query)
     # get top results
     results = searcher.search(query, limit)
-    return list(zip(*[(searcher.doc(doc_address)["doc_id"], score)
+    return list(zip(*[(searcher.doc(doc_address)["doc_id"][0], score)
                       for score, doc_address in results.hits]))

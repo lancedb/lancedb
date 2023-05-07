@@ -62,4 +62,10 @@ def test_search_index(tmp_path, table):
     assert len(results[0]) == 10  # row_ids
     assert len(results[1]) == 10  # scores
 
-    print(results)
+
+def test_create_index_from_table(tmp_path, table):
+    table.create_fts_index("text")
+    df = table.search("puppy").limit(10).select(["text"]).to_df()
+    assert len(df) == 10
+    assert "text" in df.columns
+
