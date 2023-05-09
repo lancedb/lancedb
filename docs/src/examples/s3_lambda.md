@@ -14,7 +14,7 @@ We'll also use a container to ship our Lambda code. This is a good option for La
 
 # Initial setup: creating a LanceDB Table and storing it remotely on S3
 
-We'll use the SIFT vector dataset as an example. To make it easier, we've already made a Lance-format SIFT dataset publically available, which we can access and use to populate our LanceDB Table. 
+We'll use the SIFT vector dataset as an example. To make it easier, we've already made a Lance-format SIFT dataset publicly available, which we can access and use to populate our LanceDB Table. 
 
 To do this, download the Lance files locally first from:
 
@@ -91,9 +91,9 @@ def handler(event, context):
     }
 ``` 
 
-# Deploying the container to EKS
+# Deploying the container to ECR
 
-The next step is to build and push the container to EKS, where it can then be used to create a new Lambda function. 
+The next step is to build and push the container to ECR, where it can then be used to create a new Lambda function. 
 
 It's best to follow the official AWS documentation for how to do this, which you can view here:
 
