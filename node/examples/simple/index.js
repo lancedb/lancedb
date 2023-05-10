@@ -14,7 +14,7 @@
 
 'use strict'
 
-const lancedb = require('@lancedb/vectordb')
+const lancedb = require('vectordb')
 
 const db = lancedb.connect('../../sample-lancedb')
 
