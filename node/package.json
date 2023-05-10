@@ -1,0 +1,48 @@
+{
+  "name": "vectordb",
+  "version": "0.0.1",
+  "description": " Serverless, low-latency vector database for AI applications",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "tsc": "tsc -b",
+    "build": "cargo-cp-artifact --artifact cdylib vectordb-node index.node -- cargo build --message-format=json-render-diagnostics",
+    "build-release": "npm run build -- --release",
+    "install": "npm run build-release",
+    "test": "mocha -recursive dist/test",
+    "lint": "eslint src --ext .js,.ts"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lancedb/lancedb/node"
+  },
+  "keywords": [
+    "data-format",
+    "data-science",
+    "machine-learning",
+    "data-analytics"
+  ],
+  "author": "Lance Devs",
+  "license": "Apache-2.0",
+  "devDependencies": {
+    "@types/chai": "^4.3.4",
+    "@types/mocha": "^10.0.1",
+    "@types/node": "^18.16.2",
+    "@typescript-eslint/eslint-plugin": "^5.59.1",
+    "cargo-cp-artifact": "^0.1",
+    "chai": "^4.3.7",
+    "eslint": "^8.39.0",
+    "eslint-config-standard-with-typescript": "^34.0.1",
+    "eslint-plugin-import": "^2.27.5",
+    "eslint-plugin-n": "^15.7.0",
+    "eslint-plugin-promise": "^6.1.1",
+    "mocha": "^10.2.0",
+    "ts-node": "^10.9.1",
+    "ts-node-dev": "^2.0.0",
+    "typescript": "*"
+  },
+  "dependencies": {
+    "@apache-arrow/ts": "^12.0.0",
+    "apache-arrow": "^12.0.0"
+  }
+}
