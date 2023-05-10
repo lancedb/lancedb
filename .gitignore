@@ -18,3 +18,13 @@ python/dist
 notebooks/.ipynb_checkpoints
 
 **/.hypothesis
+
+## Javascript
+index.node
+**/node_modules
+**/.DS_Store
+node/dist
+
+## Rust
+target
+
