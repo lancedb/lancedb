@@ -9,6 +9,6 @@
   "author": "",
   "license": "Apache-2.0",
   "dependencies": {
-    "vectordb": "^0.0.5"
+    "vectordb": "^0.0.6"
   }
 }
