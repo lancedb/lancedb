@@ -22,6 +22,7 @@ async function example() {
 
     const tbl = await db.openTable('my_table');
     const query = tbl.search([0.1, 0.3]);
+    query.limit = 20;
     const results = await query.execute();
     console.log(results);
 }
