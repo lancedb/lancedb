@@ -78,7 +78,7 @@ export class Table {
      * Create a search query to find the nearest neighbors of the given query vector.
      * @param queryVector The query vector.
      */
-  search(queryVector: number[]): Query {
+  search (queryVector: number[]): Query {
     return new Query(this._tbl, queryVector)
   }
 }
@@ -89,7 +89,7 @@ export class Table {
 export class Query {
   private readonly _tbl: any
   private readonly _query_vector: number[]
-  private readonly _limit: number
+  private _limit: number
   private readonly _refine_factor?: number
   private readonly _nprobes: number
   private readonly _columns?: string[]
@@ -104,6 +104,14 @@ export class Query {
     this._refine_factor = undefined
     this._columns = undefined
     this._where = undefined
+  }
+
+  set limit (value: number) {
+    this._limit = value
+  }
+
+  get limit (): number {
+    return this._limit
   }
 
   /**
