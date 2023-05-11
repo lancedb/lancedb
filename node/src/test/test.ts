@@ -66,6 +66,15 @@ describe('LanceDB client', function () {
         assert.approximately(results[0].vector[0], 3.1, 0.1)
         assert.approximately(results[0].vector[1], 4.1, 0.1)
       })
+
+      it('limits # of results', async function () {
+        const table = await tablePromise
+        const builder = table.search([0.1, 0.3])
+        builder.limit = 1
+        const results = await builder.execute() as MyResult[]
+
+        assert.equal(results.length, 1)
+      })
     })
   })
 })

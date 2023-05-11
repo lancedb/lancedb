@@ -89,12 +89,16 @@ export class Table {
 export class Query {
   private readonly _tbl: any
   private readonly _query_vector: number[]
-  private readonly _limit: number
+  private _limit: number
   private readonly _refine_factor?: number
   private readonly _nprobes: number
   private readonly _columns?: string[]
   private readonly _where?: string
   private readonly _metric = 'L2'
+
+  set limit(value: number) {
+    this._limit = value;
+  }
 
   constructor (tbl: any, queryVector: number[]) {
     this._tbl = tbl
