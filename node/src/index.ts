@@ -12,10 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { tableFromIPC, Vector } from 'apache-arrow'
+import {tableFromIPC, Vector, tableToIPC, Table as ArrowTable, RecordBatchFileWriter} from 'apache-arrow'
+import * as fs from "fs";
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { databaseNew, databaseTableNames, databaseOpenTable, tableSearch } = require('../index.node')
+const { databaseNew, databaseTableNames, databaseOpenTable, tableCreate, tableSearch } = require('../index.node')
 
 /**
  * Connect to a LanceDB instance at the given URI
@@ -55,6 +56,22 @@ export class Connection {
   async openTable (name: string): Promise<Table> {
     const tbl = await databaseOpenTable.call(this._db, name)
     return new Table(tbl, name)
+  }
+
+  // async createTable (name: string, data: Record<string, unknown[]>): Promise<Table> {
+  async createTable (name: string, table: ArrowTable): Promise<Table> {
+    // console.table([...table]);
+    // const tableIPC = tableToIPC(table)
+    // console.log(tableIPC)
+
+    const writer = RecordBatchFileWriter.writeAll(table)
+
+    // fs.writeFile('/tmp/data.arrow', await writer.toUint8Array(), (err) => {
+    //   console.error(err)
+    // })
+
+    await tableCreate.call(this._db, name, Buffer.from(await writer.toUint8Array()))
+    return await this.openTable(name)
   }
 }
 

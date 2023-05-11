@@ -1646,8 +1646,6 @@ dependencies = [
 [[package]]
 name = "lance"
 version = "0.4.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c0be48532dda07b0cd5a5b087710bbbba6972a882f7c771a316940a4868d66a6"
 dependencies = [
  "accelerate-src",
  "arrow",

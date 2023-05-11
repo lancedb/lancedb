@@ -11,7 +11,7 @@ repository = "https://github.com/lancedb/lancedb"
 [dependencies]
 arrow-array = "37.0"
 arrow-schema = "37.0"
-lance = "0.4.3"
+lance = { path = "/Users/eto/dev/lance/rust" }
 tokio = { version = "1.23", features = ["rt-multi-thread"] }
 
 [dev-dependencies]

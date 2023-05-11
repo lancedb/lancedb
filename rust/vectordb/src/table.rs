@@ -58,12 +58,21 @@ impl Table {
     pub async fn create(
         base_path: Arc<PathBuf>,
         name: String,
-        batches: &mut Box<dyn RecordBatchReader>,
+        batches: &mut Box<dyn RecordBatchReader + Send>,
     ) -> Result<Self> {
         let ds_path = base_path.join(format!("{}.{}", name, LANCE_FILE_EXTENSION));
         let ds_uri = ds_path
             .to_str()
             .ok_or(Error::IO(format!("Unable to find table {}", name)))?;
+
+        // I had to make changes to Lance's ds write signature - add + Send to the batches parameters
+        //
+        // pub async fn write(
+        //     batches: &mut Box<dyn RecordBatchReader + Send>,
+        //     uri: &str,
+        //     params: Option<WriteParams>,
+        // ) -> lance::Result<Self> {
+
         let dataset = Arc::new(Dataset::write(batches, ds_uri, Some(WriteParams::default())).await?);
         Ok(Table { name, dataset })
     }

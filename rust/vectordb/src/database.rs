@@ -74,7 +74,7 @@ impl Database {
         Ok(f)
     }
 
-    pub async fn create_table(&self, name: String,batches: &mut Box<dyn RecordBatchReader>,
+    pub async fn create_table(&self, name: String,batches: &mut Box<dyn RecordBatchReader + Send>,
     ) -> Result<Table> {
         Table::create(self.path.clone(), name, batches).await
     }
