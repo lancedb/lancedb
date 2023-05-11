@@ -78,7 +78,7 @@ export class Table {
      * Create a search query to find the nearest neighbors of the given query vector.
      * @param queryVector The query vector.
      */
-  search(queryVector: number[]): Query {
+  search (queryVector: number[]): Query {
     return new Query(this._tbl, queryVector)
   }
 }
@@ -96,10 +96,6 @@ export class Query {
   private readonly _where?: string
   private readonly _metric = 'L2'
 
-  set limit(value: number) {
-    this._limit = value;
-  }
-
   constructor (tbl: any, queryVector: number[]) {
     this._tbl = tbl
     this._query_vector = queryVector
@@ -108,6 +104,14 @@ export class Query {
     this._refine_factor = undefined
     this._columns = undefined
     this._where = undefined
+  }
+
+  set limit (value: number) {
+    this._limit = value
+  }
+
+  get limit (): number {
+    return this._limit
   }
 
   /**
