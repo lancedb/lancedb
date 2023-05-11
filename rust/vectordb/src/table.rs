@@ -15,8 +15,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use arrow_array::Float32Array;
-use lance::dataset::Dataset;
+use arrow_array::{Float32Array, RecordBatchReader};
+use lance::dataset::{Dataset, WriteParams};
 
 use crate::error::{Error, Result};
 use crate::query::Query;
@@ -53,6 +53,19 @@ impl Table {
             dataset: Arc::new(dataset),
         };
         Ok(table)
+    }
+
+    pub async fn create(
+        base_path: Arc<PathBuf>,
+        name: String,
+        batches: &mut Box<dyn RecordBatchReader>,
+    ) -> Result<Self> {
+        let ds_path = base_path.join(format!("{}.{}", name, LANCE_FILE_EXTENSION));
+        let ds_uri = ds_path
+            .to_str()
+            .ok_or(Error::IO(format!("Unable to find table {}", name)))?;
+        let dataset = Arc::new(Dataset::write(batches, ds_uri, Some(WriteParams::default())).await?);
+        Ok(Table { name, dataset })
     }
 
     /// Creates a new Query object that can be executed.

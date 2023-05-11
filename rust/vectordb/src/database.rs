@@ -15,6 +15,7 @@
 use std::fs::create_dir_all;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use arrow_array::RecordBatchReader;
 
 use crate::error::Result;
 use crate::table::Table;
@@ -71,6 +72,11 @@ impl Database {
             .flatten()
             .collect();
         Ok(f)
+    }
+
+    pub async fn create_table(&self, name: String,batches: &mut Box<dyn RecordBatchReader>,
+    ) -> Result<Table> {
+        Table::create(self.path.clone(), name, batches).await
     }
 
     /// Open a table in the database.
