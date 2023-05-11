@@ -14,8 +14,18 @@
 
 'use strict'
 
-const lancedb = require('vectordb')
+async function example() {
+    const lancedb = require('vectordb');
+    const db = lancedb.connect('../../sample-lancedb');
 
-const db = lancedb.connect('../../sample-lancedb')
+    console.log(db.tableNames());
 
-console.log(db.tableNames())
+    const tbl = await db.openTable('my_table');
+    const query = tbl.search([0.1, 0.3]);
+    const results = await query.execute();
+    console.log(results);
+}
+
+example();
+
+
