@@ -2,6 +2,8 @@
 
 ## use LanceDB's Javascript API and OpenAI to build a QA bot for YouTube transcripts
 
+<img id="splash" width="400" alt="nodejs" src="https://github.com/lancedb/lancedb/assets/917119/3a140e75-bf8e-438a-a1e4-af14a72bcf98">
+
 This Q&A bot will allow you to search through youtube transcripts using natural language! We'll introduce how you can use LanceDB's Javascript API to store and manage your data easily.
 
 For this example we're using a HuggingFace dataset that contains YouTube transcriptions: `jamescalam/youtube-transcriptions`, to make it easier, we've converted it to a LanceDB `db` already, which you can download and put in a working directory:
