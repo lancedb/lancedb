@@ -15,11 +15,9 @@
 
 <hr />
 
-LanceDB is an open-source database for vector-search built with persistent storage, which greatly simplifies retrevial, filtering and management of embeddings.
+Easily add long-term memory to your LLM apps!
 
-The key features of LanceDB include:
-
-* Production-scale vector search with no servers to manage.
+* Start locally and scale to production with low-latency.
 
 * Store, query and filter vectors, metadata and multi-modal data (text, images, videos, point clouds, and more).
 
