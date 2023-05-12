@@ -12,7 +12,6 @@ Now, we'll create a simple app that can:
 1. Take a text based query and search for contexts in our corpus, using embeddings generated from the OpenAI Embedding API.
 2. Create a prompt with the contexts, and call the OpenAI Completion API to answer the text based query.
 
-
 Dependencies and setup of OpenAI API:
 
 ```javascript
