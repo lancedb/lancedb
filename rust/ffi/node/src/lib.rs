@@ -13,6 +13,7 @@
 // limitations under the License.
 
 mod convert;
+mod arrow;
 
 use std::io::Cursor;
 use std::ops::Deref;
@@ -30,6 +31,7 @@ use lance::arrow::RecordBatchBuffer;
 use neon::types::buffer::TypedArray;
 use vectordb::database::Database;
 use vectordb::table::Table;
+use crate::arrow::convert_record_batch;
 
 struct JsDatabase {
     database: Arc<Database>,
@@ -151,7 +153,8 @@ fn table_create(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let fr = FileReader::try_new(Cursor::new(slice), None);
     let file_reader = fr.unwrap();
     for b in file_reader {
-        batches.push(b.unwrap())
+        let record_batch = convert_record_batch(b.unwrap());
+        batches.push(record_batch);
     }
 
     let rt = runtime(&mut cx)?;
@@ -162,8 +165,8 @@ fn table_create(mut cx: FunctionContext) -> JsResult<JsPromise> {
 
     rt.spawn(async move {
         let mut batch_reader: Box<dyn RecordBatchReader + Send> = Box::new(RecordBatchBuffer::new(batches) );
-
         let table_rst = database.create_table(table_name, &mut batch_reader).await;
+
         deferred.settle_with(&channel, move |mut cx| {
             let table = Arc::new(table_rst.or_else(|err| cx.throw_error(err.to_string()))?);
             Ok(cx.boxed(JsTable { table }))

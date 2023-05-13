@@ -12,6 +12,7 @@ crate-type = ["cdylib"]
 [dependencies]
 arrow-array = "37.0"
 arrow-ipc = "37.0"
+arrow-schema = "37.0"
 once_cell = "1"
 futures = "0.3"
 lance = { path = "/Users/eto/dev/lance/rust" }

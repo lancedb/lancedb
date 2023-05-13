@@ -1645,7 +1645,7 @@ dependencies = [
 
 [[package]]
 name = "lance"
-version = "0.4.6"
+version = "0.4.9"
 dependencies = [
  "accelerate-src",
  "arrow",
@@ -3369,6 +3369,7 @@ version = "0.1.0"
 dependencies = [
  "arrow-array",
  "arrow-ipc",
+ "arrow-schema",
  "futures",
  "lance",
  "neon",

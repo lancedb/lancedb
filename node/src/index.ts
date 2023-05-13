@@ -12,8 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import {tableFromIPC, Vector, tableToIPC, Table as ArrowTable, RecordBatchFileWriter} from 'apache-arrow'
-import * as fs from "fs";
+import {
+  Field,
+  FixedSizeList,
+  Float32,
+  List,
+  makeBuilder, makeVector,
+  RecordBatchFileWriter,
+  Table as ArrowTable,
+  tableFromIPC,
+  Utf8,
+  Vector, vectorFromArray
+} from 'apache-arrow'
+import * as fs from 'fs'
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { databaseNew, databaseTableNames, databaseOpenTable, tableCreate, tableSearch } = require('../index.node')
@@ -58,18 +69,46 @@ export class Connection {
     return new Table(tbl, name)
   }
 
-  // async createTable (name: string, data: Record<string, unknown[]>): Promise<Table> {
-  async createTable (name: string, table: ArrowTable): Promise<Table> {
-    // console.table([...table]);
-    // const tableIPC = tableToIPC(table)
-    // console.log(tableIPC)
+  async createTable (name: string, data: Array<Record<string, unknown>>): Promise<Table> {
+    if (data.length === 0) {
+      throw new Error('At least one record needs to be provided')
+    }
 
+    const columns = Object.keys(data[0])
+    const records: Record<string, Vector> = {}
+
+    for (const columnsKey of columns) {
+      if (columnsKey === 'vector') {
+        const children = new Field<Float32>('item', new Float32())
+        const list = new List(children)
+        const listBuilder = makeBuilder({
+          type: list
+        })
+        const vectorSize = (data[0].vector as any[]).length
+        for (const datum of data) {
+          if ((datum[columnsKey] as any[]).length !== vectorSize) {
+            throw new Error(`Invalid vector size, expected ${vectorSize}`)
+          }
+
+          listBuilder.append(datum[columnsKey])
+        }
+        records[columnsKey] = listBuilder.finish().toVector()
+      } else {
+        const values = []
+        for (const datum of data) {
+          values.push(datum[columnsKey])
+        }
+        records[columnsKey] = vectorFromArray(values)
+      }
+    }
+
+    const table = new ArrowTable(records)
+    await this.createTableArrow(name, table)
+    return await this.openTable(name)
+  }
+
+  async createTableArrow (name: string, table: ArrowTable): Promise<Table> {
     const writer = RecordBatchFileWriter.writeAll(table)
-
-    // fs.writeFile('/tmp/data.arrow', await writer.toUint8Array(), (err) => {
-    //   console.error(err)
-    // })
-
     await tableCreate.call(this._db, name, Buffer.from(await writer.toUint8Array()))
     return await this.openTable(name)
   }
@@ -95,7 +134,7 @@ export class Table {
      * Create a search query to find the nearest neighbors of the given query vector.
      * @param queryVector The query vector.
      */
-  search(queryVector: number[]): Query {
+  search (queryVector: number[]): Query {
     return new Query(this._tbl, queryVector)
   }
 }
