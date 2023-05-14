@@ -40,9 +40,8 @@ jobs:
           python -m pip install -e .
           python -m pip install -r ../docs/requirements.txt
       - name: Build docs
-        working-directory: docs
         run: |
-          mkdocs build
+          PYTHONPATH=. mkdocs build -f docs/mkdocs.yml
       - name: Setup Pages
         uses: actions/configure-pages@v2
       - name: Upload artifact

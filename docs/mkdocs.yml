@@ -8,7 +8,10 @@ theme:
 
 plugins:
 - search
-- mkdocstrings
+- mkdocstrings:
+    handlers:
+      python:
+        paths: [../python]
 - mkdocs-jupyter
 
 nav:
