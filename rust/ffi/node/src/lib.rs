@@ -32,8 +32,8 @@ use vectordb::table::Table;
 
 use crate::arrow::convert_record_batch;
 
-mod convert;
 mod arrow;
+mod convert;
 
 struct JsDatabase {
     database: Arc<Database>,
@@ -111,9 +111,9 @@ fn table_search(mut cx: FunctionContext) -> JsResult<JsPromise> {
             .search(Float32Array::from(query))
             .limit(limit as usize);
         let record_batch_stream = builder.execute();
-        let results = record_batch_stream.and_then(|stream| {
-            stream.try_collect::<Vec<_>>().map_err(Error::from)
-        }).await;
+        let results = record_batch_stream
+            .and_then(|stream| stream.try_collect::<Vec<_>>().map_err(Error::from))
+            .await;
 
         deferred.settle_with(&channel, move |mut cx| {
             let results = results.or_else(|err| cx.throw_error(err.to_string()))?;
@@ -163,9 +163,9 @@ fn table_create(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let (deferred, promise) = cx.promise();
     let database = db.database.clone();
 
-    rt.spawn(async move {
-        let mut batch_reader: Box<dyn RecordBatchReader + Send> = Box::new(RecordBatchBuffer::new(batches) );
-        let table_rst = database.create_table(table_name, &mut batch_reader).await;
+    rt.block_on(async move {
+        let batch_reader: Box<dyn RecordBatchReader> = Box::new(RecordBatchBuffer::new(batches));
+        let table_rst = database.create_table(table_name, batch_reader).await;
 
         deferred.settle_with(&channel, move |mut cx| {
             let table = Arc::new(table_rst.or_else(|err| cx.throw_error(err.to_string()))?);

@@ -58,14 +58,15 @@ impl Table {
     pub async fn create(
         base_path: Arc<PathBuf>,
         name: String,
-        batches: &mut Box<dyn RecordBatchReader + Send>,
+        mut batches: Box<dyn RecordBatchReader>,
     ) -> Result<Self> {
         let ds_path = base_path.join(format!("{}.{}", name, LANCE_FILE_EXTENSION));
         let ds_uri = ds_path
             .to_str()
             .ok_or(Error::IO(format!("Unable to find table {}", name)))?;
 
-        let dataset = Arc::new(Dataset::write(batches, ds_uri, Some(WriteParams::default())).await?);
+        let dataset =
+            Arc::new(Dataset::write(&mut batches, ds_uri, Some(WriteParams::default())).await?);
         Ok(Table { name, dataset })
     }
 
