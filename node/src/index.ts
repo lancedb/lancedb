@@ -14,17 +14,15 @@
 
 import {
   Field,
-  FixedSizeList,
   Float32,
   List,
-  makeBuilder, makeVector,
+  makeBuilder,
   RecordBatchFileWriter,
   Table as ArrowTable,
   tableFromIPC,
-  Utf8,
-  Vector, vectorFromArray
+  Vector,
+  vectorFromArray
 } from 'apache-arrow'
-import * as fs from 'fs'
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { databaseNew, databaseTableNames, databaseOpenTable, tableCreate, tableSearch } = require('../index.node')
@@ -33,7 +31,7 @@ const { databaseNew, databaseTableNames, databaseOpenTable, tableCreate, tableSe
  * Connect to a LanceDB instance at the given URI
  * @param uri The uri of the database.
  */
-export function connect (uri: string): Connection {
+export async function connect (uri: string): Promise<Connection> {
   return new Connection(uri)
 }
 
@@ -56,7 +54,7 @@ export class Connection {
   /**
      * Get the names of all tables in the database.
      */
-  tableNames (): string[] {
+  async tableNames (): Promise<string[]> {
     return databaseTableNames.call(this._db)
   }
 
@@ -162,8 +160,9 @@ export class Query {
     this._where = undefined
   }
 
-  set limit (value: number) {
+  setLimit (value: number): Query {
     this._limit = value
+    return this
   }
 
   get limit (): number {
@@ -173,7 +172,7 @@ export class Query {
   /**
      * Execute the query and return the results as an Array of Objects
      */
-  async execute (): Promise<unknown[]> {
+  async execute<T = Record<string, unknown>> (): Promise<T[]> {
     const buffer = await tableSearch.call(this._tbl, this._query_vector, this._limit)
     const data = tableFromIPC(buffer)
     return data.toArray().map((entry: Record<string, unknown>) => {
@@ -185,14 +184,7 @@ export class Query {
           newObject[key] = entry[key]
         }
       })
-      return newObject
+      return newObject as unknown as T
     })
-  }
-
-  /**
-     * Execute the query and return the results as an Array of the generic type provided
-     */
-  async execute_cast<T>(): Promise<T[]> {
-    return await this.execute() as T[]
   }
 }

@@ -12,26 +12,28 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod convert;
-mod arrow;
-
 use std::io::Cursor;
 use std::ops::Deref;
 use std::sync::Arc;
 
 use arrow_array::{Float32Array, RecordBatch, RecordBatchReader};
-use arrow_ipc::writer::FileWriter;
 use arrow_ipc::reader::FileReader;
-use futures::TryStreamExt;
+use arrow_ipc::writer::FileWriter;
+use futures::{TryFutureExt, TryStreamExt};
+use lance::arrow::RecordBatchBuffer;
 use neon::prelude::*;
+use neon::types::buffer::TypedArray;
 use once_cell::sync::OnceCell;
 use tokio::runtime::Runtime;
 
-use lance::arrow::RecordBatchBuffer;
-use neon::types::buffer::TypedArray;
 use vectordb::database::Database;
+use vectordb::error::Error;
 use vectordb::table::Table;
+
 use crate::arrow::convert_record_batch;
+
+mod convert;
+mod arrow;
 
 struct JsDatabase {
     database: Arc<Database>,
@@ -108,12 +110,10 @@ fn table_search(mut cx: FunctionContext) -> JsResult<JsPromise> {
         let builder = table
             .search(Float32Array::from(query))
             .limit(limit as usize);
-        let results = builder
-            .execute()
-            .await
-            .unwrap() // FIXME unwrap
-            .try_collect::<Vec<_>>()
-            .await;
+        let record_batch_stream = builder.execute();
+        let results = record_batch_stream.and_then(|stream| {
+            stream.try_collect::<Vec<_>>().map_err(Error::from)
+        }).await;
 
         deferred.settle_with(&channel, move |mut cx| {
             let results = results.or_else(|err| cx.throw_error(err.to_string()))?;

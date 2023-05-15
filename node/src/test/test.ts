@@ -14,103 +14,84 @@
 
 import { describe } from 'mocha'
 import { assert } from 'chai'
+import { track } from 'temp'
 
 import * as lancedb from '../index'
-import {makeVector, tableFromArrays} from 'apache-arrow'
 
 describe('LanceDB client', function () {
-  describe('open a connection to lancedb', function () {
-    const con = lancedb.connect('.../../sample-lancedb')
-
-    it.skip('should have a valid url', function () {
-      assert.equal(con.uri, '.../../sample-lancedb')
+  describe('when creating a connection to lancedb', function () {
+    it('should have a valid url', async function () {
+      const uri = await createTestDB()
+      const con = await lancedb.connect(uri)
+      assert.equal(con.uri, uri)
     })
 
-    it.skip('should return the existing table names', function () {
-      assert.deepEqual(con.tableNames(), ['my_table'])
+    it('should return the existing table names', async function () {
+      const uri = await createTestDB()
+      const con = await lancedb.connect(uri)
+      assert.deepEqual(await con.tableNames(), ['vectors'])
+    })
+  })
+
+  describe('when querying an existing dataset', function () {
+    it('should open a table', async function () {
+      const uri = await createTestDB()
+      const con = await lancedb.connect(uri)
+      const table = await con.openTable('vectors')
+      assert.equal(table.name, 'vectors')
     })
 
-    describe.skip('open a table from a connection', function () {
-      const tablePromise = con.openTable('my_table')
+    it('execute a query', async function () {
+      const uri = await createTestDB()
+      const con = await lancedb.connect(uri)
+      const table = await con.openTable('vectors')
+      const results = await table.search([0.1, 0.3]).execute()
 
-      it('should have a valid name', async function () {
-        const table = await tablePromise
-        assert.equal(table.name, 'my_table')
-      })
-
-      class MyResult {
-        vector: Float32Array = new Float32Array(0)
-        price: number = 0
-        item: string = ''
-        utf8: string = ''
-      }
-
-      it('execute a query', async function () {
-        const table = await tablePromise
-        const builder = table.search([0.1, 0.3])
-        const results = await builder.execute() as MyResult[]
-
-        assert.equal(results.length, 2)
-        assert.equal(results[0].item, 'foo')
-        assert.equal(results[0].price, 10)
-        assert.approximately(results[0].vector[0], 3.1, 0.1)
-        assert.approximately(results[0].vector[1], 4.1, 0.1)
-      })
-
-      it('execute a query and type cast the result', async function () {
-        const table = await tablePromise
-
-        const builder = table.search([0.1, 0.3])
-        const results = await builder.execute_cast<MyResult>()
-        assert.equal(results.length, 2)
-        assert.equal(results[0].item, 'foo')
-        assert.equal(results[0].price, 10)
-        assert.approximately(results[0].vector[0], 3.1, 0.1)
-        assert.approximately(results[0].vector[1], 4.1, 0.1)
-      })
-
-      it('limits # of results', async function () {
-        const table = await tablePromise
-        const builder = table.search([0.1, 0.3])
-        builder.limit = 1
-        const results = await builder.execute() as MyResult[]
-
-        assert.equal(results.length, 1)
-      })
+      assert.equal(results.length, 2)
+      assert.equal(results[0].price, 10)
+      const vector = results[0].vector as Float32Array
+      assert.approximately(vector[0], 0.0, 0.2)
+      assert.approximately(vector[0], 0.1, 0.3)
     })
 
-    describe('create table', function () {
-      it.skip('creates a new table from arrow arrays', async function () {
-        // This doesn't work, fails with `Error: internal error in Neon module: called `Option::unwrap()` on a `None` value`
-        // const vectorsArr = Array.of([0.1, 0.2], [1.1, 1.2])
-        const vectorsArr = Array.of(0.1, 0.2)
-        const idsArr = Array.of(1, 2)
+    it('limits # of results', async function () {
+      const uri = await createTestDB()
+      const con = await lancedb.connect(uri)
+      const table = await con.openTable('vectors')
+      const results = await table.search([0.1, 0.3]).setLimit(1).execute()
+      assert.equal(results.length, 1)
+    })
+  })
 
-        // For now I'm creating the arrow Table on the user side, but this need to change
-        // After the bug with Lists is resolved
-        const rainfall = tableFromArrays({
-          vectors: vectorsArr,
-          ids: idsArr
-        })
+  describe('when creating a new dataset', function () {
+    it('creates a new table from javascript objects', async function () {
+      const dir = await track().mkdir('lancejs')
+      const con = await lancedb.connect(dir)
 
-        const table = await con.createTableArrow('vectors', rainfall)
-        assert.equal(table.name, 'vectors')
-      })
+      const data = [
+        { id: 1, vector: [0.1, 0.2], price: 10 },
+        { id: 2, vector: [1.1, 1.2], price: 50 }
+      ]
 
-      it('creates a new table from javascript objects', async function () {
-        const data = [
-          { id: 1, vector: [0.1, 0.2], price: 10 },
-          { id: 2, vector: [1.1, 1.2], price: 50 }
-        ]
+      const tableName = `vectors_${Math.floor(Math.random() * 100)}`
+      const table = await con.createTable(tableName, data)
+      assert.equal(table.name, tableName)
 
-        const tableName = `vectors_${Math.floor(Math.random() * 100)}`
-        const table = await con.createTable(tableName, data)
-        assert.equal(table.name, tableName)
-
-        const builder = table.search([0.1, 0.3])
-        const results = await builder.execute()
-        console.table(results)
-      })
+      const results = await table.search([0.1, 0.3]).execute()
+      assert.equal(results.length, 2)
     })
   })
 })
+
+async function createTestDB (): Promise<string> {
+  const dir = await track().mkdir('lancejs')
+  const con = await lancedb.connect(dir)
+
+  const data = [
+    { id: 1, vector: [0.1, 0.2], price: 10 },
+    { id: 2, vector: [1.1, 1.2], price: 50 }
+  ]
+
+  await con.createTable('vectors', data)
+  return dir
+}
