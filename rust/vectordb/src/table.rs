@@ -65,14 +65,6 @@ impl Table {
             .to_str()
             .ok_or(Error::IO(format!("Unable to find table {}", name)))?;
 
-        // I had to make changes to Lance's ds write signature - add + Send to the batches parameters
-        //
-        // pub async fn write(
-        //     batches: &mut Box<dyn RecordBatchReader + Send>,
-        //     uri: &str,
-        //     params: Option<WriteParams>,
-        // ) -> lance::Result<Self> {
-
         let dataset = Arc::new(Dataset::write(batches, ds_uri, Some(WriteParams::default())).await?);
         Ok(Table { name, dataset })
     }
