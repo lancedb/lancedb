@@ -60,6 +60,7 @@ describe('LanceDB client', function () {
       const table = await con.openTable('vectors')
       const results = await table.search([0.1, 0.3]).limit(1).execute()
       assert.equal(results.length, 1)
+      assert.equal(results[0].id, 1)
     })
 
     it('uses a filter', async function () {
