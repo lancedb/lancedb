@@ -33,13 +33,11 @@ LanceDB's core is written in Rust 🦀 and is built using <a href="https://githu
 
 ## Quick Start
 
-**Installation**
-
+**Javascript**
 ```shell
 npm install vectordb
 ```
 
-**Quickstart**
 ```javascript
 const lancedb = require('vectordb');
 const db = await lancedb.connect('data/sample-lancedb');
@@ -51,6 +49,22 @@ const table = await db.createTable('vectors',
 const query = table.search([0.1, 0.3]);
 query.limit = 20;
 const results = await query.execute();
+```
+
+**Python**
+```shell
+pip install lancedb
+```
+
+```python
+import lancedb
+
+uri = "/tmp/lancedb"
+db = lancedb.connect(uri)
+table = db.create_table("my_table",
+                         data=[{"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+                               {"vector": [5.9, 26.5], "item": "bar", "price": 20.0}])
+result = table.search([100, 100]).limit(2).to_df()
 ```
 
 ## Blogs, Tutorials & Videos
