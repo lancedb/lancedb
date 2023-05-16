@@ -26,6 +26,7 @@ pub struct Query {
     pub dataset: Arc<Dataset>,
     pub query_vector: Float32Array,
     pub limit: usize,
+    pub filter: Option<String>,
     pub nprobes: usize,
     pub refine_factor: Option<u32>,
     pub metric_type: MetricType,
@@ -52,6 +53,7 @@ impl Query {
             refine_factor: None,
             metric_type: MetricType::L2,
             use_index: false,
+            filter: None
         }
     }
 
@@ -71,6 +73,7 @@ impl Query {
         scanner.nprobs(self.nprobes);
         scanner.distance_metric(self.metric_type);
         scanner.use_index(self.use_index);
+        self.filter.as_ref().map(|f| scanner.filter(f));
         self.refine_factor.map(|rf| scanner.refine(rf));
         Ok(scanner.try_into_stream().await?)
     }
@@ -132,6 +135,11 @@ impl Query {
     /// * `use_index` - Sets Whether to use an ANN index if available
     pub fn use_index(mut self, use_index: bool) -> Query {
         self.use_index = use_index;
+        self
+    }
+
+    pub fn filter(mut self, filter: Option<String>) -> Query {
+        self.filter = filter;
         self
     }
 }

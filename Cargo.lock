@@ -1645,9 +1645,9 @@ dependencies = [
 
 [[package]]
 name = "lance"
-version = "0.4.6"
+version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c0be48532dda07b0cd5a5b087710bbbba6972a882f7c771a316940a4868d66a6"
+checksum = "fc96cf89139af6f439a0e28ccd04ddf81be795b79fda3105b7a8952fadeb778e"
 dependencies = [
  "accelerate-src",
  "arrow",
@@ -3371,7 +3371,9 @@ version = "0.1.0"
 dependencies = [
  "arrow-array",
  "arrow-ipc",
+ "arrow-schema",
  "futures",
+ "lance",
  "neon",
  "once_cell",
  "tokio",

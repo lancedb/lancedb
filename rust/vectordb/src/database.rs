@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use arrow_array::RecordBatchReader;
 use std::fs::create_dir_all;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -71,6 +72,14 @@ impl Database {
             .flatten()
             .collect();
         Ok(f)
+    }
+
+    pub async fn create_table(
+        &self,
+        name: String,
+        batches: Box<dyn RecordBatchReader>,
+    ) -> Result<Table> {
+        Table::create(self.path.clone(), name, batches).await
     }
 
     /// Open a table in the database.
