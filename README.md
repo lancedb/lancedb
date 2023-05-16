@@ -33,6 +33,8 @@ LanceDB's core is written in Rust 🦀 and is built using <a href="https://githu
 
 ## Quick Start
 
+For Javascript quick start refer to our [docs](https://github.com/lancedb/lancedb/tree/main/node).
+
 **Installation**
 
 ```shell
