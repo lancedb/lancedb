@@ -25,7 +25,7 @@ import {
 } from 'apache-arrow'
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { databaseNew, databaseTableNames, databaseOpenTable, tableCreate, tableSearch } = require('../index.node')
+const { databaseNew, databaseTableNames, databaseOpenTable, tableCreate, tableSearch } = require('../native.js')
 
 /**
  * Connect to a LanceDB instance at the given URI
