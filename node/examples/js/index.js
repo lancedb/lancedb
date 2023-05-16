@@ -14,24 +14,23 @@
 
 'use strict'
 
-async function example() {
-    const lancedb = require('vectordb');
-    const db = await lancedb.connect('data/sample-lancedb');
+async function example () {
+  const lancedb = require('vectordb')
+  const db = await lancedb.connect('data/sample-lancedb')
 
-    const data = [
-      { id: 1, vector: [0.1, 0.2], price: 10 },
-      { id: 2, vector: [1.1, 1.2], price: 50 }
-    ]
+  const data = [
+    { id: 1, vector: [0.1, 0.2], price: 10 },
+    { id: 2, vector: [1.1, 1.2], price: 50 }
+  ]
 
-    const table = await db.createTable('vectors', data)
-    console.log(await db.tableNames());
+  const table = await db.createTable('vectors', data)
+  console.log(await db.tableNames())
 
-    const query = table.search([0.1, 0.3]);
-    query.limit = 20;
-    const results = await query.execute();
-    console.log(results);
+  const results = await table
+      .search([0.1, 0.3])
+      .limit(20)
+      .execute()
+  console.log(results)
 }
 
-example();
-
-
+example()
