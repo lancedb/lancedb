@@ -160,16 +160,12 @@ export class Query {
     this._filter = undefined
   }
 
-  setLimit (value: number): Query {
+  limit (value: number): Query {
     this._limit = value
     return this
   }
 
-  get limit (): number {
-    return this._limit
-  }
-
-  setFilter (value: string): Query {
+  filter (value: string): Query {
     this._filter = value
     return this
   }
