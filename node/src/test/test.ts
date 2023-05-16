@@ -88,8 +88,8 @@ async function createTestDB (): Promise<string> {
   const con = await lancedb.connect(dir)
 
   const data = [
-    { id: 1, vector: [0.1, 0.2], price: 10 },
-    { id: 2, vector: [1.1, 1.2], price: 50 }
+    { id: 1, vector: [0.1, 0.2], name: 'foo', price: 10, is_active: true },
+    { id: 2, vector: [1.1, 1.2], name: 'bar', price: 50, is_active: false }
   ]
 
   await con.createTable('vectors', data)
