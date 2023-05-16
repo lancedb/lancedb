@@ -174,7 +174,7 @@ export class Query {
      * Execute the query and return the results as an Array of Objects
      */
   async execute<T = Record<string, unknown>> (): Promise<T[]> {
-    let buffer;
+    let buffer
     if (this._filter != null) {
       buffer = await tableSearch.call(this._tbl, this._query_vector, this._limit, this._filter)
     } else {
