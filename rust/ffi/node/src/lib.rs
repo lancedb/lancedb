@@ -98,6 +98,7 @@ fn table_search(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let js_table = cx.this().downcast_or_throw::<JsBox<JsTable>, _>(&mut cx)?;
     let query_vector = cx.argument::<JsArray>(0)?; //. .as_value(&mut cx);
     let limit = cx.argument::<JsNumber>(1)?.value(&mut cx);
+    let filter = cx.argument_opt(2).map(|f| f.downcast_or_throw::<JsString, _>(&mut cx).unwrap().value(&mut cx));
 
     let rt = runtime(&mut cx)?;
     let channel = cx.channel();
@@ -109,7 +110,8 @@ fn table_search(mut cx: FunctionContext) -> JsResult<JsPromise> {
     rt.spawn(async move {
         let builder = table
             .search(Float32Array::from(query))
-            .limit(limit as usize);
+            .limit(limit as usize)
+            .filter(filter);
         let record_batch_stream = builder.execute();
         let results = record_batch_stream
             .and_then(|stream| stream.try_collect::<Vec<_>>().map_err(Error::from))

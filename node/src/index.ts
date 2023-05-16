@@ -147,7 +147,7 @@ export class Query {
   private readonly _refine_factor?: number
   private readonly _nprobes: number
   private readonly _columns?: string[]
-  private readonly _where?: string
+  private _filter?: string
   private readonly _metric = 'L2'
 
   constructor (tbl: any, queryVector: number[]) {
@@ -157,7 +157,7 @@ export class Query {
     this._nprobes = 20
     this._refine_factor = undefined
     this._columns = undefined
-    this._where = undefined
+    this._filter = undefined
   }
 
   setLimit (value: number): Query {
@@ -169,11 +169,21 @@ export class Query {
     return this._limit
   }
 
+  setFilter (value: string): Query {
+    this._filter = value
+    return this
+  }
+
   /**
      * Execute the query and return the results as an Array of Objects
      */
   async execute<T = Record<string, unknown>> (): Promise<T[]> {
-    const buffer = await tableSearch.call(this._tbl, this._query_vector, this._limit)
+    let buffer;
+    if (this._filter != null) {
+      buffer = await tableSearch.call(this._tbl, this._query_vector, this._limit, this._filter)
+    } else {
+      buffer = await tableSearch.call(this._tbl, this._query_vector, this._limit)
+    }
     const data = tableFromIPC(buffer)
     return data.toArray().map((entry: Record<string, unknown>) => {
       const newObject: Record<string, unknown> = {}

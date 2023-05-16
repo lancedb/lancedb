@@ -61,6 +61,15 @@ describe('LanceDB client', function () {
       const results = await table.search([0.1, 0.3]).setLimit(1).execute()
       assert.equal(results.length, 1)
     })
+
+    it('uses a filter', async function () {
+      const uri = await createTestDB()
+      const con = await lancedb.connect(uri)
+      const table = await con.openTable('vectors')
+      const results = await table.search([0.1, 0.3]).setFilter('id == 2').execute()
+      assert.equal(results.length, 1)
+      assert.equal(results[0].id, 2)
+    })
   })
 
   describe('when creating a new dataset', function () {
