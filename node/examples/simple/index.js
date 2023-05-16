@@ -16,12 +16,17 @@
 
 async function example() {
     const lancedb = require('vectordb');
-    const db = lancedb.connect('../../sample-lancedb');
+    const db = await lancedb.connect('data/sample-lancedb');
 
-    console.log(db.tableNames());
+    const data = [
+      { id: 1, vector: [0.1, 0.2], price: 10 },
+      { id: 2, vector: [1.1, 1.2], price: 50 }
+    ]
 
-    const tbl = await db.openTable('my_table');
-    const query = tbl.search([0.1, 0.3]);
+    const table = await db.createTable('vectors', data)
+    console.log(await db.tableNames());
+
+    const query = table.search([0.1, 0.3]);
     query.limit = 20;
     const results = await query.execute();
     console.log(results);
