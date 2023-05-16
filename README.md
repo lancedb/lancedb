@@ -23,7 +23,7 @@ The key features of LanceDB include:
 
 * Store, query and filter vectors, metadata and multi-modal data (text, images, videos, point clouds, and more).
 
-* Native Python and Javascript/Typescript support (coming soon).
+* Native Python and Javascript/Typescript support.
 
 * Zero-copy, automatic versioning, manage versions of your data without needing extra infrastructure.
 
@@ -33,15 +33,29 @@ LanceDB's core is written in Rust 🦀 and is built using <a href="https://githu
 
 ## Quick Start
 
-For Javascript quick start refer to our [docs](https://github.com/lancedb/lancedb/tree/main/node).
+**Javascript**
+```shell
+npm install vectordb
+```
 
-**Installation**
+```javascript
+const lancedb = require('vectordb');
+const db = await lancedb.connect('data/sample-lancedb');
 
+const table = await db.createTable('vectors', 
+      [{ id: 1, vector: [0.1, 0.2], item: "foo", price: 10 },
+       { id: 2, vector: [1.1, 1.2], item: "bar", price: 50 }])
+
+const query = table.search([0.1, 0.3]);
+query.limit = 20;
+const results = await query.execute();
+```
+
+**Python**
 ```shell
 pip install lancedb
 ```
 
-**Quickstart**
 ```python
 import lancedb
 
