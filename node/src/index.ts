@@ -12,16 +12,26 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { tableFromIPC, Vector } from 'apache-arrow'
+import {
+  Field,
+  Float32,
+  List,
+  makeBuilder,
+  RecordBatchFileWriter,
+  Table as ArrowTable,
+  tableFromIPC,
+  Vector,
+  vectorFromArray
+} from 'apache-arrow'
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { databaseNew, databaseTableNames, databaseOpenTable, tableSearch } = require('../index.node')
+const { databaseNew, databaseTableNames, databaseOpenTable, tableCreate, tableSearch } = require('../index.node')
 
 /**
  * Connect to a LanceDB instance at the given URI
  * @param uri The uri of the database.
  */
-export function connect (uri: string): Connection {
+export async function connect (uri: string): Promise<Connection> {
   return new Connection(uri)
 }
 
@@ -44,7 +54,7 @@ export class Connection {
   /**
      * Get the names of all tables in the database.
      */
-  tableNames (): string[] {
+  async tableNames (): Promise<string[]> {
     return databaseTableNames.call(this._db)
   }
 
@@ -55,6 +65,50 @@ export class Connection {
   async openTable (name: string): Promise<Table> {
     const tbl = await databaseOpenTable.call(this._db, name)
     return new Table(tbl, name)
+  }
+
+  async createTable (name: string, data: Array<Record<string, unknown>>): Promise<Table> {
+    if (data.length === 0) {
+      throw new Error('At least one record needs to be provided')
+    }
+
+    const columns = Object.keys(data[0])
+    const records: Record<string, Vector> = {}
+
+    for (const columnsKey of columns) {
+      if (columnsKey === 'vector') {
+        const children = new Field<Float32>('item', new Float32())
+        const list = new List(children)
+        const listBuilder = makeBuilder({
+          type: list
+        })
+        const vectorSize = (data[0].vector as any[]).length
+        for (const datum of data) {
+          if ((datum[columnsKey] as any[]).length !== vectorSize) {
+            throw new Error(`Invalid vector size, expected ${vectorSize}`)
+          }
+
+          listBuilder.append(datum[columnsKey])
+        }
+        records[columnsKey] = listBuilder.finish().toVector()
+      } else {
+        const values = []
+        for (const datum of data) {
+          values.push(datum[columnsKey])
+        }
+        records[columnsKey] = vectorFromArray(values)
+      }
+    }
+
+    const table = new ArrowTable(records)
+    await this.createTableArrow(name, table)
+    return await this.openTable(name)
+  }
+
+  async createTableArrow (name: string, table: ArrowTable): Promise<Table> {
+    const writer = RecordBatchFileWriter.writeAll(table)
+    await tableCreate.call(this._db, name, Buffer.from(await writer.toUint8Array()))
+    return await this.openTable(name)
   }
 }
 
@@ -93,7 +147,7 @@ export class Query {
   private readonly _refine_factor?: number
   private readonly _nprobes: number
   private readonly _columns?: string[]
-  private readonly _where?: string
+  private _filter?: string
   private readonly _metric = 'L2'
 
   constructor (tbl: any, queryVector: number[]) {
@@ -103,22 +157,29 @@ export class Query {
     this._nprobes = 20
     this._refine_factor = undefined
     this._columns = undefined
-    this._where = undefined
+    this._filter = undefined
   }
 
-  set limit (value: number) {
+  limit (value: number): Query {
     this._limit = value
+    return this
   }
 
-  get limit (): number {
-    return this._limit
+  filter (value: string): Query {
+    this._filter = value
+    return this
   }
 
   /**
      * Execute the query and return the results as an Array of Objects
      */
-  async execute (): Promise<unknown[]> {
-    const buffer = await tableSearch.call(this._tbl, this._query_vector, this._limit)
+  async execute<T = Record<string, unknown>> (): Promise<T[]> {
+    let buffer;
+    if (this._filter != null) {
+      buffer = await tableSearch.call(this._tbl, this._query_vector, this._limit, this._filter)
+    } else {
+      buffer = await tableSearch.call(this._tbl, this._query_vector, this._limit)
+    }
     const data = tableFromIPC(buffer)
     return data.toArray().map((entry: Record<string, unknown>) => {
       const newObject: Record<string, unknown> = {}
@@ -129,14 +190,7 @@ export class Query {
           newObject[key] = entry[key]
         }
       })
-      return newObject
+      return newObject as unknown as T
     })
-  }
-
-  /**
-     * Execute the query and return the results as an Array of the generic type provided
-     */
-  async execute_cast<T>(): Promise<T[]> {
-    return await this.execute() as T[]
   }
 }
