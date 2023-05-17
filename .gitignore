@@ -20,7 +20,7 @@ notebooks/.ipynb_checkpoints
 **/.hypothesis
 
 ## Javascript
-index.node
+*.node
 **/node_modules
 **/.DS_Store
 node/dist
