@@ -80,7 +80,11 @@ impl Table {
 
         let dataset =
             Arc::new(Dataset::write(&mut batches, path, Some(WriteParams::default())).await?);
-        Ok(Table { name, path: path.to_string(), dataset })
+        Ok(Table {
+            name,
+            path: path.to_string(),
+            dataset,
+        })
     }
 
     /// Insert records into this Table
@@ -95,12 +99,13 @@ impl Table {
     pub async fn add(
         &mut self,
         mut batches: Box<dyn RecordBatchReader>,
-        write_mode: Option<WriteMode>
+        write_mode: Option<WriteMode>,
     ) -> Result<usize> {
         let mut params = WriteParams::default();
         params.mode = write_mode.unwrap_or(WriteMode::Append);
 
-        self.dataset = Arc::new(Dataset::write(&mut batches, self.path.as_str(), Some(params)).await?);
+        self.dataset =
+            Arc::new(Dataset::write(&mut batches, self.path.as_str(), Some(params)).await?);
         Ok(batches.count())
     }
 
@@ -171,14 +176,17 @@ mod tests {
 
         let batches: Box<dyn RecordBatchReader> = Box::new(make_test_batches());
         let schema = batches.schema().clone();
-        let mut table = Table::create(Arc::new(path_buf), "test".to_string(), batches).await.unwrap();
+        let mut table = Table::create(Arc::new(path_buf), "test".to_string(), batches)
+            .await
+            .unwrap();
         assert_eq!(table.count_rows().await.unwrap(), 10);
 
-        let new_batches: Box<dyn RecordBatchReader> = Box::new(RecordBatchBuffer::new(vec![RecordBatch::try_new(
-            schema,
-            vec![Arc::new(Int32Array::from_iter_values(100..110))],
-        )
-       .unwrap()]));
+        let new_batches: Box<dyn RecordBatchReader> =
+            Box::new(RecordBatchBuffer::new(vec![RecordBatch::try_new(
+                schema,
+                vec![Arc::new(Int32Array::from_iter_values(100..110))],
+            )
+            .unwrap()]));
 
         table.add(new_batches, None).await.unwrap();
         assert_eq!(table.count_rows().await.unwrap(), 20);
@@ -192,15 +200,22 @@ mod tests {
 
         let batches: Box<dyn RecordBatchReader> = Box::new(make_test_batches());
         let schema = batches.schema().clone();
-        let mut table = Table::create(Arc::new(path_buf), "test".to_string(), batches).await.unwrap();
+        let mut table = Table::create(Arc::new(path_buf), "test".to_string(), batches)
+            .await
+            .unwrap();
         assert_eq!(table.count_rows().await.unwrap(), 10);
 
-        let new_batches: Box<dyn RecordBatchReader> = Box::new(RecordBatchBuffer::new(vec![RecordBatch::try_new(
-            schema,
-            vec![Arc::new(Int32Array::from_iter_values(100..110))],
-        ).unwrap()]));
+        let new_batches: Box<dyn RecordBatchReader> =
+            Box::new(RecordBatchBuffer::new(vec![RecordBatch::try_new(
+                schema,
+                vec![Arc::new(Int32Array::from_iter_values(100..110))],
+            )
+            .unwrap()]));
 
-        table.add(new_batches, Some(WriteMode::Overwrite)).await.unwrap();
+        table
+            .add(new_batches, Some(WriteMode::Overwrite))
+            .await
+            .unwrap();
         assert_eq!(table.count_rows().await.unwrap(), 10);
         assert_eq!(table.name, "test");
     }

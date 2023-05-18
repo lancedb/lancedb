@@ -120,20 +120,20 @@ export class Table {
  */
 export class Query {
   private readonly _tbl: any
-  private readonly _query_vector: number[]
+  private readonly _queryVector: number[]
   private _limit: number
-  private readonly _refine_factor?: number
-  private readonly _nprobes: number
+  private _refineFactor?: number
+  private _nprobes: number
   private readonly _columns?: string[]
   private _filter?: string
-  private readonly _metric = 'L2'
+  private _metricType?: MetricType
 
   constructor (tbl: any, queryVector: number[]) {
     this._tbl = tbl
-    this._query_vector = queryVector
+    this._queryVector = queryVector
     this._limit = 10
     this._nprobes = 20
-    this._refine_factor = undefined
+    this._refineFactor = undefined
     this._columns = undefined
     this._filter = undefined
   }
@@ -143,8 +143,23 @@ export class Query {
     return this
   }
 
+  refineFactor (value: number): Query {
+    this._refineFactor = value
+    return this
+  }
+
+  nprobes (value: number): Query {
+    this._nprobes = value
+    return this
+  }
+
   filter (value: string): Query {
     this._filter = value
+    return this
+  }
+
+  metricType (value: MetricType): Query {
+    this._metricType = value
     return this
   }
 
@@ -152,12 +167,7 @@ export class Query {
      * Execute the query and return the results as an Array of Objects
      */
   async execute<T = Record<string, unknown>> (): Promise<T[]> {
-    let buffer
-    if (this._filter != null) {
-      buffer = await tableSearch.call(this._tbl, this._query_vector, this._limit, this._filter)
-    } else {
-      buffer = await tableSearch.call(this._tbl, this._query_vector, this._limit)
-    }
+    const buffer = await tableSearch.call(this._tbl, this)
     const data = tableFromIPC(buffer)
     return data.toArray().map((entry: Record<string, unknown>) => {
       const newObject: Record<string, unknown> = {}
@@ -176,4 +186,9 @@ export class Query {
 export enum WriteMode {
   Overwrite = 'overwrite',
   Append = 'append'
+}
+
+export enum MetricType {
+  L2 = 'l2',
+  Cosine = 'cosine'
 }
