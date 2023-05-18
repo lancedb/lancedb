@@ -8,6 +8,9 @@ A JavaScript / Node.js library for [LanceDB](https://github.com/lancedb/lancedb)
 npm install vectordb
 ```
 
+This will download the appropriate native library for your platform. We currently
+support x86_64 Linux, Intel MacOS, and ARM (M1/M2) MacOS.
+
 ## Usage
 
 ### Basic Example
@@ -23,6 +26,12 @@ console.log(results);
 The [examples](./examples) folder contains complete examples.
 
 ## Development
+
+Build the rust library with:
+
+```bash
+npm run build
+```
 
 The LanceDB javascript is built with npm:
 
