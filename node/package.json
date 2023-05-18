@@ -6,7 +6,7 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "tsc": "tsc -b",
-    "build": "cargo-cp-artifact --artifact cdylib vectordb-node index.node -- cargo build --message-format=json-render-diagnostics",
+    "build": "cargo-cp-artifact --artifact cdylib vectordb-node darwin_arm64.node -- cargo build --message-format=json-render-diagnostics",
     "build-release": "npm run build -- --release",
     "test": "mocha -recursive dist/test",
     "lint": "eslint src --ext .js,.ts"

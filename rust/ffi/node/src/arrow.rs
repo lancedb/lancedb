@@ -12,11 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::io::Cursor;
 use std::ops::Deref;
 use std::sync::Arc;
 
 use arrow_array::cast::as_list_array;
 use arrow_array::{Array, FixedSizeListArray, RecordBatch};
+use arrow_ipc::reader::FileReader;
 use arrow_schema::{DataType, Field, Schema};
 use lance::arrow::{FixedSizeListArrayExt, RecordBatchExt};
 
@@ -44,4 +46,15 @@ pub(crate) fn convert_record_batch(record_batch: RecordBatch) -> RecordBatch {
         new_batch = new_batch.merge(&rb).unwrap();
     }
     new_batch
+}
+
+pub(crate) fn arrow_buffer_to_record_batch(slice: &[u8]) -> Vec<RecordBatch> {
+    let mut batches: Vec<RecordBatch> = Vec::new();
+    let fr = FileReader::try_new(Cursor::new(slice), None);
+    let file_reader = fr.unwrap();
+    for b in file_reader {
+        let record_batch = convert_record_batch(b.unwrap());
+        batches.push(record_batch);
+    }
+    batches
 }

@@ -12,15 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::io::Cursor;
+use std::collections::HashMap;
 use std::ops::Deref;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use arrow_array::{Float32Array, RecordBatch, RecordBatchReader};
-use arrow_ipc::reader::FileReader;
+use arrow_array::{Float32Array, RecordBatchReader};
 use arrow_ipc::writer::FileWriter;
 use futures::{TryFutureExt, TryStreamExt};
 use lance::arrow::RecordBatchBuffer;
+use lance::dataset::WriteMode;
 use neon::prelude::*;
 use neon::types::buffer::TypedArray;
 use once_cell::sync::OnceCell;
@@ -30,7 +30,7 @@ use vectordb::database::Database;
 use vectordb::error::Error;
 use vectordb::table::Table;
 
-use crate::arrow::convert_record_batch;
+use crate::arrow::arrow_buffer_to_record_batch;
 
 mod arrow;
 mod convert;
@@ -40,7 +40,7 @@ struct JsDatabase {
 }
 
 struct JsTable {
-    table: Arc<Table>,
+    table: Arc<Mutex<Table>>,
 }
 
 impl Finalize for JsDatabase {}
@@ -87,7 +87,7 @@ fn database_open_table(mut cx: FunctionContext) -> JsResult<JsPromise> {
         let table_rst = database.open_table(table_name).await;
 
         deferred.settle_with(&channel, move |mut cx| {
-            let table = Arc::new(table_rst.or_else(|err| cx.throw_error(err.to_string()))?);
+            let table = Arc::new(Mutex::new(table_rst.or_else(|err| cx.throw_error(err.to_string()))?));
             Ok(cx.boxed(JsTable { table }))
         });
     });
@@ -109,6 +109,8 @@ fn table_search(mut cx: FunctionContext) -> JsResult<JsPromise> {
 
     rt.spawn(async move {
         let builder = table
+            .lock()
+            .unwrap()
             .search(Float32Array::from(query))
             .limit(limit as usize)
             .filter(filter);
@@ -149,15 +151,7 @@ fn table_create(mut cx: FunctionContext) -> JsResult<JsPromise> {
         .downcast_or_throw::<JsBox<JsDatabase>, _>(&mut cx)?;
     let table_name = cx.argument::<JsString>(0)?.value(&mut cx);
     let buffer = cx.argument::<JsBuffer>(1)?;
-    let slice = buffer.as_slice(&mut cx);
-
-    let mut batches: Vec<RecordBatch> = Vec::new();
-    let fr = FileReader::try_new(Cursor::new(slice), None);
-    let file_reader = fr.unwrap();
-    for b in file_reader {
-        let record_batch = convert_record_batch(b.unwrap());
-        batches.push(record_batch);
-    }
+    let batches = arrow_buffer_to_record_batch(buffer.as_slice(&mut cx));
 
     let rt = runtime(&mut cx)?;
     let channel = cx.channel();
@@ -170,12 +164,46 @@ fn table_create(mut cx: FunctionContext) -> JsResult<JsPromise> {
         let table_rst = database.create_table(table_name, batch_reader).await;
 
         deferred.settle_with(&channel, move |mut cx| {
-            let table = Arc::new(table_rst.or_else(|err| cx.throw_error(err.to_string()))?);
+            let table = Arc::new(Mutex::new(table_rst.or_else(|err| cx.throw_error(err.to_string()))?));
             Ok(cx.boxed(JsTable { table }))
         });
     });
     Ok(promise)
 }
+
+fn table_add(mut cx: FunctionContext) -> JsResult<JsPromise> {
+    let write_mode_map: HashMap<&str, WriteMode> = HashMap::from([
+        ("create", WriteMode::Create),
+        ("append", WriteMode::Append),
+        ("overwrite", WriteMode::Overwrite),
+    ]);
+
+    let js_table = cx
+        .this()
+        .downcast_or_throw::<JsBox<JsTable>, _>(&mut cx)?;
+    let buffer = cx.argument::<JsBuffer>(0)?;
+    let write_mode = cx.argument::<JsString>(1)?.value(&mut cx);
+    let batches = arrow_buffer_to_record_batch(buffer.as_slice(&mut cx));
+
+    let rt = runtime(&mut cx)?;
+    let channel = cx.channel();
+
+    let (deferred, promise) = cx.promise();
+    let table = js_table.table.clone();
+    let write_mode = write_mode_map.get(write_mode.as_str()).cloned();
+
+    rt.block_on(async move {
+        let batch_reader: Box<dyn RecordBatchReader> = Box::new(RecordBatchBuffer::new(batches));
+        let add_result = table.lock().unwrap().add(batch_reader, write_mode).await;
+
+        deferred.settle_with(&channel, move |mut cx| {
+            let added = add_result.or_else(|err| cx.throw_error(err.to_string()))?;
+            Ok(cx.number(added as f64))
+        });
+    });
+    Ok(promise)
+}
+
 
 #[neon::main]
 fn main(mut cx: ModuleContext) -> NeonResult<()> {
@@ -184,5 +212,6 @@ fn main(mut cx: ModuleContext) -> NeonResult<()> {
     cx.export_function("databaseOpenTable", database_open_table)?;
     cx.export_function("tableSearch", table_search)?;
     cx.export_function("tableCreate", table_create)?;
+    cx.export_function("tableAdd", table_add)?;
     Ok(())
 }
