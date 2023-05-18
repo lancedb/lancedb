@@ -114,7 +114,7 @@ describe('LanceDB client', function () {
       assert.equal(resultsAdd.length, 4)
     })
 
-    it('replace all records in a table', async function () {
+    it('overwrite all records in a table', async function () {
       const uri = await createTestDB()
       const con = await lancedb.connect(uri)
 
@@ -122,11 +122,11 @@ describe('LanceDB client', function () {
       const results = await table.search([0.1, 0.3]).execute()
       assert.equal(results.length, 2)
 
-      const dataAdd = [
-        { id: 3, vector: [2.1, 2.2], price: 10 },
-        { id: 4, vector: [3.1, 3.2], price: 50 }
+      const dataOver = [
+        { vector: [2.1, 2.2], price: 10, name: 'foo' },
+        { vector: [3.1, 3.2], price: 50, name: 'bar' }
       ]
-      await table.add(dataAdd, WriteMode.Overwrite)
+      await table.overwrite(dataOver)
       const resultsAdd = await table.search([0.1, 0.3]).execute()
       assert.equal(resultsAdd.length, 2)
     })

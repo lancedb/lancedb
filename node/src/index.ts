@@ -106,8 +106,12 @@ export class Table {
    * @param mode Append / Overwrite existing records. Default: Append
    * @return The number of rows added to the table
    */
-  async add (data: Array<Record<string, unknown>>, mode: WriteMode = WriteMode.Append): Promise<number> {
-    return tableAdd.call(this._tbl, await fromRecordsToBuffer(data), mode.toString())
+  async add (data: Array<Record<string, unknown>>): Promise<number> {
+    return tableAdd.call(this._tbl, await fromRecordsToBuffer(data), WriteMode.Append.toString())
+  }
+
+  async overwrite (data: Array<Record<string, unknown>>): Promise<number> {
+    return tableAdd.call(this._tbl, await fromRecordsToBuffer(data), WriteMode.Overwrite.toString())
   }
 }
 
@@ -170,7 +174,6 @@ export class Query {
 }
 
 export enum WriteMode {
-  Create = 'create',
   Overwrite = 'overwrite',
   Append = 'append'
 }
