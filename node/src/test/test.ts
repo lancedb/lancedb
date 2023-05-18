@@ -17,7 +17,6 @@ import { assert } from 'chai'
 import { track } from 'temp'
 
 import * as lancedb from '../index'
-import { WriteMode } from '../index'
 
 describe('LanceDB client', function () {
   describe('when creating a connection to lancedb', function () {
