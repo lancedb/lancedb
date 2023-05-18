@@ -17,6 +17,8 @@ use std::sync::Arc;
 
 use arrow_array::{Float32Array, RecordBatchReader};
 use lance::dataset::{Dataset, WriteMode, WriteParams};
+use lance::index::{DatasetIndexExt, IndexParams, IndexType};
+use lance::index::vector::{MetricType, VectorIndexParams};
 
 use crate::error::{Error, Result};
 use crate::query::Query;
@@ -82,6 +84,23 @@ impl Table {
             Arc::new(Dataset::write(&mut batches, path, Some(WriteParams::default())).await?);
         Ok(Table { name, path: path.to_string(), dataset })
     }
+
+    //
+    //     What is the best option to expose create index api?
+    //
+
+    // Option 1 - One api per index type, parameters match what the index type expects.
+    pub async fn create_index_ivf(&self, metric_type: MetricType, num_bits: u8, num_partitions: usize, num_sub_vectors: usize, use_opq: bool, metric_type, max_iterations: usize) {
+        let params: &dyn IndexParams = &VectorIndexParams::ivf_pq(num_partitions, num_bits, num_sub_vectors, use_opq, metric_type, max_iterations);
+        self.dataset.create_index(&*[VECTOR_COLUMN_NAME],IndexType::Vector, None, params)
+    }
+    pub async fn create_index_diskann(&self, /* params here */) {}
+
+    // Option 2 - Single API, accepts IndexParams defined in the lance crate
+    pub async fn create_index(&self, params: &dyn IndexParams) {
+        self.dataset.create_index(&*[VECTOR_COLUMN_NAME],IndexType::Vector, None, params)
+    }
+
 
     /// Insert records into this Table
     ///
