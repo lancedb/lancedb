@@ -13,19 +13,15 @@
 // limitations under the License.
 
 import {
-  Field,
-  Float32,
-  List,
-  makeBuilder,
   RecordBatchFileWriter,
-  Table as ArrowTable,
+  type Table as ArrowTable,
   tableFromIPC,
-  Vector,
-  vectorFromArray
+  Vector
 } from 'apache-arrow'
+import { fromRecordsToBuffer } from './arrow'
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { databaseNew, databaseTableNames, databaseOpenTable, tableCreate, tableSearch } = require('../native.js')
+const { databaseNew, databaseTableNames, databaseOpenTable, tableCreate, tableSearch, tableAdd } = require('../native.js')
 
 /**
  * Connect to a LanceDB instance at the given URI
@@ -68,40 +64,7 @@ export class Connection {
   }
 
   async createTable (name: string, data: Array<Record<string, unknown>>): Promise<Table> {
-    if (data.length === 0) {
-      throw new Error('At least one record needs to be provided')
-    }
-
-    const columns = Object.keys(data[0])
-    const records: Record<string, Vector> = {}
-
-    for (const columnsKey of columns) {
-      if (columnsKey === 'vector') {
-        const children = new Field<Float32>('item', new Float32())
-        const list = new List(children)
-        const listBuilder = makeBuilder({
-          type: list
-        })
-        const vectorSize = (data[0].vector as any[]).length
-        for (const datum of data) {
-          if ((datum[columnsKey] as any[]).length !== vectorSize) {
-            throw new Error(`Invalid vector size, expected ${vectorSize}`)
-          }
-
-          listBuilder.append(datum[columnsKey])
-        }
-        records[columnsKey] = listBuilder.finish().toVector()
-      } else {
-        const values = []
-        for (const datum of data) {
-          values.push(datum[columnsKey])
-        }
-        records[columnsKey] = vectorFromArray(values)
-      }
-    }
-
-    const table = new ArrowTable(records)
-    await this.createTableArrow(name, table)
+    await tableCreate.call(this._db, name, await fromRecordsToBuffer(data))
     return await this.openTable(name)
   }
 
@@ -134,6 +97,17 @@ export class Table {
      */
   search (queryVector: number[]): Query {
     return new Query(this._tbl, queryVector)
+  }
+
+  /**
+   * Insert records into this Table
+   * @param data Records to be inserted into the Table
+   *
+   * @param mode Append / Overwrite existing records. Default: Append
+   * @return The number of rows added to the table
+   */
+  async add (data: Array<Record<string, unknown>>, mode: WriteMode = WriteMode.Append): Promise<number> {
+    return tableAdd.call(this._tbl, await fromRecordsToBuffer(data), mode.toString())
   }
 }
 
@@ -193,4 +167,10 @@ export class Query {
       return newObject as unknown as T
     })
   }
+}
+
+export enum WriteMode {
+  Create = 'create',
+  Overwrite = 'overwrite',
+  Append = 'append'
 }

@@ -91,7 +91,7 @@ impl Database {
     ///
     /// * A [Table] object.
     pub async fn open_table(&self, name: String) -> Result<Table> {
-        Table::new(self.path.clone(), name).await
+        Table::open(self.path.clone(), name).await
     }
 }
 
