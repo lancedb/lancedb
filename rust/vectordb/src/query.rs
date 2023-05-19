@@ -53,7 +53,7 @@ impl Query {
             refine_factor: None,
             metric_type: MetricType::L2,
             use_index: false,
-            filter: None
+            filter: None,
         }
     }
 

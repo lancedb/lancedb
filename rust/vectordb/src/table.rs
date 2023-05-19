@@ -17,10 +17,9 @@ use std::sync::Arc;
 
 use arrow_array::{Float32Array, RecordBatchReader};
 use lance::dataset::{Dataset, WriteMode, WriteParams};
-use lance::index::{DatasetIndexExt, IndexParams, IndexType};
-use lance::index::vector::{MetricType, VectorIndexParams};
 
 use crate::error::{Error, Result};
+use crate::index::vector::VectorIndexBuilder;
 use crate::query::Query;
 
 pub const VECTOR_COLUMN_NAME: &str = "vector";
@@ -29,9 +28,9 @@ pub const LANCE_FILE_EXTENSION: &str = "lance";
 
 /// A table in a LanceDB database.
 pub struct Table {
-    name: String,
-    path: String,
-    dataset: Arc<Dataset>,
+    pub(crate) name: String,
+    pub(crate) path: String,
+    pub(crate) dataset: Arc<Dataset>,
 }
 
 impl Table {
@@ -82,25 +81,16 @@ impl Table {
 
         let dataset =
             Arc::new(Dataset::write(&mut batches, path, Some(WriteParams::default())).await?);
-        Ok(Table { name, path: path.to_string(), dataset })
+        Ok(Table {
+            name,
+            path: path.to_string(),
+            dataset,
+        })
     }
 
-    //
-    //     What is the best option to expose create index api?
-    //
-
-    // Option 1 - One api per index type, parameters match what the index type expects.
-    pub async fn create_index_ivf(&self, metric_type: MetricType, num_bits: u8, num_partitions: usize, num_sub_vectors: usize, use_opq: bool, metric_type, max_iterations: usize) {
-        let params: &dyn IndexParams = &VectorIndexParams::ivf_pq(num_partitions, num_bits, num_sub_vectors, use_opq, metric_type, max_iterations);
-        self.dataset.create_index(&*[VECTOR_COLUMN_NAME],IndexType::Vector, None, params)
+    pub fn create_idx(&self) -> VectorIndexBuilder {
+        VectorIndexBuilder::new()
     }
-    pub async fn create_index_diskann(&self, /* params here */) {}
-
-    // Option 2 - Single API, accepts IndexParams defined in the lance crate
-    pub async fn create_index(&self, params: &dyn IndexParams) {
-        self.dataset.create_index(&*[VECTOR_COLUMN_NAME],IndexType::Vector, None, params)
-    }
-
 
     /// Insert records into this Table
     ///
@@ -114,12 +104,13 @@ impl Table {
     pub async fn add(
         &mut self,
         mut batches: Box<dyn RecordBatchReader>,
-        write_mode: Option<WriteMode>
+        write_mode: Option<WriteMode>,
     ) -> Result<usize> {
         let mut params = WriteParams::default();
         params.mode = write_mode.unwrap_or(WriteMode::Append);
 
-        self.dataset = Arc::new(Dataset::write(&mut batches, self.path.as_str(), Some(params)).await?);
+        self.dataset =
+            Arc::new(Dataset::write(&mut batches, self.path.as_str(), Some(params)).await?);
         Ok(batches.count())
     }
 
@@ -144,13 +135,20 @@ impl Table {
 
 #[cfg(test)]
 mod tests {
-    use arrow_array::{Float32Array, Int32Array, RecordBatch, RecordBatchReader};
+    use arrow_array::{
+        Array, FixedSizeListArray, Float32Array, Int32Array, RecordBatch, RecordBatchReader,
+    };
+    use arrow_data::ArrayDataBuilder;
     use arrow_schema::{DataType, Field, Schema};
     use lance::arrow::RecordBatchBuffer;
     use lance::dataset::{Dataset, WriteMode};
+    use lance::index::vector::ivf::IvfBuildParams;
+    use lance::index::vector::pq::PQBuildParams;
+    use rand::Rng;
     use std::sync::Arc;
     use tempfile::tempdir;
 
+    use crate::error::Result;
     use crate::table::Table;
 
     #[tokio::test]
@@ -190,14 +188,17 @@ mod tests {
 
         let batches: Box<dyn RecordBatchReader> = Box::new(make_test_batches());
         let schema = batches.schema().clone();
-        let mut table = Table::create(Arc::new(path_buf), "test".to_string(), batches).await.unwrap();
+        let mut table = Table::create(Arc::new(path_buf), "test".to_string(), batches)
+            .await
+            .unwrap();
         assert_eq!(table.count_rows().await.unwrap(), 10);
 
-        let new_batches: Box<dyn RecordBatchReader> = Box::new(RecordBatchBuffer::new(vec![RecordBatch::try_new(
-            schema,
-            vec![Arc::new(Int32Array::from_iter_values(100..110))],
-        )
-       .unwrap()]));
+        let new_batches: Box<dyn RecordBatchReader> =
+            Box::new(RecordBatchBuffer::new(vec![RecordBatch::try_new(
+                schema,
+                vec![Arc::new(Int32Array::from_iter_values(100..110))],
+            )
+            .unwrap()]));
 
         table.add(new_batches, None).await.unwrap();
         assert_eq!(table.count_rows().await.unwrap(), 20);
@@ -211,15 +212,22 @@ mod tests {
 
         let batches: Box<dyn RecordBatchReader> = Box::new(make_test_batches());
         let schema = batches.schema().clone();
-        let mut table = Table::create(Arc::new(path_buf), "test".to_string(), batches).await.unwrap();
+        let mut table = Table::create(Arc::new(path_buf), "test".to_string(), batches)
+            .await
+            .unwrap();
         assert_eq!(table.count_rows().await.unwrap(), 10);
 
-        let new_batches: Box<dyn RecordBatchReader> = Box::new(RecordBatchBuffer::new(vec![RecordBatch::try_new(
-            schema,
-            vec![Arc::new(Int32Array::from_iter_values(100..110))],
-        ).unwrap()]));
+        let new_batches: Box<dyn RecordBatchReader> =
+            Box::new(RecordBatchBuffer::new(vec![RecordBatch::try_new(
+                schema,
+                vec![Arc::new(Int32Array::from_iter_values(100..110))],
+            )
+            .unwrap()]));
 
-        table.add(new_batches, Some(WriteMode::Overwrite)).await.unwrap();
+        table
+            .add(new_batches, Some(WriteMode::Overwrite))
+            .await
+            .unwrap();
         assert_eq!(table.count_rows().await.unwrap(), 10);
         assert_eq!(table.name, "test");
     }
@@ -254,5 +262,78 @@ mod tests {
             vec![Arc::new(Int32Array::from_iter_values(0..10))],
         )
         .unwrap()])
+    }
+
+    #[tokio::test]
+    async fn test_create_index() {
+        use arrow_array::RecordBatch;
+        use arrow_schema::{DataType, Field, Schema as ArrowSchema};
+        use rand;
+        use std::iter::repeat_with;
+
+        use arrow_array::Float32Array;
+
+        let tmp_dir = tempdir().unwrap();
+        let path_buf = tmp_dir.into_path();
+
+        let dimension = 16;
+        let schema = Arc::new(ArrowSchema::new(vec![Field::new(
+            "embeddings",
+            DataType::FixedSizeList(
+                Arc::new(Field::new("item", DataType::Float32, true)),
+                dimension,
+            ),
+            false,
+        )]));
+
+        let mut rng = rand::thread_rng();
+        let float_arr = Float32Array::from(
+            repeat_with(|| rng.gen::<f32>())
+                .take(512 * dimension as usize)
+                .collect::<Vec<f32>>(),
+        );
+
+        // let float_arr = Float32Array::from(1..dimension) generate_random_array(512 * dimension as usize);
+        let vectors = Arc::new(create_fixed_size_list(float_arr, dimension).unwrap());
+        let batches = RecordBatchBuffer::new(vec![RecordBatch::try_new(
+            schema.clone(),
+            vec![vectors.clone()],
+        )
+        .unwrap()]);
+
+        let mut reader: Box<dyn RecordBatchReader + Send> = Box::new(batches);
+        let table = Table::create(Arc::new(path_buf), "test".to_string(), reader)
+            .await
+            .unwrap();
+
+        let new_table = table
+            .create_idx()
+            .ivf()
+            .column("embeddings".to_string())
+            .index_name("my_index".to_string())
+            .ivf_params(IvfBuildParams::new(256))
+            .pq_params(PQBuildParams::default())
+            .execute(table)
+            .await
+            .unwrap();
+
+        assert_eq!(new_table.dataset.load_indices().await.unwrap().len(), 1);
+
+        assert_eq!(new_table.count_rows().await.unwrap(), 512);
+        assert_eq!(new_table.name, "test");
+    }
+
+    fn create_fixed_size_list<T: Array>(values: T, list_size: i32) -> Result<FixedSizeListArray> {
+        let list_type = DataType::FixedSizeList(
+            Arc::new(Field::new("item", values.data_type().clone(), true)),
+            list_size,
+        );
+        let data = ArrayDataBuilder::new(list_type)
+            .len(values.len() / list_size as usize)
+            .add_child_data(values.into_data())
+            .build()
+            .unwrap();
+
+        Ok(FixedSizeListArray::from(data))
     }
 }

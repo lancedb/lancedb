@@ -14,5 +14,6 @@
 
 pub mod database;
 pub mod error;
+pub mod index;
 pub mod query;
 pub mod table;
