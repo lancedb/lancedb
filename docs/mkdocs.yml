@@ -1,10 +1,14 @@
 site_name: LanceDB Documentation
+repo_url: https://github.com/lancedb/lancedb
+repo_name: lancedb/lancedb
 docs_dir: src
 
 theme:
   name: "material"
   features:
     - content.code.copy
+  icon:
+    repo: fontawesome/brands/github
 
 plugins:
 - search
