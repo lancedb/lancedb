@@ -39,21 +39,17 @@ nav:
 - Basics: basic.md
 - Embeddings: embedding.md
 - Indexing: ann_indexes.md
-<<<<<<< HEAD
 - Storing data locally: local_storage.md
 - Storing data in the cloud: cloud_storage.md
 - Integrations: integrations.md
 - Examples:
   - YouTube Transcript Search using OpenAI: notebooks/youtube_transcript_search.ipynb
   - Documentation QA Bot using LangChain: notebooks/code_qa_bot.ipynb
+- Full-text search: fts.md
+- Integrations: integrations.md
 - API references:
   - Python API: python/python.md
   - Javascript API: javascript/modules.md
-=======
-- Full-text search: fts.md
-- Integrations: integrations.md
-- Python API: python.md
->>>>>>> 2aa898f (add js to docs)
 
 extra_css:
   - styles/global.css

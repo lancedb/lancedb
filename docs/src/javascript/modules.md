@@ -38,4 +38,4 @@ Connect to a LanceDB instance at the given URI
 
 #### Defined in
 
-[index.ts:30](https://github.com/lancedb/lancedb/blob/6d6e80b/node/src/index.ts#L30)
+[index.ts:30](https://github.com/lancedb/lancedb/blob/e234a3e/node/src/index.ts#L30)
