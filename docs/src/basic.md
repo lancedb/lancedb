@@ -1,6 +1,10 @@
 # Basic LanceDB Functionality
 
-We'll cover the basics of using LanceDB on your local machine in this section. LanceDB runs embedded on your backend application, so there is no need to run a separate server.
+We'll cover the basics of using LanceDB on your local machine in this section.
+
+??? info "LanceDB runs embedded on your backend application, so there is no need to run a separate server."
+
+      <img src="../assets/lancedb_embedded_explanation.png" width="650px" />
 
 ## Installation
 
@@ -69,10 +73,9 @@ We'll cover the basics of using LanceDB on your local machine in this section. L
       If you want to overwrite the table, you can pass in `mode="overwrite"`
       to the `createTable` function.
 
-!!! info 
+??? info "Under the hood, LanceDB is converting the input data into an Apache Arrow table and persisting it to disk in [Lance format](github.com/eto-ai/lance)."
 
-      Under the hood, LanceDB is converting the input data into an Apache Arrow table
-      and persisting it to disk in [Lance format](github.com/eto-ai/lance).
+      <img src="../assets/lancedb_local_data_explanation.png" width="350px" />
 
 ## How to open an existing table
 
