@@ -38,6 +38,10 @@ We'll cover the basics of using LanceDB on your local machine in this section.
       const uri = "~./lancedb";
       const db = await lancedb.connect(uri);
       ```
+      
+      LanceDB will create the directory if it doesn't exist (including parent directories).
+
+      If you need a reminder of the uri, you can call `db.uri()`.
 
 ## How to create a table
 
@@ -116,6 +120,8 @@ After a table has been created, you can always add more data to it using
 
 === "Javascript"
       ```javascript
+      await tbl.add([vector: [1.3, 1.4], item: "fizz", price: 100.0},
+              {vector: [9.5, 56.2], item: "buzz", price: 200.0}])
       ```
 
 ## How to search for (approximate) nearest neighbors
@@ -131,6 +137,7 @@ Once you've embedded the query, you can find its nearest neighbors using the fol
 
 === "Javascript"
       ```javascript
+      const query = await tbl.search([100, 100]).limit(2).execute();
       ```
 
 ## What's next
