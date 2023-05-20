@@ -1,12 +1,14 @@
-site_name: LanceDB Documentation
+site_name: LanceDB Docs
 repo_url: https://github.com/lancedb/lancedb
 repo_name: lancedb/lancedb
 docs_dir: src
 
 theme:
   name: "material"
+  logo: assets/logo.png
   features:
     - content.code.copy
+    - content.tabs.link
   icon:
     repo: fontawesome/brands/github
 
@@ -18,6 +20,19 @@ plugins:
         paths: [../python]
 - mkdocs-jupyter
 
+markdown_extensions:
+- admonition
+- pymdownx.superfences
+- pymdownx.highlight:
+    anchor_linenums: true
+    line_spans: __span
+    pygments_lang_class: true
+- pymdownx.inlinehilite
+- pymdownx.snippets
+- pymdownx.superfences
+- pymdownx.tabbed:
+    alternate_style: true
+
 nav:
 - Home: index.md
 - Basics: basic.md
@@ -26,11 +41,5 @@ nav:
 - Integrations: integrations.md
 - Python API: python.md
 
-markdown_extensions:
-- pymdownx.highlight:
-    anchor_linenums: true
-    line_spans: __span
-    pygments_lang_class: true
-- pymdownx.inlinehilite
-- pymdownx.snippets
-- pymdownx.superfences
+extra_css:
+  - styles/global.css

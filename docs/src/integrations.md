@@ -29,7 +29,7 @@ table = db.create_table("pd_table", data=data)
 table.create_index(num_partitions=256, num_sub_vectors=96)
 ```
 
-You will find detailed instructions of creating dataset and index in [Basic Operations](basic.md) and [Indexing](indexing.md)
+You will find detailed instructions of creating dataset and index in [Basic Operations](basic.md) and [Indexing](ann_indexes.md)
 sections.
 
 

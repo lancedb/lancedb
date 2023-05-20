@@ -18,43 +18,42 @@ LanceDB's core is written in Rust 🦀 and is built using <a href="https://githu
 
 ## Quick Start
 
-**Javascript**
-```shell
-npm install vectordb
-```
+=== "Python"
+      ```shell
+      pip install lancedb
+      ```
 
-```javascript
-const lancedb = require('vectordb');
-const db = await lancedb.connect('data/sample-lancedb');
+      ```python
+      import lancedb
 
-const table = await db.createTable('vectors', 
-      [{ id: 1, vector: [0.1, 0.2], item: "foo", price: 10 },
-       { id: 2, vector: [1.1, 1.2], item: "bar", price: 50 }])
+      uri = "/tmp/lancedb"
+      db = lancedb.connect(uri)
+      table = db.create_table("my_table",
+                              data=[{"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+                                    {"vector": [5.9, 26.5], "item": "bar", "price": 20.0}])
+      result = table.search([100, 100]).limit(2).to_df()
+      ```
 
-const query = table.search([0.1, 0.3]);
-query.limit = 20;
-const results = await query.execute();
-```
+=== "Javascript"
+      ```shell
+      npm install vectordb
+      ```
 
-**Python**
-```shell
-pip install lancedb
-```
+      ```javascript
+      const lancedb = require("vectordb");
 
-```python
-import lancedb
-
-uri = "/tmp/lancedb"
-db = lancedb.connect(uri)
-table = db.create_table("my_table",
-                         data=[{"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
-                               {"vector": [5.9, 26.5], "item": "bar", "price": 20.0}])
-result = table.search([100, 100]).limit(2).to_df()
+      const uri = "/tmp/lancedb";
+      const db = await lancedb.connect(uri);
+      const table = await db.createTable("my_table", 
+            [{ id: 1, vector: [3.1, 4.1], item: "foo", price: 10.0 },
+            { id: 2, vector: [5.9, 26.5], item: "bar", price: 20.0 }])
+      const results = await table.search([100, 100]).limit(2).execute();
+      ```
 
 ## Complete Demos
 
 We will be adding completed demo apps built using LanceDB.
-- [YouTube Transcript Search](../notebooks/youtube_transcript_search.ipynb)
+- [YouTube Transcript Search](notebooks/youtube_transcript_search.ipynb)
 
 
 ## Documentation Quick Links
