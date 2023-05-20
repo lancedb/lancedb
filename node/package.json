@@ -40,6 +40,8 @@
     "temp": "^0.9.4",
     "ts-node": "^10.9.1",
     "ts-node-dev": "^2.0.0",
+    "typedoc": "^0.24.7",
+    "typedoc-plugin-markdown": "^3.15.3",
     "typescript": "*"
   },
   "dependencies": {

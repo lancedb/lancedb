@@ -40,7 +40,9 @@ nav:
 - Embeddings: embedding.md
 - Indexing: ann_indexes.md
 - Integrations: integrations.md
-- Python API: python.md
+- API references:
+  - Python API: python/python.md
+  - Javascript API: javascript/modules.md
 
 extra_css:
   - styles/global.css
