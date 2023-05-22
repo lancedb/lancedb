@@ -1,0 +1,101 @@
+name: Node
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    paths:
+      - node/**
+      - rust/ffi/node/**
+      - .github/workflows/node.yml
+
+env:
+  # Disable full debug symbol generation to speed up CI build and keep memory down
+  # "1" means line tables only, which is useful for panic tracebacks.
+  RUSTFLAGS: "-C debuginfo=1"
+  RUST_BACKTRACE: "1"
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        shell: bash
+        working-directory: node
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        fetch-depth: 0
+        lfs: true
+    - uses: actions/setup-node@v3
+      with:
+        node-version: 18
+        cache: 'npm'
+        cache-dependency-path: node/package-lock.json
+    - name: Lint
+      run: |
+        npm ci
+        npm run lint
+  linux:
+    name: Linux (Node ${{ matrix.node-version }})
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        node-version: [ "14", "16", "18", "19" ]
+    runs-on: "ubuntu-22.04"
+    defaults:
+      run:
+        shell: bash
+        working-directory: node
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        fetch-depth: 0
+        lfs: true
+    - uses: actions/setup-node@v3
+      with:
+        node-version: ${{ matrix.node-version }}
+        cache: 'npm'
+        cache-dependency-path: node/package-lock.json
+    - uses: Swatinem/rust-cache@v2
+    - name: Install dependencies
+      run: |
+        sudo apt update
+        sudo apt install -y protobuf-compiler libssl-dev
+    - name: Build
+      run: |
+        npm ci
+        npm run build
+        npm run tsc
+    - name: Test
+      run: npm run test
+  macos:
+    timeout-minutes: 30
+    runs-on: "macos-11"
+    defaults:
+      run:
+        shell: bash
+        working-directory: node
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        fetch-depth: 0
+        lfs: true
+    - uses: actions/setup-node@v3
+      with:
+        node-version: 18
+        cache: 'npm'
+        cache-dependency-path: node/package-lock.json
+    - uses: Swatinem/rust-cache@v2
+    - name: Install dependencies
+      run: brew install protobuf
+    - name: Build
+      run: |
+        npm ci
+        npm run build
+        npm run tsc
+    - name: Test
+      run: |
+        npm run test
