@@ -75,14 +75,14 @@ impl VectorIndexBuilder for IvfIndexBuilder {
 #[cfg(test)]
 mod tests {
     use lance::index::vector::ivf::IvfBuildParams;
-    use lance::index::vector::{MetricType, StageParams};
     use lance::index::vector::pq::PQBuildParams;
+    use lance::index::vector::{MetricType, StageParams};
 
     use crate::index::vector::{IvfIndexBuilder, VectorIndexBuilder};
 
     #[test]
     fn test_builder_no_params() {
-        let index_builder= IvfIndexBuilder::new();
+        let index_builder = IvfIndexBuilder::new();
         assert!(index_builder.get_column().is_none());
         assert!(index_builder.get_index_name().is_none());
 
@@ -107,7 +107,8 @@ mod tests {
     fn test_builder_all_params() {
         let mut index_builder = IvfIndexBuilder::new();
 
-        index_builder.column("c".to_owned())
+        index_builder
+            .column("c".to_owned())
             .metric_type(MetricType::Cosine)
             .index_name("index".to_owned());
 

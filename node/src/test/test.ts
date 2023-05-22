@@ -136,7 +136,7 @@ describe('LanceDB client', function () {
       const uri = await createTestDB(32, 300)
       const con = await lancedb.connect(uri)
       const table = await con.openTable('vectors')
-      await table.create_index({ type: 'ivf', column: 'vector', num_partitions: 10, max_iters: 2 })
+      await table.create_index({ type: 'ivf', column: 'vector', num_partitions: 2, max_iters: 2 })
     }).timeout(5_000)
   })
 })
