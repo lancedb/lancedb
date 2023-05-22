@@ -43,7 +43,7 @@ jobs:
     timeout-minutes: 30
     strategy:
       matrix:
-        node-version: [ "14", "16", "18", "19" ]
+        node-version: [ "16", "18" ]
     runs-on: "ubuntu-22.04"
     defaults:
       run:
@@ -73,7 +73,7 @@ jobs:
       run: npm run test
   macos:
     timeout-minutes: 30
-    runs-on: "macos-11"
+    runs-on: "macos-13"
     defaults:
       run:
         shell: bash
