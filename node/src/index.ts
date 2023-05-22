@@ -119,7 +119,7 @@ export class Table {
   }
 }
 
-interface IvfIndexParamsConfig {
+interface IvfPQIndexConfig {
   /**
    * The column to be indexed
    */
@@ -172,7 +172,7 @@ export enum MetricType {
   Cosine = 'cosine'
 }
 
-export type VectorIndexParams = IvfIndexParamsConfig
+export type VectorIndexParams = IvfPQIndexConfig
 
 /**
  * A builder for nearest neighbor queries for LanceDB.
