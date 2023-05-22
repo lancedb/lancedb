@@ -17,6 +17,7 @@ use std::sync::Arc;
 
 use arrow_array::{Float32Array, RecordBatchReader};
 use lance::dataset::{Dataset, WriteMode, WriteParams};
+use lance::index::IndexType;
 
 use crate::error::{Error, Result};
 use crate::index::vector::VectorIndexBuilder;
@@ -28,9 +29,9 @@ pub const LANCE_FILE_EXTENSION: &str = "lance";
 
 /// A table in a LanceDB database.
 pub struct Table {
-    pub(crate) name: String,
-    pub(crate) path: String,
-    pub(crate) dataset: Arc<Dataset>,
+    name: String,
+    path: String,
+    dataset: Arc<Dataset>,
 }
 
 impl Table {
@@ -88,8 +89,23 @@ impl Table {
         })
     }
 
-    pub fn create_idx(&self) -> VectorIndexBuilder {
-        VectorIndexBuilder::new()
+    pub async fn create_idx(&mut self, index_builder: &impl VectorIndexBuilder) -> Result<()> {
+        use lance::index::DatasetIndexExt;
+
+        let dataset = self
+            .dataset
+            .create_index(
+                &[index_builder
+                    .get_column()
+                    .unwrap_or(VECTOR_COLUMN_NAME.to_string())
+                    .as_str()],
+                IndexType::Vector,
+                index_builder.get_index_name(),
+                &index_builder.build(),
+            )
+            .await?;
+        self.dataset = Arc::new(dataset);
+        Ok(())
     }
 
     /// Insert records into this Table
@@ -149,6 +165,7 @@ mod tests {
     use tempfile::tempdir;
 
     use crate::error::Result;
+    use crate::index::vector::IvfIndexBuilder;
     use crate::table::Table;
 
     #[tokio::test]
@@ -293,7 +310,6 @@ mod tests {
                 .collect::<Vec<f32>>(),
         );
 
-        // let float_arr = Float32Array::from(1..dimension) generate_random_array(512 * dimension as usize);
         let vectors = Arc::new(create_fixed_size_list(float_arr, dimension).unwrap());
         let batches = RecordBatchBuffer::new(vec![RecordBatch::try_new(
             schema.clone(),
@@ -301,26 +317,24 @@ mod tests {
         )
         .unwrap()]);
 
-        let mut reader: Box<dyn RecordBatchReader + Send> = Box::new(batches);
-        let table = Table::create(Arc::new(path_buf), "test".to_string(), reader)
+        let reader: Box<dyn RecordBatchReader + Send> = Box::new(batches);
+        let mut table = Table::create(Arc::new(path_buf), "test".to_string(), reader)
             .await
             .unwrap();
 
-        let new_table = table
-            .create_idx()
-            .ivf()
+        let mut i = IvfIndexBuilder::new();
+
+        let index_builder = i
             .column("embeddings".to_string())
             .index_name("my_index".to_string())
             .ivf_params(IvfBuildParams::new(256))
-            .pq_params(PQBuildParams::default())
-            .execute(table)
-            .await
-            .unwrap();
+            .pq_params(PQBuildParams::default());
 
-        assert_eq!(new_table.dataset.load_indices().await.unwrap().len(), 1);
+        table.create_idx(index_builder).await.unwrap();
 
-        assert_eq!(new_table.count_rows().await.unwrap(), 512);
-        assert_eq!(new_table.name, "test");
+        assert_eq!(table.dataset.load_indices().await.unwrap().len(), 1);
+        assert_eq!(table.count_rows().await.unwrap(), 512);
+        assert_eq!(table.name, "test");
     }
 
     fn create_fixed_size_list<T: Array>(values: T, list_size: i32) -> Result<FixedSizeListArray> {

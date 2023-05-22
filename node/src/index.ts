@@ -21,7 +21,7 @@ import {
 import { fromRecordsToBuffer } from './arrow'
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { databaseNew, databaseTableNames, databaseOpenTable, tableCreate, tableSearch, tableAdd } = require('../native.js')
+const { databaseNew, databaseTableNames, databaseOpenTable, tableCreate, tableSearch, tableAdd, tableCreateVectorIndex } = require('../native.js')
 
 /**
  * Connect to a LanceDB instance at the given URI
@@ -113,7 +113,66 @@ export class Table {
   async overwrite (data: Array<Record<string, unknown>>): Promise<number> {
     return tableAdd.call(this._tbl, await fromRecordsToBuffer(data), WriteMode.Overwrite.toString())
   }
+
+  async create_index (indexParams: VectorIndexParams): Promise<any> {
+    return tableCreateVectorIndex.call(this._tbl, indexParams)
+  }
 }
+
+interface IvfIndexParamsConfig {
+  /**
+   * The column to be indexed
+   */
+  column?: string
+
+  /**
+   * A unique name for the index
+   */
+  index_name?: string
+
+  /**
+   * Metric type, L2 or Cosine
+   */
+  metric_type?: MetricType
+
+  /**
+   * The number of partitions this index
+   */
+  num_partitions?: number
+
+  /**
+   * The max number of iterations for kmeans training.
+   */
+  max_iters?: number
+
+  /**
+   * Train as optimized product quantization.
+   */
+  use_opq?: boolean
+
+  /**
+   * Number of subvectors to build PQ code
+   */
+  num_sub_vectors?: number
+  /**
+   * The number of bits to present one PQ centroid.
+   */
+  num_bits?: number
+
+  /**
+   * Max number of iterations to train OPQ, if `use_opq` is true.
+   */
+  max_opq_iters?: number
+
+  type: 'ivf'
+}
+
+export enum MetricType {
+  L2 = 'l2',
+  Cosine = 'cosine'
+}
+
+export type VectorIndexParams = IvfIndexParamsConfig
 
 /**
  * A builder for nearest neighbor queries for LanceDB.

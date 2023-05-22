@@ -67,7 +67,7 @@ describe('LanceDB client', function () {
       const uri = await createTestDB()
       const con = await lancedb.connect(uri)
       const table = await con.openTable('vectors')
-      const results = await table.search([0.1, 0.3]).filter('id == 2').execute()
+      const results = await table.search([0.1, 0.1]).filter('id == 2').execute()
       assert.equal(results.length, 1)
       assert.equal(results[0].id, 2)
     })
@@ -130,16 +130,29 @@ describe('LanceDB client', function () {
       assert.equal(resultsAdd.length, 2)
     })
   })
+
+  describe('when creating a vector index', function () {
+    it('overwrite all records in a table', async function () {
+      const uri = await createTestDB(32, 300)
+      const con = await lancedb.connect(uri)
+      const table = await con.openTable('vectors')
+      await table.create_index({ type: 'ivf', column: 'vector', num_partitions: 10, max_iters: 2 })
+    }).timeout(5_000)
+  })
 })
 
-async function createTestDB (): Promise<string> {
+async function createTestDB (numDimensions: number = 2, numRows: number = 2): Promise<string> {
   const dir = await track().mkdir('lancejs')
   const con = await lancedb.connect(dir)
 
-  const data = [
-    { id: 1, vector: [0.1, 0.2], name: 'foo', price: 10, is_active: true },
-    { id: 2, vector: [1.1, 1.2], name: 'bar', price: 50, is_active: false }
-  ]
+  const data = []
+  for (let i = 0; i < numRows; i++) {
+    const vector = []
+    for (let j = 0; j < numDimensions; j++) {
+      vector.push(i + (j * 0.1));
+    }
+    data.push({ id: i + 1, name: `name_${i}`, price: i + 10, is_active: (i % 2 === 0), vector })
+  }
 
   await con.createTable('vectors', data)
   return dir

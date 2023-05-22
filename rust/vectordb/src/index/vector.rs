@@ -1,40 +1,26 @@
-use std::sync::Arc;
-
 use lance::index::vector::ivf::IvfBuildParams;
 use lance::index::vector::pq::PQBuildParams;
 use lance::index::vector::{MetricType, VectorIndexParams};
-use lance::index::{IndexType};
 
-use crate::error::Result;
-use crate::table::{Table, VECTOR_COLUMN_NAME};
-
-pub struct VectorIndexBuilder {}
-
-impl VectorIndexBuilder {
-    pub fn new() -> Self {
-        VectorIndexBuilder {}
-    }
-
-    pub fn ivf(&self) -> IvfPQIndexBuilder {
-        IvfPQIndexBuilder::new()
-    }
+pub trait VectorIndexBuilder {
+    fn get_column(&self) -> Option<String>;
+    fn get_index_name(&self) -> Option<String>;
+    fn build(&self) -> VectorIndexParams;
 }
 
-pub struct IvfPQIndexBuilder {
+pub struct IvfIndexBuilder {
     column: Option<String>,
     index_name: Option<String>,
-    uuid: Option<String>,
     metric_type: Option<MetricType>,
     ivf_params: Option<IvfBuildParams>,
     pq_params: Option<PQBuildParams>,
 }
 
-impl IvfPQIndexBuilder {
-    pub fn new() -> IvfPQIndexBuilder {
-        IvfPQIndexBuilder {
+impl IvfIndexBuilder {
+    pub fn new() -> IvfIndexBuilder {
+        IvfIndexBuilder {
             column: None,
             index_name: None,
-            uuid: None,
             metric_type: None,
             ivf_params: None,
             pq_params: None,
@@ -42,69 +28,121 @@ impl IvfPQIndexBuilder {
     }
 }
 
-impl IvfPQIndexBuilder {
-    pub fn column(mut self, column: String) -> Self {
+impl IvfIndexBuilder {
+    pub fn column(&mut self, column: String) -> &mut IvfIndexBuilder {
         self.column = Some(column);
         self
     }
 
-    pub fn index_name(mut self, index_name: String) -> Self {
+    pub fn index_name(&mut self, index_name: String) -> &mut IvfIndexBuilder {
         self.index_name = Some(index_name);
         self
     }
 
-    pub fn uuid(mut self, uuid: String) -> Self {
-        self.uuid = Some(uuid);
-        self
-    }
-
-    pub fn metric_type(mut self, metric_type: MetricType) -> Self {
+    pub fn metric_type(&mut self, metric_type: MetricType) -> &mut IvfIndexBuilder {
         self.metric_type = Some(metric_type);
         self
     }
 
-    pub fn ivf_params(mut self, ivf_params: IvfBuildParams) -> Self {
+    pub fn ivf_params(&mut self, ivf_params: IvfBuildParams) -> &mut IvfIndexBuilder {
         self.ivf_params = Some(ivf_params);
         self
     }
 
-    pub fn pq_params(mut self, pq_params: PQBuildParams) -> Self {
+    pub fn pq_params(&mut self, pq_params: PQBuildParams) -> &mut IvfIndexBuilder {
         self.pq_params = Some(pq_params);
         self
     }
+}
 
-    pub async fn execute(self, table: Table) -> Result<Table> {
-        let ivf_params = self.ivf_params.unwrap_or(IvfBuildParams::default());
-        let pq_params = self.pq_params.unwrap_or(PQBuildParams::default());
+impl VectorIndexBuilder for IvfIndexBuilder {
+    fn get_column(&self) -> Option<String> {
+        self.column.clone()
+    }
 
-        let vector_index_params = VectorIndexParams::ivf_pq(
-            ivf_params.num_partitions,
-            8,
-            pq_params.num_sub_vectors,
-            pq_params.use_opq,
-            pq_params.metric_type,
-            ivf_params.max_iters,
-        );
+    fn get_index_name(&self) -> Option<String> {
+        self.index_name.clone()
+    }
 
-        use lance::index::DatasetIndexExt;
+    fn build(&self) -> VectorIndexParams {
+        let ivf_params = self.ivf_params.clone().unwrap_or(IvfBuildParams::default());
+        let pq_params = self.pq_params.clone().unwrap_or(PQBuildParams::default());
 
-        let dataset = table
-            .dataset
-            .create_index(
-                &[self
-                    .column
-                    .unwrap_or(VECTOR_COLUMN_NAME.to_string())
-                    .as_str()],
-                IndexType::Vector,
-                self.index_name.clone(),
-                &vector_index_params,
-            )
-            .await?;
+        VectorIndexParams::with_ivf_pq_params(pq_params.metric_type, ivf_params, pq_params)
+    }
+}
 
-        Ok(Table {
-            path: table.path,
-            name: table.name,
-            dataset: Arc::new(dataset),
-        })
+#[cfg(test)]
+mod tests {
+    use lance::index::vector::ivf::IvfBuildParams;
+    use lance::index::vector::{MetricType, StageParams};
+    use lance::index::vector::pq::PQBuildParams;
+
+    use crate::index::vector::{IvfIndexBuilder, VectorIndexBuilder};
+
+    #[test]
+    fn test_builder_no_params() {
+        let index_builder= IvfIndexBuilder::new();
+        assert!(index_builder.get_column().is_none());
+        assert!(index_builder.get_index_name().is_none());
+
+        let index_params = index_builder.build();
+        assert_eq!(index_params.stages.len(), 2);
+        if let StageParams::Ivf(ivf_params) = index_params.stages.get(0).unwrap() {
+            let default = IvfBuildParams::default();
+            assert_eq!(ivf_params.num_partitions, default.num_partitions);
+            assert_eq!(ivf_params.max_iters, default.max_iters);
+        } else {
+            panic!("Expected first stage to be ivf")
+        }
+
+        if let StageParams::PQ(pq_params) = index_params.stages.get(1).unwrap() {
+            assert_eq!(pq_params.use_opq, false);
+        } else {
+            panic!("Expected second stage to be pq")
+        }
+    }
+
+    #[test]
+    fn test_builder_all_params() {
+        let mut index_builder = IvfIndexBuilder::new();
+
+        index_builder.column("c".to_owned())
+            .metric_type(MetricType::Cosine)
+            .index_name("index".to_owned());
+
+        assert_eq!(index_builder.column.clone().unwrap(), "c");
+        assert_eq!(index_builder.metric_type.unwrap(), MetricType::Cosine);
+        assert_eq!(index_builder.index_name.clone().unwrap(), "index");
+
+        let ivf_params = IvfBuildParams::new(500);
+        let mut pq_params = PQBuildParams::default();
+        pq_params.use_opq = true;
+        pq_params.max_iters = 1;
+        pq_params.num_bits = 8;
+        pq_params.num_sub_vectors = 50;
+        pq_params.metric_type = MetricType::Cosine;
+        pq_params.max_opq_iters = 2;
+        index_builder.ivf_params(ivf_params);
+        index_builder.pq_params(pq_params);
+
+        let index_params = index_builder.build();
+        assert_eq!(index_params.stages.len(), 2);
+        if let StageParams::Ivf(ivf_params) = index_params.stages.get(0).unwrap() {
+            assert_eq!(ivf_params.num_partitions, 500);
+        } else {
+            panic!("Expected first stage to be ivf")
+        }
+
+        if let StageParams::PQ(pq_params) = index_params.stages.get(1).unwrap() {
+            assert_eq!(pq_params.use_opq, true);
+            assert_eq!(pq_params.max_iters, 1);
+            assert_eq!(pq_params.num_bits, 8);
+            assert_eq!(pq_params.num_sub_vectors, 50);
+            assert_eq!(pq_params.metric_type, MetricType::Cosine);
+            assert_eq!(pq_params.max_opq_iters, 2);
+        } else {
+            panic!("Expected second stage to be pq")
+        }
     }
 }
