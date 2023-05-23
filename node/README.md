@@ -27,10 +27,12 @@ The [examples](./examples) folder contains complete examples.
 
 ## Development
 
-Build the rust library with:
+Build and install the rust library with:
 
 ```bash
 npm run build
+npm run pack-build
+npm install --no-save ./dist/vectordb-*.tgz
 ```
 
 The LanceDB javascript is built with npm:
