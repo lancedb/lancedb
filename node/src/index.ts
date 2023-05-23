@@ -63,8 +63,8 @@ export class Connection {
     return new Table(tbl, name)
   }
 
-  async createTable (name: string, data: Array<Record<string, unknown>>): Promise<Table> {
-    await tableCreate.call(this._db, name, await fromRecordsToBuffer(data))
+  async createTable<T> (name: string, data: Array<Record<string, unknown>>, embeddings?: Embeddings<T>): Promise<Table> {
+    await tableCreate.call(this._db, name, await fromRecordsToBuffer(data, embeddings))
     return await this.openTable(name)
   }
 
@@ -92,10 +92,23 @@ export class Table {
   }
 
   /**
-     * Create a search query to find the nearest neighbors of the given query vector.
-     * @param queryVector The query vector.
-     */
-  search (queryVector: number[]): Query {
+    * Creates a search query to find the nearest neighbors of the given query vector.
+    * @param queryVector The query vector.
+    */
+  search (queryVector: number[]): Query
+  /**
+   * Creates a search query to find the nearest neighbors of the given search term
+   * @param query The query search term
+   * @param embeddings An embedding function used to vectorize the query vector
+   */
+  search<T> (query: T, embeddings: Embeddings<T>): Query;
+  search<T> (query: T | number[], embeddings?: Embeddings<T>): Query {
+    let queryVector: number[]
+    if (embeddings !== undefined) {
+      queryVector = embeddings.embed([query as T])[0]
+    } else {
+      queryVector = query as number[]
+    }
     return new Query(this._tbl, queryVector)
   }
 
@@ -106,12 +119,12 @@ export class Table {
    * @param mode Append / Overwrite existing records. Default: Append
    * @return The number of rows added to the table
    */
-  async add (data: Array<Record<string, unknown>>): Promise<number> {
-    return tableAdd.call(this._tbl, await fromRecordsToBuffer(data), WriteMode.Append.toString())
+  async add<T> (data: Array<Record<string, unknown>>, embeddings?: Embeddings<T>): Promise<number> {
+    return tableAdd.call(this._tbl, await fromRecordsToBuffer(data, embeddings), WriteMode.Append.toString())
   }
 
-  async overwrite (data: Array<Record<string, unknown>>): Promise<number> {
-    return tableAdd.call(this._tbl, await fromRecordsToBuffer(data), WriteMode.Overwrite.toString())
+  async overwrite<T> (data: Array<Record<string, unknown>>, embeddings?: Embeddings<T>): Promise<number> {
+    return tableAdd.call(this._tbl, await fromRecordsToBuffer(data, embeddings), WriteMode.Overwrite.toString())
   }
 
   async create_index (indexParams: VectorIndexParams): Promise<any> {
@@ -235,4 +248,12 @@ export class Query {
 export enum WriteMode {
   Overwrite = 'overwrite',
   Append = 'append'
+}
+
+/**
+ * An embedding function that automatically creates vector representation for a given column
+ */
+export interface Embeddings<T> {
+  targetColumn: string
+  embed: (data: T[]) => number[][]
 }

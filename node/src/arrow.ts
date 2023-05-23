@@ -15,15 +15,16 @@
 import {
   Field,
   Float32,
-  List,
+  List, ListBuilder,
   makeBuilder,
   RecordBatchFileWriter,
   Table,
   type Vector,
   vectorFromArray
 } from 'apache-arrow'
+import { type Embeddings } from './index'
 
-export function convertToTable (data: Array<Record<string, unknown>>): Table {
+export function convertToTable<T> (data: Array<Record<string, unknown>>, embeddings?: Embeddings<T>): Table {
   if (data.length === 0) {
     throw new Error('At least one record needs to be provided')
   }
@@ -33,11 +34,7 @@ export function convertToTable (data: Array<Record<string, unknown>>): Table {
 
   for (const columnsKey of columns) {
     if (columnsKey === 'vector') {
-      const children = new Field<Float32>('item', new Float32())
-      const list = new List(children)
-      const listBuilder = makeBuilder({
-        type: list
-      })
+      const listBuilder = newVectorListBuilder()
       const vectorSize = (data[0].vector as any[]).length
       for (const datum of data) {
         if ((datum[columnsKey] as any[]).length !== vectorSize) {
@@ -52,6 +49,13 @@ export function convertToTable (data: Array<Record<string, unknown>>): Table {
       for (const datum of data) {
         values.push(datum[columnsKey])
       }
+
+      if (columnsKey === embeddings?.targetColumn) {
+        const vectors = embeddings.embed(values as T[])
+        const listBuilder = newVectorListBuilder()
+        vectors.map(v => listBuilder.append(v))
+        records.vector = listBuilder.finish().toVector()
+      }
       records[columnsKey] = vectorFromArray(values)
     }
   }
@@ -59,8 +63,17 @@ export function convertToTable (data: Array<Record<string, unknown>>): Table {
   return new Table(records)
 }
 
-export async function fromRecordsToBuffer (data: Array<Record<string, unknown>>): Promise<Buffer> {
-  const table = convertToTable(data)
+// Creates a new Arrow ListBuilder that stores a Vector column
+function newVectorListBuilder (): ListBuilder<Float32, any> {
+  const children = new Field<Float32>('item', new Float32())
+  const list = new List(children)
+  return makeBuilder({
+    type: list
+  })
+}
+
+export async function fromRecordsToBuffer<T> (data: Array<Record<string, unknown>>, embeddings?: Embeddings<T>): Promise<Buffer> {
+  const table = convertToTable(data, embeddings)
   const writer = RecordBatchFileWriter.writeAll(table)
   return Buffer.from(await writer.toUint8Array())
 }
