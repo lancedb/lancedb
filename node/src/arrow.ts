@@ -18,7 +18,7 @@ import {
   List,
   makeBuilder,
   RecordBatchFileWriter,
-  Table,
+  Table, Utf8,
   type Vector,
   vectorFromArray
 } from 'apache-arrow'
@@ -52,7 +52,12 @@ export function convertToTable (data: Array<Record<string, unknown>>): Table {
       for (const datum of data) {
         values.push(datum[columnsKey])
       }
-      records[columnsKey] = vectorFromArray(values)
+      if (typeof values[0] === 'string') {
+        // `vectorFromArray` converts strings into dictionary vectors, forcing it back to a string column
+        records[columnsKey] = vectorFromArray(values, new Utf8())
+      } else {
+        records[columnsKey] = vectorFromArray(values)
+      }
     }
   }
 
