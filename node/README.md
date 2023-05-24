@@ -35,6 +35,11 @@ npm run pack-build
 npm install --no-save ./dist/vectordb-*.tgz
 ```
 
+`npm run build` builds the Rust library, `npm run pack-build` packages the Rust
+binary into an npm module called `@vectordb/<platform>` (for example, 
+`@vectordb/darwin-arm64.node`), and then `npm run install ...` installs that
+module.
+
 The LanceDB javascript is built with npm:
 
 ```bash

@@ -1,3 +1,4 @@
+# These make sure our builds are compatible with old glibc versions.
 [target.x86_64-unknown-linux-gnu]
 pre-build = [
     "dpkg --add-architecture $CROSS_DEB_ARCH",
@@ -10,5 +11,4 @@ pre-build = [
     "dpkg --add-architecture $CROSS_DEB_ARCH",
     "apt-get update && apt-get install --assume-yes libssl-dev:$CROSS_DEB_ARCH protobuf-compiler",
 ]
-image = "ghcr.io/cross-rs/aarch64-unknown-linux-gnu:centos"
-# docker pull ghcr.io/cross-rs/aarch64-unknown-linux-gnu:edge-centos@sha256:8ca737af41df2a8078eb03a0a19e38405854ad05891a7381f7f671727a9ff736
+image = "ghcr.io/cross-rs/aarch64-unknown-linux-gnu:main-centos"

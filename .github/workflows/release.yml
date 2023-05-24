@@ -17,6 +17,29 @@ jobs:
           prerelease: true # hardcoded on for now
           generate_release_notes: true
   
+  rust:
+    runs-on: ubuntu-latest
+    needs: draft-release
+    defaults:
+      run:
+        shell: bash
+        working-directory: rust/vectordb
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+          lfs: true
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y protobuf-compiler libssl-dev
+      - name: Package Rust
+        run: cargo package --all-features
+      - uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            rust/target/vectordb-*.crate
+    
   python:
     runs-on: ubuntu-latest
     needs: draft-release
@@ -126,6 +149,11 @@ jobs:
           for filename in node/dist/*.tgz; do
             npm publish --dry-run $filename
           done
-      - uses: softprops/action-gh-release@v1
-        with:
-          draft: false
+      - name: Publish to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          cargo publish --dry-run --no-verify rust/target/vectordb-*.crate
+      # - uses: softprops/action-gh-release@v1
+      #   with:
+      #     draft: false
