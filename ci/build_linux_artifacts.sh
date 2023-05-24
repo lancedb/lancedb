@@ -20,11 +20,7 @@ build_node_binaries() {
     do
         echo "Building node library for $target"
         # cross doesn't yet pass this down to Docker, so we do it ourselves.
-        if [[ $target == x86_64* ]]; then
-            export CROSS_CONTAINER_OPTS="--platform linux/amd64"
-        else
-            export CROSS_CONTAINER_OPTS="--platform linux/arm64/v8"
-        fi
+        export CROSS_CONTAINER_OPTS="--platform linux/amd64"
         npm run cross-release -- --target $target
         npm run pack-build -- --target $target
     done
