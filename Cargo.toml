@@ -3,3 +3,4 @@ members = [
     "rust/vectordb",
     "rust/ffi/node"
 ]
+resolver = "2"

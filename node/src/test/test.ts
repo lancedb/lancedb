@@ -97,8 +97,8 @@ describe('LanceDB client', function () {
       const con = await lancedb.connect(dir)
 
       const data = [
-        { id: 1, vector: [0.1, 0.2], price: 10 },
-        { id: 2, vector: [1.1, 1.2], price: 50 }
+        { id: 1, vector: [0.1, 0.2], price: 10, name: 'a' },
+        { id: 2, vector: [1.1, 1.2], price: 50, name: 'b' }
       ]
 
       const table = await con.createTable('vectors', data)
@@ -106,8 +106,8 @@ describe('LanceDB client', function () {
       assert.equal(results.length, 2)
 
       const dataAdd = [
-        { id: 3, vector: [2.1, 2.2], price: 10 },
-        { id: 4, vector: [3.1, 3.2], price: 50 }
+        { id: 3, vector: [2.1, 2.2], price: 10, name: 'c' },
+        { id: 4, vector: [3.1, 3.2], price: 50, name: 'd' }
       ]
       await table.add(dataAdd)
       const resultsAdd = await table.search([0.1, 0.3]).execute()

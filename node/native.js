@@ -14,12 +14,26 @@
 
 let nativeLib;
 
-if (process.platform === "darwin" && process.arch === "arm64") {
-    nativeLib = require('./darwin_arm64.node')
-} else if (process.platform === "linux" && process.arch === "x64") {
-    nativeLib = require('./linux-x64.node')
-} else {
-    throw new Error(`vectordb: unsupported platform ${process.platform}_${process.arch}. Please file a bug report at https://github.com/lancedb/lancedb/issues`)
+function getPlatformLibrary() {
+    if (process.platform === "darwin" && process.arch == "arm64") {
+        return require('./aarch64-apple-darwin.node');
+    } else if (process.platform === "darwin" && process.arch == "x64") {
+        return require('./x86_64-apple-darwin.node');
+    } else if (process.platform === "linux" && process.arch == "x64") {
+        return require('./x86_64-unknown-linux-gnu.node');
+    } else {
+        throw new Error(`vectordb: unsupported platform ${process.platform}_${process.arch}. Please file a bug report at https://github.com/lancedb/lancedb/issues`)
+    }
+}
+
+try {
+    nativeLib = require('./index.node')
+} catch (e) {
+    if (e.code === "MODULE_NOT_FOUND") {
+        nativeLib = getPlatformLibrary();
+    } else {
+        throw new Error('vectordb: failed to load native library. Please file a bug report at https://github.com/lancedb/lancedb/issues');
+    }
 }
 
 module.exports = nativeLib
