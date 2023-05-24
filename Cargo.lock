@@ -3359,8 +3359,10 @@ name = "vectordb"
 version = "0.0.1"
 dependencies = [
  "arrow-array",
+ "arrow-data",
  "arrow-schema",
  "lance",
+ "rand",
  "tempfile",
  "tokio",
 ]
