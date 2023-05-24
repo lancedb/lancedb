@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use std::collections::HashMap;
+use std::convert::TryFrom;
 use std::ops::Deref;
 use std::sync::{Arc, Mutex};
 
@@ -21,6 +22,7 @@ use arrow_ipc::writer::FileWriter;
 use futures::{TryFutureExt, TryStreamExt};
 use lance::arrow::RecordBatchBuffer;
 use lance::dataset::WriteMode;
+use lance::index::vector::MetricType;
 use neon::prelude::*;
 use neon::types::buffer::TypedArray;
 use once_cell::sync::OnceCell;
@@ -39,11 +41,11 @@ struct JsDatabase {
     database: Arc<Database>,
 }
 
+impl Finalize for JsDatabase {}
+
 struct JsTable {
     table: Arc<Mutex<Table>>,
 }
-
-impl Finalize for JsDatabase {}
 
 impl Finalize for JsTable {}
 
@@ -87,7 +89,9 @@ fn database_open_table(mut cx: FunctionContext) -> JsResult<JsPromise> {
         let table_rst = database.open_table(table_name).await;
 
         deferred.settle_with(&channel, move |mut cx| {
-            let table = Arc::new(Mutex::new(table_rst.or_else(|err| cx.throw_error(err.to_string()))?));
+            let table = Arc::new(Mutex::new(
+                table_rst.or_else(|err| cx.throw_error(err.to_string()))?,
+            ));
             Ok(cx.boxed(JsTable { table }))
         });
     });
@@ -96,15 +100,32 @@ fn database_open_table(mut cx: FunctionContext) -> JsResult<JsPromise> {
 
 fn table_search(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let js_table = cx.this().downcast_or_throw::<JsBox<JsTable>, _>(&mut cx)?;
-    let query_vector = cx.argument::<JsArray>(0)?; //. .as_value(&mut cx);
-    let limit = cx.argument::<JsNumber>(1)?.value(&mut cx);
-    let filter = cx.argument_opt(2).map(|f| f.downcast_or_throw::<JsString, _>(&mut cx).unwrap().value(&mut cx));
+    let query_obj = cx.argument::<JsObject>(0)?;
+
+    let limit = query_obj
+        .get::<JsNumber, _, _>(&mut cx, "_limit")?
+        .value(&mut cx);
+    let filter = query_obj
+        .get_opt::<JsString, _, _>(&mut cx, "_filter")?
+        .map(|s| s.value(&mut cx));
+    let refine_factor = query_obj
+        .get_opt::<JsNumber, _, _>(&mut cx, "_refineFactor")?
+        .map(|s| s.value(&mut cx))
+        .map(|i| i as u32);
+    let nprobes = query_obj
+        .get::<JsNumber, _, _>(&mut cx, "_nprobes")?
+        .value(&mut cx) as usize;
+    let metric_type = query_obj
+        .get_opt::<JsString, _, _>(&mut cx, "_metricType")?
+        .map(|s| s.value(&mut cx))
+        .map(|s| MetricType::try_from(s.as_str()).unwrap());
 
     let rt = runtime(&mut cx)?;
     let channel = cx.channel();
 
     let (deferred, promise) = cx.promise();
     let table = js_table.table.clone();
+    let query_vector = query_obj.get::<JsArray, _, _>(&mut cx, "_queryVector")?;
     let query = convert::js_array_to_vec(query_vector.deref(), &mut cx);
 
     rt.spawn(async move {
@@ -113,7 +134,10 @@ fn table_search(mut cx: FunctionContext) -> JsResult<JsPromise> {
             .unwrap()
             .search(Float32Array::from(query))
             .limit(limit as usize)
-            .filter(filter);
+            .refine_factor(refine_factor)
+            .nprobes(nprobes)
+            .filter(filter)
+            .metric_type(metric_type);
         let record_batch_stream = builder.execute();
         let results = record_batch_stream
             .and_then(|stream| stream.try_collect::<Vec<_>>().map_err(Error::from))
@@ -164,7 +188,9 @@ fn table_create(mut cx: FunctionContext) -> JsResult<JsPromise> {
         let table_rst = database.create_table(table_name, batch_reader).await;
 
         deferred.settle_with(&channel, move |mut cx| {
-            let table = Arc::new(Mutex::new(table_rst.or_else(|err| cx.throw_error(err.to_string()))?));
+            let table = Arc::new(Mutex::new(
+                table_rst.or_else(|err| cx.throw_error(err.to_string()))?,
+            ));
             Ok(cx.boxed(JsTable { table }))
         });
     });
@@ -178,9 +204,7 @@ fn table_add(mut cx: FunctionContext) -> JsResult<JsPromise> {
         ("overwrite", WriteMode::Overwrite),
     ]);
 
-    let js_table = cx
-        .this()
-        .downcast_or_throw::<JsBox<JsTable>, _>(&mut cx)?;
+    let js_table = cx.this().downcast_or_throw::<JsBox<JsTable>, _>(&mut cx)?;
     let buffer = cx.argument::<JsBuffer>(0)?;
     let write_mode = cx.argument::<JsString>(1)?.value(&mut cx);
     let batches = arrow_buffer_to_record_batch(buffer.as_slice(&mut cx));
@@ -203,7 +227,6 @@ fn table_add(mut cx: FunctionContext) -> JsResult<JsPromise> {
     });
     Ok(promise)
 }
-
 
 #[neon::main]
 fn main(mut cx: ModuleContext) -> NeonResult<()> {
