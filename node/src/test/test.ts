@@ -17,6 +17,7 @@ import { assert } from 'chai'
 import { track } from 'temp'
 
 import * as lancedb from '../index'
+import { MetricType, Query } from '../index'
 
 describe('LanceDB client', function () {
   describe('when creating a connection to lancedb', function () {
@@ -96,8 +97,8 @@ describe('LanceDB client', function () {
       const con = await lancedb.connect(dir)
 
       const data = [
-        { id: 1, vector: [0.1, 0.2], price: 10 },
-        { id: 2, vector: [1.1, 1.2], price: 50 }
+        { id: 1, vector: [0.1, 0.2], price: 10, name: 'a' },
+        { id: 2, vector: [1.1, 1.2], price: 50, name: 'b' }
       ]
 
       const table = await con.createTable('vectors', data)
@@ -105,8 +106,8 @@ describe('LanceDB client', function () {
       assert.equal(results.length, 2)
 
       const dataAdd = [
-        { id: 3, vector: [2.1, 2.2], price: 10 },
-        { id: 4, vector: [3.1, 3.2], price: 50 }
+        { id: 3, vector: [2.1, 2.2], price: 10, name: 'c' },
+        { id: 4, vector: [3.1, 3.2], price: 50, name: 'd' }
       ]
       await table.add(dataAdd)
       const resultsAdd = await table.search([0.1, 0.3]).execute()
@@ -138,6 +139,20 @@ describe('LanceDB client', function () {
       const table = await con.openTable('vectors')
       await table.create_index({ type: 'ivf_pq', column: 'vector', num_partitions: 2, max_iters: 2 })
     }).timeout(5_000)
+  })
+})
+
+describe('Query object', function () {
+  it('sets custom parameters', async function () {
+    const query = new Query(undefined, [0.1, 0.3])
+      .limit(1)
+      .metricType(MetricType.Cosine)
+      .refineFactor(100)
+      .nprobes(20) as Record<string, any>
+    assert.equal(query._limit, 1)
+    assert.equal(query._metricType, MetricType.Cosine)
+    assert.equal(query._refineFactor, 100)
+    assert.equal(query._nprobes, 20)
   })
 })
 
