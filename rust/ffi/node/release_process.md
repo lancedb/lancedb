@@ -3,6 +3,8 @@ How to release the node module
 
 ### 1. Bump the versions
 
+<!-- TODO: we also need to bump the optional dependencies for node! -->
+
 ```shell
 pushd rust/vectordb
 cargo bump minor

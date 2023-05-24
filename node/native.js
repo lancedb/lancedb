@@ -18,8 +18,13 @@ let nativeLib;
 
 try {
     nativeLib = require(`@vectordb/${currentTarget()}`);
-} catch {
-    throw new Error('vectordb: failed to load native library. Please file a bug report at https://github.com/lancedb/lancedb/issues');
+} catch (e) {
+    throw new Error(`vectordb: failed to load native library.
+  You may need to run \`npm install @vectordb/${currentTarget()}\`.
+
+  If that does not work, please file a bug report at https://github.com/lancedb/lancedb/issues
+
+  Source error: ${e}`);
 }
 
 // Dynamic require for runtime.
