@@ -165,7 +165,7 @@ mod tests {
     use tempfile::tempdir;
 
     use crate::error::Result;
-    use crate::index::vector::IvfIndexBuilder;
+    use crate::index::vector::IvfPQIndexBuilder;
     use crate::table::Table;
 
     #[tokio::test]
@@ -322,7 +322,7 @@ mod tests {
             .await
             .unwrap();
 
-        let mut i = IvfIndexBuilder::new();
+        let mut i = IvfPQIndexBuilder::new();
 
         let index_builder = i
             .column("embeddings".to_string())
