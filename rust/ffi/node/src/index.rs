@@ -12,8 +12,4 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-pub mod database;
-pub mod error;
-pub mod index;
-pub mod query;
-pub mod table;
+pub mod vector;

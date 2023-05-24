@@ -36,6 +36,7 @@ use crate::arrow::arrow_buffer_to_record_batch;
 
 mod arrow;
 mod convert;
+mod index;
 
 struct JsDatabase {
     database: Arc<Database>,
@@ -236,5 +237,9 @@ fn main(mut cx: ModuleContext) -> NeonResult<()> {
     cx.export_function("tableSearch", table_search)?;
     cx.export_function("tableCreate", table_create)?;
     cx.export_function("tableAdd", table_add)?;
+    cx.export_function(
+        "tableCreateVectorIndex",
+        index::vector::table_create_vector_index,
+    )?;
     Ok(())
 }
