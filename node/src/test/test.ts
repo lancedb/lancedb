@@ -17,6 +17,7 @@ import { assert } from 'chai'
 import { track } from 'temp'
 
 import * as lancedb from '../index'
+import { MetricType, Query } from '../index'
 
 describe('LanceDB client', function () {
   describe('when creating a connection to lancedb', function () {
@@ -129,6 +130,20 @@ describe('LanceDB client', function () {
       const resultsAdd = await table.search([0.1, 0.3]).execute()
       assert.equal(resultsAdd.length, 2)
     })
+  })
+})
+
+describe('Query object', function () {
+  it('sets custom parameters', async function () {
+    const query = new Query(undefined, [0.1, 0.3])
+      .limit(1)
+      .metricType(MetricType.Cosine)
+      .refineFactor(100)
+      .nprobes(20) as Record<string, any>
+    assert.equal(query._limit, 1)
+    assert.equal(query._metricType, MetricType.Cosine)
+    assert.equal(query._refineFactor, 100)
+    assert.equal(query._nprobes, 20)
   })
 })
 

@@ -29,7 +29,7 @@ pub struct Query {
     pub filter: Option<String>,
     pub nprobes: usize,
     pub refine_factor: Option<u32>,
-    pub metric_type: MetricType,
+    pub metric_type: Option<MetricType>,
     pub use_index: bool,
 }
 
@@ -51,9 +51,9 @@ impl Query {
             limit: 10,
             nprobes: 20,
             refine_factor: None,
-            metric_type: MetricType::L2,
+            metric_type: None,
             use_index: false,
-            filter: None
+            filter: None,
         }
     }
 
@@ -71,10 +71,10 @@ impl Query {
             self.limit,
         )?;
         scanner.nprobs(self.nprobes);
-        scanner.distance_metric(self.metric_type);
         scanner.use_index(self.use_index);
         self.filter.as_ref().map(|f| scanner.filter(f));
         self.refine_factor.map(|rf| scanner.refine(rf));
+        self.metric_type.map(|mt| scanner.distance_metric(mt));
         Ok(scanner.try_into_stream().await?)
     }
 
@@ -123,7 +123,7 @@ impl Query {
     /// # Arguments
     ///
     /// * `metric_type` - The distance metric to use. By default [MetricType::L2] is used.
-    pub fn metric_type(mut self, metric_type: MetricType) -> Query {
+    pub fn metric_type(mut self, metric_type: Option<MetricType>) -> Query {
         self.metric_type = metric_type;
         self
     }
@@ -174,14 +174,14 @@ mod tests {
             .limit(100)
             .nprobes(1000)
             .use_index(true)
-            .metric_type(MetricType::Cosine)
+            .metric_type(Some(MetricType::Cosine))
             .refine_factor(Some(999));
 
         assert_eq!(query.query_vector, new_vector);
         assert_eq!(query.limit, 100);
         assert_eq!(query.nprobes, 1000);
         assert_eq!(query.use_index, true);
-        assert_eq!(query.metric_type, MetricType::Cosine);
+        assert_eq!(query.metric_type, Some(MetricType::Cosine));
         assert_eq!(query.refine_factor, Some(999));
     }
 
