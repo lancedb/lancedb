@@ -7,19 +7,6 @@ on:
     tags:
       - v*
 
-# TODO:
-# Create draft relase
-# Build and upload artifacts
-#  * Build wheel and sdist
-#  * Build npm module
-#  * Build native node modules
-# Test release
-# Publish release
-
-env:
-  NODE_VERSION: 18.x
-  NPM_REGISTRY: 'https://registry.npmjs.org'
-
 jobs:
   draft-release:
     runs-on: ubuntu-latest
@@ -78,6 +65,7 @@ jobs:
         run: |
           npm ci
           npm run tsc
+          npm pack
       - uses: softprops/action-gh-release@v1
         with:
           files: node/vectordb-*.tgz
@@ -99,25 +87,45 @@ jobs:
       with:
         files: node/dist/vectordb-darwin*.tgz
 
-  # node-linux:
-  #   runs-on: ubuntu-latest
-  #   needs: draft-release
-  #   strategy:
-  #     matrix:
-  #       target:
-  #         - x86_64-unknown-linux-gnu:centos
-  #         - aarch64-unknown-linux-gnu:centos
-  #         - aarch64-unknown-linux-musl
-  #         - x86_64-unknown-linux-musl
-  #   steps:
-  #   - name: Install system dependencies
-  #     run: |
-  #       yum install -y openssl-devel
-  #       # protobuf is too old, so we directly download binaries
-  #       PB_REL="https://github.com/protocolbuffers/protobuf/releases"
-  #       PB_VERSION=23.1
-  #       curl -LO $PB_REL/download/v$PB_VERSION/protoc-$PB_VERSION-linux-x86_64.zip
-  #       unzip protoc-$PB_VERSION-linux-x86_64.zip -d $HOME/.local
-  #       echo "${HOME}/.local/bin" >> $GITHUB_PATH
+  node-linux:
+    runs-on: ubuntu-latest
+    needs: draft-release
+    strategy:
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu:centos
+          - aarch64-unknown-linux-gnu:centos
+          - aarch64-unknown-linux-musl
+          - x86_64-unknown-linux-musl
+    steps:
+    - name: Install system dependencies
+      run: |
+        sudo apt update
+        sudo apt install -y protobuf-compiler libssl-dev
+    - name: Build Linux native node modules
+      run: bash ci/build_linux_artifacts.sh ${{ matrix.target }}
+    - uses: softprops/action-gh-release@v1
+      with:
+        files: node/dist/vectordb-linux*.tgz
 
-  
+  release:
+    needs: [python, node, node-macos, node-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v3
+      - name: Publish to PyPI
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
+        run: |
+          python -m twine upload --non-interactive \
+            --skip-existing \
+            --repository testpypi python/dist/*
+      - name: Publish to NPM
+        run: |
+          for filename in node/dist/*.tgz; do
+            npm publish --dry-run $filename
+          done
+      - uses: softprops/action-gh-release@v1
+        with:
+          draft: false
