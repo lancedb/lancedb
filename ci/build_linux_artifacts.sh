@@ -20,10 +20,10 @@ build_node_binaries() {
     do
         echo "Building node library for $target"
         # cross doesn't yet pass this down to Docker, so we do it ourselves.
-        if [[ $target == x86_64* ]]; then
-            export CROSS_CONTAINER_OPTS="--platform linux/amd64"
-        else
-            export CROSS_CONTAINER_OPTS="--platform linux/arm64/v8"
+        export CROSS_CONTAINER_OPTS="--platform linux/amd64"
+        if [[ $target == *musl ]]; then
+            # This is needed for cargo to allow build cdylibs with musl
+            RUSTFLAGS="-C target-feature=-crt-static"
         fi
         npm run cross-release -- --target $target
         npm run pack-build -- --target $target
