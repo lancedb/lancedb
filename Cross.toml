@@ -1,14 +1,34 @@
 # These make sure our builds are compatible with old glibc versions.
 [target.x86_64-unknown-linux-gnu]
 pre-build = [
-    "dpkg --add-architecture $CROSS_DEB_ARCH",
-    "apt-get update && apt-get install --assume-yes libssl-dev:$CROSS_DEB_ARCH protobuf-compiler",
+    "yum install -y openssl-devel unzip",
+    # protobuf is too old, so we directly download binaries
+    "PB_REL=https://github.com/protocolbuffers/protobuf/releases",
+    "PB_VERSION=23.1",
+    "curl -LO $PB_REL/download/v$PB_VERSION/protoc-$PB_VERSION-linux-x86_64.zip",
+    "unzip protoc-$PB_VERSION-linux-x86_64.zip -d /usr/local",
 ]
 image = "ghcr.io/cross-rs/x86_64-unknown-linux-gnu:main-centos"
 
 [target.aarch64-unknown-linux-gnu]
 pre-build = [
-    "dpkg --add-architecture $CROSS_DEB_ARCH",
-    "apt-get update && apt-get install --assume-yes libssl-dev:$CROSS_DEB_ARCH protobuf-compiler",
+    "yum install -y openssl-devel unzip",
+    # protobuf is too old, so we directly download binaries
+    "PB_REL=https://github.com/protocolbuffers/protobuf/releases",
+    "PB_VERSION=23.1",
+    "curl -LO $PB_REL/download/v$PB_VERSION/protoc-$PB_VERSION-linux-x86_64.zip",
+    "unzip protoc-$PB_VERSION-linux-x86_64.zip -d /usr/local",
 ]
 image = "ghcr.io/cross-rs/aarch64-unknown-linux-gnu:main-centos"
+
+[target.x86_64-unknown-linux-musl]
+pre-build = [
+    "dpkg --add-architecture $CROSS_DEB_ARCH",
+    "apt-get update && apt-get install --assume-yes libssl-dev:$CROSS_DEB_ARCH",
+]
+
+[target.aarch64-unknown-linux-musl]
+pre-build = [
+    "dpkg --add-architecture $CROSS_DEB_ARCH",
+    "apt-get update && apt-get install --assume-yes libssl-dev:$CROSS_DEB_ARCH",
+]
