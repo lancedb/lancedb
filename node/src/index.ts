@@ -180,6 +180,10 @@ export class Query {
     return this
   }
 
+  /**
+   * The MetricType used for this Query.
+   * @param value The metric to the. @see MetricType for the different options
+   */
   metricType (value: MetricType): Query {
     this._metricType = value
     return this
