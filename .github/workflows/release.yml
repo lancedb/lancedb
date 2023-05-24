@@ -37,8 +37,8 @@ jobs:
         run: cargo package --all-features
       - uses: softprops/action-gh-release@v1
         with:
-          files: |
-            rust/target/vectordb-*.crate
+          draft: true
+          files: target/vectordb-*.crate
     
   python:
     runs-on: ubuntu-latest
@@ -55,11 +55,14 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: 3.10
+          python-version: "3.10"
       - name: Build wheel
-        run: python setup.py sdist bdist_wheel
+        run: |
+          pip install wheel
+          python setup.py sdist bdist_wheel
       - uses: softprops/action-gh-release@v1
         with:
+          draft: true
           files: |
             python/dist/lancedb-*.tar.gz 
             python/dist/lancedb-*.whl
@@ -79,7 +82,6 @@ jobs:
           node-version: 20
           cache: 'npm'
           cache-dependency-path: node/package-lock.json
-      - uses: Swatinem/rust-cache@v2
       - name: Install dependencies
         run: |
           sudo apt update
@@ -91,12 +93,14 @@ jobs:
           npm pack
       - uses: softprops/action-gh-release@v1
         with:
+          draft: true
           files: node/vectordb-*.tgz
 
   node-macos:
     runs-on: macos-12
     needs: draft-release
     strategy:
+      fail-fast: false
       matrix:
         target: [x86_64-apple-darwin, aarch64-apple-darwin]
     steps:
@@ -104,35 +108,54 @@ jobs:
       uses: actions/checkout@v2
     - name: Install system dependencies
       run: brew install protobuf
+    - name: Install npm dependencies
+      run: |
+        cd node
+        npm ci
     - name: Build MacOS native node modules
       run: bash ci/build_macos_artifacts.sh ${{ matrix.target }}
     - uses: softprops/action-gh-release@v1
       with:
+        draft: true
         files: node/dist/vectordb-darwin*.tgz
 
   node-linux:
     runs-on: ubuntu-latest
     needs: draft-release
     strategy:
+      fail-fast: false
       matrix:
         target:
-          - x86_64-unknown-linux-gnu:centos
-          - aarch64-unknown-linux-gnu:centos
-          - aarch64-unknown-linux-musl
-          - x86_64-unknown-linux-musl
+          - x86_64-unknown-linux-gnu
+          # TODO: get release working for these targets
+          # - aarch64-unknown-linux-gnu
+          # - aarch64-unknown-linux-musl
+          # - x86_64-unknown-linux-musl
     steps:
+    - name: Checkout
+      uses: actions/checkout@v2
+    - name: Setup Rust
+      uses: ATiltedTree/setup-rust@v1
+      with:
+        rust-version: stable
     - name: Install system dependencies
       run: |
         sudo apt update
         sudo apt install -y protobuf-compiler libssl-dev
+        cargo install cross
+    - name: Install npm dependencies
+      run: |
+        cd node
+        npm ci
     - name: Build Linux native node modules
       run: bash ci/build_linux_artifacts.sh ${{ matrix.target }}
     - uses: softprops/action-gh-release@v1
       with:
+        draft: true
         files: node/dist/vectordb-linux*.tgz
 
   release:
-    needs: [python, node, node-macos, node-linux]
+    needs: [python, node, node-macos, node-linux, rust]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v3
