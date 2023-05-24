@@ -47,7 +47,7 @@ fn get_index_params_builder(
         .value(cx);
 
     match idx_type.as_str() {
-        "ivf" => {
+        "ivf_pq" => {
             let mut index_builder: IvfIndexBuilder = IvfIndexBuilder::new();
             let mut pq_params = PQBuildParams::default();
 

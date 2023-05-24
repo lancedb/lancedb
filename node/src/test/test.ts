@@ -136,7 +136,7 @@ describe('LanceDB client', function () {
       const uri = await createTestDB(32, 300)
       const con = await lancedb.connect(uri)
       const table = await con.openTable('vectors')
-      await table.create_index({ type: 'ivf', column: 'vector', num_partitions: 2, max_iters: 2 })
+      await table.create_index({ type: 'ivf_pq', column: 'vector', num_partitions: 2, max_iters: 2 })
     }).timeout(5_000)
   })
 })
@@ -149,7 +149,7 @@ async function createTestDB (numDimensions: number = 2, numRows: number = 2): Pr
   for (let i = 0; i < numRows; i++) {
     const vector = []
     for (let j = 0; j < numDimensions; j++) {
-      vector.push(i + (j * 0.1));
+      vector.push(i + (j * 0.1))
     }
     data.push({ id: i + 1, name: `name_${i}`, price: i + 10, is_active: (i % 2 === 0), vector })
   }

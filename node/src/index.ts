@@ -164,7 +164,7 @@ interface IvfPQIndexConfig {
    */
   max_opq_iters?: number
 
-  type: 'ivf'
+  type: 'ivf_pq'
 }
 
 export enum MetricType {
