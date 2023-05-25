@@ -79,7 +79,6 @@ def populate_index(index: tantivy.Index, table: LanceTable, fields: List[str]) -
             doc = tantivy.Document()
             doc.add_integer("doc_id", row_id)
             for name in fields:
-                print(b[name][i].as_py())
                 doc.add_text(name, b[name][i].as_py())
             writer.add_document(doc)
             row_id += 1
