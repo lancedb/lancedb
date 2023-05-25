@@ -14,7 +14,9 @@
 from __future__ import annotations
 
 import os
+import shutil
 from functools import cached_property
+from typing import List, Union
 
 import lance
 import numpy as np
@@ -24,7 +26,8 @@ from lance import LanceDataset
 from lance.vector import vec_to_table
 
 from .common import DATA, VEC, VECTOR_COLUMN_NAME
-from .query import LanceQueryBuilder
+from .query import LanceFtsQueryBuilder, LanceQueryBuilder
+from .util import get_uri_scheme
 
 
 def _sanitize_data(data, schema):
@@ -130,6 +133,27 @@ class LanceTable:
         )
         self._reset_dataset()
 
+    def create_fts_index(self, field_names: Union[str, List[str]]):
+        """Create a full-text search index on the table.
+
+        Warning - this API is highly experimental and is highly likely to change
+        in the future.
+
+        Parameters
+        ----------
+        field_names: str or list of str
+            The name(s) of the field to index.
+        """
+        from .fts import create_index, populate_index
+
+        if isinstance(field_names, str):
+            field_names = [field_names]
+        index = create_index(self._get_fts_index_path(), field_names)
+        populate_index(index, self, field_names)
+
+    def _get_fts_index_path(self):
+        return os.path.join(self._dataset_uri, "_indices", "tantivy")
+
     @cached_property
     def _dataset(self) -> LanceDataset:
         return lance.dataset(self._dataset_uri, version=self._version)
@@ -158,7 +182,7 @@ class LanceTable:
         self._reset_dataset()
         return len(self)
 
-    def search(self, query: VEC) -> LanceQueryBuilder:
+    def search(self, query: Union[VEC, str]) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector.
 
@@ -174,6 +198,10 @@ class LanceTable:
         and also the "score" column which is the distance between the query
         vector and the returned vector.
         """
+        if isinstance(query, str):
+            # fts
+            return LanceFtsQueryBuilder(self, query)
+
         if isinstance(query, list):
             query = np.array(query)
         if isinstance(query, np.ndarray):

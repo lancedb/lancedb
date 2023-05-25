@@ -19,6 +19,7 @@ nav:
 - Basics: basic.md
 - Embeddings: embedding.md
 - Indexing: ann_indexes.md
+- Full-text search: fts.md
 - Integrations: integrations.md
 - Python API: python.md
 
