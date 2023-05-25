@@ -18,7 +18,7 @@ setup_dependencies() {
         apk add openssl-dev
     else
         # manylinux2014
-        yum install -y openssl-devel unzip   
+        yum install -y openssl-devel unzip
     fi
 
     if [[ $1 == x86_64* ]]; then
@@ -48,39 +48,33 @@ install_node() {
     else
         nvm install --no-progress 17 # latest that supports glibc 2.17
     fi
-
-    printenv
-    echo "Node version:"
-    npm --version
-    which npm
-    which node
 }
 
 install_rust() {
     echo "Installing rust..."
     curl https://sh.rustup.rs -sSf | bash -s -- -y
-
-    printenv
-
     export PATH="$PATH:/root/.cargo/bin"
-
-    printenv
 }
 
 build_node_binary() {
     echo "Building node library for $1..."
     pushd node
+
+    npm ci
     
     if [[ $1 == *musl ]]; then
         # This is needed for cargo to allow build cdylibs with musl
         export RUSTFLAGS="-C target-feature=-crt-static"
     fi
+
+    # Cargo can run out of memory while pulling dependencies, espcially when running
+    # in QEMU. This is a workaround for that.
+    export CARGO_NET_GIT_FETCH_WITH_CLI=true
+
     # We don't pass in target, since the native target here already matches
     # and openblas-src doesn't do well with cross-compilation.
-    source ~/.bashrc
-    npm run check-npm --script-shell bash
-    npm run build-release --script-shell bash
-    npm run pack-build --script-shell bash
+    npm run build-release
+    npm run pack-build
 
     popd
 }
