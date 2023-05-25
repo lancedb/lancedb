@@ -2,8 +2,7 @@
 [target.x86_64-unknown-linux-gnu]
 pre-build = [
     # Install newer gfortran
-    "yum install -y centos-release-scl",
-    "yum install -y openssl-devel unzip devtoolset-11-gcc-gfortran",
+    "yum install -y openssl-devel unzip gcc-gfortran",
     "scl enable devtoolset-11 bash",
     # protobuf is too old, so we directly download binaries
     "PB_REL=https://github.com/protocolbuffers/protobuf/releases",

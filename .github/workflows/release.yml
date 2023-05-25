@@ -120,35 +120,54 @@ jobs:
         files: node/dist/vectordb-darwin*.tgz
 
   node-linux:
+    name: Linux ${{ matrix.settings.arch}} native node module
     runs-on: ubuntu-latest
     needs: draft-release
     strategy:
       fail-fast: false
       matrix:
-        target:
-          - x86_64-unknown-linux-gnu
-          # TODO: get release working for these targets
-          # - aarch64-unknown-linux-gnu
-          # - aarch64-unknown-linux-musl
-          # - x86_64-unknown-linux-musl
+        libc:
+          - gnu
+          - musl
+        settings:
+          - container: quay.io/pypa/manylinux2014_x86_64
+            arch: x86_64
+            protoc_arch: x86_64
+          - container:  quay.io/pypa/manylinux2014_aarch64
+            arch: aarch64
+            protoc_arch: aarch_64
+    container: ${{ matrix.settings.container }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: node
     steps:
     - name: Checkout
       uses: actions/checkout@v2
+    - name: Install system dependencies
+      run: |
+        yum install -y openssl-devel unzip
+        # Install new enough protobuf (yum-provided is old)
+        PB_REL=https://github.com/protocolbuffers/protobuf/releases \
+        PB_VERSION=23.1 \
+        curl -LO $PB_REL/download/v$PB_VERSION/protoc-$PB_VERSION-linux-${{ matrix.settings.protoc_arch }}.zip && \
+        unzip protoc-$PB_VERSION-linux-${{ matrix.settings.protoc_arch }}.zip -d /usr/local
+    - uses: actions/setup-node@v3
+      with:
+        node-version: 18
     - name: Setup Rust
       uses: ATiltedTree/setup-rust@v1
       with:
         rust-version: stable
-    - name: Install system dependencies
-      run: |
-        sudo apt update
-        sudo apt install -y protobuf-compiler libssl-dev
-        cargo install cross
     - name: Install npm dependencies
+      run: npm ci
+    - name: Build ${{ matrix.settings.libc }} library
       run: |
-        cd node
-        npm ci
-    - name: Build Linux native node modules
-      run: bash ci/build_linux_artifacts.sh ${{ matrix.target }}
+        export BUILD_TARGET=${{ matrix.settings.arch }}-unknown-linux-${{ matrix.settings.libc }}
+        rustup target add $BUILD_TARGET
+        export RUSTFLAGS="-C target-feature=-crt-static"
+        npm run build-release -- --target $BUILD_TARGET
+        npm run pack-build -- --target $BUILD_TARGET
     - uses: softprops/action-gh-release@v1
       with:
         draft: true
