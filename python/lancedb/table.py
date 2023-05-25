@@ -136,6 +136,9 @@ class LanceTable:
     def create_fts_index(self, field_names: Union[str, List[str]]):
         """Create a full-text search index on the table.
 
+        Warning - this API is highly experimental and is highly likely to change
+        in the future.
+
         Parameters
         ----------
         field_names: str or list of str
