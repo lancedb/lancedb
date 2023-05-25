@@ -17,7 +17,7 @@ import { assert } from 'chai'
 import { track } from 'temp'
 
 import * as lancedb from '../index'
-import { type Embeddings } from '../index'
+import { type EmbeddingFunction, MetricType, Query } from '../index'
 
 describe('LanceDB client', function () {
   describe('when creating a connection to lancedb', function () {
@@ -97,8 +97,8 @@ describe('LanceDB client', function () {
       const con = await lancedb.connect(dir)
 
       const data = [
-        { id: 1, vector: [0.1, 0.2], price: 10 },
-        { id: 2, vector: [1.1, 1.2], price: 50 }
+        { id: 1, vector: [0.1, 0.2], price: 10, name: 'a' },
+        { id: 2, vector: [1.1, 1.2], price: 50, name: 'b' }
       ]
 
       const table = await con.createTable('vectors', data)
@@ -106,8 +106,8 @@ describe('LanceDB client', function () {
       assert.equal(results.length, 2)
 
       const dataAdd = [
-        { id: 3, vector: [2.1, 2.2], price: 10 },
-        { id: 4, vector: [3.1, 3.2], price: 50 }
+        { id: 3, vector: [2.1, 2.2], price: 10, name: 'c' },
+        { id: 4, vector: [3.1, 3.2], price: 50, name: 'd' }
       ]
       await table.add(dataAdd)
       const resultsAdd = await table.search([0.1, 0.3]).execute()
@@ -137,16 +137,16 @@ describe('LanceDB client', function () {
       const uri = await createTestDB(32, 300)
       const con = await lancedb.connect(uri)
       const table = await con.openTable('vectors')
-      await table.create_index({type: 'ivf', column: 'vector', num_partitions: 2, max_iters: 2})
-    }).timeout(5_000)
+      await table.create_index({ type: 'ivf_pq', column: 'vector', num_partitions: 2, max_iters: 2 })
+    }).timeout(10_000) // Timeout is high partially because GH macos runner is pretty slow
   })
 
   describe('when using a custom embedding function', function () {
-    class TextEmbedding implements Embeddings<string> {
-      targetColumn: string
+    class TextEmbedding implements EmbeddingFunction<string> {
+      sourceColumn: string
 
       constructor (targetColumn: string) {
-        this.targetColumn = targetColumn
+        this.sourceColumn = targetColumn
       }
 
       _embedding_map = new Map<string, number[]>([
@@ -175,6 +175,20 @@ describe('LanceDB client', function () {
   })
 })
 
+describe('Query object', function () {
+  it('sets custom parameters', async function () {
+    const query = new Query(undefined, [0.1, 0.3])
+      .limit(1)
+      .metricType(MetricType.Cosine)
+      .refineFactor(100)
+      .nprobes(20) as Record<string, any>
+    assert.equal(query._limit, 1)
+    assert.equal(query._metricType, MetricType.Cosine)
+    assert.equal(query._refineFactor, 100)
+    assert.equal(query._nprobes, 20)
+  })
+})
+
 async function createTestDB (numDimensions: number = 2, numRows: number = 2): Promise<string> {
   const dir = await track().mkdir('lancejs')
   const con = await lancedb.connect(dir)
@@ -183,7 +197,7 @@ async function createTestDB (numDimensions: number = 2, numRows: number = 2): Pr
   for (let i = 0; i < numRows; i++) {
     const vector = []
     for (let j = 0; j < numDimensions; j++) {
-      vector.push(i + (j * 0.1));
+      vector.push(i + (j * 0.1))
     }
     data.push({ id: i + 1, name: `name_${i}`, price: i + 10, is_active: (i % 2 === 0), vector })
   }

@@ -15,16 +15,16 @@
 import {
   Field,
   Float32,
-  List, ListBuilder,
+  List, type ListBuilder,
   makeBuilder,
   RecordBatchFileWriter,
-  Table,
+  Table, Utf8,
   type Vector,
   vectorFromArray
 } from 'apache-arrow'
-import { type Embeddings } from './index'
+import { type EmbeddingFunction } from './index'
 
-export function convertToTable<T> (data: Array<Record<string, unknown>>, embeddings?: Embeddings<T>): Table {
+export function convertToTable<T> (data: Array<Record<string, unknown>>, embeddings?: EmbeddingFunction<T>): Table {
   if (data.length === 0) {
     throw new Error('At least one record needs to be provided')
   }
@@ -50,13 +50,19 @@ export function convertToTable<T> (data: Array<Record<string, unknown>>, embeddi
         values.push(datum[columnsKey])
       }
 
-      if (columnsKey === embeddings?.targetColumn) {
+      if (columnsKey === embeddings?.sourceColumn) {
         const vectors = embeddings.embed(values as T[])
         const listBuilder = newVectorListBuilder()
         vectors.map(v => listBuilder.append(v))
         records.vector = listBuilder.finish().toVector()
       }
-      records[columnsKey] = vectorFromArray(values)
+
+      if (typeof values[0] === 'string') {
+        // `vectorFromArray` converts strings into dictionary vectors, forcing it back to a string column
+        records[columnsKey] = vectorFromArray(values, new Utf8())
+      } else {
+        records[columnsKey] = vectorFromArray(values)
+      }
     }
   }
 
@@ -72,7 +78,7 @@ function newVectorListBuilder (): ListBuilder<Float32, any> {
   })
 }
 
-export async function fromRecordsToBuffer<T> (data: Array<Record<string, unknown>>, embeddings?: Embeddings<T>): Promise<Buffer> {
+export async function fromRecordsToBuffer<T> (data: Array<Record<string, unknown>>, embeddings?: EmbeddingFunction<T>): Promise<Buffer> {
   const table = convertToTable(data, embeddings)
   const writer = RecordBatchFileWriter.writeAll(table)
   return Buffer.from(await writer.toUint8Array())
