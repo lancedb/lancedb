@@ -44,9 +44,9 @@ install_node() {
         # This node version is 15, we need 16 or higher:
         # apk add nodejs-current npm 
         # So instead we install from source (nvm doesn't provide binaries for musl):
-        nvm install -s 17
+        nvm install -s --no-progress 17
     else
-        nvm install 17 # latest that supports glibc 2.17
+        nvm install --no-progress 17 # latest that supports glibc 2.17
     fi
 
     printenv
@@ -77,6 +77,8 @@ build_node_binary() {
     fi
     # We don't pass in target, since the native target here already matches
     # and openblas-src doesn't do well with cross-compilation.
+    source ~/.bashrc
+    npm run check-npm --script-shell bash
     npm run build-release --script-shell bash
     npm run pack-build --script-shell bash
 

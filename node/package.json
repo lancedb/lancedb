@@ -11,7 +11,8 @@
     "cross-release": "cargo-cp-artifact --artifact cdylib vectordb-node index.node -- cross build --message-format=json --release -p vectordb-node",
     "test": "mocha -recursive dist/test",
     "lint": "eslint src --ext .js,.ts",
-    "pack-build": "neon pack-build"
+    "pack-build": "neon pack-build",
+    "check-npm": "printenv && which node && which npm && npm --version"
   },
   "repository": {
     "type": "git",

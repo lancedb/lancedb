@@ -1,6 +1,7 @@
 name: Prepare Release
 
-# Based on https://github.com/dherman/neon-prebuild-example/blob/eaa4d33d682e5eb7abbc3da7aed153a1b1acb1b3/.github/workflows/publish.yml
+# TODO: bump versions in CI
+# TODO: keep python release separate for now.
 
 on:
   push:
@@ -137,7 +138,7 @@ jobs:
           # - musl
         arch:
           - x86_64
-          - aarch64
+          # - aarch64
     steps:
     - name: Checkout
       uses: actions/checkout@v2
@@ -146,6 +147,8 @@ jobs:
       uses: docker/setup-qemu-action@v2  
       with:
         platforms: arm64
+    - name: Setup tmate session
+      uses: mxschmitt/action-tmate@v3
     - name: Build Linux GNU native node modules
       if: ${{ matrix.libc == 'gnu' }}
       run: |

@@ -33,4 +33,6 @@ if [ -n "$1" ]; then
 else
     targets="x86_64-apple-darwin aarch64-apple-darwin"
 fi
+
+prebuild_rust $targets
 build_node_binaries $targets
