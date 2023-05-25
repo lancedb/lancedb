@@ -48,12 +48,23 @@ install_node() {
     else
         nvm install 17 # latest that supports glibc 2.17
     fi
+
+    printenv
+    echo "Node version:"
+    npm --version
+    which npm
+    which node
 }
 
 install_rust() {
     echo "Installing rust..."
     curl https://sh.rustup.rs -sSf | bash -s -- -y
+
+    printenv
+
     export PATH="$PATH:/root/.cargo/bin"
+
+    printenv
 }
 
 build_node_binary() {
@@ -66,8 +77,8 @@ build_node_binary() {
     fi
     # We don't pass in target, since the native target here already matches
     # and openblas-src doesn't do well with cross-compilation.
-    npm run build-release
-    npm run pack-build
+    npm run build-release --script-shell bash
+    npm run pack-build --script-shell bash
 
     popd
 }

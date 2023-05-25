@@ -38,7 +38,7 @@ jobs:
       - uses: softprops/action-gh-release@v1
         with:
           draft: true
-          files: target/vectordb-*.crate
+          files: target/package/vectordb-*.crate
           fail_on_unmatched_files: true
     
   python:

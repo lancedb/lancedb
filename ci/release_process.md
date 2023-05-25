@@ -35,18 +35,14 @@ git push --tag vX.X.X
 ```
 
 When the tag is pushed, GitHub actions will start building the libraries and
-will upload them to a draft release. Wait for those jobs to complete.
+will upload them to a draft release.
 
-### 3. Publish the release
+While those jobs are running, edit the release notes as needed. For example, 
+bring relevant new features and bugfixes to the top of the notes and the testing
+and CI changes to the bottom.
 
-Once the jobs are complete, you can edit the 
-
-2. Push a tag, such as vX.X.X. Once the tag is pushrf, GitHub actions will start
-   building the native libraries and uploading them to a draft release. Wait for
-   those jobs to complete.
-3. If the libraries are successful, edit the changelog and then publish the
-   release. Once you publish, a new action will start and upload all the 
-   release artifacts to npm.
+Once the jobs have finished, the release will be marked as not draft and the
+artifacts will be released to crates.io, NPM, and PyPI.
 
 ## Manual process
 
@@ -92,7 +88,15 @@ docker run \
 
 <!--
 
-For debugging, use this snippet:
+For debugging, use these snippets:
+
+```shell
+ARCH=aarch64
+docker run -it \
+    -v $(pwd):/io -w /io \
+    quay.io/pypa/manylinux2014_$ARCH \
+    bash
+```
 
 ```shell
 ARCH=aarch64
@@ -101,6 +105,8 @@ docker run -it \
     quay.io/pypa/musllinux_1_1_$ARCH \
     bash
 ```
+
+Note: musllinux_1_1 is Alpine Linux 3.12
 -->
 
 ```
