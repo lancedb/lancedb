@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
 
 from .common import VECTOR_COLUMN_NAME
 
@@ -131,7 +132,6 @@ class LanceQueryBuilder:
         vector and the returned vector.
         """
         ds = self._table.to_lance()
-        # TODO indexed search
         tbl = ds.to_table(
             columns=self._columns,
             filter=self._where,
@@ -145,3 +145,26 @@ class LanceQueryBuilder:
             },
         )
         return tbl.to_pandas()
+
+
+class LanceFtsQueryBuilder(LanceQueryBuilder):
+    def to_df(self) -> pd.DataFrame:
+        try:
+            import tantivy
+        except ImportError:
+            raise ImportError(
+                "You need to install the `lancedb[fts]` extra to use this method."
+            )
+
+        from .fts import search_index
+
+        # get the index path
+        index_path = self._table._get_fts_index_path()
+        # open the index
+        index = tantivy.Index.open(index_path)
+        # get the scores and doc ids
+        row_ids, scores = search_index(index, self._query, self._limit)
+        scores = pa.array(scores)
+        output_tbl = self._table.to_lance().take(row_ids, columns=self._columns)
+        output_tbl = output_tbl.append_column("score", scores)
+        return output_tbl.to_pandas()

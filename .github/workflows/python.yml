@@ -30,7 +30,7 @@ jobs:
         python-version: 3.${{ matrix.python-minor-version }}
     - name: Install lancedb
       run: |
-        pip install -e .
+        pip install -e ".[fts]"
         pip install pytest
     - name: Run tests
       run: pytest -x -v --durations=30 tests
@@ -49,10 +49,10 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
-        python-version: "3.10"
+        python-version: "3.11"
     - name: Install lancedb
       run: |
-        pip install -e .
+        pip install -e ".[fts]"
         pip install pytest
     - name: Run tests
       run: pytest -x -v --durations=30 tests
