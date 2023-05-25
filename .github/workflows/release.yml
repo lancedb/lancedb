@@ -39,6 +39,7 @@ jobs:
         with:
           draft: true
           files: target/vectordb-*.crate
+          fail_on_unmatched_files: true
     
   python:
     runs-on: ubuntu-latest
@@ -66,6 +67,7 @@ jobs:
           files: |
             python/dist/lancedb-*.tar.gz 
             python/dist/lancedb-*.whl
+          fail_on_unmatched_files: true
 
   node:
     runs-on: ubuntu-latest
@@ -95,6 +97,7 @@ jobs:
         with:
           draft: true
           files: node/vectordb-*.tgz
+          fail_on_unmatched_files: true
 
   node-macos:
     runs-on: macos-12
@@ -118,6 +121,7 @@ jobs:
       with:
         draft: true
         files: node/dist/vectordb-darwin*.tgz
+        fail_on_unmatched_files: true
 
   node-linux:
     name: node-linux (${{ matrix.arch}}-unknown-linux-${{ matrix.libc }})
@@ -128,13 +132,20 @@ jobs:
       matrix:
         libc:
           - gnu
-          - musl
+          # TODO: re-enable musl once we have refactored to pre-built containers
+          # Right now we have to build node from source which is too expensive.
+          # - musl
         arch:
           - x86_64
           - aarch64
     steps:
     - name: Checkout
       uses: actions/checkout@v2
+    - name: Set up QEMU
+      if: ${{ matrix.arch == 'aarch64' }}
+      uses: docker/setup-qemu-action@v2  
+      with:
+        platforms: arm64
     - name: Build Linux GNU native node modules
       if: ${{ matrix.libc == 'gnu' }}
       run: |
@@ -145,7 +156,7 @@ jobs:
     - name: Build musl Linux native node modules
       if: ${{ matrix.libc == 'musl' }}
       run: |
-        docker run \
+        docker run --platform linux/arm64/v8 \
           -v $(pwd):/io -w /io \
           quay.io/pypa/musllinux_1_1_${{ matrix.arch }} \
           bash ci/build_linux_artifacts.sh ${{ matrix.arch }}-unknown-linux-musl
@@ -153,6 +164,7 @@ jobs:
       with:
         draft: true
         files: node/dist/vectordb-linux*.tgz
+        fail_on_unmatched_files: true
 
   release:
     needs: [python, node, node-macos, node-linux, rust]
