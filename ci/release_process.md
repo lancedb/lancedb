@@ -92,7 +92,15 @@ docker run \
 
 <!--
 
-For debugging, use this snippet:
+For debugging, use these snippets:
+
+```shell
+ARCH=aarch64
+docker run -it \
+    -v $(pwd):/io -w /io \
+    quay.io/pypa/manylinux2014_$ARCH \
+    bash
+```
 
 ```shell
 ARCH=aarch64
@@ -101,6 +109,8 @@ docker run -it \
     quay.io/pypa/musllinux_1_1_$ARCH \
     bash
 ```
+
+Note: musllinux_1_1 is Alpine Linux 3.12
 -->
 
 ```

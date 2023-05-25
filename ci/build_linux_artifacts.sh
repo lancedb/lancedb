@@ -48,12 +48,23 @@ install_node() {
     else
         nvm install 17 # latest that supports glibc 2.17
     fi
+
+    printenv
+    echo "Node version:"
+    npm --version
+    which npm
+    which node
 }
 
 install_rust() {
     echo "Installing rust..."
     curl https://sh.rustup.rs -sSf | bash -s -- -y
+
+    printenv
+
     export PATH="$PATH:/root/.cargo/bin"
+
+    printenv
 }
 
 build_node_binary() {
