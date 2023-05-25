@@ -102,3 +102,10 @@ docker run -it \
     bash
 ```
 -->
+
+```
+docker run \
+    -v $(pwd):/io -w /io \
+    quay.io/pypa/musllinux_1_1_aarch64 \
+    bash alpine_repro.sh
+```

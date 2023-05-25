@@ -7,10 +7,7 @@
 # - aarch64-unknown-linux-musl
 # - x86_64-unknown-linux-musl
 
-# On MacOS, need to run in a linux container:
-# docker run -v $(pwd):/io -w /io 
-
-# Must run rustup toolchain install stable-x86_64-unknown-linux-gnu --force-non-host
+# TODO: refactor this into a Docker container we can pull
 
 set -e
 
@@ -40,11 +37,15 @@ setup_dependencies() {
 
 install_node() {
     echo "Installing node..."
+    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.34.0/install.sh | bash
+    source "$HOME"/.bashrc
+
     if [[ $1 == *musl ]]; then
-        apk add nodejs-current npm
+        # This node version is 15, we need 16 or higher:
+        # apk add nodejs-current npm 
+        # So instead we install from source (nvm doesn't provide binaries for musl):
+        nvm install -s 17
     else
-        curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.34.0/install.sh | bash
-        source "$HOME"/.nvm/nvm.sh
         nvm install 17 # latest that supports glibc 2.17
     fi
 }
@@ -53,7 +54,6 @@ install_rust() {
     echo "Installing rust..."
     curl https://sh.rustup.rs -sSf | bash -s -- -y
     export PATH="$PATH:/root/.cargo/bin"
-    rustup target add $1
 }
 
 build_node_binary() {
@@ -64,8 +64,10 @@ build_node_binary() {
         # This is needed for cargo to allow build cdylibs with musl
         export RUSTFLAGS="-C target-feature=-crt-static"
     fi
-    npm run build-release -- --target $1
-    npm run pack-build -- --target $1
+    # We don't pass in target, since the native target here already matches
+    # and openblas-src doesn't do well with cross-compilation.
+    npm run build-release
+    npm run pack-build
 
     popd
 }
@@ -77,6 +79,6 @@ TARGET=${1:-x86_64-unknown-linux-gnu}
 # aarch64-unknown-linux-musl
 
 setup_dependencies $TARGET
-install_node
-install_rust $TARGET
+install_node $TARGET
+install_rust
 build_node_binary $TARGET
