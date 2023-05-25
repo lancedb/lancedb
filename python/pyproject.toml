@@ -45,10 +45,6 @@ dev = [
 docs = [
     "mkdocs", "mkdocs-jupyter", "mkdocs-material", "mkdocstrings[python]"
 ]
-fts = [
-    # tantivy 0.19.2
-    "tantivy@git+https://github.com/quickwit-oss/tantivy-py#164adc87e1a033117001cf70e38c82a53014d985"
-]
 
 [build-system]
 requires = [

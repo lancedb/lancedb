@@ -17,7 +17,6 @@ import pandas as pd
 import pandas.testing as tm
 import pyarrow as pa
 import pytest
-
 from lancedb.query import LanceQueryBuilder
 
 

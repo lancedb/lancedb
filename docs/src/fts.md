@@ -6,9 +6,10 @@ to make this available for JS as well.
 
 ## Installation
 
-To use full text search, you must install the fts optional dependencies:
+To use full text search, you must install optional dependency tantivy-py:
 
-`pip install lancedb[fts]`
+# tantivy 0.19.2
+pip install tantivy@git+https://github.com/quickwit-oss/tantivy-py#164adc87e1a033117001cf70e38c82a53014d985
 
 
 ## Quickstart
