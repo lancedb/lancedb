@@ -116,6 +116,7 @@ export class Table {
    * Insert records into this Table.
    *
    * @param data Records to be inserted into the Table
+   * @param embeddings An optional embedding function to use
    * @return The number of rows added to the table
    */
   async add<T> (data: Array<Record<string, unknown>>, embeddings?: EmbeddingFunction<T>): Promise<number> {
@@ -126,12 +127,18 @@ export class Table {
    * Insert records into this Table, replacing its contents.
    *
    * @param data Records to be inserted into the Table
+   * @param embeddings An optional embedding function to use
    * @return The number of rows added to the table
    */
-  async overwrite (data: Array<Record<string, unknown>>): Promise<number> {
+  async overwrite<T> (data: Array<Record<string, unknown>>, embeddings?: EmbeddingFunction<T>): Promise<number> {
     return tableAdd.call(this._tbl, await fromRecordsToBuffer(data), WriteMode.Overwrite.toString())
   }
 
+  /**
+   * Create an ANN index on this Table vector index.
+   *
+   * @param indexParams The parameters of this Index, @see VectorIndexParams.
+   */
   async create_index (indexParams: VectorIndexParams): Promise<any> {
     return tableCreateVectorIndex.call(this._tbl, indexParams)
   }

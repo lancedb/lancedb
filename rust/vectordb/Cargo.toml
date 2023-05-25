@@ -14,7 +14,6 @@ arrow-data = "37.0"
 arrow-schema = "37.0"
 lance = "0.4.3"
 tokio = { version = "1.23", features = ["rt-multi-thread"] }
-rand = { version = "0.8.3", features = ["small_rng"] }
 
 [dev-dependencies]
 tempfile = "3.5.0"
