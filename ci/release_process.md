@@ -1,38 +1,10 @@
+# How to release
 
-How to release the node module
+This is for the Rust crate and Node module. For now, the Python module is
+released separately.
 
-### 1. Bump the versions
-
-<!-- TODO: we also need to bump the optional dependencies for node! -->
-
-```shell
-pushd rust/vectordb
-cargo bump minor
-popd
-
-pushd rust/ffi/node
-cargo bump minor
-popd
-
-pushd python
-cargo bump minor
-popd
-
-pushd node
-npm version minor
-popd
-
-git add -u
-git commit -m "Bump versions"
-git push
-```
-
-### 2. Push a new tag
-
-```shell
-git tag vX.X.X
-git push --tag vX.X.X
-```
+The release is started by bumping the versions and pushing a new tag. To do this
+automatically, use the `make_release_commit` GitHub action.
 
 When the tag is pushed, GitHub actions will start building the libraries and
 will upload them to a draft release.
@@ -46,7 +18,7 @@ artifacts will be released to crates.io, NPM, and PyPI.
 
 ## Manual process
 
-You can build the artifacts locally on a MacOS machine.
+You can also build the artifacts locally on a MacOS machine.
 
 ### Build the MacOS release libraries
 
@@ -76,11 +48,12 @@ docker run \
 
 You can change `ARCH` to `x86_64`.
 
-Similar script for musl binaries:
+Similar script for musl binaries (not yet working):
 
 ```shell
 ARCH=aarch64
 docker run \
+    --user $(id -u) \
     -v $(pwd):/io -w /io \
     quay.io/pypa/musllinux_1_1_$ARCH \
     bash ci/build_linux_artifacts.sh $ARCH-unknown-linux-musl

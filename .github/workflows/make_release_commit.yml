@@ -1,0 +1,70 @@
+name: Create release commit
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Just create the local commit/tags but do not push it'
+        required: true
+        default: "false"
+        type: choice
+        options:
+          - "true"
+          - "false"
+      part:
+        description: 'What kind of release is this?'
+        required: true
+        default: 'patch'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+jobs:
+  bump-version:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Check out main
+      uses: actions/checkout@v3
+      with:
+        ref: main
+        persist-credentials: false
+        fetch-depth: 0
+        lfs: true
+    - name: Install cargo utils
+      run: cargo install cargo-bump cargo-get
+    - name: Bump vectordb
+      working-directory: rust/vectordb
+      run: |
+        cargo bump ${{ inputs.part }}
+        echo "CRATE_VERSION=$(cargo get version)" >> $GITHUB_ENV
+    - name: Bump rust/ffi/node
+      working-directory: rust/ffi/node
+      run: |
+        cargo bump ${{ inputs.part }}
+        echo "FFI_CRATE_VERSION=$(cargo get version)" >> $GITHUB_ENV 
+    - name: Bump node
+      working-directory: node
+      run: |
+        npm version ${{ inputs.part }}
+        echo "NPM_PACKAGE_VERSION=$(cat package.json | jq -r '.version')" >> $GITHUB_ENV 
+    - name: Create tag
+      run: |
+        if [ "$CRATE_VERSION" != "$FFI_CRATE_VERSION" ]; then
+          echo "Version mismatch between rust/vectordb and rust/ffi/node"
+          exit 1
+        fi
+        if [ "$CRATE_VERSION" != "$NPM_PACKAGE_VERSION" ]; then
+          echo "Version mismatch between rust/vectordb and node"
+          exit 1
+        fi
+        export TAG="v$CRATE_VERSION'"
+        git tag $TAG
+    - name: Push new version and tag
+      if: ${{ inputs.dry_run }} == "false"
+      uses: ad-m/github-push-action@master
+      with:
+        github_token: ${{ secrets.RELEASE_TOKEN }}
+        branch: main
+        tags: true
