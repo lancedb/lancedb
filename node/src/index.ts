@@ -101,7 +101,7 @@ export class Table {
    * @param query The query search term
    * @param embeddings An embedding function used to vectorize the query vector
    */
-  search<T> (query: T, embeddings: EmbeddingFunction<T>): Query;
+  search<T> (query: T, embeddings: EmbeddingFunction<T>): Query
   search<T> (query: T | number[], embeddings?: EmbeddingFunction<T>): Query {
     let queryVector: number[]
     if (embeddings !== undefined) {
