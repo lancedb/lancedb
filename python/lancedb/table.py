@@ -14,8 +14,9 @@
 from __future__ import annotations
 
 import os
+import shutil
 from functools import cached_property
-from typing import Union
+from typing import List, Union
 
 import lance
 import numpy as np
@@ -26,6 +27,7 @@ from lance.vector import vec_to_table
 
 from .common import DATA, VEC, VECTOR_COLUMN_NAME
 from .query import LanceFtsQueryBuilder, LanceQueryBuilder
+from .util import get_uri_scheme
 
 
 def _sanitize_data(data, schema):
@@ -131,18 +133,20 @@ class LanceTable:
         )
         self._reset_dataset()
 
-    def create_fts_index(self, field_name: str):
+    def create_fts_index(self, field_names: Union[str, List[str]]):
         """Create a full-text search index on the table.
 
         Parameters
         ----------
-        field_name: str
-            The name of the field to index.
+        field_names: str or list of str
+            The name(s) of the field to index.
         """
         from .fts import create_index, populate_index
 
-        index = create_index(self._get_fts_index_path(), [field_name])
-        populate_index(index, self, [field_name])
+        if isinstance(field_names, str):
+            field_names = [field_names]
+        index = create_index(self._get_fts_index_path(), field_names)
+        populate_index(index, self, field_names)
 
     def _get_fts_index_path(self):
         return os.path.join(self._dataset_uri, "_indices", "tantivy")

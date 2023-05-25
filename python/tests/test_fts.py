@@ -13,13 +13,13 @@
 import os
 import random
 
-import lancedb.fts
 import numpy as np
 import pandas as pd
 import pytest
 import tantivy
 
 import lancedb as ldb
+import lancedb.fts
 
 
 @pytest.fixture
@@ -43,7 +43,7 @@ def table(tmp_path) -> ldb.table.LanceTable:
         for _ in range(100)
     ]
     table = db.create_table(
-        "test", data=pd.DataFrame({"vector": vectors, "text": text})
+        "test", data=pd.DataFrame({"vector": vectors, "text": text, "text2": text})
     )
     return table
 
@@ -74,3 +74,11 @@ def test_create_index_from_table(tmp_path, table):
     df = table.search("puppy").limit(10).select(["text"]).to_df()
     assert len(df) == 10
     assert "text" in df.columns
+
+
+def test_create_index_multiple_columns(tmp_path, table):
+    table.create_fts_index(["text", "text2"])
+    df = table.search("puppy").limit(10).to_df()
+    assert len(df) == 10
+    assert "text" in df.columns
+    assert "text2" in df.columns

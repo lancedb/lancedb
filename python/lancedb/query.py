@@ -132,7 +132,6 @@ class LanceQueryBuilder:
         vector and the returned vector.
         """
         ds = self._table.to_lance()
-        # TODO indexed search
         tbl = ds.to_table(
             columns=self._columns,
             filter=self._where,
@@ -150,7 +149,12 @@ class LanceQueryBuilder:
 
 class LanceFtsQueryBuilder(LanceQueryBuilder):
     def to_df(self) -> pd.DataFrame:
-        import tantivy
+        try:
+            import tantivy
+        except ImportError:
+            raise ImportError(
+                "You need to install the `lancedb[fts]` extra to use this method."
+            )
 
         from .fts import search_index
 
