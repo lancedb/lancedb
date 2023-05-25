@@ -68,18 +68,37 @@ bash ci/build_macos_artifacts.sh
 
 ### Build the Linux release libraries
 
-One-time setup, building the Docker container
+To build a Linux library, we need to use docker with a different build script:
 
 ```shell
-cat ci/ubuntu_build.dockerfile | docker build -t lancedb-node-build -
-```
-
-To build:
-
-```shell
+ARCH=aarch64
 docker run \
-    -v /var/run/docker.sock:/var/run/docker.sock \
     -v $(pwd):/io -w /io \
-    lancedb-node-build \
-    bash ci/build_linux_artifacts.sh
+    quay.io/pypa/manylinux2014_$ARCH \
+    bash ci/build_linux_artifacts.sh $ARCH-unknown-linux-gnu
 ```
+
+You can change `ARCH` to `x86_64`.
+
+Similar script for musl binaries:
+
+```shell
+ARCH=aarch64
+docker run \
+    -v $(pwd):/io -w /io \
+    quay.io/pypa/musllinux_1_1_$ARCH \
+    bash ci/build_linux_artifacts.sh $ARCH-unknown-linux-musl
+```
+
+<!--
+
+For debugging, use this snippet:
+
+```shell
+ARCH=aarch64
+docker run -it \
+    -v $(pwd):/io -w /io \
+    quay.io/pypa/musllinux_1_1_$ARCH \
+    bash
+```
+-->
