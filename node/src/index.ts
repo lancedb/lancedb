@@ -134,7 +134,6 @@ export class Table<T = number[]> {
    * Creates a search query to find the nearest neighbors of the given search term
    * @param query The query search term
    */
-  // search (query: T[]): Query
   search (query: T): Query {
     let queryVector: number[]
     if (this._embeddings !== undefined) {
