@@ -96,7 +96,7 @@ jobs:
     - uses: softprops/action-gh-release@v1
       with:
         draft: true
-        files: node/dist/vectordb-darwin*.tgz
+        files: node/dist/lancedb-vectordb-darwin*.tgz
         fail_on_unmatched_files: true
 
   node-linux:
@@ -113,7 +113,8 @@ jobs:
           # - musl
         arch:
           - x86_64
-          - aarch64
+          # Building on aarch64 is too slow for now
+          # - aarch64
     steps:
     - name: Checkout
       uses: actions/checkout@v3
@@ -143,7 +144,7 @@ jobs:
     - uses: softprops/action-gh-release@v1
       with:
         draft: true
-        files: node/dist/vectordb-linux*.tgz
+        files: node/dist/lancedb-vectordb-linux*.tgz
         fail_on_unmatched_files: true
 
   release:
@@ -151,14 +152,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v3
-      - name: Publish to PyPI
-        env:
-          TWINE_USERNAME: __token__
-          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
-        run: |
-          python -m twine upload --non-interactive \
-            --skip-existing \
-            --repository testpypi python/dist/*
       - name: Publish to NPM
         run: |
           for filename in node/dist/*.tgz; do

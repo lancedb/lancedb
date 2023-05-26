@@ -70,7 +70,9 @@ jobs:
         npm run tsc
         npm run build
         npm run pack-build
-        npm install --no-save ./dist/vectordb-*.tgz
+        npm install --no-save ./dist/lancedb-vectordb-*.tgz
+        # Remove index.node to test with dependency installed
+        rm index.node
     - name: Test
       run: npm run test
   macos:
@@ -99,7 +101,9 @@ jobs:
         npm run tsc
         npm run build
         npm run pack-build
-        npm install --no-save ./dist/vectordb-*.tgz
+        npm install --no-save ./dist/lancedb-vectordb-*.tgz
+        # Remove index.node to test with dependency installed
+        rm index.node
     - name: Test
       run: |
         npm run test

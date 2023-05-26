@@ -55,4 +55,4 @@ done
 popd > /dev/null
 
 
-echo "v$NEW_VERSION"
+echo $NEW_VERSION

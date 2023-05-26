@@ -37,8 +37,8 @@ jobs:
     - name: Bump versions
       run: |
         NEW_VERSION=$(bash ci/bump_versions.sh ${{ inputs.part }})
-        echo "New version: $NEW_VERSION"
-        git tag $NEW_VERSION
+        echo "New version: v$NEW_VERSION"
+        git tag v$NEW_VERSION
     - name: Push new version and tag
       if: ${{ inputs.dry_run }} == "false"
       uses: ad-m/github-push-action@master

@@ -3,6 +3,7 @@
 This is for the Rust crate and Node module. For now, the Python module is
 released separately.
 
+<!--
 The release is started by bumping the versions and pushing a new tag. To do this
 automatically, use the `make_release_commit` GitHub action.
 
@@ -16,9 +17,23 @@ and CI changes to the bottom.
 Once the jobs have finished, the release will be marked as not draft and the
 artifacts will be released to crates.io, NPM, and PyPI.
 
+-->
+
 ## Manual process
 
-You can also build the artifacts locally on a MacOS machine.
+The manual release process can be completed on a MacOS machine.
+
+### Bump the versions
+
+You can use the script `ci/bump_versions.sh` to bump the versions. It defaults
+to a `patch` bump, but you can also pass `minor` and `major`. Once you have the
+tag created, push it to GitHub.
+
+```shell
+VERSION=$(bash ci/bump_versions.sh)
+git tag v$VERSION
+git push origin v$VERSION
+```
 
 ### Build the MacOS release libraries
 
@@ -28,7 +43,7 @@ One-time setup:
 rustup target add x86_64-apple-darwin aarch64-apple-darwin
 ```
 
-To build:
+To build both x64 and arm64, run `ci/build_macos_artifacts.sh` without any args:
 
 ```shell
 bash ci/build_macos_artifacts.sh
@@ -46,8 +61,12 @@ docker run \
     bash ci/build_linux_artifacts.sh $ARCH-unknown-linux-gnu
 ```
 
-You can change `ARCH` to `x86_64`.
+For x64, change `ARCH` to `x86_64`. NOTE: compiling for a different architecture
+than your machine in Docker is very slow. It's best to do this on a machine with
+matching architecture.
 
+
+<!--
 Similar script for musl binaries (not yet working):
 
 ```shell
@@ -58,6 +77,8 @@ docker run \
     quay.io/pypa/musllinux_1_1_$ARCH \
     bash ci/build_linux_artifacts.sh $ARCH-unknown-linux-musl
 ```
+
+-->
 
 <!--
 
@@ -82,9 +103,34 @@ docker run -it \
 Note: musllinux_1_1 is Alpine Linux 3.12
 -->
 
+
+### Build the npm module
+
+To build the typescript and create a release tarball, run:
+
 ```
-docker run \
-    -v $(pwd):/io -w /io \
-    quay.io/pypa/musllinux_1_1_aarch64 \
-    bash alpine_repro.sh
+npm ci
+npm tsc
+npm pack
+```
+
+### Release to npm
+
+Assuming you still have `VERSION` set from earlier:
+
+```shell
+pushd node
+npm publish lancedb-vectordb-$VERSION.tgz
+for tarball in ./dist/lancedb-vectordb-*-$VERSION.tgz;
+    do 
+    npm publish $tarball
+done
+popd
+```
+
+### Release to crates.io
+
+```shell
+cargo publish -p vectordb
+cargo publish -p vectordb-node
 ```

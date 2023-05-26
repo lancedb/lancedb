@@ -28,30 +28,33 @@ The [examples](./examples) folder contains complete examples.
 
 ## Development
 
-Build and install the rust library with:
+To build everything fresh:
+
+```bash
+npm install
+npm run tsc
+npm run build
+```
+
+Then you should be able to run the tests with:
+
+```bash
+npm test
+```
+
+### Rebuilding Rust library
 
 ```bash
 npm run build
-npm run pack-build
-npm install --no-save ./dist/vectordb-*.tgz
 ```
 
-`npm run build` builds the Rust library, `npm run pack-build` packages the Rust
-binary into an npm module called `@vectordb/<platform>` (for example, 
-`@vectordb/darwin-arm64.node`), and then `npm run install ...` installs that
-module.
-
-The LanceDB javascript is built with npm:
+### Rebuilding Typescript
 
 ```bash
 npm run tsc
 ```
 
-Run the tests with
-
-```bash
-npm test
-```
+### Fix lints
 
 To run the linter and have it automatically fix all errors
 
