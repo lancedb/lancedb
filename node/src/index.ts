@@ -55,17 +55,50 @@ export class Connection {
   }
 
   /**
-     * Open a table in the database.
-     * @param name The name of the table.
-     */
-  async openTable (name: string): Promise<Table> {
+   * Open a table in the database.
+   *
+   * @param name The name of the table.
+   */
+  async openTable (name: string): Promise<Table>
+  /**
+   * Open a table in the database.
+   *
+   * @param name The name of the table.
+   * @param embeddings An embedding function to use on this Table
+   */
+  async openTable<T> (name: string, embeddings: EmbeddingFunction<T>): Promise<Table<T>>
+  async openTable<T> (name: string, embeddings?: EmbeddingFunction<T>): Promise<Table<T>> {
     const tbl = await databaseOpenTable.call(this._db, name)
-    return new Table(tbl, name)
+    if (embeddings !== undefined) {
+      return new Table(tbl, name, embeddings)
+    } else {
+      return new Table(tbl, name)
+    }
   }
 
-  async createTable<T> (name: string, data: Array<Record<string, unknown>>, embeddings?: EmbeddingFunction<T>): Promise<Table> {
-    await tableCreate.call(this._db, name, await fromRecordsToBuffer(data, embeddings))
-    return await this.openTable(name)
+  /**
+   * Creates a new Table and initialize it with new data.
+   *
+   * @param name The name of the table.
+   * @param data Non-empty Array of Records to be inserted into the Table
+   */
+
+  async createTable (name: string, data: Array<Record<string, unknown>>): Promise<Table>
+  /**
+   * Creates a new Table and initialize it with new data.
+   *
+   * @param name The name of the table.
+   * @param data Non-empty Array of Records to be inserted into the Table
+   * @param embeddings An embedding function to use on this Table
+   */
+  async createTable<T> (name: string, data: Array<Record<string, unknown>>, embeddings: EmbeddingFunction<T>): Promise<Table<T>>
+  async createTable<T> (name: string, data: Array<Record<string, unknown>>, embeddings?: EmbeddingFunction<T>): Promise<Table<T>> {
+    const tbl = await tableCreate.call(this._db, name, await fromRecordsToBuffer(data, embeddings))
+    if (embeddings !== undefined) {
+      return new Table(tbl, name, embeddings)
+    } else {
+      return new Table(tbl, name)
+    }
   }
 
   async createTableArrow (name: string, table: ArrowTable): Promise<Table> {
@@ -75,16 +108,22 @@ export class Connection {
   }
 }
 
-/**
- * A table in a LanceDB database.
- */
-export class Table {
+export class Table<T = number[]> {
   private readonly _tbl: any
   private readonly _name: string
+  private readonly _embeddings?: EmbeddingFunction<T>
 
-  constructor (tbl: any, name: string) {
+  constructor (tbl: any, name: string)
+  /**
+   * @param tbl
+   * @param name
+   * @param embeddings An embedding function to use when interacting with this table
+   */
+  constructor (tbl: any, name: string, embeddings: EmbeddingFunction<T>)
+  constructor (tbl: any, name: string, embeddings?: EmbeddingFunction<T>) {
     this._tbl = tbl
     this._name = name
+    this._embeddings = embeddings
   }
 
   get name (): string {
@@ -92,20 +131,14 @@ export class Table {
   }
 
   /**
-    * Creates a search query to find the nearest neighbors of the given query vector.
-    * @param queryVector The query vector.
-    */
-  search (queryVector: number[]): Query
-  /**
    * Creates a search query to find the nearest neighbors of the given search term
    * @param query The query search term
-   * @param embeddings An embedding function used to vectorize the query vector
    */
-  search<T> (query: T, embeddings: EmbeddingFunction<T>): Query
-  search<T> (query: T | number[], embeddings?: EmbeddingFunction<T>): Query {
+  // search (query: T[]): Query
+  search (query: T): Query {
     let queryVector: number[]
-    if (embeddings !== undefined) {
-      queryVector = embeddings.embed([query as T])[0]
+    if (this._embeddings !== undefined) {
+      queryVector = this._embeddings.embed([query])[0]
     } else {
       queryVector = query as number[]
     }
@@ -116,22 +149,20 @@ export class Table {
    * Insert records into this Table.
    *
    * @param data Records to be inserted into the Table
-   * @param embeddings An optional embedding function to use
    * @return The number of rows added to the table
    */
-  async add<T> (data: Array<Record<string, unknown>>, embeddings?: EmbeddingFunction<T>): Promise<number> {
-    return tableAdd.call(this._tbl, await fromRecordsToBuffer(data, embeddings), WriteMode.Append.toString())
+  async add (data: Array<Record<string, unknown>>): Promise<number> {
+    return tableAdd.call(this._tbl, await fromRecordsToBuffer(data, this._embeddings), WriteMode.Append.toString())
   }
 
   /**
    * Insert records into this Table, replacing its contents.
    *
    * @param data Records to be inserted into the Table
-   * @param embeddings An optional embedding function to use
    * @return The number of rows added to the table
    */
-  async overwrite<T> (data: Array<Record<string, unknown>>, embeddings?: EmbeddingFunction<T>): Promise<number> {
-    return tableAdd.call(this._tbl, await fromRecordsToBuffer(data), WriteMode.Overwrite.toString())
+  async overwrite (data: Array<Record<string, unknown>>): Promise<number> {
+    return tableAdd.call(this._tbl, await fromRecordsToBuffer(data, this._embeddings), WriteMode.Overwrite.toString())
   }
 
   /**

@@ -169,7 +169,7 @@ describe('LanceDB client', function () {
         { price: 50, name: 'bar' }
       ]
       const table = await con.createTable('vectors', data, embeddings)
-      const results = await table.search('foo', embeddings).execute()
+      const results = await table.search('foo').execute()
       assert.equal(results.length, 2)
     })
   })
