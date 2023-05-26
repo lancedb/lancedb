@@ -51,7 +51,7 @@ jobs:
         working-directory: node
     steps:
       - name: Checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
       - uses: actions/setup-node@v3
         with:
           node-version: 20
@@ -81,7 +81,7 @@ jobs:
         target: [x86_64-apple-darwin, aarch64-apple-darwin]
     steps:
     - name: Checkout
-      uses: actions/checkout@v2
+      uses: actions/checkout@v33
     - name: Install system dependencies
       run: brew install protobuf
     - name: Install npm dependencies
@@ -116,7 +116,7 @@ jobs:
           - aarch64
     steps:
     - name: Checkout
-      uses: actions/checkout@v2
+      uses: actions/checkout@v3
     - name: Change owner to root (for npm)
       # The docker container is run as root, so we need the files to be owned by root
       # Otherwise npm is a nightmare: https://github.com/npm/cli/issues/3773

@@ -33,34 +33,12 @@ jobs:
         fetch-depth: 0
         lfs: true
     - name: Install cargo utils
-      run: cargo install cargo-bump cargo-get
-    - name: Bump vectordb
-      working-directory: rust/vectordb
+      run: cargo install cargo-edit
+    - name: Bump versions
       run: |
-        cargo bump ${{ inputs.part }}
-        echo "CRATE_VERSION=$(cargo get version)" >> $GITHUB_ENV
-    - name: Bump rust/ffi/node
-      working-directory: rust/ffi/node
-      run: |
-        cargo bump ${{ inputs.part }}
-        echo "FFI_CRATE_VERSION=$(cargo get version)" >> $GITHUB_ENV 
-    - name: Bump node
-      working-directory: node
-      run: |
-        npm version ${{ inputs.part }}
-        echo "NPM_PACKAGE_VERSION=$(cat package.json | jq -r '.version')" >> $GITHUB_ENV 
-    - name: Create tag
-      run: |
-        if [ "$CRATE_VERSION" != "$FFI_CRATE_VERSION" ]; then
-          echo "Version mismatch between rust/vectordb and rust/ffi/node"
-          exit 1
-        fi
-        if [ "$CRATE_VERSION" != "$NPM_PACKAGE_VERSION" ]; then
-          echo "Version mismatch between rust/vectordb and node"
-          exit 1
-        fi
-        export TAG="v$CRATE_VERSION'"
-        git tag $TAG
+        NEW_VERSION=$(bash ci/bump_versions.sh ${{ inputs.part }})
+        echo "New version: $NEW_VERSION"
+        git tag $NEW_VERSION
     - name: Push new version and tag
       if: ${{ inputs.dry_run }} == "false"
       uses: ad-m/github-push-action@master
