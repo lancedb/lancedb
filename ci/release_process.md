@@ -108,7 +108,7 @@ Note: musllinux_1_1 is Alpine Linux 3.12
 
 To build the typescript and create a release tarball, run:
 
-```
+```shell
 npm ci
 npm tsc
 npm pack

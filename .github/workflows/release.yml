@@ -1,12 +1,12 @@
 name: Prepare Release
 
-# TODO: bump versions in CI
 # NOTE: Python is a separate release for now.
 
-on:
-  push:
-    tags:
-      - v*
+# Currently disabled until it can be completed.
+# on:
+#   push:
+#     tags:
+#       - v*
 
 jobs:
   draft-release:
