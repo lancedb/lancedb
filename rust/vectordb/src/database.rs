@@ -21,7 +21,7 @@ use crate::error::Result;
 use crate::table::Table;
 
 pub struct Database {
-    pub(crate) path: Arc<PathBuf>,
+    pub(crate) uri: String,
 }
 
 const LANCE_EXTENSION: &str = "lance";
@@ -37,12 +37,12 @@ impl Database {
     /// # Returns
     ///
     /// * A [Database] object.
-    pub fn connect<P: AsRef<Path>>(path: P) -> Result<Database> {
+    pub fn connect(uri: &str) -> Result<Database> {
         if !path.as_ref().try_exists()? {
             create_dir_all(&path)?;
         }
         Ok(Database {
-            path: Arc::new(path.as_ref().to_path_buf()),
+            uri: uri.to_string(),
         })
     }
 

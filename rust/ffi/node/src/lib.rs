@@ -59,7 +59,9 @@ fn runtime<'a, C: Context<'a>>(cx: &mut C) -> NeonResult<&'static Runtime> {
 fn database_new(mut cx: FunctionContext) -> JsResult<JsBox<JsDatabase>> {
     let path = cx.argument::<JsString>(0)?.value(&mut cx);
     let db = JsDatabase {
-        database: Arc::new(Database::connect(path).or_else(|err| cx.throw_error(err.to_string()))?),
+        database: Arc::new(
+            Database::connect(&path).or_else(|err| cx.throw_error(err.to_string()))?,
+        ),
     };
     Ok(cx.boxed(db))
 }

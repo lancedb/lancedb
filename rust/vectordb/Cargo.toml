@@ -12,6 +12,7 @@ repository = "https://github.com/lancedb/lancedb"
 arrow-array = "37.0"
 arrow-data = "37.0"
 arrow-schema = "37.0"
+object_store = "0.5.6"
 lance = "0.4.3"
 tokio = { version = "1.23", features = ["rt-multi-thread"] }
 

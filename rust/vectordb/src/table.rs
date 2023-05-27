@@ -16,6 +16,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use arrow_array::{Float32Array, RecordBatchReader};
+use object_store::path::Path;
 use lance::dataset::{Dataset, WriteMode, WriteParams};
 use lance::index::IndexType;
 
@@ -30,7 +31,7 @@ pub const LANCE_FILE_EXTENSION: &str = "lance";
 /// A table in a LanceDB database.
 pub struct Table {
     name: String,
-    path: String,
+    uri: String,
     dataset: Arc<Dataset>,
 }
 
@@ -45,15 +46,14 @@ impl Table {
     /// # Returns
     ///
     /// * A [Table] object.
-    pub async fn open(base_path: Arc<PathBuf>, name: String) -> Result<Self> {
-        let ds_path = base_path.join(format!("{}.{}", name, LANCE_FILE_EXTENSION));
-        let ds_uri = ds_path
-            .to_str()
-            .ok_or(Error::IO(format!("Unable to find table {}", name)))?;
-        let dataset = Dataset::open(ds_uri).await?;
+    pub async fn open(base_path: &str, name: String) -> Result<Self> {
+        let path = Path::parse(base_path)?;
+
+        let uri = path.child(format!("{}.{}", name, LANCE_FILE_EXTENSION)).to_string();
+        let dataset = Dataset::open(&uri).await?;
         let table = Table {
             name,
-            path: ds_uri.to_string(),
+            uri,
             dataset: Arc::new(dataset),
         };
         Ok(table)
@@ -84,12 +84,13 @@ impl Table {
             Arc::new(Dataset::write(&mut batches, path, Some(WriteParams::default())).await?);
         Ok(Table {
             name,
-            path: path.to_string(),
+            uri: path.to_string(),
             dataset,
         })
     }
 
-    pub async fn create_idx(&mut self, index_builder: &impl VectorIndexBuilder) -> Result<()> {
+    /// Create index on the table.
+    pub async fn create_index(&mut self, index_builder: &impl VectorIndexBuilder) -> Result<()> {
         use lance::index::DatasetIndexExt;
 
         let dataset = self
@@ -126,7 +127,7 @@ impl Table {
         params.mode = write_mode.unwrap_or(WriteMode::Append);
 
         self.dataset =
-            Arc::new(Dataset::write(&mut batches, self.path.as_str(), Some(params)).await?);
+            Arc::new(Dataset::write(&mut batches, &self.uri, Some(params)).await?);
         Ok(batches.count())
     }
 
