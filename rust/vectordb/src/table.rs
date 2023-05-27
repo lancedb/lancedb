@@ -12,15 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use arrow_array::{Float32Array, RecordBatchReader};
-use object_store::path::Path;
 use lance::dataset::{Dataset, WriteMode, WriteParams};
 use lance::index::IndexType;
+use object_store::path::Path;
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::index::vector::VectorIndexBuilder;
 use crate::query::Query;
 
@@ -46,13 +45,15 @@ impl Table {
     /// # Returns
     ///
     /// * A [Table] object.
-    pub async fn open(base_path: &str, name: String) -> Result<Self> {
-        let path = Path::parse(base_path)?;
+    pub async fn open(base_uri: &str, name: &str) -> Result<Self> {
+        let path = Path::parse(base_uri)?;
 
-        let uri = path.child(format!("{}.{}", name, LANCE_FILE_EXTENSION)).to_string();
+        let uri = path
+            .child(format!("{}.{}", name, LANCE_FILE_EXTENSION))
+            .to_string();
         let dataset = Dataset::open(&uri).await?;
         let table = Table {
-            name,
+            name: name.to_string(),
             uri,
             dataset: Arc::new(dataset),
         };
@@ -71,20 +72,19 @@ impl Table {
     ///
     /// * A [Table] object.
     pub async fn create(
-        base_path: Arc<PathBuf>,
-        name: String,
+        base_uri: &str,
+        name: &str,
         mut batches: Box<dyn RecordBatchReader>,
     ) -> Result<Self> {
-        let ds_path = base_path.join(format!("{}.{}", name, LANCE_FILE_EXTENSION));
-        let path = ds_path
-            .to_str()
-            .ok_or(Error::IO(format!("Unable to find table {}", name)))?;
-
+        let base_path = Path::parse(base_uri)?;
+        let uri = base_path
+            .child(format!("{}.{}", name, LANCE_FILE_EXTENSION))
+            .to_string();
         let dataset =
-            Arc::new(Dataset::write(&mut batches, path, Some(WriteParams::default())).await?);
+            Arc::new(Dataset::write(&mut batches, &uri, Some(WriteParams::default())).await?);
         Ok(Table {
-            name,
-            uri: path.to_string(),
+            name: name.to_string(),
+            uri,
             dataset,
         })
     }
@@ -126,8 +126,7 @@ impl Table {
         let mut params = WriteParams::default();
         params.mode = write_mode.unwrap_or(WriteMode::Append);
 
-        self.dataset =
-            Arc::new(Dataset::write(&mut batches, &self.uri, Some(params)).await?);
+        self.dataset = Arc::new(Dataset::write(&mut batches, &self.uri, Some(params)).await?);
         Ok(batches.count())
     }
 
@@ -172,9 +171,9 @@ mod tests {
     #[tokio::test]
     async fn test_new_table_not_exists() {
         let tmp_dir = tempdir().unwrap();
-        let path_buf = tmp_dir.into_path();
+        let uri = tmp_dir.path().to_str().unwrap();
 
-        let table = Table::open(Arc::new(path_buf), "test".to_string()).await;
+        let table = Table::open(&uri, "test").await;
         assert!(table.is_err());
     }
 
@@ -182,6 +181,7 @@ mod tests {
     async fn test_open() {
         let tmp_dir = tempdir().unwrap();
         let path_buf = tmp_dir.into_path();
+        let uri = tmp_dir.path().to_str().unwrap();
 
         let mut batches: Box<dyn RecordBatchReader> = Box::new(make_test_batches());
         Dataset::write(
@@ -192,9 +192,7 @@ mod tests {
         .await
         .unwrap();
 
-        let table = Table::open(Arc::new(path_buf), "test".to_string())
-            .await
-            .unwrap();
+        let table = Table::open(&uri, "test").await.unwrap();
 
         assert_eq!(table.name, "test")
     }
@@ -202,13 +200,11 @@ mod tests {
     #[tokio::test]
     async fn test_add() {
         let tmp_dir = tempdir().unwrap();
-        let path_buf = tmp_dir.into_path();
+        let uri = tmp_dir.path().to_str().unwrap();
 
         let batches: Box<dyn RecordBatchReader> = Box::new(make_test_batches());
         let schema = batches.schema().clone();
-        let mut table = Table::create(Arc::new(path_buf), "test".to_string(), batches)
-            .await
-            .unwrap();
+        let mut table = Table::create(&uri, "test", batches).await.unwrap();
         assert_eq!(table.count_rows().await.unwrap(), 10);
 
         let new_batches: Box<dyn RecordBatchReader> =
@@ -226,13 +222,11 @@ mod tests {
     #[tokio::test]
     async fn test_add_overwrite() {
         let tmp_dir = tempdir().unwrap();
-        let path_buf = tmp_dir.into_path();
+        let uri = tmp_dir.path().to_str().unwrap();
 
         let batches: Box<dyn RecordBatchReader> = Box::new(make_test_batches());
         let schema = batches.schema().clone();
-        let mut table = Table::create(Arc::new(path_buf), "test".to_string(), batches)
-            .await
-            .unwrap();
+        let mut table = Table::create(uri, "test", batches).await.unwrap();
         assert_eq!(table.count_rows().await.unwrap(), 10);
 
         let new_batches: Box<dyn RecordBatchReader> =
@@ -253,6 +247,7 @@ mod tests {
     #[tokio::test]
     async fn test_search() {
         let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
         let path_buf = tmp_dir.into_path();
 
         let mut batches: Box<dyn RecordBatchReader> = Box::new(make_test_batches());
@@ -264,9 +259,7 @@ mod tests {
         .await
         .unwrap();
 
-        let table = Table::open(Arc::new(path_buf), "test".to_string())
-            .await
-            .unwrap();
+        let table = Table::open(uri, "test").await.unwrap();
 
         let vector = Float32Array::from_iter_values([0.1, 0.2]);
         let query = table.search(vector.clone());
@@ -292,7 +285,7 @@ mod tests {
         use arrow_array::Float32Array;
 
         let tmp_dir = tempdir().unwrap();
-        let path_buf = tmp_dir.into_path();
+        let uri = tmp_dir.path().to_str().unwrap();
 
         let dimension = 16;
         let schema = Arc::new(ArrowSchema::new(vec![Field::new(
@@ -319,9 +312,7 @@ mod tests {
         .unwrap()]);
 
         let reader: Box<dyn RecordBatchReader + Send> = Box::new(batches);
-        let mut table = Table::create(Arc::new(path_buf), "test".to_string(), reader)
-            .await
-            .unwrap();
+        let mut table = Table::create(uri, "test", reader).await.unwrap();
 
         let mut i = IvfPQIndexBuilder::new();
 
@@ -331,7 +322,7 @@ mod tests {
             .ivf_params(IvfBuildParams::new(256))
             .pq_params(PQBuildParams::default());
 
-        table.create_idx(index_builder).await.unwrap();
+        table.create_index(index_builder).await.unwrap();
 
         assert_eq!(table.dataset.load_indices().await.unwrap().len(), 1);
         assert_eq!(table.count_rows().await.unwrap(), 512);

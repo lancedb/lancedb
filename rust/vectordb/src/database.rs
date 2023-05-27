@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use arrow_array::RecordBatchReader;
 use std::fs::create_dir_all;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+
+use arrow_array::RecordBatchReader;
+use object_store::path::Path;
 
 use crate::error::Result;
 use crate::table::Table;
@@ -38,6 +38,10 @@ impl Database {
     ///
     /// * A [Database] object.
     pub fn connect(uri: &str) -> Result<Database> {
+        let uri = Path::parse(uri)?;
+        if uri.is_file() {
+            create_dir_all(&uri)?;
+        }
         if !path.as_ref().try_exists()? {
             create_dir_all(&path)?;
         }
@@ -76,10 +80,10 @@ impl Database {
 
     pub async fn create_table(
         &self,
-        name: String,
+        name: &str,
         batches: Box<dyn RecordBatchReader>,
     ) -> Result<Table> {
-        Table::create(self.path.clone(), name, batches).await
+        Table::create(&self.uri, name, batches).await
     }
 
     /// Open a table in the database.
@@ -90,8 +94,8 @@ impl Database {
     /// # Returns
     ///
     /// * A [Table] object.
-    pub async fn open_table(&self, name: String) -> Result<Table> {
-        Table::open(self.path.clone(), name).await
+    pub async fn open_table(&self, name: &str) -> Result<Table> {
+        Table::open(&self.uri, name).await
     }
 }
 
@@ -105,10 +109,11 @@ mod tests {
     #[tokio::test]
     async fn test_connect() {
         let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
         let path_buf = tmp_dir.into_path();
-        let db = Database::connect(&path_buf);
+        let db = Database::connect(uri).unwrap();
 
-        assert_eq!(db.unwrap().path.as_path(), path_buf.as_path())
+        assert_eq!(db.uri, uri);
     }
 
     #[tokio::test]
@@ -118,10 +123,15 @@ mod tests {
         create_dir_all(tmp_dir.path().join("table2.lance")).unwrap();
         create_dir_all(tmp_dir.path().join("invalidlance")).unwrap();
 
-        let db = Database::connect(&tmp_dir.into_path()).unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+        let db = Database::connect(uri).unwrap();
         let tables = db.table_names().unwrap();
         assert_eq!(tables.len(), 2);
         assert!(tables.contains(&String::from("table1")));
         assert!(tables.contains(&String::from("table2")));
+    }
+
+    fn test_connect_s3() {
+        let db = Database::connect("s3://bucket/path/to/database").unwrap();
     }
 }
