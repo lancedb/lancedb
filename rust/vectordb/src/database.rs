@@ -39,12 +39,12 @@ impl Database {
     /// * A [Database] object.
     pub fn connect(uri: &str) -> Result<Database> {
         let uri = Path::parse(uri)?;
-        if uri.is_file() {
-            create_dir_all(&uri)?;
-        }
-        if !path.as_ref().try_exists()? {
-            create_dir_all(&path)?;
-        }
+        // if uri.is_file() {
+        //     create_dir_all(&uri)?;
+        // }
+        // if !path.as_ref().try_exists()? {
+        //     create_dir_all(&path)?;
+        // }
         Ok(Database {
             uri: uri.to_string(),
         })
