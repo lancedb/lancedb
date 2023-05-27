@@ -17,7 +17,7 @@ import { assert } from 'chai'
 import { track } from 'temp'
 
 import * as lancedb from '../index'
-import { MetricType, Query } from '../index'
+import { type EmbeddingFunction, MetricType, Query } from '../index'
 
 describe('LanceDB client', function () {
   describe('when creating a connection to lancedb', function () {
@@ -139,6 +139,39 @@ describe('LanceDB client', function () {
       const table = await con.openTable('vectors')
       await table.create_index({ type: 'ivf_pq', column: 'vector', num_partitions: 2, max_iters: 2 })
     }).timeout(10_000) // Timeout is high partially because GH macos runner is pretty slow
+  })
+
+  describe('when using a custom embedding function', function () {
+    class TextEmbedding implements EmbeddingFunction<string> {
+      sourceColumn: string
+
+      constructor (targetColumn: string) {
+        this.sourceColumn = targetColumn
+      }
+
+      _embedding_map = new Map<string, number[]>([
+        ['foo', [2.1, 2.2]],
+        ['bar', [3.1, 3.2]]
+      ])
+
+      embed (data: string[]): number[][] {
+        return data.map(datum => this._embedding_map.get(datum) ?? [0.0, 0.0])
+      }
+    }
+
+    it('should encode the original data into embeddings', async function () {
+      const dir = await track().mkdir('lancejs')
+      const con = await lancedb.connect(dir)
+      const embeddings = new TextEmbedding('name')
+
+      const data = [
+        { price: 10, name: 'foo' },
+        { price: 50, name: 'bar' }
+      ]
+      const table = await con.createTable('vectors', data, embeddings)
+      const results = await table.search('foo').execute()
+      assert.equal(results.length, 2)
+    })
   })
 })
 
