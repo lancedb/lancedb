@@ -13,14 +13,17 @@
 // limitations under the License.
 
 use std::fs::create_dir_all;
+use std::path::Path;
 
 use arrow_array::RecordBatchReader;
-use object_store::path::Path;
+use lance::io::object_store::ObjectStore;
 
 use crate::error::Result;
 use crate::table::Table;
 
 pub struct Database {
+    object_store: ObjectStore,
+
     pub(crate) uri: String,
 }
 
@@ -37,16 +40,17 @@ impl Database {
     /// # Returns
     ///
     /// * A [Database] object.
-    pub fn connect(uri: &str) -> Result<Database> {
-        let uri = Path::parse(uri)?;
-        // if uri.is_file() {
-        //     create_dir_all(&uri)?;
-        // }
-        // if !path.as_ref().try_exists()? {
-        //     create_dir_all(&path)?;
-        // }
+    pub async fn connect(uri: &str) -> Result<Database> {
+        let object_store = ObjectStore::new(uri).await?;
+        if matches!(object_store.scheme.as_str(), "file") {
+            let path = Path::new(uri);
+            if !path.try_exists()? {
+                create_dir_all(&path)?;
+            }
+        }
         Ok(Database {
             uri: uri.to_string(),
+            object_store,
         })
     }
 
@@ -55,12 +59,13 @@ impl Database {
     /// # Returns
     ///
     /// * A [Vec<String>] with all table names.
-    pub fn table_names(&self) -> Result<Vec<String>> {
+    pub async fn table_names(&self) -> Result<Vec<String>> {
         let f = self
-            .path
-            .read_dir()?
-            .flatten()
-            .map(|dir_entry| dir_entry.path())
+            .object_store
+            .read_dir("/")
+            .await?
+            .iter()
+            .map(|fname| Path::new(fname))
             .filter(|path| {
                 let is_lance = path
                     .extension()
@@ -110,8 +115,7 @@ mod tests {
     async fn test_connect() {
         let tmp_dir = tempdir().unwrap();
         let uri = tmp_dir.path().to_str().unwrap();
-        let path_buf = tmp_dir.into_path();
-        let db = Database::connect(uri).unwrap();
+        let db = Database::connect(uri).await.unwrap();
 
         assert_eq!(db.uri, uri);
     }
@@ -124,14 +128,15 @@ mod tests {
         create_dir_all(tmp_dir.path().join("invalidlance")).unwrap();
 
         let uri = tmp_dir.path().to_str().unwrap();
-        let db = Database::connect(uri).unwrap();
-        let tables = db.table_names().unwrap();
+        let db = Database::connect(uri).await.unwrap();
+        let tables = db.table_names().await.unwrap();
         assert_eq!(tables.len(), 2);
         assert!(tables.contains(&String::from("table1")));
         assert!(tables.contains(&String::from("table2")));
     }
 
-    fn test_connect_s3() {
-        let db = Database::connect("s3://bucket/path/to/database").unwrap();
+    #[tokio::test]
+    async fn test_connect_s3() {
+        // let db = Database::connect("s3://bucket/path/to/database").await.unwrap();
     }
 }

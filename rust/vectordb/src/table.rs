@@ -12,19 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::path::Path;
 use std::sync::Arc;
 
 use arrow_array::{Float32Array, RecordBatchReader};
 use lance::dataset::{Dataset, WriteMode, WriteParams};
 use lance::index::IndexType;
-use object_store::path::Path;
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::index::vector::VectorIndexBuilder;
 use crate::query::Query;
 
 pub const VECTOR_COLUMN_NAME: &str = "vector";
-
 pub const LANCE_FILE_EXTENSION: &str = "lance";
 
 /// A table in a LanceDB database.
@@ -32,6 +31,12 @@ pub struct Table {
     name: String,
     uri: String,
     dataset: Arc<Dataset>,
+}
+
+impl std::fmt::Display for Table {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Table({})", self.name)
+    }
 }
 
 impl Table {
@@ -46,18 +51,21 @@ impl Table {
     ///
     /// * A [Table] object.
     pub async fn open(base_uri: &str, name: &str) -> Result<Self> {
-        let path = Path::parse(base_uri)?;
+        let path = Path::new(base_uri);
 
-        let uri = path
-            .child(format!("{}.{}", name, LANCE_FILE_EXTENSION))
-            .to_string();
+        let table_uri = path.join(format!("{}.{}", name, LANCE_FILE_EXTENSION));
+        let uri = table_uri
+            .as_path()
+            .to_str()
+            .ok_or(Error::IO(format!("Invalid table name: {}", name)))?;
+        println!("Base url: {} -- {}", base_uri, uri);
+
         let dataset = Dataset::open(&uri).await?;
-        let table = Table {
+        Ok(Table {
             name: name.to_string(),
-            uri,
+            uri: uri.to_string(),
             dataset: Arc::new(dataset),
-        };
-        Ok(table)
+        })
     }
 
     /// Creates a new Table
@@ -76,9 +84,12 @@ impl Table {
         name: &str,
         mut batches: Box<dyn RecordBatchReader>,
     ) -> Result<Self> {
-        let base_path = Path::parse(base_uri)?;
-        let uri = base_path
-            .child(format!("{}.{}", name, LANCE_FILE_EXTENSION))
+        let base_path = Path::new(base_uri);
+        let table_uri = base_path.join(format!("{}.{}", name, LANCE_FILE_EXTENSION));
+        let uri = table_uri
+            .as_path()
+            .to_str()
+            .ok_or(Error::IO(format!("Invalid table name: {}", name)))?
             .to_string();
         let dataset =
             Arc::new(Dataset::write(&mut batches, &uri, Some(WriteParams::default())).await?);
@@ -151,6 +162,8 @@ impl Table {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use arrow_array::{
         Array, FixedSizeListArray, Float32Array, Int32Array, RecordBatch, RecordBatchReader,
     };
@@ -161,12 +174,10 @@ mod tests {
     use lance::index::vector::ivf::IvfBuildParams;
     use lance::index::vector::pq::PQBuildParams;
     use rand::Rng;
-    use std::sync::Arc;
     use tempfile::tempdir;
 
-    use crate::error::Result;
+    use super::*;
     use crate::index::vector::IvfPQIndexBuilder;
-    use crate::table::Table;
 
     #[tokio::test]
     async fn test_new_table_not_exists() {
@@ -180,21 +191,25 @@ mod tests {
     #[tokio::test]
     async fn test_open() {
         let tmp_dir = tempdir().unwrap();
-        let path_buf = tmp_dir.into_path();
+        let dataset_path = tmp_dir.path().join("test.lance");
         let uri = tmp_dir.path().to_str().unwrap();
 
         let mut batches: Box<dyn RecordBatchReader> = Box::new(make_test_batches());
-        Dataset::write(
-            &mut batches,
-            path_buf.join("test.lance").to_str().unwrap(),
-            None,
-        )
-        .await
-        .unwrap();
+        Dataset::write(&mut batches, dataset_path.to_str().unwrap(), None)
+            .await
+            .unwrap();
 
-        let table = Table::open(&uri, "test").await.unwrap();
+        let table = Table::open(uri, "test").await.unwrap();
 
         assert_eq!(table.name, "test")
+    }
+
+    #[test]
+    fn test_object_store_path() {
+        use std::path::Path as StdPath;
+        let p = StdPath::new("s3://bucket/path/to/file");
+        let c = p.join("subfile");
+        assert_eq!(c.to_str().unwrap(), "s3://bucket/path/to/file/subfile");
     }
 
     #[tokio::test]
@@ -247,17 +262,13 @@ mod tests {
     #[tokio::test]
     async fn test_search() {
         let tmp_dir = tempdir().unwrap();
+        let dataset_path = tmp_dir.path().join("test.lance");
         let uri = tmp_dir.path().to_str().unwrap();
-        let path_buf = tmp_dir.into_path();
 
         let mut batches: Box<dyn RecordBatchReader> = Box::new(make_test_batches());
-        Dataset::write(
-            &mut batches,
-            path_buf.join("test.lance").to_str().unwrap(),
-            None,
-        )
-        .await
-        .unwrap();
+        Dataset::write(&mut batches, dataset_path.to_str().unwrap(), None)
+            .await
+            .unwrap();
 
         let table = Table::open(uri, "test").await.unwrap();
 

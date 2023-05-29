@@ -1052,6 +1052,7 @@ dependencies = [
  "paste",
  "petgraph",
  "rand",
+ "regex",
  "uuid",
 ]
 
@@ -1645,9 +1646,55 @@ dependencies = [
 
 [[package]]
 name = "lance"
-version = "0.4.12"
+version = "0.4.16"
+dependencies = [
+ "accelerate-src",
+ "arrow",
+ "arrow-arith",
+ "arrow-array",
+ "arrow-buffer",
+ "arrow-cast",
+ "arrow-data",
+ "arrow-ord",
+ "arrow-schema",
+ "arrow-select",
+ "async-recursion",
+ "async-trait",
+ "aws-config",
+ "aws-credential-types",
+ "byteorder",
+ "bytes",
+ "cblas",
+ "chrono",
+ "datafusion",
+ "futures",
+ "lapack",
+ "lru_time_cache",
+ "num-traits",
+ "num_cpus",
+ "object_store",
+ "openblas-src",
+ "ordered-float 3.7.0",
+ "path-absolutize",
+ "pin-project",
+ "prost",
+ "prost-build",
+ "prost-types",
+ "rand",
+ "reqwest",
+ "shellexpand",
+ "sqlparser-lance",
+ "tokio",
+ "url",
+ "uuid",
+ "vcpkg",
+]
+
+[[package]]
+name = "lance"
+version = "0.4.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fc96cf89139af6f439a0e28ccd04ddf81be795b79fda3105b7a8952fadeb778e"
+checksum = "d642e1ad24cbfdfcca5ad36210499ecc4100ef2bf9b73625588f9024eead8a12"
 dependencies = [
  "accelerate-src",
  "arrow",
@@ -3361,7 +3408,7 @@ dependencies = [
  "arrow-array",
  "arrow-data",
  "arrow-schema",
- "lance",
+ "lance 0.4.16",
  "object_store",
  "rand",
  "tempfile",
@@ -3376,7 +3423,7 @@ dependencies = [
  "arrow-ipc",
  "arrow-schema",
  "futures",
- "lance",
+ "lance 0.4.16 (registry+https://github.com/rust-lang/crates.io-index)",
  "neon",
  "once_cell",
  "tokio",
