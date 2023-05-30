@@ -1,5 +1,5 @@
 # Builds the macOS artifacts (node binaries).
-# Usage: ./build_macos_artifacts.sh [target]
+# Usage: ./ci/build_macos_artifacts.sh [target]
 # Targets supported: x86_64-apple-darwin aarch64-apple-darwin
 
 prebuild_rust() {
