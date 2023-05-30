@@ -66,15 +66,28 @@ fn database_new(mut cx: FunctionContext) -> JsResult<JsBox<JsDatabase>> {
     Ok(cx.boxed(db))
 }
 
-fn database_table_names(mut cx: FunctionContext) -> JsResult<JsArray> {
+fn database_table_names(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let db = cx
         .this()
         .downcast_or_throw::<JsBox<JsDatabase>, _>(&mut cx)?;
-    let tables = db
-        .database
-        .table_names()
-        .or_else(|err| cx.throw_error(err.to_string()))?;
-    convert::vec_str_to_array(&tables, &mut cx)
+
+    let rt = runtime(&mut cx)?;
+    let (deferred, promise) = cx.promise();
+    let channel = cx.channel();
+    let database = db.database.clone();
+
+    rt.spawn(async move {
+        let tables_rst = database
+            .table_names()
+            .await;
+
+        deferred.settle_with(&channel, move |mut cx| {
+            let tables = tables_rst.or_else(|err| cx.throw_error(err.to_string()))?;
+            let table_names = convert::vec_str_to_array(&tables, &mut cx);
+            table_names
+        });
+    });
+    Ok(promise)
 }
 
 fn database_open_table(mut cx: FunctionContext) -> JsResult<JsPromise> {
@@ -89,7 +102,7 @@ fn database_open_table(mut cx: FunctionContext) -> JsResult<JsPromise> {
 
     let (deferred, promise) = cx.promise();
     rt.spawn(async move {
-        let table_rst = database.open_table(table_name).await;
+        let table_rst = database.open_table(&table_name).await;
 
         deferred.settle_with(&channel, move |mut cx| {
             let table = Arc::new(Mutex::new(
@@ -188,7 +201,7 @@ fn table_create(mut cx: FunctionContext) -> JsResult<JsPromise> {
 
     rt.block_on(async move {
         let batch_reader: Box<dyn RecordBatchReader> = Box::new(RecordBatchBuffer::new(batches));
-        let table_rst = database.create_table(table_name, batch_reader).await;
+        let table_rst = database.create_table(&table_name, batch_reader).await;
 
         deferred.settle_with(&channel, move |mut cx| {
             let table = Arc::new(Mutex::new(
