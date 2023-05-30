@@ -36,22 +36,31 @@ export async function connect (uri: string): Promise<Connection> {
  */
 export class Connection {
   private readonly _uri: string
-  private readonly _db: any
+  private _db: any
 
   constructor (uri: string) {
     this._uri = uri
-    this._db = databaseNew(uri)
+    this._db = null;
   }
 
   get uri (): string {
     return this._uri
   }
 
+  // TODO: fix return type
+  private async db() : Promise<any> {
+    if (this._db == null) {
+      this._db = await databaseNew(this._uri)
+    }
+    return this._db
+  }
+
   /**
      * Get the names of all tables in the database.
      */
   async tableNames (): Promise<string[]> {
-    return databaseTableNames.call(this._db)
+    const db = await this.db();
+    return await databaseTableNames.call(db)
   }
 
   /**
@@ -93,7 +102,8 @@ export class Connection {
    */
   async createTable<T> (name: string, data: Array<Record<string, unknown>>, embeddings: EmbeddingFunction<T>): Promise<Table<T>>
   async createTable<T> (name: string, data: Array<Record<string, unknown>>, embeddings?: EmbeddingFunction<T>): Promise<Table<T>> {
-    const tbl = await tableCreate.call(this._db, name, await fromRecordsToBuffer(data, embeddings))
+    const db = await this.db();
+    const tbl = await tableCreate.call(db, name, await fromRecordsToBuffer(data, embeddings))
     if (embeddings !== undefined) {
       return new Table(tbl, name, embeddings)
     } else {
@@ -102,8 +112,9 @@ export class Connection {
   }
 
   async createTableArrow (name: string, table: ArrowTable): Promise<Table> {
+    const db = await this.db();
     const writer = RecordBatchFileWriter.writeAll(table)
-    await tableCreate.call(this._db, name, Buffer.from(await writer.toUint8Array()))
+    await tableCreate.call(db, name, Buffer.from(await writer.toUint8Array()))
     return await this.openTable(name)
   }
 }
