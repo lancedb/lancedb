@@ -56,14 +56,24 @@ fn runtime<'a, C: Context<'a>>(cx: &mut C) -> NeonResult<&'static Runtime> {
     RUNTIME.get_or_try_init(|| Runtime::new().or_else(|err| cx.throw_error(err.to_string())))
 }
 
-fn database_new(mut cx: FunctionContext) -> JsResult<JsBox<JsDatabase>> {
+fn database_new(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let path = cx.argument::<JsString>(0)?.value(&mut cx);
-    let db = JsDatabase {
-        database: Arc::new(
-            Database::connect(&path).or_else(|err| cx.throw_error(err.to_string()))?,
-        ),
-    };
-    Ok(cx.boxed(db))
+
+    let rt = runtime(&mut cx)?;
+    let channel = cx.channel();
+    let (deferred, promise) = cx.promise();
+
+    rt.spawn(async move {
+        let database = Database::connect(&path).await;
+
+        deferred.settle_with(&channel, move |mut cx| {
+            let db = JsDatabase {
+                database: Arc::new(database.or_else(|err| cx.throw_error(err.to_string()))?),
+            };
+            Ok(cx.boxed(db))
+        });
+    });
+    Ok(promise)
 }
 
 fn database_table_names(mut cx: FunctionContext) -> JsResult<JsPromise> {
@@ -77,9 +87,7 @@ fn database_table_names(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let database = db.database.clone();
 
     rt.spawn(async move {
-        let tables_rst = database
-            .table_names()
-            .await;
+        let tables_rst = database.table_names().await;
 
         deferred.settle_with(&channel, move |mut cx| {
             let tables = tables_rst.or_else(|err| cx.throw_error(err.to_string()))?;
