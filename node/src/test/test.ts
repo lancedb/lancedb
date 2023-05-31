@@ -46,7 +46,7 @@ describe('LanceDB client', function () {
       const uri = await createTestDB()
       const con = await lancedb.connect(uri)
       const table = await con.openTable('vectors')
-      const results = await (await table.search([0.1, 0.3])).execute()
+      const results = await table.search([0.1, 0.3]).execute()
 
       assert.equal(results.length, 2)
       assert.equal(results[0].price, 10)
@@ -59,7 +59,7 @@ describe('LanceDB client', function () {
       const uri = await createTestDB()
       const con = await lancedb.connect(uri)
       const table = await con.openTable('vectors')
-      const results = await (await table.search([0.1, 0.3])).limit(1).execute()
+      const results = await table.search([0.1, 0.3]).limit(1).execute()
       assert.equal(results.length, 1)
       assert.equal(results[0].id, 1)
     })
@@ -68,7 +68,7 @@ describe('LanceDB client', function () {
       const uri = await createTestDB()
       const con = await lancedb.connect(uri)
       const table = await con.openTable('vectors')
-      const results = await (await table.search([0.1, 0.1])).filter('id == 2').execute()
+      const results = await table.search([0.1, 0.1]).filter('id == 2').execute()
       assert.equal(results.length, 1)
       assert.equal(results[0].id, 2)
     })
@@ -88,7 +88,7 @@ describe('LanceDB client', function () {
       const table = await con.createTable(tableName, data)
       assert.equal(table.name, tableName)
 
-      const results = await (await table.search([0.1, 0.3])).execute()
+      const results = await table.search([0.1, 0.3]).execute()
       assert.equal(results.length, 2)
     })
 
@@ -102,7 +102,7 @@ describe('LanceDB client', function () {
       ]
 
       const table = await con.createTable('vectors', data)
-      const results = await (await table.search([0.1, 0.3])).execute()
+      const results = await table.search([0.1, 0.3]).execute()
       assert.equal(results.length, 2)
 
       const dataAdd = [
@@ -110,7 +110,7 @@ describe('LanceDB client', function () {
         { id: 4, vector: [3.1, 3.2], price: 50, name: 'd' }
       ]
       await table.add(dataAdd)
-      const resultsAdd = await (await table.search([0.1, 0.3])).execute()
+      const resultsAdd = await table.search([0.1, 0.3]).execute()
       assert.equal(resultsAdd.length, 4)
     })
 
@@ -119,7 +119,7 @@ describe('LanceDB client', function () {
       const con = await lancedb.connect(uri)
 
       const table = await con.openTable('vectors')
-      const results = await (await table.search([0.1, 0.3])).execute()
+      const results = await table.search([0.1, 0.3]).execute()
       assert.equal(results.length, 2)
 
       const dataOver = [
@@ -127,7 +127,7 @@ describe('LanceDB client', function () {
         { vector: [3.1, 3.2], price: 50, name: 'bar' }
       ]
       await table.overwrite(dataOver)
-      const resultsAdd = await (await table.search([0.1, 0.3])).execute()
+      const resultsAdd = await table.search([0.1, 0.3]).execute()
       assert.equal(resultsAdd.length, 2)
     })
   })
@@ -169,7 +169,7 @@ describe('LanceDB client', function () {
         { price: 50, name: 'bar' }
       ]
       const table = await con.createTable('vectors', data, embeddings)
-      const results = await (await table.search('foo')).execute()
+      const results = await table.search('foo').execute()
       assert.equal(results.length, 2)
     })
   })
