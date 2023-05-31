@@ -21,8 +21,9 @@ import * as lancedb from '../index'
 
 describe('LanceDB S3 client', function () {
   if (process.env.TEST_S3_BASE_URL != null) {
+    const baseUri = process.env.TEST_S3_BASE_URL
     it('should have a valid url', async function () {
-      const uri = `${process.env.TEST_S3_BASE_URL}/valid_url`
+      const uri = `${baseUri}/valid_url`
       const table = await createTestDB(uri, 2, 20)
       const con = await lancedb.connect(uri)
       assert.equal(con.uri, uri)
@@ -35,7 +36,7 @@ describe('LanceDB S3 client', function () {
   }
 })
 
-async function createTestDB (uri: string, numDimensions: number = 2, numRows: number = 2) {
+async function createTestDB (uri: string, numDimensions: number = 2, numRows: number = 2): Promise<lancedb.Table> {
   const con = await lancedb.connect(uri)
 
   const data = []
