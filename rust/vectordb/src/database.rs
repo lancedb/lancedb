@@ -12,16 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use arrow_array::RecordBatchReader;
 use std::fs::create_dir_all;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::path::Path;
+
+use arrow_array::RecordBatchReader;
+use lance::io::object_store::ObjectStore;
 
 use crate::error::Result;
 use crate::table::Table;
 
 pub struct Database {
-    pub(crate) path: Arc<PathBuf>,
+    object_store: ObjectStore,
+
+    pub(crate) uri: String,
 }
 
 const LANCE_EXTENSION: &str = "lance";
@@ -37,12 +40,17 @@ impl Database {
     /// # Returns
     ///
     /// * A [Database] object.
-    pub fn connect<P: AsRef<Path>>(path: P) -> Result<Database> {
-        if !path.as_ref().try_exists()? {
-            create_dir_all(&path)?;
+    pub async fn connect(uri: &str) -> Result<Database> {
+        let object_store = ObjectStore::new(uri).await?;
+        if object_store.is_local() {
+            let path = Path::new(uri);
+            if !path.try_exists()? {
+                create_dir_all(&path)?;
+            }
         }
         Ok(Database {
-            path: Arc::new(path.as_ref().to_path_buf()),
+            uri: uri.to_string(),
+            object_store,
         })
     }
 
@@ -51,12 +59,13 @@ impl Database {
     /// # Returns
     ///
     /// * A [Vec<String>] with all table names.
-    pub fn table_names(&self) -> Result<Vec<String>> {
+    pub async fn table_names(&self) -> Result<Vec<String>> {
         let f = self
-            .path
-            .read_dir()?
-            .flatten()
-            .map(|dir_entry| dir_entry.path())
+            .object_store
+            .read_dir("/")
+            .await?
+            .iter()
+            .map(|fname| Path::new(fname))
             .filter(|path| {
                 let is_lance = path
                     .extension()
@@ -76,10 +85,10 @@ impl Database {
 
     pub async fn create_table(
         &self,
-        name: String,
+        name: &str,
         batches: Box<dyn RecordBatchReader>,
     ) -> Result<Table> {
-        Table::create(self.path.clone(), name, batches).await
+        Table::create(&self.uri, name, batches).await
     }
 
     /// Open a table in the database.
@@ -90,8 +99,8 @@ impl Database {
     /// # Returns
     ///
     /// * A [Table] object.
-    pub async fn open_table(&self, name: String) -> Result<Table> {
-        Table::open(self.path.clone(), name).await
+    pub async fn open_table(&self, name: &str) -> Result<Table> {
+        Table::open(&self.uri, name).await
     }
 }
 
@@ -105,10 +114,10 @@ mod tests {
     #[tokio::test]
     async fn test_connect() {
         let tmp_dir = tempdir().unwrap();
-        let path_buf = tmp_dir.into_path();
-        let db = Database::connect(&path_buf);
+        let uri = tmp_dir.path().to_str().unwrap();
+        let db = Database::connect(uri).await.unwrap();
 
-        assert_eq!(db.unwrap().path.as_path(), path_buf.as_path())
+        assert_eq!(db.uri, uri);
     }
 
     #[tokio::test]
@@ -118,10 +127,16 @@ mod tests {
         create_dir_all(tmp_dir.path().join("table2.lance")).unwrap();
         create_dir_all(tmp_dir.path().join("invalidlance")).unwrap();
 
-        let db = Database::connect(&tmp_dir.into_path()).unwrap();
-        let tables = db.table_names().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+        let db = Database::connect(uri).await.unwrap();
+        let tables = db.table_names().await.unwrap();
         assert_eq!(tables.len(), 2);
         assert!(tables.contains(&String::from("table1")));
         assert!(tables.contains(&String::from("table2")));
+    }
+
+    #[tokio::test]
+    async fn test_connect_s3() {
+        // let db = Database::connect("s3://bucket/path/to/database").await.unwrap();
     }
 }
