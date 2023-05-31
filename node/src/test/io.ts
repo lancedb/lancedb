@@ -28,7 +28,7 @@ describe('LanceDB S3 client', function () {
       const con = await lancedb.connect(uri)
       assert.equal(con.uri, uri)
 
-      const results = await table.search([0.1, 0.3]).limit(5).execute()
+      const results = await (await table.search([0.1, 0.3])).limit(5).execute()
       assert.equal(results.length, 5)
     })
   } else {
