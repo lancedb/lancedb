@@ -53,13 +53,10 @@ schema = pa.schema(
 )
 
 
-def pil_to_bytes(images) -> list[bytes]:
-    results = []
-    for img in images:
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        results.append(buf.getvalue())
-    return results
+def pil_to_bytes(img) -> list[bytes]:
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
 
 
 def generate_clip_embeddings(batch) -> pa.RecordBatch:
