@@ -9,6 +9,6 @@
   "author": "Lance Devs",
   "license": "Apache-2.0",
   "dependencies": {
-    "vectordb": "^0.1.0"
+    "vectordb": "file:../.."
   }
 }

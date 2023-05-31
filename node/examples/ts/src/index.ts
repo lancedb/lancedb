@@ -25,10 +25,8 @@ async function example () {
     const table = await db.createTable('vectors', data)
     console.log(await db.tableNames())
 
-    const query = await table
-        .search([0.1, 0.3]);
-
-    const results = await query
+    const results = await table
+        .search([0.1, 0.3])
         .limit(20)
         .execute()
     console.log(results)
