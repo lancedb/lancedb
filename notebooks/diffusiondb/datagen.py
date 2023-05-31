@@ -37,7 +37,6 @@ processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
 
 schema = pa.schema(
     [
-        pa.field("image", pa.binary()),
         pa.field("prompt", pa.string()),
         pa.field("seed", pa.uint32()),
         pa.field("step", pa.uint16()),
@@ -45,10 +44,11 @@ schema = pa.schema(
         pa.field("sampler", pa.string()),
         pa.field("width", pa.uint16()),
         pa.field("height", pa.uint16()),
-        pa.field("timestamp", pa.string()),
+        pa.field("timestamp", pa.timestamp("s")),
         pa.field("image_nsfw", pa.float32()),
         pa.field("prompt_nsfw", pa.float32()),
         pa.field("vector", pa.list_(pa.float32(), 512)),
+        pa.field("image", pa.binary()),
     ]
 )
 
@@ -65,18 +65,24 @@ def generate_clip_embeddings(batch) -> pa.RecordBatch:
     ].to(device)
     img_emb = model.get_image_features(image)
     batch["vector"] = img_emb.cpu().tolist()
+
     with Pool() as p:
-        batch["image"] = p.map(pil_to_bytes, batch["image"])
-    print(batch)
+        batch["image_bytes"] = p.map(pil_to_bytes, batch["image"])
     return batch
 
 
 def datagen(args):
     dataset = load_dataset("poloclub/diffusiondb", args.subset)
-    print(dir(dataset))
-    for b in dataset.map(generate_clip_embeddings, batched=True, batch_size=512):
-        yield b
-        break
+    data = []
+    for b in dataset.map(
+        generate_clip_embeddings, batched=True, batch_size=256, remove_columns=["image"]
+    )["train"]:
+        print(b.keys())
+        b["image"] = b["image_bytes"]
+        del b["image_bytes"]
+        data.append(b)
+    tbl = pa.Table.from_pylist(data, schema=schema)
+    return tbl
 
 
 def main():
@@ -94,9 +100,10 @@ def main():
 
     args = parser.parse_args()
 
-    reader = pa.RecordBatchReader.from_batches(schema, datagen(args))
-    list(datagen(args))
-    # lance.write_dataset(reader, "./diffusiondb.lance")
+    # reader = pa.RecordBatchReader.from_batches(schema, datagen(args))
+    # list(datagen(args))
+    batches = datagen(args)
+    lance.write_dataset(batches, "./diffusiondb.lance")
 
 
 if __name__ == "__main__":
