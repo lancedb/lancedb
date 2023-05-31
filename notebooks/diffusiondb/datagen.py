@@ -17,9 +17,16 @@
 """
 
 from argparse import ArgumentParser
+import io
+from multiprocessing import Pool
 
+from PIL import Image
 from datasets import load_dataset
 from transformers import CLIPProcessor, CLIPModel, CLIPTokenizerFast
+
+import lancedb
+import lance
+import pyarrow as pa
 
 MODEL_ID = "openai/clip-vit-base-patch32"
 
@@ -29,22 +36,49 @@ tokenizer = CLIPTokenizerFast.from_pretrained(MODEL_ID)
 model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").to(device)
 processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
 
+schema = pa.schema(
+    [
+        pa.field("image", pa.binary()),
+        pa.field("prompt", pa.string()),
+        pa.field("seed", pa.uint32()),
+        pa.field("step", pa.uint16()),
+        pa.field("cfg", pa.float32()),
+        pa.field("sampler", pa.string()),
+        pa.field("width", pa.uint16()),
+        pa.field("height", pa.uint16()),
+        pa.field("timestamp", pa.string()),
+        pa.field("image_nsfw", pa.float32()),
+        pa.field("prompt_nsfw", pa.float32()),
+        pa.field("vector", pa.list_(pa.float32(), 512)),
+    ]
+)
 
-def generate_clip_embeddings(batch):
-    # print(batches)
-    # print(batch.keys())
-    image = processor(text=None, images=batch["image"], return_tensors='pt')["pixel_values"].to(device)
-    print(image.shape)
+
+def pil_to_bytes(images) -> list[bytes]:
+    results = []
+    for img in images:
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        results.append(buf.getvalue())
+    return results
+
+
+def generate_clip_embeddings(batch) -> pa.RecordBatch:
+    image = processor(text=None, images=batch["image"], return_tensors="pt")[
+        "pixel_values"
+    ].to(device)
     img_emb = model.get_image_features(image)
-    print(img_emb.shape)
+    batch["vector"] = img_emb.cpu().tolist()
+    batch["image"] = pil_to_bytes(batch["image"])
+    print(batch)
     return batch
 
 
 def datagen(args):
     dataset = load_dataset("poloclub/diffusiondb", args.subset)
-
-    for b in dataset.map(generate_clip_embeddings, batched=True, batch_size=512):
-        print(b)
+    print(dir(dataset))
+    for b in dataset.to_iterable_dataset().map(generate_clip_embeddings, batched=True, batch_size=512):
+        yield b
         break
 
 
@@ -62,7 +96,10 @@ def main():
     )
 
     args = parser.parse_args()
-    datagen(args)
+
+    reader = pa.RecordBatchReader.from_batches(schema, datagen(args))
+    list(datagen(args))
+    # lance.write_dataset(reader, "./diffusiondb.lance")
 
 
 if __name__ == "__main__":
