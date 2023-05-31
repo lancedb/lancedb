@@ -42,7 +42,7 @@ A builder for nearest neighbor queries for LanceDB.
 
 #### Defined in
 
-[index.ts:131](https://github.com/lancedb/lancedb/blob/e234a3e/node/src/index.ts#L131)
+[index.ts:131](https://github.com/lancedb/lancedb/blob/6d6e80b/node/src/index.ts#L131)
 
 ## Properties
 
@@ -52,7 +52,7 @@ A builder for nearest neighbor queries for LanceDB.
 
 #### Defined in
 
-[index.ts:127](https://github.com/lancedb/lancedb/blob/e234a3e/node/src/index.ts#L127)
+[index.ts:127](https://github.com/lancedb/lancedb/blob/6d6e80b/node/src/index.ts#L127)
 
 ___
 
@@ -62,7 +62,7 @@ ___
 
 #### Defined in
 
-[index.ts:128](https://github.com/lancedb/lancedb/blob/e234a3e/node/src/index.ts#L128)
+[index.ts:128](https://github.com/lancedb/lancedb/blob/6d6e80b/node/src/index.ts#L128)
 
 ___
 
@@ -72,7 +72,7 @@ ___
 
 #### Defined in
 
-[index.ts:124](https://github.com/lancedb/lancedb/blob/e234a3e/node/src/index.ts#L124)
+[index.ts:124](https://github.com/lancedb/lancedb/blob/6d6e80b/node/src/index.ts#L124)
 
 ___
 
@@ -82,7 +82,7 @@ ___
 
 #### Defined in
 
-[index.ts:129](https://github.com/lancedb/lancedb/blob/e234a3e/node/src/index.ts#L129)
+[index.ts:129](https://github.com/lancedb/lancedb/blob/6d6e80b/node/src/index.ts#L129)
 
 ___
 
@@ -92,7 +92,7 @@ ___
 
 #### Defined in
 
-[index.ts:126](https://github.com/lancedb/lancedb/blob/e234a3e/node/src/index.ts#L126)
+[index.ts:126](https://github.com/lancedb/lancedb/blob/6d6e80b/node/src/index.ts#L126)
 
 ___
 
@@ -102,7 +102,7 @@ ___
 
 #### Defined in
 
-[index.ts:123](https://github.com/lancedb/lancedb/blob/e234a3e/node/src/index.ts#L123)
+[index.ts:123](https://github.com/lancedb/lancedb/blob/6d6e80b/node/src/index.ts#L123)
 
 ___
 
@@ -112,7 +112,7 @@ ___
 
 #### Defined in
 
-[index.ts:125](https://github.com/lancedb/lancedb/blob/e234a3e/node/src/index.ts#L125)
+[index.ts:125](https://github.com/lancedb/lancedb/blob/6d6e80b/node/src/index.ts#L125)
 
 ___
 
@@ -122,7 +122,7 @@ ___
 
 #### Defined in
 
-[index.ts:122](https://github.com/lancedb/lancedb/blob/e234a3e/node/src/index.ts#L122)
+[index.ts:122](https://github.com/lancedb/lancedb/blob/6d6e80b/node/src/index.ts#L122)
 
 ## Methods
 
@@ -144,7 +144,7 @@ Execute the query and return the results as an Array of Objects
 
 #### Defined in
 
-[index.ts:154](https://github.com/lancedb/lancedb/blob/e234a3e/node/src/index.ts#L154)
+[index.ts:154](https://github.com/lancedb/lancedb/blob/6d6e80b/node/src/index.ts#L154)
 
 ___
 
@@ -164,7 +164,7 @@ ___
 
 #### Defined in
 
-[index.ts:146](https://github.com/lancedb/lancedb/blob/e234a3e/node/src/index.ts#L146)
+[index.ts:146](https://github.com/lancedb/lancedb/blob/6d6e80b/node/src/index.ts#L146)
 
 ___
 
@@ -184,4 +184,4 @@ ___
 
 #### Defined in
 
-[index.ts:141](https://github.com/lancedb/lancedb/blob/e234a3e/node/src/index.ts#L141)
+[index.ts:141](https://github.com/lancedb/lancedb/blob/6d6e80b/node/src/index.ts#L141)
