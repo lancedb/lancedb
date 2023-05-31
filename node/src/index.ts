@@ -52,7 +52,7 @@ export class Connection {
      * Get the names of all tables in the database.
      */
   async tableNames (): Promise<string[]> {
-    return await databaseTableNames.call(this._db)
+    return databaseTableNames.call(this._db)
   }
 
   /**
