@@ -39,7 +39,7 @@ pub(crate) fn table_create_vector_index(mut cx: FunctionContext) -> JsResult<JsP
         let add_result = table
             .lock()
             .unwrap()
-            .create_idx(&index_params_builder)
+            .create_index(&index_params_builder)
             .await;
 
         deferred.settle_with(&channel, move |mut cx| {

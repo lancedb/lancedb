@@ -32,7 +32,8 @@ export { OpenAIEmbeddingFunction } from './embedding/openai'
  * @param uri The uri of the database.
  */
 export async function connect (uri: string): Promise<Connection> {
-  return new Connection(uri)
+  const db = await databaseNew(uri)
+  return new Connection(db, uri)
 }
 
 /**
@@ -42,9 +43,9 @@ export class Connection {
   private readonly _uri: string
   private readonly _db: any
 
-  constructor (uri: string) {
+  constructor (db: any, uri: string) {
     this._uri = uri
-    this._db = databaseNew(uri)
+    this._db = db
   }
 
   get uri (): string {

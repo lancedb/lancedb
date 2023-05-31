@@ -1052,6 +1052,7 @@ dependencies = [
  "paste",
  "petgraph",
  "rand",
+ "regex",
  "uuid",
 ]
 
@@ -1645,9 +1646,9 @@ dependencies = [
 
 [[package]]
 name = "lance"
-version = "0.4.12"
+version = "0.4.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fc96cf89139af6f439a0e28ccd04ddf81be795b79fda3105b7a8952fadeb778e"
+checksum = "86dda8185bd1ffae7b910c1f68035af23be9b717c52e9cc4de176cd30b47f772"
 dependencies = [
  "accelerate-src",
  "arrow",
@@ -1684,6 +1685,7 @@ dependencies = [
  "rand",
  "reqwest",
  "shellexpand",
+ "snafu",
  "sqlparser-lance",
  "tokio",
  "url",
@@ -3362,6 +3364,7 @@ dependencies = [
  "arrow-data",
  "arrow-schema",
  "lance",
+ "object_store",
  "rand",
  "tempfile",
  "tokio",
