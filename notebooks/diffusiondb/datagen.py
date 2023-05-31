@@ -16,17 +16,16 @@
 """Dataset hf://poloclub/diffusiondb
 """
 
-from argparse import ArgumentParser
 import io
+from argparse import ArgumentParser
 from multiprocessing import Pool
 
-from PIL import Image
-from datasets import load_dataset
-from transformers import CLIPProcessor, CLIPModel, CLIPTokenizerFast
-
-import lancedb
 import lance
+import lancedb
 import pyarrow as pa
+from datasets import load_dataset
+from PIL import Image
+from transformers import CLIPModel, CLIPProcessor, CLIPTokenizerFast
 
 MODEL_ID = "openai/clip-vit-base-patch32"
 
@@ -69,7 +68,8 @@ def generate_clip_embeddings(batch) -> pa.RecordBatch:
     ].to(device)
     img_emb = model.get_image_features(image)
     batch["vector"] = img_emb.cpu().tolist()
-    batch["image"] = pil_to_bytes(batch["image"])
+    with Pool() as p:
+        batch["image"] = p.map(pil_to_bytes, batch["image"])
     print(batch)
     return batch
 
@@ -77,7 +77,7 @@ def generate_clip_embeddings(batch) -> pa.RecordBatch:
 def datagen(args):
     dataset = load_dataset("poloclub/diffusiondb", args.subset)
     print(dir(dataset))
-    for b in dataset.to_iterable_dataset().map(generate_clip_embeddings, batched=True, batch_size=512):
+    for b in dataset.map(generate_clip_embeddings, batched=True, batch_size=512):
         yield b
         break
 
