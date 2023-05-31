@@ -1646,7 +1646,9 @@ dependencies = [
 
 [[package]]
 name = "lance"
-version = "0.4.16"
+version = "0.4.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "86dda8185bd1ffae7b910c1f68035af23be9b717c52e9cc4de176cd30b47f772"
 dependencies = [
  "accelerate-src",
  "arrow",
@@ -1683,6 +1685,7 @@ dependencies = [
  "rand",
  "reqwest",
  "shellexpand",
+ "snafu",
  "sqlparser-lance",
  "tokio",
  "url",

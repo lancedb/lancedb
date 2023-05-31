@@ -42,7 +42,7 @@ impl Database {
     /// * A [Database] object.
     pub async fn connect(uri: &str) -> Result<Database> {
         let object_store = ObjectStore::new(uri).await?;
-        if matches!(object_store.scheme.as_str(), "file") {
+        if object_store.is_local() {
             let path = Path::new(uri);
             if !path.try_exists()? {
                 create_dir_all(&path)?;

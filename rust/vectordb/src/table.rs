@@ -58,7 +58,6 @@ impl Table {
             .as_path()
             .to_str()
             .ok_or(Error::IO(format!("Invalid table name: {}", name)))?;
-        println!("Base url: {} -- {}", base_uri, uri);
 
         let dataset = Dataset::open(&uri).await?;
         Ok(Table {
