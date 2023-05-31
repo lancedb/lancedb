@@ -19,9 +19,13 @@ import {
   Vector
 } from 'apache-arrow'
 import { fromRecordsToBuffer } from './arrow'
+import type { EmbeddingFunction } from './embedding/embedding_function'
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { databaseNew, databaseTableNames, databaseOpenTable, tableCreate, tableSearch, tableAdd, tableCreateVectorIndex } = require('../native.js')
+
+export type { EmbeddingFunction }
+export { OpenAIEmbeddingFunction } from './embedding/openai'
 
 /**
  * Connect to a LanceDB instance at the given URI
@@ -134,10 +138,10 @@ export class Table<T = number[]> {
    * Creates a search query to find the nearest neighbors of the given search term
    * @param query The query search term
    */
-  search (query: T): Query {
+  async search (query: T): Promise<Query> {
     let queryVector: number[]
     if (this._embeddings !== undefined) {
-      queryVector = this._embeddings.embed([query])[0]
+      queryVector = (await this._embeddings.embed([query]))[0]
     } else {
       queryVector = query as number[]
     }
@@ -316,21 +320,6 @@ export class Query {
 export enum WriteMode {
   Overwrite = 'overwrite',
   Append = 'append'
-}
-
-/**
- * An embedding function that automatically creates vector representation for a given column.
- */
-export interface EmbeddingFunction<T> {
-  /**
-   * The name of the column that will be used as input for the Embedding Function.
-   */
-  sourceColumn: string
-
-  /**
-   * Creates a vector representation for the given values.
-   */
-  embed: (data: T[]) => number[][]
 }
 
 /**

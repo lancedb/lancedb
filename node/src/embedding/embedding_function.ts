@@ -12,26 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import * as vectordb from 'vectordb';
+/**
+ * An embedding function that automatically creates vector representation for a given column.
+ */
+export interface EmbeddingFunction<T> {
+  /**
+     * The name of the column that will be used as input for the Embedding Function.
+     */
+  sourceColumn: string
 
-async function example () {
-    const db = await vectordb.connect('data/sample-lancedb')
-
-    const data = [
-        { id: 1, vector: [0.1, 0.2], price: 10 },
-        { id: 2, vector: [1.1, 1.2], price: 50 }
-    ]
-
-    const table = await db.createTable('vectors', data)
-    console.log(await db.tableNames())
-
-    const query = await table
-        .search([0.1, 0.3]);
-
-    const results = await query
-        .limit(20)
-        .execute()
-    console.log(results)
+  /**
+     * Creates a vector representation for the given values.
+     */
+  embed: (data: T[]) => Promise<number[][]>
 }
-
-example().then(_ => { console.log ("All done!") })
