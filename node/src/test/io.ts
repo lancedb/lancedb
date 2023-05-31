@@ -18,13 +18,12 @@ import { describe } from 'mocha'
 import { assert } from 'chai'
 
 import * as lancedb from '../index'
-import { MetricType, Query } from '../index'
 
 describe('LanceDB S3 client', function () {
   if (process.env.TEST_S3_BASE_URL != null) {
     it('should have a valid url', async function () {
-      const uri = process.env.TEST_S3_BASE_URL + '/valid_url'
-      const table = await createTestDB(uri, 2, 20);
+      const uri = `${process.env.TEST_S3_BASE_URL}/valid_url`
+      const table = await createTestDB(uri, 2, 20)
       const con = await lancedb.connect(uri)
       assert.equal(con.uri, uri)
 
@@ -32,7 +31,7 @@ describe('LanceDB S3 client', function () {
       assert.equal(results.length, 5)
     })
   } else {
-    describe.skip("Skip S3 test", function () {})
+    describe.skip('Skip S3 test', function () {})
   }
 })
 
