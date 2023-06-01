@@ -97,3 +97,26 @@ def test_create_mode(tmp_path):
     )
     tbl = db.create_table("test", data=new_data, mode="overwrite")
     assert tbl.to_pandas().item.tolist() == ["fizz", "buzz"]
+
+
+def test_delete_table(tmp_path):
+    db = lancedb.connect(tmp_path)
+    data = pd.DataFrame(
+        {
+            "vector": [[3.1, 4.1], [5.9, 26.5]],
+            "item": ["foo", "bar"],
+            "price": [10.0, 20.0],
+        }
+    )
+    db.create_table("test", data=data)
+
+    with pytest.raises(Exception):
+        db.create_table("test", data=data)
+
+    assert db.table_names() == ["test"]
+
+    db.drop_table("test")
+    assert db.table_names() == []
+
+    db.create_table("test", data=data)
+    assert db.table_names() == ["test"]
