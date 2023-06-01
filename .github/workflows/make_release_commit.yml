@@ -1,0 +1,48 @@
+name: Create release commit
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Just create the local commit/tags but do not push it'
+        required: true
+        default: "false"
+        type: choice
+        options:
+          - "true"
+          - "false"
+      part:
+        description: 'What kind of release is this?'
+        required: true
+        default: 'patch'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+jobs:
+  bump-version:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Check out main
+      uses: actions/checkout@v3
+      with:
+        ref: main
+        persist-credentials: false
+        fetch-depth: 0
+        lfs: true
+    - name: Install cargo utils
+      run: cargo install cargo-edit
+    - name: Bump versions
+      run: |
+        NEW_VERSION=$(bash ci/bump_versions.sh ${{ inputs.part }})
+        echo "New version: v$NEW_VERSION"
+        git tag v$NEW_VERSION
+    - name: Push new version and tag
+      if: ${{ inputs.dry_run }} == "false"
+      uses: ad-m/github-push-action@master
+      with:
+        github_token: ${{ secrets.RELEASE_TOKEN }}
+        branch: main
+        tags: true
