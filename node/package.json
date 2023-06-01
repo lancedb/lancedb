@@ -1,6 +1,6 @@
 {
   "name": "vectordb",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": " Serverless, low-latency vector database for AI applications",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
