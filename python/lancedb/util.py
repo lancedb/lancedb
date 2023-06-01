@@ -41,3 +41,23 @@ def get_uri_scheme(uri: str) -> str:
         # So we add special handling here for schemes that are a single character
         scheme = "file"
     return scheme
+
+
+def get_uri_location(uri: str) -> str:
+    """
+    Get the location of a URI. If the parameter is not a url, assumes it is just a path
+
+    Parameters
+    ----------
+    uri : str
+        The URI to parse.
+
+    Returns
+    -------
+    str: Location part of the URL, without scheme
+    """
+    parsed = urlparse(uri)
+    if not parsed.netloc:
+        return parsed.path
+    else:
+        return parsed.netloc + parsed.path

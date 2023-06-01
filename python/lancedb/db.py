@@ -17,11 +17,11 @@ import os
 from pathlib import Path
 
 import pyarrow as pa
-import fsspec
+from pyarrow import fs
 
 from .common import DATA, URI
 from .table import LanceTable
-from .util import get_uri_scheme
+from .util import get_uri_scheme, get_uri_location
 
 
 class LanceDBConnection:
@@ -49,15 +49,25 @@ class LanceDBConnection:
         -------
         A list of table names.
         """
+        filesystem = None
         scheme = get_uri_scheme(self.uri)
-
-        if scheme not in ["file", "s3", "gs"]:
+        if scheme == "file":
+            filesystem = fs.LocalFileSystem()
+        elif scheme == "s3":
+            filesystem = fs.S3FileSystem()
+        elif scheme == "gs":
+            filesystem = fs.GcsFileSystem()
+        else:
             raise NotImplementedError(
                 "Unsupported scheme: " + scheme
             )
-        fs = fsspec.filesystem(scheme)
-        paths = fs.ls(self.uri, detail=False)
-        tables = [os.path.splitext(os.path.basename(path))[0] for path in paths if path.endswith('.lance')]
+
+        try:
+            paths = filesystem.get_file_info(fs.FileSelector(get_uri_location(self.uri)))
+        except FileNotFoundError:
+            # It is ok if the file does not exist since it will be created
+            paths = []
+        tables = [os.path.splitext(file_info.base_name)[0] for file_info in paths if file_info.extension == 'lance']
         return tables
 
     def __len__(self) -> int:
