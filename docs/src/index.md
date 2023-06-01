@@ -38,7 +38,7 @@ result = table.search([100, 100]).limit(2).to_df()
 ## Complete Demos
 
 We will be adding completed demo apps built using LanceDB.
-- [YouTube Transcript Search](../notebooks/youtube_transcript_search.ipynb)
+- [YouTube Transcript Search](../../notebooks/youtube_transcript_search.ipynb)
 
 
 ## Documentation Quick Links
