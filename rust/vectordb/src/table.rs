@@ -18,8 +18,9 @@ use std::sync::Arc;
 use arrow_array::{Float32Array, RecordBatchReader};
 use lance::dataset::{Dataset, WriteMode, WriteParams};
 use lance::index::IndexType;
+use snafu::prelude::*;
 
-use crate::error::{Error, Result};
+use crate::error::{Error, InvalidTableNameSnafu, Result};
 use crate::index::vector::VectorIndexBuilder;
 use crate::query::Query;
 
@@ -27,6 +28,7 @@ pub const VECTOR_COLUMN_NAME: &str = "vector";
 pub const LANCE_FILE_EXTENSION: &str = "lance";
 
 /// A table in a LanceDB database.
+#[derive(Debug)]
 pub struct Table {
     name: String,
     uri: String,
@@ -57,9 +59,16 @@ impl Table {
         let uri = table_uri
             .as_path()
             .to_str()
-            .ok_or(Error::IO(format!("Invalid table name: {}", name)))?;
+            .context(InvalidTableNameSnafu { name })?;
 
-        let dataset = Dataset::open(&uri).await?;
+        let dataset = Dataset::open(&uri).await.map_err(|e| match e {
+            lance::Error::DatasetNotFound { .. } => Error::TableNotFound {
+                name: name.to_string(),
+            },
+            e => Error::Lance {
+                message: e.to_string(),
+            },
+        })?;
         Ok(Table {
             name: name.to_string(),
             uri: uri.to_string(),
@@ -88,14 +97,22 @@ impl Table {
         let uri = table_uri
             .as_path()
             .to_str()
-            .ok_or(Error::IO(format!("Invalid table name: {}", name)))?
+            .context(InvalidTableNameSnafu { name })?
             .to_string();
-        let dataset =
-            Arc::new(Dataset::write(&mut batches, &uri, Some(WriteParams::default())).await?);
+        let dataset = Dataset::write(&mut batches, &uri, Some(WriteParams::default()))
+            .await
+            .map_err(|e| match e {
+                lance::Error::DatasetAlreadyExists { .. } => Error::TableAlreadyExists {
+                    name: name.to_string(),
+                },
+                e => Error::Lance {
+                    message: e.to_string(),
+                },
+            })?;
         Ok(Table {
             name: name.to_string(),
             uri,
-            dataset,
+            dataset: Arc::new(dataset),
         })
     }
 
@@ -179,15 +196,6 @@ mod tests {
     use crate::index::vector::IvfPQIndexBuilder;
 
     #[tokio::test]
-    async fn test_new_table_not_exists() {
-        let tmp_dir = tempdir().unwrap();
-        let uri = tmp_dir.path().to_str().unwrap();
-
-        let table = Table::open(&uri, "test").await;
-        assert!(table.is_err());
-    }
-
-    #[tokio::test]
     async fn test_open() {
         let tmp_dir = tempdir().unwrap();
         let dataset_path = tmp_dir.path().join("test.lance");
@@ -203,12 +211,37 @@ mod tests {
         assert_eq!(table.name, "test")
     }
 
+    #[tokio::test]
+    async fn test_open_not_found() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+        let table = Table::open(uri, "test").await;
+        assert!(matches!(table.unwrap_err(), Error::TableNotFound { .. }));
+    }
+
     #[test]
     fn test_object_store_path() {
         use std::path::Path as StdPath;
         let p = StdPath::new("s3://bucket/path/to/file");
         let c = p.join("subfile");
         assert_eq!(c.to_str().unwrap(), "s3://bucket/path/to/file/subfile");
+    }
+
+    #[tokio::test]
+    async fn test_create_already_exists() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        let batches: Box<dyn RecordBatchReader> = Box::new(make_test_batches());
+        let schema = batches.schema().clone();
+        Table::create(&uri, "test", batches).await.unwrap();
+
+        let batches: Box<dyn RecordBatchReader> = Box::new(make_test_batches());
+        let result = Table::create(&uri, "test", batches).await;
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::TableAlreadyExists { .. }
+        ));
     }
 
     #[tokio::test]
