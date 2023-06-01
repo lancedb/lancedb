@@ -237,4 +237,4 @@ def _sanitize_vector_column(data: pa.Table, vector_column_name: str) -> pa.Table
         values = values.cast(pa.float32())
     list_size = len(values) / len(data)
     vec_arr = pa.FixedSizeListArray.from_arrays(values, list_size)
-    return data.set_column(i, vector_column_name, vec_arr)
+    return data.set_column(data.column_names.index(vector_column_name), vector_column_name, vec_arr)
