@@ -24,7 +24,7 @@ import {
 } from 'apache-arrow'
 import { type EmbeddingFunction } from './index'
 
-export function convertToTable<T> (data: Array<Record<string, unknown>>, embeddings?: EmbeddingFunction<T>): Table {
+export async function convertToTable<T> (data: Array<Record<string, unknown>>, embeddings?: EmbeddingFunction<T>): Promise<Table> {
   if (data.length === 0) {
     throw new Error('At least one record needs to be provided')
   }
@@ -51,7 +51,7 @@ export function convertToTable<T> (data: Array<Record<string, unknown>>, embeddi
       }
 
       if (columnsKey === embeddings?.sourceColumn) {
-        const vectors = embeddings.embed(values as T[])
+        const vectors = await embeddings.embed(values as T[])
         const listBuilder = newVectorListBuilder()
         vectors.map(v => listBuilder.append(v))
         records.vector = listBuilder.finish().toVector()
@@ -79,7 +79,7 @@ function newVectorListBuilder (): ListBuilder<Float32, any> {
 }
 
 export async function fromRecordsToBuffer<T> (data: Array<Record<string, unknown>>, embeddings?: EmbeddingFunction<T>): Promise<Buffer> {
-  const table = convertToTable(data, embeddings)
+  const table = await convertToTable(data, embeddings)
   const writer = RecordBatchFileWriter.writeAll(table)
   return Buffer.from(await writer.toUint8Array())
 }

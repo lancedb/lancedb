@@ -154,7 +154,7 @@ describe('LanceDB client', function () {
         ['bar', [3.1, 3.2]]
       ])
 
-      embed (data: string[]): number[][] {
+      async embed (data: string[]): Promise<number[][]> {
         return data.map(datum => this._embedding_map.get(datum) ?? [0.0, 0.0])
       }
     }

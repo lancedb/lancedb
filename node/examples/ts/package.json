@@ -17,6 +17,6 @@
     "typescript": "*"
   },
   "dependencies": {
-    "vectordb": "^0.1.0"
+    "vectordb": "file:../.."
   }
 }
