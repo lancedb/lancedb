@@ -53,7 +53,7 @@ LanceDB's core is written in Rust 🦀 and is built using <a href="https://githu
 ## Complete Demos
 
 We will be adding completed demo apps built using LanceDB.
-- [YouTube Transcript Search](notebooks/youtube_transcript_search.ipynb)
+- [YouTube Transcript Search](../../notebooks/youtube_transcript_search.ipynb)
 
 
 ## Documentation Quick Links
