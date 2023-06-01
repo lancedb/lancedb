@@ -11,7 +11,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
-from lancedb.util import get_uri_scheme
+from lancedb.util import get_uri_scheme, removesuffix
 
 
 def test_normalize_uri():
@@ -28,3 +28,16 @@ def test_normalize_uri():
     for uri, expected_scheme in zip(uris, schemes):
         parsed_scheme = get_uri_scheme(uri)
         assert parsed_scheme == expected_scheme
+
+
+def test_removesuffix():
+    test_data = [
+        "table.lance",
+        "table",
+        "tablelance",
+        ".lance",
+    ]
+    expected = ["table", "table", "tablelance", ""]
+    for test_data, expected in zip(test_data, expected):
+        result = removesuffix(test_data, ".lance")
+        assert result == expected

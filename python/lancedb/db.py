@@ -21,7 +21,7 @@ import fsspec
 
 from .common import DATA, URI
 from .table import LanceTable
-from .util import get_uri_scheme
+from .util import get_uri_scheme, removesuffix
 
 
 class LanceDBConnection:
@@ -57,7 +57,7 @@ class LanceDBConnection:
             )
         fs = fsspec.filesystem(scheme)
         paths = fs.ls(self.uri, detail=False)
-        tables = [os.path.basename(path).removesuffix(".lance") for path in paths if path.endswith('.lance')]
+        tables = [removesuffix(os.path.basename(path), ".lance") for path in paths if path.endswith('.lance')]
         return tables
 
     def __len__(self) -> int:
