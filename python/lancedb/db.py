@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
 
 import pyarrow as pa
 
@@ -112,3 +113,15 @@ class LanceDBConnection:
         A LanceTable object representing the table.
         """
         return LanceTable(self, name)
+
+    def drop_table(self, name: str):
+        """Drop a table from the database.
+
+        Parameters
+        ----------
+        name: str
+            The name of the table.
+        """
+        filesystem, path = pa.fs.FileSystem.from_uri(self.uri)
+        table_path = os.path.join(path, name + ".lance")
+        filesystem.delete_dir(table_path)
