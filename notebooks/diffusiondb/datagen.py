@@ -72,12 +72,12 @@ def generate_clip_embeddings(batch) -> pa.RecordBatch:
 
 
 def datagen(args):
+    """Generate DiffusionDB dataset, and use CLIP model to generate image embeddings."""
     dataset = load_dataset("poloclub/diffusiondb", args.subset)
     data = []
     for b in dataset.map(
         generate_clip_embeddings, batched=True, batch_size=256, remove_columns=["image"]
     )["train"]:
-        print(b.keys())
         b["image"] = b["image_bytes"]
         del b["image_bytes"]
         data.append(b)
@@ -100,10 +100,8 @@ def main():
 
     args = parser.parse_args()
 
-    # reader = pa.RecordBatchReader.from_batches(schema, datagen(args))
-    # list(datagen(args))
     batches = datagen(args)
-    lance.write_dataset(batches, "./diffusiondb.lance")
+    lance.write_dataset(batches, args.output)
 
 
 if __name__ == "__main__":
