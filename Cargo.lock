@@ -3366,6 +3366,7 @@ dependencies = [
  "lance",
  "object_store",
  "rand",
+ "snafu",
  "tempfile",
  "tokio",
 ]
