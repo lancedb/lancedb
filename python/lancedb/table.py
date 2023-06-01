@@ -253,8 +253,7 @@ def _sanitize_vector_column(data: pa.Table, vector_column_name: str) -> pa.Table
     vector_column_name: str
         The name of the vector column.
     """
-    i = data.column_names.index(vector_column_name)
-    if i < 0:
+    if vector_column_name not in data.column_names:
         raise ValueError(f"Missing vector column: {vector_column_name}")
     vec_arr = data[vector_column_name].combine_chunks()
     if pa.types.is_fixed_size_list(vec_arr.type):
@@ -266,4 +265,4 @@ def _sanitize_vector_column(data: pa.Table, vector_column_name: str) -> pa.Table
         values = values.cast(pa.float32())
     list_size = len(values) / len(data)
     vec_arr = pa.FixedSizeListArray.from_arrays(values, list_size)
-    return data.set_column(i, vector_column_name, vec_arr)
+    return data.set_column(data.column_names.index(vector_column_name), vector_column_name, vec_arr)
