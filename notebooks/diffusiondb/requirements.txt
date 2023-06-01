@@ -1,0 +1,9 @@
+datasets
+Pillow
+lancedb
+isort
+black
+transformers
+--index-url https://download.pytorch.org/whl/cu118
+torch
+torchvision
