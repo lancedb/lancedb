@@ -31,8 +31,8 @@ tag created, push it to GitHub.
 
 ```shell
 VERSION=$(bash ci/bump_versions.sh)
-git tag v$VERSION
-git push origin v$VERSION
+git tag v$VERSION-nodejs
+git push origin v$VERSION--nodejs
 ```
 
 ### Build the MacOS release libraries
