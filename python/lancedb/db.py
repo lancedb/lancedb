@@ -13,9 +13,11 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pyarrow as pa
+import fsspec
 
 from .common import DATA, URI
 from .table import LanceTable
@@ -47,11 +49,16 @@ class LanceDBConnection:
         -------
         A list of table names.
         """
-        if get_uri_scheme(self.uri) == "file":
-            return [p.stem for p in Path(self.uri).glob("*.lance")]
-        raise NotImplementedError(
-            "List table_names is only supported for local filesystem for now"
-        )
+        scheme = get_uri_scheme(self.uri)
+
+        if scheme not in ["file", "s3", "gs"]:
+            raise NotImplementedError(
+                "Unsupported scheme: " + scheme
+            )
+        fs = fsspec.filesystem(scheme)
+        paths = fs.ls(self.uri, detail=False)
+        tables = [os.path.basename(path).removesuffix(".lance") for path in paths if path.endswith('.lance')]
+        return tables
 
     def __len__(self) -> int:
         return len(self.table_names())
