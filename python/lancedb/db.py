@@ -49,17 +49,11 @@ class LanceDBConnection:
         -------
         A list of table names.
         """
-        filesystem = None
-        scheme = get_uri_scheme(self.uri)
-        if scheme == "file":
-            filesystem = fs.LocalFileSystem()
-        elif scheme == "s3":
-            filesystem = fs.S3FileSystem()
-        elif scheme == "gs":
-            filesystem = fs.GcsFileSystem()
-        else:
+        try:
+            filesystem, path = fs.FileSystem.from_uri(self.uri)
+        except pa.ArrowInvalid:
             raise NotImplementedError(
-                "Unsupported scheme: " + scheme
+                "Unsupported scheme: " + self.uri
             )
 
         try:
