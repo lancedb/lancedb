@@ -225,8 +225,7 @@ def _sanitize_vector_column(data: pa.Table, vector_column_name: str) -> pa.Table
     vector_column_name: str
         The name of the vector column.
     """
-    i = data.column_names.index(vector_column_name) if vector_column_name in data.column_names else -1
-    if i < 0:
+    if vector_column_name not in data.column_names:
         raise ValueError(f"Missing vector column: {vector_column_name}")
     vec_arr = data[vector_column_name].combine_chunks()
     if pa.types.is_fixed_size_list(vec_arr.type):
