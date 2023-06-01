@@ -17,8 +17,9 @@ use std::path::Path;
 
 use arrow_array::RecordBatchReader;
 use lance::io::object_store::ObjectStore;
+use snafu::prelude::*;
 
-use crate::error::Result;
+use crate::error::{CreateDirSnafu, Result};
 use crate::table::Table;
 
 pub struct Database {
@@ -43,15 +44,21 @@ impl Database {
     pub async fn connect(uri: &str) -> Result<Database> {
         let object_store = ObjectStore::new(uri).await?;
         if object_store.is_local() {
-            let path = Path::new(uri);
-            if !path.try_exists()? {
-                create_dir_all(&path)?;
-            }
+            Self::try_create_dir(uri).context(CreateDirSnafu { path: uri })?;
         }
         Ok(Database {
             uri: uri.to_string(),
             object_store,
         })
+    }
+
+    /// Try to create a local directory to store the lancedb dataset
+    fn try_create_dir(path: &str) -> core::result::Result<(), std::io::Error> {
+        let path = Path::new(path);
+        if !path.try_exists()? {
+            create_dir_all(&path)?;
+        }
+        Ok(())
     }
 
     /// Get the names of all tables in the database.

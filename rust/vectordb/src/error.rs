@@ -12,44 +12,50 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[derive(Debug)]
-pub enum Error {
-    IO(String),
-    Lance(String),
-}
+use snafu::Snafu;
 
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let (catalog, message) = match self {
-            Self::IO(s) => ("I/O", s.as_str()),
-            Self::Lance(s) => ("Lance", s.as_str()),
-        };
-        write!(f, "LanceDBError({catalog}): {message}")
-    }
+#[derive(Debug, Snafu)]
+#[snafu(visibility(pub(crate)))]
+pub enum Error {
+    #[snafu(display("LanceDBError: Invalid table name: {name}"))]
+    InvalidTableName { name: String },
+    #[snafu(display("LanceDBError: Table '{name}' was not found"))]
+    TableNotFound { name: String },
+    #[snafu(display("LanceDBError: Table '{name}' already exists"))]
+    TableAlreadyExists { name: String },
+    #[snafu(display("LanceDBError: Unable to created lance dataset at {path}: {source}"))]
+    CreateDir {
+        path: String,
+        source: std::io::Error,
+    },
+    #[snafu(display("LanceDBError: {message}"))]
+    Store { message: String },
+    #[snafu(display("LanceDBError: {message}"))]
+    Lance { message: String },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-impl From<std::io::Error> for Error {
-    fn from(e: std::io::Error) -> Self {
-        Self::IO(e.to_string())
-    }
-}
-
 impl From<lance::Error> for Error {
     fn from(e: lance::Error) -> Self {
-        Self::Lance(e.to_string())
+        Self::Lance {
+            message: e.to_string(),
+        }
     }
 }
 
 impl From<object_store::Error> for Error {
     fn from(e: object_store::Error) -> Self {
-        Self::IO(e.to_string())
+        Self::Store {
+            message: e.to_string(),
+        }
     }
 }
 
 impl From<object_store::path::Error> for Error {
     fn from(e: object_store::path::Error) -> Self {
-        Self::IO(e.to_string())
+        Self::Store {
+            message: e.to_string(),
+        }
     }
 }
