@@ -27,6 +27,7 @@ pub const VECTOR_COLUMN_NAME: &str = "vector";
 pub const LANCE_FILE_EXTENSION: &str = "lance";
 
 /// A table in a LanceDB database.
+#[derive(Debug)]
 pub struct Table {
     name: String,
     uri: String,

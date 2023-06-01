@@ -18,7 +18,7 @@ use std::path::Path;
 use arrow_array::RecordBatchReader;
 use lance::io::object_store::ObjectStore;
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::table::Table;
 
 pub struct Database {
@@ -100,6 +100,12 @@ impl Database {
     ///
     /// * A [Table] object.
     pub async fn open_table(&self, name: &str) -> Result<Table> {
+        // Check if the table exist
+        let tables = self.table_names().await?;
+        let table_name = format!("{}.{}", name, LANCE_EXTENSION);
+        if !tables.contains(&table_name) {
+            return Err(Error::Lance(format!("{name} does not exist")));
+        }
         Table::open(&self.uri, name).await
     }
 }
@@ -133,6 +139,18 @@ mod tests {
         assert_eq!(tables.len(), 2);
         assert!(tables.contains(&String::from("table1")));
         assert!(tables.contains(&String::from("table2")));
+    }
+
+    #[tokio::test]
+    async fn open_non_existent_table() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+        let db = Database::connect(uri).await.unwrap();
+        let table = db.open_table("table1").await;
+        assert_eq!(
+            table.unwrap_err().to_string(),
+            "LanceDBError(Lance): table1 does not exist"
+        );
     }
 
     #[tokio::test]
