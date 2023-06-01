@@ -13,14 +13,16 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import os
 
 import pyarrow as pa
+from pyarrow import fs
 
 from .common import DATA, URI
 from .table import LanceTable
-from .util import get_uri_scheme
+from .util import get_uri_scheme, get_uri_location
 
 
 class LanceDBConnection:
@@ -48,11 +50,20 @@ class LanceDBConnection:
         -------
         A list of table names.
         """
-        if get_uri_scheme(self.uri) == "file":
-            return [p.stem for p in Path(self.uri).glob("*.lance")]
-        raise NotImplementedError(
-            "List table_names is only supported for local filesystem for now"
-        )
+        try:
+            filesystem, path = fs.FileSystem.from_uri(self.uri)
+        except pa.ArrowInvalid:
+            raise NotImplementedError(
+                "Unsupported scheme: " + self.uri
+            )
+
+        try:
+            paths = filesystem.get_file_info(fs.FileSelector(get_uri_location(self.uri)))
+        except FileNotFoundError:
+            # It is ok if the file does not exist since it will be created
+            paths = []
+        tables = [os.path.splitext(file_info.base_name)[0] for file_info in paths if file_info.extension == 'lance']
+        return tables
 
     def __len__(self) -> int:
         return len(self.table_names())
