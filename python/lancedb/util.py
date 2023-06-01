@@ -41,11 +41,3 @@ def get_uri_scheme(uri: str) -> str:
         # So we add special handling here for schemes that are a single character
         scheme = "file"
     return scheme
-
-
-# A function that removes the suffix of a string
-# This helper exist because String.removesuffix is only available for Python > 3.9
-def removesuffix(string, suffix):
-    if string.endswith(suffix):
-        return string[: -len(suffix)]
-    return string
