@@ -14,7 +14,7 @@ The key features of LanceDB include:
 
 * Ecosystem integrations with [LangChain 🦜️🔗](https://python.langchain.com/en/latest/modules/indexes/vectorstores/examples/lanecdb.html), [LlamaIndex 🦙](https://gpt-index.readthedocs.io/en/latest/examples/vector_stores/LanceDBIndexDemo.html), Apache-Arrow, Pandas, Polars, DuckDB and more on the way.
 
-LanceDB's core is written in Rust 🦀 and is built using <a href="https://github.com/eto-ai/lance">Lance</a>, an open-source columnar format designed for performant ML workloads.
+LanceDB's core is written in Rust 🦀 and is built using <a href="https://github.com/lancedb/lance">Lance</a>, an open-source columnar format designed for performant ML workloads.
 
 ## Quick Start
 
@@ -50,11 +50,12 @@ LanceDB's core is written in Rust 🦀 and is built using <a href="https://githu
       const results = await table.search([100, 100]).limit(2).execute();
       ```
 
-## Complete Demos
+## Complete Demos (Python)
 
 We will be adding completed demo apps built using LanceDB.
 - [YouTube Transcript Search](notebooks/youtube_transcript_search.ipynb)
-
+- [Documentation QA Bot using LangChain](notebooks/code_qa_bot.ipynb)
+- [Multimodal search using OpenAI and CLIP](notebooks/multimodal_search.ipynb)
 
 ## Documentation Quick Links
 * [`Basic Operations`](basic.md) - basic functionality of LanceDB.
