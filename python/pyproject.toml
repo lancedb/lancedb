@@ -33,7 +33,7 @@ classifiers = [
 ]
 
 [project.urls]
-repository = "https://github.com/eto-ai/lancedb"
+repository = "https://github.com/lancedb/lancedb"
 
 [project.optional-dependencies]
 tests = [
