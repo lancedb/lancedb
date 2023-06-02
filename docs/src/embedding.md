@@ -25,55 +25,88 @@ def embed_func(batch):
     return [model.encode(sentence) for sentence in batch]
 ```
 
+Please note that currently HuggingFace is only supported in the Python SDK.
+
 ### OpenAI example
 
 You can also use an external API like OpenAI to generate embeddings
 
-```python
-import openai
-import os
+=== "Python"
+      ```python
+        import openai
+        import os
 
-# Configuring the environment variable OPENAI_API_KEY
-if "OPENAI_API_KEY" not in os.environ:
-    # OR set the key here as a variable
-    openai.api_key = "sk-..."
+        # Configuring the environment variable OPENAI_API_KEY
+        if "OPENAI_API_KEY" not in os.environ:
+        # OR set the key here as a variable
+        openai.api_key = "sk-..."
 
-# verify that the API key is working
-assert len(openai.Model.list()["data"]) > 0
+        # verify that the API key is working
+        assert len(openai.Model.list()["data"]) > 0
 
-def embed_func(c):
-    rs = openai.Embedding.create(input=c, engine="text-embedding-ada-002")
-    return [record["embedding"] for record in rs["data"]]
-```
+        def embed_func(c):
+        rs = openai.Embedding.create(input=c, engine="text-embedding-ada-002")
+        return [record["embedding"] for record in rs["data"]]
+      ```
+
+=== "Javascript"
+      ```javascript
+        const lancedb = require("vectordb");
+
+        // You need to provide an OpenAI API key
+        const apiKey = "sk-..."
+        // The embedding function will create embeddings for the 'text' column
+        const embedding = new lancedb.OpenAIEmbeddingFunction('text', apiKey)
+      ```
 
 ## Applying an embedding function
 
-Using an embedding function, you can apply it to raw data
-to generate embeddings for each row.
+=== "Python"
+    Using an embedding function, you can apply it to raw data
+    to generate embeddings for each row.
 
-Say if you have a pandas DataFrame with a `text` column that you want to be embedded,
-you can use the [with_embeddings](https://lancedb.github.io/lancedb/python/#lancedb.embeddings.with_embeddings)
-function to generate embeddings and add create a combined pyarrow table:
+    Say if you have a pandas DataFrame with a `text` column that you want to be embedded,
+    you can use the [with_embeddings](https://lancedb.github.io/lancedb/python/#lancedb.embeddings.with_embeddings)
+    function to generate embeddings and add create a combined pyarrow table:
 
-```python
-import pandas as pd
-from lancedb.embeddings import with_embeddings
 
-df = pd.DataFrame([{"text": "pepperoni"},
-                   {"text": "pineapple"}])
-data = with_embeddings(embed_func, df)
+     ```python
+     import pandas as pd
+     from lancedb.embeddings import with_embeddings
 
-# The output is used to create / append to a table
-# db.create_table("my_table", data=data)
-```
+     df = pd.DataFrame([{"text": "pepperoni"},
+                        {"text": "pineapple"}])
+     data = with_embeddings(embed_func, df)
 
-If your data is in a different column, you can specify the `column` kwarg to `with_embeddings`.
+     # The output is used to create / append to a table
+     # db.create_table("my_table", data=data)
+     ```
 
-By default, LanceDB calls the function with batches of 1000 rows. This can be configured
-using the `batch_size` parameter to `with_embeddings`.
+     If your data is in a different column, you can specify the `column` kwarg to `with_embeddings`.
 
-LanceDB automatically wraps the function with retry and rate-limit logic to ensure the OpenAI
-API call is reliable.
+     By default, LanceDB calls the function with batches of 1000 rows. This can be configured
+     using the `batch_size` parameter to `with_embeddings`.
+
+     LanceDB automatically wraps the function with retry and rate-limit logic to ensure the OpenAI
+     API call is reliable.
+
+=== "Javascript"
+     Using an embedding function, you can apply it to raw data
+     to generate embeddings for each row.
+
+     You can just pass the embedding function created previously and LanceDB will automatically generate
+     embededings for your data.
+
+      ```javascript
+      const db = await lancedb.connect("/tmp/lancedb");
+      const data = [
+        { text: 'pepperoni'  },
+        { text: 'pineapple' }
+      ]
+
+      const table = await db.createTable('vectors', data, embedding)
+      ```
+
 
 ## Searching with an embedding function
 
@@ -81,13 +114,25 @@ At inference time, you also need the same embedding function to embed your query
 It's important that you use the same model / function otherwise the embedding vectors don't
 belong in the same latent space and your results will be nonsensical.
 
-```python
-query = "What's the best pizza topping?"
-query_vector = embed_func([query])[0]
-tbl.search(query_vector).limit(10).to_df()
-```
+=== "Python"
+     ```python
+     query = "What's the best pizza topping?"
+     query_vector = embed_func([query])[0]
+     tbl.search(query_vector).limit(10).to_df()
+     ```
 
-The above snippet returns a pandas DataFrame with the 10 closest vectors to the query.
+     The above snippet returns a pandas DataFrame with the 10 closest vectors to the query.
+
+=== "Javascript"
+     ```javascript
+      const results = await table
+        .search('What's the best pizza topping?')
+        .limit(10)
+        .execute()
+     ```
+
+     The above snippet returns an array of records with the 10 closest vectors to the query.
+
 
 ## Roadmap
 
