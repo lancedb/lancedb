@@ -38,7 +38,6 @@ nav:
 - Home: index.md
 - Basics: basic.md
 - Embeddings: embedding.md
-- Indexing: ann_indexes.md
 - Python full-text search: fts.md
 - Python integrations: integrations.md
 - Python examples:
@@ -47,6 +46,7 @@ nav:
   - Multimodal search using OpenAI and CLIP: notebooks/multimodal_search.ipynb
 - References:
   - Vector Search: search.md
+  - Indexing: ann_indexes.md
 - API references:
   - Python API: python/python.md
   - Javascript API: javascript/modules.md
