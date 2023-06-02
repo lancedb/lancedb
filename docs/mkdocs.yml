@@ -44,6 +44,7 @@ nav:
 - Python examples:
   - YouTube Transcript Search using OpenAI: notebooks/youtube_transcript_search.ipynb
   - Documentation QA Bot using LangChain: notebooks/code_qa_bot.ipynb
+  - Multimodal search using OpenAI and CLIP: notebooks/multimodal_search.ipynb
 - API references:
   - Python API: python/python.md
   - Javascript API: javascript/modules.md
