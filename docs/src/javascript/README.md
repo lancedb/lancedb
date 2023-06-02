@@ -1,3 +1,5 @@
+vectordb / [Exports](modules.md)
+
 # LanceDB
 
 A JavaScript / Node.js library for [LanceDB](https://github.com/lancedb/lancedb).
