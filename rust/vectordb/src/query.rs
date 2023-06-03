@@ -27,7 +27,7 @@ pub struct Query {
     pub query_vector: Float32Array,
     pub limit: usize,
     pub filter: Option<String>,
-    pub projection: Option<Vec<String>>,
+    pub select: Option<Vec<String>>,
     pub nprobes: usize,
     pub refine_factor: Option<u32>,
     pub metric_type: Option<MetricType>,
@@ -55,7 +55,7 @@ impl Query {
             metric_type: None,
             use_index: false,
             filter: None,
-            projection: None,
+            select: None,
         }
     }
 
@@ -74,7 +74,7 @@ impl Query {
         )?;
         scanner.nprobs(self.nprobes);
         scanner.use_index(self.use_index);
-        self.projection
+        self.select
             .as_ref()
             .map(|p| scanner.project(p.as_slice()));
         self.filter.as_ref().map(|f| scanner.filter(f));
@@ -153,11 +153,11 @@ impl Query {
         self
     }
 
-    /// Projection.
+    /// Return only the specified columns.
     ///
     /// Only select the specified columns. If not specified, all columns will be returned.
-    pub fn projection(mut self, projection: Option<Vec<String>>) -> Query {
-        self.projection = projection;
+    pub fn select(mut self, columns: Option<Vec<String>>) -> Query {
+        self.select = columns;
         self
     }
 }

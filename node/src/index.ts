@@ -233,7 +233,7 @@ export class Query<T = number[]> {
   private _limit: number
   private _refineFactor?: number
   private _nprobes: number
-  private _projection?: string[]
+  private _select?: string[]
   private _filter?: string
   private _metricType?: MetricType
   private readonly _embeddings?: EmbeddingFunction<T>
@@ -244,7 +244,7 @@ export class Query<T = number[]> {
     this._limit = 10
     this._nprobes = 20
     this._refineFactor = undefined
-    this._projection = undefined
+    this._select = undefined
     this._filter = undefined
     this._metricType = undefined
     this._embeddings = embeddings
@@ -286,12 +286,12 @@ export class Query<T = number[]> {
     return this
   }
 
-  /** Projection.
+  /** Return only the specified columns.
    *
    * @param value Only select the specified columns. If not specified, all columns will be returned.
    */
-  projection (value: string[]): Query<T> {
-    this._projection = value
+  select (value: string[]): Query<T> {
+    this._select = value
     return this
   }
 

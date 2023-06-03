@@ -129,8 +129,8 @@ fn table_search(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let limit = query_obj
         .get::<JsNumber, _, _>(&mut cx, "_limit")?
         .value(&mut cx);
-    let projection = query_obj
-        .get_opt::<JsArray, _, _>(&mut cx, "_projection")?
+    let select = query_obj
+        .get_opt::<JsArray, _, _>(&mut cx, "_select")?
         .map(|arr| {
             let js_array = arr.deref();
             let mut projection_vec: Vec<String> = Vec::new();
@@ -173,7 +173,7 @@ fn table_search(mut cx: FunctionContext) -> JsResult<JsPromise> {
             .nprobes(nprobes)
             .filter(filter)
             .metric_type(metric_type)
-            .projection(projection);
+            .select(select);
         let record_batch_stream = builder.execute();
         let results = record_batch_stream
             .and_then(|stream| stream.try_collect::<Vec<_>>().map_err(Error::from))

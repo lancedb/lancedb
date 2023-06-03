@@ -73,11 +73,11 @@ describe('LanceDB client', function () {
       assert.equal(results[0].id, 2)
     })
 
-    it('project only the selected columns', async function () {
+    it('select only a subset of columns', async function () {
       const uri = await createTestDB()
       const con = await lancedb.connect(uri)
       const table = await con.openTable('vectors')
-      const results = await table.search([0.1, 0.1]).projection(['is_active']).execute()
+      const results = await table.search([0.1, 0.1]).select(['is_active']).execute()
       assert.equal(results.length, 2)
       // vector and score are always returned
       assert.isDefined(results[0].vector)
@@ -197,7 +197,7 @@ describe('Query object', function () {
       .limit(1)
       .metricType(MetricType.Cosine)
       .refineFactor(100)
-      .projection(['a', 'b'])
+      .select(['a', 'b'])
       .nprobes(20) as Record<string, any>
     assert.equal(query._limit, 1)
     assert.equal(query._metricType, MetricType.Cosine)
