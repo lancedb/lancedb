@@ -72,6 +72,22 @@ describe('LanceDB client', function () {
       assert.equal(results.length, 1)
       assert.equal(results[0].id, 2)
     })
+
+    it('select only a subset of columns', async function () {
+      const uri = await createTestDB()
+      const con = await lancedb.connect(uri)
+      const table = await con.openTable('vectors')
+      const results = await table.search([0.1, 0.1]).select(['is_active']).execute()
+      assert.equal(results.length, 2)
+      // vector and score are always returned
+      assert.isDefined(results[0].vector)
+      assert.isDefined(results[0].score)
+      assert.isDefined(results[0].is_active)
+
+      assert.isUndefined(results[0].id)
+      assert.isUndefined(results[0].name)
+      assert.isUndefined(results[0].price)
+    })
   })
 
   describe('when creating a new dataset', function () {
@@ -181,11 +197,13 @@ describe('Query object', function () {
       .limit(1)
       .metricType(MetricType.Cosine)
       .refineFactor(100)
+      .select(['a', 'b'])
       .nprobes(20) as Record<string, any>
     assert.equal(query._limit, 1)
     assert.equal(query._metricType, MetricType.Cosine)
     assert.equal(query._refineFactor, 100)
     assert.equal(query._nprobes, 20)
+    assert.deepEqual(query._select, ['a', 'b'])
   })
 })
 

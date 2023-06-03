@@ -129,4 +129,9 @@ You can select the columns returned by the query using a select clause.
      ```
 
 === "Javascript"
-     Projections are not currently supported in the Javascript SDK.
+     ```javascript
+     const results = await table
+         .search(Array(1536).fill(1.2))
+         .select(["id"])
+         .execute()
+     ```
