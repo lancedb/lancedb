@@ -9,7 +9,8 @@
     "build": "cargo-cp-artifact --artifact cdylib vectordb-node index.node -- cargo build --message-format=json-render-diagnostics",
     "build-release": "npm run build -- --release",
     "test": "mocha -recursive dist/test",
-    "lint": "eslint src --ext .js,.ts"
+    "lint": "eslint src --ext .js,.ts",
+    "clean": "rm -rf node_modules *.node dist/"
   },
   "repository": {
     "type": "git",
