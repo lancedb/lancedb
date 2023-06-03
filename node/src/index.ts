@@ -168,8 +168,15 @@ export class Table<T = number[]> {
    *
    * @param indexParams The parameters of this Index, @see VectorIndexParams.
    */
-  async create_index (indexParams: VectorIndexParams): Promise<any> {
+  async createIndex (indexParams: VectorIndexParams): Promise<any> {
     return tableCreateVectorIndex.call(this._tbl, indexParams)
+  }
+
+  /**
+   * @deprecated Use [Table.createIndex]
+   */
+  async create_index (indexParams: VectorIndexParams): Promise<any> {
+    return await this.createIndex(indexParams)
   }
 }
 
