@@ -203,7 +203,7 @@ describe('Query object', function () {
     assert.equal(query._metricType, MetricType.Cosine)
     assert.equal(query._refineFactor, 100)
     assert.equal(query._nprobes, 20)
-    assert.deepEqual(query._projection, ['a', 'b'])
+    assert.deepEqual(query._select, ['a', 'b'])
   })
 })
 
