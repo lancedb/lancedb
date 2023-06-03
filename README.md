@@ -11,6 +11,10 @@
 <a href="https://twitter.com/lancedb">Twitter</a>
 
 </p>
+
+<img max-width="750px" alt="LanceDB Multimodal Search" src="https://github.com/lancedb/lancedb/assets/917119/09c5afc5-7816-4687-bae4-f2ca194426ec">
+
+</p>
 </div>
 
 <hr />
@@ -22,6 +26,8 @@ The key features of LanceDB include:
 * Production-scale vector search with no servers to manage.
 
 * Store, query and filter vectors, metadata and multi-modal data (text, images, videos, point clouds, and more).
+
+* Support for vector similarity search, full-text search and SQL.
 
 * Native Python and Javascript/Typescript support.
 
