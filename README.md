@@ -11,6 +11,10 @@
 <a href="https://twitter.com/lancedb">Twitter</a>
 
 </p>
+
+<img alt="LanceDB Multimodal Search" src="https://github.com/lancedb/lancedb/assets/917119/09c5afc5-7816-4687-bae4-f2ca194426ec">
+
+</p>
 </div>
 
 <hr />
