@@ -2,7 +2,7 @@
 
 ## use LanceDB's LangChain integration with Modal to run a serverless app
 
-<img id="splash" width="400" alt="modal" src="">
+<img id="splash" width="400" alt="modal" src="https://github.com/lancedb/lancedb/assets/917119/7d80a40f-60d7-48a6-972f-dab05000eccf">
 
 We're going to build a QA bot for your documentation using LanceDB's LangChain integration and use Modal for deployment.
 
