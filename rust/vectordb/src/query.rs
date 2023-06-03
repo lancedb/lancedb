@@ -27,6 +27,7 @@ pub struct Query {
     pub query_vector: Float32Array,
     pub limit: usize,
     pub filter: Option<String>,
+    pub select: Option<Vec<String>>,
     pub nprobes: usize,
     pub refine_factor: Option<u32>,
     pub metric_type: Option<MetricType>,
@@ -54,6 +55,7 @@ impl Query {
             metric_type: None,
             use_index: false,
             filter: None,
+            select: None,
         }
     }
 
@@ -72,6 +74,9 @@ impl Query {
         )?;
         scanner.nprobs(self.nprobes);
         scanner.use_index(self.use_index);
+        self.select
+            .as_ref()
+            .map(|p| scanner.project(p.as_slice()));
         self.filter.as_ref().map(|f| scanner.filter(f));
         self.refine_factor.map(|rf| scanner.refine(rf));
         self.metric_type.map(|mt| scanner.distance_metric(mt));
@@ -138,8 +143,21 @@ impl Query {
         self
     }
 
+    ///  A filter statement to be applied to this query.
+    ///
+    /// # Arguments
+    ///
+    /// * `filter` -  value A filter in the same format used by a sql WHERE clause.
     pub fn filter(mut self, filter: Option<String>) -> Query {
         self.filter = filter;
+        self
+    }
+
+    /// Return only the specified columns.
+    ///
+    /// Only select the specified columns. If not specified, all columns will be returned.
+    pub fn select(mut self, columns: Option<Vec<String>>) -> Query {
+        self.select = columns;
         self
     }
 }
