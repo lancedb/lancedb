@@ -1,8 +1,10 @@
 import sys
-from modal import Secret, Stub, Image
+from modal import Secret, Stub, Image, web_endpoint
 import lancedb
 import re
 import pickle
+import requests
+import zipfile
 from pathlib import Path
 
 from langchain.document_loaders import UnstructuredHTMLLoader
@@ -12,7 +14,15 @@ from langchain.vectorstores import LanceDB
 from langchain.llms import OpenAI
 from langchain.chains import RetrievalQA
 
-lancedb_image = Image.debian_slim().pip_install("lancedb", "langchain", "openai", "tiktoken")
+lancedb_image = Image.debian_slim().pip_install(
+    "lancedb",
+    "langchain",
+    "openai",
+    "pandas",
+    "tiktoken",
+    "unstructured",
+    "tabulate"
+)
 
 stub = Stub(
     name="example-langchain-lancedb",
@@ -23,7 +33,6 @@ stub = Stub(
 docsearch = None
 docs_path = Path("docs.pkl")
 db_path = Path("lancedb")
-doc_cache = []
 
 def get_document_title(document):
     m = str(document.metadata["source"])
@@ -32,16 +41,24 @@ def get_document_title(document):
         return(title[0])
     return ''
 
+def download_docs():
+    pandas_docs = requests.get("https://eto-public.s3.us-west-2.amazonaws.com/datasets/pandas_docs/pandas.documentation.zip")
+    with open(Path("pandas.documentation.zip"), "wb") as f:
+        f.write(pandas_docs.content)
+
+    file = zipfile.ZipFile(Path("pandas.documentation.zip"))
+    file.extractall(path=Path("pandas_docs"))
+
 def store_docs():
     docs = []
 
     if not docs_path.exists():
-        for p in Path("./pandas.documentation").rglob("*.html"):
+        for p in Path("pandas_docs/pandas.documentation").rglob("*.html"):
             if p.is_dir():
                 continue
             loader = UnstructuredHTMLLoader(p)
             raw_document = loader.load()
-            
+
             m = {}
             m["title"] = get_document_title(raw_document[0])
             m["version"] = "2.0rc0"
@@ -55,36 +72,36 @@ def store_docs():
         with docs_path.open("rb") as fh:
             docs = pickle.load(fh)
 
-    doc_cache = docs
+    return docs
 
 def qanda_langchain(query):
-    store_docs()
+    download_docs()
+    docs = store_docs()
 
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=1000,
         chunk_overlap=200,
     )
-    documents = text_splitter.split_documents(doc_cache)
+    documents = text_splitter.split_documents(docs)
     embeddings = OpenAIEmbeddings()
 
     db = lancedb.connect(db_path) 
     table = db.create_table("pandas_docs", data=[
-        {"vector": embeddings.embed_query("Hello World")}
+        {"vector": embeddings.embed_query("Hello World"), "text": "Hello World", "id": "1"}
     ], mode="overwrite")
     docsearch = LanceDB.from_documents(documents, embeddings, connection=table)
     qa = RetrievalQA.from_chain_type(llm=OpenAI(), chain_type="stuff", retriever=docsearch.as_retriever())
     return qa.run(query)
 
 @stub.function()
-def cli(query: str, show_sources: bool = False):
+@web_endpoint(method="GET")
+def web(query: str):
     answer = qanda_langchain(query)
-    # Terminal codes for pretty-printing.
-    bold, end = "\033[1m", "\033[0m"
+    return {
+        "answer": answer,
+    }
 
-    print(f"🦜 {bold}ANSWER:{end}")
+@stub.function()
+def cli(query: str):
+    answer = qanda_langchain(query)
     print(answer)
-    if show_sources:
-        print(f"🔗 {bold}SOURCES:{end}")
-        for text in sources:
-            print(text)
-            print("----")
