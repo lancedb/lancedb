@@ -153,7 +153,7 @@ describe('LanceDB client', function () {
       const uri = await createTestDB(32, 300)
       const con = await lancedb.connect(uri)
       const table = await con.openTable('vectors')
-      await table.create_index({ type: 'ivf_pq', column: 'vector', num_partitions: 2, max_iters: 2 })
+      await table.createIndex({ type: 'ivf_pq', column: 'vector', num_partitions: 2, max_iters: 2 })
     }).timeout(10_000) // Timeout is high partially because GH macos runner is pretty slow
   })
 
