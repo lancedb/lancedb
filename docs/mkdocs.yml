@@ -38,13 +38,15 @@ nav:
 - Home: index.md
 - Basics: basic.md
 - Embeddings: embedding.md
-- Indexing: ann_indexes.md
 - Python full-text search: fts.md
 - Python integrations: integrations.md
 - Python examples:
   - YouTube Transcript Search using OpenAI: notebooks/youtube_transcript_search.ipynb
   - Documentation QA Bot using LangChain: notebooks/code_qa_bot.ipynb
   - Multimodal search using CLIP: notebooks/multimodal_search.ipynb
+- References:
+  - Vector Search: search.md
+  - Indexing: ann_indexes.md
 - API references:
   - Python API: python/python.md
   - Javascript API: javascript/modules.md

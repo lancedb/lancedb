@@ -18,7 +18,7 @@ In the future we will look to automatically create and configure the ANN index.
      ```python
      import lancedb
      import numpy as np
-     uri = "~/.lancedb"
+     uri = "data/sample-lancedb"
      db = lancedb.connect(uri)
 
      # Create 10,000 sample vectors
@@ -48,7 +48,7 @@ In the future we will look to automatically create and configure the ANN index.
 Since `create_index` has a training step, it can take a few minutes to finish for large tables. You can control the index
 creation by providing the following parameters:
 
-- **metric** (default: "L2"): The distance metric to use. By default we use euclidean distance. We also support cosine distance.
+- **metric** (default: "L2"): The distance metric to use. By default we use euclidean distance. We also support "cosine" distance.
 - **num_partitions** (default: 256): The number of partitions of the index. The number of partitions should be configured so each partition has 3-5K vectors. For example, a table
 with ~1M vectors should use 256 partitions. You can specify arbitrary number of partitions but powers of 2 is most conventional.
 A higher number leads to faster queries, but it makes index generation slower.
@@ -87,7 +87,7 @@ There are a couple of parameters that can be used to fine-tune the search:
 === "Javascript"
      ```javascript
      const results = await table
-         .search(Array(1536).fill(1.2))
+         .search(Array(768).fill(1.2))
          .limit(2)
          .nprobes(20)
          .refineFactor(10)
