@@ -1,10 +1,16 @@
-site_name: LanceDB Documentation
+site_name: LanceDB Docs
+repo_url: https://github.com/lancedb/lancedb
+repo_name: lancedb/lancedb
 docs_dir: src
 
 theme:
   name: "material"
+  logo: assets/logo.png
   features:
     - content.code.copy
+    - content.tabs.link
+  icon:
+    repo: fontawesome/brands/github
 
 plugins:
 - search
@@ -14,16 +20,10 @@ plugins:
         paths: [../python]
 - mkdocs-jupyter
 
-nav:
-- Home: index.md
-- Basics: basic.md
-- Embeddings: embedding.md
-- Indexing: ann_indexes.md
-- Full-text search: fts.md
-- Integrations: integrations.md
-- Python API: python.md
-
 markdown_extensions:
+- admonition
+- pymdownx.superfences
+- pymdownx.details
 - pymdownx.highlight:
     anchor_linenums: true
     line_spans: __span
@@ -31,3 +31,25 @@ markdown_extensions:
 - pymdownx.inlinehilite
 - pymdownx.snippets
 - pymdownx.superfences
+- pymdownx.tabbed:
+    alternate_style: true
+
+nav:
+- Home: index.md
+- Basics: basic.md
+- Embeddings: embedding.md
+- Python full-text search: fts.md
+- Python integrations: integrations.md
+- Python examples:
+  - YouTube Transcript Search using OpenAI: notebooks/youtube_transcript_search.ipynb
+  - Documentation QA Bot using LangChain: notebooks/code_qa_bot.ipynb
+  - Multimodal search using CLIP: notebooks/multimodal_search.ipynb
+- References:
+  - Vector Search: search.md
+  - Indexing: ann_indexes.md
+- API references:
+  - Python API: python/python.md
+  - Javascript API: javascript/modules.md
+
+extra_css:
+  - styles/global.css

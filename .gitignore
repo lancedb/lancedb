@@ -15,7 +15,7 @@ site
 python/build
 python/dist
 
-notebooks/.ipynb_checkpoints
+**/.ipynb_checkpoints
 
 **/.hypothesis
 

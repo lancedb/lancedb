@@ -12,29 +12,43 @@ In the future we will look to automatically create and configure the ANN index.
 
 ## Creating an ANN Index
 
-Creating indexes is done via the [create_index](https://lancedb.github.io/lancedb/python/#lancedb.table.LanceTable.create_index) method.
+=== "Python"
+     Creating indexes is done via the [create_index](https://lancedb.github.io/lancedb/python/#lancedb.table.LanceTable.create_index) method.
 
-```python
-import lancedb
-import numpy as np
-uri = "~/.lancedb"
-db = lancedb.connect(uri)
+     ```python
+     import lancedb
+     import numpy as np
+     uri = "data/sample-lancedb"
+     db = lancedb.connect(uri)
 
-# Create 10,000 sample vectors
-data = [{"vector": row, "item": f"item {i}"}
-   for i, row in enumerate(np.random.random((10_000, 768)).astype('float32'))]
+     # Create 10,000 sample vectors
+     data = [{"vector": row, "item": f"item {i}"}
+        for i, row in enumerate(np.random.random((10_000, 768)).astype('float32'))]
 
-# Add the vectors to a table
-tbl = db.create_table("my_vectors", data=data)
+     # Add the vectors to a table
+     tbl = db.create_table("my_vectors", data=data)
 
-# Create and train the index - you need to have enough data in the table for an effective training step
-tbl.create_index(num_partitions=256, num_sub_vectors=96)
-```
+     # Create and train the index - you need to have enough data in the table for an effective training step
+     tbl.create_index(num_partitions=256, num_sub_vectors=96)
+     ```
+
+=== "Javascript"
+     ```javascript
+     const vectordb = require('vectordb')
+     const db = await vectordb.connect('data/sample-lancedb')
+
+     let data = []
+     for (let i = 0; i < 10_000; i++) {
+         data.push({vector: Array(1536).fill(i), id: `${i}`, content: "", longId: `${i}`},)
+     }
+     const table = await db.createTable('vectors', data)
+     await table.create_index({ type: 'ivf_pq', column: 'vector', num_partitions: 256, num_sub_vectors: 96 })
+     ```
 
 Since `create_index` has a training step, it can take a few minutes to finish for large tables. You can control the index
 creation by providing the following parameters:
 
-- **metric** (default: "L2"): The distance metric to use. By default we use euclidean distance. We also support cosine distance.
+- **metric** (default: "L2"): The distance metric to use. By default we use euclidean distance. We also support "cosine" distance.
 - **num_partitions** (default: 256): The number of partitions of the index. The number of partitions should be configured so each partition has 3-5K vectors. For example, a table
 with ~1M vectors should use 256 partitions. You can specify arbitrary number of partitions but powers of 2 is most conventional.
 A higher number leads to faster queries, but it makes index generation slower.
@@ -57,18 +71,28 @@ There are a couple of parameters that can be used to fine-tune the search:
   e.g., for 1M vectors divided into 256 partitions, if you're looking for top 20, then refine_factor=200 reranks the whole partition.<br/>
   Note: refine_factor is only applicable if an ANN index is present. If specified on a table without an ANN index, it is ignored.
 
-
-```python
-tbl.search(np.random.random((768))) \
-    .limit(2) \
-    .nprobes(20) \
-    .refine_factor(10) \
-    .to_df()
+=== "Python"
+     ```python
+     tbl.search(np.random.random((768))) \
+         .limit(2) \
+         .nprobes(20) \
+         .refine_factor(10) \
+         .to_df()
 
                                               vector       item       score
-0  [0.44949695, 0.8444449, 0.06281311, 0.23338133...  item 1141  103.575333
-1  [0.48587373, 0.269207, 0.15095535, 0.65531915,...  item 3953  108.393867
-```
+     0  [0.44949695, 0.8444449, 0.06281311, 0.23338133...  item 1141  103.575333
+     1  [0.48587373, 0.269207, 0.15095535, 0.65531915,...  item 3953  108.393867
+     ```
+
+=== "Javascript"
+     ```javascript
+     const results = await table
+         .search(Array(768).fill(1.2))
+         .limit(2)
+         .nprobes(20)
+         .refineFactor(10)
+         .execute()
+     ```
 
 The search will return the data requested in addition to the score of each item.
 
@@ -78,18 +102,31 @@ The search will return the data requested in addition to the score of each item.
 
 You can further filter the elements returned by a search using a where clause.
 
-```python
-tbl.search(np.random.random((768))).where("item != 'item 1141'").to_df()
-```
+=== "Python"
+     ```python
+     tbl.search(np.random.random((768))).where("item != 'item 1141'").to_df()
+     ```
+
+=== "Javascript"
+     ```javascript
+     const results = await table
+         .search(Array(1536).fill(1.2))
+         .where("item != 'item 1141'")
+         .execute()
+     ```
 
 ### Projections (select clause)
 
 You can select the columns returned by the query using a select clause.
 
-```python
-tbl.search(np.random.random((768))).select(["vector"]).to_df()
-                                              vector      score
-0  [0.30928212, 0.022668175, 0.1756372, 0.4911822...  93.971092
-1  [0.2525465, 0.01723831, 0.261568, 0.002007689,...  95.173485
-...
-```
+=== "Python"
+     ```python
+     tbl.search(np.random.random((768))).select(["vector"]).to_df()
+     vector      score
+     0  [0.30928212, 0.022668175, 0.1756372, 0.4911822...  93.971092
+     1  [0.2525465, 0.01723831, 0.261568, 0.002007689,...  95.173485
+     ...
+     ```
+
+=== "Javascript"
+     Projections are not currently supported in the Javascript SDK.
