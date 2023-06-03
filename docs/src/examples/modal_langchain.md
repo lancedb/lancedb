@@ -32,6 +32,8 @@ stub = Stub(
 )
 ```
 
+We're using Modal's Secrets injection to secure our OpenAI key. To set your own, you can access the Modal UI and enter your key.
+
 ### Setting up caches for LanceDB and LangChain
 
 Next, we can setup some globals to cache our LanceDB database, as well as our LangChain docsource:
