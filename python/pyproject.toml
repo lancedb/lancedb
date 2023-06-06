@@ -37,7 +37,7 @@ repository = "https://github.com/lancedb/lancedb"
 
 [project.optional-dependencies]
 tests = [
-    "pytest"
+    "pytest", "pytest-mock"
 ]
 dev = [
     "ruff", "pre-commit", "black"

@@ -82,3 +82,10 @@ def test_create_index_multiple_columns(tmp_path, table):
     assert len(df) == 10
     assert "text" in df.columns
     assert "text2" in df.columns
+
+
+def test_empty_rs(tmp_path, table, mocker):
+    table.create_fts_index(["text", "text2"])
+    mocker.patch("lancedb.fts.search_index", return_value=([], []))
+    df = table.search("puppy").limit(10).to_df()
+    assert len(df) == 0
