@@ -4,96 +4,136 @@
 
 <img id="splash" width="400" alt="nodejs" src="https://github.com/lancedb/lancedb/assets/917119/3a140e75-bf8e-438a-a1e4-af14a72bcf98">
 
-This Q&A bot will allow you to search through youtube transcripts using natural language! We'll introduce how you can use LanceDB's Javascript API to store and manage your data easily.
+This Q&A bot will allow you to search through youtube transcripts using natural language! We'll introduce how to use LanceDB's Javascript API to store and manage your data easily.
 
-For this example we're using a HuggingFace dataset that contains YouTube transcriptions: `jamescalam/youtube-transcriptions`, to make it easier, we've converted it to a LanceDB `db` already, which you can download and put in a working directory:
-
-```wget -c https://eto-public.s3.us-west-2.amazonaws.com/lancedb_demo.tar.gz -O - | tar -xz -C .```
-
-Now, we'll create a simple app that can:
-1. Take a text based query and search for contexts in our corpus, using embeddings generated from the OpenAI Embedding API.
-2. Create a prompt with the contexts, and call the OpenAI Completion API to answer the text based query.
-
-Dependencies and setup of OpenAI API:
-
-```javascript
-const lancedb = require("vectordb");
-const { Configuration, OpenAIApi } = require("openai");
-
-const configuration = new Configuration({
-    apiKey: process.env.OPENAI_API_KEY,
-    });
-const openai = new OpenAIApi(configuration);
+```bash
+npm install vectordb
 ```
 
-First, let's set our question and the context amount. The context amount will be used to query similar documents in our corpus.
+## Download the data
 
-```javascript
-const QUESTION = "who was the 12th person on the moon and when did they land?";
-const CONTEXT_AMOUNT = 3;
+For this example, we're using a sample of a HuggingFace dataset that contains YouTube transcriptions: `jamescalam/youtube-transcriptions`. Download and extract this file under the `data` folder:
+
+```bash
+wget -c https://eto-public.s3.us-west-2.amazonaws.com/datasets/youtube_transcript/youtube-transcriptions_sample.jsonl
 ```
 
-Now, let's generate an embedding from this question:
+## Prepare Context
+
+Each item in the dataset contains just a short chunk of text. We'll need to merge a bunch of these chunks together on a rolling basis. For this demo, we'll look back 20 records to create a more complete context for each sentence.
+
+First, we need to read and parse the input file.
 
 ```javascript
-const embeddingResponse = await openai.createEmbedding({
-    model: "text-embedding-ada-002",
-    input: QUESTION,
-});
+const lines = (await fs.readFile(INPUT_FILE_NAME, 'utf-8'))
+  .toString()
+  .split('\n')
+  .filter(line => line.length > 0)
+  .map(line => JSON.parse(line))
 
-const embedding = embeddingResponse.data["data"][0]["embedding"];
+const data = contextualize(lines, 20, 'video_id')
 ```
 
-Once we have the embedding, we can connect to LanceDB (using the database we downloaded earlier), and search through the chatbot table.
-We'll extract 3 similar documents found.
+The contextualize function groups the transcripts by video_id and then creates the expanded context for each item.
 
 ```javascript
-const db = await lancedb.connect('./lancedb');
-const tbl = await db.openTable('chatbot');
-const query = tbl.search(embedding);
-query.limit = CONTEXT_AMOUNT;
-const context = await query.execute();
-```
+function contextualize (rows, contextSize, groupColumn) {
+  const grouped = []
+  rows.forEach(row => {
+    if (!grouped[row[groupColumn]]) {
+      grouped[row[groupColumn]] = []
+    }
+    grouped[row[groupColumn]].push(row)
+  })
 
-Let's combine the context together so we can pass it into our prompt:
-
-```javascript
-for (let i = 1; i < context.length; i++) {
-    context[0]["text"] += " " + context[i]["text"];
+  const data = []
+  Object.keys(grouped).forEach(key => {
+    for (let i = 0; i < grouped[key].length; i++) {
+      const start = i - contextSize > 0 ? i - contextSize : 0
+      grouped[key][i].context = grouped[key].slice(start, i + 1).map(r => r.text).join(' ')
+    }
+    data.push(...grouped[key])
+  })
+  return data
 }
 ```
 
-Lastly, let's construct the prompt. You could play around with this to create more accurate/better prompts to yield results.
+## Create the LanceDB Table
+
+To load our data into LanceDB, we need to create embedding (vectors) for each item. For this example, we will use the OpenAI embedding functions, which have a native integration with LanceDB.
 
 ```javascript
-const prompt = "Answer the question based on the context below.\n\n" +
-    "Context:\n" +
-    `${context[0]["text"]}\n` +
-    `\n\nQuestion: ${QUESTION}\nAnswer:`;
+// You need to provide an OpenAI API key, here we read it from the OPENAI_API_KEY environment variable
+const apiKey = process.env.OPENAI_API_KEY
+// The embedding function will create embeddings for the 'context' column
+const embedFunction = new lancedb.OpenAIEmbeddingFunction('context', apiKey)
+// Connects to LanceDB
+const db = await lancedb.connect('data/youtube-lancedb')
+const tbl = await db.createTable('vectors', data, embedFunction)
 ```
 
-We pass the prompt, along with the context, to the completion API.
+## Create and answer the prompt
+
+We will accept questions in natural language and use our corpus stored in LanceDB to answer them. First, we need to set up the OpenAI client:
 
 ```javascript
-const completion = await openai.createCompletion({
-    model: "text-davinci-003",
-    prompt,
-    temperature: 0,
-    max_tokens: 400,
-    top_p: 1,
-    frequency_penalty: 0,
-    presence_penalty: 0,
-});
+const configuration = new Configuration({ apiKey })
+const openai = new OpenAIApi(configuration)
 ```
 
-And that's it!
+Then we can prompt questions and use LanceDB to retrieve the three most relevant transcripts for this prompt.
 
 ```javascript
-console.log(completion.data.choices[0].text);
+const query = await rl.question('Prompt: ')
+const results = await tbl
+  .search(query)
+  .select(['title', 'text', 'context'])
+  .limit(3)
+  .execute()
 ```
 
-The response is (which is non deterministic):
+The query and the transcripts' context are appended together in a single prompt:
 
+```javascript
+function createPrompt (query, context) {
+    let prompt =
+        'Answer the question based on the context below.\n\n' +
+        'Context:\n'
+
+    // need to make sure our prompt is not larger than max size
+    prompt = prompt + context.map(c => c.context).join('\n\n---\n\n').substring(0, 3750)
+    prompt = prompt + `\n\nQuestion: ${query}\nAnswer:`
+    return prompt
+}
 ```
-The 12th person on the moon was Harrison Schmitt and he landed on December 11, 1972.
+
+We can now use the OpenAI Completion API to process our custom prompt and give us an answer.
+
+```javascript
+const response = await openai.createCompletion({
+  model: 'text-davinci-003',
+  prompt: createPrompt(query, results),
+  max_tokens: 400,
+  temperature: 0,
+  top_p: 1,
+  frequency_penalty: 0,
+  presence_penalty: 0
+})
+console.log(response.data.choices[0].text)
 ```
+
+## Let's put it all together now
+
+Now we can provide queries and have them answered based on your local LanceDB data.
+
+```bash
+Prompt: who was the 12th person on the moon and when did they land?
+ The 12th person on the moon was Harrison Schmitt and he landed on December 11, 1972.
+Prompt: Which training method should I use for sentence transformers when I only have pairs of related sentences?
+ NLI with multiple negative ranking loss.
+```
+
+## That's a wrap
+
+In this example, you learned how to use LanceDB to store and query embedding representations of your local data. The complete example code is on [GitHub](https://github.com/lancedb/lancedb/tree/main/node/examples), and you can also download the LanceDB dataset using [this link](https://eto-public.s3.us-west-2.amazonaws.com/datasets/youtube_transcript/youtube-lancedb.zip).
+
