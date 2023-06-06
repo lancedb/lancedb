@@ -32,7 +32,7 @@ jobs:
       run: |
         pip install -e .
         pip install tantivy@git+https://github.com/quickwit-oss/tantivy-py#164adc87e1a033117001cf70e38c82a53014d985
-        pip install pytest
+        pip install pytest pytest-mock
     - name: Run tests
       run: pytest -x -v --durations=30 tests
   mac:
@@ -55,6 +55,6 @@ jobs:
       run: |
         pip install -e .
         pip install tantivy@git+https://github.com/quickwit-oss/tantivy-py#164adc87e1a033117001cf70e38c82a53014d985
-        pip install pytest
+        pip install pytest pytest-mock
     - name: Run tests
       run: pytest -x -v --durations=30 tests

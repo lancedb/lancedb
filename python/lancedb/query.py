@@ -164,6 +164,8 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         index = tantivy.Index.open(index_path)
         # get the scores and doc ids
         row_ids, scores = search_index(index, self._query, self._limit)
+        if len(row_ids) == 0:
+            return pd.DataFrame()
         scores = pa.array(scores)
         output_tbl = self._table.to_lance().take(row_ids, columns=self._columns)
         output_tbl = output_tbl.append_column("score", scores)
