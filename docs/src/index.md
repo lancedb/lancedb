@@ -55,6 +55,9 @@ LanceDB's core is written in Rust 🦀 and is built using <a href="https://githu
 - [Documentation QA Bot using LangChain](notebooks/code_qa_bot.ipynb)
 - [Multimodal search using CLIP](notebooks/multimodal_search.ipynb)
 
+## Complete Demos (JavaScript)
+- [YouTube Transcript Search](examples/nodejs.md)
+
 ## Documentation Quick Links
 * [`Basic Operations`](basic.md) - basic functionality of LanceDB.
 * [`Embedding Functions`](embedding.md) - functions for working with embeddings.
