@@ -118,6 +118,8 @@ def search_index(
     query = index.parse_query(query)
     # get top results
     results = searcher.search(query, limit)
+    if results.count == 0:
+        return tuple(), tuple()
     return tuple(
         zip(
             *[
