@@ -22,8 +22,21 @@ def connect(uri: URI) -> LanceDBConnection:
     uri: str or Path
         The uri of the database.
 
+    Examples
+    --------
+
+    For a local directory, provide a path for the database:
+
+    >>> import lancedb
+    >>> db = lancedb.connect("~/.lancedb")
+
+    For object storage, use a URI prefix:
+
+    >>> db = lancedb.connect("s3://my-bucket/lancedb")
+
     Returns
     -------
-    A connection to a LanceDB database.
+    conn : LanceDBConnection
+        A connection to a LanceDB database.
     """
     return LanceDBConnection(uri)

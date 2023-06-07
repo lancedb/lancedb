@@ -35,6 +35,8 @@ jobs:
         pip install pytest pytest-mock
     - name: Run tests
       run: pytest -x -v --durations=30 tests
+    - name: doctest
+      run: pytest --doctest-modules lancedb
   mac:
     timeout-minutes: 30
     runs-on: "macos-12"

@@ -14,10 +14,22 @@ theme:
 
 plugins:
 - search
+- autorefs
 - mkdocstrings:
     handlers:
       python:
         paths: [../python]
+        selection:
+          docstring_style: numpy
+        rendering:
+          heading_level: 3
+          show_source: false
+          show_symbol_type_in_heading: true
+          show_signature_annotations: true
+        import:
+          # for cross references
+          - https://arrow.apache.org/docs/objects.inv
+          - https://pandas.pydata.org/docs/objects.inv
 - mkdocs-jupyter
 
 markdown_extensions:

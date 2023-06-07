@@ -64,4 +64,5 @@ LanceDB's core is written in Rust 🦀 and is built using <a href="https://githu
 * [`Indexing`](ann_indexes.md) - create vector indexes to speed up queries.
 * [`Full text search`](fts.md) - [EXPERIMENTAL] full-text search API
 * [`Ecosystem Integrations`](integrations.md) - integrating LanceDB with python data tooling ecosystem.
-* [`API Reference`](python.md) - detailed documentation for the LanceDB Python SDK.
+* [`Python API Reference`](python/python.md) - detailed documentation for the LanceDB Python SDK.
+* [`Node API Reference`](javascript/modules.md) - detailed documentation for the LanceDB Python SDK.
