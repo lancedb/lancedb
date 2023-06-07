@@ -8,6 +8,8 @@ The key features of LanceDB include:
 
 * Store, query and filter vectors, metadata and multi-modal data (text, images, videos, point clouds, and more).
 
+* Support for vector similarity search, full-text search and SQL.
+
 * Native Python and Javascript/Typescript support.
 
 * Zero-copy, automatic versioning, manage versions of your data without needing extra infrastructure.
@@ -54,9 +56,11 @@ LanceDB's core is written in Rust 🦀 and is built using <a href="https://githu
 - [YouTube Transcript Search](notebooks/youtube_transcript_search.ipynb)
 - [Documentation QA Bot using LangChain](notebooks/code_qa_bot.ipynb)
 - [Multimodal search using CLIP](notebooks/multimodal_search.ipynb)
+- [Serverless QA Bot with S3 and Lambda](examples/serverless_lancedb_with_s3_and_lambda.md)
+- [Serverless QA Bot with Modal](examples/serverless_qa_bot_with_modal_and_langchain.md)
 
 ## Complete Demos (JavaScript)
-- [YouTube Transcript Search](examples/nodejs.md)
+- [YouTube Transcript Search](examples/youtube_transcript_bot_with_nodejs.md)
 
 ## Documentation Quick Links
 * [`Basic Operations`](basic.md) - basic functionality of LanceDB.
