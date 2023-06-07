@@ -101,13 +101,13 @@ class LanceQueryBuilder:
         self._where = where
         return self
 
-    def metric(self, metric: Literal["l2", "cosine"]) -> LanceQueryBuilder:
+    def metric(self, metric: Literal["L2", "cosine"]) -> LanceQueryBuilder:
         """Set the distance metric to use.
 
         Parameters
         ----------
-        metric: "l2" or "cosine"
-            The distance metric to use. By default "l2" is used.
+        metric: "L2" or "cosine"
+            The distance metric to use. By default "L2" is used.
 
         Returns
         -------
