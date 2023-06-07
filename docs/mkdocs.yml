@@ -41,9 +41,13 @@ nav:
 - Python full-text search: fts.md
 - Python integrations: integrations.md
 - Python examples:
-  - YouTube Transcript Search using OpenAI: notebooks/youtube_transcript_search.ipynb
+  - YouTube Transcript Search: notebooks/youtube_transcript_search.ipynb
   - Documentation QA Bot using LangChain: notebooks/code_qa_bot.ipynb
   - Multimodal search using CLIP: notebooks/multimodal_search.ipynb
+  - Serverless QA Bot with S3 and Lambda: examples/serverless_lancedb_with_s3_and_lambda.md
+  - Serverless QA Bot with Modal: examples/serverless_qa_bot_with_modal_and_langchain.md
+- Javascript examples:
+  - YouTube Transcript Search: examples/youtube_transcript_bot_with_nodejs.md
 - References:
   - Vector Search: search.md
   - Indexing: ann_indexes.md
