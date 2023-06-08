@@ -17,12 +17,74 @@ import pandas as pd
 
 def contextualize(raw_df: pd.DataFrame) -> Contextualizer:
     """Create a Contextualizer object for the given DataFrame.
-    Used to create context windows.
+
+    Used to create context windows. Context windows are rolling subsets of text
+    data.
+
+    The input text column should already be separated into rows that will be the
+    unit of the window. So to create a context window over tokens, start with
+    a DataFrame with one token per row. To create a context window over sentences,
+    start with a DataFrame with one sentence per row.
+
+    Examples
+    --------
+    >>> from lancedb.context import contextualize
+    >>> import pandas as pd
+    >>> data = pd.DataFrame({
+    ...    'token': ['The', 'quick', 'brown', 'fox', 'jumped', 'over',
+    ...              'the', 'lazy', 'dog', 'I', 'love', 'sandwiches'],
+    ...    'document_id': [1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2]
+    ... })
+
+    ``window`` determines how many rows to include in each window. In our case
+    this how many tokens, but depending on the input data, it could be sentences,
+    paragraphs, messages, etc.
+
+    >>> contextualize(data).window(3).stride(1).text_col('token').to_df()
+                  token  document_id
+    0   The quick brown            1
+    1   quick brown fox            1
+    2  brown fox jumped            1
+    3   fox jumped over            1
+    4   jumped over the            1
+    5     over the lazy            1
+    6      the lazy dog            1
+    7        lazy dog I            1
+    8        dog I love            1
+    >>> contextualize(data).window(7).stride(1).text_col('token').to_df()
+                                      token  document_id
+    0   The quick brown fox jumped over the            1
+    1  quick brown fox jumped over the lazy            1
+    2    brown fox jumped over the lazy dog            1
+    3        fox jumped over the lazy dog I            1
+    4       jumped over the lazy dog I love            1
+
+
+    ``stride`` determines how many rows to skip between each window start. This can
+    be used to reduce the total number of windows generated.
+
+    >>> contextualize(data).window(4).stride(2).text_col('token').to_df()
+                       token  document_id
+    0    The quick brown fox            1
+    2  brown fox jumped over            1
+    4   jumped over the lazy            1
+    6         the lazy dog I            1
+
+    ``groupby`` determines how to group the rows. For example, we would like to have
+    context windows that don't cross document boundaries. In this case, we can
+    pass ``document_id`` as the group by.
+
+    >>> contextualize(data).window(4).stride(2).text_col('token').groupby('document_id').to_df()
+                       token  document_id
+    0    The quick brown fox            1
+    2  brown fox jumped over            1
+    4   jumped over the lazy            1
     """
     return Contextualizer(raw_df)
 
 
 class Contextualizer:
+    """Create context windows from a DataFrame. See [lancedb.context.contextualize][]."""
     def __init__(self, raw_df):
         self._text_col = None
         self._groupby = None

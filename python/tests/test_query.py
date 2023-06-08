@@ -30,23 +30,13 @@ class MockTable:
 
 @pytest.fixture
 def table(tmp_path) -> MockTable:
-    df = pd.DataFrame(
-        {
-            "vector": [[1, 2], [3, 4]],
-            "id": [1, 2],
-            "str_field": ["a", "b"],
-            "float_field": [1.0, 2.0],
-        }
-    )
-    schema = pa.schema(
-        [
-            pa.field("vector", pa.list_(pa.float32(), list_size=2)),
-            pa.field("id", pa.int32()),
-            pa.field("str_field", pa.string()),
-            pa.field("float_field", pa.float64()),
-        ]
-    )
-    lance.write_dataset(df, tmp_path, schema)
+    df = pa.table({
+        "vector": pa.array([[1, 2], [3, 4]], type=pa.list_(pa.float32(), list_size=2)),
+        "id": pa.array([1, 2]),
+        "str_field": pa.array(["a", "b"]),
+        "float_field": pa.array([1.0, 2.0]),
+    })
+    lance.write_dataset(df, tmp_path)
     return MockTable(tmp_path)
 
 
@@ -65,7 +55,7 @@ def test_query_builder_with_filter(table):
 def test_query_builder_with_metric(table):
     query = [4, 8]
     df_default = LanceQueryBuilder(table, query).to_df()
-    df_l2 = LanceQueryBuilder(table, query).metric("l2").to_df()
+    df_l2 = LanceQueryBuilder(table, query).metric("L2").to_df()
     tm.assert_frame_equal(df_default, df_l2)
 
     df_cosine = LanceQueryBuilder(table, query).metric("cosine").limit(1).to_df()
