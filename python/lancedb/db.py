@@ -28,6 +28,31 @@ from .util import get_uri_scheme, get_uri_location
 class LanceDBConnection:
     """
     A connection to a LanceDB database.
+
+    Parameters
+    ----------
+    uri: str or Path
+        The root uri of the database.
+    
+    Examples
+    --------
+    >>> import lancedb
+    >>> db = lancedb.connect("./.lancedb")
+    >>> db.create_table("my_table", data=[{"vector": [1.1, 1.2], "b": 2},
+    ...                                   {"vector": [0.5, 1.3], "b": 4}])
+    LanceTable(my_table)
+    >>> db.create_table("another_table", data=[{"vector": [0.4, 0.4], "b": 6}])
+    LanceTable(another_table)
+    >>> db.table_names()
+    ['another_table', 'my_table']
+    >>> len(db)
+    2
+    >>> db["my_table"]
+    LanceTable(my_table)
+    >>> "my_table" in db
+    True
+    >>> db.drop_table("my_table")
+    >>> db.drop_table("another_table")
     """
 
     def __init__(self, uri: URI):
@@ -48,7 +73,8 @@ class LanceDBConnection:
 
         Returns
         -------
-        A list of table names.
+        list of str
+            A list of table names.
         """
         try:
             filesystem, path = fs.FileSystem.from_uri(self.uri)
@@ -103,7 +129,73 @@ class LanceDBConnection:
 
         Returns
         -------
-        A LanceTable object representing the table.
+        LanceTable
+            A reference to the newly created table.
+
+        Examples
+        --------
+
+        Can create with list of tuples or dictionaries:
+
+        >>> import lancedb
+        >>> db = lancedb.connect("./.lancedb")
+        >>> data = [{"vector": [1.1, 1.2], "lat": 45.5, "long": -122.7},
+        ...         {"vector": [0.2, 1.8], "lat": 40.1, "long":  -74.1}]
+        >>> db.create_table("my_table", data)
+        LanceTable(my_table)
+        >>> db["my_table"].head()
+        pyarrow.Table
+        vector: fixed_size_list<item: float>[2]
+          child 0, item: float
+        lat: double
+        long: double
+        ----
+        vector: [[[1.1,1.2],[0.2,1.8]]]
+        lat: [[45.5,40.1]]
+        long: [[-122.7,-74.1]]
+        
+        You can also pass a pandas DataFrame:
+
+        >>> import pandas as pd
+        >>> data = pd.DataFrame({
+        ...    "vector": [[1.1, 1.2], [0.2, 1.8]],
+        ...    "lat": [45.5, 40.1],
+        ...    "long": [-122.7, -74.1]
+        ... })
+        >>> db.create_table("table2", data)
+        LanceTable(table2)
+        >>> db["table2"].head()
+        pyarrow.Table
+        vector: fixed_size_list<item: float>[2]
+          child 0, item: float
+        lat: double
+        long: double
+        ----
+        vector: [[[1.1,1.2],[0.2,1.8]]]
+        lat: [[45.5,40.1]]
+        long: [[-122.7,-74.1]]
+
+        Data is converted to Arrow before being written to disk. For maximum 
+        control over how data is saved, either provide the PyArrow schema to
+        convert to or else provide a PyArrow table directly.
+
+        >>> custom_schema = pa.schema([
+        ...   pa.field("vector", pa.list_(pa.float32(), 2)),
+        ...   pa.field("lat", pa.float32()),
+        ...   pa.field("long", pa.float32())
+        ... ])
+        >>> db.create_table("table3", data, schema = custom_schema)
+        LanceTable(table3)
+        >>> db["table3"].head()
+        pyarrow.Table
+        vector: fixed_size_list<item: float>[2]
+          child 0, item: float
+        lat: float
+        long: float
+        ----
+        vector: [[[1.1,1.2],[0.2,1.8]]]
+        lat: [[45.5,40.1]]
+        long: [[-122.7,-74.1]]
         """
         if data is not None:
             tbl = LanceTable.create(self, name, data, schema, mode=mode)

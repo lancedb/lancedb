@@ -11,6 +11,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 from __future__ import annotations
+from typing import Literal
 
 import numpy as np
 import pandas as pd
@@ -22,6 +23,24 @@ from .common import VECTOR_COLUMN_NAME
 class LanceQueryBuilder:
     """
     A builder for nearest neighbor queries for LanceDB.
+
+    Examples
+    --------
+    >>> import lancedb
+    >>> data = [{"vector": [1.1, 1.2], "b": 2},
+    ...         {"vector": [0.5, 1.3], "b": 4},
+    ...         {"vector": [0.4, 0.4], "b": 6},
+    ...         {"vector": [0.4, 0.4], "b": 10}]
+    >>> db = lancedb.connect("./.lancedb")
+    >>> table = db.create_table("my_table", data=data)
+    >>> (table.search([0.4, 0.4])
+    ...       .metric("cosine")
+    ...       .where("b < 10")
+    ...       .select(["b"])
+    ...       .limit(2)
+    ...       .to_df())
+       b      vector  score
+    0  6  [0.4, 0.4]    0.0
     """
 
     def __init__(self, table: "lancedb.table.LanceTable", query: np.ndarray):
@@ -44,7 +63,8 @@ class LanceQueryBuilder:
 
         Returns
         -------
-        The LanceQueryBuilder object.
+        LanceQueryBuilder
+            The LanceQueryBuilder object.
         """
         self._limit = limit
         return self
@@ -59,7 +79,8 @@ class LanceQueryBuilder:
 
         Returns
         -------
-        The LanceQueryBuilder object.
+        LanceQueryBuilder
+            The LanceQueryBuilder object.
         """
         self._columns = columns
         return self
@@ -74,28 +95,36 @@ class LanceQueryBuilder:
 
         Returns
         -------
-        The LanceQueryBuilder object.
+        LanceQueryBuilder
+            The LanceQueryBuilder object.
         """
         self._where = where
         return self
 
-    def metric(self, metric: str) -> LanceQueryBuilder:
+    def metric(self, metric: Literal["L2", "cosine"]) -> LanceQueryBuilder:
         """Set the distance metric to use.
 
         Parameters
         ----------
-        metric: str
-            The distance metric to use. By default "l2" is used.
+        metric: "L2" or "cosine"
+            The distance metric to use. By default "L2" is used.
 
         Returns
         -------
-        The LanceQueryBuilder object.
+        LanceQueryBuilder
+            The LanceQueryBuilder object.
         """
         self._metric = metric
         return self
 
     def nprobes(self, nprobes: int) -> LanceQueryBuilder:
         """Set the number of probes to use.
+
+        Higher values will yield better recall (more likely to find vectors if 
+        they exist) at the expense of latency.
+
+        See discussion in [Querying an ANN Index][../querying-an-ann-index] for
+        tuning advice.
 
         Parameters
         ----------
@@ -104,13 +133,20 @@ class LanceQueryBuilder:
 
         Returns
         -------
-        The LanceQueryBuilder object.
+        LanceQueryBuilder
+            The LanceQueryBuilder object.
         """
         self._nprobes = nprobes
         return self
 
     def refine_factor(self, refine_factor: int) -> LanceQueryBuilder:
-        """Set the refine factor to use.
+        """Set the refine factor to use, increasing the number of vectors sampled.
+
+        As an example, a refine factor of 2 will sample 2x as many vectors as
+        requested, re-ranks them, and returns the top half most relevant results.
+
+        See discussion in [Querying an ANN Index][querying-an-ann-index] for
+        tuning advice.
 
         Parameters
         ----------
@@ -119,7 +155,8 @@ class LanceQueryBuilder:
 
         Returns
         -------
-        The LanceQueryBuilder object.
+        LanceQueryBuilder
+            The LanceQueryBuilder object.
         """
         self._refine_factor = refine_factor
         return self

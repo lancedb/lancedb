@@ -47,6 +47,40 @@ def _sanitize_data(data, schema):
 class LanceTable:
     """
     A table in a LanceDB database.
+
+    Examples
+    --------
+
+    Create using [LanceDBConnection.create_table][lancedb.LanceDBConnection.create_table]
+    (more examples in that method's documentation).
+
+    >>> import lancedb
+    >>> db = lancedb.connect("./.lancedb")
+    >>> table = db.create_table("my_table", data=[{"vector": [1.1, 1.2], "b": 2}])
+    >>> table.head()
+    pyarrow.Table
+    vector: fixed_size_list<item: float>[2]
+      child 0, item: float
+    b: int64
+    ----
+    vector: [[[1.1,1.2]]]
+    b: [[2]]
+
+    Can append new data with [LanceTable.add][lancedb.table.LanceTable.add].
+
+    >>> table.add([{"vector": [0.5, 1.3], "b": 4}])
+    2
+
+    Can query the table with [LanceTable.search][lancedb.table.LanceTable.search].
+
+    >>> table.search([0.4, 0.4]).select(["b"]).to_df()
+       b      vector  score
+    0  4  [0.5, 1.3]   0.82
+    1  2  [1.1, 1.2]   1.13
+
+    Search queries are much faster when an index is created. See
+    [LanceTable.create_index][lancedb.table.LanceTable.create_index].
+
     """
 
     def __init__(
@@ -64,7 +98,12 @@ class LanceTable:
 
     @property
     def schema(self) -> pa.Schema:
-        """Return the schema of the table."""
+        """Return the schema of the table.
+        
+        Returns
+        -------
+        pa.Schema
+            A PyArrow schema object."""
         return self._dataset.schema
 
     def list_versions(self):
@@ -72,12 +111,39 @@ class LanceTable:
         return self._dataset.versions()
 
     @property
-    def version(self):
+    def version(self) -> int:
         """Get the current version of the table"""
         return self._dataset.version
 
     def checkout(self, version: int):
-        """Checkout a version of the table"""
+        """Checkout a version of the table. This is an in-place operation.
+        
+        This allows viewing previous versions of the table.
+        
+        Parameters
+        ----------
+        version : int
+            The version to checkout.
+        
+        Examples
+        --------
+        >>> import lancedb
+        >>> db = lancedb.connect("./.lancedb")
+        >>> table = db.create_table("my_table", [{"vector": [1.1, 0.9], "type": "vector"}])
+        >>> table.version
+        1
+        >>> table.to_pandas()
+               vector    type
+        0  [1.1, 0.9]  vector
+        >>> table.add([{"vector": [0.5, 0.2], "type": "vector"}])
+        2
+        >>> table.version
+        2
+        >>> table.checkout(1)
+        >>> table.to_pandas()
+               vector    type
+        0  [1.1, 0.9]  vector
+        """
         max_ver = max([v["version"] for v in self._dataset.versions()])
         if version < 1 or version > max_ver:
             raise ValueError(f"Invalid version {version}")
@@ -98,11 +164,20 @@ class LanceTable:
         return self._dataset.head(n)
 
     def to_pandas(self) -> pd.DataFrame:
-        """Return the table as a pandas DataFrame."""
+        """Return the table as a pandas DataFrame.
+        
+        Returns
+        -------
+        pd.DataFrame
+        """
         return self.to_arrow().to_pandas()
 
     def to_arrow(self) -> pa.Table:
-        """Return the table as a pyarrow Table."""
+        """Return the table as a pyarrow Table.
+        
+        Returns
+        -------
+        pa.Table"""
         return self._dataset.to_table()
 
     @property
@@ -175,7 +250,8 @@ class LanceTable:
 
         Returns
         -------
-        The number of vectors added to the table.
+        int
+            The number of vectors in the table.
         """
         data = _sanitize_data(data, self.schema)
         lance.write_dataset(data, self._dataset_uri, mode=mode)
@@ -193,10 +269,11 @@ class LanceTable:
 
         Returns
         -------
-        A LanceQueryBuilder object representing the query.
-        Once executed, the query returns selected columns, the vector,
-        and also the "score" column which is the distance between the query
-        vector and the returned vector.
+        LanceQueryBuilder
+            A query builder object representing the query.
+            Once executed, the query returns selected columns, the vector,
+            and also the "score" column which is the distance between the query
+            vector and the returned vector.
         """
         if isinstance(query, str):
             # fts

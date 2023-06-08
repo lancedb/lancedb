@@ -68,6 +68,11 @@ def populate_index(index: tantivy.Index, table: LanceTable, fields: List[str]) -
         The table to index
     fields : List[str]
         List of fields to index
+    
+    Returns
+    -------
+    int
+        The number of rows indexed
     """
     # first check the fields exist and are string or large string type
     for name in fields:
