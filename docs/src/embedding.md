@@ -45,7 +45,7 @@ You can also use an external API like OpenAI to generate embeddings
         assert len(openai.Model.list()["data"]) > 0
 
         def embed_func(c):
-        rs = openai.Embedding.create(input=c, engine="text-embedding-ada-002")
+            rs = openai.Embedding.create(input=c, engine="text-embedding-ada-002")
         return [record["embedding"] for record in rs["data"]]
       ```
 
