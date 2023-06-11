@@ -137,17 +137,23 @@ class Contextualizer:
         self._text_col = text_col
         return self
 
-    def to_df(self) -> pd.DataFrame:
+    def to_df(self, threshold: int = 1) -> pd.DataFrame:
         """Create the context windows and return a DataFrame."""
 
         def process_group(grp):
             # For each group, create the text rolling window
+            # with values greater than threshold
             text = grp[self._text_col].values
-            contexts = grp.iloc[: -self._window : self._stride, :].copy()
-            contexts[self._text_col] = [
-                " ".join(text[start_i : start_i + self._window])
-                for start_i in range(0, len(grp) - self._window, self._stride)
+            contexts = grp.iloc[: : self._stride, :].copy()
+            windows = [
+                " ".join(text[start_i : min(start_i + self._window, len(grp))])
+                for start_i in range(0, len(grp), self._stride)
+                if start_i + self._window <= len(grp) or len(grp) - start_i > threshold
             ]
+            # if last few rows dropped
+            if len(windows) < len(contexts):
+                contexts = contexts.iloc[:len(windows)]
+            contexts[self._text_col] = windows
             return contexts
 
         if self._groupby is None:
