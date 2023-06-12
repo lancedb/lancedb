@@ -99,7 +99,7 @@ class LanceTable:
     @property
     def schema(self) -> pa.Schema:
         """Return the schema of the table.
-        
+
         Returns
         -------
         pa.Schema
@@ -117,14 +117,14 @@ class LanceTable:
 
     def checkout(self, version: int):
         """Checkout a version of the table. This is an in-place operation.
-        
+
         This allows viewing previous versions of the table.
-        
+
         Parameters
         ----------
         version : int
             The version to checkout.
-        
+
         Examples
         --------
         >>> import lancedb
@@ -165,7 +165,7 @@ class LanceTable:
 
     def to_pandas(self) -> pd.DataFrame:
         """Return the table as a pandas DataFrame.
-        
+
         Returns
         -------
         pd.DataFrame
@@ -174,7 +174,7 @@ class LanceTable:
 
     def to_arrow(self) -> pa.Table:
         """Return the table as a pyarrow Table.
-        
+
         Returns
         -------
         pa.Table"""
@@ -342,4 +342,6 @@ def _sanitize_vector_column(data: pa.Table, vector_column_name: str) -> pa.Table
         values = values.cast(pa.float32())
     list_size = len(values) / len(data)
     vec_arr = pa.FixedSizeListArray.from_arrays(values, list_size)
-    return data.set_column(data.column_names.index(vector_column_name), vector_column_name, vec_arr)
+    return data.set_column(
+        data.column_names.index(vector_column_name), vector_column_name, vec_arr
+    )

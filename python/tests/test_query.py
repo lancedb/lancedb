@@ -30,12 +30,16 @@ class MockTable:
 
 @pytest.fixture
 def table(tmp_path) -> MockTable:
-    df = pa.table({
-        "vector": pa.array([[1, 2], [3, 4]], type=pa.list_(pa.float32(), list_size=2)),
-        "id": pa.array([1, 2]),
-        "str_field": pa.array(["a", "b"]),
-        "float_field": pa.array([1.0, 2.0]),
-    })
+    df = pa.table(
+        {
+            "vector": pa.array(
+                [[1, 2], [3, 4]], type=pa.list_(pa.float32(), list_size=2)
+            ),
+            "id": pa.array([1, 2]),
+            "str_field": pa.array(["a", "b"]),
+            "float_field": pa.array([1.0, 2.0]),
+        }
+    )
     lance.write_dataset(df, tmp_path)
     return MockTable(tmp_path)
 

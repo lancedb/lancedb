@@ -120,7 +120,7 @@ class LanceQueryBuilder:
     def nprobes(self, nprobes: int) -> LanceQueryBuilder:
         """Set the number of probes to use.
 
-        Higher values will yield better recall (more likely to find vectors if 
+        Higher values will yield better recall (more likely to find vectors if
         they exist) at the expense of latency.
 
         See discussion in [Querying an ANN Index][../querying-an-ann-index] for

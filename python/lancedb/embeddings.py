@@ -33,7 +33,7 @@ def with_embeddings(
     """Add a vector column to a table using the given embedding function.
 
     The new columns will be called "vector".
-    
+
     Parameters
     ----------
     func : Callable
@@ -48,7 +48,7 @@ def with_embeddings(
         Whether to show a progress bar.
     batch_size : int, default 1000
         The number of row values to pass to each call of the embedding function.
-    
+
     Returns
     -------
     pa.Table
