@@ -1,4 +1,4 @@
-"""Custom exception handling""
+"""Custom exception handling"""
 
 class MissingValueError(ValueError):
     """Exception raised when a required value is missing."""
