@@ -1,4 +1,4 @@
-name: [Python] Create release commit
+name: Python - Create release commit
 
 on:
   workflow_dispatch:
