@@ -33,7 +33,7 @@ class LanceDBConnection:
     ----------
     uri: str or Path
         The root uri of the database.
-    
+
     Examples
     --------
     >>> import lancedb
@@ -79,16 +79,20 @@ class LanceDBConnection:
         try:
             filesystem, path = fs.FileSystem.from_uri(self.uri)
         except pa.ArrowInvalid:
-            raise NotImplementedError(
-                "Unsupported scheme: " + self.uri
-            )
+            raise NotImplementedError("Unsupported scheme: " + self.uri)
 
         try:
-            paths = filesystem.get_file_info(fs.FileSelector(get_uri_location(self.uri)))
+            paths = filesystem.get_file_info(
+                fs.FileSelector(get_uri_location(self.uri))
+            )
         except FileNotFoundError:
             # It is ok if the file does not exist since it will be created
             paths = []
-        tables = [os.path.splitext(file_info.base_name)[0] for file_info in paths if file_info.extension == 'lance']
+        tables = [
+            os.path.splitext(file_info.base_name)[0]
+            for file_info in paths
+            if file_info.extension == "lance"
+        ]
         return tables
 
     def __len__(self) -> int:
@@ -153,7 +157,7 @@ class LanceDBConnection:
         vector: [[[1.1,1.2],[0.2,1.8]]]
         lat: [[45.5,40.1]]
         long: [[-122.7,-74.1]]
-        
+
         You can also pass a pandas DataFrame:
 
         >>> import pandas as pd
@@ -175,7 +179,7 @@ class LanceDBConnection:
         lat: [[45.5,40.1]]
         long: [[-122.7,-74.1]]
 
-        Data is converted to Arrow before being written to disk. For maximum 
+        Data is converted to Arrow before being written to disk. For maximum
         control over how data is saved, either provide the PyArrow schema to
         convert to or else provide a PyArrow table directly.
 
