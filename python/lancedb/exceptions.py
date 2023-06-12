@@ -9,7 +9,7 @@ class MissingValueError(ValueError):
 
 class MissingColumnError(KeyError):
     """
-    Exception raised when a column name specified is not in 
+    Exception raised when a column name specified is not in
     the  DataFrame object
     """
 

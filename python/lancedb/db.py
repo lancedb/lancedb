@@ -33,7 +33,7 @@ class LanceDBConnection:
     ----------
     uri: str or Path
         The root uri of the database.
-    
+
     Examples
     --------
     >>> import lancedb
@@ -157,7 +157,7 @@ class LanceDBConnection:
         vector: [[[1.1,1.2],[0.2,1.8]]]
         lat: [[45.5,40.1]]
         long: [[-122.7,-74.1]]
-        
+
         You can also pass a pandas DataFrame:
 
         >>> import pandas as pd
@@ -179,7 +179,7 @@ class LanceDBConnection:
         lat: [[45.5,40.1]]
         long: [[-122.7,-74.1]]
 
-        Data is converted to Arrow before being written to disk. For maximum 
+        Data is converted to Arrow before being written to disk. For maximum
         control over how data is saved, either provide the PyArrow schema to
         convert to or else provide a PyArrow table directly.
 

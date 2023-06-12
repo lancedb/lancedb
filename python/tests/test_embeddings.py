@@ -27,7 +27,10 @@ def test_with_embeddings():
             # ratelimiter package doesn't work on 3.11
             continue
         data = pa.Table.from_arrays(
-            [pa.array(["foo", "bar"]), pa.array([10.0, 20.0]),],
+            [
+                pa.array(["foo", "bar"]),
+                pa.array([10.0, 20.0]),
+            ],
             names=["text", "price"],
         )
         data = with_embeddings(mock_embed_func, data, wrap_api=wrap_api)

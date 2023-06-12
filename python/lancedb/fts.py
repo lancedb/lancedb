@@ -68,7 +68,7 @@ def populate_index(index: tantivy.Index, table: LanceTable, fields: List[str]) -
         The table to index
     fields : List[str]
         List of fields to index
-    
+
     Returns
     -------
     int

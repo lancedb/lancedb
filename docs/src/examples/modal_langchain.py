@@ -78,7 +78,10 @@ def qanda_langchain(query):
     download_docs()
     docs = store_docs()
 
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200,)
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1000,
+        chunk_overlap=200,
+    )
     documents = text_splitter.split_documents(docs)
     embeddings = OpenAIEmbeddings()
 
