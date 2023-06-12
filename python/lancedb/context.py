@@ -13,7 +13,7 @@
 from __future__ import annotations
 
 import pandas as pd
-
+from .exceptions import MissingValueError, MissingColumnError
 
 def contextualize(raw_df: pd.DataFrame) -> Contextualizer:
     """Create a Contextualizer object for the given DataFrame.
@@ -139,6 +139,17 @@ class Contextualizer:
 
     def to_df(self, threshold: int = 1) -> pd.DataFrame:
         """Create the context windows and return a DataFrame."""
+
+        if self._text_col not in self._raw_df.columns.tolist():
+            raise MissingColumnError(self._text_col)
+
+        if self._window is None or self._window < 1:
+            raise MissingValueError("The value of window is None or less than 1. Specify the "
+                "window size (number of rows to include in each window)")
+
+        if self._stride is None or self._stride < 1:
+            raise MissingValueError("The value of stride is None or less than 1. Specify the "
+                "stride (number of rows to skip between each window)")
 
         def process_group(grp):
             # For each group, create the text rolling window
