@@ -49,7 +49,8 @@ def test_contextualizer_with_threshold(raw_df: pd.DataFrame):
     .stride(3)\
     .text_col('token')\
     .groupby('document_id')\
-    .to_df(3)['token']\
+    .threshold(3)\
+    .to_df()['token']\
     .to_list()
     
     assert result == [
