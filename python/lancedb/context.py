@@ -15,6 +15,8 @@ from __future__ import annotations
 import pandas as pd
 from .exceptions import MissingValueError, MissingColumnError
 
+
+
 def contextualize(raw_df: pd.DataFrame) -> Contextualizer:
     """Create a Contextualizer object for the given DataFrame.
 
@@ -108,6 +110,7 @@ def contextualize(raw_df: pd.DataFrame) -> Contextualizer:
 
 class Contextualizer:
     """Create context windows from a DataFrame. See [lancedb.context.contextualize][]."""
+
     def __init__(self, raw_df):
         self._text_col = None
         self._groupby = None
@@ -180,12 +183,16 @@ class Contextualizer:
             raise MissingColumnError(self._text_col)
 
         if self._window is None or self._window < 1:
-            raise MissingValueError("The value of window is None or less than 1. Specify the "
-                "window size (number of rows to include in each window)")
+            raise MissingValueError(
+                "The value of window is None or less than 1. Specify the "
+                "window size (number of rows to include in each window)"
+            )
 
         if self._stride is None or self._stride < 1:
-            raise MissingValueError("The value of stride is None or less than 1. Specify the "
-                "stride (number of rows to skip between each window)")
+            raise MissingValueError(
+                "The value of stride is None or less than 1. Specify the "
+                "stride (number of rows to skip between each window)"
+            )
 
         def process_group(grp):
             # For each group, create the text rolling window

@@ -19,6 +19,7 @@ import lancedb
 # You need to setup AWS credentials an a base path to run this test. Example
 #    AWS_PROFILE=default TEST_S3_BASE_URL=s3://my_bucket/dataset pytest tests/test_io.py
 
+
 @pytest.mark.skipif(
     (os.environ.get("TEST_S3_BASE_URL") is None),
     reason="please setup s3 base url",
