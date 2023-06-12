@@ -79,16 +79,20 @@ class LanceDBConnection:
         try:
             filesystem, path = fs.FileSystem.from_uri(self.uri)
         except pa.ArrowInvalid:
-            raise NotImplementedError(
-                "Unsupported scheme: " + self.uri
-            )
+            raise NotImplementedError("Unsupported scheme: " + self.uri)
 
         try:
-            paths = filesystem.get_file_info(fs.FileSelector(get_uri_location(self.uri)))
+            paths = filesystem.get_file_info(
+                fs.FileSelector(get_uri_location(self.uri))
+            )
         except FileNotFoundError:
             # It is ok if the file does not exist since it will be created
             paths = []
-        tables = [os.path.splitext(file_info.base_name)[0] for file_info in paths if file_info.extension == 'lance']
+        tables = [
+            os.path.splitext(file_info.base_name)[0]
+            for file_info in paths
+            if file_info.extension == "lance"
+        ]
         return tables
 
     def __len__(self) -> int:

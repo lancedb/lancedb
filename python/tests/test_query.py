@@ -30,12 +30,16 @@ class MockTable:
 
 @pytest.fixture
 def table(tmp_path) -> MockTable:
-    df = pa.table({
-        "vector": pa.array([[1, 2], [3, 4]], type=pa.list_(pa.float32(), list_size=2)),
-        "id": pa.array([1, 2]),
-        "str_field": pa.array(["a", "b"]),
-        "float_field": pa.array([1.0, 2.0]),
-    })
+    df = pa.table(
+        {
+            "vector": pa.array(
+                [[1, 2], [3, 4]], type=pa.list_(pa.float32(), list_size=2)
+            ),
+            "id": pa.array([1, 2]),
+            "str_field": pa.array(["a", "b"]),
+            "float_field": pa.array([1.0, 2.0]),
+        }
+    )
     lance.write_dataset(df, tmp_path)
     return MockTable(tmp_path)
 
@@ -60,8 +64,7 @@ def test_query_builder_with_metric(table):
 
     df_cosine = LanceQueryBuilder(table, query).metric("cosine").limit(1).to_df()
     assert df_cosine.score[0] == pytest.approx(
-        cosine_distance(query, df_cosine.vector[0]),
-        abs=1e-6,
+        cosine_distance(query, df_cosine.vector[0]), abs=1e-6,
     )
     assert 0 <= df_cosine.score[0] <= 1
 

@@ -6,6 +6,7 @@ import pytest
 # import lancedb so we don't have to in every example
 import lancedb
 
+
 @pytest.fixture(autouse=True)
 def doctest_setup(monkeypatch, tmpdir):
     # disable color for doctests so we don't have to include
@@ -15,6 +16,3 @@ def doctest_setup(monkeypatch, tmpdir):
     monkeypatch.setitem(os.environ, "COLUMNS", "80")
     # Work in a temporary directory
     monkeypatch.chdir(tmpdir)
-
-    
-    
