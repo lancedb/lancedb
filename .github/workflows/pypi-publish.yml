@@ -1,0 +1,31 @@
+name: PyPI Publish
+
+on:
+  release:
+    types: [ published ]
+    tags:
+      - 'python-v*' # Push events that matches the python-make-release action
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+        working-directory: python
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.8"
+      - name: Build distribution
+        run: |
+          ls -la
+          pip install wheel setuptools --upgrade
+          python setup.py sdist bdist_wheel
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@v1.8.5
+        with:
+          password: ${{ secrets.LANCEDB_PYPI_API_TOKEN }}
+          packages-dir: python/dist
