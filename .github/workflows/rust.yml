@@ -2,15 +2,19 @@ name: Rust
 
 on:
   push:
-    branches: [ "main" ]
+    branches:
+      - main
   pull_request:
-    branches: [ "main" ]
+    paths:
+      - rust/**
+      - .github/workflows/rust.yml
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   build:
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: rust
