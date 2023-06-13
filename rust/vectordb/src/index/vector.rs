@@ -20,6 +20,8 @@ pub trait VectorIndexBuilder {
     fn get_column(&self) -> Option<String>;
     fn get_index_name(&self) -> Option<String>;
     fn build(&self) -> VectorIndexParams;
+
+    fn get_replace(&self) -> bool;
 }
 
 pub struct IvfPQIndexBuilder {
@@ -28,6 +30,7 @@ pub struct IvfPQIndexBuilder {
     metric_type: Option<MetricType>,
     ivf_params: Option<IvfBuildParams>,
     pq_params: Option<PQBuildParams>,
+    replace: bool,
 }
 
 impl IvfPQIndexBuilder {
@@ -38,6 +41,7 @@ impl IvfPQIndexBuilder {
             metric_type: None,
             ivf_params: None,
             pq_params: None,
+            replace: true,
         }
     }
 }
@@ -67,6 +71,11 @@ impl IvfPQIndexBuilder {
         self.pq_params = Some(pq_params);
         self
     }
+
+    pub fn replace(&mut self, replace: bool) -> &mut IvfPQIndexBuilder {
+        self.replace = replace;
+        self
+    }
 }
 
 impl VectorIndexBuilder for IvfPQIndexBuilder {
@@ -83,6 +92,10 @@ impl VectorIndexBuilder for IvfPQIndexBuilder {
         let pq_params = self.pq_params.clone().unwrap_or(PQBuildParams::default());
 
         VectorIndexParams::with_ivf_pq_params(pq_params.metric_type, ivf_params, pq_params)
+    }
+
+    fn get_replace(&self) -> bool {
+        self.replace
     }
 }
 

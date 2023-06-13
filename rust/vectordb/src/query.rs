@@ -177,7 +177,7 @@ mod tests {
     #[tokio::test]
     async fn test_setters_getters() {
         let mut batches: Box<dyn RecordBatchReader> = Box::new(make_test_batches());
-        let ds = Dataset::write(&mut batches, ":memory:", None)
+        let ds = Dataset::write(&mut batches, "memory://foo", None)
             .await
             .unwrap();
 
@@ -206,7 +206,7 @@ mod tests {
     #[tokio::test]
     async fn test_execute() {
         let mut batches: Box<dyn RecordBatchReader> = Box::new(make_test_batches());
-        let ds = Dataset::write(&mut batches, ":memory:", None)
+        let ds = Dataset::write(&mut batches, "memory://foo", None)
             .await
             .unwrap();
 

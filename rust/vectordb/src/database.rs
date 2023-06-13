@@ -42,7 +42,7 @@ impl Database {
     ///
     /// * A [Database] object.
     pub async fn connect(uri: &str) -> Result<Database> {
-        let object_store = ObjectStore::new(uri).await?;
+        let (object_store, _) = ObjectStore::from_uri(uri).await?;
         if object_store.is_local() {
             Self::try_create_dir(uri).context(CreateDirSnafu { path: uri })?;
         }
