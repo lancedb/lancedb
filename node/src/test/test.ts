@@ -64,13 +64,19 @@ describe('LanceDB client', function () {
       assert.equal(results[0].id, 1)
     })
 
-    it('uses a filter', async function () {
+    it('uses a filter / where clause', async function () {
+      const assertResults = (results: Array<Record<string, unknown>>) => {
+        assert.equal(results.length, 1)
+        assert.equal(results[0].id, 2)
+      }
+
       const uri = await createTestDB()
       const con = await lancedb.connect(uri)
       const table = await con.openTable('vectors')
-      const results = await table.search([0.1, 0.1]).filter('id == 2').execute()
-      assert.equal(results.length, 1)
-      assert.equal(results[0].id, 2)
+      let results = await table.search([0.1, 0.1]).filter('id == 2').execute()
+      assertResults(results)
+      results = await table.search([0.1, 0.1]).where('id == 2').execute()
+      assertResults(results)
     })
 
     it('select only a subset of columns', async function () {
