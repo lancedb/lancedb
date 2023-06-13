@@ -103,9 +103,7 @@ describe('LanceDB client', function () {
       const tableName = `vectors_${Math.floor(Math.random() * 100)}`
       const table = await con.createTable(tableName, data)
       assert.equal(table.name, tableName)
-
-      const results = await table.search([0.1, 0.3]).execute()
-      assert.equal(results.length, 2)
+      assert.equal(await table.countRows(), 2)
     })
 
     it('appends records to an existing table ', async function () {
@@ -118,16 +116,14 @@ describe('LanceDB client', function () {
       ]
 
       const table = await con.createTable('vectors', data)
-      const results = await table.search([0.1, 0.3]).execute()
-      assert.equal(results.length, 2)
+      assert.equal(await table.countRows(), 2)
 
       const dataAdd = [
         { id: 3, vector: [2.1, 2.2], price: 10, name: 'c' },
         { id: 4, vector: [3.1, 3.2], price: 50, name: 'd' }
       ]
       await table.add(dataAdd)
-      const resultsAdd = await table.search([0.1, 0.3]).execute()
-      assert.equal(resultsAdd.length, 4)
+      assert.equal(await table.countRows(), 4)
     })
 
     it('overwrite all records in a table', async function () {
@@ -135,16 +131,14 @@ describe('LanceDB client', function () {
       const con = await lancedb.connect(uri)
 
       const table = await con.openTable('vectors')
-      const results = await table.search([0.1, 0.3]).execute()
-      assert.equal(results.length, 2)
+      assert.equal(await table.countRows(), 2)
 
       const dataOver = [
         { vector: [2.1, 2.2], price: 10, name: 'foo' },
         { vector: [3.1, 3.2], price: 50, name: 'bar' }
       ]
       await table.overwrite(dataOver)
-      const resultsAdd = await table.search([0.1, 0.3]).execute()
-      assert.equal(resultsAdd.length, 2)
+      assert.equal(await table.countRows(), 2)
     })
   })
 
