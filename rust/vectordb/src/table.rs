@@ -130,6 +130,7 @@ impl Table {
                 IndexType::Vector,
                 index_builder.get_index_name(),
                 &index_builder.build(),
+                index_builder.get_replace(),
             )
             .await?;
         self.dataset = Arc::new(dataset);
@@ -233,7 +234,7 @@ mod tests {
         let uri = tmp_dir.path().to_str().unwrap();
 
         let batches: Box<dyn RecordBatchReader> = Box::new(make_test_batches());
-        let schema = batches.schema().clone();
+        let _ = batches.schema().clone();
         Table::create(&uri, "test", batches).await.unwrap();
 
         let batches: Box<dyn RecordBatchReader> = Box::new(make_test_batches());
