@@ -65,6 +65,7 @@ describe('LanceDB client', function () {
     })
 
     it('uses a filter / where clause', async function () {
+      // eslint-disable-next-line @typescript-eslint/explicit-function-return-type
       const assertResults = (results: Array<Record<string, unknown>>) => {
         assert.equal(results.length, 1)
         assert.equal(results[0].id, 2)
