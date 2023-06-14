@@ -14,7 +14,6 @@
 from __future__ import annotations
 
 import os
-import shutil
 from functools import cached_property
 from typing import List, Union
 
@@ -27,7 +26,6 @@ from lance.vector import vec_to_table
 
 from .common import DATA, VEC, VECTOR_COLUMN_NAME
 from .query import LanceFtsQueryBuilder, LanceQueryBuilder
-from .util import get_uri_scheme
 
 
 def _sanitize_data(data, schema):
