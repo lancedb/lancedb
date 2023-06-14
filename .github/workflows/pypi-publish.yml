@@ -3,12 +3,12 @@ name: PyPI Publish
 on:
   release:
     types: [ published ]
-    tags:
-      - 'python-v*' # Push events that matches the python-make-release action
 
 jobs:
   publish:
     runs-on: ubuntu-latest
+    # Only runs on tags that matches the python-make-release action
+    if: startsWith(github.ref, 'refs/tags/python-v')
     defaults:
       run:
         shell: bash
