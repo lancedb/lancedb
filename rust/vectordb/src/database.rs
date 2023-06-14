@@ -69,7 +69,7 @@ impl Database {
     pub async fn table_names(&self) -> Result<Vec<String>> {
         let f = self
             .object_store
-            .read_dir("/")
+            .read_dir(self.uri.as_str())
             .await?
             .iter()
             .map(|fname| Path::new(fname))
