@@ -293,6 +293,8 @@ export class Query<T = number[]> {
     return this
   }
 
+  where = this.filter
+
   /** Return only the specified columns.
    *
    * @param value Only select the specified columns. If not specified, all columns will be returned.
