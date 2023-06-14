@@ -10,19 +10,87 @@ on:
       - .github/workflows/rust.yml
 
 env:
+  # This env var is used by Swatinem/rust-cache@v2 for the cache
+  # key, so we set it to make sure it is always consistent.
   CARGO_TERM_COLOR: always
+  # Disable full debug symbol generation to speed up CI build and keep memory down
+  # "1" means line tables only, which is useful for panic tracebacks.
+  RUSTFLAGS: "-C debuginfo=1"
+  RUST_BACKTRACE: "1"
 
 jobs:
-  build:
+  linux:
+    timeout-minutes: 30
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        shell: bash
+        working-directory: rust
+    steps:
+    - uses: actions/checkout@v3
+      with:
+          fetch-depth: 0
+          lfs: true
+    - uses: Swatinem/rust-cache@v2
+      with:
+          workspaces: rust
+    - name: Install dependencies
+      run: |
+          sudo apt update
+          sudo apt install -y protobuf-compiler libssl-dev
+    - name: Build
+      run: cargo build --all-features
+    - name: Run tests
+      run: cargo test --all-features
+  macos:
+    runs-on: macos-12
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v3
+        with:
+            fetch-depth: 0
+            lfs: true
+      - name: CPU features
+        run: sysctl -a | grep cpu
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Install dependencies
+        run: brew install protobuf
+      - name: Build
+        run: cargo build --all-features
+      - name: Run tests
+        run: cargo test --all-features
+  windows:
+    runs-on: windows-latest
     timeout-minutes: 30
     defaults:
       run:
         working-directory: rust
-    runs-on: ubuntu-latest
-
+    env:
+      VCPKG_BINARY_SOURCES: 'clear;nuget,GitHub,readwrite'
     steps:
-    - uses: actions/checkout@v3
-    - name: Build
-      run: cargo build --verbose
-    - name: Run tests
-      run: cargo test --verbose
+      - uses: actions/checkout@v3
+        with:
+              fetch-depth: 0
+              lfs: true
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - uses: ./.github/workflows/install_windows_dependencies
+        with:
+          vcpkg_token: ${{ secrets.VCPKG_GITHUB_PACKAGES }}
+          update_vcpkg: true
+      - name: Build
+        run: |
+          $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
+          $env:PATH = $env:VCPKG_INSTALLATION_ROOT + '\installed\x64-windows\bin;' + $env:PATH
+          $env:PATH = $env:VCPKG_INSTALLATION_ROOT + '\installed\x64-windows-static-md\bin;' + $env:PATH
+          $env:PATH = $env:VCPKG_INSTALLATION_ROOT + '\installed\x64-windows\tools\protobuf;' + $env:PATH
+          cargo build --all-features
+      - name: Run tests
+        run: cargo test --all-features
