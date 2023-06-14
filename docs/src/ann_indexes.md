@@ -67,7 +67,7 @@ There are a couple of parameters that can be used to fine-tune the search:
   e.g., for 1M vectors divided up into 256 partitions, nprobes should be set to ~20-40.<br/>
   Note: nprobes is only applicable if an ANN index is present. If specified on a table without an ANN index, it is ignored.
 - **refine_factor** (default: None): Refine the results by reading extra elements and re-ranking them in memory.<br/>
-  A higher number makes search more accurate but also slower. If you find the recall is less than idea, try refine_factor=10 to start.<br/>
+  A higher number makes search more accurate but also slower. If you find the recall is less than ideal, try refine_factor=10 to start.<br/>
   e.g., for 1M vectors divided into 256 partitions, if you're looking for top 20, then refine_factor=200 reranks the whole partition.<br/>
   Note: refine_factor is only applicable if an ANN index is present. If specified on a table without an ANN index, it is ignored.
 
