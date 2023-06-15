@@ -97,6 +97,7 @@ fn get_index_params_builder(
                 let ivf_params = IvfBuildParams {
                     num_partitions: np,
                     max_iters,
+                    centroids: None,
                 };
                 index_builder.ivf_params(ivf_params)
             });

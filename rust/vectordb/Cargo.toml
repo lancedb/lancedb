@@ -1,6 +1,6 @@
 [package]
 name = "vectordb"
-version = "0.0.1"
+version = "0.1.6"
 edition = "2021"
 description = "Serverless, low-latency vector database for AI applications"
 license = "Apache-2.0"
@@ -14,7 +14,7 @@ arrow-data = "37.0"
 arrow-schema = "37.0"
 object_store = "0.5.6"
 snafu = "0.7.4"
-lance = "0.4.17"
+lance = "0.4.21"
 tokio = { version = "1.23", features = ["rt-multi-thread"] }
 
 [dev-dependencies]
