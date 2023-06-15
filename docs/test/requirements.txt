@@ -1,6 +1,5 @@
 lancedb 
 numpy
 pandas
-openai
 pylance
 duckdb
