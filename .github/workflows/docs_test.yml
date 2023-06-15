@@ -8,8 +8,6 @@ on:
       - docs/test/**
       - .github/workflows/docs_test.yml
   pull_request:
-    branches:
-      - main
     paths:
       - docs/test/**
       - .github/workflows/docs_test.yml
