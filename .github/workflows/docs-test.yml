@@ -4,11 +4,11 @@ on:
   push:
     branches: ["main"]
     paths:
-      - docs/**
+      - docs/test/**
   pull_request:
     branches: ["main"]
     paths:
-      - docs/**
+      - docs/test/**
 
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
@@ -18,13 +18,17 @@ jobs:
   test:
     name: Test doc code
     runs-on: "ubuntu-22.04"
+    strategy:
+      matrix:
+        node-version: [ "16", "18" ]
+        python-minor-version: [ "8", "9", "10", "11" ]
     steps:
     - name: Checkout
       uses: actions/checkout@v3
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
-        python-version: "3.10"
+        python-version: 3.${{ matrix.python-minor-version }}
         cache: "pip"
         cache-dependency-path: "docs/test/requirements.txt"
     - uses: actions/setup-node@v3
@@ -40,7 +44,7 @@ jobs:
       run: |
         python -m pip install -e .
         python -m pip install -r requirements.txt
-      name: Install node dependencies
+    - name: Install node dependencies
       run: 
         cd docs/test
         npm ci
