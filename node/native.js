@@ -17,7 +17,7 @@ const { currentTarget } = require('@neon-rs/load');
 let nativeLib;
 
 try {
-    nativeLib = require(`@lancedb/vectordb-${currentTarget()}`);
+    nativeLib = require(`vectordb-${currentTarget()}`);
 } catch (e) {
     try {
         // Might be developing locally, so try that. But don't expose that error
@@ -25,7 +25,7 @@ try {
         nativeLib = require("./index.node");
     } catch {
         throw new Error(`vectordb: failed to load native library.
-  You may need to run \`npm install @lancedb/vectordb-${currentTarget()}\`.
+  You may need to run \`npm install vectordb-${currentTarget()}\`.
       
   If that does not work, please file a bug report at https://github.com/lancedb/lancedb/issues
       

@@ -1,50 +1,14 @@
-name: Prepare Release
+name: NPM Publish
 
-# NOTE: Python is a separate release for now.
-
-# Currently disabled until it can be completed.
-# on:
-#   push:
-#     tags:
-#       - v*
+on:
+  release:
+    types: [ published ]
 
 jobs:
-  draft-release:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: softprops/action-gh-release@v1
-        with:
-          draft: true
-          prerelease: true # hardcoded on for now
-          generate_release_notes: true
-  
-  rust:
-    runs-on: ubuntu-latest
-    needs: draft-release
-    defaults:
-      run:
-        shell: bash
-        working-directory: rust/vectordb
-    steps:
-      - uses: actions/checkout@v3
-        with:
-          fetch-depth: 0
-          lfs: true
-      - name: Install dependencies
-        run: |
-          sudo apt update
-          sudo apt install -y protobuf-compiler libssl-dev
-      - name: Package Rust
-        run: cargo package --all-features
-      - uses: softprops/action-gh-release@v1
-        with:
-          draft: true
-          files: target/package/vectordb-*.crate
-          fail_on_unmatched_files: true
-
   node:
     runs-on: ubuntu-latest
-    needs: draft-release
+    # Only runs on tags that matches the make-release action
+    if: startsWith(github.ref, 'refs/tags/v')
     defaults:
       run:
         shell: bash
@@ -66,22 +30,24 @@ jobs:
           npm ci
           npm run tsc
           npm pack
-      - uses: softprops/action-gh-release@v1
+      - name: Upload Linux Artifacts
+        uses: actions/upload-artifact@v3
         with:
-          draft: true
-          files: node/vectordb-*.tgz
-          fail_on_unmatched_files: true
+          name: node-package
+          path: |
+            node/vectordb-*.tgz
 
   node-macos:
     runs-on: macos-12
-    needs: draft-release
+    # Only runs on tags that matches the make-release action
+    if: startsWith(github.ref, 'refs/tags/v')
     strategy:
       fail-fast: false
       matrix:
         target: [x86_64-apple-darwin, aarch64-apple-darwin]
     steps:
     - name: Checkout
-      uses: actions/checkout@v33
+      uses: actions/checkout@v3
     - name: Install system dependencies
       run: brew install protobuf
     - name: Install npm dependencies
@@ -93,16 +59,18 @@ jobs:
       run: rustup target add aarch64-apple-darwin
     - name: Build MacOS native node modules
       run: bash ci/build_macos_artifacts.sh ${{ matrix.target }}
-    - uses: softprops/action-gh-release@v1
+    - name: Upload Darwin Artifacts
+      uses: actions/upload-artifact@v3
       with:
-        draft: true
-        files: node/dist/lancedb-vectordb-darwin*.tgz
-        fail_on_unmatched_files: true
+        name: darwin-native
+        path: |
+          node/dist/vectordb-darwin*.tgz
 
   node-linux:
     name: node-linux (${{ matrix.arch}}-unknown-linux-${{ matrix.libc }})
     runs-on: ubuntu-latest
-    needs: draft-release
+    # Only runs on tags that matches the make-release action
+    if: startsWith(github.ref, 'refs/tags/v')
     strategy:
       fail-fast: false
       matrix:
@@ -124,7 +92,7 @@ jobs:
       run: sudo chown -R root:root .
     - name: Set up QEMU
       if: ${{ matrix.arch == 'aarch64' }}
-      uses: docker/setup-qemu-action@v2  
+      uses: docker/setup-qemu-action@v2
       with:
         platforms: arm64
     - name: Build Linux GNU native node modules
@@ -141,27 +109,29 @@ jobs:
           -v $(pwd):/io -w /io \
           quay.io/pypa/musllinux_1_1_${{ matrix.arch }} \
           bash ci/build_linux_artifacts.sh ${{ matrix.arch }}-unknown-linux-musl
-    - uses: softprops/action-gh-release@v1
+    - name: Upload Linux Artifacts
+      uses: actions/upload-artifact@v3
       with:
-        draft: true
-        files: node/dist/lancedb-vectordb-linux*.tgz
-        fail_on_unmatched_files: true
+        name: linux-native
+        path: |
+          node/dist/vectordb-linux*.tgz
 
   release:
-    needs: [rust, node, node-macos, node-linux]
+    needs: [node, node-macos, node-linux]
     runs-on: ubuntu-latest
+    # Only runs on tags that matches the make-release action
+    if: startsWith(github.ref, 'refs/tags/v')
     steps:
       - uses: actions/download-artifact@v3
+      - name: Display structure of downloaded files
+        run: ls -R
+      - uses: actions/setup-node@v3
+        with:
+          node-version: 20
       - name: Publish to NPM
-        run: |
-          for filename in node/dist/*.tgz; do
-            npm publish --dry-run $filename
-          done
-      - name: Publish to crates.io
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.LANCEDB_NPM_REGISTRY_TOKEN }}
         run: |
-          cargo publish --dry-run --no-verify rust/target/vectordb-*.crate
-      # - uses: softprops/action-gh-release@v1
-      #   with:
-      #     draft: false
+          for filename in */*.tgz; do
+            npm publish $filename
+          done
