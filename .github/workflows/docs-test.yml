@@ -17,48 +17,48 @@ on:
 jobs:
   test:
     name: Test doc code
-    runs-on: ubuntu-22.04
+    runs-on: "ubuntu-22.04"
     steps:
-      - name: Checkout
-        uses: actions/checkout@v3
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: "3.10"
-          cache: "pip"
-          cache-dependency-path: "docs/test/requirements.txt"
-      - uses: actions/setup-node@v3
-        with:
-          node-version: ${{ matrix.node-version }}
-          cache: 'npm'
-          cache-dependency-path: docs/test/package-lock.json
-      - name: Install rust
-        run:
-          curl https://sh.rustup.rs -sSf | sh
-      - name: Build Python
-        working-directory: docs/test
-        run: |
-          python -m pip install -e .
-          python -m pip install -r requirements.txt
-       name: Install node dependencies
-        run: 
-          cd docs/test
-          npm ci
-      - name: Create test files
-        run: 
-          python md_testing.py
-      - name: Run python setup files
-        run: 
-          cd python
-          for d in *; do cd "$d"; if test -f "$d"-setup.py; then python "$d"-setup.py || exit 1; fi; cd ..; done
-      - name: Test python
-        run: 
-          for d in *; do cd "$d"; python "$d".py || exit 1; cd ..; done
-          cd ..
-      - name: Run node setup files
-        run: 
-          cd node
-          for d in *; do cd "$d"; if test -f "$d"-setup.js; then node "$d"-setup.js || exit 1; fi; cd ..; done
-      - name: Test node
-        run: 
-          for d in *; do cd "$d"; node "$d".js || exit 1; cd ..; done
+    - name: Checkout
+      uses: actions/checkout@v3
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: "3.10"
+        cache: "pip"
+        cache-dependency-path: "docs/test/requirements.txt"
+    - uses: actions/setup-node@v3
+      with:
+        node-version: ${{ matrix.node-version }}
+        cache: 'npm'
+        cache-dependency-path: docs/test/package-lock.json
+    - name: Install rust
+      run:
+        curl https://sh.rustup.rs -sSf | sh
+    - name: Build Python
+      working-directory: docs/test
+      run: |
+        python -m pip install -e .
+        python -m pip install -r requirements.txt
+      name: Install node dependencies
+      run: 
+        cd docs/test
+        npm ci
+    - name: Create test files
+      run: 
+        python md_testing.py
+    - name: Run python setup files
+      run: 
+        cd python
+        for d in *; do cd "$d"; if test -f "$d"-setup.py; then python "$d"-setup.py || exit 1; fi; cd ..; done
+    - name: Test python
+      run: 
+        for d in *; do cd "$d"; python "$d".py || exit 1; cd ..; done
+        cd ..
+    - name: Run node setup files
+      run: 
+        cd node
+        for d in *; do cd "$d"; if test -f "$d"-setup.js; then node "$d"-setup.js || exit 1; fi; cd ..; done
+    - name: Test node
+      run: 
+        for d in *; do cd "$d"; node "$d".js || exit 1; cd ..; done
