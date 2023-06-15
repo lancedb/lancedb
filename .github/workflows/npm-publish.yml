@@ -1,0 +1,137 @@
+name: NPM Publish
+
+on:
+  release:
+    types: [ published ]
+
+jobs:
+  node:
+    runs-on: ubuntu-latest
+    # Only runs on tags that matches the make-release action
+    if: startsWith(github.ref, 'refs/tags/v')
+    defaults:
+      run:
+        shell: bash
+        working-directory: node
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+      - uses: actions/setup-node@v3
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: node/package-lock.json
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y protobuf-compiler libssl-dev
+      - name: Build
+        run: |
+          npm ci
+          npm run tsc
+          npm pack
+      - name: Upload Linux Artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: node-package
+          path: |
+            node/vectordb-*.tgz
+
+  node-macos:
+    runs-on: macos-12
+    # Only runs on tags that matches the make-release action
+    if: startsWith(github.ref, 'refs/tags/v')
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [x86_64-apple-darwin, aarch64-apple-darwin]
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+    - name: Install system dependencies
+      run: brew install protobuf
+    - name: Install npm dependencies
+      run: |
+        cd node
+        npm ci
+    - name: Install rustup target
+      if: ${{ matrix.target == 'aarch64-apple-darwin' }}
+      run: rustup target add aarch64-apple-darwin
+    - name: Build MacOS native node modules
+      run: bash ci/build_macos_artifacts.sh ${{ matrix.target }}
+    - name: Upload Darwin Artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: darwin-native
+        path: |
+          node/dist/vectordb-darwin*.tgz
+
+  node-linux:
+    name: node-linux (${{ matrix.arch}}-unknown-linux-${{ matrix.libc }})
+    runs-on: ubuntu-latest
+    # Only runs on tags that matches the make-release action
+    if: startsWith(github.ref, 'refs/tags/v')
+    strategy:
+      fail-fast: false
+      matrix:
+        libc:
+          - gnu
+          # TODO: re-enable musl once we have refactored to pre-built containers
+          # Right now we have to build node from source which is too expensive.
+          # - musl
+        arch:
+          - x86_64
+          # Building on aarch64 is too slow for now
+          # - aarch64
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+    - name: Change owner to root (for npm)
+      # The docker container is run as root, so we need the files to be owned by root
+      # Otherwise npm is a nightmare: https://github.com/npm/cli/issues/3773
+      run: sudo chown -R root:root .
+    - name: Set up QEMU
+      if: ${{ matrix.arch == 'aarch64' }}
+      uses: docker/setup-qemu-action@v2
+      with:
+        platforms: arm64
+    - name: Build Linux GNU native node modules
+      if: ${{ matrix.libc == 'gnu' }}
+      run: |
+        docker run \
+          -v $(pwd):/io -w /io \
+          quay.io/pypa/manylinux2014_${{ matrix.arch }} \
+          bash ci/build_linux_artifacts.sh ${{ matrix.arch }}-unknown-linux-gnu
+    - name: Build musl Linux native node modules
+      if: ${{ matrix.libc == 'musl' }}
+      run: |
+        docker run --platform linux/arm64/v8 \
+          -v $(pwd):/io -w /io \
+          quay.io/pypa/musllinux_1_1_${{ matrix.arch }} \
+          bash ci/build_linux_artifacts.sh ${{ matrix.arch }}-unknown-linux-musl
+    - name: Upload Linux Artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: linux-native
+        path: |
+          node/dist/vectordb-linux*.tgz
+
+  release:
+    needs: [node, node-macos, node-linux]
+    runs-on: ubuntu-latest
+    # Only runs on tags that matches the make-release action
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/download-artifact@v3
+      - name: Display structure of downloaded files
+        run: ls -R
+      - uses: actions/setup-node@v3
+        with:
+          node-version: 20
+      - name: Publish to NPM
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.LANCEDB_NPM_REGISTRY_TOKEN }}
+        run: |
+          for filename in */*.tgz; do
+            npm publish $filename
+          done
