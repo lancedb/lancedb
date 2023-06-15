@@ -5,6 +5,9 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "fs": "^0.0.1-security",
+    "glob": "^10.2.7",
+    "path": "^0.12.7",
     "vectordb": "^0.1.5"
   }
 }

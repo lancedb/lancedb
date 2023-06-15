@@ -5,11 +5,11 @@ on:
     branches:
       - main
     paths:
-      - docs/test/**
+      - docs/**
       - .github/workflows/docs_test.yml
   pull_request:
     paths:
-      - docs/test/**
+      - docs/**
       - .github/workflows/docs_test.yml
 
   # Allows you to run this workflow manually from the Actions tab
@@ -17,12 +17,11 @@ on:
 
 
 jobs:
-  test:
-    name: Test doc code
+  test-python:
+    name: Test doc python code
     runs-on: "ubuntu-22.04"
     strategy:
       matrix:
-        node-version: [ "16", "18" ]
         python-minor-version: [ "8", "9", "10", "11" ]
     steps:
     - name: Checkout
@@ -33,38 +32,50 @@ jobs:
         python-version: 3.${{ matrix.python-minor-version }}
         cache: "pip"
         cache-dependency-path: "docs/test/requirements.txt"
-    - uses: actions/setup-node@v3
+    - name: Build Python
+      working-directory: docs/test
+      run:
+        python -m pip install -r requirements.txt
+    - name: Create test files
+      run: |
+        cd docs/test
+        python md_testing.py
+    - name: Run setup files
+      run: |
+        cd docs/test/python
+        for d in *; do cd "$d"; if test -f "$d"-setup.py; then echo "$d"-setup.py; python "$d"-setup.py; fi; cd ..; done
+    - name: Test
+      run: |
+        cd docs/test/python
+        for d in *; do cd "$d"; echo "$d".py; python "$d".py; cd ..; done
+  test-node:
+    name: Test doc nodejs code
+    runs-on: "ubuntu-22.04"
+    strategy:
+      matrix:
+        node-version: [ "16", "18" ]
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+    - name: Set up Node
+      uses: actions/setup-node@v3
       with:
         node-version: ${{ matrix.node-version }}
         cache: 'npm'
         cache-dependency-path: docs/test/package-lock.json
-    - name: Install rust
-      run:
-        curl https://sh.rustup.rs -sSf | sh
-    - name: Build Python
-      working-directory: docs/test
-      run: |
-        python -m pip install -e .
-        python -m pip install -r requirements.txt
     - name: Install node dependencies
-      run: 
+      run: |
         cd docs/test
         npm ci
     - name: Create test files
-      run: 
-        python md_testing.py
-    - name: Run python setup files
-      run: 
-        cd python
-        for d in *; do cd "$d"; if test -f "$d"-setup.py; then python "$d"-setup.py || exit 1; fi; cd ..; done
-    - name: Test python
-      run: 
-        for d in *; do cd "$d"; python "$d".py || exit 1; cd ..; done
-        cd ..
-    - name: Run node setup files
-      run: 
-        cd node
-        for d in *; do cd "$d"; if test -f "$d"-setup.js; then node "$d"-setup.js || exit 1; fi; cd ..; done
-    - name: Test node
-      run: 
-        for d in *; do cd "$d"; node "$d".js || exit 1; cd ..; done
+      run: |
+        cd docs/test
+        node md_testing.js
+    - name: Run setup files
+      run: |
+        cd docs/test/node
+        for d in *; do cd "$d"; if test -f "$d"-setup.js; then echo "$d"-setup.js; node "$d"-setup.js; fi; cd ..; done
+    - name: Test
+      run: |
+        cd docs/test/node
+        for d in *; do cd "$d"; echo "$d".js; node "$d".js; cd ..; done

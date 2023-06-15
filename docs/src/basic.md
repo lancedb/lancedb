@@ -102,7 +102,7 @@ const tbl = await db.openTable("my_table");
 If you forget the name of your table, you can always get a listing of all table names:
 
 ```javascript
-console.log(db.tableNames());
+console.log(await db.tableNames());
 ```
 
 ## How to add data to a table
