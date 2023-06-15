@@ -19,10 +19,13 @@ import pyarrow as pa
 import pytest
 from lancedb.query import LanceQueryBuilder
 
+from lancedb.db import LanceDBConnection
+
 
 class MockTable:
     def __init__(self, tmp_path):
         self.uri = tmp_path
+        self._conn = LanceDBConnection("/tmp/lance/")
 
     def to_lance(self):
         return lance.dataset(self.uri)
