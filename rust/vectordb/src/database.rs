@@ -42,7 +42,7 @@ impl Database {
     ///
     /// * A [Database] object.
     pub async fn connect(uri: &str) -> Result<Database> {
-        let object_store = ObjectStore::new(uri).await?;
+        let (object_store, _) = ObjectStore::from_uri(uri).await?;
         if object_store.is_local() {
             Self::try_create_dir(uri).context(CreateDirSnafu { path: uri })?;
         }
@@ -69,7 +69,7 @@ impl Database {
     pub async fn table_names(&self) -> Result<Vec<String>> {
         let f = self
             .object_store
-            .read_dir("/")
+            .read_dir(self.uri.as_str())
             .await?
             .iter()
             .map(|fname| Path::new(fname))
