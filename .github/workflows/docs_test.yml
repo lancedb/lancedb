@@ -1,12 +1,14 @@
-name: Test code in 
+name: Documentation Code Testing
 
 on:
   push:
-    branches: ["main"]
+    branches:
+      - main
     paths:
       - docs/test/**
   pull_request:
-    branches: ["main"]
+    branches:
+      - main
     paths:
       - docs/test/**
 
