@@ -11,6 +11,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
+import functools
 from pathlib import Path
 
 import pandas as pd
@@ -22,6 +23,10 @@ from lancedb.table import LanceTable
 class MockDB:
     def __init__(self, uri: Path):
         self.uri = uri
+
+    @functools.cached_property
+    def is_managed_remote(self) -> bool:
+        return False
 
 
 @pytest.fixture

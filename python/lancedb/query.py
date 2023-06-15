@@ -11,11 +11,12 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 from __future__ import annotations
-from typing import Literal
+from typing import Awaitable, Literal
 
 import numpy as np
 import pandas as pd
 import pyarrow as pa
+import asyncio
 
 from .common import VECTOR_COLUMN_NAME
 
@@ -168,8 +169,28 @@ class LanceQueryBuilder:
         and also the "score" column which is the distance between the query
         vector and the returned vector.
         """
+
+        return self.to_arrow().to_pandas()
+
+    def to_arrow(self) -> pa.Table:
+        """
+        Execute the query and return the results as a arrow Table.
+        In addition to the selected columns, LanceDB also returns a vector
+        and also the "score" column which is the distance between the query
+        vector and the returned vector.
+        """
+        if self._table._conn.is_managed_remote:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = asyncio.get_event_loop()
+            result = self._table._conn._client.query(
+                self._table.name, self.to_remote_query()
+            )
+            return loop.run_until_complete(result).to_arrow()
+
         ds = self._table.to_lance()
-        tbl = ds.to_table(
+        return ds.to_table(
             columns=self._columns,
             filter=self._where,
             nearest={
@@ -181,7 +202,20 @@ class LanceQueryBuilder:
                 "refine_factor": self._refine_factor,
             },
         )
-        return tbl.to_pandas()
+
+    def to_remote_query(self) -> "VectorQuery":
+        # don't import unless we are connecting to remote
+        from lancedb.remote.client import VectorQuery
+
+        return VectorQuery(
+            vector=self._query.tolist(),
+            filter=self._where,
+            k=self._limit,
+            _metric=self._metric,
+            columns=self._columns,
+            nprobes=self._nprobes,
+            refine_factor=self._refine_factor,
+        )
 
 
 class LanceFtsQueryBuilder(LanceQueryBuilder):
