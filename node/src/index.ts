@@ -22,7 +22,7 @@ import { fromRecordsToBuffer } from './arrow'
 import type { EmbeddingFunction } from './embedding/embedding_function'
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { databaseNew, databaseTableNames, databaseOpenTable, tableCreate, tableSearch, tableAdd, tableCreateVectorIndex } = require('../native.js')
+const { databaseNew, databaseTableNames, databaseOpenTable, tableCreate, tableSearch, tableAdd, tableCreateVectorIndex, tableCountRows } = require('../native.js')
 
 export type { EmbeddingFunction }
 export { OpenAIEmbeddingFunction } from './embedding/openai'
@@ -177,6 +177,13 @@ export class Table<T = number[]> {
    */
   async create_index (indexParams: VectorIndexParams): Promise<any> {
     return await this.createIndex(indexParams)
+  }
+
+  /**
+   * Returns the number of rows in this table.
+   */
+  async countRows (): Promise<number> {
+    return tableCountRows.call(this._tbl)
   }
 }
 
