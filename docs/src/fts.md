@@ -18,6 +18,20 @@ Assume:
 1. `table` is a LanceDB Table
 2. `text` is the name of the Table column that we want to index
 
+For example,
+
+```python
+import lancedb
+
+uri = "data/sample-lancedb"
+db = lancedb.connect(uri)
+
+table = db.create_table("my_table",
+            data=[{"vector": [3.1, 4.1], "text": "foo"},
+                  {"vector": [5.9, 26.5], "text": "bar"}])
+
+```
+
 To create the index:
 
 ```python

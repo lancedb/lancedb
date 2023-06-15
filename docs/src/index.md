@@ -21,36 +21,36 @@ LanceDB's core is written in Rust 🦀 and is built using <a href="https://githu
 ## Quick Start
 
 === "Python"
-      ```shell
-      pip install lancedb
-      ```
+```shell
+pip install lancedb
+```
 
-      ```python
-      import lancedb
+```python
+import lancedb
 
-      uri = "/tmp/lancedb"
-      db = lancedb.connect(uri)
-      table = db.create_table("my_table",
-                              data=[{"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
-                                    {"vector": [5.9, 26.5], "item": "bar", "price": 20.0}])
-      result = table.search([100, 100]).limit(2).to_df()
-      ```
+uri = "data/sample-lancedb"
+db = lancedb.connect(uri)
+table = db.create_table("my_table",
+                        data=[{"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+                              {"vector": [5.9, 26.5], "item": "bar", "price": 20.0}])
+result = table.search([100, 100]).limit(2).to_df()
+```
 
 === "Javascript"
-      ```shell
-      npm install vectordb
-      ```
+```shell
+npm install vectordb
+```
 
-      ```javascript
-      const lancedb = require("vectordb");
+```javascript
+const lancedb = require("vectordb");
 
-      const uri = "/tmp/lancedb";
-      const db = await lancedb.connect(uri);
-      const table = await db.createTable("my_table", 
-            [{ id: 1, vector: [3.1, 4.1], item: "foo", price: 10.0 },
-            { id: 2, vector: [5.9, 26.5], item: "bar", price: 20.0 }])
-      const results = await table.search([100, 100]).limit(2).execute();
-      ```
+const uri = "data/sample-lancedb";
+const db = await lancedb.connect(uri);
+const table = await db.createTable("my_table", 
+      [{ id: 1, vector: [3.1, 4.1], item: "foo", price: 10.0 },
+      { id: 2, vector: [5.9, 26.5], item: "bar", price: 20.0 }])
+const results = await table.search([100, 100]).limit(2).execute();
+```
 
 ## Complete Demos (Python)
 - [YouTube Transcript Search](notebooks/youtube_transcript_search.ipynb)

@@ -30,55 +30,73 @@ the vector column and compute the distance.
 
 === "Python"
 
-    ```python
-    import lancedb
-    db = lancedb.connect("data/sample-lancedb")
+<!--python 
+import lancedb
+import numpy as np
+uri = "data/sample-lancedb"
+db = lancedb.connect(uri)
 
-    tbl = db.open_table("my_vectors")
+data = [{"vector": row, "item": f"item {i}"}
+     for i, row in enumerate(np.random.random((10_000, 1536)).astype('float32'))]
 
-    df = tbl.search(np.random.random((768)))
-        .limit(10)
-        .to_df()
-    ```
+db.create_table("my_vectors", data=data)
+-->
+```python
+import lancedb
+import numpy as np
+
+db = lancedb.connect("data/sample-lancedb")
+
+tbl = db.open_table("my_vectors")
+
+df_1 = tbl.search(np.random.random((1536))) \
+    .limit(10) \
+    .to_df()
+```
 
 === "JavaScript"
 
-    ```javascript
-    const vectordb = require('vectordb')
-    const db = await vectordb.connect('data/sample-lancedb')
+<!--javascript 
+const vectordb = require('vectordb')
+const db = await vectordb.connect('data/sample-lancedb')
 
-    tbl = db.open_table("my_vectors")
+let data = []
+for (let i = 0; i < 10_000; i++) {
+     data.push({vector: Array(1536).fill(i), id: `${i}`, content: "", longId: `${i}`},)
+}
+await db.createTable('my_vectors', data)
+-->
+```javascript
+const vectordb = require('vectordb')
+const db = await vectordb.connect('data/sample-lancedb')
 
-    const results = await tbl.search(Array(768))
-        .limit(20)
-        .execute()
-    ```
+const tbl = await db.openTable("my_vectors")
+
+const results_1 = await tbl.search(Array(1536).fill(1.2))
+    .limit(20)
+    .execute()
+```
 
 By default, `l2` will be used as `Metric` type. You can customize the metric type
 as well.
 
 === "Python"
 
-    ```python
-    df = tbl.search(np.random.random((768)))
-        .metric("cosine")
-        .limit(10)
-        .to_df()
-    ```
+```python
+df_2 = tbl.search(np.random.random((1536))) \
+    .metric("cosine") \
+    .limit(10) \
+    .to_df()
+```
 
 === "JavaScript"
 
-    ```javascript
-    const vectordb = require('vectordb')
-    const db = await vectordb.connect('data/sample-lancedb')
-
-    tbl = db.open_table("my_vectors")
-
-    const results = await tbl.search(Array(768))
-        .metric("cosine")
-        .limit(20)
-        .execute()
-    ```
+```javascript
+const results_2 = await tbl.search(Array(1536).fill(1.2))
+    .metricType("cosine")
+    .limit(20)
+    .execute()
+```
 
 ### Search with Vector Index.
 

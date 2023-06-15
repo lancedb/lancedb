@@ -6,11 +6,11 @@ Built on top of Apache Arrow, `LanceDB` is easy to integrate with the Python eco
 
 First, we need to connect to a `LanceDB` database.
 
-``` py
+```py
 
 import lancedb
 
-db = lancedb.connect("/tmp/lancedb")
+db = lancedb.connect("data/sample-lancedb")
 ```
 
 And write a `Pandas DataFrame` to LanceDB directly.
@@ -79,7 +79,7 @@ We will re-use the dataset created previously
 ```python
 import lancedb
 
-db = lancedb.connect("/tmp/lancedb")
+db = lancedb.connect("data/sample-lancedb")
 table = db.open_table("pd_table")
 arrow_table = table.to_arrow()
 ```
@@ -87,8 +87,12 @@ arrow_table = table.to_arrow()
 `DuckDB` can directly query the `arrow_table`:
 
 ```python
-In [15]: duckdb.query("SELECT * FROM t")
-Out[15]:
+import duckdb 
+
+duckdb.query("SELECT * FROM arrow_table")
+```
+
+```
 ┌─────────────┬─────────┬────────┐
 │   vector    │  item   │ price  │
 │   float[]   │ varchar │ double │
@@ -96,8 +100,12 @@ Out[15]:
 │ [3.1, 4.1]  │ foo     │   10.0 │
 │ [5.9, 26.5] │ bar     │   20.0 │
 └─────────────┴─────────┴────────┘
+```
+```python
+duckdb.query("SELECT mean(price) FROM arrow_table")
+```
 
-In [16]: duckdb.query("SELECT mean(price) FROM t")
+```
 Out[16]:
 ┌─────────────┐
 │ mean(price) │
