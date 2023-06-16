@@ -12,18 +12,17 @@
 #  limitations under the License.
 
 from __future__ import annotations
-import functools
 
+import functools
 import os
 from pathlib import Path
-import os
 
 import pyarrow as pa
 from pyarrow import fs
 
 from .common import DATA, URI
 from .table import LanceTable
-from .util import get_uri_scheme, get_uri_location
+from .util import get_uri_location, get_uri_scheme
 
 
 class LanceDBConnection:

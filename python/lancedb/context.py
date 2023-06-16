@@ -13,7 +13,8 @@
 from __future__ import annotations
 
 import pandas as pd
-from .exceptions import MissingValueError, MissingColumnError
+
+from .exceptions import MissingColumnError, MissingValueError
 
 
 def contextualize(raw_df: pd.DataFrame) -> Contextualizer:

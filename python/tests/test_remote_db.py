@@ -13,9 +13,8 @@
 
 import pyarrow as pa
 
-
-from lancedb.remote.client import VectorQuery, VectorQueryResult
 from lancedb.db import LanceDBConnection
+from lancedb.remote.client import VectorQuery, VectorQueryResult
 
 
 class FakeLanceDBClient:
