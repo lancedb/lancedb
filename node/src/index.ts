@@ -22,7 +22,7 @@ import { fromRecordsToBuffer } from './arrow'
 import type { EmbeddingFunction } from './embedding/embedding_function'
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { databaseNew, databaseTableNames, databaseOpenTable, tableCreate, tableSearch, tableAdd, tableCreateVectorIndex, tableCountRows } = require('../native.js')
+const { databaseNew, databaseTableNames, databaseOpenTable, databaseDropTable, tableCreate, tableSearch, tableAdd, tableCreateVectorIndex, tableCountRows } = require('../native.js')
 
 export type { EmbeddingFunction }
 export { OpenAIEmbeddingFunction } from './embedding/openai'
@@ -104,6 +104,13 @@ export class Connection {
     } else {
       return new Table(tbl, name)
     }
+  }
+
+  /**
+   * Drop a Table from the database
+   */
+  async dropTable (name: string): Promise<unknown> {
+    return databaseDropTable.call(this._db, name)
   }
 
   async createTableArrow (name: string, table: ArrowTable): Promise<Table> {

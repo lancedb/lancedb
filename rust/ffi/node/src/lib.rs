@@ -122,6 +122,28 @@ fn database_open_table(mut cx: FunctionContext) -> JsResult<JsPromise> {
     Ok(promise)
 }
 
+fn database_drop_table(mut cx: FunctionContext) -> JsResult<JsPromise> {
+    let db = cx
+        .this()
+        .downcast_or_throw::<JsBox<JsDatabase>, _>(&mut cx)?;
+    let table_name = cx.argument::<JsString>(0)?.value(&mut cx);
+
+    let rt = runtime(&mut cx)?;
+    let channel = cx.channel();
+    let database = db.database.clone();
+
+    let (deferred, promise) = cx.promise();
+    rt.spawn(async move {
+        let table_rst = database.drop_table(&table_name).await;
+
+        deferred.settle_with(&channel, move |mut cx| {
+            table_rst.or_else(|err| cx.throw_error(err.to_string()))?;
+            Ok(cx.null())
+        });
+    });
+    Ok(promise)
+}
+
 fn table_search(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let js_table = cx.this().downcast_or_throw::<JsBox<JsTable>, _>(&mut cx)?;
     let query_obj = cx.argument::<JsObject>(0)?;
@@ -288,6 +310,7 @@ fn main(mut cx: ModuleContext) -> NeonResult<()> {
     cx.export_function("databaseNew", database_new)?;
     cx.export_function("databaseTableNames", database_table_names)?;
     cx.export_function("databaseOpenTable", database_open_table)?;
+    cx.export_function("databaseDropTable", database_drop_table)?;
     cx.export_function("tableSearch", table_search)?;
     cx.export_function("tableCreate", table_create)?;
     cx.export_function("tableAdd", table_add)?;

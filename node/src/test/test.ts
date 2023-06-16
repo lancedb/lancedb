@@ -147,6 +147,14 @@ describe('LanceDB client', function () {
       await table.overwrite(dataOver)
       assert.equal(await table.countRows(), 2)
     })
+
+    it('drops an existing table', async function () {
+      const uri = await createTestDB()
+      const con = await lancedb.connect(uri)
+      assert.equal((await con.tableNames())[0], 'vectors')
+      await con.dropTable('vectors')
+      assert.equal((await con.tableNames()).length, 0)
+    })
   })
 
   describe('when creating a vector index', function () {

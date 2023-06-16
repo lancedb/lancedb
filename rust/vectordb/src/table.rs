@@ -175,6 +175,11 @@ impl Table {
     pub async fn count_rows(&self) -> Result<usize> {
         Ok(self.dataset.count_rows().await?)
     }
+
+    pub(crate) async fn drop_table(&self) -> Result<()> {
+        self.dataset.delete_dataset().await?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

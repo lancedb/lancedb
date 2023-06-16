@@ -109,11 +109,24 @@ impl Database {
     pub async fn open_table(&self, name: &str) -> Result<Table> {
         Table::open(&self.uri, name).await
     }
+
+    /// Drops a Table and delete all data stored in it.
+    ///
+    /// # Arguments
+    /// * `name` - The name of the table.
+    ///
+    pub async fn drop_table(&self, name: &str) -> Result<()> {
+        self.open_table(name).await?.drop_table().await
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use arrow_array::{Int32Array, RecordBatch, RecordBatchReader};
+    use arrow_schema::{DataType, Field, Schema};
+    use lance::arrow::RecordBatchBuffer;
     use std::fs::create_dir_all;
+    use std::sync::Arc;
     use tempfile::tempdir;
 
     use crate::database::Database;
@@ -140,6 +153,27 @@ mod tests {
         assert_eq!(tables.len(), 2);
         assert!(tables.contains(&String::from("table1")));
         assert!(tables.contains(&String::from("table2")));
+    }
+
+    #[tokio::test]
+    async fn test_drop_table() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        let schema = Arc::new(Schema::new(vec![Field::new("i", DataType::Int32, false)]));
+        let buffer = RecordBatchBuffer::new(vec![RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from_iter_values(0..10))],
+        )
+        .unwrap()]);
+        let batches: Box<dyn RecordBatchReader> = Box::new(buffer);
+
+        let uri = tmp_dir.path().to_str().unwrap();
+        let db = Database::connect(uri).await.unwrap();
+        db.create_table("test", batches).await.unwrap();
+        assert_eq!(db.table_names().await.unwrap()[0], "test");
+        db.drop_table("test").await.unwrap();
+        assert!(db.table_names().await.unwrap().is_empty());
     }
 
     #[tokio::test]

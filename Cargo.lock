@@ -1654,8 +1654,6 @@ dependencies = [
 [[package]]
 name = "lance"
 version = "0.4.21"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d6c2e7bcfc71c7167ec70cd06c6d55c644a148f6580218c5a0b66e13ac5b5cc"
 dependencies = [
  "accelerate-src",
  "arrow",
@@ -3386,7 +3384,7 @@ checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
 name = "vectordb"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "arrow-array",
  "arrow-data",
@@ -3401,7 +3399,7 @@ dependencies = [
 
 [[package]]
 name = "vectordb-node"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "arrow-array",
  "arrow-ipc",
