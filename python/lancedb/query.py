@@ -11,12 +11,13 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 from __future__ import annotations
+
+import asyncio
 from typing import Awaitable, Literal
 
 import numpy as np
 import pandas as pd
 import pyarrow as pa
-import asyncio
 
 from .common import VECTOR_COLUMN_NAME
 

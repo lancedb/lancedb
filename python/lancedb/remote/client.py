@@ -13,11 +13,11 @@
 
 
 import functools
+import urllib.parse
 
 import aiohttp
 import attr
 import pyarrow as pa
-import urllib.parse
 
 from lancedb.remote import VectorQuery, VectorQueryResult
 from lancedb.remote.errors import LanceDBClientError
