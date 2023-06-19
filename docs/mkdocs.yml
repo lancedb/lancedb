@@ -6,12 +6,12 @@ docs_dir: src
 theme:
   name: "material"
   logo: assets/logo.png
+  favicon: assets/logo.png
   features:
     - content.code.copy
     - content.tabs.link
   icon:
     repo: fontawesome/brands/github
-  favicon: assets/logo.png
 
 plugins:
 - search
