@@ -11,6 +11,7 @@ theme:
     - content.tabs.link
   icon:
     repo: fontawesome/brands/github
+  favicon: assets/logo.png
 
 plugins:
 - search
