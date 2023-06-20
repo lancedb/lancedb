@@ -4,10 +4,12 @@
   "description": "",
   "author": "",
   "license": "ISC",
+  "devDependencies": {
+    "vectordb": "https://gitpkg.now.sh/lancedb/lancedb/node?main&scripts.postinstall=npm%20ci%20%26%26%20npm%20run%20build%20%26%26%20npm%20run%20tsc"
+  },
   "dependencies": {
     "fs": "^0.0.1-security",
     "glob": "^10.2.7",
-    "path": "^0.12.7",
-    "vectordb": "^0.1.8"
+    "path": "^0.12.7"
   }
 }

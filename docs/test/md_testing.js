@@ -54,6 +54,8 @@ function createCodeFiles(prefix, suffix, fileEnding = "") {
 }
 
 // Setup doc code
+// Some documentation pages have certain assumptions such as a created database or a table with vectors.
+// We can create code files with <!--[language] --> tag to set up the actual documentation:
 createCodeFiles("<!--", "-->", "-setup");
 
 // Actual doc code

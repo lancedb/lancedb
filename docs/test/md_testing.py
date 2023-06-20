@@ -17,14 +17,17 @@ glob_string = "../src/**/*.md"
 
 def yield_lines(lines: Iterator[str], prefix: str, suffix: str):
     in_code_block = False
+    # Python code has strict indentation
+    strip_length = 0
     for line in lines:
         if line.strip().startswith(prefix + python_prefix):
             in_code_block = True
+            strip_length = len(line) - len(line.lstrip())
         elif in_code_block and line.strip().startswith(suffix):
             in_code_block = False
             yield "\n"
         elif in_code_block:
-            yield line
+            yield line[strip_length:]
 
 def create_code_files(prefix: str, suffix: str, file_ending: str = ""):
     for file in filter(lambda file: file not in excluded_files, glob.glob(glob_string, recursive=True)):
@@ -39,6 +42,8 @@ def create_code_files(prefix: str, suffix: str, file_ending: str = ""):
                 out.writelines(lines)
 
 # Setup doc code
+# Some documentation pages have certain assumptions such as a created database or a table with vectors.
+# We can create code files with <!-- --> tag to set up the actual documentation:
 create_code_files("<!--", "-->", "-setup")
 
 # Actual doc code

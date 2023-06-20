@@ -41,18 +41,19 @@ data = [{"vector": row, "item": f"item {i}"}
 
 db.create_table("my_vectors", data=data)
 -->
-```python
-import lancedb
-import numpy as np
 
-db = lancedb.connect("data/sample-lancedb")
+    ```python
+    import lancedb
+    import numpy as np
+    
+    db = lancedb.connect("data/sample-lancedb")
 
-tbl = db.open_table("my_vectors")
+    tbl = db.open_table("my_vectors")
 
-df_1 = tbl.search(np.random.random((1536))) \
-    .limit(10) \
-    .to_df()
-```
+    df = tbl.search(np.random.random((1536))) \
+        .limit(10) \
+        .to_df()
+    ```
 
 === "JavaScript"
 
@@ -66,44 +67,44 @@ for (let i = 0; i < 10_000; i++) {
 }
 await db.createTable('my_vectors', data)
 -->
-```javascript
-const vectordb = require('vectordb')
-const db = await vectordb.connect('data/sample-lancedb')
+    ```javascript
+    const vectordb = require('vectordb')
+    const db = await vectordb.connect('data/sample-lancedb')
 
-const tbl = await db.openTable("my_vectors")
+    const tbl = await db.openTable("my_vectors")
 
-const results_1 = await tbl.search(Array(1536).fill(1.2))
-    .limit(20)
-    .execute()
-```
+    const results_1 = await tbl.search(Array(1536).fill(1.2))
+        .limit(20)
+        .execute()
+    ```
+
 
 <!-- Commenting out for now since metricType fails for JS on Ubuntu 22.04.
 
 By default, `l2` will be used as `Metric` type. You can customize the metric type
 as well.
+-->
 
-
+<!--
 === "Python"
 -->
-
-<!-- ```python
-df_2 = tbl.search(np.random.random((1536))) \
-    .metric("cosine") \
-    .limit(10) \
-    .to_df()
-```
+<!--    ```python
+    df = tbl.search(np.random.random((1536))) \
+        .metric("cosine") \
+        .limit(10) \
+        .to_df()
+    ```
 -->
-
 <!--
 === "JavaScript"
 -->
 
-<!-- ```javascript
-const results_2 = await tbl.search(Array(1536).fill(1.2))
-    .metricType("cosine")
-    .limit(20)
-    .execute()
-```
+<!--   ```javascript
+    const results_2 = await tbl.search(Array(1536).fill(1.2))
+        .metricType("cosine")
+        .limit(20)
+        .execute()
+    ```
 -->
 
 ### Search with Vector Index.
