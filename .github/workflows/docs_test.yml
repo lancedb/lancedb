@@ -73,7 +73,13 @@ jobs:
       run: |
         cd docs/test
         npm ci
-        cd node_modules/vectordb
+    - name: Rust cache
+      uses: swatinem/rust-cache@v2
+      with:
+        workspaces: './docs/test/node_modules/vectordb -> target'
+    - name: Install node dependencies
+      run: |
+        cd docs/test/node_modules/vectordb 
         npm ci
         npm run build
         npm run tsc
