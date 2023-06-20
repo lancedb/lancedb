@@ -73,6 +73,10 @@ jobs:
       run: |
         cd docs/test
         npm ci
+        cd node-modules/vectordb
+        npm ci
+        npm run build
+        npm run tsc
     - name: Create test files
       run: |
         cd docs/test
