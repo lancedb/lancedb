@@ -19,10 +19,11 @@ on:
 jobs:
   test-python:
     name: Test doc python code
-    runs-on: "ubuntu-22.04"
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         python-minor-version: [ "8", "9", "10", "11" ]
+        os: ["ubuntu-22.04", "macos-13"]
     steps:
     - name: Checkout
       uses: actions/checkout@v3
@@ -50,10 +51,11 @@ jobs:
         for d in *; do cd "$d"; echo "$d".py; python "$d".py; cd ..; done
   test-node:
     name: Test doc nodejs code
-    runs-on: "ubuntu-22.04"
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         node-version: [ "16", "18" ]
+        os: ["ubuntu-22.04", "macos-13"]
     steps:
     - name: Checkout
       uses: actions/checkout@v3
@@ -63,6 +65,10 @@ jobs:
         node-version: ${{ matrix.node-version }}
         cache: 'npm'
         cache-dependency-path: docs/test/package-lock.json
+    - name: Install dependecies needed for ubuntu
+      if: ${{ matrix.os == 'ubuntu-22.04' }}
+      run: |
+        sudo apt install -y protobuf-compiler libssl-dev
     - name: Install node dependencies
       run: |
         cd docs/test

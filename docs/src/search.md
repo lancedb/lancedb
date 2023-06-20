@@ -77,6 +77,8 @@ const results_1 = await tbl.search(Array(1536).fill(1.2))
     .execute()
 ```
 
+<!-- Commenting out for now since metricType fails for JS on Ubuntu 22.04.
+
 By default, `l2` will be used as `Metric` type. You can customize the metric type
 as well.
 
@@ -97,6 +99,8 @@ const results_2 = await tbl.search(Array(1536).fill(1.2))
     .limit(20)
     .execute()
 ```
+
+-->
 
 ### Search with Vector Index.
 
