@@ -82,24 +82,28 @@ const results_1 = await tbl.search(Array(1536).fill(1.2))
 By default, `l2` will be used as `Metric` type. You can customize the metric type
 as well.
 
-=== "Python"
 
-```python
+=== "Python"
+-->
+
+<!-- ```python
 df_2 = tbl.search(np.random.random((1536))) \
     .metric("cosine") \
     .limit(10) \
     .to_df()
 ```
+-->
 
+<!--
 === "JavaScript"
+-->
 
-```javascript
+<!-- ```javascript
 const results_2 = await tbl.search(Array(1536).fill(1.2))
     .metricType("cosine")
     .limit(20)
     .execute()
 ```
-
 -->
 
 ### Search with Vector Index.
