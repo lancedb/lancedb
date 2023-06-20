@@ -107,7 +107,7 @@ impl Database {
     ///
     /// * A [Table] object.
     pub async fn open_table(&self, name: &str) -> Result<Table> {
-        Table::open(&self.uri, name).await
+        Table::open(&self.uri, name, None).await
     }
 }
 

@@ -1654,6 +1654,58 @@ dependencies = [
 [[package]]
 name = "lance"
 version = "0.4.21"
+dependencies = [
+ "accelerate-src",
+ "arrow",
+ "arrow-arith",
+ "arrow-array",
+ "arrow-buffer",
+ "arrow-cast",
+ "arrow-data",
+ "arrow-ipc",
+ "arrow-ord",
+ "arrow-row",
+ "arrow-schema",
+ "arrow-select",
+ "async-recursion",
+ "async-trait",
+ "aws-config",
+ "aws-credential-types",
+ "byteorder",
+ "bytes",
+ "cblas",
+ "chrono",
+ "dashmap",
+ "datafusion",
+ "futures",
+ "lapack",
+ "log",
+ "lru_time_cache",
+ "num-traits",
+ "num_cpus",
+ "object_store",
+ "openblas-src",
+ "ordered-float 3.7.0",
+ "path-absolutize",
+ "pin-project",
+ "prost",
+ "prost-build",
+ "prost-types",
+ "rand",
+ "reqwest",
+ "roaring",
+ "shellexpand",
+ "snafu",
+ "sqlparser-lance",
+ "tokio",
+ "url",
+ "uuid",
+ "vcpkg",
+]
+
+[[package]]
+name = "lance"
+version = "0.4.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d6c2e7bcfc71c7167ec70cd06c6d55c644a148f6580218c5a0b66e13ac5b5cc"
 dependencies = [
@@ -3386,12 +3438,12 @@ checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
 name = "vectordb"
-version = "0.0.1"
+version = "0.1.8"
 dependencies = [
  "arrow-array",
  "arrow-data",
  "arrow-schema",
- "lance",
+ "lance 0.4.21",
  "object_store",
  "rand",
  "snafu",
@@ -3401,13 +3453,13 @@ dependencies = [
 
 [[package]]
 name = "vectordb-node"
-version = "0.1.0"
+version = "0.1.8"
 dependencies = [
  "arrow-array",
  "arrow-ipc",
  "arrow-schema",
  "futures",
- "lance",
+ "lance 0.4.21 (registry+https://github.com/rust-lang/crates.io-index)",
  "neon",
  "once_cell",
  "tokio",

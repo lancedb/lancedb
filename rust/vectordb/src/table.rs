@@ -18,6 +18,7 @@ use std::sync::Arc;
 use arrow_array::{Float32Array, RecordBatchReader};
 use lance::dataset::{Dataset, WriteMode, WriteParams};
 use lance::index::IndexType;
+use lance::io::object_cache::ObjectCache;
 use snafu::prelude::*;
 
 use crate::error::{Error, InvalidTableNameSnafu, Result};
@@ -33,6 +34,11 @@ pub struct Table {
     name: String,
     uri: String,
     dataset: Arc<Dataset>,
+}
+
+#[derive(Debug)]
+pub struct OpenTableParams {
+    object_cache: Option<Arc<dyn ObjectCache>>,
 }
 
 impl std::fmt::Display for Table {
@@ -52,7 +58,7 @@ impl Table {
     /// # Returns
     ///
     /// * A [Table] object.
-    pub async fn open(base_uri: &str, name: &str) -> Result<Self> {
+    pub async fn open(base_uri: &str, name: &str, params: Option<OpenTableParams>) -> Result<Self> {
         let path = Path::new(base_uri);
 
         let table_uri = path.join(format!("{}.{}", name, LANCE_FILE_EXTENSION));
@@ -61,7 +67,7 @@ impl Table {
             .to_str()
             .context(InvalidTableNameSnafu { name })?;
 
-        let dataset = Dataset::open(&uri).await.map_err(|e| match e {
+        let mut dataset = Dataset::open(&uri).await.map_err(|e| match e {
             lance::Error::DatasetNotFound { .. } => Error::TableNotFound {
                 name: name.to_string(),
             },
@@ -69,6 +75,13 @@ impl Table {
                 message: e.to_string(),
             },
         })?;
+
+        if let Some(params) = params {
+            if let Some(object_cache) = params.object_cache {
+                dataset = dataset.with_object_cache(object_cache);
+            }
+        }
+
         Ok(Table {
             name: name.to_string(),
             uri: uri.to_string(),
