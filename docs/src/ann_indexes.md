@@ -29,7 +29,7 @@ data = [{"vector": row, "item": f"item {i}"}
 tbl = db.create_table("my_vectors", data=data)
 
 # Create and train the index - you need to have enough data in the table for an effective training step
-# tbl.create_index(num_partitions=256, num_sub_vectors=96)
+tbl.create_index(num_partitions=256, num_sub_vectors=96)
 ```
 
 === "Javascript"
@@ -42,7 +42,7 @@ for (let i = 0; i < 10_000; i++) {
      data.push({vector: Array(1536).fill(i), id: `${i}`, content: "", longId: `${i}`},)
 }
 const table = await db.createTable('my_vectors', data)
-// await table.createIndex({ type: 'ivf_pq', column: 'vector', num_partitions: 256, num_sub_vectors: 96 })
+await table.createIndex({ type: 'ivf_pq', column: 'vector', num_partitions: 256, num_sub_vectors: 96 })
 ```
 
 Since `create_index` has a training step, it can take a few minutes to finish for large tables. You can control the index
