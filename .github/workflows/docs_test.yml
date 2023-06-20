@@ -73,7 +73,7 @@ jobs:
       run: |
         cd docs/test
         npm ci
-        cd docs/test/node-modules/vectordb
+        cd docs/test/node_modules/vectordb
         npm ci
         npm run build
         npm run tsc
