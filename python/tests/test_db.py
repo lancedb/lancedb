@@ -121,27 +121,32 @@ def test_delete_table(tmp_path):
     db.create_table("test", data=data)
     assert db.table_names() == ["test"]
 
+
 def test_copying(tmp_path_factory):
     db = lancedb.connect(tmp_path_factory.mktemp("source"))
     db_dest = lancedb.connect(tmp_path_factory.mktemp("db_dest"))
-    data=[
-            {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
-            {"vector": [5.9, 26.5], "item": "bar", "price": 20.0},
-        ]
-    
+    data = [
+        {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+        {"vector": [5.9, 26.5], "item": "bar", "price": 20.0},
+    ]
+
     source_table = db.create_table("source_table", data=data)
 
-    dest_table = db_dest.copy_table(source_table) # Copy from LanceTable Object
+    dest_table = db_dest.copy_table(source_table)  # Copy from LanceTable Object
     assert "source_table" in db_dest.table_names()
     assert dest_table._conn == db_dest
     assert dest_table.name == source_table.name
 
-    dest_table = db_dest.copy_table(source_table._dataset_uri, "dest_table") # Copy from Lancetable URI
+    dest_table = db_dest.copy_table(
+        source_table._dataset_uri, "dest_table"
+    )  # Copy from Lancetable URI
     assert "dest_table" in db_dest.table_names()
     assert dest_table._conn == db_dest
     assert dest_table.name == "dest_table"
 
-    db_dest.copy_table(dest_table, "table_copy2") # Copy from same LanceTable Object with new name
+    db_dest.copy_table(
+        dest_table, "table_copy2"
+    )  # Copy from same LanceTable Object with new name
 
-    with pytest.raises(ValueError): # Copy from same LanceTable Object with same name
+    with pytest.raises(ValueError):  # Copy from same LanceTable Object with same name
         db_dest.copy_table(dest_table)

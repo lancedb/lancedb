@@ -256,7 +256,9 @@ class LanceDBConnection:
             tbl = LanceTable(self, name)
         return tbl
 
-    def copy_table(self, source: Union[str, Path, LanceTable], name: str = None) -> LanceTable:
+    def copy_table(
+        self, source: Union[str, Path, LanceTable], name: str = None
+    ) -> LanceTable:
         """Copy a table in the database.
 
         Parameters
@@ -287,13 +289,14 @@ class LanceDBConnection:
         dest_uri = os.path.join(self.uri, dest_table_name + ".lance")
         source_uri = str(source_uri)
         if source_uri == dest_uri:
-            raise ValueError("Cannot copy table to itself. Provide a different name if you intend to copy the table in the same databse.")
+            raise ValueError(
+                "Cannot copy table to itself. Provide a different name if you intend to copy the table in the same databse."
+            )
         elif dest_table_name in self.table_names():
             raise ValueError("Table already exists in database.")
 
         pa.fs.copy_files(source_uri, dest_uri)
         return LanceTable(self, dest_table_name)
-
 
     def open_table(self, name: str) -> LanceTable:
         """Open a table in the database.
