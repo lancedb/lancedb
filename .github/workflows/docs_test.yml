@@ -15,6 +15,11 @@ on:
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
 
+env:
+  # Disable full debug symbol generation to speed up CI build and keep memory down
+  # "1" means line tables only, which is useful for panic tracebacks.
+  RUSTFLAGS: "-C debuginfo=1"
+  RUST_BACKTRACE: "1"
 
 jobs:
   test-python:
