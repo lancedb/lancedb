@@ -16,6 +16,7 @@ from __future__ import annotations
 import functools
 import os
 from pathlib import Path
+from typing import Union
 
 import pyarrow as pa
 from pyarrow import fs
@@ -254,6 +255,41 @@ class LanceDBConnection:
         else:
             tbl = LanceTable(self, name)
         return tbl
+
+    def copy_table(self, source: Union[str, Path, LanceTable], name: str = None) -> LanceTable:
+        """Copy a table in the database.
+
+        Parameters
+        ----------
+        source: str or LanceTable
+            The name of the table or a LanceTable object.
+        name: str; optional
+            The name of the new table. If not provided, the name of the source table is used.
+
+        Returns
+        -------
+        LanceTable
+            A reference to the newly created table.
+        """
+        if isinstance(source, str):
+            source = Path(source)
+
+        if isinstance(source, Path):
+            if not source.exists():
+                raise FileNotFoundError(f"Source path does not exist: {source}")
+            if not source.name.endswith(".lance"):
+                raise ValueError("Source path must end with .lance")
+            dataset_uri = source
+        elif isinstance(source, LanceTable):
+            dataset_uri = Path(source._dataset_uri)
+
+        if dataset_uri == self.uri:
+            raise ValueError("Cannot copy table to itself")
+
+        table_name = name or dataset_uri.stem
+        pa.fs.copy_files(str(dataset_uri), os.path.join(self.uri, table_name + ".lance"))
+        return LanceTable(self, table_name)
+
 
     def open_table(self, name: str) -> LanceTable:
         """Open a table in the database.

@@ -120,3 +120,23 @@ def test_delete_table(tmp_path):
 
     db.create_table("test", data=data)
     assert db.table_names() == ["test"]
+
+def test_copying(tmp_path_factory):
+    db = lancedb.connect(tmp_path_factory.mktemp("db"))
+    db_cp = lancedb.connect(tmp_path_factory.mktemp("db_copy"))
+    data=[
+            {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+            {"vector": [5.9, 26.5], "item": "bar", "price": 20.0},
+        ]
+    
+    table = db.create_table("test", data=data)
+
+    cp_table1 = db_cp.copy_table(table) # Copy from LanceTable Object
+    assert "table_copy" in db_cp.table_names()
+    assert cp_table1._conn == db_cp
+    assert cp_table1.name == table.name
+
+    cp_table2 = db_cp.copy_table(table._conn.uri + "/test.lance", "table_copy") # Copy from Lancetable URI
+    assert "table_copy2" in db_cp.table_names()
+    assert cp_table2._conn == db_cp
+    assert cp_table2.name == "table_copy"
