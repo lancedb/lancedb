@@ -261,7 +261,7 @@ class LanceDBConnection:
 
         Parameters
         ----------
-        source: str or LanceTable
+        source: str, Path, LanceTable
             The name of the table or a LanceTable object.
         name: str; optional
             The name of the new table. If not provided, the name of the source table is used.
