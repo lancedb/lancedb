@@ -288,6 +288,8 @@ class LanceDBConnection:
         source_uri = str(source_uri)
         if source_uri == dest_uri:
             raise ValueError("Cannot copy table to itself. Provide a different name if you intend to copy the table in the same databse.")
+        elif dest_table_name in self.table_names():
+            raise ValueError("Table already exists in database.")
 
         pa.fs.copy_files(source_uri, dest_uri)
         return LanceTable(self, dest_table_name)
