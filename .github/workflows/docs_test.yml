@@ -73,10 +73,10 @@ jobs:
       run: |
         cd docs/test
         npm ci
+    - name: Setup Rust cache
+      run: git clone https://github.com/lancedb/lancedb.git
     - name: Rust cache
       uses: swatinem/rust-cache@v2
-      with:
-        workspaces: './docs/test/node_modules/vectordb -> target'
     - name: Install node dependencies
       run: |
         cd docs/test/node_modules/vectordb 
