@@ -83,7 +83,7 @@ jobs:
         npm ci
     - name: Rust cache
       uses: swatinem/rust-cache@v2
-    - name: Install node dependencies
+    - name: Install LanceDB
       run: |
         cd docs/test/node_modules/vectordb 
         npm ci
