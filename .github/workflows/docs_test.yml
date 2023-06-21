@@ -59,6 +59,9 @@ jobs:
     steps:
     - name: Checkout
       uses: actions/checkout@v3
+      with:
+        fetch-depth: 0
+        lfs: true
     - name: Set up Node
       uses: actions/setup-node@v3
       with:
@@ -73,8 +76,6 @@ jobs:
       run: |
         cd docs/test
         npm ci
-    - name: Setup Rust cache
-      run: git clone https://github.com/lancedb/lancedb.git
     - name: Rust cache
       uses: swatinem/rust-cache@v2
     - name: Install node dependencies
