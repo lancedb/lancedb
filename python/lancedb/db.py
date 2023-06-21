@@ -279,16 +279,18 @@ class LanceDBConnection:
                 raise FileNotFoundError(f"Source path does not exist: {source}")
             if not source.name.endswith(".lance"):
                 raise ValueError("Source path must end with .lance")
-            dataset_uri = source
+            source_uri = source
         elif isinstance(source, LanceTable):
-            dataset_uri = Path(source._dataset_uri)
+            source_uri = Path(source._dataset_uri)
 
-        if dataset_uri == self.uri:
-            raise ValueError("Cannot copy table to itself")
+        dest_table_name = name or source_uri.stem
+        dest_uri = os.path.join(self.uri, dest_table_name + ".lance")
+        source_uri = str(source_uri)
+        if source_uri == dest_uri:
+            raise ValueError("Cannot copy table to itself. Provide a different name if you intend to copy the table in the same databse.")
 
-        table_name = name or dataset_uri.stem
-        pa.fs.copy_files(str(dataset_uri), os.path.join(self.uri, table_name + ".lance"))
-        return LanceTable(self, table_name)
+        pa.fs.copy_files(source_uri, dest_uri)
+        return LanceTable(self, dest_table_name)
 
 
     def open_table(self, name: str) -> LanceTable:

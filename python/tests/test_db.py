@@ -129,14 +129,19 @@ def test_copying(tmp_path_factory):
             {"vector": [5.9, 26.5], "item": "bar", "price": 20.0},
         ]
     
-    table = db.create_table("test", data=data)
+    table = db.create_table("source_table", data=data)
 
     cp_table1 = db_cp.copy_table(table) # Copy from LanceTable Object
-    assert "table_copy" in db_cp.table_names()
+    assert "source_table" in db_cp.table_names()
     assert cp_table1._conn == db_cp
     assert cp_table1.name == table.name
 
-    cp_table2 = db_cp.copy_table(table._conn.uri + "/test.lance", "table_copy") # Copy from Lancetable URI
-    assert "table_copy2" in db_cp.table_names()
+    cp_table2 = db_cp.copy_table(table._dataset_uri, "table_copy") # Copy from Lancetable URI
+    assert "table_copy" in db_cp.table_names()
     assert cp_table2._conn == db_cp
     assert cp_table2.name == "table_copy"
+
+    db_cp.copy_table(cp_table1, "table_copy2") # Copy from LanceTable Object with new name
+    
+    with pytest.raises(ValueError): # Copy table to itself with same name
+        db_cp.copy_table(cp_table1)
