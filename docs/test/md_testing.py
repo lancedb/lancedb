@@ -29,22 +29,13 @@ def yield_lines(lines: Iterator[str], prefix: str, suffix: str):
         elif in_code_block:
             yield line[strip_length:]
 
-def create_code_files(prefix: str, suffix: str, file_ending: str = ""):
-    for file in filter(lambda file: file not in excluded_files, glob.glob(glob_string, recursive=True)):
-        with open(file, "r") as f:
-            lines = list(yield_lines(iter(f), prefix, suffix))
+for file in filter(lambda file: file not in excluded_files, glob.glob(glob_string, recursive=True)):
+    with open(file, "r") as f:
+        lines = list(yield_lines(iter(f), "```", "```"))
 
-        if len(lines) > 0:
-            out_path = Path(python_folder) / Path(file).name.strip(".md") / (Path(file).name.strip(".md") + file_ending + python_file)
-            print(out_path)
-            out_path.parent.mkdir(exist_ok=True, parents=True)
-            with open(out_path, "w") as out:
-                out.writelines(lines)
-
-# Setup doc code
-# Some documentation pages have certain assumptions such as a created database or a table with vectors.
-# We can create code files with <!-- --> tag to set up the actual documentation:
-create_code_files("<!--", "-->", "-setup")
-
-# Actual doc code
-create_code_files("```", "```")
+    if len(lines) > 0:
+        out_path = Path(python_folder) / Path(file).name.strip(".md") / (Path(file).name.strip(".md") + python_file)
+        print(out_path)
+        out_path.parent.mkdir(exist_ok=True, parents=True)
+        with open(out_path, "w") as out:
+            out.writelines(lines)

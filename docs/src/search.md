@@ -43,8 +43,8 @@ db.create_table("my_vectors", data=data)
 -->
 <!-- Setup Code
 ```javascript 
-const vectordb = require('vectordb')
-const db_setup = await vectordb.connect('data/sample-lancedb')
+const vectordb_setup = require('vectordb')
+const db_setup = await vectordb_setup.connect('data/sample-lancedb')
 
 let data = []
 for (let i = 0; i < 10_000; i++) {

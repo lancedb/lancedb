@@ -46,10 +46,6 @@ jobs:
       run: |
         cd docs/test
         python md_testing.py
-    - name: Run setup files
-      run: |
-        cd docs/test/python
-        for d in *; do cd "$d"; if test -f "$d"-setup.py; then echo "$d"-setup.py; python "$d"-setup.py; fi; cd ..; done
     - name: Test
       run: |
         cd docs/test/python
@@ -93,10 +89,6 @@ jobs:
       run: |
         cd docs/test
         node md_testing.js
-    - name: Run setup files
-      run: |
-        cd docs/test/node
-        for d in *; do cd "$d"; if test -f "$d"-setup.js; then echo "$d"-setup.js; node "$d"-setup.js; fi; cd ..; done
     - name: Test
       run: |
         cd docs/test/node

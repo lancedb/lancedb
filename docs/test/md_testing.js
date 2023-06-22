@@ -30,33 +30,22 @@ function* yieldLines(lines, prefix, suffix) {
   }
 }
 
-function createCodeFiles(prefix, suffix, fileEnding = "") {
-  const files = glob.sync(globString, { recursive: true });
+const files = glob.sync(globString, { recursive: true });
 
-  for (const file of files.filter((file) => !excludedFiles.includes(file))) {
-    const lines = [];
-    const data = fs.readFileSync(file, "utf-8");
-    const fileLines = data.split("\n");
+for (const file of files.filter((file) => !excludedFiles.includes(file))) {
+  const lines = [];
+  const data = fs.readFileSync(file, "utf-8");
+  const fileLines = data.split("\n");
 
-    for (const line of yieldLines(fileLines, prefix, suffix)) {
-      lines.push(line);
-    }
+  for (const line of yieldLines(fileLines, "```", "```")) {
+    lines.push(line);
+  }
 
-    if (lines.length > 0) {
-      const fileName = path.basename(file, ".md");
-      const fileExtension = fileEnding === "" ? nodeFile : fileEnding + nodeFile;
-      const outPath = path.join(nodeFolder, fileName, `${fileName}${fileExtension}`);
-      console.log(outPath)
-      fs.mkdirSync(path.dirname(outPath), { recursive: true });
-      fs.writeFileSync(outPath, asyncPrefix + "\n" + lines.join("\n") + asyncSuffix);
-    }
+  if (lines.length > 0) {
+    const fileName = path.basename(file, ".md");
+    const outPath = path.join(nodeFolder, fileName, `${fileName}${nodeFile}`);
+    console.log(outPath)
+    fs.mkdirSync(path.dirname(outPath), { recursive: true });
+    fs.writeFileSync(outPath, asyncPrefix + "\n" + lines.join("\n") + asyncSuffix);
   }
 }
-
-// Setup doc code
-// Some documentation pages have certain assumptions such as a created database or a table with vectors.
-// We can create code files with <!--[language] --> tag to set up the actual documentation:
-createCodeFiles("<!--", "-->", "-setup");
-
-// Actual doc code
-createCodeFiles("```", "```");
