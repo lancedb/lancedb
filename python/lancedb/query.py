@@ -43,7 +43,12 @@ class LanceQueryBuilder:
     0  6  [0.4, 0.4]    0.0
     """
 
-    def __init__(self, table: "lancedb.table.LanceTable", query: np.ndarray, vector_column_name: str):
+    def __init__(
+        self,
+        table: "lancedb.table.LanceTable",
+        query: np.ndarray,
+        vector_column_name: str,
+    ):
         self._metric = "L2"
         self._nprobes = 20
         self._refine_factor = None

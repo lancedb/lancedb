@@ -182,7 +182,13 @@ class LanceTable:
     def _dataset_uri(self) -> str:
         return os.path.join(self._conn.uri, f"{self.name}.lance")
 
-    def create_index(self, metric="L2", num_partitions=256, num_sub_vectors=96, vector_column_name=VECTOR_COLUMN_NAME):
+    def create_index(
+        self,
+        metric="L2",
+        num_partitions=256,
+        num_sub_vectors=96,
+        vector_column_name=VECTOR_COLUMN_NAME,
+    ):
         """Create an index on the table.
 
         Parameters
@@ -256,7 +262,9 @@ class LanceTable:
         self._reset_dataset()
         return len(self)
 
-    def search(self, query: Union[VEC, str], vector_column_name=VECTOR_COLUMN_NAME) -> LanceQueryBuilder:
+    def search(
+        self, query: Union[VEC, str], vector_column_name=VECTOR_COLUMN_NAME
+    ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector.
 

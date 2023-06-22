@@ -73,5 +73,12 @@ def test_query_builder_with_metric(table):
     assert 0 <= df_cosine.score[0] <= 1
 
 
+def test_query_builder_with_different_vector_column(table):
+    query = [4, 8]
+    vector_column_name = "foo_vector"
+    builder = LanceQueryBuilder(table, query, vector_column_name)
+    assert builder._vector_column_name == vector_column_name
+
+
 def cosine_distance(vec1, vec2):
     return 1 - np.dot(vec1, vec2) / (np.linalg.norm(vec1) * np.linalg.norm(vec2))
