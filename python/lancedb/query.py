@@ -19,8 +19,6 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 
-from .common import VECTOR_COLUMN_NAME
-
 
 class LanceQueryBuilder:
     """
@@ -45,7 +43,7 @@ class LanceQueryBuilder:
     0  6  [0.4, 0.4]    0.0
     """
 
-    def __init__(self, table: "lancedb.table.LanceTable", query: np.ndarray):
+    def __init__(self, table: "lancedb.table.LanceTable", query: np.ndarray, vector_column_name: str):
         self._metric = "L2"
         self._nprobes = 20
         self._refine_factor = None
@@ -54,6 +52,7 @@ class LanceQueryBuilder:
         self._limit = 10
         self._columns = None
         self._where = None
+        self._vector_column_name = vector_column_name
 
     def limit(self, limit: int) -> LanceQueryBuilder:
         """Set the maximum number of results to return.
@@ -195,7 +194,7 @@ class LanceQueryBuilder:
             columns=self._columns,
             filter=self._where,
             nearest={
-                "column": VECTOR_COLUMN_NAME,
+                "column": self._vector_column_name,
                 "q": self._query,
                 "k": self._limit,
                 "metric": self._metric,
