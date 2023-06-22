@@ -48,24 +48,30 @@ def table(tmp_path) -> MockTable:
 
 
 def test_query_builder(table):
-    df = LanceQueryBuilder(table, [0, 0]).limit(1).select(["id"]).to_df()
+    df = LanceQueryBuilder(table, [0, 0], "vector").limit(1).select(["id"]).to_df()
     assert df["id"].values[0] == 1
     assert all(df["vector"].values[0] == [1, 2])
 
 
 def test_query_builder_with_filter(table):
-    df = LanceQueryBuilder(table, [0, 0]).where("id = 2").to_df()
+    df = LanceQueryBuilder(table, [0, 0], "vector").where("id = 2").to_df()
     assert df["id"].values[0] == 2
     assert all(df["vector"].values[0] == [3, 4])
 
 
 def test_query_builder_with_metric(table):
     query = [4, 8]
-    df_default = LanceQueryBuilder(table, query).to_df()
-    df_l2 = LanceQueryBuilder(table, query).metric("L2").to_df()
+    vector_column_name = "vector"
+    df_default = LanceQueryBuilder(table, query, vector_column_name).to_df()
+    df_l2 = LanceQueryBuilder(table, query, vector_column_name).metric("L2").to_df()
     tm.assert_frame_equal(df_default, df_l2)
 
-    df_cosine = LanceQueryBuilder(table, query).metric("cosine").limit(1).to_df()
+    df_cosine = (
+        LanceQueryBuilder(table, query, vector_column_name)
+        .metric("cosine")
+        .limit(1)
+        .to_df()
+    )
     assert df_cosine.score[0] == pytest.approx(
         cosine_distance(query, df_cosine.vector[0]),
         abs=1e-6,
