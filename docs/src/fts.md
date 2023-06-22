@@ -27,8 +27,8 @@ uri = "data/sample-lancedb"
 db = lancedb.connect(uri)
 
 table = db.create_table("my_table",
-            data=[{"vector": [3.1, 4.1], "text": "foo"},
-                  {"vector": [5.9, 26.5], "text": "bar"}])
+            data=[{"vector": [3.1, 4.1], "text": "Frodo was a happy puppy"},
+                  {"vector": [5.9, 26.5], "text": "There are several kittens playing"}])
 
 ```
 
