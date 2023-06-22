@@ -283,7 +283,7 @@ class LanceTable:
         """
         if isinstance(query, str):
             # fts
-            return LanceFtsQueryBuilder(self, query)
+            return LanceFtsQueryBuilder(self, query, vector_column_name)
 
         if isinstance(query, list):
             query = np.array(query)
