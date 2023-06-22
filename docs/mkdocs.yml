@@ -12,6 +12,7 @@ theme:
     - content.tabs.link
   icon:
     repo: fontawesome/brands/github
+  custom_dir: overrides
 
 plugins:
 - search
