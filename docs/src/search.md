@@ -17,7 +17,7 @@ Currently, we support the following metrics:
 | Metric      | Description                          |
 | ----------- | ------------------------------------ |
 | `L2`        | [Euclidean / L2 distance](https://en.wikipedia.org/wiki/Euclidean_distance) |
-| `Cosine`    | [Cosine Similarity](https://en.wikipedia.org/wiki/Cosine_similarity)|
+<!-- | `Cosine`    | [Cosine Similarity](https://en.wikipedia.org/wiki/Cosine_similarity)| -->
 
 
 ## Search
@@ -28,9 +28,8 @@ Currently, we support the following metrics:
 If there is no [vector index is created](ann_indexes.md), LanceDB will just brute-force scan
 the vector column and compute the distance.
 
-=== "Python"
-
-<!--python 
+<!-- Setup Code
+```python 
 import lancedb
 import numpy as np
 uri = "data/sample-lancedb"
@@ -40,7 +39,22 @@ data = [{"vector": row, "item": f"item {i}"}
      for i, row in enumerate(np.random.random((10_000, 1536)).astype('float32'))]
 
 db.create_table("my_vectors", data=data)
+```
 -->
+<!-- Setup Code
+```javascript 
+const vectordb = require('vectordb')
+const db_setup = await vectordb.connect('data/sample-lancedb')
+
+let data = []
+for (let i = 0; i < 10_000; i++) {
+     data.push({vector: Array(1536).fill(i), id: `${i}`, content: "", longId: `${i}`},)
+}
+await db_setup.createTable('my_vectors', data)
+```
+-->
+=== "Python"
+
 
     ```python
     import lancedb
@@ -57,16 +71,6 @@ db.create_table("my_vectors", data=data)
 
 === "JavaScript"
 
-<!--javascript 
-const vectordb = require('vectordb')
-const db = await vectordb.connect('data/sample-lancedb')
-
-let data = []
-for (let i = 0; i < 10_000; i++) {
-     data.push({vector: Array(1536).fill(i), id: `${i}`, content: "", longId: `${i}`},)
-}
-await db.createTable('my_vectors', data)
--->
     ```javascript
     const vectordb = require('vectordb')
     const db = await vectordb.connect('data/sample-lancedb')
