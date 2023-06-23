@@ -28,7 +28,7 @@ pub const VECTOR_COLUMN_NAME: &str = "vector";
 pub const LANCE_FILE_EXTENSION: &str = "lance";
 
 /// A table in a LanceDB database.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Table {
     name: String,
     uri: String,
@@ -177,14 +177,23 @@ impl Table {
     }
 
     /// Merge new data into this table.
-    pub async fn merge(&mut self, mut batches: Box<dyn RecordBatchReader>, left_on: &str, right_on: &str) -> Result<()> {
-        self.dataset.merge(&mut batches, left_on, right_on).await?;
-        Ok(batches.count())
+    pub async fn merge(
+        &mut self,
+        mut batches: Box<dyn RecordBatchReader>,
+        left_on: &str,
+        right_on: &str,
+    ) -> Result<()> {
+        let mut dataset = self.dataset.as_ref().clone();
+        dataset.merge(&mut batches, left_on, right_on).await?;
+        self.dataset = Arc::new(dataset);
+        Ok(())
     }
 
     /// Delete rows from the table
     pub async fn delete(&mut self, predicate: &str) -> Result<()> {
-        self.dataset.delete(predicate).await?;
+        let mut dataset = self.dataset.as_ref().clone();
+        dataset.delete(predicate).await?;
+        self.dataset = Arc::new(dataset);
         Ok(())
     }
 }

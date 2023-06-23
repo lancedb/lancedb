@@ -283,33 +283,6 @@ fn table_count_rows(mut cx: FunctionContext) -> JsResult<JsPromise> {
     Ok(promise)
 }
 
-fn table_merge(mut cx: FunctionContext) -> JsResult<JsPromise> {
-    let js_table = cx.this().downcast_or_throw::<JsBox<JsTable>, _>(&mut cx)?;
-    let rt = runtime(&mut cx)?;
-    let channel = cx.channel();
-
-    let buffer = cx.argument::<JsBuffer>(0)?;
-    let batches = arrow_buffer_to_record_batch(buffer.as_slice(&mut cx));
-
-    let left_on = cx.argument::<JsString>(1)?.value(&mut cx);
-    let right_on = cx.argument::<JsString>(2)?.value(&mut cx);
-
-    let (deferred, promise) = cx.promise();
-    let table = js_table.table.clone();
-
-    let handle = rt.spawn_blocking(async move {
-        let batch_reader: Box<dyn RecordBatchReader> = Box::new(RecordBatchBuffer::new(batches));
-        let merge_result = table.lock().unwrap().merge(batch_reader, &left_on, &right_on).await;
-
-        deferred.settle_with(&channel, move |mut cx| {
-            let merged = merge_result.or_else(|err| cx.throw_error(err.to_string()))?;
-            Ok(cx.number(merged as f64))
-        });
-    });
-    // TODO: What to do with handle?
-    Ok(promise)
-}
-
 fn table_delete(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let js_table = cx.this().downcast_or_throw::<JsBox<JsTable>, _>(&mut cx)?;
     let rt = runtime(&mut cx)?;
@@ -320,14 +293,13 @@ fn table_delete(mut cx: FunctionContext) -> JsResult<JsPromise> {
 
     let predicate = cx.argument::<JsString>(0)?.value(&mut cx);
 
-    rt.spawn_blocking(async move {
-        let delete_result = table.lock().unwrap().delete(&predicate).await;
+    let delete_result = rt.block_on(async move { table.lock().unwrap().delete(&predicate).await });
 
-        deferred.settle_with(&channel, move |mut cx| {
-            let deleted = delete_result.or_else(|err| cx.throw_error(err.to_string()))?;
-            Ok(cx.number(deleted as f64))
-        });
+    deferred.settle_with(&channel, move |mut cx| {
+        delete_result.or_else(|err| cx.throw_error(err.to_string()))?;
+        Ok(cx.undefined())
     });
+
     Ok(promise)
 }
 
@@ -340,7 +312,6 @@ fn main(mut cx: ModuleContext) -> NeonResult<()> {
     cx.export_function("tableCreate", table_create)?;
     cx.export_function("tableAdd", table_add)?;
     cx.export_function("tableCountRows", table_count_rows)?;
-    cx.export_function("tableMerge", table_merge)?;
     cx.export_function("tableDelete", table_delete)?;
     cx.export_function(
         "tableCreateVectorIndex",

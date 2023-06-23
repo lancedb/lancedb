@@ -188,26 +188,26 @@ export class Table<T = number[]> {
 
   /**
    * Merge new columns into this table.
-   * 
+   *
    * @param data The data to be merged into this table.
-   * @param left_on The column in the table to be merged on.
-   * @param right_on The column in the data to be merged on. If not provided, the column name will be used.
+   * @param leftOn The column in the table to be merged on.
+   * @param rightOn The column in the data to be merged on. If not provided, the column name will be used.
    */
-  async merge (data: Array<Record<string, unknown>>, left_on: string, right_on?: string): Promise<void> {
-    right_on = right_on ?? left_on;
+  async merge (data: Array<Record<string, unknown>>, leftOn: string, rightOn?: string): Promise<void> {
+    rightOn = rightOn ?? leftOn
 
-    let data_buffer = await fromRecordsToBuffer(data, this._embeddings);
+    const dataBuffer = await fromRecordsToBuffer(data)
 
-    return tableMerge(this._tbl, data_buffer, left_on, right_on);
+    return tableMerge.call(this._tbl, dataBuffer, leftOn, rightOn)
   }
 
   /**
    * Delete rows from this table.
-   * 
+   *
    * @param filter The filter to be applied to this table.
    */
   async delete (filter: string): Promise<void> {
-    return tableDelete(this._tbl, filter);
+    return tableDelete.call(this._tbl, filter)
   }
 }
 

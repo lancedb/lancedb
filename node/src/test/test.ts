@@ -147,6 +147,17 @@ describe('LanceDB client', function () {
       await table.overwrite(dataOver)
       assert.equal(await table.countRows(), 2)
     })
+
+    it('can delete records from a table', async function () {
+      const uri = await createTestDB()
+      const con = await lancedb.connect(uri)
+
+      const table = await con.openTable('vectors')
+      assert.equal(await table.countRows(), 2)
+
+      await table.delete('price = 10')
+      assert.equal(await table.countRows(), 1)
+    })
   })
 
   describe('when creating a vector index', function () {
