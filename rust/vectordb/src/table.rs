@@ -175,6 +175,18 @@ impl Table {
     pub async fn count_rows(&self) -> Result<usize> {
         Ok(self.dataset.count_rows().await?)
     }
+
+    /// Merge new data into this table.
+    pub async fn merge(&mut self, mut batches: Box<dyn RecordBatchReader>, left_on: &str, right_on: &str) -> Result<()> {
+        self.dataset.merge(&mut batches, left_on, right_on).await?;
+        Ok(batches.count())
+    }
+
+    /// Delete rows from the table
+    pub async fn delete(&mut self, predicate: &str) -> Result<()> {
+        self.dataset.delete(predicate).await?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

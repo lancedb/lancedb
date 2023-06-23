@@ -293,6 +293,76 @@ class LanceTable:
         return tbl
 
 
+    def merge(self, other: DATA, left_on: str, right_on: str = None, schema: pa.Schema = None):
+        """Merge another table into this table.
+
+        Parameters
+        ----------
+        other: list-of-dict, dict, pd.DataFrame
+            The data to insert into the table.
+        left_on: str
+            The name of the column in this table to use when merging.
+        right_on: str; optional
+            The name of the column in the other table to use when merging. If
+            not specified, this defaults to the same value as left_on.
+        schema: pa.Schema; optional
+            The expected schema. If not provided, this just converts the
+            vector column to fixed_size_list(float32) if necessary.
+        left_on: str; optional
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> import pandas as pd
+        >>> data = pd.DataFrame({"id": [1, 2, 3], "type": ['a', 'b', 'c']})
+        >>> db = lancedb.connect("./.lancedb")
+        >>> table = db.create_table("my_table", data)
+        >>> table.to_pandas()
+          id type
+        0  1    a 
+        1  2    b 
+        2  3    c 
+        >>> new_data = pd.DataFrame({"id": [1, 2, 3], "meta": ['x', 'y', 'z']})
+        >>> table.merge(new_data, left_on="id")
+        >>> table.to_pandas()
+          id type meta
+        0  1    a    x
+        1  2    b    y
+        2  3    c    z
+        """
+        other = _sanitize_data(other, schema)
+        self._dataset.merge(other, left_on=left_on, right_on=right_on)
+
+
+    def delete(self, where: str):
+        """Delete rows from the table.
+        
+        Parameters
+        ----------
+        where: str
+            The SQL where clause to use when deleting rows.
+        
+        Examples
+        --------
+        >>> import lancedb
+        >>> import pandas as pd
+        >>> data = pd.DataFrame({"x": [1, 2, 3]})
+        >>> db = lancedb.connect("./.lancedb")
+        >>> table = db.create_table("my_table", data)
+        >>> table.to_pandas()
+           x
+        0  1
+        1  2
+        2  3
+        >>> table.delete_where("x = 2")
+        >>> table.to_pandas()
+           x
+        0  1
+        1  3
+        """
+        self._dataset.delete(where)
+
+
 def _sanitize_schema(data: pa.Table, schema: pa.Schema = None) -> pa.Table:
     """Ensure that the table has the expected schema.
 

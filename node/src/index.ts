@@ -22,7 +22,7 @@ import { fromRecordsToBuffer } from './arrow'
 import type { EmbeddingFunction } from './embedding/embedding_function'
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { databaseNew, databaseTableNames, databaseOpenTable, tableCreate, tableSearch, tableAdd, tableCreateVectorIndex, tableCountRows } = require('../native.js')
+const { databaseNew, databaseTableNames, databaseOpenTable, tableCreate, tableSearch, tableAdd, tableCreateVectorIndex, tableCountRows, tableMerge, tableDelete } = require('../native.js')
 
 export type { EmbeddingFunction }
 export { OpenAIEmbeddingFunction } from './embedding/openai'
@@ -184,6 +184,30 @@ export class Table<T = number[]> {
    */
   async countRows (): Promise<number> {
     return tableCountRows.call(this._tbl)
+  }
+
+  /**
+   * Merge new columns into this table.
+   * 
+   * @param data The data to be merged into this table.
+   * @param left_on The column in the table to be merged on.
+   * @param right_on The column in the data to be merged on. If not provided, the column name will be used.
+   */
+  async merge (data: Array<Record<string, unknown>>, left_on: string, right_on?: string): Promise<void> {
+    right_on = right_on ?? left_on;
+
+    let data_buffer = await fromRecordsToBuffer(data, this._embeddings);
+
+    return tableMerge(this._tbl, data_buffer, left_on, right_on);
+  }
+
+  /**
+   * Delete rows from this table.
+   * 
+   * @param filter The filter to be applied to this table.
+   */
+  async delete (filter: string): Promise<void> {
+    return tableDelete(this._tbl, filter);
   }
 }
 
