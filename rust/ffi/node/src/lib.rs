@@ -134,9 +134,7 @@ fn database_drop_table(mut cx: FunctionContext) -> JsResult<JsPromise> {
 
     let (deferred, promise) = cx.promise();
     rt.spawn(async move {
-        let result =  database
-        .drop_table(&table_name)
-        .await;
+        let result = database.drop_table(&table_name).await;
         deferred.settle_with(&channel, move |mut cx| {
             result.or_else(|err| cx.throw_error(err.to_string()))?;
             Ok(cx.null())
