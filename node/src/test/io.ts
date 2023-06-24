@@ -50,5 +50,3 @@ async function createTestDB (uri: string, numDimensions: number = 2, numRows: nu
 
   return await con.createTable('vectors', data)
 }
-
-
