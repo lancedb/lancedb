@@ -22,7 +22,7 @@ import { fromRecordsToBuffer } from './arrow'
 import type { EmbeddingFunction } from './embedding/embedding_function'
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { databaseNew, databaseTableNames, databaseOpenTable, tableCreate, tableSearch, tableAdd, tableCreateVectorIndex, tableCountRows } = require('../native.js')
+const { databaseNew, databaseTableNames, databaseOpenTable, tableCreate, tableSearch, tableAdd, tableCreateVectorIndex, tableCountRows, tableDelete } = require('../native.js')
 
 export type { EmbeddingFunction }
 export { OpenAIEmbeddingFunction } from './embedding/openai'
@@ -184,6 +184,15 @@ export class Table<T = number[]> {
    */
   async countRows (): Promise<number> {
     return tableCountRows.call(this._tbl)
+  }
+
+  /**
+   * Delete rows from this table.
+   *
+   * @param filter The filter to be applied to this table.
+   */
+  async delete (filter: string): Promise<void> {
+    return tableDelete.call(this._tbl, filter)
   }
 }
 
