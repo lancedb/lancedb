@@ -197,6 +197,7 @@ class LanceTable:
             The number of PQ sub-vectors to use when creating the index.
             Default is 96.
         """
+        
         self._dataset.create_index(
             column=VECTOR_COLUMN_NAME,
             index_type="IVF_PQ",
