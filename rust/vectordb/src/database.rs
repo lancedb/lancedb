@@ -1,4 +1,4 @@
-// Copyright 2023 Lance Developers.
+// Copyright 2023 LanceDB Developers.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -109,6 +109,16 @@ impl Database {
     pub async fn open_table(&self, name: &str) -> Result<Table> {
         Table::open(&self.uri, name).await
     }
+
+    /// Drop a table in the database.
+    ///
+    /// # Arguments
+    /// * `name` - The name of the table.
+    pub async fn drop_table(&self, name: &str) -> Result<()> {
+        let dir_name = format!("{}/{}.{}", self.uri, name, LANCE_EXTENSION);
+        self.object_store.remove_dir_all(dir_name).await?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -145,5 +155,18 @@ mod tests {
     #[tokio::test]
     async fn test_connect_s3() {
         // let db = Database::connect("s3://bucket/path/to/database").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn drop_table() {
+        let tmp_dir = tempdir().unwrap();
+        create_dir_all(tmp_dir.path().join("table1.lance")).unwrap();
+
+        let uri = tmp_dir.path().to_str().unwrap();
+        let db = Database::connect(uri).await.unwrap();
+        db.drop_table("table1").await.unwrap();
+
+        let tables = db.table_names().await.unwrap();
+        assert_eq!(tables.len(), 0);
     }
 }

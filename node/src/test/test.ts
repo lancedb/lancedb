@@ -235,3 +235,22 @@ async function createTestDB (numDimensions: number = 2, numRows: number = 2): Pr
   await con.createTable('vectors', data)
   return dir
 }
+
+describe('Drop table', function () {
+  it('drop a table', async function () {
+    const dir = await track().mkdir('lancejs')
+    const con = await lancedb.connect(dir)
+
+    const data = [
+      { price: 10, name: 'foo', vector: [1, 2, 3] },
+      { price: 50, name: 'bar', vector: [4, 5, 6] }
+    ]
+    await con.createTable('t1', data)
+    await con.createTable('t2', data)
+
+    assert.deepEqual(await con.tableNames(), ['t1', 't2'])
+
+    await con.dropTable('t1')
+    assert.deepEqual(await con.tableNames(), ['t2'])
+  })
+})
