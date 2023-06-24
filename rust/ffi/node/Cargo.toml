@@ -10,12 +10,12 @@ exclude = ["index.node"]
 crate-type = ["cdylib"]
 
 [dependencies]
-arrow-array = "37.0"
-arrow-ipc = "37.0"
-arrow-schema = "37.0"
+arrow-array = "40.0"
+arrow-ipc = "40.0"
+arrow-schema = "40.0"
 once_cell = "1"
 futures = "0.3"
-lance = "0.4.17"
+lance = "0.5.0"
 vectordb = { path = "../../vectordb" }
 tokio = { version = "1.23", features = ["rt-multi-thread"] }
 neon = {version = "0.10.1", default-features = false, features = ["channel-api", "napi-6", "promise-api", "task-api"] }

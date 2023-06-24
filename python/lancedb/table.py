@@ -292,6 +292,34 @@ class LanceTable:
         lance.write_dataset(data, tbl._dataset_uri, mode=mode)
         return tbl
 
+    def delete(self, where: str):
+        """Delete rows from the table.
+
+        Parameters
+        ----------
+        where: str
+            The SQL where clause to use when deleting rows.
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> import pandas as pd
+        >>> data = pd.DataFrame({"x": [1, 2, 3], "vector": [[1, 2], [3, 4], [5, 6]]})
+        >>> db = lancedb.connect("./.lancedb")
+        >>> table = db.create_table("my_table", data)
+        >>> table.to_pandas()
+           x      vector
+        0  1  [1.0, 2.0]
+        1  2  [3.0, 4.0]
+        2  3  [5.0, 6.0]
+        >>> table.delete("x = 2")
+        >>> table.to_pandas()
+           x      vector
+        0  1  [1.0, 2.0]
+        1  3  [5.0, 6.0]
+        """
+        self._dataset.delete(where)
+
 
 def _sanitize_schema(data: pa.Table, schema: pa.Schema = None) -> pa.Table:
     """Ensure that the table has the expected schema.
