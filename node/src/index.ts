@@ -22,7 +22,7 @@ import { fromRecordsToBuffer } from './arrow'
 import type { EmbeddingFunction } from './embedding/embedding_function'
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { databaseNew, databaseTableNames, databaseOpenTable, tableCreate, tableSearch, tableAdd, tableCreateVectorIndex, tableCountRows, tableMerge, tableDelete } = require('../native.js')
+const { databaseNew, databaseTableNames, databaseOpenTable, tableCreate, tableSearch, tableAdd, tableCreateVectorIndex, tableCountRows, tableDelete } = require('../native.js')
 
 export type { EmbeddingFunction }
 export { OpenAIEmbeddingFunction } from './embedding/openai'
@@ -184,21 +184,6 @@ export class Table<T = number[]> {
    */
   async countRows (): Promise<number> {
     return tableCountRows.call(this._tbl)
-  }
-
-  /**
-   * Merge new columns into this table.
-   *
-   * @param data The data to be merged into this table.
-   * @param leftOn The column in the table to be merged on.
-   * @param rightOn The column in the data to be merged on. If not provided, the column name will be used.
-   */
-  async merge (data: Array<Record<string, unknown>>, leftOn: string, rightOn?: string): Promise<void> {
-    rightOn = rightOn ?? leftOn
-
-    const dataBuffer = await fromRecordsToBuffer(data)
-
-    return tableMerge.call(this._tbl, dataBuffer, leftOn, rightOn)
   }
 
   /**
