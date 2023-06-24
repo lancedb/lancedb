@@ -182,7 +182,7 @@ class LanceTable:
     def _dataset_uri(self) -> str:
         return os.path.join(self._conn.uri, f"{self.name}.lance")
 
-    def create_index(self, metric="L2", num_partitions=256, num_sub_vectors=96):
+    def create_index(self, metric="L2", num_partitions=256, num_sub_vectors=96, replace: bool = False):
         """Create an index on the table.
 
         Parameters
@@ -203,6 +203,7 @@ class LanceTable:
             metric=metric,
             num_partitions=num_partitions,
             num_sub_vectors=num_sub_vectors,
+            replace=replace,  # Pass the replace parameter
         )
         self._reset_dataset()
 
