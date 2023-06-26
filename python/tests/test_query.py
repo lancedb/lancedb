@@ -17,9 +17,11 @@ import pandas as pd
 import pandas.testing as tm
 import pyarrow as pa
 import pytest
+import unittest.mock as mock
 
 from lancedb.db import LanceDBConnection
 from lancedb.query import LanceQueryBuilder
+from lancedb.table import LanceTable
 
 
 class MockTable:
@@ -79,11 +81,34 @@ def test_query_builder_with_metric(table):
     assert 0 <= df_cosine.score[0] <= 1
 
 
-def test_query_builder_with_different_vector_column(table):
+def test_query_builder_with_different_vector_column():
+    table = mock.MagicMock(spec=LanceTable)
     query = [4, 8]
     vector_column_name = "foo_vector"
-    builder = LanceQueryBuilder(table, query, vector_column_name)
-    assert builder._vector_column_name == vector_column_name
+    builder = (
+        LanceQueryBuilder(table, query, vector_column_name)
+        .metric("cosine")
+        .where("b < 10")
+        .select(["b"])
+        .limit(2)
+    )
+    ds = mock.Mock()
+    table.to_lance.return_value = ds
+    table._conn = mock.MagicMock()
+    table._conn.is_managed_remote = False
+    builder.to_arrow()
+    ds.to_table.assert_called_once_with(
+        columns=["b"],
+        filter="b < 10",
+        nearest={
+            "column": vector_column_name,
+            "q": query,
+            "k": 2,
+            "metric": "cosine",
+            "nprobes": 20,
+            "refine_factor": None,
+        },
+    )
 
 
 def cosine_distance(vec1, vec2):

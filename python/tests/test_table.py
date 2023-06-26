@@ -17,8 +17,10 @@ from pathlib import Path
 import pandas as pd
 import pyarrow as pa
 import pytest
+from unittest.mock import patch, PropertyMock
 
 from lancedb.table import LanceTable
+from lancedb.db import LanceDBConnection
 
 
 class MockDB:
@@ -142,3 +144,33 @@ def test_versioning(db):
     table.checkout(1)
     assert table.version == 1
     assert len(table) == 2
+
+
+def test_create_index_method():
+    with patch.object(LanceTable, "_reset_dataset", return_value=None):
+        with patch.object(
+            LanceTable, "_dataset", new_callable=PropertyMock
+        ) as mock_dataset:
+            # Setup mock responses
+            mock_dataset.return_value.create_index.return_value = None
+
+            # Create a LanceTable object
+            connection = LanceDBConnection(uri="mock.uri")
+            table = LanceTable(connection, "test_table")
+
+            # Call the create_index method
+            table.create_index(
+                metric="L2",
+                num_partitions=256,
+                num_sub_vectors=96,
+                vector_column_name="vector",
+            )
+
+            # Check that the _dataset.create_index method was called with the right parameters
+            mock_dataset.return_value.create_index.assert_called_once_with(
+                column="vector",
+                index_type="IVF_PQ",
+                metric="L2",
+                num_partitions=256,
+                num_sub_vectors=96,
+            )
