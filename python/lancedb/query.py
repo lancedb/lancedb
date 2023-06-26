@@ -19,6 +19,8 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 
+from .common import VECTOR_COLUMN_NAME
+
 
 class LanceQueryBuilder:
     """
@@ -47,7 +49,7 @@ class LanceQueryBuilder:
         self,
         table: "lancedb.table.LanceTable",
         query: np.ndarray,
-        vector_column_name: str,
+        vector_column_name: str = VECTOR_COLUMN_NAME,
     ):
         self._metric = "L2"
         self._nprobes = 20
