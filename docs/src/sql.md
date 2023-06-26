@@ -1,7 +1,7 @@
 # SQL filters
 
 LanceDB embraces the utilization of standard SQL expressions as predicates for hybrid
-filters. It can be used during vector search, deletion and
+filters. It can be used during hybrid vector search and deletion operations.
 
 Currently, Lance supports a growing list of expressions.
 
