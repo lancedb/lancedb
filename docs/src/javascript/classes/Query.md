@@ -18,7 +18,6 @@ A builder for nearest neighbor queries for LanceDB.
 
 ### Properties
 
-- [\_columns](Query.md#_columns)
 - [\_embeddings](Query.md#_embeddings)
 - [\_filter](Query.md#_filter)
 - [\_limit](Query.md#_limit)
@@ -27,7 +26,9 @@ A builder for nearest neighbor queries for LanceDB.
 - [\_query](Query.md#_query)
 - [\_queryVector](Query.md#_queryvector)
 - [\_refineFactor](Query.md#_refinefactor)
+- [\_select](Query.md#_select)
 - [\_tbl](Query.md#_tbl)
+- [where](Query.md#where)
 
 ### Methods
 
@@ -37,6 +38,7 @@ A builder for nearest neighbor queries for LanceDB.
 - [metricType](Query.md#metrictype)
 - [nprobes](Query.md#nprobes)
 - [refineFactor](Query.md#refinefactor)
+- [select](Query.md#select)
 
 ## Constructors
 
@@ -60,19 +62,9 @@ A builder for nearest neighbor queries for LanceDB.
 
 #### Defined in
 
-[index.ts:241](https://github.com/lancedb/lancedb/blob/31dab97/node/src/index.ts#L241)
+[index.ts:353](https://github.com/lancedb/lancedb/blob/bfb5400/node/src/index.ts#L353)
 
 ## Properties
-
-### \_columns
-
-• `Private` `Optional` `Readonly` **\_columns**: `string`[]
-
-#### Defined in
-
-[index.ts:236](https://github.com/lancedb/lancedb/blob/31dab97/node/src/index.ts#L236)
-
-___
 
 ### \_embeddings
 
@@ -80,7 +72,7 @@ ___
 
 #### Defined in
 
-[index.ts:239](https://github.com/lancedb/lancedb/blob/31dab97/node/src/index.ts#L239)
+[index.ts:351](https://github.com/lancedb/lancedb/blob/bfb5400/node/src/index.ts#L351)
 
 ___
 
@@ -90,7 +82,7 @@ ___
 
 #### Defined in
 
-[index.ts:237](https://github.com/lancedb/lancedb/blob/31dab97/node/src/index.ts#L237)
+[index.ts:349](https://github.com/lancedb/lancedb/blob/bfb5400/node/src/index.ts#L349)
 
 ___
 
@@ -100,7 +92,7 @@ ___
 
 #### Defined in
 
-[index.ts:233](https://github.com/lancedb/lancedb/blob/31dab97/node/src/index.ts#L233)
+[index.ts:345](https://github.com/lancedb/lancedb/blob/bfb5400/node/src/index.ts#L345)
 
 ___
 
@@ -110,7 +102,7 @@ ___
 
 #### Defined in
 
-[index.ts:238](https://github.com/lancedb/lancedb/blob/31dab97/node/src/index.ts#L238)
+[index.ts:350](https://github.com/lancedb/lancedb/blob/bfb5400/node/src/index.ts#L350)
 
 ___
 
@@ -120,7 +112,7 @@ ___
 
 #### Defined in
 
-[index.ts:235](https://github.com/lancedb/lancedb/blob/31dab97/node/src/index.ts#L235)
+[index.ts:347](https://github.com/lancedb/lancedb/blob/bfb5400/node/src/index.ts#L347)
 
 ___
 
@@ -130,7 +122,7 @@ ___
 
 #### Defined in
 
-[index.ts:231](https://github.com/lancedb/lancedb/blob/31dab97/node/src/index.ts#L231)
+[index.ts:343](https://github.com/lancedb/lancedb/blob/bfb5400/node/src/index.ts#L343)
 
 ___
 
@@ -140,7 +132,7 @@ ___
 
 #### Defined in
 
-[index.ts:232](https://github.com/lancedb/lancedb/blob/31dab97/node/src/index.ts#L232)
+[index.ts:344](https://github.com/lancedb/lancedb/blob/bfb5400/node/src/index.ts#L344)
 
 ___
 
@@ -150,7 +142,17 @@ ___
 
 #### Defined in
 
-[index.ts:234](https://github.com/lancedb/lancedb/blob/31dab97/node/src/index.ts#L234)
+[index.ts:346](https://github.com/lancedb/lancedb/blob/bfb5400/node/src/index.ts#L346)
+
+___
+
+### \_select
+
+• `Private` `Optional` **\_select**: `string`[]
+
+#### Defined in
+
+[index.ts:348](https://github.com/lancedb/lancedb/blob/bfb5400/node/src/index.ts#L348)
 
 ___
 
@@ -160,7 +162,33 @@ ___
 
 #### Defined in
 
-[index.ts:230](https://github.com/lancedb/lancedb/blob/31dab97/node/src/index.ts#L230)
+[index.ts:342](https://github.com/lancedb/lancedb/blob/bfb5400/node/src/index.ts#L342)
+
+___
+
+### where
+
+• **where**: (`value`: `string`) => [`Query`](Query.md)<`T`\>
+
+#### Type declaration
+
+▸ (`value`): [`Query`](Query.md)<`T`\>
+
+A filter statement to be applied to this query.
+
+##### Parameters
+
+| Name | Type | Description |
+| :------ | :------ | :------ |
+| `value` | `string` | A filter in the same format used by a sql WHERE clause. |
+
+##### Returns
+
+[`Query`](Query.md)<`T`\>
+
+#### Defined in
+
+[index.ts:401](https://github.com/lancedb/lancedb/blob/bfb5400/node/src/index.ts#L401)
 
 ## Methods
 
@@ -182,7 +210,7 @@ Execute the query and return the results as an Array of Objects
 
 #### Defined in
 
-[index.ts:301](https://github.com/lancedb/lancedb/blob/31dab97/node/src/index.ts#L301)
+[index.ts:424](https://github.com/lancedb/lancedb/blob/bfb5400/node/src/index.ts#L424)
 
 ___
 
@@ -204,7 +232,7 @@ A filter statement to be applied to this query.
 
 #### Defined in
 
-[index.ts:284](https://github.com/lancedb/lancedb/blob/31dab97/node/src/index.ts#L284)
+[index.ts:396](https://github.com/lancedb/lancedb/blob/bfb5400/node/src/index.ts#L396)
 
 ___
 
@@ -226,7 +254,7 @@ Sets the number of results that will be returned
 
 #### Defined in
 
-[index.ts:257](https://github.com/lancedb/lancedb/blob/31dab97/node/src/index.ts#L257)
+[index.ts:369](https://github.com/lancedb/lancedb/blob/bfb5400/node/src/index.ts#L369)
 
 ___
 
@@ -252,7 +280,7 @@ MetricType for the different options
 
 #### Defined in
 
-[index.ts:293](https://github.com/lancedb/lancedb/blob/31dab97/node/src/index.ts#L293)
+[index.ts:416](https://github.com/lancedb/lancedb/blob/bfb5400/node/src/index.ts#L416)
 
 ___
 
@@ -274,7 +302,7 @@ The number of probes used. A higher number makes search more accurate but also s
 
 #### Defined in
 
-[index.ts:275](https://github.com/lancedb/lancedb/blob/31dab97/node/src/index.ts#L275)
+[index.ts:387](https://github.com/lancedb/lancedb/blob/bfb5400/node/src/index.ts#L387)
 
 ___
 
@@ -296,4 +324,26 @@ Refine the results by reading extra elements and re-ranking them in memory.
 
 #### Defined in
 
-[index.ts:266](https://github.com/lancedb/lancedb/blob/31dab97/node/src/index.ts#L266)
+[index.ts:378](https://github.com/lancedb/lancedb/blob/bfb5400/node/src/index.ts#L378)
+
+___
+
+### select
+
+▸ **select**(`value`): [`Query`](Query.md)<`T`\>
+
+Return only the specified columns.
+
+#### Parameters
+
+| Name | Type | Description |
+| :------ | :------ | :------ |
+| `value` | `string`[] | Only select the specified columns. If not specified, all columns will be returned. |
+
+#### Returns
+
+[`Query`](Query.md)<`T`\>
+
+#### Defined in
+
+[index.ts:407](https://github.com/lancedb/lancedb/blob/bfb5400/node/src/index.ts#L407)
