@@ -3364,13 +3364,13 @@ checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
 name = "vectordb"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "arrow-array",
  "arrow-data",
  "arrow-schema",
  "lance",
- "object_store 0.5.6",
+ "object_store 0.6.1",
  "rand",
  "snafu",
  "tempfile",
@@ -3379,7 +3379,7 @@ dependencies = [
 
 [[package]]
 name = "vectordb-node"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "arrow-array",
  "arrow-ipc",
