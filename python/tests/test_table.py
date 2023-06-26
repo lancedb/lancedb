@@ -13,14 +13,14 @@
 
 import functools
 from pathlib import Path
+from unittest.mock import PropertyMock, patch
 
 import pandas as pd
 import pyarrow as pa
 import pytest
-from unittest.mock import patch, PropertyMock
 
-from lancedb.table import LanceTable
 from lancedb.db import LanceDBConnection
+from lancedb.table import LanceTable
 
 
 class MockDB:

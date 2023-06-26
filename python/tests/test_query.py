@@ -11,13 +11,14 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
+import unittest.mock as mock
+
 import lance
 import numpy as np
 import pandas as pd
 import pandas.testing as tm
 import pyarrow as pa
 import pytest
-import unittest.mock as mock
 
 from lancedb.db import LanceDBConnection
 from lancedb.query import LanceQueryBuilder
