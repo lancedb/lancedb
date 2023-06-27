@@ -204,7 +204,7 @@ class LanceTable:
         num_sub_vectors: int
             The number of PQ sub-vectors to use when creating the index.
             Default is 96.
-        vector_column_name: str
+        vector_column_name: str, default "vector"
             The vector column name to create the index.
         replace: bool, default True
             If True, replace the existing index if it exists.
