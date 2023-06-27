@@ -164,6 +164,7 @@ def test_create_index_method():
                 num_partitions=256,
                 num_sub_vectors=96,
                 vector_column_name="vector",
+                replace=True,
             )
 
             # Check that the _dataset.create_index method was called with the right parameters
@@ -173,4 +174,5 @@ def test_create_index_method():
                 metric="L2",
                 num_partitions=256,
                 num_sub_vectors=96,
+                replace=True,
             )
