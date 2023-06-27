@@ -124,11 +124,7 @@ fn get_index_params_builder(
 
             obj.get_opt::<JsBoolean, _, _>(cx, "replace")
                 .map_err(|t| t.to_string())?
-                .map(|s| {
-                    println!("Replace is: {:?}", s.value(cx));
-                    index_builder.replace(s.value(cx))
-                }
-                    );
+                .map(|s| index_builder.replace(s.value(cx)));
 
             Ok(index_builder)
         }
