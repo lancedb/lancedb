@@ -14,10 +14,15 @@
 
 import { describe } from 'mocha'
 import { assert } from 'chai'
+
 import { track } from 'temp'
 
 import * as lancedb from '../index'
 import { type EmbeddingFunction, MetricType, Query } from '../index'
+const chai = require('chai')
+const expect = chai.expect
+const chaiAsPromised = require('chai-as-promised')
+chai.use(chaiAsPromised)
 
 describe('LanceDB client', function () {
   describe('when creating a connection to lancedb', function () {
@@ -165,8 +170,25 @@ describe('LanceDB client', function () {
       const uri = await createTestDB(32, 300)
       const con = await lancedb.connect(uri)
       const table = await con.openTable('vectors')
-      await table.createIndex({ type: 'ivf_pq', column: 'vector', num_partitions: 2, max_iters: 2 })
+      await table.createIndex({ type: 'ivf_pq', column: 'vector', num_partitions: 2, max_iters: 2, num_sub_vectors: 2 })
     }).timeout(10_000) // Timeout is high partially because GH macos runner is pretty slow
+
+    it('replace an existing index', async function () {
+      const uri = await createTestDB(16, 300)
+      const con = await lancedb.connect(uri)
+      const table = await con.openTable('vectors')
+
+      await table.createIndex({ type: 'ivf_pq', column: 'vector', num_partitions: 2, max_iters: 2, num_sub_vectors: 2 })
+
+      // Replace should fail if the index already exists
+      await expect(table.createIndex({
+        type: 'ivf_pq', column: 'vector', num_partitions: 2, max_iters: 2, num_sub_vectors: 2, replace: false
+      })
+      ).to.be.rejectedWith('LanceError(Index)')
+
+      // Default replace = true
+      await table.createIndex({ type: 'ivf_pq', column: 'vector', num_partitions: 2, max_iters: 2, num_sub_vectors: 2 })
+    }).timeout(50_000)
   })
 
   describe('when using a custom embedding function', function () {

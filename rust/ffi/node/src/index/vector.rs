@@ -122,6 +122,14 @@ fn get_index_params_builder(
                 .map_err(|t| t.to_string())?
                 .map(|s| pq_params.max_opq_iters = s.value(cx) as usize);
 
+            obj.get_opt::<JsBoolean, _, _>(cx, "replace")
+                .map_err(|t| t.to_string())?
+                .map(|s| {
+                    println!("Replace is: {:?}", s.value(cx));
+                    index_builder.replace(s.value(cx))
+                }
+                    );
+
             Ok(index_builder)
         }
         t => Err(format!("{} is not a valid index type", t).to_string()),
