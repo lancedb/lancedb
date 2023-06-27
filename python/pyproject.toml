@@ -1,7 +1,7 @@
 [project]
 name = "lancedb"
-version = "0.1.8"
-dependencies = ["pylance>=0.4.20", "ratelimiter", "retry", "tqdm", "aiohttp", "pydantic", "attr"]
+version = "0.1.9"
+dependencies = ["pylance~=0.5.0", "ratelimiter", "retry", "tqdm", "aiohttp", "pydantic", "attr"]
 description = "lancedb"
 authors = [
     { name = "LanceDB Devs", email = "dev@lancedb.com" },
@@ -37,7 +37,7 @@ repository = "https://github.com/lancedb/lancedb"
 
 [project.optional-dependencies]
 tests = [
-    "pytest", "pytest-mock", "doctest", "pytest-asyncio"
+    "pytest", "pytest-mock", "pytest-asyncio"
 ]
 dev = [
     "ruff", "pre-commit", "black"

@@ -22,7 +22,7 @@ import { fromRecordsToBuffer } from './arrow'
 import type { EmbeddingFunction } from './embedding/embedding_function'
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { databaseNew, databaseTableNames, databaseOpenTable, tableCreate, tableSearch, tableAdd, tableCreateVectorIndex, tableCountRows } = require('../native.js')
+const { databaseNew, databaseTableNames, databaseOpenTable, databaseDropTable, tableCreate, tableSearch, tableAdd, tableCreateVectorIndex, tableCountRows, tableDelete } = require('../native.js')
 
 export type { EmbeddingFunction }
 export { OpenAIEmbeddingFunction } from './embedding/openai'
@@ -111,6 +111,14 @@ export class Connection {
     await tableCreate.call(this._db, name, Buffer.from(await writer.toUint8Array()))
     return await this.openTable(name)
   }
+
+  /**
+   * Drop an existing table.
+   * @param name The name of the table to drop.
+   */
+  async dropTable (name: string): Promise<void> {
+    await databaseDropTable.call(this._db, name)
+  }
 }
 
 export class Table<T = number[]> {
@@ -173,17 +181,19 @@ export class Table<T = number[]> {
   }
 
   /**
-   * @deprecated Use [Table.createIndex]
-   */
-  async create_index (indexParams: VectorIndexParams): Promise<any> {
-    return await this.createIndex(indexParams)
-  }
-
-  /**
    * Returns the number of rows in this table.
    */
   async countRows (): Promise<number> {
     return tableCountRows.call(this._tbl)
+  }
+
+  /**
+   * Delete rows from this table.
+   *
+   * @param filter The filter to be applied to this table.
+   */
+  async delete (filter: string): Promise<void> {
+    return tableDelete.call(this._tbl, filter)
   }
 }
 
@@ -231,6 +241,11 @@ interface IvfPQIndexConfig {
    * Max number of iterations to train OPQ, if `use_opq` is true.
    */
   max_opq_iters?: number
+
+  /**
+   * Replace an existing index with the same name if it exists.
+   */
+  replace?: boolean
 
   type: 'ivf_pq'
 }

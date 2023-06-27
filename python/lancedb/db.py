@@ -43,7 +43,7 @@ class LanceDBConnection:
     LanceTable(my_table)
     >>> db.create_table("another_table", data=[{"vector": [0.4, 0.4], "b": 6}])
     LanceTable(another_table)
-    >>> db.table_names()
+    >>> sorted(db.table_names())
     ['another_table', 'my_table']
     >>> len(db)
     2
