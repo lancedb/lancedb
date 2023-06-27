@@ -181,13 +181,6 @@ export class Table<T = number[]> {
   }
 
   /**
-   * @deprecated Use [Table.createIndex]
-   */
-  async create_index (indexParams: VectorIndexParams): Promise<any> {
-    return await this.createIndex(indexParams)
-  }
-
-  /**
    * Returns the number of rows in this table.
    */
   async countRows (): Promise<number> {
@@ -248,6 +241,11 @@ interface IvfPQIndexConfig {
    * Max number of iterations to train OPQ, if `use_opq` is true.
    */
   max_opq_iters?: number
+
+  /**
+   * Replace an existing index with the same name if it exists.
+   */
+  replace?: boolean
 
   type: 'ivf_pq'
 }
