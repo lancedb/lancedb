@@ -11,6 +11,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -120,3 +121,31 @@ def test_delete_table(tmp_path):
 
     db.create_table("test", data=data)
     assert db.table_names() == ["test"]
+
+
+def test_replace_index(tmp_path):
+    db = lancedb.connect(uri=tmp_path)
+    table = db.create_table(
+        "test",
+        [
+            {"vector": np.random.rand(128), "item": "foo", "price": float(i)}
+            for i in range(1000)
+        ],
+    )
+    table.create_index(
+        num_partitions=2,
+        num_sub_vectors=4,
+    )
+
+    with pytest.raises(Exception):
+        table.create_index(
+            num_partitions=2,
+            num_sub_vectors=4,
+            replace=False,
+        )
+
+    table.create_index(
+        num_partitions=2,
+        num_sub_vectors=4,
+        replace=True,
+    )
