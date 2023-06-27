@@ -252,7 +252,7 @@ class LanceDBConnection:
         if data is not None:
             tbl = LanceTable.create(self, name, data, schema, mode=mode)
         else:
-            tbl = LanceTable(self, name)
+            tbl = LanceTable.open(self, name)
         return tbl
 
     def open_table(self, name: str) -> LanceTable:
@@ -267,7 +267,7 @@ class LanceDBConnection:
         -------
         A LanceTable object representing the table.
         """
-        return LanceTable(self, name)
+        return LanceTable.open(self, name)
 
     def drop_table(self, name: str):
         """Drop a table from the database.

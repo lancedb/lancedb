@@ -308,6 +308,19 @@ class LanceTable:
         lance.write_dataset(data, tbl._dataset_uri, mode=mode)
         return tbl
 
+    @classmethod
+    def open(cls, db, name):
+        tbl = cls(db, name)
+        if tbl._conn.is_managed_remote:
+            # Not completely sure how to check for remote table existence yet.
+            return tbl
+        if not os.path.exists(tbl._dataset_uri):
+            raise FileNotFoundError(
+                f"Table {name} does not exist. Please first call db.create_table({name}, data)"
+            )
+
+        return tbl
+
     def delete(self, where: str):
         """Delete rows from the table.
 

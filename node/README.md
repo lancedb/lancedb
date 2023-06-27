@@ -16,7 +16,7 @@ npm install vectordb
 const lancedb = require('vectordb');
 const db = lancedb.connect('<PATH_TO_LANCEDB_DATASET>');
 const table = await db.openTable('my_table');
-const query = await table.search([0.1, 0.3]).limit(20).execute();
+const results = await table.search([0.1, 0.3]).limit(20).execute();
 console.log(results);
 ```
 
