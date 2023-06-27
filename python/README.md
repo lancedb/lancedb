@@ -46,6 +46,7 @@ To run linter and automatically fix all errors:
 
 ```bash
 black .
+isort .
 ```
 
 If any packages are missing, install them with:
