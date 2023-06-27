@@ -188,13 +188,15 @@ class LanceTable:
         num_partitions=256,
         num_sub_vectors=96,
         vector_column_name=VECTOR_COLUMN_NAME,
+        replace: bool = True,
     ):
         """Create an index on the table.
 
         Parameters
         ----------
         metric: str, default "L2"
-            The distance metric to use when creating the index. Valid values are "L2" or "cosine".
+            The distance metric to use when creating the index.
+            Valid values are "L2", "cosine", or "dot".
             L2 is euclidean distance.
         num_partitions: int
             The number of IVF partitions to use when creating the index.
@@ -202,6 +204,11 @@ class LanceTable:
         num_sub_vectors: int
             The number of PQ sub-vectors to use when creating the index.
             Default is 96.
+        vector_column_name: str
+            The vector column name to create the index.
+        replace: bool, default True
+            If True, replace the existing index if it exists.
+            If False, raise an error if duplicate index exists.
         """
         self._dataset.create_index(
             column=vector_column_name,
@@ -209,6 +216,7 @@ class LanceTable:
             metric=metric,
             num_partitions=num_partitions,
             num_sub_vectors=num_sub_vectors,
+            replace=replace,
         )
         self._reset_dataset()
 
