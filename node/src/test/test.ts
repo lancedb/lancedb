@@ -13,15 +13,15 @@
 // limitations under the License.
 
 import { describe } from 'mocha'
-import { assert } from 'chai'
-
 import { track } from 'temp'
+import * as chai from 'chai'
+import * as chaiAsPromised from 'chai-as-promised'
 
 import * as lancedb from '../index'
 import { type EmbeddingFunction, MetricType, Query } from '../index'
-const chai = require('chai')
+
 const expect = chai.expect
-const chaiAsPromised = require('chai-as-promised')
+const assert = chai.assert
 chai.use(chaiAsPromised)
 
 describe('LanceDB client', function () {

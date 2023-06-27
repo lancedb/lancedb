@@ -26,6 +26,7 @@
   "license": "Apache-2.0",
   "devDependencies": {
     "@types/chai": "^4.3.4",
+    "@types/chai-as-promised": "^7.1.5",
     "@types/mocha": "^10.0.1",
     "@types/node": "^18.16.2",
     "@types/sinon": "^10.0.15",
