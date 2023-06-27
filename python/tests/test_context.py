@@ -13,7 +13,6 @@
 
 import pandas as pd
 import pytest
-
 from lancedb.context import contextualize
 
 

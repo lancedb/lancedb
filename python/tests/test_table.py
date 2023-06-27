@@ -18,7 +18,6 @@ from unittest.mock import PropertyMock, patch
 import pandas as pd
 import pyarrow as pa
 import pytest
-
 from lancedb.db import LanceDBConnection
 from lancedb.table import LanceTable
 

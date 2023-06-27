@@ -19,7 +19,6 @@ import pandas as pd
 import pandas.testing as tm
 import pyarrow as pa
 import pytest
-
 from lancedb.db import LanceDBConnection
 from lancedb.query import LanceQueryBuilder
 from lancedb.table import LanceTable
@@ -76,8 +75,7 @@ def test_query_builder_with_metric(table):
         .to_df()
     )
     assert df_cosine.score[0] == pytest.approx(
-        cosine_distance(query, df_cosine.vector[0]),
-        abs=1e-6,
+        cosine_distance(query, df_cosine.vector[0]), abs=1e-6,
     )
     assert 0 <= df_cosine.score[0] <= 1
 
