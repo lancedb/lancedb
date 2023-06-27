@@ -120,3 +120,12 @@ def test_delete_table(tmp_path):
 
     db.create_table("test", data=data)
     assert db.table_names() == ["test"]
+
+
+def test_empty_or_nonexistent_table(tmp_path):
+    db = lancedb.connect(tmp_path)
+    with pytest.raises(Exception):
+        db.create_table("test_with_no_data")
+
+    with pytest.raises(Exception):
+        db.open_table("does_not_exist")
