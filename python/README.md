@@ -42,6 +42,12 @@ To run the unit tests:
 pytest
 ```
 
+To run linter and automatically fix all errors:
+
+```bash
+black .
+```
+
 If any packages are missing, install them with:
 
 ```bash

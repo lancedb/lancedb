@@ -307,7 +307,9 @@ class LanceTable:
             # Not completely sure how to check for remote table existence yet.
             return tbl
         if not os.path.exists(tbl._dataset_uri):
-            raise FileNotFoundError(f"Table {name} does not exist. Please first call db.create_table({name}, data)")
+            raise FileNotFoundError(
+                f"Table {name} does not exist. Please first call db.create_table({name}, data)"
+            )
 
         return tbl
 
