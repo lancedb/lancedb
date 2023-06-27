@@ -142,14 +142,19 @@ def test_replace_index(tmp_path):
         ],
     )
     table.create_index(
-        num_partitions=2, num_sub_vectors=4,
+        num_partitions=2,
+        num_sub_vectors=4,
     )
 
     with pytest.raises(Exception):
         table.create_index(
-            num_partitions=2, num_sub_vectors=4, replace=False,
+            num_partitions=2,
+            num_sub_vectors=4,
+            replace=False,
         )
 
     table.create_index(
-        num_partitions=2, num_sub_vectors=4, replace=True,
+        num_partitions=2,
+        num_sub_vectors=4,
+        replace=True,
     )

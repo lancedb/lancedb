@@ -76,7 +76,8 @@ def test_query_builder_with_metric(table):
         .to_df()
     )
     assert df_cosine.score[0] == pytest.approx(
-        cosine_distance(query, df_cosine.vector[0]), abs=1e-6,
+        cosine_distance(query, df_cosine.vector[0]),
+        abs=1e-6,
     )
     assert 0 <= df_cosine.score[0] <= 1
 

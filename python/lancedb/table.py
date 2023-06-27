@@ -310,7 +310,7 @@ class LanceTable:
 
     @classmethod
     def open(cls, db, name):
-        tbl = LanceTable(db, name)
+        tbl = cls(db, name)
         if tbl._conn.is_managed_remote:
             # Not completely sure how to check for remote table existence yet.
             return tbl

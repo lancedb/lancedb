@@ -22,7 +22,8 @@ import lancedb
 
 
 @pytest.mark.skipif(
-    (os.environ.get("TEST_S3_BASE_URL") is None), reason="please setup s3 base url",
+    (os.environ.get("TEST_S3_BASE_URL") is None),
+    reason="please setup s3 base url",
 )
 def test_s3_io():
     db = lancedb.connect(os.environ.get("TEST_S3_BASE_URL"))
