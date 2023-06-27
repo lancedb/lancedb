@@ -12,6 +12,7 @@
 #  limitations under the License.
 
 import pyarrow as pa
+
 from lancedb.db import LanceDBConnection
 from lancedb.remote.client import VectorQuery, VectorQueryResult
 
