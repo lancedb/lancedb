@@ -23,10 +23,10 @@ import pandas as pd
 import pyarrow as pa
 from lance import LanceDataset
 from lance.vector import vec_to_table
+from lancedb.telemetry import Telemetry
 
 from .common import DATA, VEC, VECTOR_COLUMN_NAME
 from .query import LanceFtsQueryBuilder, LanceQueryBuilder
-
 
 def _sanitize_data(data, schema):
     if isinstance(data, list):
@@ -87,6 +87,7 @@ class LanceTable:
         self._conn = connection
         self.name = name
         self._version = version
+        self.telemetry = Telemetry()
 
     def _reset_dataset(self):
         try:
@@ -205,6 +206,7 @@ class LanceTable:
             num_sub_vectors=num_sub_vectors,
         )
         self._reset_dataset()
+        self.telemetry.capture('create_index')
 
     def create_fts_index(self, field_names: Union[str, List[str]]):
         """Create a full-text search index on the table.
@@ -223,6 +225,7 @@ class LanceTable:
             field_names = [field_names]
         index = create_index(self._get_fts_index_path(), field_names)
         populate_index(index, self, field_names)
+        self.telemetry.capture('create_fts_index')
 
     def _get_fts_index_path(self):
         return os.path.join(self._dataset_uri, "_indices", "tantivy")
@@ -254,6 +257,7 @@ class LanceTable:
         data = _sanitize_data(data, self.schema)
         lance.write_dataset(data, self._dataset_uri, mode=mode)
         self._reset_dataset()
+        self.telemetry.capture('add_to_table')
         return len(self)
 
     def search(self, query: Union[VEC, str]) -> LanceQueryBuilder:
@@ -283,6 +287,7 @@ class LanceTable:
             query = query.astype(np.float32)
         else:
             raise TypeError(f"Unsupported query type: {type(query)}")
+        self.telemetry.capture('search_table')
         return LanceQueryBuilder(self, query)
 
     @classmethod
@@ -290,6 +295,7 @@ class LanceTable:
         tbl = LanceTable(db, name)
         data = _sanitize_data(data, schema)
         lance.write_dataset(data, tbl._dataset_uri, mode=mode)
+        tbl.telemetry.capture('create_table')
         return tbl
 
 
