@@ -78,7 +78,7 @@ jobs:
         cd docs/test
         npm cache clean -f
         rm package-lock.json
-        npm ci
+        npm install 
     - name: Rust cache
       uses: swatinem/rust-cache@v2
     - name: Install LanceDB
