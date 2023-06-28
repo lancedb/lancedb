@@ -1,0 +1,96 @@
+name: Documentation Code Testing
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - docs/**
+      - .github/workflows/docs_test.yml
+  pull_request:
+    paths:
+      - docs/**
+      - .github/workflows/docs_test.yml
+
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+
+env:
+  # Disable full debug symbol generation to speed up CI build and keep memory down
+  # "1" means line tables only, which is useful for panic tracebacks.
+  RUSTFLAGS: "-C debuginfo=1"
+  RUST_BACKTRACE: "1"
+
+jobs:
+  test-python:
+    name: Test doc python code
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        python-minor-version: [ "11" ]
+        os: ["ubuntu-22.04"]
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: 3.${{ matrix.python-minor-version }}
+        cache: "pip"
+        cache-dependency-path: "docs/test/requirements.txt"
+    - name: Build Python
+      working-directory: docs/test
+      run:
+        python -m pip install -r requirements.txt
+    - name: Create test files
+      run: |
+        cd docs/test
+        python md_testing.py
+    - name: Test
+      run: |
+        cd docs/test/python
+        for d in *; do cd "$d"; echo "$d".py; python "$d".py; cd ..; done
+  test-node:
+    name: Test doc nodejs code
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        node-version: [ "18" ]
+        os: ["ubuntu-22.04"]
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+      with:
+        fetch-depth: 0
+        lfs: true
+    - name: Set up Node
+      uses: actions/setup-node@v3
+      with:
+        node-version: ${{ matrix.node-version }}
+        cache: 'npm'
+        cache-dependency-path: docs/test/package-lock.json
+    - name: Install dependecies needed for ubuntu
+      if: ${{ matrix.os == 'ubuntu-22.04' }}
+      run: |
+        sudo apt install -y protobuf-compiler libssl-dev
+    - name: Install node dependencies
+      run: |
+        cd docs/test
+        npm cache clean --force
+        npm ci
+    - name: Rust cache
+      uses: swatinem/rust-cache@v2
+    - name: Install LanceDB
+      run: |
+        cd docs/test/node_modules/vectordb 
+        npm ci
+        npm run build
+        npm run tsc
+    - name: Create test files
+      run: |
+        cd docs/test
+        node md_testing.js
+    - name: Test
+      run: |
+        cd docs/test/node
+        for d in *; do cd "$d"; echo "$d".js; node "$d".js; cd ..; done

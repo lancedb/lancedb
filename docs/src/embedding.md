@@ -98,7 +98,7 @@ You can also use an external API like OpenAI to generate embeddings
      embededings for your data.
 
       ```javascript
-      const db = await lancedb.connect("/tmp/lancedb");
+      const db = await lancedb.connect("data/sample-lancedb");
       const data = [
         { text: 'pepperoni'  },
         { text: 'pineapple' }

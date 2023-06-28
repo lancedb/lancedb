@@ -15,11 +15,35 @@ Currently, Lance supports a growing list of expressions.
 * ``regexp_match(column, pattern)``
 
 For example, the following filter string is acceptable:
+<!-- Setup Code
+```python 
+import lancedb
+import numpy as np
+uri = "data/sample-lancedb"
+db = lancedb.connect(uri)
 
+data = [{"vector": row, "item": f"item {i}"}
+     for i, row in enumerate(np.random.random((10_000, 2)).astype('int'))]
+
+tbl = db.create_table("my_vectors", data=data)
+```
+-->
+<!-- Setup Code
+```javascript 
+const vectordb = require('vectordb')
+const db = await vectordb.connect('data/sample-lancedb')
+
+let data = []
+for (let i = 0; i < 10_000; i++) {
+     data.push({vector: Array(1536).fill(i), id: `${i}`, content: "", longId: `${i}`},)
+}
+const tbl = await db.createTable('my_vectors', data)
+```
+-->
 === "Python"
 
     ```python
-    tbl.search([100, 102])
+    tbl.search([100, 102]) \
        .where("""(
         (label IN [10, 20])
         AND
