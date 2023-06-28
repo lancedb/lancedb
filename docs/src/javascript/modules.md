@@ -11,14 +11,16 @@
 
 ### Classes
 
-- [Connection](classes/Connection.md)
+- [LocalConnection](classes/LocalConnection.md)
+- [LocalTable](classes/LocalTable.md)
 - [OpenAIEmbeddingFunction](classes/OpenAIEmbeddingFunction.md)
 - [Query](classes/Query.md)
-- [Table](classes/Table.md)
 
 ### Interfaces
 
+- [Connection](interfaces/Connection.md)
 - [EmbeddingFunction](interfaces/EmbeddingFunction.md)
+- [Table](interfaces/Table.md)
 
 ### Type Aliases
 
@@ -36,13 +38,13 @@
 
 #### Defined in
 
-[index.ts:224](https://github.com/lancedb/lancedb/blob/31dab97/node/src/index.ts#L224)
+[index.ts:336](https://github.com/lancedb/lancedb/blob/bfb5400/node/src/index.ts#L336)
 
 ## Functions
 
 ### connect
 
-▸ **connect**(`uri`): `Promise`<[`Connection`](classes/Connection.md)\>
+▸ **connect**(`uri`): `Promise`<[`Connection`](interfaces/Connection.md)\>
 
 Connect to a LanceDB instance at the given URI
 
@@ -54,8 +56,8 @@ Connect to a LanceDB instance at the given URI
 
 #### Returns
 
-`Promise`<[`Connection`](classes/Connection.md)\>
+`Promise`<[`Connection`](interfaces/Connection.md)\>
 
 #### Defined in
 
-[index.ts:34](https://github.com/lancedb/lancedb/blob/31dab97/node/src/index.ts#L34)
+[index.ts:34](https://github.com/lancedb/lancedb/blob/bfb5400/node/src/index.ts#L34)

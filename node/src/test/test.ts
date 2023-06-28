@@ -13,11 +13,16 @@
 // limitations under the License.
 
 import { describe } from 'mocha'
-import { assert } from 'chai'
 import { track } from 'temp'
+import * as chai from 'chai'
+import * as chaiAsPromised from 'chai-as-promised'
 
 import * as lancedb from '../index'
 import { type EmbeddingFunction, MetricType, Query } from '../index'
+
+const expect = chai.expect
+const assert = chai.assert
+chai.use(chaiAsPromised)
 
 describe('LanceDB client', function () {
   describe('when creating a connection to lancedb', function () {
@@ -110,9 +115,7 @@ describe('LanceDB client', function () {
       const tableName = `vectors_${Math.floor(Math.random() * 100)}`
       const table = await con.createTable(tableName, data)
       assert.equal(table.name, tableName)
-
-      const results = await table.search([0.1, 0.3]).execute()
-      assert.equal(results.length, 2)
+      assert.equal(await table.countRows(), 2)
     })
 
     it('appends records to an existing table ', async function () {
@@ -125,16 +128,14 @@ describe('LanceDB client', function () {
       ]
 
       const table = await con.createTable('vectors', data)
-      const results = await table.search([0.1, 0.3]).execute()
-      assert.equal(results.length, 2)
+      assert.equal(await table.countRows(), 2)
 
       const dataAdd = [
         { id: 3, vector: [2.1, 2.2], price: 10, name: 'c' },
         { id: 4, vector: [3.1, 3.2], price: 50, name: 'd' }
       ]
       await table.add(dataAdd)
-      const resultsAdd = await table.search([0.1, 0.3]).execute()
-      assert.equal(resultsAdd.length, 4)
+      assert.equal(await table.countRows(), 4)
     })
 
     it('overwrite all records in a table', async function () {
@@ -142,16 +143,25 @@ describe('LanceDB client', function () {
       const con = await lancedb.connect(uri)
 
       const table = await con.openTable('vectors')
-      const results = await table.search([0.1, 0.3]).execute()
-      assert.equal(results.length, 2)
+      assert.equal(await table.countRows(), 2)
 
       const dataOver = [
         { vector: [2.1, 2.2], price: 10, name: 'foo' },
         { vector: [3.1, 3.2], price: 50, name: 'bar' }
       ]
       await table.overwrite(dataOver)
-      const resultsAdd = await table.search([0.1, 0.3]).execute()
-      assert.equal(resultsAdd.length, 2)
+      assert.equal(await table.countRows(), 2)
+    })
+
+    it('can delete records from a table', async function () {
+      const uri = await createTestDB()
+      const con = await lancedb.connect(uri)
+
+      const table = await con.openTable('vectors')
+      assert.equal(await table.countRows(), 2)
+
+      await table.delete('price = 10')
+      assert.equal(await table.countRows(), 1)
     })
   })
 
@@ -160,8 +170,25 @@ describe('LanceDB client', function () {
       const uri = await createTestDB(32, 300)
       const con = await lancedb.connect(uri)
       const table = await con.openTable('vectors')
-      await table.createIndex({ type: 'ivf_pq', column: 'vector', num_partitions: 2, max_iters: 2 })
+      await table.createIndex({ type: 'ivf_pq', column: 'vector', num_partitions: 2, max_iters: 2, num_sub_vectors: 2 })
     }).timeout(10_000) // Timeout is high partially because GH macos runner is pretty slow
+
+    it('replace an existing index', async function () {
+      const uri = await createTestDB(16, 300)
+      const con = await lancedb.connect(uri)
+      const table = await con.openTable('vectors')
+
+      await table.createIndex({ type: 'ivf_pq', column: 'vector', num_partitions: 2, max_iters: 2, num_sub_vectors: 2 })
+
+      // Replace should fail if the index already exists
+      await expect(table.createIndex({
+        type: 'ivf_pq', column: 'vector', num_partitions: 2, max_iters: 2, num_sub_vectors: 2, replace: false
+      })
+      ).to.be.rejectedWith('LanceError(Index)')
+
+      // Default replace = true
+      await table.createIndex({ type: 'ivf_pq', column: 'vector', num_partitions: 2, max_iters: 2, num_sub_vectors: 2 })
+    }).timeout(50_000)
   })
 
   describe('when using a custom embedding function', function () {
@@ -230,3 +257,22 @@ async function createTestDB (numDimensions: number = 2, numRows: number = 2): Pr
   await con.createTable('vectors', data)
   return dir
 }
+
+describe('Drop table', function () {
+  it('drop a table', async function () {
+    const dir = await track().mkdir('lancejs')
+    const con = await lancedb.connect(dir)
+
+    const data = [
+      { price: 10, name: 'foo', vector: [1, 2, 3] },
+      { price: 50, name: 'bar', vector: [4, 5, 6] }
+    ]
+    await con.createTable('t1', data)
+    await con.createTable('t2', data)
+
+    assert.deepEqual(await con.tableNames(), ['t1', 't2'])
+
+    await con.dropTable('t1')
+    assert.deepEqual(await con.tableNames(), ['t2'])
+  })
+})

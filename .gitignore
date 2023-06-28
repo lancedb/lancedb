@@ -3,6 +3,7 @@
 *.egg-info
 **/__pycache__
 .DS_Store
+venv
 
 rust/target
 rust/Cargo.lock

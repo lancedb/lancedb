@@ -28,12 +28,6 @@ The [examples](./examples) folder contains complete examples.
 
 ## Development
 
-The LanceDB javascript is built with npm:
-
-```bash
-npm run tsc
-```
-
 Run the tests with
 
 ```bash

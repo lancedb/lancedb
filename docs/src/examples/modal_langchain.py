@@ -1,18 +1,19 @@
-import sys
-from modal import Secret, Stub, Image, web_endpoint
-import lancedb
-import re
 import pickle
-import requests
+import re
+import sys
 import zipfile
 from pathlib import Path
 
+import requests
+from langchain.chains import RetrievalQA
 from langchain.document_loaders import UnstructuredHTMLLoader
 from langchain.embeddings import OpenAIEmbeddings
+from langchain.llms import OpenAI
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.vectorstores import LanceDB
-from langchain.llms import OpenAI
-from langchain.chains import RetrievalQA
+from modal import Image, Secret, Stub, web_endpoint
+
+import lancedb
 
 lancedb_image = Image.debian_slim().pip_install(
     "lancedb", "langchain", "openai", "pandas", "tiktoken", "unstructured", "tabulate"
@@ -78,10 +79,7 @@ def qanda_langchain(query):
     download_docs()
     docs = store_docs()
 
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1000,
-        chunk_overlap=200,
-    )
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200,)
     documents = text_splitter.split_documents(docs)
     embeddings = OpenAIEmbeddings()
 

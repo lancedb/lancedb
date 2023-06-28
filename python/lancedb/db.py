@@ -13,16 +13,16 @@
 
 from __future__ import annotations
 
+import functools
 import os
 from pathlib import Path
-import os
 
 import pyarrow as pa
 from pyarrow import fs
 
 from .common import DATA, URI
 from .table import LanceTable
-from .util import get_uri_scheme, get_uri_location
+from .util import get_uri_location, get_uri_scheme
 
 
 class LanceDBConnection:
@@ -43,7 +43,7 @@ class LanceDBConnection:
     LanceTable(my_table)
     >>> db.create_table("another_table", data=[{"vector": [0.4, 0.4], "b": 6}])
     LanceTable(another_table)
-    >>> db.table_names()
+    >>> sorted(db.table_names())
     ['another_table', 'my_table']
     >>> len(db)
     2
@@ -56,7 +56,16 @@ class LanceDBConnection:
     """
 
     def __init__(self, uri: URI):
-        is_local = isinstance(uri, Path) or get_uri_scheme(uri) == "file"
+        if not isinstance(uri, Path):
+            scheme = get_uri_scheme(uri)
+        is_local = isinstance(uri, Path) or scheme == "file"
+        # managed lancedb remote uses schema like lancedb+[http|grpc|...]://
+        self._is_managed_remote = not is_local and scheme.startswith("lancedb")
+        if self._is_managed_remote:
+            if len(scheme.split("+")) != 2:
+                raise ValueError(
+                    f"Invalid LanceDB URI: {uri}, expected uri to have scheme like lancedb+<flavor>://..."
+                )
         if is_local:
             if isinstance(uri, str):
                 uri = Path(uri)
@@ -64,9 +73,48 @@ class LanceDBConnection:
             Path(uri).mkdir(parents=True, exist_ok=True)
         self._uri = str(uri)
 
+        self._entered = False
+
     @property
     def uri(self) -> str:
         return self._uri
+
+    @functools.cached_property
+    def is_managed_remote(self) -> bool:
+        return self._is_managed_remote
+
+    @functools.cached_property
+    def remote_flavor(self) -> str:
+        if not self.is_managed_remote:
+            raise ValueError(
+                "Not a managed remote LanceDB, there should be no server flavor"
+            )
+        return get_uri_scheme(self.uri).split("+")[1]
+
+    @functools.cached_property
+    def _client(self) -> "lancedb.remote.LanceDBClient":
+        if not self.is_managed_remote:
+            raise ValueError("Not a managed remote LanceDB, there should be no client")
+
+        # don't import unless we are really using remote
+        from lancedb.remote.client import RestfulLanceDBClient
+
+        if self.remote_flavor == "http":
+            return RestfulLanceDBClient(self._uri)
+
+        raise ValueError("Unsupported remote flavor: " + self.remote_flavor)
+
+    async def close(self):
+        if self._entered:
+            raise ValueError("Cannot re-enter the same LanceDBConnection twice")
+        self._entered = True
+        await self._client.close()
+
+    async def __aenter__(self) -> LanceDBConnection:
+        return self
+
+    async def __aexit__(self, exc_type, exc_value, traceback):
+        await self.close()
 
     def table_names(self) -> list[str]:
         """Get the names of all tables in the database.
@@ -204,7 +252,7 @@ class LanceDBConnection:
         if data is not None:
             tbl = LanceTable.create(self, name, data, schema, mode=mode)
         else:
-            tbl = LanceTable(self, name)
+            tbl = LanceTable.open(self, name)
         return tbl
 
     def open_table(self, name: str) -> LanceTable:
@@ -219,7 +267,7 @@ class LanceDBConnection:
         -------
         A LanceTable object representing the table.
         """
-        return LanceTable(self, name)
+        return LanceTable.open(self, name)
 
     def drop_table(self, name: str):
         """Drop a table from the database.

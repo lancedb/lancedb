@@ -14,7 +14,6 @@
 from __future__ import annotations
 
 import os
-import shutil
 from functools import cached_property
 from typing import List, Union
 
@@ -27,7 +26,6 @@ from lance.vector import vec_to_table
 
 from .common import DATA, VEC, VECTOR_COLUMN_NAME
 from .query import LanceFtsQueryBuilder, LanceQueryBuilder
-from .util import get_uri_scheme
 
 
 def _sanitize_data(data, schema):
@@ -184,13 +182,21 @@ class LanceTable:
     def _dataset_uri(self) -> str:
         return os.path.join(self._conn.uri, f"{self.name}.lance")
 
-    def create_index(self, metric="L2", num_partitions=256, num_sub_vectors=96):
+    def create_index(
+        self,
+        metric="L2",
+        num_partitions=256,
+        num_sub_vectors=96,
+        vector_column_name=VECTOR_COLUMN_NAME,
+        replace: bool = True,
+    ):
         """Create an index on the table.
 
         Parameters
         ----------
         metric: str, default "L2"
-            The distance metric to use when creating the index. Valid values are "L2" or "cosine".
+            The distance metric to use when creating the index.
+            Valid values are "L2", "cosine", or "dot".
             L2 is euclidean distance.
         num_partitions: int
             The number of IVF partitions to use when creating the index.
@@ -198,13 +204,19 @@ class LanceTable:
         num_sub_vectors: int
             The number of PQ sub-vectors to use when creating the index.
             Default is 96.
+        vector_column_name: str, default "vector"
+            The vector column name to create the index.
+        replace: bool, default True
+            If True, replace the existing index if it exists.
+            If False, raise an error if duplicate index exists.
         """
         self._dataset.create_index(
-            column=VECTOR_COLUMN_NAME,
+            column=vector_column_name,
             index_type="IVF_PQ",
             metric=metric,
             num_partitions=num_partitions,
             num_sub_vectors=num_sub_vectors,
+            replace=replace,
         )
         self._reset_dataset()
 
@@ -258,7 +270,9 @@ class LanceTable:
         self._reset_dataset()
         return len(self)
 
-    def search(self, query: Union[VEC, str]) -> LanceQueryBuilder:
+    def search(
+        self, query: Union[VEC, str], vector_column_name=VECTOR_COLUMN_NAME
+    ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector.
 
@@ -277,7 +291,7 @@ class LanceTable:
         """
         if isinstance(query, str):
             # fts
-            return LanceFtsQueryBuilder(self, query)
+            return LanceFtsQueryBuilder(self, query, vector_column_name)
 
         if isinstance(query, list):
             query = np.array(query)
@@ -285,7 +299,7 @@ class LanceTable:
             query = query.astype(np.float32)
         else:
             raise TypeError(f"Unsupported query type: {type(query)}")
-        return LanceQueryBuilder(self, query)
+        return LanceQueryBuilder(self, query, vector_column_name)
 
     @classmethod
     def create(cls, db, name, data, schema=None, mode="create"):
@@ -293,6 +307,47 @@ class LanceTable:
         data = _sanitize_data(data, schema)
         lance.write_dataset(data, tbl._dataset_uri, mode=mode)
         return tbl
+
+    @classmethod
+    def open(cls, db, name):
+        tbl = cls(db, name)
+        if tbl._conn.is_managed_remote:
+            # Not completely sure how to check for remote table existence yet.
+            return tbl
+        if not os.path.exists(tbl._dataset_uri):
+            raise FileNotFoundError(
+                f"Table {name} does not exist. Please first call db.create_table({name}, data)"
+            )
+
+        return tbl
+
+    def delete(self, where: str):
+        """Delete rows from the table.
+
+        Parameters
+        ----------
+        where: str
+            The SQL where clause to use when deleting rows.
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> import pandas as pd
+        >>> data = pd.DataFrame({"x": [1, 2, 3], "vector": [[1, 2], [3, 4], [5, 6]]})
+        >>> db = lancedb.connect("./.lancedb")
+        >>> table = db.create_table("my_table", data)
+        >>> table.to_pandas()
+           x      vector
+        0  1  [1.0, 2.0]
+        1  2  [3.0, 4.0]
+        2  3  [5.0, 6.0]
+        >>> table.delete("x = 2")
+        >>> table.to_pandas()
+           x      vector
+        0  1  [1.0, 2.0]
+        1  3  [5.0, 6.0]
+        """
+        self._dataset.delete(where)
 
 
 def _sanitize_schema(data: pa.Table, schema: pa.Schema = None) -> pa.Table:

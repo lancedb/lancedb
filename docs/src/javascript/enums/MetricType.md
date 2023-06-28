@@ -21,7 +21,7 @@ Cosine distance
 
 #### Defined in
 
-[index.ts:341](https://github.com/lancedb/lancedb/blob/31dab97/node/src/index.ts#L341)
+[index.ts:465](https://github.com/lancedb/lancedb/blob/bfb5400/node/src/index.ts#L465)
 
 ___
 
@@ -33,4 +33,4 @@ Euclidean distance
 
 #### Defined in
 
-[index.ts:336](https://github.com/lancedb/lancedb/blob/31dab97/node/src/index.ts#L336)
+[index.ts:460](https://github.com/lancedb/lancedb/blob/bfb5400/node/src/index.ts#L460)

@@ -6,11 +6,13 @@ docs_dir: src
 theme:
   name: "material"
   logo: assets/logo.png
+  favicon: assets/logo.png
   features:
     - content.code.copy
     - content.tabs.link
   icon:
     repo: fontawesome/brands/github
+  custom_dir: overrides
 
 plugins:
 - search
@@ -36,6 +38,7 @@ plugins:
 
 markdown_extensions:
 - admonition
+- footnotes
 - pymdownx.superfences
 - pymdownx.details
 - pymdownx.highlight:
@@ -64,6 +67,7 @@ nav:
   - YouTube Transcript Search: examples/youtube_transcript_bot_with_nodejs.md
 - References:
   - Vector Search: search.md
+  - SQL filters: sql.md
   - Indexing: ann_indexes.md
 - API references:
   - Python API: python/python.md

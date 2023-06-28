@@ -22,7 +22,7 @@ import { fromRecordsToBuffer } from './arrow'
 import type { EmbeddingFunction } from './embedding/embedding_function'
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { databaseNew, databaseTableNames, databaseOpenTable, tableCreate, tableSearch, tableAdd, tableCreateVectorIndex } = require('../native.js')
+const { databaseNew, databaseTableNames, databaseOpenTable, databaseDropTable, tableCreate, tableSearch, tableAdd, tableCreateVectorIndex, tableCountRows, tableDelete } = require('../native.js')
 
 export type { EmbeddingFunction }
 export { OpenAIEmbeddingFunction } from './embedding/openai'
@@ -33,13 +33,96 @@ export { OpenAIEmbeddingFunction } from './embedding/openai'
  */
 export async function connect (uri: string): Promise<Connection> {
   const db = await databaseNew(uri)
-  return new Connection(db, uri)
+  return new LocalConnection(db, uri)
+}
+
+/**
+ * A LanceDB connection that allows you to open tables and create new ones.
+ *
+ * Connection could be local against filesystem or remote against a server.
+ */
+export interface Connection {
+  uri: string
+
+  tableNames: () => Promise<string[]>
+
+  /**
+   * Open a table in the database.
+   *
+   * @param name The name of the table.
+   */
+  openTable: ((name: string) => Promise<Table>) & (<T>(name: string, embeddings: EmbeddingFunction<T>) => Promise<Table<T>>) & (<T>(name: string, embeddings?: EmbeddingFunction<T>) => Promise<Table<T>>)
+
+  /**
+   * Creates a new Table and initialize it with new data.
+   *
+   * @param name The name of the table.
+   * @param data Non-empty Array of Records to be inserted into the Table
+   */
+
+  createTable: ((name: string, data: Array<Record<string, unknown>>) => Promise<Table>) & (<T>(name: string, data: Array<Record<string, unknown>>, embeddings: EmbeddingFunction<T>) => Promise<Table<T>>) & (<T>(name: string, data: Array<Record<string, unknown>>, embeddings?: EmbeddingFunction<T>) => Promise<Table<T>>)
+
+  createTableArrow: (name: string, table: ArrowTable) => Promise<Table>
+
+  /**
+   * Drop an existing table.
+   * @param name The name of the table to drop.
+   */
+  dropTable: (name: string) => Promise<void>
+}
+
+/**
+ * A LanceDB table that allows you to search and update a table.
+ */
+export interface Table<T = number[]> {
+  name: string
+
+  /**
+   * Creates a search query to find the nearest neighbors of the given search term
+   * @param query The query search term
+   */
+  search: (query: T) => Query<T>
+
+  /**
+   * Insert records into this Table.
+   *
+   * @param data Records to be inserted into the Table
+   * @return The number of rows added to the table
+   */
+  add: (data: Array<Record<string, unknown>>) => Promise<number>
+
+  /**
+   * Insert records into this Table, replacing its contents.
+   *
+   * @param data Records to be inserted into the Table
+   * @return The number of rows added to the table
+   */
+  overwrite: (data: Array<Record<string, unknown>>) => Promise<number>
+
+  /**
+   * Create an ANN index on this Table vector index.
+   *
+   * @param indexParams The parameters of this Index, @see VectorIndexParams.
+   */
+  createIndex: (indexParams: VectorIndexParams) => Promise<any>
+
+  /**
+   * Returns the number of rows in this table.
+   */
+  countRows: () => Promise<number>
+
+  /**
+   * Delete rows from this table.
+   *
+   * @param filter  A filter in the same format used by a sql WHERE clause.
+   */
+  delete: (filter: string) => Promise<void>
 }
 
 /**
  * A connection to a LanceDB database.
  */
-export class Connection {
+export class LocalConnection implements Connection {
   private readonly _uri: string
   private readonly _db: any
 
@@ -75,9 +158,9 @@ export class Connection {
   async openTable<T> (name: string, embeddings?: EmbeddingFunction<T>): Promise<Table<T>> {
     const tbl = await databaseOpenTable.call(this._db, name)
     if (embeddings !== undefined) {
-      return new Table(tbl, name, embeddings)
+      return new LocalTable(tbl, name, embeddings)
     } else {
-      return new Table(tbl, name)
+      return new LocalTable(tbl, name)
     }
   }
 
@@ -100,9 +183,9 @@ export class Connection {
   async createTable<T> (name: string, data: Array<Record<string, unknown>>, embeddings?: EmbeddingFunction<T>): Promise<Table<T>> {
     const tbl = await tableCreate.call(this._db, name, await fromRecordsToBuffer(data, embeddings))
     if (embeddings !== undefined) {
-      return new Table(tbl, name, embeddings)
+      return new LocalTable(tbl, name, embeddings)
     } else {
-      return new Table(tbl, name)
+      return new LocalTable(tbl, name)
     }
   }
 
@@ -111,9 +194,17 @@ export class Connection {
     await tableCreate.call(this._db, name, Buffer.from(await writer.toUint8Array()))
     return await this.openTable(name)
   }
+
+  /**
+   * Drop an existing table.
+   * @param name The name of the table to drop.
+   */
+  async dropTable (name: string): Promise<void> {
+    await databaseDropTable.call(this._db, name)
+  }
 }
 
-export class Table<T = number[]> {
+export class LocalTable<T = number[]> implements Table<T> {
   private readonly _tbl: any
   private readonly _name: string
   private readonly _embeddings?: EmbeddingFunction<T>
@@ -173,10 +264,19 @@ export class Table<T = number[]> {
   }
 
   /**
-   * @deprecated Use [Table.createIndex]
+   * Returns the number of rows in this table.
    */
-  async create_index (indexParams: VectorIndexParams): Promise<any> {
-    return await this.createIndex(indexParams)
+  async countRows (): Promise<number> {
+    return tableCountRows.call(this._tbl)
+  }
+
+  /**
+   * Delete rows from this table.
+   *
+   * @param filter A filter in the same format used by a sql WHERE clause.
+   */
+  async delete (filter: string): Promise<void> {
+    return tableDelete.call(this._tbl, filter)
   }
 }
 
@@ -224,6 +324,11 @@ interface IvfPQIndexConfig {
    * Max number of iterations to train OPQ, if `use_opq` is true.
    */
   max_opq_iters?: number
+
+  /**
+   * Replace an existing index with the same name if it exists.
+   */
+  replace?: boolean
 
   type: 'ivf_pq'
 }
@@ -325,6 +430,7 @@ export class Query<T = number[]> {
 
     const buffer = await tableSearch.call(this._tbl, this)
     const data = tableFromIPC(buffer)
+
     return data.toArray().map((entry: Record<string, unknown>) => {
       const newObject: Record<string, unknown> = {}
       Object.keys(entry).forEach((key: string) => {
