@@ -14,7 +14,7 @@ arrow-data = "40.0"
 arrow-schema = "40.0"
 object_store = "0.6.1"
 snafu = "0.7.4"
-lance = "0.5.0"
+lance = "0.5.1"
 tokio = { version = "1.23", features = ["rt-multi-thread"] }
 
 [dev-dependencies]
