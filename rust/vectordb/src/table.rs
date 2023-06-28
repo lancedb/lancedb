@@ -16,7 +16,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use arrow_array::{Float32Array, RecordBatchReader};
-use lance::dataset::{Dataset, WriteMode, WriteParams};
+use lance::dataset::{Dataset, ReadParams, WriteMode, WriteParams};
 use lance::index::IndexType;
 use snafu::prelude::*;
 
@@ -41,6 +41,11 @@ impl std::fmt::Display for Table {
     }
 }
 
+#[derive(Default)]
+pub struct OpenTableParams {
+    pub(crate) dataset_read_params: ReadParams,
+}
+
 impl Table {
     /// Opens an existing Table
     ///
@@ -53,6 +58,25 @@ impl Table {
     ///
     /// * A [Table] object.
     pub async fn open(base_uri: &str, name: &str) -> Result<Self> {
+        Self::open_with_params(base_uri, name, OpenTableParams::default()).await
+    }
+
+    /// Opens an existing Table
+    ///
+    /// # Arguments
+    ///
+    /// * `base_path` - The base path where the table is located
+    /// * `name` The Table name
+    /// * `params` The [OpenTableParams] to use when opening the table
+    ///
+    /// # Returns
+    ///
+    /// * A [Table] object.
+    pub async fn open_with_params(
+        base_uri: &str,
+        name: &str,
+        params: OpenTableParams,
+    ) -> Result<Self> {
         let path = Path::new(base_uri);
 
         let table_uri = path.join(format!("{}.{}", name, LANCE_FILE_EXTENSION));
@@ -61,14 +85,16 @@ impl Table {
             .to_str()
             .context(InvalidTableNameSnafu { name })?;
 
-        let dataset = Dataset::open(&uri).await.map_err(|e| match e {
-            lance::Error::DatasetNotFound { .. } => Error::TableNotFound {
-                name: name.to_string(),
-            },
-            e => Error::Lance {
-                message: e.to_string(),
-            },
-        })?;
+        let dataset = Dataset::open_with_params(uri, &params.dataset_read_params)
+            .await
+            .map_err(|e| match e {
+                lance::Error::DatasetNotFound { .. } => Error::TableNotFound {
+                    name: name.to_string(),
+                },
+                e => Error::Lance {
+                    message: e.to_string(),
+                },
+            })?;
         Ok(Table {
             name: name.to_string(),
             uri: uri.to_string(),
@@ -200,6 +226,7 @@ impl Table {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
 
     use arrow_array::{
@@ -211,6 +238,7 @@ mod tests {
     use lance::dataset::{Dataset, WriteMode};
     use lance::index::vector::ivf::IvfBuildParams;
     use lance::index::vector::pq::PQBuildParams;
+    use lance::io::object_store::{ObjectStoreParams, WrappingObjectStore};
     use rand::Rng;
     use tempfile::tempdir;
 
@@ -329,6 +357,54 @@ mod tests {
         let vector = Float32Array::from_iter_values([0.1, 0.2]);
         let query = table.search(vector.clone());
         assert_eq!(vector, query.query_vector);
+    }
+
+    #[derive(Default)]
+    struct NoOpCacheWrapper {
+        called: AtomicBool,
+    }
+
+    impl NoOpCacheWrapper {
+        fn called(&self) -> bool {
+            self.called.load(Ordering::Relaxed)
+        }
+    }
+
+    impl WrappingObjectStore for NoOpCacheWrapper {
+        fn wrap(
+            &self,
+            original: Arc<dyn object_store::ObjectStore>,
+        ) -> Arc<dyn object_store::ObjectStore> {
+            self.called.store(true, Ordering::Relaxed);
+            return original;
+        }
+    }
+
+    #[tokio::test]
+    async fn test_open_table_options() {
+        let tmp_dir = tempdir().unwrap();
+        let dataset_path = tmp_dir.path().join("test.lance");
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        let mut batches: Box<dyn RecordBatchReader> = Box::new(make_test_batches());
+        Dataset::write(&mut batches, dataset_path.to_str().unwrap(), None)
+            .await
+            .unwrap();
+
+        let wrapper = Arc::new(NoOpCacheWrapper::default());
+
+        let param = OpenTableParams {
+            dataset_read_params: ReadParams {
+                store_options: Some(ObjectStoreParams {
+                    object_store_wrapper: Some(wrapper.clone()),
+                }),
+                ..ReadParams::default()
+            },
+        };
+
+        assert!(!wrapper.called());
+        let _ = Table::open_with_params(uri, "test", param).await.unwrap();
+        assert!(wrapper.called());
     }
 
     fn make_test_batches() -> RecordBatchBuffer {

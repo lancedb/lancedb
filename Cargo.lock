@@ -1636,9 +1636,9 @@ dependencies = [
 
 [[package]]
 name = "lance"
-version = "0.5.0"
+version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "84dfe2a2af3e7b079a4743e303617c6ac19f43d212b7d6def8873305266f2bcd"
+checksum = "76dad119202267ad3f2a5f5dd4b38a9ce7f66c13c14005c2588f9a18da7f25ab"
 dependencies = [
  "arrow",
  "arrow-arith",
