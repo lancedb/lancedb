@@ -67,8 +67,6 @@ jobs:
       uses: actions/setup-node@v3
       with:
         node-version: ${{ matrix.node-version }}
-        cache: 'npm'
-        cache-dependency-path: docs/test/package-lock.json
     - name: Install dependecies needed for ubuntu
       if: ${{ matrix.os == 'ubuntu-22.04' }}
       run: |
@@ -76,7 +74,6 @@ jobs:
     - name: Install node dependencies
       run: |
         cd docs/test
-        npm cache clean -f
         npm install 
     - name: Rust cache
       uses: swatinem/rust-cache@v2
