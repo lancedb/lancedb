@@ -17,7 +17,7 @@
 
 #### Defined in
 
-[index.ts:326](https://github.com/lancedb/lancedb/blob/31dab97/node/src/index.ts#L326)
+[index.ts:450](https://github.com/lancedb/lancedb/blob/bfb5400/node/src/index.ts#L450)
 
 ___
 
@@ -27,4 +27,4 @@ ___
 
 #### Defined in
 
-[index.ts:325](https://github.com/lancedb/lancedb/blob/31dab97/node/src/index.ts#L325)
+[index.ts:449](https://github.com/lancedb/lancedb/blob/bfb5400/node/src/index.ts#L449)
