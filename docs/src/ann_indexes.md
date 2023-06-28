@@ -23,7 +23,7 @@ In the future we will look to automatically create and configure the ANN index.
 
      # Create 10,000 sample vectors
      data = [{"vector": row, "item": f"item {i}"}
-        for i, row in enumerate(np.random.random((10_000, 768)).astype('float32'))]
+        for i, row in enumerate(np.random.random((10_000, 1536)).astype('float32'))]
 
      # Add the vectors to a table
      tbl = db.create_table("my_vectors", data=data)
@@ -41,8 +41,8 @@ In the future we will look to automatically create and configure the ANN index.
      for (let i = 0; i < 10_000; i++) {
          data.push({vector: Array(1536).fill(i), id: `${i}`, content: "", longId: `${i}`},)
      }
-     const table = await db.createTable('vectors', data)
-     await table.create_index({ type: 'ivf_pq', column: 'vector', num_partitions: 256, num_sub_vectors: 96 })
+     const table = await db.createTable('my_vectors', data)
+     await table.createIndex({ type: 'ivf_pq', column: 'vector', num_partitions: 256, num_sub_vectors: 96 })
      ```
 
 Since `create_index` has a training step, it can take a few minutes to finish for large tables. You can control the index
@@ -73,12 +73,13 @@ There are a couple of parameters that can be used to fine-tune the search:
 
 === "Python"
      ```python
-     tbl.search(np.random.random((768))) \
+     tbl.search(np.random.random((1536))) \
          .limit(2) \
          .nprobes(20) \
          .refine_factor(10) \
          .to_df()
-
+     ```
+     ```
                                               vector       item       score
      0  [0.44949695, 0.8444449, 0.06281311, 0.23338133...  item 1141  103.575333
      1  [0.48587373, 0.269207, 0.15095535, 0.65531915,...  item 3953  108.393867
@@ -86,8 +87,8 @@ There are a couple of parameters that can be used to fine-tune the search:
 
 === "Javascript"
      ```javascript
-     const results = await table
-         .search(Array(768).fill(1.2))
+     const results_1 = await table
+         .search(Array(1536).fill(1.2))
          .limit(2)
          .nprobes(20)
          .refineFactor(10)
@@ -104,14 +105,14 @@ You can further filter the elements returned by a search using a where clause.
 
 === "Python"
      ```python
-     tbl.search(np.random.random((768))).where("item != 'item 1141'").to_df()
+     tbl.search(np.random.random((1536))).where("item != 'item 1141'").to_df()
      ```
 
 === "Javascript"
      ```javascript
-     const results = await table
+     const results_2 = await table
          .search(Array(1536).fill(1.2))
-         .where("item != 'item 1141'")
+         .where("id != '1141'")
          .execute()
      ```
 
@@ -121,7 +122,9 @@ You can select the columns returned by the query using a select clause.
 
 === "Python"
      ```python
-     tbl.search(np.random.random((768))).select(["vector"]).to_df()
+     tbl.search(np.random.random((1536))).select(["vector"]).to_df()
+     ```
+     ```
      vector      score
      0  [0.30928212, 0.022668175, 0.1756372, 0.4911822...  93.971092
      1  [0.2525465, 0.01723831, 0.261568, 0.002007689,...  95.173485
@@ -130,7 +133,7 @@ You can select the columns returned by the query using a select clause.
 
 === "Javascript"
      ```javascript
-     const results = await table
+     const results_3 = await table
          .search(Array(1536).fill(1.2))
          .select(["id"])
          .execute()

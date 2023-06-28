@@ -23,7 +23,7 @@ We'll cover the basics of using LanceDB on your local machine in this section.
 === "Python"
       ```python
       import lancedb
-      uri = "~/.lancedb"
+      uri = "data/sample-lancedb"
       db = lancedb.connect(uri)
       ```
 
@@ -35,7 +35,7 @@ We'll cover the basics of using LanceDB on your local machine in this section.
       ```javascript
       const lancedb = require("vectordb");
 
-      const uri = "~./lancedb";
+      const uri = "data/sample-lancedb";
       const db = await lancedb.connect(uri);
       ```
       
@@ -102,7 +102,7 @@ Once created, you can open a table using the following code:
       If you forget the name of your table, you can always get a listing of all table names:
 
       ```javascript
-      console.log(db.tableNames());
+      console.log(await db.tableNames());
       ```
 
 ## How to add data to a table
@@ -118,7 +118,7 @@ After a table has been created, you can always add more data to it using
 
 === "Javascript"
       ```javascript
-      await tbl.add([vector: [1.3, 1.4], item: "fizz", price: 100.0},
+      await tbl.add([{vector: [1.3, 1.4], item: "fizz", price: 100.0},
               {vector: [9.5, 56.2], item: "buzz", price: 200.0}])
       ```
 

@@ -28,7 +28,7 @@ LanceDB's core is written in Rust 🦀 and is built using <a href="https://githu
       ```python
       import lancedb
 
-      uri = "/tmp/lancedb"
+      uri = "data/sample-lancedb"
       db = lancedb.connect(uri)
       table = db.create_table("my_table",
                               data=[{"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
@@ -44,7 +44,7 @@ LanceDB's core is written in Rust 🦀 and is built using <a href="https://githu
       ```javascript
       const lancedb = require("vectordb");
 
-      const uri = "/tmp/lancedb";
+      const uri = "data/sample-lancedb";
       const db = await lancedb.connect(uri);
       const table = await db.createTable("my_table", 
             [{ id: 1, vector: [3.1, 4.1], item: "foo", price: 10.0 },
