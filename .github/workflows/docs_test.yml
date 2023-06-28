@@ -76,8 +76,7 @@ jobs:
     - name: Install node dependencies
       run: |
         cd docs/test
-        npm cache verify
-        npm ci
+        npm install
     - name: Rust cache
       uses: swatinem/rust-cache@v2
     - name: Install LanceDB

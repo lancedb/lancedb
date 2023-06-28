@@ -4,12 +4,10 @@
   "description": "",
   "author": "",
   "license": "ISC",
-  "devDependencies": {
-    "vectordb": "https://gitpkg.now.sh/lancedb/lancedb/node?main"
-  },
   "dependencies": {
     "fs": "^0.0.1-security",
     "glob": "^10.2.7",
-    "path": "^0.12.7"
+    "path": "^0.12.7",
+    "vectordb": "https://gitpkg.now.sh/lancedb/lancedb/node?main"
   }
 }
