@@ -1636,9 +1636,9 @@ dependencies = [
 
 [[package]]
 name = "lance"
-version = "0.5.1"
+version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "76dad119202267ad3f2a5f5dd4b38a9ce7f66c13c14005c2588f9a18da7f25ab"
+checksum = "c9394675e5f03bedf00952fec1ff4d1525a1a4ceff36ae41018bc354e9ff771a"
 dependencies = [
  "arrow",
  "arrow-arith",
@@ -1678,7 +1678,6 @@ dependencies = [
  "roaring",
  "shellexpand",
  "snafu",
- "sqlparser-lance",
  "tokio",
  "url",
  "uuid",
@@ -2910,15 +2909,6 @@ checksum = "37d3706eefb17039056234df6b566b0014f303f867f2656108334a55b8096f59"
 dependencies = [
  "log",
  "sqlparser_derive",
-]
-
-[[package]]
-name = "sqlparser-lance"
-version = "0.32.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8d6869d4a81a3594c324d22a21767b8cf91961d30f8f219201f9e10951a16a17"
-dependencies = [
- "log",
 ]
 
 [[package]]

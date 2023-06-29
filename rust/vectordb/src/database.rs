@@ -20,7 +20,7 @@ use lance::io::object_store::ObjectStore;
 use snafu::prelude::*;
 
 use crate::error::{CreateDirSnafu, Result};
-use crate::table::Table;
+use crate::table::{OpenTableParams, Table};
 
 pub struct Database {
     object_store: ObjectStore,
@@ -107,7 +107,25 @@ impl Database {
     ///
     /// * A [Table] object.
     pub async fn open_table(&self, name: &str) -> Result<Table> {
-        Table::open(&self.uri, name).await
+        self.open_table_with_params(name, OpenTableParams::default())
+            .await
+    }
+
+    /// Open a table in the database.
+    ///
+    /// # Arguments
+    /// * `name` - The name of the table.
+    /// * `params` - The parameters to open the table.
+    ///
+    /// # Returns
+    ///
+    /// * A [Table] object.
+    pub async fn open_table_with_params(
+        &self,
+        name: &str,
+        params: OpenTableParams,
+    ) -> Result<Table> {
+        Table::open_with_params(&self.uri, name, params).await
     }
 
     /// Drop a table in the database.
