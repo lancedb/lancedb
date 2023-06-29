@@ -462,5 +462,10 @@ export enum MetricType {
   /**
    * Cosine distance
    */
-  Cosine = 'cosine'
+  Cosine = 'cosine',
+
+  /**
+   * Dot product
+   */
+  Dot = 'dot'
 }
