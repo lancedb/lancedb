@@ -43,7 +43,7 @@ impl std::fmt::Display for Table {
 
 #[derive(Default)]
 pub struct OpenTableParams {
-    pub(crate) dataset_read_params: ReadParams,
+    pub open_table_params: ReadParams,
 }
 
 impl Table {
@@ -85,7 +85,7 @@ impl Table {
             .to_str()
             .context(InvalidTableNameSnafu { name })?;
 
-        let dataset = Dataset::open_with_params(uri, &params.dataset_read_params)
+        let dataset = Dataset::open_with_params(uri, &params.open_table_params)
             .await
             .map_err(|e| match e {
                 lance::Error::DatasetNotFound { .. } => Error::TableNotFound {
@@ -394,7 +394,7 @@ mod tests {
         let wrapper = Arc::new(NoOpCacheWrapper::default());
 
         let param = OpenTableParams {
-            dataset_read_params: ReadParams {
+            open_table_params: ReadParams {
                 store_options: Some(ObjectStoreParams {
                     object_store_wrapper: Some(wrapper.clone()),
                 }),
