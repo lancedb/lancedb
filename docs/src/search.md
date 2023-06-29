@@ -17,7 +17,8 @@ Currently, we support the following metrics:
 | Metric      | Description                          |
 | ----------- | ------------------------------------ |
 | `L2`        | [Euclidean / L2 distance](https://en.wikipedia.org/wiki/Euclidean_distance) |
-<!-- | `Cosine`    | [Cosine Similarity](https://en.wikipedia.org/wiki/Cosine_similarity)| -->
+| `Cosine`    | [Cosine Similarity](https://en.wikipedia.org/wiki/Cosine_similarity)|
+| `Dot`       | [Dot Production](https://en.wikipedia.org/wiki/Dot_product) |
 
 
 ## Search
@@ -29,7 +30,7 @@ If there is no [vector index is created](ann_indexes.md), LanceDB will just brut
 the vector column and compute the distance.
 
 <!-- Setup Code
-```python 
+```python
 import lancedb
 import numpy as np
 uri = "data/sample-lancedb"
@@ -42,7 +43,7 @@ db.create_table("my_vectors", data=data)
 ```
 -->
 <!-- Setup Code
-```javascript 
+```javascript
 const vectordb_setup = require('vectordb')
 const db_setup = await vectordb_setup.connect('data/sample-lancedb')
 
@@ -59,7 +60,7 @@ await db_setup.createTable('my_vectors', data)
     ```python
     import lancedb
     import numpy as np
-    
+
     db = lancedb.connect("data/sample-lancedb")
 
     tbl = db.open_table("my_vectors")
