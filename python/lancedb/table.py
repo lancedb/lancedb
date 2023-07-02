@@ -28,15 +28,15 @@ from .common import DATA, VEC, VECTOR_COLUMN_NAME
 from .query import LanceFtsQueryBuilder, LanceQueryBuilder
 
 
-def _sanitize_data(data, schema):
+def _sanitize_data(data, schema, strict_mode):
     if isinstance(data, list):
         data = pa.Table.from_pylist(data)
-        data = _sanitize_schema(data, schema=schema)
+        data = _sanitize_schema(data, schema=schema, strict_mode=strict_mode)
     if isinstance(data, dict):
         data = vec_to_table(data)
     if isinstance(data, pd.DataFrame):
         data = pa.Table.from_pandas(data)
-        data = _sanitize_schema(data, schema=schema)
+        data = _sanitize_schema(data, schema=schema, strict_mode=strict_mode)
     if not isinstance(data, pa.Table):
         raise TypeError(f"Unsupported data type: {type(data)}")
     return data
@@ -249,7 +249,7 @@ class LanceTable:
         """Return the LanceDataset backing this table."""
         return self._dataset
 
-    def add(self, data: DATA, mode: str = "append") -> int:
+    def add(self, data: DATA, mode: str = "append", strict: bool = False) -> int:
         """Add data to the table.
 
         Parameters
@@ -259,13 +259,17 @@ class LanceTable:
         mode: str
             The mode to use when writing the data. Valid values are
             "append" and "overwrite".
+        strict: bool, default False
+            If True then raise ValueError if input data is not all the same
+            length, otherwise rows with vectors less than the max length in
+            the input data will be removed.
 
         Returns
         -------
         int
             The number of vectors in the table.
         """
-        data = _sanitize_data(data, self.schema)
+        data = _sanitize_data(data, self.schema, strict)
         lance.write_dataset(data, self._dataset_uri, mode=mode)
         self._reset_dataset()
         return len(self)
@@ -302,9 +306,9 @@ class LanceTable:
         return LanceQueryBuilder(self, query, vector_column_name)
 
     @classmethod
-    def create(cls, db, name, data, schema=None, mode="create"):
+    def create(cls, db, name, data, schema=None, mode="create", strict: bool = False):
         tbl = LanceTable(db, name)
-        data = _sanitize_data(data, schema)
+        data = _sanitize_data(data, schema, strict)
         lance.write_dataset(data, tbl._dataset_uri, mode=mode)
         return tbl
 
@@ -350,7 +354,8 @@ class LanceTable:
         self._dataset.delete(where)
 
 
-def _sanitize_schema(data: pa.Table, schema: pa.Schema = None) -> pa.Table:
+def _sanitize_schema(data: pa.Table, schema: pa.Schema = None,
+                     strict_mode: bool = False) -> pa.Table:
     """Ensure that the table has the expected schema.
 
     Parameters
@@ -360,21 +365,28 @@ def _sanitize_schema(data: pa.Table, schema: pa.Schema = None) -> pa.Table:
     schema: pa.Schema; optional
         The expected schema. If not provided, this just converts the
         vector column to fixed_size_list(float32) if necessary.
+    strict_mode: bool; default False
+        If True, raise a ValueError if the vectors are not all the same length
+        length, otherwise rows with vectors less than the max length in
+        the input data will be removed.
     """
     if schema is not None:
         if data.schema == schema:
             return data
         # cast the columns to the expected types
         data = data.combine_chunks()
-        data = _sanitize_vector_column(data, vector_column_name=VECTOR_COLUMN_NAME)
+        data = _sanitize_vector_column(data, vector_column_name=VECTOR_COLUMN_NAME,
+                                       strict_mode=strict_mode)
         return pa.Table.from_arrays(
             [data[name] for name in schema.names], schema=schema
         )
     # just check the vector column
-    return _sanitize_vector_column(data, vector_column_name=VECTOR_COLUMN_NAME)
+    return _sanitize_vector_column(data, vector_column_name=VECTOR_COLUMN_NAME,
+                                   strict_mode=strict_mode)
 
 
-def _sanitize_vector_column(data: pa.Table, vector_column_name: str) -> pa.Table:
+def _sanitize_vector_column(data: pa.Table, vector_column_name: str,
+                            strict_mode: bool) -> pa.Table:
     """
     Ensure that the vector column exists and has type fixed_size_list(float32)
 
@@ -384,6 +396,10 @@ def _sanitize_vector_column(data: pa.Table, vector_column_name: str) -> pa.Table
         The table to sanitize.
     vector_column_name: str
         The name of the vector column.
+    strict_mode: bool; default False
+        If True, raise a ValueError if the vectors are not all the same length
+        length, otherwise rows with vectors less than the max length in
+        the input data will be removed.
     """
     if vector_column_name not in data.column_names:
         raise ValueError(f"Missing vector column: {vector_column_name}")
@@ -392,6 +408,18 @@ def _sanitize_vector_column(data: pa.Table, vector_column_name: str) -> pa.Table
         return data
     if not pa.types.is_list(vec_arr.type):
         raise TypeError(f"Unsupported vector column type: {vec_arr.type}")
+    if len(vec_arr.values) % len(data) != 0:
+        if strict_mode:
+            raise ValueError(
+                f"Vector column {vector_column_name} has variable length vectors"
+            )
+        # not a fixed size list, maybe some NaNs
+        lst_lengths = np.unique([len(lst) for lst in vec_arr])
+        ndims = np.max(lst_lengths)
+        mask = pa.array([len(lst) == ndims for lst in vec_arr])
+        data = data.filter(mask)
+        vec_arr = data[vector_column_name].combine_chunks()
+
     values = vec_arr.values
     if not pa.types.is_float32(values.type):
         values = values.cast(pa.float32())

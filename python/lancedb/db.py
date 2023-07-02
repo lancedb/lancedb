@@ -158,6 +158,7 @@ class LanceDBConnection:
         data: DATA = None,
         schema: pa.Schema = None,
         mode: str = "create",
+        strict: bool = False,
     ) -> LanceTable:
         """Create a table in the database.
 
@@ -173,6 +174,10 @@ class LanceDBConnection:
             The mode to use when creating the table. Can be either "create" or "overwrite".
             By default, if the table already exists, an exception is raised.
             If you want to overwrite the table, use mode="overwrite".
+        strict: bool, default False
+            If True then raise ValueError if input data is not all the same
+            length, otherwise rows with vectors less than the max length in
+            the input data will be removed.
 
         Note
         ----
@@ -253,7 +258,8 @@ class LanceDBConnection:
             raise ValueError("mode must be either 'create' or 'overwrite'")
 
         if data is not None:
-            tbl = LanceTable.create(self, name, data, schema, mode=mode)
+            tbl = LanceTable.create(self, name, data, schema, mode=mode,
+                                    strict=strict)
         else:
             tbl = LanceTable.open(self, name)
         return tbl

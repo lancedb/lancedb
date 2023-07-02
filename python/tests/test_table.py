@@ -179,7 +179,8 @@ def test_create_index_method():
             )
 
 
-def test_add_with_nans():
+def test_add_with_nans(db):
+    # LangChain sometimes pass [NaN] if the embedding function fails
     table = LanceTable.create(
         db,
         "test",
@@ -188,4 +189,15 @@ def test_add_with_nans():
             {"vector": [np.nan], "item": "bar", "price": 20.0},
         ],
     )
-    assert table.search([1., 1.]).limit(1).to_arrow()["item"][0] == "foo"
+    assert len(table) == 1
+
+    with pytest.raises(ValueError):
+        LanceTable.create(
+            db,
+            "test",
+            data=[
+                {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+                {"vector": [np.nan], "item": "bar", "price": 20.0},
+            ],
+            strict=True,
+        )
