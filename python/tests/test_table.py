@@ -15,6 +15,7 @@ import functools
 from pathlib import Path
 from unittest.mock import PropertyMock, patch
 
+import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pytest
@@ -176,3 +177,15 @@ def test_create_index_method():
                 num_sub_vectors=96,
                 replace=True,
             )
+
+
+def test_add_with_nans():
+    table = LanceTable.create(
+        db,
+        "test",
+        data=[
+            {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+            {"vector": [np.nan], "item": "bar", "price": 20.0},
+        ],
+    )
+    assert table.search([1., 1.]).limit(1).to_arrow()["item"][0] == "foo"
