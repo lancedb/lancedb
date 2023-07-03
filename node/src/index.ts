@@ -57,7 +57,7 @@ export interface Connection {
    * Creates a new Table and initialize it with new data.
    *
    * @param name The name of the table.
-   * @param data Non-empty Array of Records to be inserted into the Table
+   * @param data Non-empty Array of Records to be inserted into the Table.
    */
 
   createTable: ((name: string, data: Array<Record<string, unknown>>) => Promise<Table>) & (<T>(name: string, data: Array<Record<string, unknown>>, embeddings: EmbeddingFunction<T>) => Promise<Table<T>>) & (<T>(name: string, data: Array<Record<string, unknown>>, embeddings?: EmbeddingFunction<T>) => Promise<Table<T>>)
