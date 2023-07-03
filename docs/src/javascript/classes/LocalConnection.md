@@ -46,7 +46,7 @@ A connection to a LanceDB database.
 
 #### Defined in
 
-[index.ts:129](https://github.com/lancedb/lancedb/blob/bfb5400/node/src/index.ts#L129)
+[index.ts:158](https://github.com/lancedb/lancedb/blob/a6bdffd/node/src/index.ts#L158)
 
 ## Properties
 
@@ -56,7 +56,7 @@ A connection to a LanceDB database.
 
 #### Defined in
 
-[index.ts:127](https://github.com/lancedb/lancedb/blob/bfb5400/node/src/index.ts#L127)
+[index.ts:156](https://github.com/lancedb/lancedb/blob/a6bdffd/node/src/index.ts#L156)
 
 ___
 
@@ -66,7 +66,7 @@ ___
 
 #### Defined in
 
-[index.ts:126](https://github.com/lancedb/lancedb/blob/bfb5400/node/src/index.ts#L126)
+[index.ts:155](https://github.com/lancedb/lancedb/blob/a6bdffd/node/src/index.ts#L155)
 
 ## Accessors
 
@@ -84,7 +84,7 @@ ___
 
 #### Defined in
 
-[index.ts:134](https://github.com/lancedb/lancedb/blob/bfb5400/node/src/index.ts#L134)
+[index.ts:163](https://github.com/lancedb/lancedb/blob/a6bdffd/node/src/index.ts#L163)
 
 ## Methods
 
@@ -107,11 +107,11 @@ Creates a new Table and initialize it with new data.
 
 #### Implementation of
 
-Connection.createTable
+[Connection](../interfaces/Connection.md).[createTable](../interfaces/Connection.md#createtable)
 
 #### Defined in
 
-[index.ts:174](https://github.com/lancedb/lancedb/blob/bfb5400/node/src/index.ts#L174)
+[index.ts:203](https://github.com/lancedb/lancedb/blob/a6bdffd/node/src/index.ts#L203)
 
 ▸ **createTable**<`T`\>(`name`, `data`, `embeddings`): `Promise`<[`Table`](../interfaces/Table.md)<`T`\>\>
 
@@ -137,11 +137,11 @@ Creates a new Table and initialize it with new data.
 
 #### Implementation of
 
-Connection.createTable
+[Connection](../interfaces/Connection.md).[createTable](../interfaces/Connection.md#createtable)
 
 #### Defined in
 
-[index.ts:182](https://github.com/lancedb/lancedb/blob/bfb5400/node/src/index.ts#L182)
+[index.ts:211](https://github.com/lancedb/lancedb/blob/a6bdffd/node/src/index.ts#L211)
 
 ___
 
@@ -166,7 +166,7 @@ ___
 
 #### Defined in
 
-[index.ts:192](https://github.com/lancedb/lancedb/blob/bfb5400/node/src/index.ts#L192)
+[index.ts:221](https://github.com/lancedb/lancedb/blob/a6bdffd/node/src/index.ts#L221)
 
 ___
 
@@ -192,7 +192,7 @@ Drop an existing table.
 
 #### Defined in
 
-[index.ts:202](https://github.com/lancedb/lancedb/blob/bfb5400/node/src/index.ts#L202)
+[index.ts:231](https://github.com/lancedb/lancedb/blob/a6bdffd/node/src/index.ts#L231)
 
 ___
 
@@ -214,11 +214,11 @@ Open a table in the database.
 
 #### Implementation of
 
-Connection.openTable
+[Connection](../interfaces/Connection.md).[openTable](../interfaces/Connection.md#opentable)
 
 #### Defined in
 
-[index.ts:150](https://github.com/lancedb/lancedb/blob/bfb5400/node/src/index.ts#L150)
+[index.ts:179](https://github.com/lancedb/lancedb/blob/a6bdffd/node/src/index.ts#L179)
 
 ▸ **openTable**<`T`\>(`name`, `embeddings`): `Promise`<[`Table`](../interfaces/Table.md)<`T`\>\>
 
@@ -243,11 +243,11 @@ Open a table in the database.
 
 #### Implementation of
 
-Connection.openTable
+[Connection](../interfaces/Connection.md).[openTable](../interfaces/Connection.md#opentable)
 
 #### Defined in
 
-[index.ts:157](https://github.com/lancedb/lancedb/blob/bfb5400/node/src/index.ts#L157)
+[index.ts:186](https://github.com/lancedb/lancedb/blob/a6bdffd/node/src/index.ts#L186)
 
 ___
 
@@ -267,4 +267,4 @@ Get the names of all tables in the database.
 
 #### Defined in
 
-[index.ts:141](https://github.com/lancedb/lancedb/blob/bfb5400/node/src/index.ts#L141)
+[index.ts:170](https://github.com/lancedb/lancedb/blob/a6bdffd/node/src/index.ts#L170)

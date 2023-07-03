@@ -44,31 +44,60 @@ export async function connect (uri: string): Promise<Connection> {
 export interface Connection {
   uri: string
 
-  tableNames: () => Promise<string[]>
+  /**
+   *
+   */
+  tableNames(): Promise<string[]>
 
   /**
    * Open a table in the database.
-   *
    * @param name The name of the table.
    */
-  openTable: ((name: string) => Promise<Table>) & (<T>(name: string, embeddings: EmbeddingFunction<T>) => Promise<Table<T>>) & (<T>(name: string, embeddings?: EmbeddingFunction<T>) => Promise<Table<T>>)
+  openTable(name: string): Promise<Table>
+  /**
+   * Open a table in the database.
+   * @param name The name of the table.
+   * @param embeddings An embedding function to use on this Table
+   */
+  openTable<T>(name: string, embeddings: EmbeddingFunction<T>): Promise<Table<T>>
+  /**
+   * Open a table in the database.
+   * @param name The name of the table.
+   * @param embeddings An embedding function to use on this Table
+   */
+  openTable<T>(name: string, embeddings?: EmbeddingFunction<T>): Promise<Table<T>>
 
   /**
    * Creates a new Table and initialize it with new data.
-   *
    * @param name The name of the table.
    * @param data Non-empty Array of Records to be inserted into the Table
    */
+  createTable(name: string, data: Array<Record<string, unknown>>): Promise<Table>
+  /**
+   * Creates a new Table and initialize it with new data.
+   * @param name The name of the table.
+   * @param data Non-empty Array of Records to be inserted into the Table
+   * @param embeddings An embedding function to use on this Table
+  */
+  createTable<T>(name: string, data: Array<Record<string, unknown>>, embeddings: EmbeddingFunction<T>): Promise<Table<T>>
+  /**
+   * Creates a new Table and initialize it with new data.
+   * @param name The name of the table.
+   * @param data Non-empty Array of Records to be inserted into the Table
+   * @param embeddings An embedding function to use on this Table
+  */
+  createTable<T>(name: string, data: Array<Record<string, unknown>>, embeddings?: EmbeddingFunction<T>): Promise<Table<T>>
 
-  createTable: ((name: string, data: Array<Record<string, unknown>>) => Promise<Table>) & (<T>(name: string, data: Array<Record<string, unknown>>, embeddings: EmbeddingFunction<T>) => Promise<Table<T>>) & (<T>(name: string, data: Array<Record<string, unknown>>, embeddings?: EmbeddingFunction<T>) => Promise<Table<T>>)
-
-  createTableArrow: (name: string, table: ArrowTable) => Promise<Table>
+  /**
+   *
+   */
+  createTableArrow(name: string, table: ArrowTable): Promise<Table>
 
   /**
    * Drop an existing table.
    * @param name The name of the table to drop.
    */
-  dropTable: (name: string) => Promise<void>
+  dropTable(name: string): Promise<void>
 }
 
 /**
