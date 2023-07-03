@@ -18,7 +18,7 @@ import * as chai from 'chai'
 import * as chaiAsPromised from 'chai-as-promised'
 
 import * as lancedb from '../index'
-import { type EmbeddingFunction, MetricType, Query } from '../index'
+import { type EmbeddingFunction, MetricType, Query, WriteMode } from '../index'
 
 const expect = chai.expect
 const assert = chai.assert
@@ -218,7 +218,7 @@ describe('LanceDB client', function () {
         { price: 10, name: 'foo' },
         { price: 50, name: 'bar' }
       ]
-      const table = await con.createTable('vectors', data, embeddings)
+      const table = await con.createTable('vectors', data, WriteMode.Create, embeddings)
       const results = await table.search('foo').execute()
       assert.equal(results.length, 2)
     })
