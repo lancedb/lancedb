@@ -46,7 +46,7 @@ A connection to a LanceDB database.
 
 #### Defined in
 
-[index.ts:158](https://github.com/lancedb/lancedb/blob/a6bdffd/node/src/index.ts#L158)
+[index.ts:160](https://github.com/lancedb/lancedb/blob/0162b16/node/src/index.ts#L160)
 
 ## Properties
 
@@ -56,7 +56,7 @@ A connection to a LanceDB database.
 
 #### Defined in
 
-[index.ts:156](https://github.com/lancedb/lancedb/blob/a6bdffd/node/src/index.ts#L156)
+[index.ts:158](https://github.com/lancedb/lancedb/blob/0162b16/node/src/index.ts#L158)
 
 ___
 
@@ -66,7 +66,7 @@ ___
 
 #### Defined in
 
-[index.ts:155](https://github.com/lancedb/lancedb/blob/a6bdffd/node/src/index.ts#L155)
+[index.ts:157](https://github.com/lancedb/lancedb/blob/0162b16/node/src/index.ts#L157)
 
 ## Accessors
 
@@ -84,7 +84,7 @@ ___
 
 #### Defined in
 
-[index.ts:163](https://github.com/lancedb/lancedb/blob/a6bdffd/node/src/index.ts#L163)
+[index.ts:165](https://github.com/lancedb/lancedb/blob/0162b16/node/src/index.ts#L165)
 
 ## Methods
 
@@ -111,7 +111,7 @@ Creates a new Table and initialize it with new data.
 
 #### Defined in
 
-[index.ts:203](https://github.com/lancedb/lancedb/blob/a6bdffd/node/src/index.ts#L203)
+[index.ts:205](https://github.com/lancedb/lancedb/blob/0162b16/node/src/index.ts#L205)
 
 ▸ **createTable**<`T`\>(`name`, `data`, `embeddings`): `Promise`<[`Table`](../interfaces/Table.md)<`T`\>\>
 
@@ -141,7 +141,7 @@ Creates a new Table and initialize it with new data.
 
 #### Defined in
 
-[index.ts:211](https://github.com/lancedb/lancedb/blob/a6bdffd/node/src/index.ts#L211)
+[index.ts:213](https://github.com/lancedb/lancedb/blob/0162b16/node/src/index.ts#L213)
 
 ___
 
@@ -166,7 +166,7 @@ ___
 
 #### Defined in
 
-[index.ts:221](https://github.com/lancedb/lancedb/blob/a6bdffd/node/src/index.ts#L221)
+[index.ts:223](https://github.com/lancedb/lancedb/blob/0162b16/node/src/index.ts#L223)
 
 ___
 
@@ -192,7 +192,7 @@ Drop an existing table.
 
 #### Defined in
 
-[index.ts:231](https://github.com/lancedb/lancedb/blob/a6bdffd/node/src/index.ts#L231)
+[index.ts:233](https://github.com/lancedb/lancedb/blob/0162b16/node/src/index.ts#L233)
 
 ___
 
@@ -218,7 +218,7 @@ Open a table in the database.
 
 #### Defined in
 
-[index.ts:179](https://github.com/lancedb/lancedb/blob/a6bdffd/node/src/index.ts#L179)
+[index.ts:181](https://github.com/lancedb/lancedb/blob/0162b16/node/src/index.ts#L181)
 
 ▸ **openTable**<`T`\>(`name`, `embeddings`): `Promise`<[`Table`](../interfaces/Table.md)<`T`\>\>
 
@@ -247,7 +247,7 @@ Open a table in the database.
 
 #### Defined in
 
-[index.ts:186](https://github.com/lancedb/lancedb/blob/a6bdffd/node/src/index.ts#L186)
+[index.ts:188](https://github.com/lancedb/lancedb/blob/0162b16/node/src/index.ts#L188)
 
 ___
 
@@ -267,4 +267,4 @@ Get the names of all tables in the database.
 
 #### Defined in
 
-[index.ts:170](https://github.com/lancedb/lancedb/blob/a6bdffd/node/src/index.ts#L170)
+[index.ts:172](https://github.com/lancedb/lancedb/blob/0162b16/node/src/index.ts#L172)
