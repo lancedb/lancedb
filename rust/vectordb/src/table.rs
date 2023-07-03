@@ -1,4 +1,4 @@
-// Copyright 2023 Lance Developers.
+// Copyright 2023 LanceDB Developers.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -117,6 +117,7 @@ impl Table {
         base_uri: &str,
         name: &str,
         mut batches: Box<dyn RecordBatchReader>,
+        params: Option<WriteParams>,
     ) -> Result<Self> {
         let base_path = Path::new(base_uri);
         let table_uri = base_path.join(format!("{}.{}", name, LANCE_FILE_EXTENSION));
@@ -125,7 +126,7 @@ impl Table {
             .to_str()
             .context(InvalidTableNameSnafu { name })?
             .to_string();
-        let dataset = Dataset::write(&mut batches, &uri, Some(WriteParams::default()))
+        let dataset = Dataset::write(&mut batches, &uri, params)
             .await
             .map_err(|e| match e {
                 lance::Error::DatasetAlreadyExists { .. } => Error::TableAlreadyExists {

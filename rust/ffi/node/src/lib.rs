@@ -21,7 +21,7 @@ use arrow_array::{Float32Array, RecordBatchReader};
 use arrow_ipc::writer::FileWriter;
 use futures::{TryFutureExt, TryStreamExt};
 use lance::arrow::RecordBatchBuffer;
-use lance::dataset::WriteMode;
+use lance::dataset::{WriteMode, WriteParams};
 use lance::index::vector::MetricType;
 use neon::prelude::*;
 use neon::types::buffer::TypedArray;
@@ -234,6 +234,16 @@ fn table_create(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let buffer = cx.argument::<JsBuffer>(1)?;
     let batches = arrow_buffer_to_record_batch(buffer.as_slice(&mut cx));
 
+    // Write mode
+    let mode = match cx.argument::<JsString>(2)?.value(&mut cx).as_str() {
+        "overwrite" => WriteMode::Overwrite,
+        "append" => WriteMode::Append,
+        "create" => WriteMode::Create,
+        _ => return cx.throw_error("Table::create only supports 'overwrite' and 'create' modes")
+    };
+    let mut params = WriteParams::default();
+    params.mode = mode;
+
     let rt = runtime(&mut cx)?;
     let channel = cx.channel();
 
@@ -242,7 +252,7 @@ fn table_create(mut cx: FunctionContext) -> JsResult<JsPromise> {
 
     rt.block_on(async move {
         let batch_reader: Box<dyn RecordBatchReader> = Box::new(RecordBatchBuffer::new(batches));
-        let table_rst = database.create_table(&table_name, batch_reader).await;
+        let table_rst = database.create_table(&table_name, batch_reader, Some(params)).await;
 
         deferred.settle_with(&channel, move |mut cx| {
             let table = Arc::new(Mutex::new(

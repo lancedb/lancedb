@@ -187,7 +187,10 @@ export class LocalConnection implements Connection {
    */
   async createTable<T> (name: string, data: Array<Record<string, unknown>>, mode: WriteMode, embeddings: EmbeddingFunction<T>): Promise<Table<T>>
   async createTable<T> (name: string, data: Array<Record<string, unknown>>, mode: WriteMode, embeddings?: EmbeddingFunction<T>): Promise<Table<T>> {
-    const tbl = await tableCreate.call(this._db, name, await fromRecordsToBuffer(data, embeddings))
+    if (mode === undefined) {
+      mode = WriteMode.Create
+    }
+    const tbl = await tableCreate.call(this._db, name, await fromRecordsToBuffer(data, embeddings), mode.toLowerCase())
     if (embeddings !== undefined) {
       return new LocalTable(tbl, name, embeddings)
     } else {
