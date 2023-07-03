@@ -2,7 +2,7 @@ name: Deploy docs to Pages
 
 on:
   push:
-    branches: ["main"]
+    branches: ["leon/dynamic-docs-generation"]
 
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
@@ -39,6 +39,28 @@ jobs:
         run: |
           python -m pip install -e .
           python -m pip install -r ../docs/requirements.txt
+      - name: Set up node
+        uses: actions/setup-node@v3
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+          cache-dependency-path: node/package-lock.json
+      - uses: Swatinem/rust-cache@v2
+      - name: Install node dependencies
+        working-directory: node
+        run: |
+          sudo apt update
+          sudo apt install -y protobuf-compiler libssl-dev
+      - name: Build node
+        working-directory: node
+        run: |
+          npm ci
+          npm run build
+          npm run tsc
+      - name: Create markdown files
+        working-directory: node
+        run: |
+          npx typedoc --plugin typedoc-plugin-markdown --out ../docs/src/javascript src/index.ts
       - name: Build docs
         run: |
           PYTHONPATH=. mkdocs build -f docs/mkdocs.yml
