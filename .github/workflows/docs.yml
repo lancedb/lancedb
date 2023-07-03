@@ -51,6 +51,12 @@ jobs:
         run: |
           sudo apt update
           sudo apt install -y protobuf-compiler libssl-dev
+      - name: Build node
+        working-directory: node
+        run: |
+          npm ci
+          npm run build
+          npm run tsc
       - name: Create markdown files
         working-directory: node
         run: |
