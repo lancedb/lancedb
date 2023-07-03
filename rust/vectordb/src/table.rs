@@ -285,10 +285,10 @@ mod tests {
 
         let batches: Box<dyn RecordBatchReader> = Box::new(make_test_batches());
         let _ = batches.schema().clone();
-        Table::create(&uri, "test", batches).await.unwrap();
+        Table::create(&uri, "test", batches, None).await.unwrap();
 
         let batches: Box<dyn RecordBatchReader> = Box::new(make_test_batches());
-        let result = Table::create(&uri, "test", batches).await;
+        let result = Table::create(&uri, "test", batches, None).await;
         assert!(matches!(
             result.unwrap_err(),
             Error::TableAlreadyExists { .. }
@@ -302,7 +302,7 @@ mod tests {
 
         let batches: Box<dyn RecordBatchReader> = Box::new(make_test_batches());
         let schema = batches.schema().clone();
-        let mut table = Table::create(&uri, "test", batches).await.unwrap();
+        let mut table = Table::create(&uri, "test", batches, None).await.unwrap();
         assert_eq!(table.count_rows().await.unwrap(), 10);
 
         let new_batches: Box<dyn RecordBatchReader> =
@@ -324,7 +324,7 @@ mod tests {
 
         let batches: Box<dyn RecordBatchReader> = Box::new(make_test_batches());
         let schema = batches.schema().clone();
-        let mut table = Table::create(uri, "test", batches).await.unwrap();
+        let mut table = Table::create(uri, "test", batches, None).await.unwrap();
         assert_eq!(table.count_rows().await.unwrap(), 10);
 
         let new_batches: Box<dyn RecordBatchReader> =
@@ -454,7 +454,7 @@ mod tests {
         .unwrap()]);
 
         let reader: Box<dyn RecordBatchReader + Send> = Box::new(batches);
-        let mut table = Table::create(uri, "test", reader).await.unwrap();
+        let mut table = Table::create(uri, "test", reader, None).await.unwrap();
 
         let mut i = IvfPQIndexBuilder::new();
 
