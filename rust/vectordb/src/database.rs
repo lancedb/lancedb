@@ -16,6 +16,7 @@ use std::fs::create_dir_all;
 use std::path::Path;
 
 use arrow_array::RecordBatchReader;
+use lance::dataset::WriteParams;
 use lance::io::object_store::ObjectStore;
 use snafu::prelude::*;
 
@@ -90,12 +91,19 @@ impl Database {
         Ok(f)
     }
 
+    /// Create a new table in the database.
+    ///
+    /// # Arguments
+    /// * `name` - The name of the table.
+    /// * `batches` - The initial data to write to the table.
+    /// * `params` - Optional [`WriteParams`] to create the table.
     pub async fn create_table(
         &self,
         name: &str,
         batches: Box<dyn RecordBatchReader>,
+        params: Option<WriteParams>,
     ) -> Result<Table> {
-        Table::create(&self.uri, name, batches).await
+        Table::create(&self.uri, name, batches, params).await
     }
 
     /// Open a table in the database.

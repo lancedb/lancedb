@@ -170,7 +170,7 @@ class LanceDBConnection:
         schema: pyarrow.Schema; optional
             The schema of the table.
         mode: str; default "create"
-            The mode to use when creating the table.
+            The mode to use when creating the table. Can be either "create" or "overwrite".
             By default, if the table already exists, an exception is raised.
             If you want to overwrite the table, use mode="overwrite".
 
@@ -249,6 +249,9 @@ class LanceDBConnection:
         lat: [[45.5,40.1]]
         long: [[-122.7,-74.1]]
         """
+        if mode.lower() not in ["create", "overwrite"]:
+            raise ValueError("mode must be either 'create' or 'overwrite'")
+
         if data is not None:
             tbl = LanceTable.create(self, name, data, schema, mode=mode)
         else:
