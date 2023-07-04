@@ -158,7 +158,8 @@ class LanceDBConnection:
         data: DATA = None,
         schema: pa.Schema = None,
         mode: str = "create",
-        strict: bool = False,
+        on_bad_vectors: str = "drop",
+        fill_value: float = 0.
     ) -> LanceTable:
         """Create a table in the database.
 
@@ -174,10 +175,11 @@ class LanceDBConnection:
             The mode to use when creating the table. Can be either "create" or "overwrite".
             By default, if the table already exists, an exception is raised.
             If you want to overwrite the table, use mode="overwrite".
-        strict: bool, default False
-            If True then raise ValueError if input data is not all the same
-            length, otherwise rows with vectors less than the max length in
-            the input data will be removed.
+        on_bad_vectors: str
+            What to do if any of the vectors are not the same size or contains NaNs.
+            One of "raise", "drop", "fill".
+        fill_value: float
+            The value to use when filling vectors. Only used if on_bad_vectors="fill".
 
         Note
         ----
@@ -259,7 +261,7 @@ class LanceDBConnection:
 
         if data is not None:
             tbl = LanceTable.create(self, name, data, schema, mode=mode,
-                                    strict=strict)
+                                    on_bad_vectors=on_bad_vectors, fill_value=fill_value)
         else:
             tbl = LanceTable.open(self, name)
         return tbl

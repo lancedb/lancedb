@@ -15,12 +15,13 @@ from __future__ import annotations
 
 import os
 from functools import cached_property
-from typing import List, Union
+from typing import List, Union, Any
 
 import lance
 import numpy as np
 import pandas as pd
 import pyarrow as pa
+import pyarrow.compute as pc
 from lance import LanceDataset
 from lance.vector import vec_to_table
 
@@ -28,15 +29,15 @@ from .common import DATA, VEC, VECTOR_COLUMN_NAME
 from .query import LanceFtsQueryBuilder, LanceQueryBuilder
 
 
-def _sanitize_data(data, schema, strict_mode):
+def _sanitize_data(data, schema, on_bad_vectors, fill_value):
     if isinstance(data, list):
         data = pa.Table.from_pylist(data)
-        data = _sanitize_schema(data, schema=schema, strict_mode=strict_mode)
+        data = _sanitize_schema(data, schema=schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value)
     if isinstance(data, dict):
         data = vec_to_table(data)
     if isinstance(data, pd.DataFrame):
         data = pa.Table.from_pandas(data)
-        data = _sanitize_schema(data, schema=schema, strict_mode=strict_mode)
+        data = _sanitize_schema(data, schema=schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value)
     if not isinstance(data, pa.Table):
         raise TypeError(f"Unsupported data type: {type(data)}")
     return data
@@ -249,7 +250,8 @@ class LanceTable:
         """Return the LanceDataset backing this table."""
         return self._dataset
 
-    def add(self, data: DATA, mode: str = "append", strict: bool = False) -> int:
+    def add(self, data: DATA, mode: str = "append",
+            on_bad_vectors: str = "drop", fill_value: float = 0.) -> int:
         """Add data to the table.
 
         Parameters
@@ -259,17 +261,18 @@ class LanceTable:
         mode: str
             The mode to use when writing the data. Valid values are
             "append" and "overwrite".
-        strict: bool, default False
-            If True then raise ValueError if input data is not all the same
-            length, otherwise rows with vectors less than the max length in
-            the input data will be removed.
+        on_bad_vectors: str
+            What to do if any of the vectors are not the same size or contains NaNs.
+            One of "raise", "drop", "fill".
+        fill_value: float, default 0.
+            The value to use when filling vectors. Only used if on_bad_vectors="fill".
 
         Returns
         -------
         int
             The number of vectors in the table.
         """
-        data = _sanitize_data(data, self.schema, strict)
+        data = _sanitize_data(data, self.schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value)
         lance.write_dataset(data, self._dataset_uri, mode=mode)
         self._reset_dataset()
         return len(self)
@@ -284,6 +287,8 @@ class LanceTable:
         ----------
         query: list, np.ndarray
             The query vector.
+        vector_column_name: str, default "vector"
+            The name of the vector column to search.
 
         Returns
         -------
@@ -306,9 +311,45 @@ class LanceTable:
         return LanceQueryBuilder(self, query, vector_column_name)
 
     @classmethod
-    def create(cls, db, name, data, schema=None, mode="create", strict: bool = False):
+    def create(cls, db, name, data, schema=None, mode="create",
+               on_bad_vectors: str = "drop", fill_value: float = 0.):
+        """
+        Create a new table.
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> import pandas as pd
+        >>> data = pd.DataFrame({"x": [1, 2, 3], "vector": [[1, 2], [3, 4], [5, 6]]})
+        >>> db = lancedb.connect("./.lancedb")
+        >>> table = db.create_table("my_table", data)
+        >>> table.to_pandas()
+           x      vector
+        0  1  [1.0, 2.0]
+        1  2  [3.0, 4.0]
+        2  3  [5.0, 6.0]
+
+        Parameters
+        ----------
+        db: LanceDB
+            The LanceDB instance to create the table in.
+        name: str
+            The name of the table to create.
+        data: list-of-dict, dict, pd.DataFrame
+            The data to insert into the table.
+        schema: dict, optional
+            The schema of the table. If not provided, the schema is inferred from the data.
+        mode: str, default "create"
+            The mode to use when writing the data. Valid values are
+            "create", "overwrite", and "append".
+        on_bad_vectors: str
+            What to do if any of the vectors are not the same size or contains NaNs.
+            One of "raise", "drop", "fill".
+        fill_value: float, default 0.
+            The value to use when filling vectors. Only used if on_bad_vectors="fill".
+        """
         tbl = LanceTable(db, name)
-        data = _sanitize_data(data, schema, strict)
+        data = _sanitize_data(data, schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value)
         lance.write_dataset(data, tbl._dataset_uri, mode=mode)
         return tbl
 
@@ -355,7 +396,7 @@ class LanceTable:
 
 
 def _sanitize_schema(data: pa.Table, schema: pa.Schema = None,
-                     strict_mode: bool = False) -> pa.Table:
+                     on_bad_vectors: str = "drop", fill_value: float = 0.) -> pa.Table:
     """Ensure that the table has the expected schema.
 
     Parameters
@@ -365,28 +406,31 @@ def _sanitize_schema(data: pa.Table, schema: pa.Schema = None,
     schema: pa.Schema; optional
         The expected schema. If not provided, this just converts the
         vector column to fixed_size_list(float32) if necessary.
-    strict_mode: bool; default False
-        If True, raise a ValueError if the vectors are not all the same length
-        length, otherwise rows with vectors less than the max length in
-        the input data will be removed.
+    on_bad_vectors: str
+        What to do if any of the vectors are not the same size or contains NaNs.
+        One of "raise", "drop", "fill".
+    fill_value: float
+        The value to use when filling vectors. Only used if on_bad_vectors="fill".
     """
     if schema is not None:
         if data.schema == schema:
             return data
         # cast the columns to the expected types
         data = data.combine_chunks()
-        data = _sanitize_vector_column(data, vector_column_name=VECTOR_COLUMN_NAME,
-                                       strict_mode=strict_mode)
+        data = _sanitize_vector_column(
+            data, vector_column_name=VECTOR_COLUMN_NAME,
+            on_bad_vectors=on_bad_vectors, fill_value=fill_value)
         return pa.Table.from_arrays(
             [data[name] for name in schema.names], schema=schema
         )
     # just check the vector column
-    return _sanitize_vector_column(data, vector_column_name=VECTOR_COLUMN_NAME,
-                                   strict_mode=strict_mode)
+    return _sanitize_vector_column(
+            data, vector_column_name=VECTOR_COLUMN_NAME,
+            on_bad_vectors=on_bad_vectors, fill_value=fill_value)
 
 
 def _sanitize_vector_column(data: pa.Table, vector_column_name: str,
-                            strict_mode: bool) -> pa.Table:
+                            on_bad_vectors: str = "drop", fill_value: float = 0.) -> pa.Table:
     """
     Ensure that the vector column exists and has type fixed_size_list(float32)
 
@@ -396,35 +440,102 @@ def _sanitize_vector_column(data: pa.Table, vector_column_name: str,
         The table to sanitize.
     vector_column_name: str
         The name of the vector column.
-    strict_mode: bool; default False
-        If True, raise a ValueError if the vectors are not all the same length
-        length, otherwise rows with vectors less than the max length in
-        the input data will be removed.
+    on_bad_vectors: str
+        What to do if any of the vectors are not the same size or contains NaNs.
+        One of "raise", "drop", "fill".
+    fill_value: float
+        The value to use when filling vectors. Only used if on_bad_vectors="fill".
     """
     if vector_column_name not in data.column_names:
         raise ValueError(f"Missing vector column: {vector_column_name}")
+    # ChunkedArray is annoying to work with, so we combine chunks here
     vec_arr = data[vector_column_name].combine_chunks()
-    if pa.types.is_fixed_size_list(vec_arr.type):
-        return data
-    if not pa.types.is_list(vec_arr.type):
+    if pa.types.is_list(data[vector_column_name].type):
+        # if it's a variable size list array we make sure the dimensions are all the same
+        has_jagged_ndims = len(vec_arr.values) % len(data) != 0
+        if has_jagged_ndims:
+            data = _sanitize_jagged(data, fill_value, on_bad_vectors, vec_arr, vector_column_name)
+            vec_arr = data[vector_column_name].combine_chunks()
+    elif not pa.types.is_fixed_size_list(vec_arr.type):
         raise TypeError(f"Unsupported vector column type: {vec_arr.type}")
-    if len(vec_arr.values) % len(data) != 0:
-        if strict_mode:
-            raise ValueError(
-                f"Vector column {vector_column_name} has variable length vectors"
-            )
-        # not a fixed size list, maybe some NaNs
-        lst_lengths = np.unique([len(lst) for lst in vec_arr])
-        ndims = np.max(lst_lengths)
-        mask = pa.array([len(lst) == ndims for lst in vec_arr])
-        data = data.filter(mask)
-        vec_arr = data[vector_column_name].combine_chunks()
 
+    vec_arr = ensure_fixed_size_list_of_f32(vec_arr)
+    data = data.set_column(data.column_names.index(vector_column_name), vector_column_name, vec_arr)
+
+    has_nans = pc.any(vec_arr.values.is_nan()).as_py()
+    if has_nans:
+        data = _sanitize_nans(data, fill_value, on_bad_vectors, vec_arr, vector_column_name)
+
+    return data
+
+
+def ensure_fixed_size_list_of_f32(vec_arr):
     values = vec_arr.values
     if not pa.types.is_float32(values.type):
         values = values.cast(pa.float32())
-    list_size = len(values) / len(data)
+    if pa.types.is_fixed_size_list(vec_arr.type):
+        list_size = vec_arr.type.list_size
+    else:
+        list_size = len(values) / len(vec_arr)
     vec_arr = pa.FixedSizeListArray.from_arrays(values, list_size)
-    return data.set_column(
-        data.column_names.index(vector_column_name), vector_column_name, vec_arr
-    )
+    return vec_arr
+
+
+def _sanitize_jagged(data, fill_value, on_bad_vectors, vec_arr, vector_column_name):
+    """Sanitize jagged vectors."""
+    if on_bad_vectors == "raise":
+        raise ValueError(
+            f"Vector column {vector_column_name} has variable length vectors "
+            "Set on_bad_vectors='drop' to remove them, or "
+            "set on_bad_vectors='fill' and fill_value=<value> to replace them."
+        )
+
+    lst_lengths = pc.list_value_length(vec_arr)
+    ndims = pc.max(lst_lengths).as_py()
+    correct_ndims = pc.equal(lst_lengths, ndims)
+
+    if on_bad_vectors == "fill":
+        if fill_value is None:
+            raise ValueError(
+                f"`fill_value` must not be None if `on_bad_vectors` is 'fill'"
+            )
+        fill_arr = pa.scalar([float(fill_value)] * ndims)
+        vec_arr = pc.if_else(correct_ndims, vec_arr, fill_arr)
+        data = data.set_column(
+            data.column_names.index(vector_column_name),
+            vector_column_name,
+            vec_arr
+        )
+    elif on_bad_vectors == "drop":
+        data = data.filter(correct_ndims)
+    return data
+
+
+def _sanitize_nans(data, fill_value, on_bad_vectors, vec_arr, vector_column_name):
+    """Sanitize NaNs in vectors"""
+    if on_bad_vectors == "raise":
+        raise ValueError(
+            f"Vector column {vector_column_name} has NaNs. "
+            "Set on_bad_vectors='drop' to remove them, or "
+            "set on_bad_vectors='fill' and fill_value=<value> to replace them."
+        )
+    elif on_bad_vectors == "fill":
+        if fill_value is None:
+            raise ValueError(
+                f"`fill_value` must not be None if `on_bad_vectors` is 'fill'"
+            )
+        fill_value = float(fill_value)
+        values = pc.if_else(vec_arr.values.is_nan(), fill_value, vec_arr.values)
+        ndims = len(vec_arr[0])
+        vec_arr = pa.FixedSizeListArray.from_arrays(values, ndims)
+        data = data.set_column(
+            data.column_names.index(vector_column_name),
+            vector_column_name,
+            vec_arr
+        )
+    elif on_bad_vectors == "drop":
+        is_value_nan = pc.is_nan(vec_arr.values).to_numpy(zero_copy_only=False)
+        is_full = np.any(~is_value_nan.reshape(-1, vec_arr.type.list_size),
+                         axis=1)
+        data = data.filter(is_full)
+    return data
