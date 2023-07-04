@@ -16,6 +16,7 @@ npm install vectordb
 
 ```javascript
 const lancedb = require('vectordb');
+const db = await lancedb.connect('<PATH_TO_LANCEDB_DATASET>');
 const db = lancedb.connect('data/sample-lancedb');
 const table = await db.createTable("my_table",
       [{ id: 1, vector: [0.1, 1.0], item: "foo", price: 10.0 },

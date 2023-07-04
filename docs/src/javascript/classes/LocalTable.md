@@ -2,7 +2,7 @@
 
 # Class: LocalTable<T\>
 
-A LanceDB table that allows you to search and update a table.
+A LanceDB Table is the collection of Records. Each Record has one or more vector fields.
 
 ## Type parameters
 
@@ -60,7 +60,7 @@ A LanceDB table that allows you to search and update a table.
 
 #### Defined in
 
-[index.ts:240](https://github.com/lancedb/lancedb/blob/20281c7/node/src/index.ts#L240)
+[index.ts:221](https://github.com/lancedb/lancedb/blob/97101eb/node/src/index.ts#L221)
 
 • **new LocalTable**<`T`\>(`tbl`, `name`, `embeddings`)
 
@@ -80,7 +80,7 @@ A LanceDB table that allows you to search and update a table.
 
 #### Defined in
 
-[index.ts:246](https://github.com/lancedb/lancedb/blob/20281c7/node/src/index.ts#L246)
+[index.ts:227](https://github.com/lancedb/lancedb/blob/97101eb/node/src/index.ts#L227)
 
 ## Properties
 
@@ -90,7 +90,7 @@ A LanceDB table that allows you to search and update a table.
 
 #### Defined in
 
-[index.ts:238](https://github.com/lancedb/lancedb/blob/20281c7/node/src/index.ts#L238)
+[index.ts:219](https://github.com/lancedb/lancedb/blob/97101eb/node/src/index.ts#L219)
 
 ___
 
@@ -100,7 +100,7 @@ ___
 
 #### Defined in
 
-[index.ts:237](https://github.com/lancedb/lancedb/blob/20281c7/node/src/index.ts#L237)
+[index.ts:218](https://github.com/lancedb/lancedb/blob/97101eb/node/src/index.ts#L218)
 
 ___
 
@@ -110,7 +110,7 @@ ___
 
 #### Defined in
 
-[index.ts:236](https://github.com/lancedb/lancedb/blob/20281c7/node/src/index.ts#L236)
+[index.ts:217](https://github.com/lancedb/lancedb/blob/97101eb/node/src/index.ts#L217)
 
 ## Accessors
 
@@ -128,7 +128,7 @@ ___
 
 #### Defined in
 
-[index.ts:253](https://github.com/lancedb/lancedb/blob/20281c7/node/src/index.ts#L253)
+[index.ts:234](https://github.com/lancedb/lancedb/blob/97101eb/node/src/index.ts#L234)
 
 ## Methods
 
@@ -156,7 +156,7 @@ The number of rows added to the table
 
 #### Defined in
 
-[index.ts:271](https://github.com/lancedb/lancedb/blob/20281c7/node/src/index.ts#L271)
+[index.ts:252](https://github.com/lancedb/lancedb/blob/97101eb/node/src/index.ts#L252)
 
 ___
 
@@ -176,7 +176,7 @@ Returns the number of rows in this table.
 
 #### Defined in
 
-[index.ts:297](https://github.com/lancedb/lancedb/blob/20281c7/node/src/index.ts#L297)
+[index.ts:278](https://github.com/lancedb/lancedb/blob/97101eb/node/src/index.ts#L278)
 
 ___
 
@@ -206,7 +206,7 @@ VectorIndexParams.
 
 #### Defined in
 
-[index.ts:290](https://github.com/lancedb/lancedb/blob/20281c7/node/src/index.ts#L290)
+[index.ts:271](https://github.com/lancedb/lancedb/blob/97101eb/node/src/index.ts#L271)
 
 ___
 
@@ -232,7 +232,7 @@ Delete rows from this table.
 
 #### Defined in
 
-[index.ts:306](https://github.com/lancedb/lancedb/blob/20281c7/node/src/index.ts#L306)
+[index.ts:287](https://github.com/lancedb/lancedb/blob/97101eb/node/src/index.ts#L287)
 
 ___
 
@@ -260,7 +260,7 @@ The number of rows added to the table
 
 #### Defined in
 
-[index.ts:281](https://github.com/lancedb/lancedb/blob/20281c7/node/src/index.ts#L281)
+[index.ts:262](https://github.com/lancedb/lancedb/blob/97101eb/node/src/index.ts#L262)
 
 ___
 
@@ -286,4 +286,4 @@ Creates a search query to find the nearest neighbors of the given search term
 
 #### Defined in
 
-[index.ts:261](https://github.com/lancedb/lancedb/blob/20281c7/node/src/index.ts#L261)
+[index.ts:242](https://github.com/lancedb/lancedb/blob/97101eb/node/src/index.ts#L242)

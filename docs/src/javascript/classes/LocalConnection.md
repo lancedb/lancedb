@@ -46,7 +46,7 @@ A connection to a LanceDB database.
 
 #### Defined in
 
-[index.ts:157](https://github.com/lancedb/lancedb/blob/20281c7/node/src/index.ts#L157)
+[index.ts:132](https://github.com/lancedb/lancedb/blob/97101eb/node/src/index.ts#L132)
 
 ## Properties
 
@@ -56,7 +56,7 @@ A connection to a LanceDB database.
 
 #### Defined in
 
-[index.ts:155](https://github.com/lancedb/lancedb/blob/20281c7/node/src/index.ts#L155)
+[index.ts:130](https://github.com/lancedb/lancedb/blob/97101eb/node/src/index.ts#L130)
 
 ___
 
@@ -66,7 +66,7 @@ ___
 
 #### Defined in
 
-[index.ts:154](https://github.com/lancedb/lancedb/blob/20281c7/node/src/index.ts#L154)
+[index.ts:129](https://github.com/lancedb/lancedb/blob/97101eb/node/src/index.ts#L129)
 
 ## Accessors
 
@@ -84,13 +84,13 @@ ___
 
 #### Defined in
 
-[index.ts:162](https://github.com/lancedb/lancedb/blob/20281c7/node/src/index.ts#L162)
+[index.ts:137](https://github.com/lancedb/lancedb/blob/97101eb/node/src/index.ts#L137)
 
 ## Methods
 
 ### createTable
 
-▸ **createTable**(`name`, `data`): `Promise`<[`Table`](../interfaces/Table.md)<`number`[]\>\>
+▸ **createTable**(`name`, `data`, `mode?`): `Promise`<[`Table`](../interfaces/Table.md)<`number`[]\>\>
 
 Creates a new Table and initialize it with new data.
 
@@ -100,6 +100,7 @@ Creates a new Table and initialize it with new data.
 | :------ | :------ | :------ |
 | `name` | `string` | The name of the table. |
 | `data` | `Record`<`string`, `unknown`\>[] | Non-empty Array of Records to be inserted into the Table |
+| `mode?` | [`WriteMode`](../enums/WriteMode.md) | The write mode to use when creating the table. |
 
 #### Returns
 
@@ -111,9 +112,31 @@ Creates a new Table and initialize it with new data.
 
 #### Defined in
 
-[index.ts:202](https://github.com/lancedb/lancedb/blob/20281c7/node/src/index.ts#L202)
+[index.ts:177](https://github.com/lancedb/lancedb/blob/97101eb/node/src/index.ts#L177)
 
-▸ **createTable**<`T`\>(`name`, `data`, `embeddings`): `Promise`<[`Table`](../interfaces/Table.md)<`T`\>\>
+▸ **createTable**(`name`, `data`, `mode`): `Promise`<[`Table`](../interfaces/Table.md)<`number`[]\>\>
+
+#### Parameters
+
+| Name | Type |
+| :------ | :------ |
+| `name` | `string` |
+| `data` | `Record`<`string`, `unknown`\>[] |
+| `mode` | [`WriteMode`](../enums/WriteMode.md) |
+
+#### Returns
+
+`Promise`<[`Table`](../interfaces/Table.md)<`number`[]\>\>
+
+#### Implementation of
+
+Connection.createTable
+
+#### Defined in
+
+[index.ts:178](https://github.com/lancedb/lancedb/blob/97101eb/node/src/index.ts#L178)
+
+▸ **createTable**<`T`\>(`name`, `data`, `mode`, `embeddings`): `Promise`<[`Table`](../interfaces/Table.md)<`T`\>\>
 
 Creates a new Table and initialize it with new data.
 
@@ -129,6 +152,7 @@ Creates a new Table and initialize it with new data.
 | :------ | :------ | :------ |
 | `name` | `string` | The name of the table. |
 | `data` | `Record`<`string`, `unknown`\>[] | Non-empty Array of Records to be inserted into the Table |
+| `mode` | [`WriteMode`](../enums/WriteMode.md) | The write mode to use when creating the table. |
 | `embeddings` | [`EmbeddingFunction`](../interfaces/EmbeddingFunction.md)<`T`\> | An embedding function to use on this Table |
 
 #### Returns
@@ -137,11 +161,11 @@ Creates a new Table and initialize it with new data.
 
 #### Implementation of
 
-[Connection](../interfaces/Connection.md).[createTable](../interfaces/Connection.md#createtable)
+Connection.createTable
 
 #### Defined in
 
-[index.ts:210](https://github.com/lancedb/lancedb/blob/20281c7/node/src/index.ts#L210)
+[index.ts:188](https://github.com/lancedb/lancedb/blob/97101eb/node/src/index.ts#L188)
 
 ___
 
@@ -166,7 +190,7 @@ ___
 
 #### Defined in
 
-[index.ts:220](https://github.com/lancedb/lancedb/blob/20281c7/node/src/index.ts#L220)
+[index.ts:201](https://github.com/lancedb/lancedb/blob/97101eb/node/src/index.ts#L201)
 
 ___
 
@@ -192,7 +216,7 @@ Drop an existing table.
 
 #### Defined in
 
-[index.ts:230](https://github.com/lancedb/lancedb/blob/20281c7/node/src/index.ts#L230)
+[index.ts:211](https://github.com/lancedb/lancedb/blob/97101eb/node/src/index.ts#L211)
 
 ___
 
@@ -218,7 +242,7 @@ Open a table in the database.
 
 #### Defined in
 
-[index.ts:178](https://github.com/lancedb/lancedb/blob/20281c7/node/src/index.ts#L178)
+[index.ts:153](https://github.com/lancedb/lancedb/blob/97101eb/node/src/index.ts#L153)
 
 ▸ **openTable**<`T`\>(`name`, `embeddings`): `Promise`<[`Table`](../interfaces/Table.md)<`T`\>\>
 
@@ -243,11 +267,11 @@ Open a table in the database.
 
 #### Implementation of
 
-[Connection](../interfaces/Connection.md).[openTable](../interfaces/Connection.md#opentable)
+Connection.openTable
 
 #### Defined in
 
-[index.ts:185](https://github.com/lancedb/lancedb/blob/20281c7/node/src/index.ts#L185)
+[index.ts:160](https://github.com/lancedb/lancedb/blob/97101eb/node/src/index.ts#L160)
 
 ___
 
@@ -267,4 +291,4 @@ Get the names of all tables in the database.
 
 #### Defined in
 
-[index.ts:169](https://github.com/lancedb/lancedb/blob/20281c7/node/src/index.ts#L169)
+[index.ts:144](https://github.com/lancedb/lancedb/blob/97101eb/node/src/index.ts#L144)

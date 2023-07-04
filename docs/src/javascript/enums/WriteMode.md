@@ -2,11 +2,14 @@
 
 # Enumeration: WriteMode
 
+Write mode for writing a table.
+
 ## Table of contents
 
 ### Enumeration Members
 
 - [Append](WriteMode.md#append)
+- [Create](WriteMode.md#create)
 - [Overwrite](WriteMode.md#overwrite)
 
 ## Enumeration Members
@@ -15,9 +18,23 @@
 
 • **Append** = ``"append"``
 
+Append new data to the table.
+
 #### Defined in
 
-[index.ts:478](https://github.com/lancedb/lancedb/blob/20281c7/node/src/index.ts#L478)
+[index.ts:466](https://github.com/lancedb/lancedb/blob/97101eb/node/src/index.ts#L466)
+
+___
+
+### Create
+
+• **Create** = ``"create"``
+
+Create a new [Table](../interfaces/Table.md).
+
+#### Defined in
+
+[index.ts:462](https://github.com/lancedb/lancedb/blob/97101eb/node/src/index.ts#L462)
 
 ___
 
@@ -25,6 +42,8 @@ ___
 
 • **Overwrite** = ``"overwrite"``
 
+Overwrite the existing [Table](../interfaces/Table.md) if presented.
+
 #### Defined in
 
-[index.ts:477](https://github.com/lancedb/lancedb/blob/20281c7/node/src/index.ts#L477)
+[index.ts:464](https://github.com/lancedb/lancedb/blob/97101eb/node/src/index.ts#L464)
