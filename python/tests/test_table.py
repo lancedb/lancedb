@@ -168,7 +168,8 @@ def test_create_index_method():
                 replace=True,
             )
 
-            # Check that the _dataset.create_index method was called with the right parameters
+            # Check that the _dataset.create_index method was called
+            # with the right parameters
             mock_dataset.return_value.create_index.assert_called_once_with(
                 column="vector",
                 index_type="IVF_PQ",
