@@ -214,16 +214,13 @@ def test_add_with_nans(db):
         {"vector": [np.nan], "item": "bar", "price": 20.0},
         {"vector": [5], "item": "bar", "price": 20.0},
         {"vector": [np.nan, np.nan], "item": "bar", "price": 20.0},
-        {"vector": [np.nan, 5.], "item": "bar", "price": 20.0},
+        {"vector": [np.nan, 5.0], "item": "bar", "price": 20.0},
     ]
     for row in bad_data:
         with pytest.raises(ValueError):
             LanceTable.create(
                 db,
                 "raise_test",
-                data=[
-                    {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
-                    row
-                ],
+                data=[{"vector": [3.1, 4.1], "item": "foo", "price": 10.0}, row],
                 on_bad_vectors="raise",
             )

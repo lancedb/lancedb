@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import os
 from functools import cached_property
-from typing import List, Union, Any
+from typing import Any, List, Union
 
 import lance
 import numpy as np
@@ -32,12 +32,16 @@ from .query import LanceFtsQueryBuilder, LanceQueryBuilder
 def _sanitize_data(data, schema, on_bad_vectors, fill_value):
     if isinstance(data, list):
         data = pa.Table.from_pylist(data)
-        data = _sanitize_schema(data, schema=schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value)
+        data = _sanitize_schema(
+            data, schema=schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value
+        )
     if isinstance(data, dict):
         data = vec_to_table(data)
     if isinstance(data, pd.DataFrame):
         data = pa.Table.from_pandas(data)
-        data = _sanitize_schema(data, schema=schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value)
+        data = _sanitize_schema(
+            data, schema=schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value
+        )
     if not isinstance(data, pa.Table):
         raise TypeError(f"Unsupported data type: {type(data)}")
     return data
@@ -250,8 +254,13 @@ class LanceTable:
         """Return the LanceDataset backing this table."""
         return self._dataset
 
-    def add(self, data: DATA, mode: str = "append",
-            on_bad_vectors: str = "drop", fill_value: float = 0.) -> int:
+    def add(
+        self,
+        data: DATA,
+        mode: str = "append",
+        on_bad_vectors: str = "drop",
+        fill_value: float = 0.0,
+    ) -> int:
         """Add data to the table.
 
         Parameters
@@ -272,7 +281,9 @@ class LanceTable:
         int
             The number of vectors in the table.
         """
-        data = _sanitize_data(data, self.schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value)
+        data = _sanitize_data(
+            data, self.schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value
+        )
         lance.write_dataset(data, self._dataset_uri, mode=mode)
         self._reset_dataset()
         return len(self)
@@ -311,8 +322,16 @@ class LanceTable:
         return LanceQueryBuilder(self, query, vector_column_name)
 
     @classmethod
-    def create(cls, db, name, data, schema=None, mode="create",
-               on_bad_vectors: str = "drop", fill_value: float = 0.):
+    def create(
+        cls,
+        db,
+        name,
+        data,
+        schema=None,
+        mode="create",
+        on_bad_vectors: str = "drop",
+        fill_value: float = 0.0,
+    ):
         """
         Create a new table.
 
@@ -349,7 +368,9 @@ class LanceTable:
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
         """
         tbl = LanceTable(db, name)
-        data = _sanitize_data(data, schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value)
+        data = _sanitize_data(
+            data, schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value
+        )
         lance.write_dataset(data, tbl._dataset_uri, mode=mode)
         return tbl
 
@@ -395,8 +416,12 @@ class LanceTable:
         self._dataset.delete(where)
 
 
-def _sanitize_schema(data: pa.Table, schema: pa.Schema = None,
-                     on_bad_vectors: str = "drop", fill_value: float = 0.) -> pa.Table:
+def _sanitize_schema(
+    data: pa.Table,
+    schema: pa.Schema = None,
+    on_bad_vectors: str = "drop",
+    fill_value: float = 0.0,
+) -> pa.Table:
     """Ensure that the table has the expected schema.
 
     Parameters
@@ -418,19 +443,29 @@ def _sanitize_schema(data: pa.Table, schema: pa.Schema = None,
         # cast the columns to the expected types
         data = data.combine_chunks()
         data = _sanitize_vector_column(
-            data, vector_column_name=VECTOR_COLUMN_NAME,
-            on_bad_vectors=on_bad_vectors, fill_value=fill_value)
+            data,
+            vector_column_name=VECTOR_COLUMN_NAME,
+            on_bad_vectors=on_bad_vectors,
+            fill_value=fill_value,
+        )
         return pa.Table.from_arrays(
             [data[name] for name in schema.names], schema=schema
         )
     # just check the vector column
     return _sanitize_vector_column(
-            data, vector_column_name=VECTOR_COLUMN_NAME,
-            on_bad_vectors=on_bad_vectors, fill_value=fill_value)
+        data,
+        vector_column_name=VECTOR_COLUMN_NAME,
+        on_bad_vectors=on_bad_vectors,
+        fill_value=fill_value,
+    )
 
 
-def _sanitize_vector_column(data: pa.Table, vector_column_name: str,
-                            on_bad_vectors: str = "drop", fill_value: float = 0.) -> pa.Table:
+def _sanitize_vector_column(
+    data: pa.Table,
+    vector_column_name: str,
+    on_bad_vectors: str = "drop",
+    fill_value: float = 0.0,
+) -> pa.Table:
     """
     Ensure that the vector column exists and has type fixed_size_list(float32)
 
@@ -454,17 +489,23 @@ def _sanitize_vector_column(data: pa.Table, vector_column_name: str,
         # if it's a variable size list array we make sure the dimensions are all the same
         has_jagged_ndims = len(vec_arr.values) % len(data) != 0
         if has_jagged_ndims:
-            data = _sanitize_jagged(data, fill_value, on_bad_vectors, vec_arr, vector_column_name)
+            data = _sanitize_jagged(
+                data, fill_value, on_bad_vectors, vec_arr, vector_column_name
+            )
             vec_arr = data[vector_column_name].combine_chunks()
     elif not pa.types.is_fixed_size_list(vec_arr.type):
         raise TypeError(f"Unsupported vector column type: {vec_arr.type}")
 
     vec_arr = ensure_fixed_size_list_of_f32(vec_arr)
-    data = data.set_column(data.column_names.index(vector_column_name), vector_column_name, vec_arr)
+    data = data.set_column(
+        data.column_names.index(vector_column_name), vector_column_name, vec_arr
+    )
 
     has_nans = pc.any(vec_arr.values.is_nan()).as_py()
     if has_nans:
-        data = _sanitize_nans(data, fill_value, on_bad_vectors, vec_arr, vector_column_name)
+        data = _sanitize_nans(
+            data, fill_value, on_bad_vectors, vec_arr, vector_column_name
+        )
 
     return data
 
@@ -502,9 +543,7 @@ def _sanitize_jagged(data, fill_value, on_bad_vectors, vec_arr, vector_column_na
         fill_arr = pa.scalar([float(fill_value)] * ndims)
         vec_arr = pc.if_else(correct_ndims, vec_arr, fill_arr)
         data = data.set_column(
-            data.column_names.index(vector_column_name),
-            vector_column_name,
-            vec_arr
+            data.column_names.index(vector_column_name), vector_column_name, vec_arr
         )
     elif on_bad_vectors == "drop":
         data = data.filter(correct_ndims)
@@ -529,13 +568,10 @@ def _sanitize_nans(data, fill_value, on_bad_vectors, vec_arr, vector_column_name
         ndims = len(vec_arr[0])
         vec_arr = pa.FixedSizeListArray.from_arrays(values, ndims)
         data = data.set_column(
-            data.column_names.index(vector_column_name),
-            vector_column_name,
-            vec_arr
+            data.column_names.index(vector_column_name), vector_column_name, vec_arr
         )
     elif on_bad_vectors == "drop":
         is_value_nan = pc.is_nan(vec_arr.values).to_numpy(zero_copy_only=False)
-        is_full = np.any(~is_value_nan.reshape(-1, vec_arr.type.list_size),
-                         axis=1)
+        is_full = np.any(~is_value_nan.reshape(-1, vec_arr.type.list_size), axis=1)
         data = data.filter(is_full)
     return data

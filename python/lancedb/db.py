@@ -159,7 +159,7 @@ class LanceDBConnection:
         schema: pa.Schema = None,
         mode: str = "create",
         on_bad_vectors: str = "drop",
-        fill_value: float = 0.
+        fill_value: float = 0.0,
     ) -> LanceTable:
         """Create a table in the database.
 
@@ -260,8 +260,15 @@ class LanceDBConnection:
             raise ValueError("mode must be either 'create' or 'overwrite'")
 
         if data is not None:
-            tbl = LanceTable.create(self, name, data, schema, mode=mode,
-                                    on_bad_vectors=on_bad_vectors, fill_value=fill_value)
+            tbl = LanceTable.create(
+                self,
+                name,
+                data,
+                schema,
+                mode=mode,
+                on_bad_vectors=on_bad_vectors,
+                fill_value=fill_value,
+            )
         else:
             tbl = LanceTable.open(self, name)
         return tbl
