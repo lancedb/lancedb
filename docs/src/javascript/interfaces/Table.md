@@ -52,7 +52,7 @@ The number of rows added to the table
 
 #### Defined in
 
-[index.ts:123](https://github.com/lancedb/lancedb/blob/0162b16/node/src/index.ts#L123)
+[index.ts:120](https://github.com/lancedb/lancedb/blob/20281c7/node/src/index.ts#L120)
 
 ___
 
@@ -72,7 +72,7 @@ Returns the number of rows in this table.
 
 #### Defined in
 
-[index.ts:143](https://github.com/lancedb/lancedb/blob/0162b16/node/src/index.ts#L143)
+[index.ts:140](https://github.com/lancedb/lancedb/blob/20281c7/node/src/index.ts#L140)
 
 ___
 
@@ -102,7 +102,7 @@ VectorIndexParams.
 
 #### Defined in
 
-[index.ts:138](https://github.com/lancedb/lancedb/blob/0162b16/node/src/index.ts#L138)
+[index.ts:135](https://github.com/lancedb/lancedb/blob/20281c7/node/src/index.ts#L135)
 
 ___
 
@@ -128,7 +128,7 @@ Delete rows from this table.
 
 #### Defined in
 
-[index.ts:150](https://github.com/lancedb/lancedb/blob/0162b16/node/src/index.ts#L150)
+[index.ts:147](https://github.com/lancedb/lancedb/blob/20281c7/node/src/index.ts#L147)
 
 ___
 
@@ -138,7 +138,7 @@ ___
 
 #### Defined in
 
-[index.ts:109](https://github.com/lancedb/lancedb/blob/0162b16/node/src/index.ts#L109)
+[index.ts:106](https://github.com/lancedb/lancedb/blob/20281c7/node/src/index.ts#L106)
 
 ___
 
@@ -166,7 +166,7 @@ The number of rows added to the table
 
 #### Defined in
 
-[index.ts:131](https://github.com/lancedb/lancedb/blob/0162b16/node/src/index.ts#L131)
+[index.ts:128](https://github.com/lancedb/lancedb/blob/20281c7/node/src/index.ts#L128)
 
 ___
 
@@ -192,4 +192,4 @@ Creates a search query to find the nearest neighbors of the given search term
 
 #### Defined in
 
-[index.ts:115](https://github.com/lancedb/lancedb/blob/0162b16/node/src/index.ts#L115)
+[index.ts:112](https://github.com/lancedb/lancedb/blob/20281c7/node/src/index.ts#L112)

@@ -44,7 +44,6 @@ export async function connect (uri: string): Promise<Connection> {
 export interface Connection {
   uri: string
 
-  /* eslint-disable @typescript-eslint/method-signature-style */
   tableNames(): Promise<string[]>
 
   /**
@@ -97,8 +96,6 @@ export interface Connection {
    * @param name The name of the table to drop.
    */
   dropTable(name: string): Promise<void>
-
-  /* eslint-enable @typescript-eslint/method-signature-style */
 
 }
 
