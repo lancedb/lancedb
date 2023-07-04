@@ -48,54 +48,48 @@ export interface Connection {
 
   /**
    * Open a table in the database.
+   *
    * @param name The name of the table.
    */
   openTable(name: string): Promise<Table>
 
   /**
    * Open a table in the database.
+   *
    * @param name The name of the table.
    * @param embeddings An embedding function to use on this Table
    */
   openTable<T>(name: string, embeddings: EmbeddingFunction<T>): Promise<Table<T>>
-
-  /**
-   * Open a table in the database.
-   * @param name The name of the table.
-   * @param embeddings An embedding function to use on this Table
-   */
   openTable<T>(name: string, embeddings?: EmbeddingFunction<T>): Promise<Table<T>>
 
   /**
    * Creates a new Table and initialize it with new data.
-   * @param name The name of the table.
-   * @param data Non-empty Array of Records to be inserted into the Table
+   *
+   * @param {string} name - The name of the table.
+   * @param data - Non-empty Array of Records to be inserted into the Table
+   * @param {WriteMode} - The write mode to use when creating the table.
    */
-  createTable(name: string, data: Array<Record<string, unknown>>): Promise<Table>
+  createTable(name: string, data: Array<Record<string, unknown>>, mode?: WriteMode): Promise<Table>
+  createTable(name: string, data: Array<Record<string, unknown>>, mode: WriteMode): Promise<Table>
 
   /**
    * Creates a new Table and initialize it with new data.
-   * @param name The name of the table.
-   * @param data Non-empty Array of Records to be inserted into the Table
-   * @param embeddings An embedding function to use on this Table
-  */
-  createTable<T>(name: string, data: Array<Record<string, unknown>>, embeddings: EmbeddingFunction<T>): Promise<Table<T>>
+   *
+   * @param {string} name - The name of the table.
+   * @param data - Non-empty Array of Records to be inserted into the Table
+   * @param {WriteMode} - The write mode to use when creating the table.
+   * @param embeddings - An embedding function to use on this Table
+   */
+  createTable<T>(name: string, data: Array<Record<string, unknown>>, mode: WriteMode, embeddings: EmbeddingFunction<T>): Promise<Table<T>>
+  createTable<T>(name: string, data: Array<Record<string, unknown>>, mode: WriteMode, embeddings?: EmbeddingFunction<T>): Promise<Table<T>>
 
-  /**
-   * Creates a new Table and initialize it with new data.
-   * @param name The name of the table.
-   * @param data Non-empty Array of Records to be inserted into the Table
-   * @param embeddings An embedding function to use on this Table
-  */
-  createTable<T>(name: string, data: Array<Record<string, unknown>>, embeddings?: EmbeddingFunction<T>): Promise<Table<T>>
-
-  createTableArrow(name: string, table: ArrowTable): Promise<Table>
+  createTableArrow: (name: string, table: ArrowTable) => Promise<Table>
 
   /**
    * Drop an existing table.
    * @param name The name of the table to drop.
    */
-  dropTable(name: string): Promise<void>
+  dropTable: (name: string) => Promise<void>
 
 }
 
