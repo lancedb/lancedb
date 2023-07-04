@@ -9,6 +9,7 @@ Distance metrics type.
 ### Enumeration Members
 
 - [Cosine](MetricType.md#cosine)
+- [Dot](MetricType.md#dot)
 - [L2](MetricType.md#l2)
 
 ## Enumeration Members
@@ -21,7 +22,19 @@ Cosine distance
 
 #### Defined in
 
-[index.ts:465](https://github.com/lancedb/lancedb/blob/bfb5400/node/src/index.ts#L465)
+[index.ts:481](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L481)
+
+___
+
+### Dot
+
+• **Dot** = ``"dot"``
+
+Dot product
+
+#### Defined in
+
+[index.ts:486](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L486)
 
 ___
 
@@ -33,4 +46,4 @@ Euclidean distance
 
 #### Defined in
 
-[index.ts:460](https://github.com/lancedb/lancedb/blob/bfb5400/node/src/index.ts#L460)
+[index.ts:476](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L476)
