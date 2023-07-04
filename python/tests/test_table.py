@@ -180,24 +180,50 @@ def test_create_index_method():
 
 
 def test_add_with_nans(db):
-    # LangChain sometimes pass [NaN] if the embedding function fails
+    # By default we drop bad input vectors
     table = LanceTable.create(
         db,
         "test",
         data=[
             {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
             {"vector": [np.nan], "item": "bar", "price": 20.0},
+            {"vector": [5], "item": "bar", "price": 20.0},
+            {"vector": [np.nan, np.nan], "item": "bar", "price": 20.0},
         ],
     )
     assert len(table) == 1
 
-    with pytest.raises(ValueError):
-        LanceTable.create(
-            db,
-            "test",
-            data=[
-                {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
-                {"vector": [np.nan], "item": "bar", "price": 20.0},
-            ],
-            strict=True,
-        )
+    # We can fill bad input with some value
+    table = LanceTable.create(
+        db,
+        "test",
+        data=[
+            {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+            {"vector": [np.nan], "item": "bar", "price": 20.0},
+            {"vector": [np.nan, np.nan], "item": "bar", "price": 20.0},
+        ],
+        on_invalid_vectors="fill",
+        fill_value=0.0,
+    )
+    assert len(table) == 3
+    arrow_tbl = table.to_lance().to_table(filter="item == 'bar'")
+    v = arrow_tbl["item"].to_pylist()[0]
+    assert np.allclose(v, np.array([0.0, 0.0]))
+
+    bad_data = [
+        {"vector": [np.nan], "item": "bar", "price": 20.0},
+        {"vector": [5], "item": "bar", "price": 20.0},
+        {"vector": [np.nan, np.nan], "item": "bar", "price": 20.0},
+        {"vector": [np.nan, 5.], "item": "bar", "price": 20.0},
+    ]
+    for row in bad_data:
+        with pytest.raises(ValueError):
+            LanceTable.create(
+                db,
+                "test",
+                data=[
+                    {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+                    row
+                ],
+                on_invalid_vectors="raise",
+            )
