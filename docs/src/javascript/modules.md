@@ -38,7 +38,7 @@
 
 #### Defined in
 
-[index.ts:345](https://github.com/lancedb/lancedb/blob/97101eb/node/src/index.ts#L345)
+[index.ts:345](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L345)
 
 ## Functions
 
@@ -60,4 +60,4 @@ Connect to a LanceDB instance at the given URI
 
 #### Defined in
 
-[index.ts:34](https://github.com/lancedb/lancedb/blob/97101eb/node/src/index.ts#L34)
+[index.ts:34](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L34)

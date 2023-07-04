@@ -22,7 +22,7 @@ Append new data to the table.
 
 #### Defined in
 
-[index.ts:466](https://github.com/lancedb/lancedb/blob/97101eb/node/src/index.ts#L466)
+[index.ts:466](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L466)
 
 ___
 
@@ -34,7 +34,7 @@ Create a new [Table](../interfaces/Table.md).
 
 #### Defined in
 
-[index.ts:462](https://github.com/lancedb/lancedb/blob/97101eb/node/src/index.ts#L462)
+[index.ts:462](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L462)
 
 ___
 
@@ -46,4 +46,4 @@ Overwrite the existing [Table](../interfaces/Table.md) if presented.
 
 #### Defined in
 
-[index.ts:464](https://github.com/lancedb/lancedb/blob/97101eb/node/src/index.ts#L464)
+[index.ts:464](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L464)

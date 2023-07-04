@@ -32,7 +32,7 @@ Connection could be local against filesystem or remote against a server.
 
 #### Defined in
 
-[index.ts:45](https://github.com/lancedb/lancedb/blob/97101eb/node/src/index.ts#L45)
+[index.ts:45](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L45)
 
 ## Methods
 
@@ -63,7 +63,7 @@ Creates a new Table and initialize it with new data.
 
 #### Defined in
 
-[index.ts:65](https://github.com/lancedb/lancedb/blob/97101eb/node/src/index.ts#L65)
+[index.ts:65](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L65)
 
 ___
 
@@ -84,7 +84,7 @@ ___
 
 #### Defined in
 
-[index.ts:67](https://github.com/lancedb/lancedb/blob/97101eb/node/src/index.ts#L67)
+[index.ts:67](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L67)
 
 ___
 
@@ -106,7 +106,7 @@ Drop an existing table.
 
 #### Defined in
 
-[index.ts:73](https://github.com/lancedb/lancedb/blob/97101eb/node/src/index.ts#L73)
+[index.ts:73](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L73)
 
 ___
 
@@ -135,7 +135,7 @@ Open a table in the database.
 
 #### Defined in
 
-[index.ts:55](https://github.com/lancedb/lancedb/blob/97101eb/node/src/index.ts#L55)
+[index.ts:55](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L55)
 
 ___
 
@@ -149,4 +149,4 @@ ___
 
 #### Defined in
 
-[index.ts:47](https://github.com/lancedb/lancedb/blob/97101eb/node/src/index.ts#L47)
+[index.ts:47](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L47)

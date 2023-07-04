@@ -22,7 +22,7 @@ Cosine distance
 
 #### Defined in
 
-[index.ts:481](https://github.com/lancedb/lancedb/blob/97101eb/node/src/index.ts#L481)
+[index.ts:481](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L481)
 
 ___
 
@@ -34,7 +34,7 @@ Dot product
 
 #### Defined in
 
-[index.ts:486](https://github.com/lancedb/lancedb/blob/97101eb/node/src/index.ts#L486)
+[index.ts:486](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L486)
 
 ___
 
@@ -46,4 +46,4 @@ Euclidean distance
 
 #### Defined in
 
-[index.ts:476](https://github.com/lancedb/lancedb/blob/97101eb/node/src/index.ts#L476)
+[index.ts:476](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L476)
