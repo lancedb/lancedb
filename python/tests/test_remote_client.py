@@ -30,7 +30,7 @@ class MockLanceDBServer:
         table_name = request.match_info["table_name"]
         assert table_name == "test_table"
 
-        request_json = await request.json()
+        await request.json()
         # TODO: do some matching
 
         vecs = pd.Series([np.random.rand(128) for x in range(10)], name="vector")
