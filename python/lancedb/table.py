@@ -337,7 +337,7 @@ class LanceTable:
         cls,
         db,
         name,
-        data,
+        data=None,
         schema=None,
         mode="create",
         on_bad_vectors: str = "drop",
@@ -365,7 +365,7 @@ class LanceTable:
             The LanceDB instance to create the table in.
         name: str
             The name of the table to create.
-        data: list-of-dict, dict, pd.DataFrame
+        data: list-of-dict, dict, pd.DataFrame, default None
             The data to insert into the table.
         schema: dict, optional
             The schema of the table. If not provided, the schema is inferred from the data.
@@ -383,11 +383,11 @@ class LanceTable:
             data = _sanitize_data(
                 data, schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value
             )
+            lance.write_dataset(data, tbl._dataset_uri, mode=mode)
         else:
-            # If we're not writing data, we have to manually check that the table doesn't exist
+            # If we're not writing data, we have to manually check that the table doesn't already exist
             if mode == "create" and _has_latest_manifest(tbl._dataset_uri):
                 raise ValueError(f"Table {name} already exists")
-        lance.write_dataset(data, tbl._dataset_uri, mode=mode)
         return LanceTable(db, name)
 
     @classmethod
