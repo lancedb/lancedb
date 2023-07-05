@@ -14,7 +14,6 @@ import sys
 
 import numpy as np
 import pyarrow as pa
-
 from lancedb.embeddings import with_embeddings
 
 

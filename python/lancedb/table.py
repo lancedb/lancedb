@@ -15,15 +15,15 @@ from __future__ import annotations
 
 import os
 from functools import cached_property
-from typing import Any, List, Union
+from typing import List, Union
 
 import lance
 import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.compute as pc
-from lance import LanceDataset
 import pyarrow.fs
+from lance import LanceDataset
 from lance.vector import vec_to_table
 
 from .common import DATA, VEC, VECTOR_COLUMN_NAME
@@ -300,7 +300,7 @@ class LanceTable:
             return _has_latest_manifest(self._dataset_uri)
 
     def search(
-            self, query: Union[VEC, str], vector_column_name=VECTOR_COLUMN_NAME
+        self, query: Union[VEC, str], vector_column_name=VECTOR_COLUMN_NAME
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector.
@@ -437,9 +437,12 @@ def _has_latest_manifest(dataset_uri: str) -> bool:
     return finfo.type != pa.fs.FileType.NotFound
 
 
-def _sanitize_schema(data: pa.Table, schema: pa.Schema = None,
-                     on_bad_vectors: str = "drop",
-                     fill_value: float = 0.0) -> pa.Table:
+def _sanitize_schema(
+    data: pa.Table,
+    schema: pa.Schema = None,
+    on_bad_vectors: str = "drop",
+    fill_value: float = 0.0,
+) -> pa.Table:
     """Ensure that the table has the expected schema.
 
     Parameters
@@ -556,7 +559,7 @@ def _sanitize_jagged(data, fill_value, on_bad_vectors, vec_arr, vector_column_na
     if on_bad_vectors == "fill":
         if fill_value is None:
             raise ValueError(
-                f"`fill_value` must not be None if `on_bad_vectors` is 'fill'"
+                "`fill_value` must not be None if `on_bad_vectors` is 'fill'"
             )
         fill_arr = pa.scalar([float(fill_value)] * ndims)
         vec_arr = pc.if_else(correct_ndims, vec_arr, fill_arr)
@@ -579,7 +582,7 @@ def _sanitize_nans(data, fill_value, on_bad_vectors, vec_arr, vector_column_name
     elif on_bad_vectors == "fill":
         if fill_value is None:
             raise ValueError(
-                f"`fill_value` must not be None if `on_bad_vectors` is 'fill'"
+                "`fill_value` must not be None if `on_bad_vectors` is 'fill'"
             )
         fill_value = float(fill_value)
         values = pc.if_else(vec_arr.values.is_nan(), fill_value, vec_arr.values)
