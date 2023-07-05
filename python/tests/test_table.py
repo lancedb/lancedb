@@ -88,6 +88,15 @@ def test_create_table(db):
         assert expected == tbl
 
 
+def test_empty_table(db):
+    tbl = LanceTable.create(db, "test")
+    data = [
+        {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+        {"vector": [5.9, 26.5], "item": "bar", "price": 20.0},
+    ]
+    tbl.add(data=data)
+
+
 def test_add(db):
     table = LanceTable.create(
         db,
