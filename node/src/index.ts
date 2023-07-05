@@ -20,6 +20,7 @@ import {
 } from 'apache-arrow'
 import { fromRecordsToBuffer } from './arrow'
 import type { EmbeddingFunction } from './embedding/embedding_function'
+import {OnBadVectors} from "./common";
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { databaseNew, databaseTableNames, databaseOpenTable, databaseDropTable, tableCreate, tableSearch, tableAdd, tableCreateVectorIndex, tableCountRows, tableDelete } = require('../native.js')
@@ -190,7 +191,8 @@ export class LocalConnection implements Connection {
     if (mode === undefined) {
       mode = WriteMode.Create
     }
-    const tbl = await tableCreate.call(this._db, name, await fromRecordsToBuffer(data, embeddings), mode.toLowerCase())
+    const tblData = await fromRecordsToBuffer(data, embeddings)
+    const tbl = await tableCreate.call(this._db, name, tblData, mode.toLowerCase())
     if (embeddings !== undefined) {
       return new LocalTable(tbl, name, embeddings)
     } else {
@@ -247,20 +249,30 @@ export class LocalTable<T = number[]> implements Table<T> {
    * Insert records into this Table.
    *
    * @param data Records to be inserted into the Table
+   * @param onBadVectors How to handle vectors of the wrong size or with NaN values
+   * @param fillValue The value to use if onBadVectors is set to FILL
    * @return The number of rows added to the table
    */
-  async add (data: Array<Record<string, unknown>>): Promise<number> {
-    return tableAdd.call(this._tbl, await fromRecordsToBuffer(data, this._embeddings), WriteMode.Append.toString())
+  async add (data: Array<Record<string, unknown>>,
+    onBadVectors: OnBadVectors = OnBadVectors.DROP,
+    fillValue: number = 0.0): Promise<number> {
+    const tblData = await fromRecordsToBuffer(data, this._embeddings, onBadVectors, fillValue)
+    return tableAdd.call(this._tbl, tblData, WriteMode.Append.toString())
   }
 
   /**
    * Insert records into this Table, replacing its contents.
    *
    * @param data Records to be inserted into the Table
+   * @param onBadVectors How to handle vectors of the wrong size or with NaN values
+   * @param fillValue The value to use if onBadVectors is set to FILL
    * @return The number of rows added to the table
    */
-  async overwrite (data: Array<Record<string, unknown>>): Promise<number> {
-    return tableAdd.call(this._tbl, await fromRecordsToBuffer(data, this._embeddings), WriteMode.Overwrite.toString())
+  async overwrite (data: Array<Record<string, unknown>>,
+    onBadVectors: OnBadVectors = OnBadVectors.DROP,
+    fillValue: number = 0.0): Promise<number> {
+    const tblData = await fromRecordsToBuffer(data, this._embeddings, onBadVectors, fillValue)
+    return tableAdd.call(this._tbl, tblData, WriteMode.Overwrite.toString())
   }
 
   /**
