@@ -572,7 +572,7 @@ def _sanitize_jagged(data, fill_value, on_bad_vectors, vec_arr, vector_column_na
 
 
 def _sanitize_nans(data, fill_value, on_bad_vectors, vec_arr, vector_column_name):
-    """Sanitize NaNs in vectors"""
+    """Sanitize NaNs in vectors."""
     if on_bad_vectors == "raise":
         raise ValueError(
             f"Vector column {vector_column_name} has NaNs. "
