@@ -22,8 +22,8 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.compute as pc
-from lance import LanceDataset
 import pyarrow.fs
+from lance import LanceDataset
 from lance.vector import vec_to_table
 
 from .common import DATA, VEC, VECTOR_COLUMN_NAME
@@ -300,7 +300,7 @@ class LanceTable:
             return _has_latest_manifest(self._dataset_uri)
 
     def search(
-            self, query: Union[VEC, str], vector_column_name=VECTOR_COLUMN_NAME
+        self, query: Union[VEC, str], vector_column_name=VECTOR_COLUMN_NAME
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector.
