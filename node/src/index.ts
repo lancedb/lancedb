@@ -254,7 +254,7 @@ export class LocalTable<T = number[]> implements Table<T> {
    * @return The number of rows added to the table
    */
   async add (data: Array<Record<string, unknown>>,
-    onBadVectors: OnBadVectors = OnBadVectors.DROP,
+    onBadVectors: OnBadVectors = OnBadVectors.ERROR,
     fillValue: number = 0.0): Promise<number> {
     const tblData = await fromRecordsToBuffer(data, this._embeddings, onBadVectors, fillValue)
     return tableAdd.call(this._tbl, tblData, WriteMode.Append.toString())
@@ -269,7 +269,7 @@ export class LocalTable<T = number[]> implements Table<T> {
    * @return The number of rows added to the table
    */
   async overwrite (data: Array<Record<string, unknown>>,
-    onBadVectors: OnBadVectors = OnBadVectors.DROP,
+    onBadVectors: OnBadVectors = OnBadVectors.ERROR,
     fillValue: number = 0.0): Promise<number> {
     const tblData = await fromRecordsToBuffer(data, this._embeddings, onBadVectors, fillValue)
     return tableAdd.call(this._tbl, tblData, WriteMode.Overwrite.toString())

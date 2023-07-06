@@ -29,7 +29,7 @@ import { OnBadVectors, type Result } from './common'
 
 export async function convertToTable<T> (
   data: Array<Record<string, unknown>>, embeddings?: EmbeddingFunction<T>,
-  onBadVectors: OnBadVectors = OnBadVectors.DROP,
+  onBadVectors: OnBadVectors = OnBadVectors.ERROR,
   fillValue: number = 0.0): Promise<Table> {
   if (data.length === 0) {
     throw new Error('At least one record needs to be provided')
@@ -141,7 +141,7 @@ function newVectorListBuilder (): ListBuilder<Float32, any> {
 
 export async function fromRecordsToBuffer<T> (
   data: Array<Record<string, unknown>>, embeddings?: EmbeddingFunction<T>,
-  onBadVectors: OnBadVectors = OnBadVectors.DROP,
+  onBadVectors: OnBadVectors = OnBadVectors.ERROR,
   fillValue: number = 0.0): Promise<Buffer> {
   const table = await convertToTable(data, embeddings, onBadVectors, fillValue)
   const writer = RecordBatchFileWriter.writeAll(table)
