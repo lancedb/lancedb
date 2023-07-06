@@ -289,7 +289,9 @@ export class LocalTable<T = number[]> implements Table<T> {
   }
 }
 
-interface IvfPQIndexConfig {
+/// Config to build IVF_PQ index.
+///
+export interface IvfPQIndexConfig {
   /**
    * The column to be indexed
    */
