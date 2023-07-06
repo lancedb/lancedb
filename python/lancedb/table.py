@@ -359,8 +359,10 @@ class LanceTable:
             The name of the table to create.
         data: list-of-dict, dict, pd.DataFrame, default None
             The data to insert into the table.
+            At least one of `data` or `schema` must be provided.
         schema: dict, optional
             The schema of the table. If not provided, the schema is inferred from the data.
+            At least one of `data` or `schema` must be provided.
         mode: str, default "create"
             The mode to use when writing the data. Valid values are
             "create", "overwrite", and "append".
