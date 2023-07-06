@@ -13,13 +13,13 @@
 import os
 import random
 
-import lancedb.fts
 import numpy as np
 import pandas as pd
 import pytest
 import tantivy
 
 import lancedb as ldb
+import lancedb.fts
 
 
 @pytest.fixture

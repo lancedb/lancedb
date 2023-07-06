@@ -17,6 +17,7 @@ import pandas as pd
 import pyarrow as pa
 import pytest
 from aiohttp import web
+
 from lancedb.remote.client import RestfulLanceDBClient, VectorQuery
 
 

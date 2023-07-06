@@ -18,6 +18,7 @@ import numpy as np
 import pandas.testing as tm
 import pyarrow as pa
 import pytest
+
 from lancedb.db import LanceDBConnection
 from lancedb.query import LanceQueryBuilder
 from lancedb.table import LanceTable
