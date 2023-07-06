@@ -15,7 +15,6 @@ import abc
 from typing import List, Optional
 
 import attr
-import pandas as pd
 import pyarrow as pa
 from pydantic import BaseModel
 
