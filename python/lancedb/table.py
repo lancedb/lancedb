@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import os
+from abc import ABC, abstractmethod
 from functools import cached_property
 from typing import List, Union
 
@@ -48,14 +49,14 @@ def _sanitize_data(data, schema, on_bad_vectors, fill_value):
     return data
 
 
-class LanceTable:
+class Table(ABC):
     """
     A table in a LanceDB database.
 
     Examples
     --------
 
-    Create using [LanceDBConnection.create_table][lancedb.LanceDBConnection.create_table]
+    Create using [DBConnection.create_table][lancedb.DBConnection.create_table]
     (more examples in that method's documentation).
 
     >>> import lancedb
@@ -83,8 +84,121 @@ class LanceTable:
     1  2  [1.1, 1.2]   1.13
 
     Search queries are much faster when an index is created. See
-    [LanceTable.create_index][lancedb.table.LanceTable.create_index].
+    [Table.create_index][lancedb.table.LanceTable.create_index].
+    """
+    @abstractmethod
+    def schema(self) -> pa.Schema:
+        """Return the [Arrow Schema](https://arrow.apache.org/docs/python/api/datatypes.html#) of
+        this [Table](Table)
 
+        """
+        raise NotImplementedError
+
+    def to_pandas(self) -> pd.DataFrame:
+        """Return the table as a pandas DataFrame.
+
+        Returns
+        -------
+        pd.DataFrame
+        """
+        return self.to_arrow().to_pandas()
+
+    @abstractmethod
+    def to_arrow(self) -> pa.Table:
+        """Return the table as a pyarrow Table.
+
+        Returns
+        -------
+        pa.Table
+        """
+        raise NotImplementedError
+
+    def create_index(
+        self,
+        metric="L2",
+        num_partitions=256,
+        num_sub_vectors=96,
+        vector_column_name=VECTOR_COLUMN_NAME,
+        replace: bool = True,
+    ):
+        """Create an index on the table.
+
+        Parameters
+        ----------
+        metric: str, default "L2"
+            The distance metric to use when creating the index.
+            Valid values are "L2", "cosine", or "dot".
+            L2 is euclidean distance.
+        num_partitions: int
+            The number of IVF partitions to use when creating the index.
+            Default is 256.
+        num_sub_vectors: int
+            The number of PQ sub-vectors to use when creating the index.
+            Default is 96.
+        vector_column_name: str, default "vector"
+            The vector column name to create the index.
+        replace: bool, default True
+            If True, replace the existing index if it exists.
+            If False, raise an error if duplicate index exists.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def add(
+        self,
+        data: DATA,
+        mode: str = "append",
+        on_bad_vectors: str = "error",
+        fill_value: float = 0.0,
+    ) -> int:
+        """Add more data to the [Table](Table).
+
+        Parameters
+        ----------
+        data: list-of-dict, dict, pd.DataFrame
+            The data to insert into the table.
+        mode: str
+            The mode to use when writing the data. Valid values are
+            "append" and "overwrite".
+        on_bad_vectors: str, default "error"
+            What to do if any of the vectors are not the same size or contains NaNs.
+            One of "error", "drop", "fill".
+        fill_value: float, default 0.
+            The value to use when filling vectors. Only used if on_bad_vectors="fill".
+
+        Returns
+        -------
+        int
+            The number of vectors in the table.
+        """
+        raise NotImplementedError
+
+    def search(
+        self, query: Union[VEC, str], vector_column_name=VECTOR_COLUMN_NAME
+    ) -> LanceQueryBuilder:
+        """Create a search query to find the nearest neighbors
+        of the given query vector.
+
+        Parameters
+        ----------
+        query: list, np.ndarray
+            The query vector.
+        vector_column_name: str, default "vector"
+            The name of the vector column to search.
+
+        Returns
+        -------
+        LanceQueryBuilder
+            A query builder object representing the query.
+            Once executed, the query returns selected columns, the vector,
+            and also the "score" column which is the distance between the query
+            vector and the returned vector.
+        """
+        raise NotImplementedError
+
+class LanceTable(Table):
+    """
+    A table in a LanceDB database.
     """
 
     def __init__(
@@ -198,24 +312,6 @@ class LanceTable:
         replace: bool = True,
     ):
         """Create an index on the table.
-
-        Parameters
-        ----------
-        metric: str, default "L2"
-            The distance metric to use when creating the index.
-            Valid values are "L2", "cosine", or "dot".
-            L2 is euclidean distance.
-        num_partitions: int
-            The number of IVF partitions to use when creating the index.
-            Default is 256.
-        num_sub_vectors: int
-            The number of PQ sub-vectors to use when creating the index.
-            Default is 96.
-        vector_column_name: str, default "vector"
-            The vector column name to create the index.
-        replace: bool, default True
-            If True, replace the existing index if it exists.
-            If False, raise an error if duplicate index exists.
         """
         self._dataset.create_index(
             column=vector_column_name,
