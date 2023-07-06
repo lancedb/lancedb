@@ -284,20 +284,12 @@ class LanceTable:
             The number of vectors in the table.
         """
         # TODO: manage table listing and metadata separately
-        schema = None if not self._has_data() else self.schema
         data = _sanitize_data(
-            data, schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value
+            data, self.schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value
         )
         lance.write_dataset(data, self._dataset_uri, mode=mode)
         self._reset_dataset()
         return len(self)
-
-    def _has_data(self):
-        try:
-            self._dataset
-            return True
-        except Exception:
-            return _has_latest_manifest(self._dataset_uri)
 
     def search(
         self, query: Union[VEC, str], vector_column_name=VECTOR_COLUMN_NAME
@@ -383,11 +375,11 @@ class LanceTable:
             data = _sanitize_data(
                 data, schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value
             )
-            lance.write_dataset(data, tbl._dataset_uri, mode=mode)
         else:
-            # If we're not writing data, we have to manually check that the table doesn't already exist
-            if mode == "create" and _has_latest_manifest(tbl._dataset_uri):
-                raise ValueError(f"Table {name} already exists")
+            if schema is None:
+                raise ValueError("Either data or schema must be provided")
+            data = pa.Table.from_pylist([], schema=schema)
+        lance.write_dataset(data, tbl._dataset_uri, mode=mode)
         return LanceTable(db, name)
 
     @classmethod
