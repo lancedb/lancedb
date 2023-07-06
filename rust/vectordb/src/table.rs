@@ -16,12 +16,13 @@ use std::path::Path;
 use std::sync::Arc;
 
 use arrow_array::{Float32Array, RecordBatchReader};
-use lance::dataset::{Dataset, ReadParams, WriteMode, WriteParams};
+use lance::dataset::{Dataset, ReadParams, WriteParams};
 use lance::index::IndexType;
 use snafu::prelude::*;
 
 use crate::error::{Error, InvalidTableNameSnafu, Result};
 use crate::index::vector::VectorIndexBuilder;
+use crate::WriteMode;
 use crate::query::Query;
 
 pub const VECTOR_COLUMN_NAME: &str = "vector";
@@ -305,12 +306,16 @@ mod tests {
         let mut table = Table::create(&uri, "test", batches, None).await.unwrap();
         assert_eq!(table.count_rows().await.unwrap(), 10);
 
-        let new_batches: Box<dyn RecordBatchReader> =
-            Box::new(RecordBatchIterator::new(vec![RecordBatch::try_new(
+        let new_batches: Box<dyn RecordBatchReader> = Box::new(RecordBatchIterator::new(
+            vec![RecordBatch::try_new(
                 schema.clone(),
                 vec![Arc::new(Int32Array::from_iter_values(100..110))],
             )
-            .unwrap()].into_iter().map(Ok), schema.clone()));
+            .unwrap()]
+            .into_iter()
+            .map(Ok),
+            schema.clone(),
+        ));
 
         table.add(new_batches, None).await.unwrap();
         assert_eq!(table.count_rows().await.unwrap(), 20);

@@ -239,7 +239,7 @@ fn table_create(mut cx: FunctionContext) -> JsResult<JsPromise> {
         "overwrite" => WriteMode::Overwrite,
         "append" => WriteMode::Append,
         "create" => WriteMode::Create,
-        _ => return cx.throw_error("Table::create only supports 'overwrite' and 'create' modes")
+        _ => return cx.throw_error("Table::create only supports 'overwrite' and 'create' modes"),
     };
     let mut params = WriteParams::default();
     params.mode = mode;
@@ -255,7 +255,9 @@ fn table_create(mut cx: FunctionContext) -> JsResult<JsPromise> {
             batches.into_iter().map(Ok),
             schema,
         ));
-        let table_rst = database.create_table(&table_name, batch_reader, Some(params)).await;
+        let table_rst = database
+            .create_table(&table_name, batch_reader, Some(params))
+            .await;
 
         deferred.settle_with(&channel, move |mut cx| {
             let table = Arc::new(Mutex::new(
