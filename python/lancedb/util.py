@@ -11,9 +11,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
-from urllib.parse import ParseResult, urlparse
-
-from pyarrow import fs
+from urllib.parse import urlparse
 
 
 def get_uri_scheme(uri: str) -> str:

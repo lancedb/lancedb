@@ -13,7 +13,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Awaitable, Literal
+from typing import Literal
 
 import numpy as np
 import pandas as pd
