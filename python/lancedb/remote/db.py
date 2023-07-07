@@ -54,6 +54,8 @@ class RemoteDBConnection(DBConnection):
         """
         from .table import RemoteTable
 
+        # TODO: check if table exists
+
         return RemoteTable(self, name)
 
     def create_table(
