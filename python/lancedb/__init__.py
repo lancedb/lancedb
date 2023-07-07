@@ -11,16 +11,24 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
-from .db import URI, LanceDBConnection
+from typing import Optional
+
+from .db import URI, DBConnection, LanceDBConnection
+from .remote.db import RemoteDBConnection
 
 
-def connect(uri: URI) -> LanceDBConnection:
-    """Connect to a LanceDB instance at the given URI
+def connect(
+    uri: URI, *, api_key: Optional[str] = None, region: str = "us-west-2"
+) -> DBConnection:
+    """Connect to a LanceDB database.
 
     Parameters
     ----------
     uri: str or Path
         The uri of the database.
+    api_token: str, optional
+        If presented, connect to LanceDB cloud.
+        Otherwise, connect to a database on file system or cloud storage.
 
     Examples
     --------
@@ -34,9 +42,17 @@ def connect(uri: URI) -> LanceDBConnection:
 
     >>> db = lancedb.connect("s3://my-bucket/lancedb")
 
+    Connect to LancdDB cloud:
+
+    >>> db = lancedb.connect("db://my_database", api_key="ldb_...")
+
     Returns
     -------
-    conn : LanceDBConnection
+    conn : DBConnection
         A connection to a LanceDB database.
     """
+    if isinstance(uri, str) and uri.startswith("db://"):
+        if api_key is None:
+            raise ValueError(f"api_key is required to connected LanceDB cloud: {uri}")
+        return RemoteDBConnection(uri, api_key, region)
     return LanceDBConnection(uri)
