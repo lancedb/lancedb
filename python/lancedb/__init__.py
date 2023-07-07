@@ -18,7 +18,7 @@ from .remote.db import RemoteDBConnection
 
 
 def connect(
-    uri: URI, api_key: Optional[str] = None, region: str = "us-west-2"
+    uri: URI, *, api_key: Optional[str] = None, region: str = "us-west-2"
 ) -> DBConnection:
     """Connect to a LanceDB database.
 
