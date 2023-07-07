@@ -13,12 +13,13 @@
 
 
 import functools
-import urllib.parse
+from typing import Dict
 
 import aiohttp
 import attr
 import pyarrow as pa
 
+from lancedb.common import Credential
 from lancedb.remote import VectorQuery, VectorQueryResult
 from lancedb.remote.errors import LanceDBClientError
 
@@ -35,29 +36,32 @@ def _check_not_closed(f):
 
 @attr.define(slots=False)
 class RestfulLanceDBClient:
-    url: str
+    db_name: str
+    region: str
+    api_key: Credential
     closed: bool = attr.field(default=False, init=False)
 
     @functools.cached_property
     def session(self) -> aiohttp.ClientSession:
-        parsed = urllib.parse.urlparse(self.url)
-        scheme = parsed.scheme
-        if not scheme.startswith("lancedb"):
-            raise ValueError(
-                f"Invalid scheme: {scheme}, must be like lancedb+<flavor>://"
-            )
-        flavor = scheme.split("+")[1]
-        url = f"{flavor}://{parsed.hostname}:{parsed.port}"
+        url = f"https://{self.db_name}.{self.region}.api.lancedb.com"
         return aiohttp.ClientSession(url)
 
     async def close(self):
         await self.session.close()
         self.closed = True
 
+    @functools.cached_property
+    def headers(self) -> Dict[str, str]:
+        return {
+            "x-api-key": self.api_key,
+        }
+
     @_check_not_closed
     async def query(self, table_name: str, query: VectorQuery) -> VectorQueryResult:
         async with self.session.post(
-            f"/table/{table_name}/", json=query.dict(exclude_none=True)
+            f"/1/table/{table_name}/",
+            json=query.dict(exclude_none=True),
+            headers=self.headers,
         ) as resp:
             resp: aiohttp.ClientResponse = resp
             if 400 <= resp.status < 500:

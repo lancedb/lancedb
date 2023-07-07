@@ -15,17 +15,161 @@ from __future__ import annotations
 
 import functools
 import os
+from abc import ABC, abstractmethod
 from pathlib import Path
 
 import pyarrow as pa
 from pyarrow import fs
 
 from .common import DATA, URI
-from .table import LanceTable
+from .table import LanceTable, Table
 from .util import get_uri_location, get_uri_scheme
 
 
-class LanceDBConnection:
+class DBConnection(ABC):
+    """An active LanceDB connection interface."""
+
+    @abstractmethod
+    def table_names(self) -> list[str]:
+        """List all table names in the database."""
+        pass
+
+    @abstractmethod
+    def create_table(
+        self,
+        name: str,
+        data: DATA = None,
+        schema: pa.Schema = None,
+        mode: str = "create",
+        on_bad_vectors: str = "error",
+        fill_value: float = 0.0,
+    ) -> Table:
+        """Create a [Table][lancedb.table.Table] in the database.
+
+        Parameters
+        ----------
+        name: str
+            The name of the table.
+        data: list, tuple, dict, pd.DataFrame; optional
+            The data to insert into the table.
+        schema: pyarrow.Schema; optional
+            The schema of the table.
+        mode: str; default "create"
+            The mode to use when creating the table. Can be either "create" or "overwrite".
+            By default, if the table already exists, an exception is raised.
+            If you want to overwrite the table, use mode="overwrite".
+        on_bad_vectors: str, default "error"
+            What to do if any of the vectors are not the same size or contains NaNs.
+            One of "error", "drop", "fill".
+        fill_value: float
+            The value to use when filling vectors. Only used if on_bad_vectors="fill".
+
+        Note
+        ----
+        The vector index won't be created by default.
+        To create the index, call the `create_index` method on the table.
+
+        Returns
+        -------
+        LanceTable
+            A reference to the newly created table.
+
+        Examples
+        --------
+
+        Can create with list of tuples or dictionaries:
+
+        >>> import lancedb
+        >>> db = lancedb.connect("./.lancedb")
+        >>> data = [{"vector": [1.1, 1.2], "lat": 45.5, "long": -122.7},
+        ...         {"vector": [0.2, 1.8], "lat": 40.1, "long":  -74.1}]
+        >>> db.create_table("my_table", data)
+        LanceTable(my_table)
+        >>> db["my_table"].head()
+        pyarrow.Table
+        vector: fixed_size_list<item: float>[2]
+          child 0, item: float
+        lat: double
+        long: double
+        ----
+        vector: [[[1.1,1.2],[0.2,1.8]]]
+        lat: [[45.5,40.1]]
+        long: [[-122.7,-74.1]]
+
+        You can also pass a pandas DataFrame:
+
+        >>> import pandas as pd
+        >>> data = pd.DataFrame({
+        ...    "vector": [[1.1, 1.2], [0.2, 1.8]],
+        ...    "lat": [45.5, 40.1],
+        ...    "long": [-122.7, -74.1]
+        ... })
+        >>> db.create_table("table2", data)
+        LanceTable(table2)
+        >>> db["table2"].head()
+        pyarrow.Table
+        vector: fixed_size_list<item: float>[2]
+          child 0, item: float
+        lat: double
+        long: double
+        ----
+        vector: [[[1.1,1.2],[0.2,1.8]]]
+        lat: [[45.5,40.1]]
+        long: [[-122.7,-74.1]]
+
+        Data is converted to Arrow before being written to disk. For maximum
+        control over how data is saved, either provide the PyArrow schema to
+        convert to or else provide a PyArrow table directly.
+
+        >>> custom_schema = pa.schema([
+        ...   pa.field("vector", pa.list_(pa.float32(), 2)),
+        ...   pa.field("lat", pa.float32()),
+        ...   pa.field("long", pa.float32())
+        ... ])
+        >>> db.create_table("table3", data, schema = custom_schema)
+        LanceTable(table3)
+        >>> db["table3"].head()
+        pyarrow.Table
+        vector: fixed_size_list<item: float>[2]
+          child 0, item: float
+        lat: float
+        long: float
+        ----
+        vector: [[[1.1,1.2],[0.2,1.8]]]
+        lat: [[45.5,40.1]]
+        long: [[-122.7,-74.1]]
+        """
+        raise NotImplementedError
+
+    def __getitem__(self, name: str) -> LanceTable:
+        return self.open_table(name)
+
+    def open_table(self, name: str) -> Table:
+        """Open a Lance Table in the database.
+
+        Parameters
+        ----------
+        name: str
+            The name of the table.
+
+        Returns
+        -------
+        A LanceTable object representing the table.
+        """
+        raise NotImplementedError
+
+    def drop_table(self, name: str):
+        """Drop a table from the database.
+
+        Parameters
+        ----------
+        name: str
+            The name of the table.
+        """
+        raise NotImplementedError
+
+
+class LanceDBConnection(DBConnection):
     """
     A connection to a LanceDB database.
 
@@ -59,13 +203,6 @@ class LanceDBConnection:
         if not isinstance(uri, Path):
             scheme = get_uri_scheme(uri)
         is_local = isinstance(uri, Path) or scheme == "file"
-        # managed lancedb remote uses schema like lancedb+[http|grpc|...]://
-        self._is_managed_remote = not is_local and scheme.startswith("lancedb")
-        if self._is_managed_remote:
-            if len(scheme.split("+")) != 2:
-                raise ValueError(
-                    f"Invalid LanceDB URI: {uri}, expected uri to have scheme like lancedb+<flavor>://..."
-                )
         if is_local:
             if isinstance(uri, str):
                 uri = Path(uri)
@@ -78,43 +215,6 @@ class LanceDBConnection:
     @property
     def uri(self) -> str:
         return self._uri
-
-    @functools.cached_property
-    def is_managed_remote(self) -> bool:
-        return self._is_managed_remote
-
-    @functools.cached_property
-    def remote_flavor(self) -> str:
-        if not self.is_managed_remote:
-            raise ValueError(
-                "Not a managed remote LanceDB, there should be no server flavor"
-            )
-        return get_uri_scheme(self.uri).split("+")[1]
-
-    @functools.cached_property
-    def _client(self) -> "lancedb.remote.LanceDBClient":
-        if not self.is_managed_remote:
-            raise ValueError("Not a managed remote LanceDB, there should be no client")
-
-        # don't import unless we are really using remote
-        from lancedb.remote.client import RestfulLanceDBClient
-
-        if self.remote_flavor == "http":
-            return RestfulLanceDBClient(self._uri)
-
-        raise ValueError("Unsupported remote flavor: " + self.remote_flavor)
-
-    async def close(self):
-        if self._entered:
-            raise ValueError("Cannot re-enter the same LanceDBConnection twice")
-        self._entered = True
-        await self._client.close()
-
-    async def __aenter__(self) -> LanceDBConnection:
-        return self
-
-    async def __aexit__(self, exc_type, exc_value, traceback):
-        await self.close()
 
     def table_names(self) -> list[str]:
         """Get the names of all tables in the database.
@@ -148,9 +248,6 @@ class LanceDBConnection:
 
     def __contains__(self, name: str) -> bool:
         return name in self.table_names()
-
-    def __getitem__(self, name: str) -> LanceTable:
-        return self.open_table(name)
 
     def create_table(
         self,

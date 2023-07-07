@@ -10,13 +10,15 @@ pip install lancedb
 
 ::: lancedb.connect
 
-::: lancedb.LanceDBConnection
+::: lancedb.db.DBConnection
 
 ## Table
 
-::: lancedb.table.LanceTable
+::: lancedb.table.Table
 
 ## Querying
+
+::: lancedb.query.Query
 
 ::: lancedb.query.LanceQueryBuilder
 
