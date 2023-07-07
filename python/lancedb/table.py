@@ -687,7 +687,7 @@ def _sanitize_nans(data, fill_value, on_bad_vectors, vec_arr, vector_column_name
                 "`fill_value` must not be None if `on_bad_vectors` is 'fill'"
             )
         fill_value = float(fill_value)
-        values = pc.if_else(vec_arr.values.is_nan(), fill_value, vec_arr.values)
+        values = pc.if_else(pc.is_nan(vec_arr.values), fill_value, vec_arr.values)
         ndims = len(vec_arr[0])
         vec_arr = pa.FixedSizeListArray.from_arrays(values, ndims)
         data = data.set_column(

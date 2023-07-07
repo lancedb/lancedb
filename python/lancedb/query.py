@@ -217,8 +217,9 @@ class LanceQueryBuilder:
         and also the "score" column which is the distance between the query
         vector and the returned vectors.
         """
+        vector =  self._query if isinstance(self._query, list) else self._query.tolist()
         query = Query(
-            vector=self._query.tolist(),
+            vector=vector,
             filter=self._where,
             k=self._limit,
             _metric=self._metric,
@@ -230,7 +231,7 @@ class LanceQueryBuilder:
 
 
 class LanceFtsQueryBuilder(LanceQueryBuilder):
-    def to_df(self) -> pd.DataFrame:
+    def to_arrow(self) -> pd.Table:
         try:
             import tantivy
         except ImportError:
@@ -247,8 +248,9 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         # get the scores and doc ids
         row_ids, scores = search_index(index, self._query, self._limit)
         if len(row_ids) == 0:
-            return pd.DataFrame()
+            empty_schema = pa.schema([pa.field("score", pa.float32())])
+            return pa.Table.from_pylist([], schema=empty_schema)
         scores = pa.array(scores)
         output_tbl = self._table.to_lance().take(row_ids, columns=self._columns)
         output_tbl = output_tbl.append_column("score", scores)
-        return output_tbl.to_pandas()
+        return output_tbl
