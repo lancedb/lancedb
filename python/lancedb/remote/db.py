@@ -12,10 +12,11 @@
 #  limitations under the License.
 
 from urllib.parse import urlparse
+from typing import List
 
 import pyarrow as pa
 
-from lancedb.common import DATA, URI
+from lancedb.common import DATA
 from lancedb.db import DBConnection
 from lancedb.table import Table
 
@@ -37,7 +38,7 @@ class RemoteDBConnection(DBConnection):
     def __repr__(self) -> str:
         return f"RemoveConnect(name={self.db_name})"
 
-    def table_names(self) -> list[str]:
+    def table_names(self) -> List[str]:
         raise NotImplementedError
 
     def open_table(self, name: str) -> Table:
