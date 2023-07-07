@@ -59,7 +59,8 @@ class RestfulLanceDBClient:
     @_check_not_closed
     async def query(self, table_name: str, query: VectorQuery) -> VectorQueryResult:
         async with self.session.post(
-            f"/table/{table_name}/", json=query.dict(exclude_none=True),
+            f"/table/{table_name}/",
+            json=query.dict(exclude_none=True),
             headers=self.headers,
         ) as resp:
             resp: aiohttp.ClientResponse = resp
