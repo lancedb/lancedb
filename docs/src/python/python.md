@@ -18,6 +18,8 @@ pip install lancedb
 
 ## Querying
 
+::: lancedb.query.Query
+
 ::: lancedb.query.LanceQueryBuilder
 
 ::: lancedb.query.LanceFtsQueryBuilder

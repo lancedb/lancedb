@@ -28,7 +28,7 @@ from lance import LanceDataset
 from lance.vector import vec_to_table
 
 from .common import DATA, VEC, VECTOR_COLUMN_NAME
-from .query import LanceFtsQueryBuilder, LanceQueryBuilder
+from .query import LanceFtsQueryBuilder, LanceQueryBuilder, Query
 
 
 def _sanitize_data(data, schema, on_bad_vectors, fill_value):
@@ -51,7 +51,7 @@ def _sanitize_data(data, schema, on_bad_vectors, fill_value):
 
 class Table(ABC):
     """
-    A table in a LanceDB database.
+    A [Table](Table) is a collection of Records in a LanceDB [Database](Database).
 
     Examples
     --------
@@ -71,12 +71,12 @@ class Table(ABC):
     vector: [[[1.1,1.2]]]
     b: [[2]]
 
-    Can append new data with [LanceTable.add][lancedb.table.LanceTable.add].
+    Can append new data with [Table.add()][lancedb.table.Table.add].
 
     >>> table.add([{"vector": [0.5, 1.3], "b": 4}])
     2
 
-    Can query the table with [LanceTable.search][lancedb.table.LanceTable.search].
+    Can query the table with [Table.search][lancedb.table.Table.search].
 
     >>> table.search([0.4, 0.4]).select(["b"]).to_df()
        b      vector  score
@@ -84,8 +84,9 @@ class Table(ABC):
     1  2  [1.1, 1.2]   1.13
 
     Search queries are much faster when an index is created. See
-    [Table.create_index][lancedb.table.LanceTable.create_index].
+    [Table.create_index][lancedb.table.Table.create_index].
     """
+
     @abstractmethod
     def schema(self) -> pa.Schema:
         """Return the [Arrow Schema](https://arrow.apache.org/docs/python/api/datatypes.html#) of
@@ -118,7 +119,7 @@ class Table(ABC):
         metric="L2",
         num_partitions=256,
         num_sub_vectors=96,
-        vector_column_name=VECTOR_COLUMN_NAME,
+        vector_column_name: str = VECTOR_COLUMN_NAME,
         replace: bool = True,
     ):
         """Create an index on the table.
@@ -174,7 +175,7 @@ class Table(ABC):
         raise NotImplementedError
 
     def search(
-        self, query: Union[VEC, str], vector_column_name=VECTOR_COLUMN_NAME
+        self, query: Union[VEC, str], vector_column: str = VECTOR_COLUMN_NAME
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector.
@@ -183,7 +184,7 @@ class Table(ABC):
         ----------
         query: list, np.ndarray
             The query vector.
-        vector_column_name: str, default "vector"
+        vector_column: str, default "vector"
             The name of the vector column to search.
 
         Returns
@@ -195,6 +196,10 @@ class Table(ABC):
             vector and the returned vector.
         """
         raise NotImplementedError
+
+    def _execute_query(self, query: Query) -> pa.Table:
+        pass
+
 
 class LanceTable(Table):
     """
@@ -311,8 +316,7 @@ class LanceTable(Table):
         vector_column_name=VECTOR_COLUMN_NAME,
         replace: bool = True,
     ):
-        """Create an index on the table.
-        """
+        """Create an index on the table."""
         self._dataset.create_index(
             column=vector_column_name,
             index_type="IVF_PQ",

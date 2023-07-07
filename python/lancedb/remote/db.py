@@ -12,19 +12,28 @@
 #  limitations under the License.
 
 from lancedb.db import DBConnection
+from lancedb.table import Table
+from lancedb.common import DATA, URI
+from .client import RestfulLanceDBClient
+
 import pyarrow as pa
 
 
 class RemoteDBConnection(DBConnection):
     """A connection to a remote LanceDB database."""
-    def __init__(self, db_name: str, api_key: str):
+
+    def __init__(self, db_name: str, api_key: str, region: str):
         self.db_name = db_name
         self.api_key = api_key
+        self._client = RestfulLanceDBClient(db_name, region)
 
     def __repr__(self) -> str:
         return f"RemoveConnect(name={self.db_name})"
 
-    def open_table(self, name: str) -> LanceTable:
+    def table_names(self) -> list[str]:
+        raise NotImplementedError
+
+    def open_table(self, name: str) -> Table:
         """Open a Lance Table in the database.
 
         Parameters
@@ -36,7 +45,9 @@ class RemoteDBConnection(DBConnection):
         -------
         A LanceTable object representing the table.
         """
-        raise NotImplementedError
+        from .table import RemoteTable
+
+        return RemoteTable(self, name)
 
     def create_table(
         self,
@@ -46,5 +57,5 @@ class RemoteDBConnection(DBConnection):
         mode: str = "create",
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
-    ) -> LanceTable:
+    ) -> Table:
         raise NotImplementedError

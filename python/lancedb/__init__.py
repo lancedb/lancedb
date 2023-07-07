@@ -17,7 +17,9 @@ from .db import URI, LanceDBConnection, DBConnection
 from .remote.db import RemoteDBConnection
 
 
-def connect(uri: URI, api_key: Optional[str] = None) -> DBConnection:
+def connect(
+    uri: URI, api_key: Optional[str] = None, region: str = "us-west-2"
+) -> DBConnection:
     """Connect to a LanceDB database.
 
     Parameters
@@ -52,5 +54,5 @@ def connect(uri: URI, api_key: Optional[str] = None) -> DBConnection:
     if uri.startswith("db://"):
         if api_key is None:
             raise ValueError(f"api_key is required to connected LanceDB cloud: {uri}")
-        return RemoteDBConnection(uri, api_key)
+        return RemoteDBConnection(uri, api_key, region)
     return LanceDBConnection(uri)
