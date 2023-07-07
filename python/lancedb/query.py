@@ -13,7 +13,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Literal
+from typing import Literal, Union
 
 import numpy as np
 import pandas as pd
@@ -48,7 +48,7 @@ class LanceQueryBuilder:
     def __init__(
         self,
         table: "lancedb.table.LanceTable",
-        query: np.ndarray,
+        query: Union[np.ndarray, str],
         vector_column_name: str = VECTOR_COLUMN_NAME,
     ):
         self._metric = "L2"

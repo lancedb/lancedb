@@ -19,6 +19,7 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pytest
+from lance.vector import vec_to_table
 
 from lancedb.db import LanceDBConnection
 from lancedb.table import LanceTable
@@ -89,7 +90,31 @@ def test_create_table(db):
         assert expected == tbl
 
 
+def test_empty_table(db):
+    schema = pa.schema(
+        [
+            pa.field("vector", pa.list_(pa.float32(), 2)),
+            pa.field("item", pa.string()),
+            pa.field("price", pa.float32()),
+        ]
+    )
+    tbl = LanceTable.create(db, "test", schema=schema)
+    data = [
+        {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+        {"vector": [5.9, 26.5], "item": "bar", "price": 20.0},
+    ]
+    tbl.add(data=data)
+
+
 def test_add(db):
+    schema = pa.schema(
+        [
+            pa.field("vector", pa.list_(pa.float32(), 2)),
+            pa.field("item", pa.string()),
+            pa.field("price", pa.float64()),
+        ]
+    )
+
     table = LanceTable.create(
         db,
         "test",
@@ -98,7 +123,19 @@ def test_add(db):
             {"vector": [5.9, 26.5], "item": "bar", "price": 20.0},
         ],
     )
+    _add(table, schema)
 
+    table = LanceTable.create(db, "test2", schema=schema)
+    table.add(
+        data=[
+            {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+            {"vector": [5.9, 26.5], "item": "bar", "price": 20.0},
+        ],
+    )
+    _add(table, schema)
+
+
+def _add(table, schema):
     # table = LanceTable(db, "test")
     assert len(table) == 2
 
@@ -113,13 +150,7 @@ def test_add(db):
             pa.array(["foo", "bar", "new"]),
             pa.array([10.0, 20.0, 30.0]),
         ],
-        schema=pa.schema(
-            [
-                pa.field("vector", pa.list_(pa.float32(), 2)),
-                pa.field("item", pa.string()),
-                pa.field("price", pa.float64()),
-            ]
-        ),
+        schema=schema,
     )
     assert expected == table.to_arrow()
 
