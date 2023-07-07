@@ -14,9 +14,9 @@
 from typing import Union
 import asyncio
 
-import pyarrow as paw
+import pyarrow as pa
 
-from lancedb.common import VEC, VECTOR_COLUMN_NAME
+from lancedb.common import DATA, VEC, VECTOR_COLUMN_NAME
 
 from ..table import Table, Query
 from ..query import LanceQueryBuilder, Query
@@ -31,6 +31,31 @@ class RemoteTable(Table):
     def __repr__(self) -> str:
         return f"RemoteTable({self._conn.db_name}.{self.name})"
 
+    def schema(self) -> pa.Schema:
+        raise NotImplementedError
+
+    def to_arrow(self) -> pa.Table:
+        raise NotImplementedError
+
+    def create_index(
+        self,
+        metric="L2",
+        num_partitions=256,
+        num_sub_vectors=96,
+        vector_column_name: str = VECTOR_COLUMN_NAME,
+        replace: bool = True,
+    ):
+        pass
+
+    def add(
+        self,
+        data: DATA,
+        mode: str = "append",
+        on_bad_vectors: str = "error",
+        fill_value: float = 0.0,
+    ) -> int:
+        pass
+
     def search(
         self, query: VEC | str, vector_column: str = VECTOR_COLUMN_NAME
     ) -> LanceQueryBuilder:
@@ -41,4 +66,5 @@ class RemoteTable(Table):
             loop = asyncio.get_running_loop()
         except RuntimeError:
             loop = asyncio.get_event_loop()
-        result = self._table._conn._client.query(self._table.name, query)
+        result = self._conn._client.query(self._name, query)
+        return loop.run_until_complete(result).to_arrow()

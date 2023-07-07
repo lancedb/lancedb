@@ -79,6 +79,13 @@ class LanceQueryBuilder:
         query: Union[np.ndarray, str],
         vector_column: str = VECTOR_COLUMN_NAME,
     ):
+        if isinstance(query, list):
+            query = np.array(query)
+        if isinstance(query, np.ndarray):
+            query = query.astype(np.float32)
+        else:
+            raise TypeError(f"Unsupported query type: {type(query)}")
+
         self._metric = "L2"
         self._nprobes = 20
         self._refine_factor = None
@@ -216,35 +223,7 @@ class LanceQueryBuilder:
         and also the "score" column which is the distance between the query
         vector and the returned vectors.
         """
-        if self._table._conn.is_managed_remote:
-            try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                loop = asyncio.get_event_loop()
-            result = self._table._conn._client.query(
-                self._table.name, self.to_remote_query()
-            )
-            return loop.run_until_complete(result).to_arrow()
-
-        ds = self._table.to_lance()
-        return ds.to_table(
-            columns=self._columns,
-            filter=self._where,
-            nearest={
-                "column": self._vector_column,
-                "q": self._query,
-                "k": self._limit,
-                "metric": self._metric,
-                "nprobes": self._nprobes,
-                "refine_factor": self._refine_factor,
-            },
-        )
-
-    def to_remote_query(self) -> "VectorQuery":
-        # don't import unless we are connecting to remote
-        from lancedb.remote.client import VectorQuery
-
-        return VectorQuery(
+        query = Query(
             vector=self._query.tolist(),
             filter=self._where,
             k=self._limit,
@@ -253,6 +232,7 @@ class LanceQueryBuilder:
             nprobes=self._nprobes,
             refine_factor=self._refine_factor,
         )
+        return self._table._execute_query(query)
 
 
 class LanceFtsQueryBuilder(LanceQueryBuilder):

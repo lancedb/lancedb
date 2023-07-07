@@ -11,6 +11,8 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
+from urllib.parse import urlparse
+
 from lancedb.db import DBConnection
 from lancedb.table import Table
 from lancedb.common import DATA, URI
@@ -22,10 +24,14 @@ import pyarrow as pa
 class RemoteDBConnection(DBConnection):
     """A connection to a remote LanceDB database."""
 
-    def __init__(self, db_name: str, api_key: str, region: str):
-        self.db_name = db_name
+    def __init__(self, db_url: str, api_key: str, region: str):
+        """Connect to a remote LanceDB database."""
+        parsed = urlparse(db_url)
+        if parsed.scheme != "db":
+            raise ValueError(f"Invalid scheme: {parsed.scheme}, only accepts db://")
+        self.db_name = parsed.netloc
         self.api_key = api_key
-        self._client = RestfulLanceDBClient(db_name, region)
+        self._client = RestfulLanceDBClient(self.db_name, region)
 
     def __repr__(self) -> str:
         return f"RemoveConnect(name={self.db_name})"

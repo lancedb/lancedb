@@ -51,7 +51,7 @@ def connect(
     conn : DBConnection
         A connection to a LanceDB database.
     """
-    if uri.startswith("db://"):
+    if isinstance(uri, str) and uri.startswith("db://"):
         if api_key is None:
             raise ValueError(f"api_key is required to connected LanceDB cloud: {uri}")
         return RemoteDBConnection(uri, api_key, region)

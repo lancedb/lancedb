@@ -41,11 +41,8 @@ class RestfulLanceDBClient:
 
     @functools.cached_property
     def session(self) -> aiohttp.ClientSession:
-        parsed = urllib.parse.urlparse(self.url)
-        scheme = parsed.scheme
-        if not scheme.startswith("db"):
-            raise ValueError(f"Invalid scheme: {scheme}, must be like db://")
         url = f"https://{self.db_name}.{self.region}.api.lancedb.com"
+        print(url)
         return aiohttp.ClientSession(url)
 
     async def close(self):

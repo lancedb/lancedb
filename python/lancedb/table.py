@@ -174,6 +174,7 @@ class Table(ABC):
         """
         raise NotImplementedError
 
+    @abstractmethod
     def search(
         self, query: Union[VEC, str], vector_column: str = VECTOR_COLUMN_NAME
     ) -> LanceQueryBuilder:
@@ -197,6 +198,7 @@ class Table(ABC):
         """
         raise NotImplementedError
 
+    @abstractmethod
     def _execute_query(self, query: Query) -> pa.Table:
         pass
 
@@ -523,6 +525,21 @@ class LanceTable(Table):
         1  3  [5.0, 6.0]
         """
         self._dataset.delete(where)
+
+    def _execute_query(self, query: Query) -> pa.Table:
+        ds = self.to_lance()
+        return ds.to_table(
+            columns=query.columns,
+            filter=self.where,
+            nearest={
+                "column": query.vector_column,
+                "q": query.vector,
+                "k": query.limit,
+                "metric": query._metric,
+                "nprobes": query.nprobes,
+                "refine_factor": query.refine_factor,
+            },
+        )
 
 
 def _sanitize_schema(
