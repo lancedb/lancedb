@@ -15,14 +15,14 @@ from __future__ import annotations
 
 import functools
 import os
-from pathlib import Path
 from abc import ABC, abstractmethod
+from pathlib import Path
 
 import pyarrow as pa
 from pyarrow import fs
 
 from .common import DATA, URI
-from .table import Table, LanceTable
+from .table import LanceTable, Table
 from .util import get_uri_location, get_uri_scheme
 
 
@@ -141,6 +141,9 @@ class DBConnection(ABC):
         """
         raise NotImplementedError
 
+    def __getitem__(self, name: str) -> LanceTable:
+        return self.open_table(name)
+
     def open_table(self, name: str) -> Table:
         """Open a Lance Table in the database.
 
@@ -245,9 +248,6 @@ class LanceDBConnection(DBConnection):
 
     def __contains__(self, name: str) -> bool:
         return name in self.table_names()
-
-    def __getitem__(self, name: str) -> LanceTable:
-        return self.open_table(name)
 
     def create_table(
         self,

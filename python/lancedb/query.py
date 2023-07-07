@@ -26,6 +26,8 @@ from .common import VECTOR_COLUMN_NAME
 class Query(BaseModel):
     """A Query"""
 
+    vector_column: str = VECTOR_COLUMN_NAME
+
     # vector to search for
     vector: List[float]
 
@@ -74,17 +76,10 @@ class LanceQueryBuilder:
 
     def __init__(
         self,
-        table: "lancedb.table.LanceTable",
+        table: "lancedb.table.Table",
         query: Union[np.ndarray, str],
         vector_column: str = VECTOR_COLUMN_NAME,
     ):
-        if isinstance(query, list):
-            query = np.array(query)
-        if isinstance(query, np.ndarray):
-            query = query.astype(np.float32)
-        else:
-            raise TypeError(f"Unsupported query type: {type(query)}")
-
         self._metric = "L2"
         self._nprobes = 20
         self._refine_factor = None

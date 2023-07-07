@@ -11,15 +11,15 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
-from typing import Union
 import asyncio
+from typing import Union
 
 import pyarrow as pa
 
 from lancedb.common import DATA, VEC, VECTOR_COLUMN_NAME
 
-from ..table import Table, Query
 from ..query import LanceQueryBuilder, Query
+from ..table import Query, Table
 from .db import RemoteDBConnection
 
 

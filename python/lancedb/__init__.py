@@ -13,7 +13,7 @@
 
 from typing import Optional
 
-from .db import URI, LanceDBConnection, DBConnection
+from .db import URI, DBConnection, LanceDBConnection
 from .remote.db import RemoteDBConnection
 
 

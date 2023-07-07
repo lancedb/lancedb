@@ -13,6 +13,7 @@
 
 import pyarrow as pa
 
+import lancedb
 from lancedb.db import LanceDBConnection
 from lancedb.remote.client import VectorQuery, VectorQueryResult
 
@@ -28,7 +29,7 @@ class FakeLanceDBClient:
 
 
 def test_remote_db():
-    conn = LanceDBConnection("lancedb+http://client-will-be-injected")
+    conn = lancedb.connect("db://client-will-be-injected", api_key="fake")
     setattr(conn, "_client", FakeLanceDBClient())
 
     table = conn["test"]

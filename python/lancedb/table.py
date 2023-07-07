@@ -489,9 +489,6 @@ class LanceTable(Table):
     @classmethod
     def open(cls, db, name):
         tbl = cls(db, name)
-        if tbl._conn.is_managed_remote:
-            # Not completely sure how to check for remote table existence yet.
-            return tbl
         if not os.path.exists(tbl._dataset_uri):
             raise FileNotFoundError(
                 f"Table {name} does not exist. Please first call db.create_table({name}, data)"
@@ -530,11 +527,11 @@ class LanceTable(Table):
         ds = self.to_lance()
         return ds.to_table(
             columns=query.columns,
-            filter=self.where,
+            filter=query.filter,
             nearest={
                 "column": query.vector_column,
                 "q": query.vector,
-                "k": query.limit,
+                "k": query.k,
                 "metric": query._metric,
                 "nprobes": query.nprobes,
                 "refine_factor": query.refine_factor,
@@ -627,7 +624,7 @@ def _sanitize_vector_column(
         data.column_names.index(vector_column_name), vector_column_name, vec_arr
     )
 
-    has_nans = pc.any(vec_arr.values.is_nan()).as_py()
+    has_nans = pc.any(pc.is_nan(vec_arr.values)).as_py()
     if has_nans:
         data = _sanitize_nans(
             data, fill_value, on_bad_vectors, vec_arr, vector_column_name

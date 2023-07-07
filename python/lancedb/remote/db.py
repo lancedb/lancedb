@@ -13,12 +13,13 @@
 
 from urllib.parse import urlparse
 
+import pyarrow as pa
+
+from lancedb.common import DATA, URI
 from lancedb.db import DBConnection
 from lancedb.table import Table
-from lancedb.common import DATA, URI
-from .client import RestfulLanceDBClient
 
-import pyarrow as pa
+from .client import RestfulLanceDBClient
 
 
 class RemoteDBConnection(DBConnection):

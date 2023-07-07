@@ -27,10 +27,25 @@ from lancedb.table import LanceTable
 class MockTable:
     def __init__(self, tmp_path):
         self.uri = tmp_path
-        self._conn = LanceDBConnection("/tmp/lance/")
+        self._conn = LanceDBConnection(self.uri)
 
     def to_lance(self):
         return lance.dataset(self.uri)
+
+    def _execute_query(self, query):
+        ds = self.to_lance()
+        return ds.to_table(
+            columns=query.columns,
+            filter=query.filter,
+            nearest={
+                "column": query.vector_column,
+                "q": query.vector,
+                "k": query.k,
+                "metric": query._metric,
+                "nprobes": query.nprobes,
+                "refine_factor": query.refine_factor,
+            },
+        )
 
 
 @pytest.fixture
