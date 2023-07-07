@@ -13,7 +13,7 @@
 
 
 import functools
-import urllib.parse
+from typing import Dict
 
 import aiohttp
 import attr
@@ -37,6 +37,7 @@ def _check_not_closed(f):
 class RestfulLanceDBClient:
     db_name: str
     region: str
+    api_key: str
     closed: bool = attr.field(default=False, init=False)
 
     @functools.cached_property
@@ -49,10 +50,17 @@ class RestfulLanceDBClient:
         await self.session.close()
         self.closed = True
 
+    @functools.cached_property
+    def headers(self) -> Dict[str, str]:
+        return {
+            "x-api-key": self.api_key,
+        }
+
     @_check_not_closed
     async def query(self, table_name: str, query: VectorQuery) -> VectorQueryResult:
         async with self.session.post(
-            f"/table/{table_name}/", json=query.dict(exclude_none=True)
+            f"/table/{table_name}/", json=query.dict(exclude_none=True),
+            headers=self.headers,
         ) as resp:
             resp: aiohttp.ClientResponse = resp
             if 400 <= resp.status < 500:

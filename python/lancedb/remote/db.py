@@ -31,7 +31,7 @@ class RemoteDBConnection(DBConnection):
             raise ValueError(f"Invalid scheme: {parsed.scheme}, only accepts db://")
         self.db_name = parsed.netloc
         self.api_key = api_key
-        self._client = RestfulLanceDBClient(self.db_name, region)
+        self._client = RestfulLanceDBClient(self.db_name, region, api_key)
 
     def __repr__(self) -> str:
         return f"RemoveConnect(name={self.db_name})"

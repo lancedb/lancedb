@@ -196,17 +196,10 @@ class LanceDBConnection(DBConnection):
     >>> db.drop_table("another_table")
     """
 
-    def __init__(self, uri: URI, api_token: str = None):
+    def __init__(self, uri: URI):
         if not isinstance(uri, Path):
             scheme = get_uri_scheme(uri)
         is_local = isinstance(uri, Path) or scheme == "file"
-        # managed lancedb remote uses schema like lancedb+[http|grpc|...]://
-        self._is_managed_remote = not is_local and scheme.startswith("db://")
-        if self._is_managed_remote:
-            if len(scheme.split("+")) != 2:
-                raise ValueError(
-                    f"Invalid LanceDB URI: {uri}, expected uri to have scheme like db://..."
-                )
         if is_local:
             if isinstance(uri, str):
                 uri = Path(uri)
@@ -219,43 +212,6 @@ class LanceDBConnection(DBConnection):
     @property
     def uri(self) -> str:
         return self._uri
-
-    @functools.cached_property
-    def is_managed_remote(self) -> bool:
-        return self._is_managed_remote
-
-    @functools.cached_property
-    def remote_flavor(self) -> str:
-        if not self.is_managed_remote:
-            raise ValueError(
-                "Not a managed remote LanceDB, there should be no server flavor"
-            )
-        return get_uri_scheme(self.uri).split("+")[1]
-
-    @functools.cached_property
-    def _client(self) -> "lancedb.remote.LanceDBClient":
-        if not self.is_managed_remote:
-            raise ValueError("Not a managed remote LanceDB, there should be no client")
-
-        # don't import unless we are really using remote
-        from lancedb.remote.client import RestfulLanceDBClient
-
-        if self.remote_flavor == "http":
-            return RestfulLanceDBClient(self._uri)
-
-        raise ValueError("Unsupported remote flavor: " + self.remote_flavor)
-
-    async def close(self):
-        if self._entered:
-            raise ValueError("Cannot re-enter the same LanceDBConnection twice")
-        self._entered = True
-        await self._client.close()
-
-    async def __aenter__(self) -> LanceDBConnection:
-        return self
-
-    async def __aexit__(self, exc_type, exc_value, traceback):
-        await self.close()
 
     def table_names(self) -> list[str]:
         """Get the names of all tables in the database.
