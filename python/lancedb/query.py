@@ -217,7 +217,7 @@ class LanceQueryBuilder:
         and also the "score" column which is the distance between the query
         vector and the returned vectors.
         """
-        vector =  self._query if isinstance(self._query, list) else self._query.tolist()
+        vector = self._query if isinstance(self._query, list) else self._query.tolist()
         query = Query(
             vector=vector,
             filter=self._where,
