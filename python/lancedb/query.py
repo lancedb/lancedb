@@ -38,7 +38,7 @@ class Query(BaseModel):
     k: int
 
     # # metrics
-    _metric: str = "L2"
+    metric: str = "L2"
 
     # which columns to return in the results
     columns: Optional[List[str]] = None
@@ -222,7 +222,7 @@ class LanceQueryBuilder:
             vector=vector,
             filter=self._where,
             k=self._limit,
-            _metric=self._metric,
+            metric=self._metric,
             columns=self._columns,
             nprobes=self._nprobes,
             refine_factor=self._refine_factor,

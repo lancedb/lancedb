@@ -532,7 +532,7 @@ class LanceTable(Table):
                 "column": query.vector_column,
                 "q": query.vector,
                 "k": query.k,
-                "metric": query._metric,
+                "metric": query.metric,
                 "nprobes": query.nprobes,
                 "refine_factor": query.refine_factor,
             },
