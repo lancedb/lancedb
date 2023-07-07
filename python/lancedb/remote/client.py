@@ -21,6 +21,7 @@ import pyarrow as pa
 
 from lancedb.remote import VectorQuery, VectorQueryResult
 from lancedb.remote.errors import LanceDBClientError
+from lancedb.common import Credential
 
 
 def _check_not_closed(f):
@@ -37,7 +38,7 @@ def _check_not_closed(f):
 class RestfulLanceDBClient:
     db_name: str
     region: str
-    api_key: str
+    api_key: Credential
     closed: bool = attr.field(default=False, init=False)
 
     @functools.cached_property
