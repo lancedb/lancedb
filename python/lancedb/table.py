@@ -22,6 +22,7 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.compute as pc
+import pyarrow.fs
 from lance import LanceDataset
 from lance.vector import vec_to_table
 
@@ -95,7 +96,8 @@ class LanceTable:
 
     def _reset_dataset(self):
         try:
-            del self.__dict__["_dataset"]
+            if "_dataset" in self.__dict__:
+                del self.__dict__["_dataset"]
         except AttributeError:
             pass
 
@@ -281,6 +283,7 @@ class LanceTable:
         int
             The number of vectors in the table.
         """
+        # TODO: manage table listing and metadata separately
         data = _sanitize_data(
             data, self.schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value
         )
@@ -326,7 +329,7 @@ class LanceTable:
         cls,
         db,
         name,
-        data,
+        data=None,
         schema=None,
         mode="create",
         on_bad_vectors: str = "error",
@@ -354,10 +357,12 @@ class LanceTable:
             The LanceDB instance to create the table in.
         name: str
             The name of the table to create.
-        data: list-of-dict, dict, pd.DataFrame
+        data: list-of-dict, dict, pd.DataFrame, default None
             The data to insert into the table.
+            At least one of `data` or `schema` must be provided.
         schema: dict, optional
             The schema of the table. If not provided, the schema is inferred from the data.
+            At least one of `data` or `schema` must be provided.
         mode: str, default "create"
             The mode to use when writing the data. Valid values are
             "create", "overwrite", and "append".
@@ -368,11 +373,16 @@ class LanceTable:
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
         """
         tbl = LanceTable(db, name)
-        data = _sanitize_data(
-            data, schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value
-        )
+        if data is not None:
+            data = _sanitize_data(
+                data, schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value
+            )
+        else:
+            if schema is None:
+                raise ValueError("Either data or schema must be provided")
+            data = pa.Table.from_pylist([], schema=schema)
         lance.write_dataset(data, tbl._dataset_uri, mode=mode)
-        return tbl
+        return LanceTable(db, name)
 
     @classmethod
     def open(cls, db, name):
@@ -384,7 +394,6 @@ class LanceTable:
             raise FileNotFoundError(
                 f"Table {name} does not exist. Please first call db.create_table({name}, data)"
             )
-
         return tbl
 
     def delete(self, where: str):
