@@ -14,7 +14,6 @@
 import pyarrow as pa
 
 import lancedb
-from lancedb.db import LanceDBConnection
 from lancedb.remote.client import VectorQuery, VectorQueryResult
 
 

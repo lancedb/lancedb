@@ -45,7 +45,7 @@ class RemoteTable(Table):
         vector_column_name: str = VECTOR_COLUMN_NAME,
         replace: bool = True,
     ):
-        pass
+        raise NotImplementedError
 
     def add(
         self,
@@ -54,10 +54,10 @@ class RemoteTable(Table):
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
     ) -> int:
-        pass
+        raise NotImplementedError
 
     def search(
-        self, query: VEC | str, vector_column: str = VECTOR_COLUMN_NAME
+        self, query: Union[VEC, str], vector_column: str = VECTOR_COLUMN_NAME
     ) -> LanceQueryBuilder:
         return LanceQueryBuilder(self, query, vector_column)
 
