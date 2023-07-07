@@ -20,7 +20,7 @@ import pyarrow as pa
 import pytest
 
 from lancedb.db import LanceDBConnection
-from lancedb.query import LanceQueryBuilder
+from lancedb.query import LanceQueryBuilder, Query
 from lancedb.table import LanceTable
 
 
@@ -109,20 +109,17 @@ def test_query_builder_with_different_vector_column():
     )
     ds = mock.Mock()
     table.to_lance.return_value = ds
-    table._conn = mock.MagicMock()
-    table._conn.is_managed_remote = False
     builder.to_arrow()
-    ds.to_table.assert_called_once_with(
-        columns=["b"],
-        filter="b < 10",
-        nearest={
-            "column": vector_column_name,
-            "q": query,
-            "k": 2,
-            "metric": "cosine",
-            "nprobes": 20,
-            "refine_factor": None,
-        },
+    table._execute_query.assert_called_once_with(
+        Query(
+            vector=query,
+            filter="b < 10",
+            k=2,
+            _metric="cosine",
+            columns=["b"],
+            nprobes=20,
+            refine_factor=None,
+        )
     )
 
 
