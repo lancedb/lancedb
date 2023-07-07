@@ -27,6 +27,7 @@ VECTOR_COLUMN_NAME = "vector"
 
 class Credential(str):
     """Credential field"""
+
     def __repr__(self) -> str:
         return "********"
 

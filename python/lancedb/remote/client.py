@@ -19,9 +19,9 @@ import aiohttp
 import attr
 import pyarrow as pa
 
+from lancedb.common import Credential
 from lancedb.remote import VectorQuery, VectorQueryResult
 from lancedb.remote.errors import LanceDBClientError
-from lancedb.common import Credential
 
 
 def _check_not_closed(f):
