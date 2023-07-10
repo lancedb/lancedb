@@ -128,54 +128,54 @@ def schema_to_dict(schema: pa.Schema) -> Dict[str, Any]:
     >>> import pyarrow as pa
     >>> import lancedb
     >>> schema = pa.schema(
-        [
-            pa.field("id", pa.int64()),
-            pa.field("vector", lancedb.vector(512), nullable=False),
-            pa.field(
-                "struct",
-                pa.struct(
-                    [
-                        pa.field("a", pa.utf8()),
-                        pa.field("b", pa.float32()),
-                    ]
-                ),
-                True,
-            ),
-        ],
-        metadata={"key": "value"},
-    )
+    ...     [
+    ...         pa.field("id", pa.int64()),
+    ...         pa.field("vector", lancedb.vector(512), nullable=False),
+    ...         pa.field(
+    ...             "struct",
+    ...             pa.struct(
+    ...             [
+    ...                 pa.field("a", pa.utf8()),
+    ...                 pa.field("b", pa.float32()),
+    ...             ]
+    ...         ),
+    ...         True,
+    ...     ),
+    ...     ],
+    ...     metadata={"key": "value"},
+    ... )
     >>> json_schema = schema_to_dict(schema)
     >>> assert json_schema == {
-        "fields": [
-            {"name": "id", "type": {"name": "int64"}, "nullable": True},
-            {
-                "name": "vector",
-                "type": {
-                    "name": "fixed_size_list",
-                    "value_type": {"name": "float32"},
-                    "width": 512,
-                },
-                "nullable": False,
-            },
-            {
-                "name": "struct",
-                "type": {
-                    "name": "struct",
-                    "fields": [
-                        {"name": "a", "type": {"name": "string"}, "nullable": True},
-                        {"name": "b", "type": {"name": "float32"}, "nullable": True},
-                    ],
-                },
-                "nullable": True,
-            },
-        ],
-        "metadata": {"key": "value"},
-    }
+    ...     "fields": [
+    ...     {"name": "id", "type": {"name": "int64"}, "nullable": True},
+    ...     {
+    ...         "name": "vector",
+    ...         "type": {
+    ...             "name": "fixed_size_list",
+    ...             "value_type": {"name": "float32"},
+    ...             "width": 512,
+    ...         },
+    ...        "nullable": False,
+    ...    },
+    ...    {
+    ...         "name": "struct",
+    ...         "type": {
+    ...             "name": "struct",
+    ...             "fields": [
+    ...                 {"name": "a", "type": {"name": "string"}, "nullable": True},
+    ...                 {"name": "b", "type": {"name": "float32"}, "nullable": True},
+    ...            ],
+    ...         },
+    ...         "nullable": True,
+    ...     },
+    ...     ],
+    ...     "metadata": {"key": "value"},
+    ... }
 
     """
     fields = []
     for name in schema.names:
-        field = schema.field_by_name(name)
+        field = schema.field(name)
         fields.append(_field_to_dict(field))
     return {
         "fields": fields,
