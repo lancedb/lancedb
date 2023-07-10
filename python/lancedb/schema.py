@@ -96,18 +96,26 @@ def _type_to_dict(dt: pa.DataType) -> Dict[str, Any]:
             "name": "struct",
             "fields": [_field_to_dict(dt.field(i)) for i in range(dt.num_fields)],
         }
+    elif pa.types.is_dictionary(dt):
+        return {
+            "name": "dictionary",
+            "index_type": _type_to_dict(dt.index_type),
+            "value_type": _type_to_dict(dt.value_type),
+        }
     # TODO: support extension types
 
     raise TypeError(f"Unsupported type: {dt}")
 
 
 def _field_to_dict(field: pa.field) -> Dict[str, Any]:
-    return {
+    ret = {
         "name": field.name,
         "type": _type_to_dict(field.type),
         "nullable": field.nullable,
-        # "metadata": field.metadata,
     }
+    if field.metadata is not None:
+        ret["metadata"] = field.metadata
+    return ret
 
 
 def schema_to_dict(schema: pa.Schema) -> Dict[str, Any]:
@@ -220,6 +228,10 @@ def _dict_to_type(dt: Dict[str, Any]) -> pa.DataType:
         for field in dt["fields"]:
             fields.append(_dict_to_field(field))
         return pa.struct(fields)
+    elif name == "dictionary":
+        return pa.dictionary(
+            _dict_to_type(dt["index_type"]), _dict_to_type(dt["value_type"])
+        )
     raise TypeError(f"Unsupported type: {dt}")
 
 

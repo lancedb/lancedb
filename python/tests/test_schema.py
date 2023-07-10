@@ -32,6 +32,7 @@ def test_schema_to_dict():
                 ),
                 True,
             ),
+            pa.field("d", pa.dictionary(pa.int64(), pa.utf8()), False),
         ],
         metadata={"key": "value"},
     )
@@ -59,6 +60,15 @@ def test_schema_to_dict():
                     ],
                 },
                 "nullable": True,
+            },
+            {
+                "name": "d",
+                "type": {
+                    "name": "dictionary",
+                    "index_type": {"name": "int64"},
+                    "value_type": {"name": "string"},
+                },
+                "nullable": False,
             },
         ],
         "metadata": {"key": "value"},
