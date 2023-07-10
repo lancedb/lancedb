@@ -11,6 +11,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
+import asyncio
 from typing import List
 from urllib.parse import urlparse
 
@@ -34,12 +35,18 @@ class RemoteDBConnection(DBConnection):
         self.db_name = parsed.netloc
         self.api_key = api_key
         self._client = RestfulLanceDBClient(self.db_name, region, api_key)
+        try:
+            self._loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._loop = asyncio.get_event_loop()
 
     def __repr__(self) -> str:
         return f"RemoveConnect(name={self.db_name})"
 
     def table_names(self) -> List[str]:
-        raise NotImplementedError
+        """List the names of all tables in the database."""
+        result = self._loop.run_until_complete(self._client.list_tables())
+        return result
 
     def open_table(self, name: str) -> Table:
         """Open a Lance Table in the database.
