@@ -61,10 +61,5 @@ class RemoteTable(Table):
         return LanceQueryBuilder(self, query, vector_column)
 
     def _execute_query(self, query: Query) -> pa.Table:
-        import asyncio
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = asyncio.get_event_loop()
         result = self._conn._client.query(self._name, query)
-        return loop.run_until_complete(result).to_arrow()
+        return self._conn._loop.run_until_complete(result).to_arrow()
