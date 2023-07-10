@@ -13,7 +13,7 @@
 
 
 import functools
-from typing import Dict, Any, Union, Callable
+from typing import Any, Callable, Dict, Union
 
 import aiohttp
 import attr
@@ -34,10 +34,12 @@ def _check_not_closed(f):
 
     return wrapped
 
+
 async def _read_ipc(resp: aiohttp.ClientResponse) -> pa.Table:
     resp_body = await resp.read()
     with pa.ipc.open_file(pa.BufferReader(resp_body)) as reader:
         return reader.read_all()
+
 
 @attr.define(slots=False)
 class RestfulLanceDBClient:
@@ -79,21 +81,20 @@ class RestfulLanceDBClient:
             )
 
     @_check_not_closed
-    async def get(
-        self, uri: str, params: Union[Dict[str, Any], BaseModel] = None
-    ):
+    async def get(self, uri: str, params: Union[Dict[str, Any], BaseModel] = None):
         """Send a GET request and returns the deserialized response payload."""
         if isinstance(params, BaseModel):
             params: Dict[str, Any] = params.dict(exclude_none=True)
-        async with self.session.get(
-            uri, params=params, headers=self.headers) as resp:
+        async with self.session.get(uri, params=params, headers=self.headers) as resp:
             await self._check_status(resp)
             return await resp.json()
 
     @_check_not_closed
     async def post(
-        self, uri: str, data: Union[Dict[str, Any], BaseModel],
-        deserialize: Callable = lambda resp: resp.json()
+        self,
+        uri: str,
+        data: Union[Dict[str, Any], BaseModel],
+        deserialize: Callable = lambda resp: resp.json(),
     ) -> Dict[str, Any]:
         """Send a POST request and returns the deserialized response payload.
 
