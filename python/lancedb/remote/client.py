@@ -35,7 +35,6 @@ def _check_not_closed(f):
     return wrapped
 
 async def _read_ipc(resp: aiohttp.ClientResponse) -> pa.Table:
-    reader = await resp.content.read()
     resp_body = await resp.read()
     with pa.ipc.open_file(pa.BufferReader(resp_body)) as reader:
         return reader.read_all()
