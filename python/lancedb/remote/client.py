@@ -61,12 +61,41 @@ class RestfulLanceDBClient:
             "x-api-key": self.api_key,
         }
 
+    @staticmethod
+    async def _check_status(resp: aiohttp.ClientResponse):
+        if resp.status == 404:
+            raise LanceDBClientError(f"Not found: {await resp.text()}")
+        elif 400 <= resp.status < 500:
+            raise LanceDBClientError(
+                f"Bad Request: {resp.status}, error: {await resp.text()}"
+            )
+        elif 500 <= resp.status < 600:
+            raise LanceDBClientError(
+                f"Internal Server Error: {resp.status}, error: {await resp.text()}"
+            )
+        elif resp.status != 200:
+            raise LanceDBClientError(
+                f"Unknown Error: {resp.status}, error: {await resp.text()}"
+            )
+
+    @_check_not_closed
+    async def get(
+        self, uri: str, params: Union[Dict[str, Any], BaseModel] = None
+    ):
+        """Send a GET request and returns the deserialized response payload."""
+        if isinstance(params, BaseModel):
+            params: Dict[str, Any] = params.dict(exclude_none=True)
+        async with self.session.get(
+            uri, params=params, headers=self.headers) as resp:
+            await self._check_status(resp)
+            return await resp.json()
+
     @_check_not_closed
     async def post(
         self, uri: str, data: Union[Dict[str, Any], BaseModel],
         deserialize: Callable = lambda resp: resp.json()
     ) -> Dict[str, Any]:
-        """Send a POST request and returns JSON response.
+        """Send a POST request and returns the deserialized response payload.
 
         Parameters
         ----------
@@ -83,26 +112,13 @@ class RestfulLanceDBClient:
             headers=self.headers,
         ) as resp:
             resp: aiohttp.ClientResponse = resp
-            if resp.status == 404:
-                raise LanceDBClientError(f"Not found: {await resp.text()}")
-            elif 400 <= resp.status < 500:
-                raise LanceDBClientError(
-                    f"Bad Request: {resp.status}, error: {await resp.text()}"
-                )
-            elif 500 <= resp.status < 600:
-                raise LanceDBClientError(
-                    f"Internal Server Error: {resp.status}, error: {await resp.text()}"
-                )
-            elif resp.status != 200:
-                raise LanceDBClientError(
-                    f"Unknown Error: {resp.status}, error: {await resp.text()}"
-                )
+            await self._check_status(resp)
             return await deserialize(resp)
 
     @_check_not_closed
     async def list_tables(self):
         """List all tables in the database."""
-        json = await self.post("/1/table/", {})
+        json = await self.get("/1/table/", {})
         return json["tables"]
 
     @_check_not_closed

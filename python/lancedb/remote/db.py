@@ -46,7 +46,6 @@ class RemoteDBConnection(DBConnection):
     def table_names(self) -> List[str]:
         """List the names of all tables in the database."""
         result = self._loop.run_until_complete(self._client.list_tables())
-        print("Table names: ", result)
         return result
 
     def open_table(self, name: str) -> Table:
