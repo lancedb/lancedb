@@ -14,7 +14,7 @@
 import pyarrow as pa
 
 import lancedb
-from lancedb.schema import schema_to_dict, dict_to_schema
+from lancedb.schema import dict_to_schema, schema_to_dict
 
 
 def test_schema_to_dict():
