@@ -12,6 +12,10 @@
 #  limitations under the License.
 
 from urllib.parse import urlparse
+from typing import Dict
+
+import pyarrow as pa
+import numpy as np
 
 
 def get_uri_scheme(uri: str) -> str:
@@ -59,3 +63,14 @@ def get_uri_location(uri: str) -> str:
         return parsed.path
     else:
         return parsed.netloc + parsed.path
+
+
+def _convert_arrow_to_json(val):
+    if isinstance(val, np.ndarray) and len(val.shape) == 1:
+        return val.tolist()
+    else:
+        return val
+
+def arrow_to_json(table: pa.Table) -> Dict:
+    df = table.to_pandas().applymap(_convert_arrow_to_json)
+    return df.to_dict(orient="records")

@@ -31,7 +31,7 @@ from .common import DATA, VEC, VECTOR_COLUMN_NAME
 from .query import LanceFtsQueryBuilder, LanceQueryBuilder, Query
 
 
-def _sanitize_data(data, schema, on_bad_vectors, fill_value):
+def _sanitize_data(data, schema, on_bad_vectors, fill_value) -> pa.Table:
     if isinstance(data, list):
         data = pa.Table.from_pylist(data)
         data = _sanitize_schema(

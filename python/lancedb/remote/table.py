@@ -12,13 +12,14 @@
 #  limitations under the License.
 
 from typing import Union
+import uuid
 
 import pyarrow as pa
 
 from lancedb.common import DATA, VEC, VECTOR_COLUMN_NAME
-
+from lancedb.util import arrow_to_json
 from ..query import LanceQueryBuilder, Query
-from ..table import Query, Table
+from ..table import Query, Table, _sanitize_data
 from .db import RemoteDBConnection
 
 
@@ -53,7 +54,18 @@ class RemoteTable(Table):
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
     ) -> int:
-        raise NotImplementedError
+        data = _sanitize_data(
+            data, None, on_bad_vectors=on_bad_vectors, fill_value=fill_value
+        )
+        request_id = uuid.uuid4().hex
+        records = arrow_to_json(data)
+        payload = {
+            "request_id": request_id,
+            "records": records,
+        }
+        result = self._conn._client.post(f"/1/table/{self._name}/insert/", data=payload)
+        # TODO: Retries if failed
+        return self._conn._loop.run_until_complete(result)
 
     def search(
         self, query: Union[VEC, str], vector_column: str = VECTOR_COLUMN_NAME
