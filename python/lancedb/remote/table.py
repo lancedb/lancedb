@@ -11,7 +11,6 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
-import asyncio
 from typing import Union
 
 import pyarrow as pa
@@ -62,6 +61,7 @@ class RemoteTable(Table):
         return LanceQueryBuilder(self, query, vector_column)
 
     def _execute_query(self, query: Query) -> pa.Table:
+        import asyncio
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
