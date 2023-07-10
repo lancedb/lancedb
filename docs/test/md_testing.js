@@ -2,17 +2,17 @@ const glob = require("glob");
 const fs = require("fs");
 const path = require("path");
 
-const excludedFiles = [
+const globString = "../src/**/*.md";
+const excludedGlobs = [
   "../src/fts.md",
   "../src/embedding.md",
-  "../src/examples/serverless_lancedb_with_s3_and_lambda.md",
-  "../src/examples/serverless_qa_bot_with_modal_and_langchain.md",
-  "../src/examples/youtube_transcript_bot_with_nodejs.md",
+  "../src/examples/*.md",
+  "../src/vectordb-recipes/**/*.md"
 ];
+
 const nodePrefix = "javascript";
 const nodeFile = ".js";
 const nodeFolder = "node";
-const globString = "../src/**/*.md";
 const asyncPrefix = "(async () => {\n";
 const asyncSuffix = "})();";
 
@@ -31,6 +31,7 @@ function* yieldLines(lines, prefix, suffix) {
 }
 
 const files = glob.sync(globString, { recursive: true });
+const excludedFiles = glob.sync(excludedGlobs, { recursive: true });
 
 for (const file of files.filter((file) => !excludedFiles.includes(file))) {
   const lines = [];

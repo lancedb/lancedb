@@ -1,0 +1,3 @@
+[submodule "docs/src/vectordb-recipes"]
+	path = docs/src/vectordb-recipes
+	url = https://github.com/lancedb/vectordb-recipes

@@ -35,6 +35,10 @@ plugins:
           - https://arrow.apache.org/docs/objects.inv
           - https://pandas.pydata.org/docs/objects.inv
 - mkdocs-jupyter
+- exclude:
+    regex:
+      # exclude vectordb-recipes files other than notebooks
+      - "vectordb-recipes/.*(?<!.ipynb)$"
 
 markdown_extensions:
 - admonition
@@ -58,9 +62,9 @@ nav:
 - Python full-text search: fts.md
 - Python integrations: integrations.md
 - Python examples:
-  - YouTube Transcript Search: notebooks/youtube_transcript_search.ipynb
-  - Documentation QA Bot using LangChain: notebooks/code_qa_bot.ipynb
-  - Multimodal search using CLIP: notebooks/multimodal_search.ipynb
+  - YouTube Transcript Search: vectordb-recipes/examples/youtube_bot/main.ipynb
+  - Documentation QA Bot using LangChain: vectordb-recipes/examples/Code-Documentation-QA-Bot/main.ipynb
+  - Multimodal search using CLIP: vectordb-recipes/examples/multimodal_clip/main.ipynb
   - Serverless QA Bot with S3 and Lambda: examples/serverless_lancedb_with_s3_and_lambda.md
   - Serverless QA Bot with Modal: examples/serverless_qa_bot_with_modal_and_langchain.md
 - Javascript examples:

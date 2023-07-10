@@ -4,4 +4,4 @@
 
 <img id="splash" width="400" alt="multimodal search" src="https://github.com/lancedb/lancedb/assets/917119/993a7c9f-be01-449d-942e-1ce1d4ed63af">
 
-This example is in a [notebook](https://github.com/lancedb/lancedb/blob/main/docs/src/notebooks/multimodal_search.ipynb)
+This example is in a [notebook](https://github.com/lancedb/vectordb-recipes/blob/main/examples/youtube_bot/main.ipynb)
