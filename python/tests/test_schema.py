@@ -13,14 +13,15 @@
 
 import pyarrow as pa
 
-from lancedb.schema import schema_to_dict
+import lancedb
+from lancedb.schema import schema_to_dict, dict_to_schema
 
 
 def test_schema_to_dict():
     schema = pa.schema(
         [
             pa.field("id", pa.int64()),
-            pa.field("vector", pa.float32(), nullable=False),
+            pa.field("vector", lancedb.vector(512), nullable=False),
             pa.field(
                 "struct",
                 pa.struct(
@@ -39,7 +40,15 @@ def test_schema_to_dict():
     assert json_schema == {
         "fields": [
             {"name": "id", "type": {"name": "int64"}, "nullable": True},
-            {"name": "vector", "type": {"name": "float32"}, "nullable": False},
+            {
+                "name": "vector",
+                "type": {
+                    "name": "fixed_size_list",
+                    "value_type": {"name": "float32"},
+                    "width": 512,
+                },
+                "nullable": False,
+            },
             {
                 "name": "struct",
                 "type": {
@@ -54,3 +63,6 @@ def test_schema_to_dict():
         ],
         "metadata": {"key": "value"},
     }
+
+    actual_schema = dict_to_schema(json_schema)
+    assert actual_schema == schema

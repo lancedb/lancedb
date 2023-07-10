@@ -30,7 +30,7 @@ def vector(dimension: int, value_type: pa.DataType = pa.float32()) -> pa.DataTyp
 
     Returns
     -------
-    The vector type.
+    A PyArrow DataType for vectors.
 
     Examples
     --------
@@ -86,6 +86,11 @@ def _type_to_dict(dt: pa.DataType) -> Dict[str, Any]:
             "width": dt.list_size,
             "value_type": _type_to_dict(dt.value_type),
         }
+    elif pa.types.is_list(dt):
+        return {
+            "name": "fixed_size_list",
+            "value_type": _type_to_dict(dt.value_type),
+        }
     elif pa.types.is_struct(dt):
         return {
             "name": "struct",
@@ -117,6 +122,56 @@ def schema_to_dict(schema: pa.Schema) -> Dict[str, Any]:
     -------
     A dict of the data type.
 
+    Examples
+    --------
+
+    >>> import pyarrow as pa
+    >>> import lancedb
+    >>> schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("vector", lancedb.vector(512), nullable=False),
+            pa.field(
+                "struct",
+                pa.struct(
+                    [
+                        pa.field("a", pa.utf8()),
+                        pa.field("b", pa.float32()),
+                    ]
+                ),
+                True,
+            ),
+        ],
+        metadata={"key": "value"},
+    )
+    >>> json_schema = schema_to_dict(schema)
+    >>> assert json_schema == {
+        "fields": [
+            {"name": "id", "type": {"name": "int64"}, "nullable": True},
+            {
+                "name": "vector",
+                "type": {
+                    "name": "fixed_size_list",
+                    "value_type": {"name": "float32"},
+                    "width": 512,
+                },
+                "nullable": False,
+            },
+            {
+                "name": "struct",
+                "type": {
+                    "name": "struct",
+                    "fields": [
+                        {"name": "a", "type": {"name": "string"}, "nullable": True},
+                        {"name": "b", "type": {"name": "float32"}, "nullable": True},
+                    ],
+                },
+                "nullable": True,
+            },
+        ],
+        "metadata": {"key": "value"},
+    }
+
     """
     fields = []
     for name in schema.names:
@@ -130,7 +185,69 @@ def schema_to_dict(schema: pa.Schema) -> Dict[str, Any]:
     }
 
 
-def dict_to_schema(json: Dict[str, Any]) -> pa.Schema:
-    """Reconstruct a PyArrow Schema from a JSON dict."""
+def _dict_to_type(dt: Dict[str, Any]) -> pa.DataType:
+    name = dt["name"]
+    try:
+        return {
+            "boolean": pa.bool_(),
+            "int8": pa.int8(),
+            "int16": pa.int16(),
+            "int32": pa.int32(),
+            "int64": pa.int64(),
+            "uint8": pa.uint8(),
+            "uint16": pa.uint16(),
+            "uint32": pa.uint32(),
+            "uint64": pa.uint64(),
+            "float16": pa.float16(),
+            "float32": pa.float32(),
+            "float64": pa.float64(),
+            "string": pa.string(),
+            "binary": pa.binary(),
+            "large_string": pa.large_string(),
+            "large_binary": pa.large_binary(),
+        }[name]
+    except KeyError:
+        pass
 
-    pass
+    if name == "fixed_size_binary":
+        return pa.binary(dt["width"])
+    elif name == "fixed_size_list":
+        return pa.list_(_dict_to_type(dt["value_type"]), dt["width"])
+    elif name == "list":
+        return pa.list_(_dict_to_type(dt["value_type"]))
+    elif name == "struct":
+        fields = []
+        for field in dt["fields"]:
+            fields.append(_dict_to_field(field))
+        return pa.struct(fields)
+    raise TypeError(f"Unsupported type: {dt}")
+
+
+def _dict_to_field(field: Dict[str, Any]) -> pa.Field:
+    name = field["name"]
+    nullable = field["nullable"] if "nullable" in field else True
+    dt = _dict_to_type(field["type"])
+    metadata = field.get("metadata", None)
+    return pa.field(name, dt, nullable, metadata)
+
+
+def dict_to_schema(json: Dict[str, Any]) -> pa.Schema:
+    """Reconstruct a PyArrow Schema from a JSON dict.
+
+    Parameters
+    ----------
+    json : Dict[str, Any]
+        The JSON dict to reconstruct Schema from.
+
+    Returns
+    -------
+    A PyArrow Schema.
+    """
+    fields = []
+    for field in json["fields"]:
+        fields.append(_dict_to_field(field))
+    metadata = {
+        k.encode("utf-8"): v.encode("utf-8")
+        for (k, v) in json.get("metadata", {}).items()
+    }
+    return pa.schema(fields, metadata)
