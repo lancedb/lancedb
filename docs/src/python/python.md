@@ -43,3 +43,10 @@ pip install lancedb
 ::: lancedb.fts.populate_index
 
 ::: lancedb.fts.search_index
+
+## Utilities
+
+::: lancedb.schema.schema_to_dict
+::: lancedb.schema.dict_to_schema
+::: lancedb.vector
+
