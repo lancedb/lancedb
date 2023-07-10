@@ -11,13 +11,14 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
-from typing import Union
 import uuid
+from typing import Union
 
 import pyarrow as pa
 
 from lancedb.common import DATA, VEC, VECTOR_COLUMN_NAME
 from lancedb.util import arrow_to_json
+
 from ..query import LanceQueryBuilder, Query
 from ..table import Query, Table, _sanitize_data
 from .db import RemoteDBConnection

@@ -11,11 +11,11 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
-from urllib.parse import urlparse
 from typing import Dict
+from urllib.parse import urlparse
 
-import pyarrow as pa
 import numpy as np
+import pyarrow as pa
 
 
 def get_uri_scheme(uri: str) -> str:
@@ -70,6 +70,7 @@ def _convert_arrow_to_json(val):
         return val.tolist()
     else:
         return val
+
 
 def arrow_to_json(table: pa.Table) -> Dict:
     df = table.to_pandas().applymap(_convert_arrow_to_json)
