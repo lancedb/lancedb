@@ -53,9 +53,9 @@ LanceDB's core is written in Rust 🦀 and is built using <a href="https://githu
       ```
 
 ## Complete Demos (Python)
-- [YouTube Transcript Search](vectordb-recipes/examples/youtube_bot/main.ipynb)
-- [Documentation QA Bot using LangChain](vectordb-recipes/examples/Code-Documentation-QA-Bot/main.ipynb)
-- [Multimodal search using CLIP](vectordb-recipes/examples/multimodal_clip/main.ipynb)
+- [YouTube Transcript Search](examples/youtube_bot/main.ipynb)
+- [Documentation QA Bot using LangChain](examples/Code-Documentation-QA-Bot/main.ipynb)
+- [Multimodal search using CLIP](examples/multimodal_clip/main.ipynb)
 - [Serverless QA Bot with S3 and Lambda](examples/serverless_lancedb_with_s3_and_lambda.md)
 - [Serverless QA Bot with Modal](examples/serverless_qa_bot_with_modal_and_langchain.md)
 

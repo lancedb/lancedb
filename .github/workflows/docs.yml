@@ -61,6 +61,9 @@ jobs:
         working-directory: node
         run: |
           npx typedoc --plugin typedoc-plugin-markdown --out ../docs/src/javascript src/index.ts
+      - name: Move vectordb-recipes to examples
+        working-directory: docs/src
+        run: mv vectordb-recipes/examples/** examples/
       - name: Build docs
         run: |
           PYTHONPATH=. mkdocs build -f docs/mkdocs.yml
