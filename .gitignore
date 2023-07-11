@@ -5,6 +5,8 @@
 .DS_Store
 venv
 
+.vscode
+
 rust/target
 rust/Cargo.lock
 
