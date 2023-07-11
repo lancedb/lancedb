@@ -100,7 +100,7 @@ impl Database {
     pub async fn create_table(
         &self,
         name: &str,
-        batches: Box<dyn RecordBatchReader>,
+        batches: impl RecordBatchReader + Send + 'static,
         params: Option<WriteParams>,
     ) -> Result<Table> {
         Table::create(&self.uri, name, batches, params).await

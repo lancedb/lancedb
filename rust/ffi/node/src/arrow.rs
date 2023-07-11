@@ -13,7 +13,6 @@
 // limitations under the License.
 
 use std::io::Cursor;
-use std::ops::Deref;
 use std::sync::Arc;
 
 use arrow_array::cast::as_list_array;
@@ -25,10 +24,13 @@ use lance::arrow::{FixedSizeListArrayExt, RecordBatchExt};
 pub(crate) fn convert_record_batch(record_batch: RecordBatch) -> RecordBatch {
     let column = record_batch
         .column_by_name("vector")
+        .cloned()
         .expect("vector column is missing");
-    let arr = as_list_array(column.deref());
+    // TODO: we should just consume the underlaying js buffer in the future instead of this arrow around a bunch of times
+    let arr = as_list_array(column.as_ref());
     let list_size = arr.values().len() / record_batch.num_rows();
-    let r = FixedSizeListArray::try_new(arr.values(), list_size as i32).unwrap();
+    let r =
+        FixedSizeListArray::try_new_from_values(arr.values().to_owned(), list_size as i32).unwrap();
 
     let schema = Arc::new(Schema::new(vec![Field::new(
         "vector",
