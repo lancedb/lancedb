@@ -17,19 +17,23 @@ use std::convert::TryFrom;
 use std::ops::Deref;
 use std::sync::{Arc, Mutex};
 
-use arrow_array::{Float32Array, RecordBatchIterator, RecordBatchReader};
+use arrow_array::{Float32Array, RecordBatchIterator};
 use arrow_ipc::writer::FileWriter;
+use async_trait::async_trait;
 use futures::{TryFutureExt, TryStreamExt};
-use lance::dataset::{WriteMode, WriteParams};
+use lance::dataset::{ReadParams, WriteMode, WriteParams};
 use lance::index::vector::MetricType;
+use lance::io::object_store::ObjectStoreParams;
 use neon::prelude::*;
 use neon::types::buffer::TypedArray;
+use object_store::aws::{AwsCredential, AwsCredentialProvider};
+use object_store::CredentialProvider;
 use once_cell::sync::OnceCell;
 use tokio::runtime::Runtime;
 
 use vectordb::database::Database;
 use vectordb::error::Error;
-use vectordb::table::Table;
+use vectordb::table::{OpenTableParams, Table};
 
 use crate::arrow::arrow_buffer_to_record_batch;
 
@@ -48,6 +52,33 @@ struct JsTable {
 }
 
 impl Finalize for JsTable {}
+
+// TODO: object_store didn't export this type so I copied it.
+// Make a requiest to object_store to export this type
+#[derive(Debug)]
+pub struct StaticCredentialProvider<T> {
+    credential: Arc<T>,
+}
+
+impl<T> StaticCredentialProvider<T> {
+    pub fn new(credential: T) -> Self {
+        Self {
+            credential: Arc::new(credential),
+        }
+    }
+}
+
+#[async_trait]
+impl<T> CredentialProvider for StaticCredentialProvider<T>
+where
+    T: std::fmt::Debug + Send + Sync,
+{
+    type Credential = T;
+
+    async fn get_credential(&self) -> object_store::Result<Arc<T>> {
+        Ok(Arc::clone(&self.credential))
+    }
+}
 
 fn runtime<'a, C: Context<'a>>(cx: &mut C) -> NeonResult<&'static Runtime> {
     static RUNTIME: OnceCell<Runtime> = OnceCell::new();
@@ -97,11 +128,59 @@ fn database_table_names(mut cx: FunctionContext) -> JsResult<JsPromise> {
     Ok(promise)
 }
 
+fn get_aws_creds<T>(
+    cx: &mut FunctionContext,
+    arg_starting_location: i32,
+) -> Result<Option<AwsCredentialProvider>, NeonResult<T>> {
+    let secret_key_id = cx
+        .argument_opt(arg_starting_location)
+        .map(|arg| arg.downcast_or_throw::<JsString, FunctionContext>(cx).ok())
+        .flatten()
+        .map(|v| v.value(cx));
+
+    let secret_key = cx
+        .argument_opt(arg_starting_location + 1)
+        .map(|arg| arg.downcast_or_throw::<JsString, FunctionContext>(cx).ok())
+        .flatten()
+        .map(|v| v.value(cx));
+
+    let temp_token = cx
+        .argument_opt(arg_starting_location + 2)
+        .map(|arg| arg.downcast_or_throw::<JsString, FunctionContext>(cx).ok())
+        .flatten()
+        .map(|v| v.value(cx));
+
+    match (secret_key_id, secret_key, temp_token) {
+        (Some(key_id), Some(key), optional_token) => Ok(Some(Arc::new(
+            StaticCredentialProvider::new(AwsCredential {
+                key_id: key_id,
+                secret_key: key,
+                token: optional_token,
+            }),
+        ))),
+        (None, None, None) => Ok(None),
+        _ => Err(cx.throw_error("Invalid credentials configuration")),
+    }
+}
+
 fn database_open_table(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let db = cx
         .this()
         .downcast_or_throw::<JsBox<JsDatabase>, _>(&mut cx)?;
     let table_name = cx.argument::<JsString>(0)?.value(&mut cx);
+
+    let aws_creds = match get_aws_creds(&mut cx, 1) {
+        Ok(creds) => creds,
+        Err(err) => return err,
+    };
+
+    let param = ReadParams {
+        store_options: Some(ObjectStoreParams {
+            aws_credentials: aws_creds,
+            ..ObjectStoreParams::default()
+        }),
+        ..ReadParams::default()
+    };
 
     let rt = runtime(&mut cx)?;
     let channel = cx.channel();
@@ -109,7 +188,14 @@ fn database_open_table(mut cx: FunctionContext) -> JsResult<JsPromise> {
 
     let (deferred, promise) = cx.promise();
     rt.spawn(async move {
-        let table_rst = database.open_table(&table_name).await;
+        let table_rst = database
+            .open_table_with_params(
+                &table_name,
+                OpenTableParams {
+                    open_table_params: param,
+                },
+            )
+            .await;
 
         deferred.settle_with(&channel, move |mut cx| {
             let table = Arc::new(Mutex::new(
@@ -241,8 +327,6 @@ fn table_create(mut cx: FunctionContext) -> JsResult<JsPromise> {
         "create" => WriteMode::Create,
         _ => return cx.throw_error("Table::create only supports 'overwrite' and 'create' modes"),
     };
-    let mut params = WriteParams::default();
-    params.mode = mode;
 
     let rt = runtime(&mut cx)?;
     let channel = cx.channel();
@@ -250,11 +334,22 @@ fn table_create(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let (deferred, promise) = cx.promise();
     let database = db.database.clone();
 
+    let aws_creds = match get_aws_creds(&mut cx, 3) {
+        Ok(creds) => creds,
+        Err(err) => return err,
+    };
+
+    let params = WriteParams {
+        store_params: Some(ObjectStoreParams {
+            aws_credentials: aws_creds,
+            ..ObjectStoreParams::default()
+        }),
+        mode: mode,
+        ..WriteParams::default()
+    };
+
     rt.block_on(async move {
-        let batch_reader: Box<dyn RecordBatchReader> = Box::new(RecordBatchIterator::new(
-            batches.into_iter().map(Ok),
-            schema,
-        ));
+        let batch_reader = RecordBatchIterator::new(batches.into_iter().map(Ok), schema);
         let table_rst = database
             .create_table(&table_name, batch_reader, Some(params))
             .await;
@@ -289,16 +384,27 @@ fn table_add(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let table = js_table.table.clone();
     let write_mode = write_mode_map.get(write_mode.as_str()).cloned();
 
+    let aws_creds = match get_aws_creds(&mut cx, 2) {
+        Ok(creds) => creds,
+        Err(err) => return err,
+    };
+
+    let params = WriteParams {
+        store_params: Some(ObjectStoreParams {
+            aws_credentials: aws_creds,
+            ..ObjectStoreParams::default()
+        }),
+        mode: write_mode.unwrap_or(WriteMode::Append),
+        ..WriteParams::default()
+    };
+
     rt.block_on(async move {
-        let batch_reader: Box<dyn RecordBatchReader> = Box::new(RecordBatchIterator::new(
-            batches.into_iter().map(Ok),
-            schema,
-        ));
-        let add_result = table.lock().unwrap().add(batch_reader, write_mode).await;
+        let batch_reader = RecordBatchIterator::new(batches.into_iter().map(Ok), schema);
+        let add_result = table.lock().unwrap().add(batch_reader, Some(params)).await;
 
         deferred.settle_with(&channel, move |mut cx| {
-            let added = add_result.or_else(|err| cx.throw_error(err.to_string()))?;
-            Ok(cx.number(added as f64))
+            let _added = add_result.or_else(|err| cx.throw_error(err.to_string()))?;
+            Ok(cx.boolean(true))
         });
     });
     Ok(promise)

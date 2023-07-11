@@ -6,9 +6,9 @@ members = [
 resolver = "2"
 
 [workspace.dependencies]
-lance = "=0.5.3"
-arrow-array = "40.0"
-arrow-data = "40.0"
-arrow-schema = "40.0"
-arrow-ipc = "40.0"
+lance = "=0.5.5"
+arrow-array = "42.0"
+arrow-data = "42.0"
+arrow-schema = "42.0"
+arrow-ipc = "42.0"
 object_store = "0.6.1"
