@@ -6,6 +6,7 @@ on:
       - main
   pull_request:
     paths:
+      - Cargo.toml
       - rust/**
       - .github/workflows/rust.yml
 
