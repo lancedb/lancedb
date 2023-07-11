@@ -155,12 +155,12 @@ def schema_to_dict(schema: pa.Schema) -> Dict[str, Any]:
     >>> json_schema = schema_to_dict(schema)
     >>> assert json_schema == {
     ...     "fields": [
-    ...     {"name": "id", "type": {"name": "int64"}, "nullable": True},
+    ...     {"name": "id", "type": {"type": "int64"}, "nullable": True},
     ...     {
     ...         "name": "vector",
     ...         "type": {
-    ...             "name": "fixed_size_list",
-    ...             "value_type": {"name": "float32"},
+    ...             "type": "fixed_size_list",
+    ...             "value_type": {"type": "float32"},
     ...             "width": 512,
     ...         },
     ...        "nullable": False,
@@ -168,10 +168,10 @@ def schema_to_dict(schema: pa.Schema) -> Dict[str, Any]:
     ...    {
     ...         "name": "struct",
     ...         "type": {
-    ...             "name": "struct",
+    ...             "type": "struct",
     ...             "fields": [
-    ...                 {"name": "a", "type": {"name": "string"}, "nullable": True},
-    ...                 {"name": "b", "type": {"name": "float32"}, "nullable": True},
+    ...                 {"name": "a", "type": {"type": "string"}, "nullable": True},
+    ...                 {"name": "b", "type": {"type": "float32"}, "nullable": True},
     ...            ],
     ...         },
     ...         "nullable": True,
