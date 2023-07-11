@@ -40,12 +40,12 @@ def test_schema_to_dict():
     json_schema = schema_to_dict(schema)
     assert json_schema == {
         "fields": [
-            {"name": "id", "type": {"name": "int64"}, "nullable": True},
+            {"name": "id", "type": {"type": "int64"}, "nullable": True},
             {
                 "name": "vector",
                 "type": {
                     "type": "fixed_size_list",
-                    "value_type": {"name": "float32"},
+                    "value_type": {"type": "float32"},
                     "width": 512,
                 },
                 "nullable": False,
