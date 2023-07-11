@@ -79,38 +79,32 @@ await db_setup.createTable('my_vectors', data)
     const tbl = await db.openTable("my_vectors")
 
     const results_1 = await tbl.search(Array(1536).fill(1.2))
-        .limit(20)
+        .limit(10)
         .execute()
     ```
 
-
-<!-- Commenting out for now since metricType fails for JS on Ubuntu 22.04.
-
 By default, `l2` will be used as `Metric` type. You can customize the metric type
 as well.
--->
 
-<!--
 === "Python"
--->
-<!--    ```python
+
+    ```python
     df = tbl.search(np.random.random((1536))) \
         .metric("cosine") \
         .limit(10) \
         .to_df()
     ```
--->
-<!--
-=== "JavaScript"
--->
 
-<!--   ```javascript
+
+=== "JavaScript"
+
+    ```javascript
     const results_2 = await tbl.search(Array(1536).fill(1.2))
         .metricType("cosine")
-        .limit(20)
+        .limit(10)
         .execute()
     ```
--->
+
 
 ### Search with Vector Index.
 
