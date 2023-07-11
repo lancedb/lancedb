@@ -15,23 +15,37 @@ import unittest.mock as mock
 
 import lance
 import numpy as np
-import pandas as pd
 import pandas.testing as tm
 import pyarrow as pa
 import pytest
 
 from lancedb.db import LanceDBConnection
-from lancedb.query import LanceQueryBuilder
+from lancedb.query import LanceQueryBuilder, Query
 from lancedb.table import LanceTable
 
 
 class MockTable:
     def __init__(self, tmp_path):
         self.uri = tmp_path
-        self._conn = LanceDBConnection("/tmp/lance/")
+        self._conn = LanceDBConnection(self.uri)
 
     def to_lance(self):
         return lance.dataset(self.uri)
+
+    def _execute_query(self, query):
+        ds = self.to_lance()
+        return ds.to_table(
+            columns=query.columns,
+            filter=query.filter,
+            nearest={
+                "column": query.vector_column,
+                "q": query.vector,
+                "k": query.k,
+                "metric": query.metric,
+                "nprobes": query.nprobes,
+                "refine_factor": query.refine_factor,
+            },
+        )
 
 
 @pytest.fixture
@@ -95,20 +109,17 @@ def test_query_builder_with_different_vector_column():
     )
     ds = mock.Mock()
     table.to_lance.return_value = ds
-    table._conn = mock.MagicMock()
-    table._conn.is_managed_remote = False
     builder.to_arrow()
-    ds.to_table.assert_called_once_with(
-        columns=["b"],
-        filter="b < 10",
-        nearest={
-            "column": vector_column_name,
-            "q": query,
-            "k": 2,
-            "metric": "cosine",
-            "nprobes": 20,
-            "refine_factor": None,
-        },
+    table._execute_query.assert_called_once_with(
+        Query(
+            vector=query,
+            filter="b < 10",
+            k=2,
+            metric="cosine",
+            columns=["b"],
+            nprobes=20,
+            refine_factor=None,
+        )
     )
 
 

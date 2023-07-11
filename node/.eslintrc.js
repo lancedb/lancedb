@@ -12,5 +12,6 @@ module.exports = {
     sourceType: 'module'
   },
   rules: {
+    "@typescript-eslint/method-signature-style": "off",
   }
 }

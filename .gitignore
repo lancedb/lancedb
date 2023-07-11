@@ -31,3 +31,4 @@ node/examples/**/dist
 ## Rust
 target
 
+Cargo.lock

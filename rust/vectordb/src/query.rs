@@ -164,9 +164,8 @@ impl Query {
 mod tests {
     use std::sync::Arc;
 
-    use arrow_array::{Float32Array, RecordBatch, RecordBatchReader};
+    use arrow_array::{Float32Array, RecordBatch, RecordBatchIterator, RecordBatchReader};
     use arrow_schema::{DataType, Field as ArrowField, Schema as ArrowSchema};
-    use lance::arrow::RecordBatchBuffer;
     use lance::dataset::Dataset;
     use lance::index::vector::MetricType;
 
@@ -174,7 +173,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_setters_getters() {
-        let mut batches: Box<dyn RecordBatchReader> = Box::new(make_test_batches());
+        let mut batches: Box<dyn RecordBatchReader> = make_test_batches();
         let ds = Dataset::write(&mut batches, "memory://foo", None)
             .await
             .unwrap();
@@ -203,7 +202,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute() {
-        let mut batches: Box<dyn RecordBatchReader> = Box::new(make_test_batches());
+        let mut batches: Box<dyn RecordBatchReader> = make_test_batches();
         let ds = Dataset::write(&mut batches, "memory://foo", None)
             .await
             .unwrap();
@@ -214,7 +213,7 @@ mod tests {
         assert_eq!(result.is_ok(), true);
     }
 
-    fn make_test_batches() -> RecordBatchBuffer {
+    fn make_test_batches() -> Box<dyn RecordBatchReader> {
         let dim: usize = 128;
         let schema = Arc::new(ArrowSchema::new(vec![
             ArrowField::new("key", DataType::Int32, false),
@@ -228,7 +227,11 @@ mod tests {
             ),
             ArrowField::new("uri", DataType::Utf8, true),
         ]));
-
-        RecordBatchBuffer::new(vec![RecordBatch::new_empty(schema.clone())])
+        Box::new(RecordBatchIterator::new(
+            vec![RecordBatch::new_empty(schema.clone())]
+                .into_iter()
+                .map(Ok),
+            schema,
+        ))
     }
 }

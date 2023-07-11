@@ -10,13 +10,15 @@ pip install lancedb
 
 ::: lancedb.connect
 
-::: lancedb.LanceDBConnection
+::: lancedb.db.DBConnection
 
 ## Table
 
-::: lancedb.table.LanceTable
+::: lancedb.table.Table
 
 ## Querying
+
+::: lancedb.query.Query
 
 ::: lancedb.query.LanceQueryBuilder
 
@@ -41,3 +43,10 @@ pip install lancedb
 ::: lancedb.fts.populate_index
 
 ::: lancedb.fts.search_index
+
+## Utilities
+
+::: lancedb.schema.schema_to_dict
+::: lancedb.schema.dict_to_schema
+::: lancedb.vector
+

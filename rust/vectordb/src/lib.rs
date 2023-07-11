@@ -19,3 +19,6 @@ pub mod query;
 pub mod table;
 
 pub use database::Database;
+pub use table::Table;
+
+pub use lance::dataset::WriteMode;

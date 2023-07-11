@@ -17,11 +17,10 @@ use std::convert::TryFrom;
 use std::ops::Deref;
 use std::sync::{Arc, Mutex};
 
-use arrow_array::{Float32Array, RecordBatchReader};
+use arrow_array::{Float32Array, RecordBatchIterator, RecordBatchReader};
 use arrow_ipc::writer::FileWriter;
 use futures::{TryFutureExt, TryStreamExt};
-use lance::arrow::RecordBatchBuffer;
-use lance::dataset::WriteMode;
+use lance::dataset::{WriteMode, WriteParams};
 use lance::index::vector::MetricType;
 use neon::prelude::*;
 use neon::types::buffer::TypedArray;
@@ -233,6 +232,17 @@ fn table_create(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let table_name = cx.argument::<JsString>(0)?.value(&mut cx);
     let buffer = cx.argument::<JsBuffer>(1)?;
     let batches = arrow_buffer_to_record_batch(buffer.as_slice(&mut cx));
+    let schema = batches[0].schema();
+
+    // Write mode
+    let mode = match cx.argument::<JsString>(2)?.value(&mut cx).as_str() {
+        "overwrite" => WriteMode::Overwrite,
+        "append" => WriteMode::Append,
+        "create" => WriteMode::Create,
+        _ => return cx.throw_error("Table::create only supports 'overwrite' and 'create' modes"),
+    };
+    let mut params = WriteParams::default();
+    params.mode = mode;
 
     let rt = runtime(&mut cx)?;
     let channel = cx.channel();
@@ -241,8 +251,13 @@ fn table_create(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let database = db.database.clone();
 
     rt.block_on(async move {
-        let batch_reader: Box<dyn RecordBatchReader> = Box::new(RecordBatchBuffer::new(batches));
-        let table_rst = database.create_table(&table_name, batch_reader).await;
+        let batch_reader: Box<dyn RecordBatchReader> = Box::new(RecordBatchIterator::new(
+            batches.into_iter().map(Ok),
+            schema,
+        ));
+        let table_rst = database
+            .create_table(&table_name, batch_reader, Some(params))
+            .await;
 
         deferred.settle_with(&channel, move |mut cx| {
             let table = Arc::new(Mutex::new(
@@ -265,6 +280,7 @@ fn table_add(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let buffer = cx.argument::<JsBuffer>(0)?;
     let write_mode = cx.argument::<JsString>(1)?.value(&mut cx);
     let batches = arrow_buffer_to_record_batch(buffer.as_slice(&mut cx));
+    let schema = batches[0].schema();
 
     let rt = runtime(&mut cx)?;
     let channel = cx.channel();
@@ -274,7 +290,10 @@ fn table_add(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let write_mode = write_mode_map.get(write_mode.as_str()).cloned();
 
     rt.block_on(async move {
-        let batch_reader: Box<dyn RecordBatchReader> = Box::new(RecordBatchBuffer::new(batches));
+        let batch_reader: Box<dyn RecordBatchReader> = Box::new(RecordBatchIterator::new(
+            batches.into_iter().map(Ok),
+            schema,
+        ));
         let add_result = table.lock().unwrap().add(batch_reader, write_mode).await;
 
         deferred.settle_with(&channel, move |mut cx| {

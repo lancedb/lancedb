@@ -13,12 +13,14 @@
 
 
 import functools
-import urllib.parse
+from typing import Any, Callable, Dict, Union
 
 import aiohttp
 import attr
 import pyarrow as pa
+from pydantic import BaseModel
 
+from lancedb.common import Credential
 from lancedb.remote import VectorQuery, VectorQueryResult
 from lancedb.remote.errors import LanceDBClientError
 
@@ -33,47 +35,95 @@ def _check_not_closed(f):
     return wrapped
 
 
+async def _read_ipc(resp: aiohttp.ClientResponse) -> pa.Table:
+    resp_body = await resp.read()
+    with pa.ipc.open_file(pa.BufferReader(resp_body)) as reader:
+        return reader.read_all()
+
+
 @attr.define(slots=False)
 class RestfulLanceDBClient:
-    url: str
+    db_name: str
+    region: str
+    api_key: Credential
     closed: bool = attr.field(default=False, init=False)
 
     @functools.cached_property
     def session(self) -> aiohttp.ClientSession:
-        parsed = urllib.parse.urlparse(self.url)
-        scheme = parsed.scheme
-        if not scheme.startswith("lancedb"):
-            raise ValueError(
-                f"Invalid scheme: {scheme}, must be like lancedb+<flavor>://"
-            )
-        flavor = scheme.split("+")[1]
-        url = f"{flavor}://{parsed.hostname}:{parsed.port}"
+        url = f"https://{self.db_name}.{self.region}.api.lancedb.com"
         return aiohttp.ClientSession(url)
 
     async def close(self):
         await self.session.close()
         self.closed = True
 
+    @functools.cached_property
+    def headers(self) -> Dict[str, str]:
+        return {
+            "x-api-key": self.api_key,
+        }
+
+    @staticmethod
+    async def _check_status(resp: aiohttp.ClientResponse):
+        if resp.status == 404:
+            raise LanceDBClientError(f"Not found: {await resp.text()}")
+        elif 400 <= resp.status < 500:
+            raise LanceDBClientError(
+                f"Bad Request: {resp.status}, error: {await resp.text()}"
+            )
+        elif 500 <= resp.status < 600:
+            raise LanceDBClientError(
+                f"Internal Server Error: {resp.status}, error: {await resp.text()}"
+            )
+        elif resp.status != 200:
+            raise LanceDBClientError(
+                f"Unknown Error: {resp.status}, error: {await resp.text()}"
+            )
+
     @_check_not_closed
-    async def query(self, table_name: str, query: VectorQuery) -> VectorQueryResult:
+    async def get(self, uri: str, params: Union[Dict[str, Any], BaseModel] = None):
+        """Send a GET request and returns the deserialized response payload."""
+        if isinstance(params, BaseModel):
+            params: Dict[str, Any] = params.dict(exclude_none=True)
+        async with self.session.get(uri, params=params, headers=self.headers) as resp:
+            await self._check_status(resp)
+            return await resp.json()
+
+    @_check_not_closed
+    async def post(
+        self,
+        uri: str,
+        data: Union[Dict[str, Any], BaseModel],
+        deserialize: Callable = lambda resp: resp.json(),
+    ) -> Dict[str, Any]:
+        """Send a POST request and returns the deserialized response payload.
+
+        Parameters
+        ----------
+        uri : str
+            The uri to send the POST request to.
+        data: Union[Dict[str, Any], BaseModel]
+
+        """
+        if isinstance(data, BaseModel):
+            data: Dict[str, Any] = data.dict(exclude_none=True)
         async with self.session.post(
-            f"/table/{table_name}/", json=query.dict(exclude_none=True)
+            uri,
+            json=data,
+            headers=self.headers,
         ) as resp:
             resp: aiohttp.ClientResponse = resp
-            if 400 <= resp.status < 500:
-                raise LanceDBClientError(
-                    f"Bad Request: {resp.status}, error: {await resp.text()}"
-                )
-            if 500 <= resp.status < 600:
-                raise LanceDBClientError(
-                    f"Internal Server Error: {resp.status}, error: {await resp.text()}"
-                )
-            if resp.status != 200:
-                raise LanceDBClientError(
-                    f"Unknown Error: {resp.status}, error: {await resp.text()}"
-                )
+            await self._check_status(resp)
+            return await deserialize(resp)
 
-            resp_body = await resp.read()
-            with pa.ipc.open_file(pa.BufferReader(resp_body)) as reader:
-                tbl = reader.read_all()
+    @_check_not_closed
+    async def list_tables(self):
+        """List all tables in the database."""
+        json = await self.get("/1/table/", {})
+        return json["tables"]
+
+    @_check_not_closed
+    async def query(self, table_name: str, query: VectorQuery) -> VectorQueryResult:
+        """Query a table."""
+        tbl = await self.post(f"/1/table/{table_name}/", query, deserialize=_read_ipc)
         return VectorQueryResult(tbl)

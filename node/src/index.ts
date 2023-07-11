@@ -37,42 +37,45 @@ export async function connect (uri: string): Promise<Connection> {
 }
 
 /**
- * A LanceDB connection that allows you to open tables and create new ones.
+ * A LanceDB Connection that allows you to open tables and create new ones.
  *
  * Connection could be local against filesystem or remote against a server.
  */
 export interface Connection {
   uri: string
 
-  tableNames: () => Promise<string[]>
+  tableNames(): Promise<string[]>
 
   /**
    * Open a table in the database.
    *
    * @param name The name of the table.
+   * @param embeddings An embedding function to use on this table
    */
-  openTable: ((name: string) => Promise<Table>) & (<T>(name: string, embeddings: EmbeddingFunction<T>) => Promise<Table<T>>) & (<T>(name: string, embeddings?: EmbeddingFunction<T>) => Promise<Table<T>>)
+  openTable<T>(name: string, embeddings?: EmbeddingFunction<T>): Promise<Table<T>>
 
   /**
    * Creates a new Table and initialize it with new data.
    *
-   * @param name The name of the table.
-   * @param data Non-empty Array of Records to be inserted into the Table
+   * @param {string} name - The name of the table.
+   * @param data - Non-empty Array of Records to be inserted into the table
+   * @param {WriteMode} mode - The write mode to use when creating the table.
+   * @param {EmbeddingFunction} embeddings - An embedding function to use on this table
    */
+  createTable<T>(name: string, data: Array<Record<string, unknown>>, mode?: WriteMode, embeddings?: EmbeddingFunction<T>): Promise<Table<T>>
 
-  createTable: ((name: string, data: Array<Record<string, unknown>>) => Promise<Table>) & (<T>(name: string, data: Array<Record<string, unknown>>, embeddings: EmbeddingFunction<T>) => Promise<Table<T>>) & (<T>(name: string, data: Array<Record<string, unknown>>, embeddings?: EmbeddingFunction<T>) => Promise<Table<T>>)
-
-  createTableArrow: (name: string, table: ArrowTable) => Promise<Table>
+  createTableArrow(name: string, table: ArrowTable): Promise<Table>
 
   /**
    * Drop an existing table.
    * @param name The name of the table to drop.
    */
-  dropTable: (name: string) => Promise<void>
+  dropTable(name: string): Promise<void>
+
 }
 
 /**
- * A LanceDB table that allows you to search and update a table.
+ * A LanceDB Table is the collection of Records. Each Record has one or more vector fields.
  */
 export interface Table<T = number[]> {
   name: string
@@ -169,19 +172,25 @@ export class LocalConnection implements Connection {
    *
    * @param name The name of the table.
    * @param data Non-empty Array of Records to be inserted into the Table
+   * @param mode The write mode to use when creating the table.
    */
+  async createTable (name: string, data: Array<Record<string, unknown>>, mode?: WriteMode): Promise<Table>
+  async createTable (name: string, data: Array<Record<string, unknown>>, mode: WriteMode): Promise<Table>
 
-  async createTable (name: string, data: Array<Record<string, unknown>>): Promise<Table>
   /**
    * Creates a new Table and initialize it with new data.
    *
    * @param name The name of the table.
    * @param data Non-empty Array of Records to be inserted into the Table
+   * @param mode The write mode to use when creating the table.
    * @param embeddings An embedding function to use on this Table
    */
-  async createTable<T> (name: string, data: Array<Record<string, unknown>>, embeddings: EmbeddingFunction<T>): Promise<Table<T>>
-  async createTable<T> (name: string, data: Array<Record<string, unknown>>, embeddings?: EmbeddingFunction<T>): Promise<Table<T>> {
-    const tbl = await tableCreate.call(this._db, name, await fromRecordsToBuffer(data, embeddings))
+  async createTable<T> (name: string, data: Array<Record<string, unknown>>, mode: WriteMode, embeddings: EmbeddingFunction<T>): Promise<Table<T>>
+  async createTable<T> (name: string, data: Array<Record<string, unknown>>, mode: WriteMode, embeddings?: EmbeddingFunction<T>): Promise<Table<T>> {
+    if (mode === undefined) {
+      mode = WriteMode.Create
+    }
+    const tbl = await tableCreate.call(this._db, name, await fromRecordsToBuffer(data, embeddings), mode.toLowerCase())
     if (embeddings !== undefined) {
       return new LocalTable(tbl, name, embeddings)
     } else {
@@ -280,7 +289,9 @@ export class LocalTable<T = number[]> implements Table<T> {
   }
 }
 
-interface IvfPQIndexConfig {
+/// Config to build IVF_PQ index.
+///
+export interface IvfPQIndexConfig {
   /**
    * The column to be indexed
    */
@@ -445,8 +456,15 @@ export class Query<T = number[]> {
   }
 }
 
+/**
+ * Write mode for writing a table.
+ */
 export enum WriteMode {
+  /** Create a new {@link Table}. */
+  Create = 'create',
+  /** Overwrite the existing {@link Table} if presented. */
   Overwrite = 'overwrite',
+  /** Append new data to the table. */
   Append = 'append'
 }
 
@@ -462,5 +480,10 @@ export enum MetricType {
   /**
    * Cosine distance
    */
-  Cosine = 'cosine'
+  Cosine = 'cosine',
+
+  /**
+   * Dot product
+   */
+  Dot = 'dot'
 }
