@@ -166,13 +166,10 @@ export class LocalConnection implements Connection {
    * @param embeddings An embedding function to use on this Table
    */
   async openTable<T> (name: string, embeddings: EmbeddingFunction<T>): Promise<Table<T>>
-  async openTable<T> (name: string, embeddings?: EmbeddingFunction<T>): Promise<Table<T>> {
+  async openTable<T> (name: string, embeddings?: EmbeddingFunction<T>, awsCredentials?: AwsCredentials): Promise<Table<T>>
+  async openTable<T> (name: string, embeddings?: EmbeddingFunction<T>, awsCredentials?: AwsCredentials): Promise<Table<T>> {
     const tbl = await databaseOpenTable.call(this._db, name)
-    if (embeddings !== undefined) {
-      return new LocalTable(tbl, name, embeddings)
-    } else {
-      return new LocalTable(tbl, name)
-    }
+    return new LocalTable(tbl, name, embeddings, awsCredentials)
   }
 
   /**
@@ -194,6 +191,7 @@ export class LocalConnection implements Connection {
    * @param embeddings An embedding function to use on this Table
    */
   async createTable<T> (name: string, data: Array<Record<string, unknown>>, mode: WriteMode, embeddings: EmbeddingFunction<T>): Promise<Table<T>>
+  async createTable<T> (name: string, data: Array<Record<string, unknown>>, mode: WriteMode, embeddings?: EmbeddingFunction<T>, awsCredentials?: AwsCredentials): Promise<Table<T>>
   async createTable<T> (name: string, data: Array<Record<string, unknown>>, mode: WriteMode, embeddings?: EmbeddingFunction<T>, awsCredentials?: AwsCredentials): Promise<Table<T>> {
     if (mode === undefined) {
       mode = WriteMode.Create
