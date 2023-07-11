@@ -1,4 +1,4 @@
-// Copyright 2023 Lance Developers.
+// Copyright 2023 LanceDB Developers.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,12 +16,13 @@ use std::path::Path;
 use std::sync::Arc;
 
 use arrow_array::{Float32Array, RecordBatchReader};
-use lance::dataset::{Dataset, ReadParams, WriteMode, WriteParams};
+use lance::dataset::{Dataset, ReadParams, WriteParams};
 use lance::index::IndexType;
 use snafu::prelude::*;
 
 use crate::error::{Error, InvalidTableNameSnafu, Result};
 use crate::index::vector::VectorIndexBuilder;
+use crate::WriteMode;
 use crate::query::Query;
 
 pub const VECTOR_COLUMN_NAME: &str = "vector";
@@ -43,7 +44,7 @@ impl std::fmt::Display for Table {
 
 #[derive(Default)]
 pub struct OpenTableParams {
-    pub(crate) dataset_read_params: ReadParams,
+    pub open_table_params: ReadParams,
 }
 
 impl Table {
@@ -85,7 +86,7 @@ impl Table {
             .to_str()
             .context(InvalidTableNameSnafu { name })?;
 
-        let dataset = Dataset::open_with_params(uri, &params.dataset_read_params)
+        let dataset = Dataset::open_with_params(uri, &params.open_table_params)
             .await
             .map_err(|e| match e {
                 lance::Error::DatasetNotFound { .. } => Error::TableNotFound {
@@ -117,6 +118,7 @@ impl Table {
         base_uri: &str,
         name: &str,
         mut batches: Box<dyn RecordBatchReader>,
+        params: Option<WriteParams>,
     ) -> Result<Self> {
         let base_path = Path::new(base_uri);
         let table_uri = base_path.join(format!("{}.{}", name, LANCE_FILE_EXTENSION));
@@ -125,7 +127,7 @@ impl Table {
             .to_str()
             .context(InvalidTableNameSnafu { name })?
             .to_string();
-        let dataset = Dataset::write(&mut batches, &uri, Some(WriteParams::default()))
+        let dataset = Dataset::write(&mut batches, &uri, params)
             .await
             .map_err(|e| match e {
                 lance::Error::DatasetAlreadyExists { .. } => Error::TableAlreadyExists {
@@ -230,11 +232,11 @@ mod tests {
     use std::sync::Arc;
 
     use arrow_array::{
-        Array, FixedSizeListArray, Float32Array, Int32Array, RecordBatch, RecordBatchReader,
+        Array, FixedSizeListArray, Float32Array, Int32Array, RecordBatch, RecordBatchIterator,
+        RecordBatchReader,
     };
     use arrow_data::ArrayDataBuilder;
     use arrow_schema::{DataType, Field, Schema};
-    use lance::arrow::RecordBatchBuffer;
     use lance::dataset::{Dataset, WriteMode};
     use lance::index::vector::ivf::IvfBuildParams;
     use lance::index::vector::pq::PQBuildParams;
@@ -251,7 +253,7 @@ mod tests {
         let dataset_path = tmp_dir.path().join("test.lance");
         let uri = tmp_dir.path().to_str().unwrap();
 
-        let mut batches: Box<dyn RecordBatchReader> = Box::new(make_test_batches());
+        let mut batches: Box<dyn RecordBatchReader> = make_test_batches();
         Dataset::write(&mut batches, dataset_path.to_str().unwrap(), None)
             .await
             .unwrap();
@@ -282,12 +284,12 @@ mod tests {
         let tmp_dir = tempdir().unwrap();
         let uri = tmp_dir.path().to_str().unwrap();
 
-        let batches: Box<dyn RecordBatchReader> = Box::new(make_test_batches());
+        let batches: Box<dyn RecordBatchReader> = make_test_batches();
         let _ = batches.schema().clone();
-        Table::create(&uri, "test", batches).await.unwrap();
+        Table::create(&uri, "test", batches, None).await.unwrap();
 
-        let batches: Box<dyn RecordBatchReader> = Box::new(make_test_batches());
-        let result = Table::create(&uri, "test", batches).await;
+        let batches: Box<dyn RecordBatchReader> = make_test_batches();
+        let result = Table::create(&uri, "test", batches, None).await;
         assert!(matches!(
             result.unwrap_err(),
             Error::TableAlreadyExists { .. }
@@ -299,17 +301,21 @@ mod tests {
         let tmp_dir = tempdir().unwrap();
         let uri = tmp_dir.path().to_str().unwrap();
 
-        let batches: Box<dyn RecordBatchReader> = Box::new(make_test_batches());
+        let batches: Box<dyn RecordBatchReader> = make_test_batches();
         let schema = batches.schema().clone();
-        let mut table = Table::create(&uri, "test", batches).await.unwrap();
+        let mut table = Table::create(&uri, "test", batches, None).await.unwrap();
         assert_eq!(table.count_rows().await.unwrap(), 10);
 
-        let new_batches: Box<dyn RecordBatchReader> =
-            Box::new(RecordBatchBuffer::new(vec![RecordBatch::try_new(
-                schema,
+        let new_batches: Box<dyn RecordBatchReader> = Box::new(RecordBatchIterator::new(
+            vec![RecordBatch::try_new(
+                schema.clone(),
                 vec![Arc::new(Int32Array::from_iter_values(100..110))],
             )
-            .unwrap()]));
+            .unwrap()]
+            .into_iter()
+            .map(Ok),
+            schema.clone(),
+        ));
 
         table.add(new_batches, None).await.unwrap();
         assert_eq!(table.count_rows().await.unwrap(), 20);
@@ -321,17 +327,21 @@ mod tests {
         let tmp_dir = tempdir().unwrap();
         let uri = tmp_dir.path().to_str().unwrap();
 
-        let batches: Box<dyn RecordBatchReader> = Box::new(make_test_batches());
+        let batches: Box<dyn RecordBatchReader> = make_test_batches();
         let schema = batches.schema().clone();
-        let mut table = Table::create(uri, "test", batches).await.unwrap();
+        let mut table = Table::create(uri, "test", batches, None).await.unwrap();
         assert_eq!(table.count_rows().await.unwrap(), 10);
 
-        let new_batches: Box<dyn RecordBatchReader> =
-            Box::new(RecordBatchBuffer::new(vec![RecordBatch::try_new(
-                schema,
+        let new_batches: Box<dyn RecordBatchReader> = Box::new(RecordBatchIterator::new(
+            vec![RecordBatch::try_new(
+                schema.clone(),
                 vec![Arc::new(Int32Array::from_iter_values(100..110))],
             )
-            .unwrap()]));
+            .unwrap()]
+            .into_iter()
+            .map(Ok),
+            schema.clone(),
+        ));
 
         table
             .add(new_batches, Some(WriteMode::Overwrite))
@@ -347,7 +357,7 @@ mod tests {
         let dataset_path = tmp_dir.path().join("test.lance");
         let uri = tmp_dir.path().to_str().unwrap();
 
-        let mut batches: Box<dyn RecordBatchReader> = Box::new(make_test_batches());
+        let mut batches: Box<dyn RecordBatchReader> = make_test_batches();
         Dataset::write(&mut batches, dataset_path.to_str().unwrap(), None)
             .await
             .unwrap();
@@ -386,18 +396,18 @@ mod tests {
         let dataset_path = tmp_dir.path().join("test.lance");
         let uri = tmp_dir.path().to_str().unwrap();
 
-        let mut batches: Box<dyn RecordBatchReader> = Box::new(make_test_batches());
+        let mut batches: Box<dyn RecordBatchReader> = make_test_batches();
         Dataset::write(&mut batches, dataset_path.to_str().unwrap(), None)
             .await
             .unwrap();
 
         let wrapper = Arc::new(NoOpCacheWrapper::default());
 
+        let mut object_store_params = ObjectStoreParams::default();
+        object_store_params.object_store_wrapper = Some(wrapper.clone());
         let param = OpenTableParams {
-            dataset_read_params: ReadParams {
-                store_options: Some(ObjectStoreParams {
-                    object_store_wrapper: Some(wrapper.clone()),
-                }),
+            open_table_params: ReadParams {
+                store_options: Some(object_store_params),
                 ..ReadParams::default()
             },
         };
@@ -407,13 +417,15 @@ mod tests {
         assert!(wrapper.called());
     }
 
-    fn make_test_batches() -> RecordBatchBuffer {
+    fn make_test_batches() -> Box<dyn RecordBatchReader> {
         let schema = Arc::new(Schema::new(vec![Field::new("i", DataType::Int32, false)]));
-        RecordBatchBuffer::new(vec![RecordBatch::try_new(
-            schema.clone(),
-            vec![Arc::new(Int32Array::from_iter_values(0..10))],
-        )
-        .unwrap()])
+        Box::new(RecordBatchIterator::new(
+            vec![RecordBatch::try_new(
+                schema.clone(),
+                vec![Arc::new(Int32Array::from_iter_values(0..10))],
+            )],
+            schema,
+        ))
     }
 
     #[tokio::test]
@@ -446,14 +458,15 @@ mod tests {
         );
 
         let vectors = Arc::new(create_fixed_size_list(float_arr, dimension).unwrap());
-        let batches = RecordBatchBuffer::new(vec![RecordBatch::try_new(
-            schema.clone(),
-            vec![vectors.clone()],
-        )
-        .unwrap()]);
+        let batches = RecordBatchIterator::new(
+            vec![RecordBatch::try_new(schema.clone(), vec![vectors.clone()]).unwrap()]
+                .into_iter()
+                .map(Ok),
+            schema,
+        );
 
         let reader: Box<dyn RecordBatchReader + Send> = Box::new(batches);
-        let mut table = Table::create(uri, "test", reader).await.unwrap();
+        let mut table = Table::create(uri, "test", reader, None).await.unwrap();
 
         let mut i = IvfPQIndexBuilder::new();
 

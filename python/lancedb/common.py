@@ -23,3 +23,13 @@ URI = Union[str, Path]
 # TODO support generator
 DATA = Union[List[dict], dict, pd.DataFrame]
 VECTOR_COLUMN_NAME = "vector"
+
+
+class Credential(str):
+    """Credential field"""
+
+    def __repr__(self) -> str:
+        return "********"
+
+    def __str__(self) -> str:
+        return "********"

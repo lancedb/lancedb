@@ -15,9 +15,11 @@ import functools
 from pathlib import Path
 from unittest.mock import PropertyMock, patch
 
+import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pytest
+from lance.vector import vec_to_table
 
 from lancedb.db import LanceDBConnection
 from lancedb.table import LanceTable
@@ -88,7 +90,31 @@ def test_create_table(db):
         assert expected == tbl
 
 
+def test_empty_table(db):
+    schema = pa.schema(
+        [
+            pa.field("vector", pa.list_(pa.float32(), 2)),
+            pa.field("item", pa.string()),
+            pa.field("price", pa.float32()),
+        ]
+    )
+    tbl = LanceTable.create(db, "test", schema=schema)
+    data = [
+        {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+        {"vector": [5.9, 26.5], "item": "bar", "price": 20.0},
+    ]
+    tbl.add(data=data)
+
+
 def test_add(db):
+    schema = pa.schema(
+        [
+            pa.field("vector", pa.list_(pa.float32(), 2)),
+            pa.field("item", pa.string()),
+            pa.field("price", pa.float64()),
+        ]
+    )
+
     table = LanceTable.create(
         db,
         "test",
@@ -97,7 +123,19 @@ def test_add(db):
             {"vector": [5.9, 26.5], "item": "bar", "price": 20.0},
         ],
     )
+    _add(table, schema)
 
+    table = LanceTable.create(db, "test2", schema=schema)
+    table.add(
+        data=[
+            {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+            {"vector": [5.9, 26.5], "item": "bar", "price": 20.0},
+        ],
+    )
+    _add(table, schema)
+
+
+def _add(table, schema):
     # table = LanceTable(db, "test")
     assert len(table) == 2
 
@@ -112,13 +150,7 @@ def test_add(db):
             pa.array(["foo", "bar", "new"]),
             pa.array([10.0, 20.0, 30.0]),
         ],
-        schema=pa.schema(
-            [
-                pa.field("vector", pa.list_(pa.float32(), 2)),
-                pa.field("item", pa.string()),
-                pa.field("price", pa.float64()),
-            ]
-        ),
+        schema=schema,
     )
     assert expected == table.to_arrow()
 
@@ -167,7 +199,8 @@ def test_create_index_method():
                 replace=True,
             )
 
-            # Check that the _dataset.create_index method was called with the right parameters
+            # Check that the _dataset.create_index method was called
+            # with the right parameters
             mock_dataset.return_value.create_index.assert_called_once_with(
                 column="vector",
                 index_type="IVF_PQ",
@@ -176,3 +209,50 @@ def test_create_index_method():
                 num_sub_vectors=96,
                 replace=True,
             )
+
+
+def test_add_with_nans(db):
+    # by default we raise an error on bad input vectors
+    bad_data = [
+        {"vector": [np.nan], "item": "bar", "price": 20.0},
+        {"vector": [5], "item": "bar", "price": 20.0},
+        {"vector": [np.nan, np.nan], "item": "bar", "price": 20.0},
+        {"vector": [np.nan, 5.0], "item": "bar", "price": 20.0},
+    ]
+    for row in bad_data:
+        with pytest.raises(ValueError):
+            LanceTable.create(
+                db,
+                "error_test",
+                data=[{"vector": [3.1, 4.1], "item": "foo", "price": 10.0}, row],
+            )
+
+    table = LanceTable.create(
+        db,
+        "drop_test",
+        data=[
+            {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+            {"vector": [np.nan], "item": "bar", "price": 20.0},
+            {"vector": [5], "item": "bar", "price": 20.0},
+            {"vector": [np.nan, np.nan], "item": "bar", "price": 20.0},
+        ],
+        on_bad_vectors="drop",
+    )
+    assert len(table) == 1
+
+    # We can fill bad input with some value
+    table = LanceTable.create(
+        db,
+        "fill_test",
+        data=[
+            {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+            {"vector": [np.nan], "item": "bar", "price": 20.0},
+            {"vector": [np.nan, np.nan], "item": "bar", "price": 20.0},
+        ],
+        on_bad_vectors="fill",
+        fill_value=0.0,
+    )
+    assert len(table) == 3
+    arrow_tbl = table.to_lance().to_table(filter="item == 'bar'")
+    v = arrow_tbl["vector"].to_pylist()[0]
+    assert np.allclose(v, np.array([0.0, 0.0]))

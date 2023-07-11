@@ -1,6 +1,6 @@
 [project]
 name = "lancedb"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = ["pylance~=0.5.0", "ratelimiter", "retry", "tqdm", "aiohttp", "pydantic", "attr"]
 description = "lancedb"
 authors = [

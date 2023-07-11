@@ -16,11 +16,12 @@ use std::fs::create_dir_all;
 use std::path::Path;
 
 use arrow_array::RecordBatchReader;
+use lance::dataset::WriteParams;
 use lance::io::object_store::ObjectStore;
 use snafu::prelude::*;
 
 use crate::error::{CreateDirSnafu, Result};
-use crate::table::Table;
+use crate::table::{OpenTableParams, Table};
 
 pub struct Database {
     object_store: ObjectStore,
@@ -90,12 +91,19 @@ impl Database {
         Ok(f)
     }
 
+    /// Create a new table in the database.
+    ///
+    /// # Arguments
+    /// * `name` - The name of the table.
+    /// * `batches` - The initial data to write to the table.
+    /// * `params` - Optional [`WriteParams`] to create the table.
     pub async fn create_table(
         &self,
         name: &str,
         batches: Box<dyn RecordBatchReader>,
+        params: Option<WriteParams>,
     ) -> Result<Table> {
-        Table::create(&self.uri, name, batches).await
+        Table::create(&self.uri, name, batches, params).await
     }
 
     /// Open a table in the database.
@@ -107,7 +115,25 @@ impl Database {
     ///
     /// * A [Table] object.
     pub async fn open_table(&self, name: &str) -> Result<Table> {
-        Table::open(&self.uri, name).await
+        self.open_table_with_params(name, OpenTableParams::default())
+            .await
+    }
+
+    /// Open a table in the database.
+    ///
+    /// # Arguments
+    /// * `name` - The name of the table.
+    /// * `params` - The parameters to open the table.
+    ///
+    /// # Returns
+    ///
+    /// * A [Table] object.
+    pub async fn open_table_with_params(
+        &self,
+        name: &str,
+        params: OpenTableParams,
+    ) -> Result<Table> {
+        Table::open_with_params(&self.uri, name, params).await
     }
 
     /// Drop a table in the database.

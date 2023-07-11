@@ -2,7 +2,7 @@
 
 # Interface: Table<T\>
 
-A LanceDB table that allows you to search and update a table.
+A LanceDB Table is the collection of Records. Each Record has one or more vector fields.
 
 ## Type parameters
 
@@ -52,7 +52,7 @@ The number of rows added to the table
 
 #### Defined in
 
-[index.ts:92](https://github.com/lancedb/lancedb/blob/bfb5400/node/src/index.ts#L92)
+[index.ts:95](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L95)
 
 ___
 
@@ -72,7 +72,7 @@ Returns the number of rows in this table.
 
 #### Defined in
 
-[index.ts:112](https://github.com/lancedb/lancedb/blob/bfb5400/node/src/index.ts#L112)
+[index.ts:115](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L115)
 
 ___
 
@@ -102,7 +102,7 @@ VectorIndexParams.
 
 #### Defined in
 
-[index.ts:107](https://github.com/lancedb/lancedb/blob/bfb5400/node/src/index.ts#L107)
+[index.ts:110](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L110)
 
 ___
 
@@ -128,7 +128,7 @@ Delete rows from this table.
 
 #### Defined in
 
-[index.ts:119](https://github.com/lancedb/lancedb/blob/bfb5400/node/src/index.ts#L119)
+[index.ts:122](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L122)
 
 ___
 
@@ -138,7 +138,7 @@ ___
 
 #### Defined in
 
-[index.ts:78](https://github.com/lancedb/lancedb/blob/bfb5400/node/src/index.ts#L78)
+[index.ts:81](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L81)
 
 ___
 
@@ -166,7 +166,7 @@ The number of rows added to the table
 
 #### Defined in
 
-[index.ts:100](https://github.com/lancedb/lancedb/blob/bfb5400/node/src/index.ts#L100)
+[index.ts:103](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L103)
 
 ___
 
@@ -192,4 +192,4 @@ Creates a search query to find the nearest neighbors of the given search term
 
 #### Defined in
 
-[index.ts:84](https://github.com/lancedb/lancedb/blob/bfb5400/node/src/index.ts#L84)
+[index.ts:87](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L87)

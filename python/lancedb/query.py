@@ -10,16 +10,45 @@
 #  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
+
 from __future__ import annotations
 
-import asyncio
-from typing import Awaitable, Literal
+from typing import List, Literal, Optional, Union
 
 import numpy as np
 import pandas as pd
 import pyarrow as pa
+from pydantic import BaseModel
 
 from .common import VECTOR_COLUMN_NAME
+
+
+class Query(BaseModel):
+    """A Query"""
+
+    vector_column: str = VECTOR_COLUMN_NAME
+
+    # vector to search for
+    vector: List[float]
+
+    # sql filter to refine the query with
+    filter: Optional[str] = None
+
+    # top k results to return
+    k: int
+
+    # # metrics
+    metric: str = "L2"
+
+    # which columns to return in the results
+    columns: Optional[List[str]] = None
+
+    # optional query parameters for tuning the results,
+    # e.g. `{"nprobes": "10", "refine_factor": "10"}`
+    nprobes: int = 10
+
+    # Refine factor.
+    refine_factor: Optional[int] = None
 
 
 class LanceQueryBuilder:
@@ -47,9 +76,9 @@ class LanceQueryBuilder:
 
     def __init__(
         self,
-        table: "lancedb.table.LanceTable",
-        query: np.ndarray,
-        vector_column_name: str = VECTOR_COLUMN_NAME,
+        table: "lancedb.table.Table",
+        query: Union[np.ndarray, str],
+        vector_column: str = VECTOR_COLUMN_NAME,
     ):
         self._metric = "L2"
         self._nprobes = 20
@@ -59,7 +88,7 @@ class LanceQueryBuilder:
         self._limit = 10
         self._columns = None
         self._where = None
-        self._vector_column_name = vector_column_name
+        self._vector_column = vector_column
 
     def limit(self, limit: int) -> LanceQueryBuilder:
         """Set the maximum number of results to return.
@@ -181,52 +210,28 @@ class LanceQueryBuilder:
 
     def to_arrow(self) -> pa.Table:
         """
-        Execute the query and return the results as a arrow Table.
+        Execute the query and return the results as an
+        [Apache Arrow Table](https://arrow.apache.org/docs/python/generated/pyarrow.Table.html#pyarrow.Table).
+
         In addition to the selected columns, LanceDB also returns a vector
         and also the "score" column which is the distance between the query
-        vector and the returned vector.
+        vector and the returned vectors.
         """
-        if self._table._conn.is_managed_remote:
-            try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                loop = asyncio.get_event_loop()
-            result = self._table._conn._client.query(
-                self._table.name, self.to_remote_query()
-            )
-            return loop.run_until_complete(result).to_arrow()
-
-        ds = self._table.to_lance()
-        return ds.to_table(
-            columns=self._columns,
-            filter=self._where,
-            nearest={
-                "column": self._vector_column_name,
-                "q": self._query,
-                "k": self._limit,
-                "metric": self._metric,
-                "nprobes": self._nprobes,
-                "refine_factor": self._refine_factor,
-            },
-        )
-
-    def to_remote_query(self) -> "VectorQuery":
-        # don't import unless we are connecting to remote
-        from lancedb.remote.client import VectorQuery
-
-        return VectorQuery(
-            vector=self._query.tolist(),
+        vector = self._query if isinstance(self._query, list) else self._query.tolist()
+        query = Query(
+            vector=vector,
             filter=self._where,
             k=self._limit,
-            _metric=self._metric,
+            metric=self._metric,
             columns=self._columns,
             nprobes=self._nprobes,
             refine_factor=self._refine_factor,
         )
+        return self._table._execute_query(query)
 
 
 class LanceFtsQueryBuilder(LanceQueryBuilder):
-    def to_df(self) -> pd.DataFrame:
+    def to_arrow(self) -> pd.Table:
         try:
             import tantivy
         except ImportError:
@@ -243,8 +248,9 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         # get the scores and doc ids
         row_ids, scores = search_index(index, self._query, self._limit)
         if len(row_ids) == 0:
-            return pd.DataFrame()
+            empty_schema = pa.schema([pa.field("score", pa.float32())])
+            return pa.Table.from_pylist([], schema=empty_schema)
         scores = pa.array(scores)
         output_tbl = self._table.to_lance().take(row_ids, columns=self._columns)
         output_tbl = output_tbl.append_column("score", scores)
-        return output_tbl.to_pandas()
+        return output_tbl

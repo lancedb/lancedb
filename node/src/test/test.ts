@@ -1,4 +1,4 @@
-// Copyright 2023 Lance Developers.
+// Copyright 2023 LanceDB Developers.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -18,7 +18,7 @@ import * as chai from 'chai'
 import * as chaiAsPromised from 'chai-as-promised'
 
 import * as lancedb from '../index'
-import { type EmbeddingFunction, MetricType, Query } from '../index'
+import { type EmbeddingFunction, MetricType, Query, WriteMode } from '../index'
 
 const expect = chai.expect
 const assert = chai.assert
@@ -116,6 +116,31 @@ describe('LanceDB client', function () {
       const table = await con.createTable(tableName, data)
       assert.equal(table.name, tableName)
       assert.equal(await table.countRows(), 2)
+    })
+
+    it('use overwrite flag to overwrite existing table', async function () {
+      const dir = await track().mkdir('lancejs')
+      const con = await lancedb.connect(dir)
+
+      const data = [
+        { id: 1, vector: [0.1, 0.2], price: 10 },
+        { id: 2, vector: [1.1, 1.2], price: 50 }
+      ]
+
+      const tableName = 'overwrite'
+      await con.createTable(tableName, data, WriteMode.Create)
+
+      const newData = [
+        { id: 1, vector: [0.1, 0.2], price: 10 },
+        { id: 2, vector: [1.1, 1.2], price: 50 },
+        { id: 3, vector: [1.1, 1.2], price: 50 }
+      ]
+
+      await expect(con.createTable(tableName, newData)).to.be.rejectedWith(Error, 'already exists')
+
+      const table = await con.createTable(tableName, newData, WriteMode.Overwrite)
+      assert.equal(table.name, tableName)
+      assert.equal(await table.countRows(), 3)
     })
 
     it('appends records to an existing table ', async function () {
@@ -218,7 +243,7 @@ describe('LanceDB client', function () {
         { price: 10, name: 'foo' },
         { price: 50, name: 'bar' }
       ]
-      const table = await con.createTable('vectors', data, embeddings)
+      const table = await con.createTable('vectors', data, WriteMode.Create, embeddings)
       const results = await table.search('foo').execute()
       assert.equal(results.length, 2)
     })

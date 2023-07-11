@@ -1,10 +1,8 @@
-import builtins
 import os
 
 import pytest
 
 # import lancedb so we don't have to in every example
-import lancedb
 
 
 @pytest.fixture(autouse=True)
