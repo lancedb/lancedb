@@ -47,58 +47,58 @@ def vector(dimension: int, value_type: pa.DataType = pa.float32()) -> pa.DataTyp
 
 def _type_to_dict(dt: pa.DataType) -> Dict[str, Any]:
     if pa.types.is_boolean(dt):
-        return {"name": "boolean"}
+        return {"type": "boolean"}
     elif pa.types.is_int8(dt):
-        return {"name": "int8"}
+        return {"type": "int8"}
     elif pa.types.is_int16(dt):
-        return {"name": "int16"}
+        return {"type": "int16"}
     elif pa.types.is_int32(dt):
-        return {"name": "int32"}
+        return {"type": "int32"}
     elif pa.types.is_int64(dt):
-        return {"name": "int64"}
+        return {"type": "int64"}
     elif pa.types.is_uint8(dt):
-        return {"name": "uint8"}
+        return {"type": "uint8"}
     elif pa.types.is_uint16(dt):
-        return {"name": "uint16"}
+        return {"type": "uint16"}
     elif pa.types.is_uint32(dt):
-        return {"name": "uint32"}
+        return {"type": "uint32"}
     elif pa.types.is_uint64(dt):
-        return {"name": "uint64"}
+        return {"type": "uint64"}
     elif pa.types.is_float16(dt):
-        return {"name": "float16"}
+        return {"type": "float16"}
     elif pa.types.is_float32(dt):
-        return {"name": "float32"}
+        return {"type": "float32"}
     elif pa.types.is_float64(dt):
-        return {"name": "float64"}
+        return {"type": "float64"}
     elif pa.types.is_string(dt):
-        return {"name": "string"}
+        return {"type": "string"}
     elif pa.types.is_binary(dt):
-        return {"name": "binary"}
+        return {"type": "binary"}
     elif pa.types.is_large_string(dt):
-        return {"name": "large_string"}
+        return {"type": "large_string"}
     elif pa.types.is_large_binary(dt):
-        return {"name": "large_binary"}
+        return {"type": "large_binary"}
     elif pa.types.is_fixed_size_binary(dt):
-        return {"name": "fixed_size_binary", "width": dt.byte_width}
+        return {"type": "fixed_size_binary", "width": dt.byte_width}
     elif pa.types.is_fixed_size_list(dt):
         return {
-            "name": "fixed_size_list",
+            "type": "fixed_size_list",
             "width": dt.list_size,
             "value_type": _type_to_dict(dt.value_type),
         }
     elif pa.types.is_list(dt):
         return {
-            "name": "fixed_size_list",
+            "type": "fixed_size_list",
             "value_type": _type_to_dict(dt.value_type),
         }
     elif pa.types.is_struct(dt):
         return {
-            "name": "struct",
+            "type": "struct",
             "fields": [_field_to_dict(dt.field(i)) for i in range(dt.num_fields)],
         }
     elif pa.types.is_dictionary(dt):
         return {
-            "name": "dictionary",
+            "type": "dictionary",
             "index_type": _type_to_dict(dt.index_type),
             "value_type": _type_to_dict(dt.value_type),
         }
@@ -194,7 +194,7 @@ def schema_to_dict(schema: pa.Schema) -> Dict[str, Any]:
 
 
 def _dict_to_type(dt: Dict[str, Any]) -> pa.DataType:
-    name = dt["name"]
+    type_name = dt["type"]
     try:
         return {
             "boolean": pa.bool_(),
@@ -213,22 +213,22 @@ def _dict_to_type(dt: Dict[str, Any]) -> pa.DataType:
             "binary": pa.binary(),
             "large_string": pa.large_string(),
             "large_binary": pa.large_binary(),
-        }[name]
+        }[type_name]
     except KeyError:
         pass
 
-    if name == "fixed_size_binary":
+    if type_name == "fixed_size_binary":
         return pa.binary(dt["width"])
-    elif name == "fixed_size_list":
+    elif type_name == "fixed_size_list":
         return pa.list_(_dict_to_type(dt["value_type"]), dt["width"])
-    elif name == "list":
+    elif type_name == "list":
         return pa.list_(_dict_to_type(dt["value_type"]))
-    elif name == "struct":
+    elif type_name == "struct":
         fields = []
         for field in dt["fields"]:
             fields.append(_dict_to_field(field))
         return pa.struct(fields)
-    elif name == "dictionary":
+    elif type_name == "dictionary":
         return pa.dictionary(
             _dict_to_type(dt["index_type"]), _dict_to_type(dt["value_type"])
         )
