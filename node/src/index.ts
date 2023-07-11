@@ -122,6 +122,14 @@ export interface Table<T = number[]> {
   delete: (filter: string) => Promise<void>
 }
 
+export interface AwsCredentials {
+  accessKeyId: string
+
+  secretKey: string
+
+  sessionToken?: string
+}
+
 /**
  * A connection to a LanceDB database.
  */
@@ -186,16 +194,23 @@ export class LocalConnection implements Connection {
    * @param embeddings An embedding function to use on this Table
    */
   async createTable<T> (name: string, data: Array<Record<string, unknown>>, mode: WriteMode, embeddings: EmbeddingFunction<T>): Promise<Table<T>>
-  async createTable<T> (name: string, data: Array<Record<string, unknown>>, mode: WriteMode, embeddings?: EmbeddingFunction<T>): Promise<Table<T>> {
+  async createTable<T> (name: string, data: Array<Record<string, unknown>>, mode: WriteMode, embeddings?: EmbeddingFunction<T>, awsCredentials?: AwsCredentials): Promise<Table<T>> {
     if (mode === undefined) {
       mode = WriteMode.Create
     }
-    const tbl = await tableCreate.call(this._db, name, await fromRecordsToBuffer(data, embeddings), mode.toLowerCase())
-    if (embeddings !== undefined) {
-      return new LocalTable(tbl, name, embeddings)
-    } else {
-      return new LocalTable(tbl, name)
+
+    const createArgs = [this._db, name, await fromRecordsToBuffer(data, embeddings), mode.toLowerCase()]
+    if (awsCredentials !== undefined) {
+      createArgs.push(awsCredentials.accessKeyId)
+      createArgs.push(awsCredentials.secretKey)
+      if (awsCredentials.sessionToken !== undefined) {
+        createArgs.push(awsCredentials.sessionToken)
+      }
     }
+
+    const tbl = await tableCreate.call(...createArgs)
+
+    return new LocalTable(tbl, name, embeddings, awsCredentials)
   }
 
   async createTableArrow (name: string, table: ArrowTable): Promise<Table> {
@@ -217,6 +232,7 @@ export class LocalTable<T = number[]> implements Table<T> {
   private readonly _tbl: any
   private readonly _name: string
   private readonly _embeddings?: EmbeddingFunction<T>
+  private readonly _awsCredentials?: AwsCredentials
 
   constructor (tbl: any, name: string)
   /**
@@ -225,10 +241,12 @@ export class LocalTable<T = number[]> implements Table<T> {
    * @param embeddings An embedding function to use when interacting with this table
    */
   constructor (tbl: any, name: string, embeddings: EmbeddingFunction<T>)
-  constructor (tbl: any, name: string, embeddings?: EmbeddingFunction<T>) {
+  constructor (tbl: any, name: string, embeddings?: EmbeddingFunction<T>, awsCredentials?: AwsCredentials)
+  constructor (tbl: any, name: string, embeddings?: EmbeddingFunction<T>, awsCredentials?: AwsCredentials) {
     this._tbl = tbl
     this._name = name
     this._embeddings = embeddings
+    this._awsCredentials = awsCredentials
   }
 
   get name (): string {
@@ -250,7 +268,15 @@ export class LocalTable<T = number[]> implements Table<T> {
    * @return The number of rows added to the table
    */
   async add (data: Array<Record<string, unknown>>): Promise<number> {
-    return tableAdd.call(this._tbl, await fromRecordsToBuffer(data, this._embeddings), WriteMode.Append.toString())
+    const callArgs = [this._tbl, await fromRecordsToBuffer(data, this._embeddings), WriteMode.Append.toString()]
+    if (this._awsCredentials !== undefined) {
+      callArgs.push(this._awsCredentials.accessKeyId)
+      callArgs.push(this._awsCredentials.secretKey)
+      if (this._awsCredentials.sessionToken !== undefined) {
+        callArgs.push(this._awsCredentials.sessionToken)
+      }
+    }
+    return tableAdd.call(...callArgs)
   }
 
   /**
@@ -260,6 +286,14 @@ export class LocalTable<T = number[]> implements Table<T> {
    * @return The number of rows added to the table
    */
   async overwrite (data: Array<Record<string, unknown>>): Promise<number> {
+    const callArgs = [this._tbl, await fromRecordsToBuffer(data, this._embeddings), WriteMode.Overwrite.toString()]
+    if (this._awsCredentials !== undefined) {
+      callArgs.push(this._awsCredentials.accessKeyId)
+      callArgs.push(this._awsCredentials.secretKey)
+      if (this._awsCredentials.sessionToken !== undefined) {
+        callArgs.push(this._awsCredentials.sessionToken)
+      }
+    }
     return tableAdd.call(this._tbl, await fromRecordsToBuffer(data, this._embeddings), WriteMode.Overwrite.toString())
   }
 
