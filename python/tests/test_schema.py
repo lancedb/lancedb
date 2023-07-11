@@ -76,3 +76,34 @@ def test_schema_to_dict():
 
     actual_schema = dict_to_schema(json_schema)
     assert actual_schema == schema
+
+
+def test_temporal_types():
+    schema = pa.schema(
+        [
+            pa.field("t32", pa.time32("s")),
+            pa.field("t32ms", pa.time32("ms")),
+            pa.field("t64", pa.time64("ns")),
+            pa.field("ts", pa.timestamp("s")),
+            pa.field("ts_us_tz", pa.timestamp("us", tz="America/New_York")),
+        ],
+    )
+    json_schema = schema_to_dict(schema)
+
+    assert json_schema == {
+        "fields": [
+            {"name": "t32", "type": {"type": "time32:s"}, "nullable": True},
+            {"name": "t32ms", "type": {"type": "time32:ms"}, "nullable": True},
+            {"name": "t64", "type": {"type": "time64:ns"}, "nullable": True},
+            {"name": "ts", "type": {"type": "timestamp:s:"}, "nullable": True},
+            {
+                "name": "ts_us_tz",
+                "type": {"type": "timestamp:us:America/New_York"},
+                "nullable": True,
+            },
+        ],
+        "metadata": {},
+    }
+
+    actual_schema = dict_to_schema(json_schema)
+    assert actual_schema == schema
