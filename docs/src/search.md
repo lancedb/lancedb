@@ -99,7 +99,7 @@ as well.
 
     ```javascript
     const results_2 = await tbl.search(Array(1536).fill(1.2))
-        .metricType(vectordb.MetricType.Cosine)
+        .metricType("cosine")
         .limit(10)
         .execute()
     ```
