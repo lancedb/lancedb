@@ -70,6 +70,16 @@ def _type_to_dict(dt: pa.DataType) -> Dict[str, Any]:
         return {"type": "float32"}
     elif pa.types.is_float64(dt):
         return {"type": "float64"}
+    elif pa.types.is_date32(dt):
+        return {"type": f"date32"}
+    elif pa.types.is_date64(dt):
+        return {"type": f"date64"}
+    elif pa.types.is_time32(dt):
+        return {"type": f"time32:{dt.unit}"}
+    elif pa.types.is_time64(dt):
+        return {"type": f"time64:{dt.unit}"}
+    elif pa.types.is_timestamp(dt):
+        return {"type": f"timestamp:{dt.unit}:{dt.tz if dt.tz is not None else ''}"}
     elif pa.types.is_string(dt):
         return {"type": "string"}
     elif pa.types.is_binary(dt):
@@ -88,7 +98,7 @@ def _type_to_dict(dt: pa.DataType) -> Dict[str, Any]:
         }
     elif pa.types.is_list(dt):
         return {
-            "type": "fixed_size_list",
+            "type": "list",
             "value_type": _type_to_dict(dt.value_type),
         }
     elif pa.types.is_struct(dt):
@@ -185,12 +195,15 @@ def schema_to_dict(schema: pa.Schema) -> Dict[str, Any]:
     for name in schema.names:
         field = schema.field(name)
         fields.append(_field_to_dict(field))
-    return {
+    json_schema = {
         "fields": fields,
         "metadata": {
             k.decode("utf-8"): v.decode("utf-8") for (k, v) in schema.metadata.items()
-        },
+        }
+        if schema.metadata is not None
+        else {},
     }
+    return json_schema
 
 
 def _dict_to_type(dt: Dict[str, Any]) -> pa.DataType:
@@ -213,6 +226,8 @@ def _dict_to_type(dt: Dict[str, Any]) -> pa.DataType:
             "binary": pa.binary(),
             "large_string": pa.large_string(),
             "large_binary": pa.large_binary(),
+            "date32": pa.date32(),
+            "date64": pa.date64(),
         }[type_name]
     except KeyError:
         pass
@@ -232,6 +247,15 @@ def _dict_to_type(dt: Dict[str, Any]) -> pa.DataType:
         return pa.dictionary(
             _dict_to_type(dt["index_type"]), _dict_to_type(dt["value_type"])
         )
+    elif type_name.startswith("time32:"):
+        return pa.time32(type_name.split(":")[1])
+    elif type_name.startswith("time64:"):
+        return pa.time64(type_name.split(":")[1])
+    elif type_name.startswith("timestamp:"):
+        fields = type_name.split(":")
+        unit = fields[1]
+        tz = fields[2] if len(fields) > 2 else None
+        return pa.timestamp(unit, tz)
     raise TypeError(f"Unsupported type: {dt}")
 
 
