@@ -14,7 +14,7 @@
 """Pydantic adapter for LanceDB"""
 
 from types import GenericAlias
-from typing import Any, Type, Union, _GenericAlias, _UnionGenericAlias
+from typing import Any, List, Type, Union, _GenericAlias
 
 import pyarrow as pa
 import pydantic
@@ -44,12 +44,20 @@ def _py_type_to_arrow_type(py_type: Type[Any]) -> pa.DataType:
         return pa.bool_()
     elif py_type == bytes:
         return pa.binary()
-    raise TypeError(f"Converting Pydantic type to Arrow Type: unsupported type {py_type}")
+    raise TypeError(
+        f"Converting Pydantic type to Arrow Type: unsupported type {py_type}"
+    )
+
+
+def _pydantic_model_to_fields(model: pydantic.BaseModel) -> List[pa.Field]:
+    fields = []
+    for name, field in model.__fields__.items():
+        fields.append(_pydantic_to_field(name, field))
+    return fields
 
 
 def _pydantic_to_arrow_type(field: pydantic.fields.FieldInfo) -> pa.DataType:
-    """Convert a Pydantic FieldInfo to Arrow DataType
-    """
+    """Convert a Pydantic FieldInfo to Arrow DataType"""
     if isinstance(field.annotation, (GenericAlias, _GenericAlias)):
         origin = field.annotation.__origin__
         args = field.annotation.__args__
@@ -59,7 +67,11 @@ def _pydantic_to_arrow_type(field: pydantic.fields.FieldInfo) -> pa.DataType:
         elif origin == Union:
             if len(args) == 2 and args[1] == type(None):
                 return _py_type_to_arrow_type(args[0])
+    elif issubclass(field.annotation, pydantic.BaseModel):
+        fields = _pydantic_model_to_fields(field.annotation)
+        return pa.struct(fields)
     return _py_type_to_arrow_type(field.annotation)
+
 
 def is_nullable(field: pydantic.fields.FieldInfo) -> bool:
     """Check if a Pydantic FieldInfo is nullable."""
