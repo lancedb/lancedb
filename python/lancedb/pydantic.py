@@ -14,12 +14,11 @@
 """Pydantic adapter for LanceDB"""
 
 from abc import ABC, abstractstaticmethod
-from types import GenericAlias
-from typing import Annotated, Any, List, Type, TypeVar, Union, _GenericAlias
+# from types import GenericAlias
+from typing import Any, List, Type, TypeVar, Union, _GenericAlias
 
 import pyarrow as pa
 import pydantic
-from annotated_types import Len
 from pydantic_core import CoreSchema, core_schema
 
 
@@ -102,7 +101,7 @@ def _pydantic_model_to_fields(model: pydantic.BaseModel) -> List[pa.Field]:
 
 def _pydantic_to_arrow_type(field: pydantic.fields.FieldInfo) -> pa.DataType:
     """Convert a Pydantic FieldInfo to Arrow DataType"""
-    if isinstance(field.annotation, (GenericAlias, _GenericAlias)):
+    if isinstance(field.annotation, _GenericAlias):
         origin = field.annotation.__origin__
         args = field.annotation.__args__
         if origin == list:
@@ -121,7 +120,7 @@ def _pydantic_to_arrow_type(field: pydantic.fields.FieldInfo) -> pa.DataType:
 
 def is_nullable(field: pydantic.fields.FieldInfo) -> bool:
     """Check if a Pydantic FieldInfo is nullable."""
-    if isinstance(field.annotation, (GenericAlias, _GenericAlias)):
+    if isinstance(field.annotation, _GenericAlias):
         origin = field.annotation.__origin__
         args = field.annotation.__args__
         if origin == Union:
