@@ -82,6 +82,9 @@ where
 
 fn runtime<'a, C: Context<'a>>(cx: &mut C) -> NeonResult<&'static Runtime> {
     static RUNTIME: OnceCell<Runtime> = OnceCell::new();
+    static LOG: OnceCell<()> = OnceCell::new();
+
+    LOG.get_or_init(|| env_logger::init());
 
     RUNTIME.get_or_try_init(|| Runtime::new().or_else(|err| cx.throw_error(err.to_string())))
 }
