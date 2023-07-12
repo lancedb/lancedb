@@ -21,3 +21,4 @@ tokio = { version = "1.23", features = ["rt-multi-thread"] }
 neon = {version = "0.10.1", default-features = false, features = ["channel-api", "napi-6", "promise-api", "task-api"] }
 object_store = { workspace = true, features = ["aws"] }
 async-trait = "0"
+env_logger = "0"
