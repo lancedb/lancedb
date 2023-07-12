@@ -12,12 +12,13 @@
 #  limitations under the License.
 
 
+import json
 from typing import List, Optional
 
 import pyarrow as pa
 import pydantic
 
-from lancedb.pydantic import Vector, pydantic_to_schema
+from lancedb.pydantic import pydantic_to_schema, vector
 
 
 def test_pydantic_to_arrow():
@@ -57,3 +58,34 @@ def test_pydantic_to_arrow():
         ]
     )
     assert schema == expect_schema
+
+
+def test_fixed_size_list_field():
+    class TestModel(pydantic.BaseModel):
+        vec: vector(16)
+        li: List[int]
+
+    data = TestModel(vec=range(16), li=[1, 2, 3])
+    assert json.loads(data.model_dump_json()) == {
+        "vec": list(range(16)),
+        "li": [1, 2, 3],
+    }
+
+    schema = pydantic_to_schema(TestModel)
+    assert schema == pa.schema(
+        [
+            pa.field("vec", pa.list_(pa.float32(), 16), False),
+            pa.field("li", pa.list_(pa.int64()), False),
+        ]
+    )
+
+    json_schema = TestModel.model_json_schema()
+    assert json_schema == {
+        "properties": {
+            "vec": {"items": {"type": "number"}, "title": "Vec", "type": "array"},
+            "li": {"items": {"type": "integer"}, "title": "Li", "type": "array"},
+        },
+        "required": ["vec", "li"],
+        "title": "TestModel",
+        "type": "object",
+    }

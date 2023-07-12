@@ -13,17 +13,61 @@
 
 """Pydantic adapter for LanceDB"""
 
+from abc import ABC, abstractstaticmethod
 from types import GenericAlias
-from typing import Any, List, Type, Union, _GenericAlias
+from typing import Annotated, Any, List, Type, TypeVar, Union, _GenericAlias
 
 import pyarrow as pa
 import pydantic
+from annotated_types import Len
+from pydantic_core import CoreSchema, core_schema
 
 
-class Vector(list):
-    """Vector Field to be used with Pydantic Model"""
+class FixedSizeListMixin(ABC):
+    @abstractstaticmethod
+    def dim() -> int:
+        raise NotImplementedError
 
-    pass
+    @abstractstaticmethod
+    def value_arrow_type() -> pa.DataType:
+        raise NotImplementedError
+
+
+T = TypeVar("T")
+
+
+def vector(
+    dim: int, value_type: pa.DataType = pa.float32()
+) -> Type[FixedSizeListMixin]:
+    """Vector Type.
+
+    Note
+    ----
+    Experimental feature.
+    """
+
+    # TODO: make a public parameterized type.
+    class FixedSizeList(list, FixedSizeListMixin):
+        @staticmethod
+        def dim() -> int:
+            return dim
+
+        @staticmethod
+        def value_arrow_type() -> pa.DataType:
+            return value_type
+
+        @classmethod
+        def __get_pydantic_core_schema__(
+            cls, source_type: Any, handler: pydantic.GetCoreSchemaHandler
+        ) -> CoreSchema:
+            return core_schema.no_info_after_validator_function(
+                cls,
+                core_schema.list_schema(
+                    items_schema=core_schema.float_schema(),
+                ),
+            )
+
+    return FixedSizeList
 
 
 def _py_type_to_arrow_type(py_type: Type[Any]) -> pa.DataType:
@@ -51,7 +95,7 @@ def _py_type_to_arrow_type(py_type: Type[Any]) -> pa.DataType:
 
 def _pydantic_model_to_fields(model: pydantic.BaseModel) -> List[pa.Field]:
     fields = []
-    for name, field in model.__fields__.items():
+    for name, field in model.model_fields.items():
         fields.append(_pydantic_to_field(name, field))
     return fields
 
@@ -70,6 +114,8 @@ def _pydantic_to_arrow_type(field: pydantic.fields.FieldInfo) -> pa.DataType:
     elif issubclass(field.annotation, pydantic.BaseModel):
         fields = _pydantic_model_to_fields(field.annotation)
         return pa.struct(fields)
+    elif issubclass(field.annotation, FixedSizeListMixin):
+        return pa.list_(field.annotation.value_arrow_type(), field.annotation.dim())
     return _py_type_to_arrow_type(field.annotation)
 
 
@@ -102,7 +148,5 @@ def pydantic_to_schema(model: Type[pydantic.BaseModel]) -> pa.Schema:
     -------
     A PyArrow Schema.
     """
-    fields = []
-    for name, field in model.__fields__.items():
-        fields.append(_pydantic_to_field(name, field))
+    fields = _pydantic_model_to_fields(model)
     return pa.schema(fields)
