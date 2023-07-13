@@ -13,6 +13,8 @@
 
 """Pydantic adapter for LanceDB"""
 
+from __future__ import annotations
+
 import inspect
 import sys
 import types
@@ -67,11 +69,13 @@ def vector(
 
         @classmethod
         def __get_pydantic_core_schema__(
-            cls, source_type: Any, handler: pydantic.GetCoreSchemaHandler
+            cls, _source_type: Any, _handler: pydantic.GetCoreSchemaHandler
         ) -> CoreSchema:
             return core_schema.no_info_after_validator_function(
                 cls,
                 core_schema.list_schema(
+                    min_length=dim,
+                    max_length=dim,
                     items_schema=core_schema.float_schema(),
                 ),
             )

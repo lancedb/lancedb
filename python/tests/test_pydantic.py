@@ -110,7 +110,7 @@ def test_fixed_size_list_field():
         vec: vector(16)
         li: List[int]
 
-    data = TestModel(vec=range(16), li=[1, 2, 3])
+    data = TestModel(vec=list(range(16)), li=[1, 2, 3])
     assert json.loads(data.model_dump_json()) == {
         "vec": list(range(16)),
         "li": [1, 2, 3],
@@ -127,10 +127,29 @@ def test_fixed_size_list_field():
     json_schema = TestModel.model_json_schema()
     assert json_schema == {
         "properties": {
-            "vec": {"items": {"type": "number"}, "title": "Vec", "type": "array"},
+            "vec": {
+                "items": {"type": "number"},
+                "maxItems": 16,
+                "minItems": 16,
+                "title": "Vec",
+                "type": "array",
+            },
             "li": {"items": {"type": "integer"}, "title": "Li", "type": "array"},
         },
         "required": ["vec", "li"],
         "title": "TestModel",
         "type": "object",
     }
+
+
+def test_fixed_size_list_validation():
+    class TestModel(pydantic.BaseModel):
+        vec: vector(8)
+
+    with pytest.raises(pydantic.ValidationError):
+        TestModel(vec=range(9))
+
+    with pytest.raises(pydantic.ValidationError):
+        TestModel(vec=range(7))
+
+    TestModel(vec=range(8))
