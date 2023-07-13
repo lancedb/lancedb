@@ -52,5 +52,12 @@ pip install lancedb
 
 ::: lancedb.vector
 
-::: lancedb.pydantic.pydantic_to_arrow
+## Integrations
+
+### Pydantic
+
+::: lancedb.pydantic.pydantic_to_schema
+
+::: lancedb.pydantic.vector
+
 

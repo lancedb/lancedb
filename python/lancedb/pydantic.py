@@ -38,11 +38,22 @@ T = TypeVar("T")
 def vector(
     dim: int, value_type: pa.DataType = pa.float32()
 ) -> Type[FixedSizeListMixin]:
-    """Vector Type.
+    """Pydantic Vector Type.
 
     Note
     ----
     Experimental feature.
+
+    Examples
+    --------
+
+    >>> import pydantic
+    >>> import lancedb.pydantic.vector
+    ...
+    >>> class MyModel(pydantic.BaseModel):
+    ...     vector: vector(756)
+    ...     id: int
+    ...     description: str
     """
 
     # TODO: make a public parameterized type.
