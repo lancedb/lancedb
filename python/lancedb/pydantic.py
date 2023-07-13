@@ -47,7 +47,7 @@ def vector(
     --------
 
     >>> import pydantic
-    >>> import lancedb.pydantic.vector
+    >>> from lancedb.pydantic import vector
     ...
     >>> class MyModel(pydantic.BaseModel):
     ...     vector: vector(756)
