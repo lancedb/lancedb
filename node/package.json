@@ -1,6 +1,6 @@
 {
   "name": "vectordb",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "description": " Serverless, low-latency vector database for AI applications",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -75,9 +75,9 @@
     }
   },
   "optionalDependencies": {
-    "vectordb-darwin-arm64": "0.1.12",
-    "vectordb-darwin-x64": "0.1.12",
-    "vectordb-linux-x64-gnu": "0.1.12",
-    "vectordb-linux-arm64-gnu": "0.1.12"
+    "vectordb-darwin-arm64": "0.1.13",
+    "vectordb-darwin-x64": "0.1.13",
+    "vectordb-linux-x64-gnu": "0.1.13",
+    "vectordb-linux-arm64-gnu": "0.1.13"
   }
 }
