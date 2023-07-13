@@ -112,7 +112,7 @@ def _pydantic_model_to_fields(model: pydantic.BaseModel) -> List[pa.Field]:
 def _pydantic_to_arrow_type(field: pydantic.fields.FieldInfo) -> pa.DataType:
     """Convert a Pydantic FieldInfo to Arrow DataType"""
     if isinstance(field.annotation, _GenericAlias) or (
-        sys.version_info > (3, 8) and isinstance(field.annotation, types.GenericAlias)
+        sys.version_info < (3, 9) and isinstance(field.annotation, types.GenericAlias)
     ):
         origin = field.annotation.__origin__
         args = field.annotation.__args__
