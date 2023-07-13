@@ -1,7 +1,7 @@
 # ANN (Approximate Nearest Neighbor) Indexes
 
 You can create an index over your vector data to make search faster.
-Vector indexes are faster but less accurate than exhaustive search.
+Vector indexes are faster but less accurate than exhaustive search (KNN or Flat Search).
 LanceDB provides many parameters to fine-tune the index's size, the speed of queries, and the accuracy of results.
 
 Currently, LanceDB does *not* automatically create the ANN index.
@@ -10,7 +10,18 @@ If you can live with <100ms latency, skipping index creation is a simpler workfl
 
 In the future we will look to automatically create and configure the ANN index.
 
-## Creating an ANN Index
+## Types of Index
+
+Lance can support multiple index types, the most widely used one is `IVF_PQ`.
+
+* `IVF_PQ`: use **Inverted File Index (IVF)** to first divide the dataset into `N` partitions,
+   and then use **Product Quantization** to compress vectors in each partition.
+* `DISKANN` (**Experimental**): organize the vector as a on-disk graph, where the vertices approximately
+   represent the nearest neighbors of each vector.
+
+## Creating an IVF_PQ Index
+
+Lance supports `IVF_PQ` index type by default.
 
 === "Python"
      Creating indexes is done via the [create_index](https://lancedb.github.io/lancedb/python/#lancedb.table.LanceTable.create_index) method.
@@ -45,15 +56,21 @@ In the future we will look to automatically create and configure the ANN index.
      await table.createIndex({ type: 'ivf_pq', column: 'vector', num_partitions: 256, num_sub_vectors: 96 })
      ```
 
-Since `create_index` has a training step, it can take a few minutes to finish for large tables. You can control the index
-creation by providing the following parameters:
-
-- **metric** (default: "L2"): The distance metric to use. By default we use euclidean distance. We also support "cosine" distance.
-- **num_partitions** (default: 256): The number of partitions of the index. The number of partitions should be configured so each partition has 3-5K vectors. For example, a table
+- **metric** (default: "L2"): The distance metric to use. By default it uses euclidean distance "`L2`".
+We also support "cosine" and "dot" distance as well.
+- **num_partitions** (default: 256): The number of partitions of the index.
+The number of partitions should be configured so each partition has 3-5K vectors. For example, a table
 with ~1M vectors should use 256 partitions. You can specify arbitrary number of partitions but powers of 2 is most conventional.
-A higher number leads to faster queries, but it makes index generation slower.
-- **num_sub_vectors** (default: 96): The number of subvectors (M) that will be created during Product Quantization (PQ). A larger number makes
-search more accurate, but also makes the index larger and slower to build.
+- **num_sub_vectors** (default: 96): The number of sub-vectors (M) that will be created during Product Quantization (PQ).
+For D dimensional vector, it will be divided into `M` of `D/M` sub-vectors, each of which is presented by
+a single PQ code. A larger number of `M` allows more variability to present a vector, and thus more accurate,
+but also makes the index larger and slower to search.
+
+<figure markdown>
+  ![IVF PQ](./assets/ivf_pq.png)
+  <figcaption>IVF_PQ index with <code>num_partitions=2, num_sub_vectors=4</code></figcaption>
+</figure>
+
 
 ## Querying an ANN Index
 

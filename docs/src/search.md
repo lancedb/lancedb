@@ -25,9 +25,9 @@ Currently, we support the following metrics:
 
 ### Flat Search
 
+If LanceDB does not create a vector index, LanceDB would need to scan (`Flat Search`) the entire vector column
+and compute the distance for each vector in order to find the closest matches.
 
-If there is no [vector index is created](ann_indexes.md), LanceDB will just brute-force scan
-the vector column and compute the distance.
 
 <!-- Setup Code
 ```python
@@ -106,6 +106,16 @@ as well.
     ```
 
 
-### Search with Vector Index.
+### Approximate Nearest Neighbor (ANN) Search with Vector Index.
+
+To accelerate vector retrievals, it is common to build vector indices.
+A vector index is a data structure specifically designed to efficiently organize and
+search vector data based on their similarity or distance metrics.
+By constructing a vector index, you can reduce the search space and avoid the need
+for brute-force scanning of the entire vector column.
+
+However, fast vector search using indices often entails making a trade-off with accuracy to some extent.
+This is why it is often called **Approximate Nearest Neighbors (ANN)** search, while the Flat Search (KNN)
+always returns 100% recall.
 
 See [ANN Index](ann_indexes.md) for more details.
