@@ -18,7 +18,7 @@ import * as chai from 'chai'
 import * as chaiAsPromised from 'chai-as-promised'
 
 import * as lancedb from '../index'
-import { type EmbeddingFunction, MetricType, Query, WriteMode } from '../index'
+import { type AwsCredentials, type EmbeddingFunction, MetricType, Query, WriteMode } from '../index'
 
 const expect = chai.expect
 const assert = chai.assert
@@ -29,6 +29,22 @@ describe('LanceDB client', function () {
     it('should have a valid url', async function () {
       const uri = await createTestDB()
       const con = await lancedb.connect(uri)
+      assert.equal(con.uri, uri)
+    })
+
+    it('should accept an options object', async function () {
+      const uri = await createTestDB()
+      const con = await lancedb.connect({ uri })
+      assert.equal(con.uri, uri)
+    })
+
+    it('should accept custom aws credentials', async function () {
+      const uri = await createTestDB()
+      const awsCredentials: AwsCredentials = {
+        accessKeyId: '',
+        secretKey: ''
+      }
+      const con = await lancedb.connect({ uri, awsCredentials })
       assert.equal(con.uri, uri)
     })
 
