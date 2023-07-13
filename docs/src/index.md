@@ -46,7 +46,7 @@ LanceDB's core is written in Rust 🦀 and is built using <a href="https://githu
 
       const uri = "data/sample-lancedb";
       const db = await lancedb.connect(uri);
-      const table = await db.createTable("my_table", 
+      const table = await db.createTable("my_table",
             [{ id: 1, vector: [3.1, 4.1], item: "foo", price: 10.0 },
             { id: 2, vector: [5.9, 26.5], item: "bar", price: 20.0 }])
       const results = await table.search([100, 100]).limit(2).execute();
@@ -67,6 +67,6 @@ LanceDB's core is written in Rust 🦀 and is built using <a href="https://githu
 * [`Embedding Functions`](embedding.md) - functions for working with embeddings.
 * [`Indexing`](ann_indexes.md) - create vector indexes to speed up queries.
 * [`Full text search`](fts.md) - [EXPERIMENTAL] full-text search API
-* [`Ecosystem Integrations`](integrations.md) - integrating LanceDB with python data tooling ecosystem.
+* [`Ecosystem Integrations`](python/integration.md) - integrating LanceDB with python data tooling ecosystem.
 * [`Python API Reference`](python/python.md) - detailed documentation for the LanceDB Python SDK.
 * [`Node API Reference`](javascript/modules.md) - detailed documentation for the LanceDB Python SDK.
