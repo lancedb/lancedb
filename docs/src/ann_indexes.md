@@ -177,6 +177,6 @@ Higher number of partitions could lead to more efficient I/O during queries and 
 On `SIFT-1M` dataset, our benchmark shows that keeping each partition 1K-4K rows lead to a good latency / recall.
 
 `num_sub_vectors` decides how many Product Quantization code to generate on each vector. Because
-Product Quantization is a loss compression of the original vector, the more `num_sub_vectors` usually results to
+Product Quantization is a lossy compression of the original vector, the more `num_sub_vectors` usually results to
 less space distortion, and thus yield better accuracy. However, similarly, more `num_sub_vectors` causes heavier I/O and
 more PQ computation, thus, higher latency. `dimension / num_sub_vectors` should be aligned with 8 for better SIMD efficiency.
