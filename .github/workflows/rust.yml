@@ -82,5 +82,5 @@ jobs:
       - name: Run tests
         run: |
           $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
-          cargo build --no-default-features
-          cargo test --no-default-features
+          cargo build
+          cargo test
