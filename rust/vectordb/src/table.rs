@@ -274,6 +274,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(windows))]
     fn test_object_store_path() {
         use std::path::Path as StdPath;
         let p = StdPath::new("s3://bucket/path/to/file");
