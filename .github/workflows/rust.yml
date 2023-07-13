@@ -66,3 +66,20 @@ jobs:
         run: cargo build --all-features
       - name: Run tests
         run: cargo test --all-features
+  windows-:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v3
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Install protoc
+        run: |
+          curl -LO "https://github.com/protocolbuffers/protobuf/releases/latest/download/protoc-3.17.3-win64.zip"
+          tar -xzf protoc-3.17.3-win64.zip -C $HOME
+          # Add protoc to the system PATH
+          echo "::add-path::$HOME\\bin"
+      - name: Run tests
+        run: |
+          cargo build --all-features
+          cargo test --all-features
