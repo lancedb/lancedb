@@ -66,7 +66,7 @@ jobs:
         run: cargo build --all-features
       - name: Run tests
         run: cargo test --all-features
-  windows-:
+  windows:
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v3
@@ -78,7 +78,7 @@ jobs:
           curl -LO "https://github.com/protocolbuffers/protobuf/releases/latest/download/protoc-3.17.3-win64.zip"
           tar -xzf protoc-3.17.3-win64.zip -C $HOME
           # Add protoc to the system PATH
-          echo "::add-path::$HOME\\bin"
+          echo "$env:USERPROFILE\bin" >> $env:GITHUB_ENV
       - name: Run tests
         run: |
           cargo build --all-features
