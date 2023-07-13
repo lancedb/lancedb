@@ -13,6 +13,9 @@
 
 """Pydantic adapter for LanceDB"""
 
+import inspect
+import sys
+import types
 from abc import ABC, abstractstaticmethod
 from typing import Any, List, Type, Union, _GenericAlias
 
@@ -108,7 +111,9 @@ def _pydantic_model_to_fields(model: pydantic.BaseModel) -> List[pa.Field]:
 
 def _pydantic_to_arrow_type(field: pydantic.fields.FieldInfo) -> pa.DataType:
     """Convert a Pydantic FieldInfo to Arrow DataType"""
-    if isinstance(field.annotation, _GenericAlias):
+    if isinstance(field.annotation, _GenericAlias) or (
+        sys.version_info > (3, 8) and isinstance(field.annotation, types.GenericAlias)
+    ):
         origin = field.annotation.__origin__
         args = field.annotation.__args__
         if origin == list:
@@ -117,11 +122,13 @@ def _pydantic_to_arrow_type(field: pydantic.fields.FieldInfo) -> pa.DataType:
         elif origin == Union:
             if len(args) == 2 and args[1] == type(None):
                 return _py_type_to_arrow_type(args[0])
-    elif issubclass(field.annotation, pydantic.BaseModel):
-        fields = _pydantic_model_to_fields(field.annotation)
-        return pa.struct(fields)
-    elif issubclass(field.annotation, FixedSizeListMixin):
-        return pa.list_(field.annotation.value_arrow_type(), field.annotation.dim())
+    elif inspect.isclass(field.annotation):
+        if issubclass(field.annotation, pydantic.BaseModel):
+            # Struct
+            fields = _pydantic_model_to_fields(field.annotation)
+            return pa.struct(fields)
+        elif issubclass(field.annotation, FixedSizeListMixin):
+            return pa.list_(field.annotation.value_arrow_type(), field.annotation.dim())
     return _py_type_to_arrow_type(field.annotation)
 
 
