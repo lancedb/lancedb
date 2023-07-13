@@ -59,12 +59,9 @@ Lance supports `IVF_PQ` index type by default.
 - **metric** (default: "L2"): The distance metric to use. By default it uses euclidean distance "`L2`".
 We also support "cosine" and "dot" distance as well.
 - **num_partitions** (default: 256): The number of partitions of the index.
-The number of partitions should be configured so each partition has 3-5K vectors. For example, a table
-with ~1M vectors should use 256 partitions. You can specify arbitrary number of partitions but powers of 2 is most conventional.
 - **num_sub_vectors** (default: 96): The number of sub-vectors (M) that will be created during Product Quantization (PQ).
 For D dimensional vector, it will be divided into `M` of `D/M` sub-vectors, each of which is presented by
-a single PQ code. A larger number of `M` allows more variability to present a vector, and thus more accurate,
-but also makes the index larger and slower to search.
+a single PQ code.
 
 <figure markdown>
   ![IVF PQ](./assets/ivf_pq.png)
