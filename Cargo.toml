@@ -6,7 +6,7 @@ members = [
 resolver = "2"
 
 [workspace.dependencies]
-lance = "=0.5.5"
+lance = { git = "https://github.com/lancedb/lance.git", branch = "gsilvestrin/win_remove_vcpkg" }
 arrow-array = "42.0"
 arrow-data = "42.0"
 arrow-schema = "42.0"
