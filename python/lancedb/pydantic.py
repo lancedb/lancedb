@@ -14,8 +14,7 @@
 """Pydantic adapter for LanceDB"""
 
 from abc import ABC, abstractstaticmethod
-# from types import GenericAlias
-from typing import Any, List, Type, TypeVar, Union, _GenericAlias
+from typing import Any, List, Type, Union, _GenericAlias
 
 import pyarrow as pa
 import pydantic
@@ -30,9 +29,6 @@ class FixedSizeListMixin(ABC):
     @abstractstaticmethod
     def value_arrow_type() -> pa.DataType:
         raise NotImplementedError
-
-
-T = TypeVar("T")
 
 
 def vector(
