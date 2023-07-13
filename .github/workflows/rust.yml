@@ -76,7 +76,7 @@ jobs:
       - name: Install protoc
         run: |
           curl -LO "https://github.com/protocolbuffers/protobuf/releases/latest/download/protoc-3.17.3-win64.zip"
-          unzip protoc-3.15.8-linux-x86_64.zip -d $HOME\protoc
+          unzip protoc-3.17.3-win64.zip -d $HOME\protoc
           # Add protoc to the system PATH
           echo "$HOME\protoc\bin" >> $env:GITHUB_PATH
       - name: Run tests
