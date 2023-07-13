@@ -50,6 +50,7 @@ markdown_extensions:
 - pymdownx.superfences
 - pymdownx.tabbed:
     alternate_style: true
+- md_in_html
 
 nav:
 - Home: index.md
