@@ -68,6 +68,7 @@ nav:
   - Serverless QA Bot with Modal: examples/serverless_qa_bot_with_modal_and_langchain.md
 - Javascript examples:
   - YouTube Transcript Search: examples/youtube_transcript_bot_with_nodejs.md
+  - TransformersJS Embedding Search: examples/transformerjs_embedding_search_nodejs.md
 - References:
   - Vector Search: search.md
   - SQL filters: sql.md
