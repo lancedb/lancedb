@@ -132,6 +132,7 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.LANCEDB_NPM_REGISTRY_TOKEN }}
         run: |
-          for filename in */*.tgz; do
+          mv */*.tgz .
+          for filename in *.tgz; do
             npm publish $filename
           done
