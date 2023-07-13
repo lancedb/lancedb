@@ -59,15 +59,13 @@ def vector(
     ...
     >>> class MyModel(pydantic.BaseModel):
     ...     id: int
-    ...     url: Optional[str]
-    ...     embeddings: vector(756)
-
+    ...     url: str
+    ...     embeddings: vector(768)
     >>> schema = pydantic_to_schema(MyModel)
-    >>> assert schema = pa.schema([
-    ...     pa.field("id", pa.int64()),
-    ...     pa.field("name", pa.utf8()),
-    ...     pa.field("name", pa.utf8(), True),
-    ...     pa.field("embeddings", pa.list_(pa.float32(), 768))
+    >>> assert schema == pa.schema([
+    ...     pa.field("id", pa.int64(), False),
+    ...     pa.field("url", pa.utf8(), False),
+    ...     pa.field("embeddings", pa.list_(pa.float32(), 768), False)
     ... ])
     """
 
