@@ -226,6 +226,7 @@ class LanceQueryBuilder:
             columns=self._columns,
             nprobes=self._nprobes,
             refine_factor=self._refine_factor,
+            vector_column=self._vector_column,
         )
         return self._table._execute_query(query)
 

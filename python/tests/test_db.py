@@ -13,6 +13,7 @@
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
 import pytest
 
 import lancedb
@@ -130,6 +131,9 @@ def test_empty_or_nonexistent_table(tmp_path):
 
     with pytest.raises(Exception):
         db.open_table("does_not_exist")
+
+    schema = pa.schema([pa.field("a", pa.int32())])
+    db.create_table("test", schema=schema)
 
 
 def test_replace_index(tmp_path):
