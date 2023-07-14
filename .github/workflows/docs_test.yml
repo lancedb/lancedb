@@ -81,7 +81,7 @@ jobs:
       run: |
         cd docs/test/node_modules/vectordb 
         npm ci
-        npm run build
+        npm run build-release
         npm run tsc
     - name: Create test files
       run: |
