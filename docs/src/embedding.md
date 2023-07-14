@@ -46,7 +46,7 @@ You can also use an external API like OpenAI to generate embeddings
 
         def embed_func(c):
             rs = openai.Embedding.create(input=c, engine="text-embedding-ada-002")
-            eturn [record["embedding"] for record in rs["data"]]
+            return [record["embedding"] for record in rs["data"]]
       ```
 
 === "Javascript"
