@@ -1,4 +1,6 @@
-# Vector embedding search using TransformersJS and NodeJS
+# Vector embedding search using TransformersJS
+
+## Embed and query data from LacneDB using TransformersJS
 
 This example shows how to use the [transformers.js](https://github.com/xenova/transformers.js) library to perform vector embedding search using LanceDB's Javascript API.
 
