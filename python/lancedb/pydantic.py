@@ -41,9 +41,15 @@ def vector(
 ) -> Type[FixedSizeListMixin]:
     """Pydantic Vector Type.
 
-    Note
-    ----
-    Experimental feature.
+    !!! warning
+        Experimental feature.
+
+    Parameters
+    ----------
+    dim : int
+        The dimension of the vector.
+    value_type : pyarrow.DataType, optional
+        The value type of the vector, by default pa.float32()
 
     Examples
     --------
@@ -52,9 +58,15 @@ def vector(
     >>> from lancedb.pydantic import vector
     ...
     >>> class MyModel(pydantic.BaseModel):
-    ...     vector: vector(756)
     ...     id: int
-    ...     description: str
+    ...     url: str
+    ...     embeddings: vector(768)
+    >>> schema = pydantic_to_schema(MyModel)
+    >>> assert schema == pa.schema([
+    ...     pa.field("id", pa.int64(), False),
+    ...     pa.field("url", pa.utf8(), False),
+    ...     pa.field("embeddings", pa.list_(pa.float32(), 768), False)
+    ... ])
     """
 
     # TODO: make a public parameterized type.
@@ -163,7 +175,36 @@ def pydantic_to_schema(model: Type[pydantic.BaseModel]) -> pa.Schema:
 
     Returns
     -------
-    A PyArrow Schema.
+    pyarrow.Schema
+
+    Examples
+    --------
+
+    >>> from typing import List, Optional
+    >>> import pydantic
+    >>> from lancedb.pydantic import pydantic_to_schema
+    ...
+    >>> class InnerModel(pydantic.BaseModel):
+    ...     a: str
+    ...     b: Optional[float]
+    >>>
+    >>> class FooModel(pydantic.BaseModel):
+    ...     id: int
+    ...     s: Optional[str] = None
+    ...     vec: List[float]
+    ...     li: List[int]
+    ...     inner: InnerModel
+    >>> schema = pydantic_to_schema(FooModel)
+    >>> assert schema == pa.schema([
+    ...     pa.field("id", pa.int64(), False),
+    ...     pa.field("s", pa.utf8(), True),
+    ...     pa.field("vec", pa.list_(pa.float64()), False),
+    ...     pa.field("li", pa.list_(pa.int64()), False),
+    ...     pa.field("inner", pa.struct([
+    ...         pa.field("a", pa.utf8(), False),
+    ...         pa.field("b", pa.float64(), True),
+    ...     ]), False),
+    ... ])
     """
     fields = _pydantic_model_to_fields(model)
     return pa.schema(fields)

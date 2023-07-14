@@ -60,6 +60,9 @@ nav:
 - Python integrations:
   - Pandas and PyArrow: python/arrow.md
   - DuckDB: python/duckdb.md
+  - LangChain 🦜️🔗: https://python.langchain.com/en/latest/modules/indexes/vectorstores/examples/lancedb.html
+  - LlamaIndex 🦙: https://gpt-index.readthedocs.io/en/latest/examples/vector_stores/LanceDBIndexDemo.html
+  - Pydantic: python/pydantic.md
 - Python examples:
   - YouTube Transcript Search: notebooks/youtube_transcript_search.ipynb
   - Documentation QA Bot using LangChain: notebooks/code_qa_bot.ipynb
