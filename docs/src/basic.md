@@ -122,6 +122,24 @@ After a table has been created, you can always add more data to it using
               {vector: [9.5, 56.2], item: "buzz", price: 200.0}])
       ```
 
+## How to delete rows from a table
+
+You can use the `delete()` method on tables with a SQL expression to delete rows
+from a table. 
+
+=== "Python"
+      ```python
+      tbl.delete('item = "fizz"')
+      ```
+
+=== "Javascript"
+      ```javascript
+      await tbl.delete('item = "fizz"')
+      ```
+
+The deletion predicate is a SQL expression that supports the same expressions
+as the `where()` clause on a search.
+
 ## How to search for (approximate) nearest neighbors
 
 Once you've embedded the query, you can find its nearest neighbors using the following code:
