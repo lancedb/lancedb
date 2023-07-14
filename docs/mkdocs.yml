@@ -60,6 +60,9 @@ nav:
 - Python integrations:
   - Pandas and PyArrow: python/arrow.md
   - DuckDB: python/duckdb.md
+  - LangChain 🦜️🔗: https://python.langchain.com/en/latest/modules/indexes/vectorstores/examples/lancedb.html
+  - LlamaIndex 🦙: https://gpt-index.readthedocs.io/en/latest/examples/vector_stores/LanceDBIndexDemo.html
+  - Pydantic: python/pydantic.md
 - Python examples:
   - YouTube Transcript Search: notebooks/youtube_transcript_search.ipynb
   - Documentation QA Bot using LangChain: notebooks/code_qa_bot.ipynb
@@ -68,6 +71,7 @@ nav:
   - Serverless QA Bot with Modal: examples/serverless_qa_bot_with_modal_and_langchain.md
 - Javascript examples:
   - YouTube Transcript Search: examples/youtube_transcript_bot_with_nodejs.md
+  - TransformersJS Embedding Search: examples/transformerjs_embedding_search_nodejs.md
 - References:
   - Vector Search: search.md
   - SQL filters: sql.md
