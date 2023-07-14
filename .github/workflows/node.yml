@@ -59,11 +59,12 @@ jobs:
         node-version: ${{ matrix.node-version }}
         cache: 'npm'
         cache-dependency-path: node/package-lock.json
-    - uses: Swatinem/rust-cache@v2
     - name: Install dependencies
       run: |
         sudo apt update
         sudo apt install -y protobuf-compiler libssl-dev
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+    - uses: Swatinem/rust-cache@v2
     - name: Build
       run: |
         npm ci
