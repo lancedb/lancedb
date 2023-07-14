@@ -59,7 +59,7 @@ async function example() {
         .metricType("cosine")
         .limit(2)
         .execute()
-    console.log(results)
+    console.log(results.map(r => r.text))
 
 }
 

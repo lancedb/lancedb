@@ -76,9 +76,13 @@ const results = await table
     .metricType("cosine")
     .limit(2)
     .execute()
-console.log(results)
+console.log(results.map(r => r.text))
+```
+```bash
+[ 'Banana', 'Cherry' ]
 ```
 
+Output of `results`:
 ```bash
 [
   {
