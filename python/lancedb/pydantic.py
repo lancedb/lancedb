@@ -18,7 +18,7 @@ from __future__ import annotations
 import inspect
 import sys
 import types
-from abc import ABC, abstractstaticmethod
+from abc import ABC, abstractmethod
 from typing import Any, List, Type, Union, _GenericAlias
 
 import pyarrow as pa
@@ -27,11 +27,13 @@ from pydantic_core import CoreSchema, core_schema
 
 
 class FixedSizeListMixin(ABC):
-    @abstractstaticmethod
+    @staticmethod
+    @abstractmethod
     def dim() -> int:
         raise NotImplementedError
 
-    @abstractstaticmethod
+    @staticmethod
+    @abstractmethod
     def value_arrow_type() -> pa.DataType:
         raise NotImplementedError
 
