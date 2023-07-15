@@ -16,6 +16,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use arrow_array::{Float32Array, RecordBatchReader};
+use arrow_schema::SchemaRef;
 use lance::dataset::{Dataset, ReadParams, WriteParams};
 use lance::index::IndexType;
 use snafu::prelude::*;
@@ -142,6 +143,16 @@ impl Table {
             uri,
             dataset: Arc::new(dataset),
         })
+    }
+
+    /// Schema of this Table.
+    pub fn schema(&self) -> SchemaRef {
+        Arc::new(self.dataset.schema().into())
+    }
+
+    /// Version of this Table
+    pub fn version(&self) -> u64 {
+        self.dataset.version().version
     }
 
     /// Create index on the table.
@@ -350,10 +361,7 @@ mod tests {
             ..Default::default()
         };
 
-        table
-            .add(new_batches, Some(param))
-            .await
-            .unwrap();
+        table.add(new_batches, Some(param)).await.unwrap();
         assert_eq!(table.count_rows().await.unwrap(), 10);
         assert_eq!(table.name, "test");
     }
