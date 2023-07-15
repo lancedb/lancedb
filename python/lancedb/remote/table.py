@@ -18,9 +18,9 @@ import pyarrow as pa
 from lancedb.common import DATA, VEC, VECTOR_COLUMN_NAME
 
 from ..query import LanceQueryBuilder, Query
+from ..schema import json_to_schema
 from ..table import Query, Table
 from .db import RemoteDBConnection
-from ..schema import json_to_schema
 
 
 class RemoteTable(Table):
@@ -34,7 +34,7 @@ class RemoteTable(Table):
     def schema(self) -> pa.Schema:
         """Return the schema of the table."""
         resp = self._conn._loop.run_until_complete(
-            self._conn._client.get(f"/table/{self._name}")
+            self._conn._client.get(f"/table/{self._name}/describe")
         )
         schema = json_to_schema(resp["schema"])
         raise schema

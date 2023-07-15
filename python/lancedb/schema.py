@@ -15,9 +15,9 @@
 
 import json
 from typing import Any, Dict, Type
-from lance import schema_to_json, json_to_schema
 
 import pyarrow as pa
+from lance import json_to_schema, schema_to_json
 
 
 def vector(dimension: int, value_type: pa.DataType = pa.float32()) -> pa.DataType:

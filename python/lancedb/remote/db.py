@@ -75,4 +75,7 @@ class RemoteDBConnection(DBConnection):
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
     ) -> Table:
+        if data is None and schema is None:
+            raise ValueError("Either data or schema must be provided.")
+
         raise NotImplementedError
