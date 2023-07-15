@@ -20,6 +20,7 @@ from lancedb.common import DATA, VEC, VECTOR_COLUMN_NAME
 from ..query import LanceQueryBuilder, Query
 from ..table import Query, Table
 from .db import RemoteDBConnection
+from ..schema import json_to_schema
 
 
 class RemoteTable(Table):
@@ -31,7 +32,12 @@ class RemoteTable(Table):
         return f"RemoteTable({self._conn.db_name}.{self.name})"
 
     def schema(self) -> pa.Schema:
-        raise NotImplementedError
+        """Return the schema of the table."""
+        resp = self._conn._loop.run_until_complete(
+            self._conn._client.get(f"/table/{self._name}")
+        )
+        schema = json_to_schema(resp["schema"])
+        raise schema
 
     def to_arrow(self) -> pa.Table:
         raise NotImplementedError
