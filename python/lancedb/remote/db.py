@@ -20,6 +20,7 @@ import pyarrow as pa
 from lancedb.common import DATA
 from lancedb.db import DBConnection
 from lancedb.table import Table, _sanitize_data
+from lancedb.schema import schema_to_json
 
 from .client import RestfulLanceDBClient
 
@@ -86,4 +87,10 @@ class RemoteDBConnection(DBConnection):
                 raise ValueError("Either data or schema must be provided")
             data = pa.Table.from_pylist([], schema=schema)
 
+        payload = {
+            "name": name,
+            "schema": schema_to_json(data.schema),
+            "records": data.to_pydict(),
+        }
+        self._loop.run_until_complete(self._client.create_table("/table/", payload))
         raise NotImplementedError
