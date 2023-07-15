@@ -1,16 +1,18 @@
 {
   "name": "vectordb",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "description": " Serverless, low-latency vector database for AI applications",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
     "tsc": "tsc -b",
-    "build": "cargo-cp-artifact --artifact cdylib vectordb-node index.node -- cargo build --message-format=json-render-diagnostics",
+    "build": "cargo-cp-artifact --artifact cdylib vectordb-node index.node -- cargo build --message-format=json",
     "build-release": "npm run build -- --release",
-    "test": "npm run tsc; mocha -recursive dist/test",
+    "test": "npm run tsc && mocha -recursive dist/test",
     "lint": "eslint src --ext .js,.ts",
-    "clean": "rm -rf node_modules *.node dist/"
+    "clean": "rm -rf node_modules *.node dist/",
+    "pack-build": "neon pack-build",
+    "check-npm": "printenv && which node && which npm && npm --version"
   },
   "repository": {
     "type": "git",
@@ -25,6 +27,7 @@
   "author": "Lance Devs",
   "license": "Apache-2.0",
   "devDependencies": {
+    "@neon-rs/cli": "^0.0.74",
     "@types/chai": "^4.3.4",
     "@types/chai-as-promised": "^7.1.5",
     "@types/mocha": "^10.0.1",
@@ -52,6 +55,32 @@
   },
   "dependencies": {
     "@apache-arrow/ts": "^12.0.0",
+    "@neon-rs/load": "^0.0.74",
     "apache-arrow": "^12.0.0"
+  },
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ],
+  "neon": {
+    "targets": {
+      "x86_64-apple-darwin": "vectordb-darwin-x64",
+      "aarch64-apple-darwin": "vectordb-darwin-arm64",
+      "x86_64-unknown-linux-gnu": "vectordb-linux-x64-gnu",
+      "aarch64-unknown-linux-gnu": "vectordb-linux-arm64-gnu",
+      "x86_64-pc-windows-msvc": "vectordb-win32-x64-msvc"
+    }
+  },
+  "optionalDependencies": {
+    "vectordb-darwin-arm64": "0.1.13",
+    "vectordb-darwin-x64": "0.1.13",
+    "vectordb-linux-arm64-gnu": "0.1.13",
+    "vectordb-linux-x64-gnu": "0.1.13",
+    "vectordb-win32-x64-msvc": "0.1.13"
   }
 }

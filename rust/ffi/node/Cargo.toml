@@ -1,6 +1,6 @@
 [package]
 name = "vectordb-node"
-version = "0.1.12"
+version = "0.1.13"
 description = "Serverless, low-latency vector database for AI applications"
 license = "Apache-2.0"
 edition = "2018"
@@ -15,6 +15,7 @@ arrow-ipc = { workspace = true }
 arrow-schema = { workspace = true }
 once_cell = "1"
 futures = "0.3"
+half = { workspace = true }
 lance = { workspace = true }
 vectordb = { path = "../../vectordb" }
 tokio = { version = "1.23", features = ["rt-multi-thread"] }

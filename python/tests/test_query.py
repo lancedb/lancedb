@@ -119,6 +119,7 @@ def test_query_builder_with_different_vector_column():
             columns=["b"],
             nprobes=20,
             refine_factor=None,
+            vector_column="foo_vector",
         )
     )
 

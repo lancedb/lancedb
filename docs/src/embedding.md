@@ -46,7 +46,7 @@ You can also use an external API like OpenAI to generate embeddings
 
         def embed_func(c):
             rs = openai.Embedding.create(input=c, engine="text-embedding-ada-002")
-        return [record["embedding"] for record in rs["data"]]
+            return [record["embedding"] for record in rs["data"]]
       ```
 
 === "Javascript"
@@ -126,7 +126,7 @@ belong in the same latent space and your results will be nonsensical.
 === "Javascript"
      ```javascript
       const results = await table
-        .search('What's the best pizza topping?')
+        .search("What's the best pizza topping?")
         .limit(10)
         .execute()
      ```

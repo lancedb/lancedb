@@ -12,29 +12,26 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+const { currentTarget } = require('@neon-rs/load');
+
 let nativeLib;
 
-function getPlatformLibrary() {
-    if (process.platform === "darwin" && process.arch == "arm64") {
-        return require('./aarch64-apple-darwin.node');
-    } else if (process.platform === "darwin" && process.arch == "x64") {
-        return require('./x86_64-apple-darwin.node');
-    } else if (process.platform === "linux" && process.arch == "x64") {
-        return require('./x86_64-unknown-linux-gnu.node');
-    } else {
-        throw new Error(`vectordb: unsupported platform ${process.platform}_${process.arch}. Please file a bug report at https://github.com/lancedb/lancedb/issues`)
-    }
-}
-
 try {
-    nativeLib = require('./index.node')
+    nativeLib = require(`vectordb-${currentTarget()}`);
 } catch (e) {
-    if (e.code === "MODULE_NOT_FOUND") {
-        nativeLib = getPlatformLibrary();
-    } else {
-        throw new Error('vectordb: failed to load native library. Please file a bug report at https://github.com/lancedb/lancedb/issues');
-    }
+    try {
+        // Might be developing locally, so try that. But don't expose that error
+        // to the user.
+        nativeLib = require("./index.node");
+    } catch {
+        throw new Error(`vectordb: failed to load native library.
+  You may need to run \`npm install vectordb-${currentTarget()}\`.
+      
+  If that does not work, please file a bug report at https://github.com/lancedb/lancedb/issues
+      
+  Source error: ${e}`);
+    }   
 }
 
-module.exports = nativeLib
-
+// Dynamic require for runtime.
+module.exports = nativeLib;

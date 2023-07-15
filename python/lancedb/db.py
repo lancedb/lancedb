@@ -356,18 +356,15 @@ class LanceDBConnection(DBConnection):
         if mode.lower() not in ["create", "overwrite"]:
             raise ValueError("mode must be either 'create' or 'overwrite'")
 
-        if data is not None:
-            tbl = LanceTable.create(
-                self,
-                name,
-                data,
-                schema,
-                mode=mode,
-                on_bad_vectors=on_bad_vectors,
-                fill_value=fill_value,
-            )
-        else:
-            tbl = LanceTable.open(self, name)
+        tbl = LanceTable.create(
+            self,
+            name,
+            data,
+            schema,
+            mode=mode,
+            on_bad_vectors=on_bad_vectors,
+            fill_value=fill_value,
+        )
         return tbl
 
     def open_table(self, name: str) -> LanceTable:

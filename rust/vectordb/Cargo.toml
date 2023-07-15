@@ -1,6 +1,6 @@
 [package]
 name = "vectordb"
-version = "0.1.12"
+version = "0.1.13"
 edition = "2021"
 description = "Serverless, low-latency vector database for AI applications"
 license = "Apache-2.0"
@@ -13,6 +13,7 @@ arrow-data = { workspace = true }
 arrow-schema = { workspace = true }
 object_store = { workspace = true }
 snafu = "0.7.4"
+half = { workspace = true }
 lance = { workspace = true }
 tokio = { version = "1.23", features = ["rt-multi-thread"] }
 

@@ -18,26 +18,48 @@ import { describe } from 'mocha'
 import { assert } from 'chai'
 
 import * as lancedb from '../index'
+import { type ConnectionOptions } from '../index'
 
 describe('LanceDB S3 client', function () {
   if (process.env.TEST_S3_BASE_URL != null) {
     const baseUri = process.env.TEST_S3_BASE_URL
     it('should have a valid url', async function () {
-      const uri = `${baseUri}/valid_url`
-      const table = await createTestDB(uri, 2, 20)
-      const con = await lancedb.connect(uri)
-      assert.equal(con.uri, uri)
+      const opts = { uri: `${baseUri}/valid_url` }
+      const table = await createTestDB(opts, 2, 20)
+      const con = await lancedb.connect(opts)
+      assert.equal(con.uri, opts.uri)
 
       const results = await table.search([0.1, 0.3]).limit(5).execute()
       assert.equal(results.length, 5)
-    })
+    }).timeout(10_000)
+  } else {
+    describe.skip('Skip S3 test', function () {})
+  }
+
+  if (process.env.TEST_S3_BASE_URL != null && process.env.TEST_AWS_ACCESS_KEY_ID != null && process.env.TEST_AWS_SECRET_ACCESS_KEY != null) {
+    const baseUri = process.env.TEST_S3_BASE_URL
+    it('use custom credentials', async function () {
+      const opts: ConnectionOptions = {
+        uri: `${baseUri}/custom_credentials`,
+        awsCredentials: {
+          accessKeyId: process.env.TEST_AWS_ACCESS_KEY_ID as string,
+          secretKey: process.env.TEST_AWS_SECRET_ACCESS_KEY as string
+        }
+      }
+      const table = await createTestDB(opts, 2, 20)
+      const con = await lancedb.connect(opts)
+      assert.equal(con.uri, opts.uri)
+
+      const results = await table.search([0.1, 0.3]).limit(5).execute()
+      assert.equal(results.length, 5)
+    }).timeout(10_000)
   } else {
     describe.skip('Skip S3 test', function () {})
   }
 })
 
-async function createTestDB (uri: string, numDimensions: number = 2, numRows: number = 2): Promise<lancedb.Table> {
-  const con = await lancedb.connect(uri)
+async function createTestDB (opts: ConnectionOptions, numDimensions: number = 2, numRows: number = 2): Promise<lancedb.Table> {
+  const con = await lancedb.connect(opts)
 
   const data = []
   for (let i = 0; i < numRows; i++) {
