@@ -36,10 +36,10 @@ class RemoteTable(Table):
     def schema(self) -> pa.Schema:
         """Return the schema of the table."""
         resp = self._conn._loop.run_until_complete(
-            self._conn._client.get(f"/table/{self._name}/describe")
+            self._conn._client.get(f"/v1/table/{self._name}/describe")
         )
         schema = json_to_schema(resp["schema"])
-        raise schema
+        return schema
 
     def to_arrow(self) -> pa.Table:
         raise NotImplementedError

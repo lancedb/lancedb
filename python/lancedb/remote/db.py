@@ -23,6 +23,7 @@ from lancedb.schema import schema_to_json
 from lancedb.table import Table, _sanitize_data
 
 from .client import RestfulLanceDBClient
+from .arrow import to_ipc_binary
 
 
 class RemoteDBConnection(DBConnection):
@@ -89,10 +90,6 @@ class RemoteDBConnection(DBConnection):
 
         from .table import RemoteTable
 
-        payload = {
-            "name": name,
-            "schema": schema_to_json(data.schema),
-            "records": data.to_pydict(),
-        }
-        self._loop.run_until_complete(self._client.create_table("/table/", payload))
+        data = to_ipc_binary(data)
+        self._loop.run_until_complete(self._client.post(f"/v1/table/{name}/create", data=data))
         return RemoteTable(self, name)
