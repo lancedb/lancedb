@@ -12,6 +12,7 @@
 #  limitations under the License.
 
 from typing import Union
+from functools import cached_property
 
 import pyarrow as pa
 
@@ -31,6 +32,7 @@ class RemoteTable(Table):
     def __repr__(self) -> str:
         return f"RemoteTable({self._conn.db_name}.{self.name})"
 
+    @cached_property
     def schema(self) -> pa.Schema:
         """Return the schema of the table."""
         resp = self._conn._loop.run_until_complete(
