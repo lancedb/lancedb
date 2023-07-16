@@ -13,7 +13,7 @@
 
 
 import functools
-from typing import Any, Callable, Dict, Union
+from typing import Any, Callable, Dict, Optional, Union
 
 import aiohttp
 import attr
@@ -23,6 +23,8 @@ from pydantic import BaseModel
 from lancedb.common import Credential
 from lancedb.remote import VectorQuery, VectorQueryResult
 from lancedb.remote.errors import LanceDBClientError
+
+ARROW_STREAM_CONTENT_TYPE = "application/vnd.apache.arrow.stream"
 
 
 def _check_not_closed(f):
@@ -50,7 +52,7 @@ class RestfulLanceDBClient:
 
     @functools.cached_property
     def session(self) -> aiohttp.ClientSession:
-        url = f"https://{self.db_name}.{self.region}.api.lancedb.com"
+        url = f"http://{self.db_name}.{self.region}.api.lancedb.com:10024"
         return aiohttp.ClientSession(url)
 
     async def close(self):
@@ -59,9 +61,12 @@ class RestfulLanceDBClient:
 
     @functools.cached_property
     def headers(self) -> Dict[str, str]:
-        return {
+        headers = {
             "x-api-key": self.api_key,
         }
+        if self.region == "local":  # Local test mode
+            headers["Host"] = f"{self.db_name}.{self.region}.api.lancedb.com"
+        return headers
 
     @staticmethod
     async def _check_status(resp: aiohttp.ClientResponse):
@@ -94,6 +99,8 @@ class RestfulLanceDBClient:
         self,
         uri: str,
         data: Union[Dict[str, Any], BaseModel, bytes],
+        params: Optional[Dict[str, Any]] = None,
+        content_type: Optional[str] = None,
         deserialize: Callable = lambda resp: resp.json(),
     ) -> Dict[str, Any]:
         """Send a POST request and returns the deserialized response payload.
@@ -111,9 +118,14 @@ class RestfulLanceDBClient:
             req_kwargs = {"data": data}
         else:
             req_kwargs = {"json": data}
+
+        headers = self.headers.copy()
+        if content_type is not None:
+            headers["content-type"] = content_type
         async with self.session.post(
             uri,
-            headers=self.headers,
+            headers=headers,
+            params=params,
             **req_kwargs,
         ) as resp:
             resp: aiohttp.ClientResponse = resp
