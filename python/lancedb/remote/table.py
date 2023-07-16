@@ -11,6 +11,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
+import uuid
 from functools import cached_property
 from typing import Union
 
@@ -20,7 +21,9 @@ from lancedb.common import DATA, VEC, VECTOR_COLUMN_NAME
 
 from ..query import LanceQueryBuilder, Query
 from ..schema import json_to_schema
-from ..table import Query, Table
+from ..table import Query, Table, _sanitize_data
+from .arrow import to_ipc_binary
+from .client import ARROW_STREAM_CONTENT_TYPE
 from .db import RemoteDBConnection
 
 
@@ -61,7 +64,22 @@ class RemoteTable(Table):
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
     ) -> int:
-        raise NotImplementedError
+        data = _sanitize_data(
+            data, self.schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value
+        )
+        payload = to_ipc_binary(data)
+
+        request_id = uuid.uuid4().hex
+
+        self._conn._loop.run_until_complete(
+            self._conn._client.post(
+                f"/v1/table/{self._name}/insert",
+                data=payload,
+                params={"request_id": request_id, "mode": mode},
+                content_type=ARROW_STREAM_CONTENT_TYPE,
+            )
+        )
+        return len(data)
 
     def search(
         self, query: Union[VEC, str], vector_column: str = VECTOR_COLUMN_NAME

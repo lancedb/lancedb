@@ -12,6 +12,7 @@
 #  limitations under the License.
 
 import asyncio
+import uuid
 from typing import List
 from urllib.parse import urlparse
 
@@ -23,7 +24,7 @@ from lancedb.schema import schema_to_json
 from lancedb.table import Table, _sanitize_data
 
 from .arrow import to_ipc_binary
-from .client import RestfulLanceDBClient
+from .client import ARROW_STREAM_CONTENT_TYPE, RestfulLanceDBClient
 
 
 class RemoteDBConnection(DBConnection):
@@ -73,7 +74,6 @@ class RemoteDBConnection(DBConnection):
         name: str,
         data: DATA = None,
         schema: pa.Schema = None,
-        mode: str = "create",
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
     ) -> Table:
@@ -91,7 +91,14 @@ class RemoteDBConnection(DBConnection):
         from .table import RemoteTable
 
         data = to_ipc_binary(data)
+        request_id = uuid.uuid4().hex
+
         self._loop.run_until_complete(
-            self._client.post(f"/v1/table/{name}/create", data=data)
+            self._client.post(
+                f"/v1/table/{name}/create",
+                data=data,
+                params={"request_id": request_id},
+                content_type=ARROW_STREAM_CONTENT_TYPE,
+            )
         )
         return RemoteTable(self, name)
