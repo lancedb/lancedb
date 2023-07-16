@@ -19,8 +19,8 @@ import pyarrow as pa
 
 from lancedb.common import DATA
 from lancedb.db import DBConnection
-from lancedb.table import Table, _sanitize_data
 from lancedb.schema import schema_to_json
+from lancedb.table import Table, _sanitize_data
 
 from .client import RestfulLanceDBClient
 
@@ -88,6 +88,7 @@ class RemoteDBConnection(DBConnection):
             data = pa.Table.from_pylist([], schema=schema)
 
         from .table import RemoteTable
+
         payload = {
             "name": name,
             "schema": schema_to_json(data.schema),
