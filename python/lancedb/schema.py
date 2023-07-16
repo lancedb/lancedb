@@ -13,7 +13,6 @@
 
 """Schema related utilities."""
 
-import json
 from typing import Any, Dict, Type
 
 import pyarrow as pa

@@ -93,7 +93,7 @@ class RestfulLanceDBClient:
     async def post(
         self,
         uri: str,
-        data: Union[Dict[str, Any], BaseModel],
+        data: Union[Dict[str, Any], BaseModel, bytes],
         deserialize: Callable = lambda resp: resp.json(),
     ) -> Dict[str, Any]:
         """Send a POST request and returns the deserialized response payload.
@@ -107,10 +107,14 @@ class RestfulLanceDBClient:
         """
         if isinstance(data, BaseModel):
             data: Dict[str, Any] = data.dict(exclude_none=True)
+        if isinstance(data, bytes):
+            req_kwargs = {"data": data}
+        else:
+            req_kwargs = {"json": data}
         async with self.session.post(
             uri,
-            json=data,
             headers=self.headers,
+            **req_kwargs,
         ) as resp:
             resp: aiohttp.ClientResponse = resp
             await self._check_status(resp)
@@ -119,11 +123,11 @@ class RestfulLanceDBClient:
     @_check_not_closed
     async def list_tables(self):
         """List all tables in the database."""
-        json = await self.get("/1/table/", {})
+        json = await self.get("/v1/table/", {})
         return json["tables"]
 
     @_check_not_closed
     async def query(self, table_name: str, query: VectorQuery) -> VectorQueryResult:
         """Query a table."""
-        tbl = await self.post(f"/1/table/{table_name}/", query, deserialize=_read_ipc)
+        tbl = await self.post(f"/v1/table/{table_name}/", query, deserialize=_read_ipc)
         return VectorQueryResult(tbl)
