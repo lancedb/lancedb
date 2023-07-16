@@ -19,7 +19,8 @@ import pyarrow as pa
 
 from lancedb.common import DATA
 from lancedb.db import DBConnection
-from lancedb.table import Table
+from lancedb.schema import schema_to_json
+from lancedb.table import Table, _sanitize_data
 
 from .client import RestfulLanceDBClient
 
@@ -75,4 +76,23 @@ class RemoteDBConnection(DBConnection):
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
     ) -> Table:
-        raise NotImplementedError
+        if data is None and schema is None:
+            raise ValueError("Either data or schema must be provided.")
+        if data is not None:
+            data = _sanitize_data(
+                data, schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value
+            )
+        else:
+            if schema is None:
+                raise ValueError("Either data or schema must be provided")
+            data = pa.Table.from_pylist([], schema=schema)
+
+        from .table import RemoteTable
+
+        payload = {
+            "name": name,
+            "schema": schema_to_json(data.schema),
+            "records": data.to_pydict(),
+        }
+        self._loop.run_until_complete(self._client.create_table("/table/", payload))
+        return RemoteTable(self, name)

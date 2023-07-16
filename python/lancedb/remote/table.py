@@ -11,6 +11,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
+from functools import cached_property
 from typing import Union
 
 import pyarrow as pa
@@ -18,6 +19,7 @@ import pyarrow as pa
 from lancedb.common import DATA, VEC, VECTOR_COLUMN_NAME
 
 from ..query import LanceQueryBuilder, Query
+from ..schema import json_to_schema
 from ..table import Query, Table
 from .db import RemoteDBConnection
 
@@ -30,8 +32,14 @@ class RemoteTable(Table):
     def __repr__(self) -> str:
         return f"RemoteTable({self._conn.db_name}.{self.name})"
 
+    @cached_property
     def schema(self) -> pa.Schema:
-        raise NotImplementedError
+        """Return the schema of the table."""
+        resp = self._conn._loop.run_until_complete(
+            self._conn._client.get(f"/table/{self._name}/describe")
+        )
+        schema = json_to_schema(resp["schema"])
+        raise schema
 
     def to_arrow(self) -> pa.Table:
         raise NotImplementedError
