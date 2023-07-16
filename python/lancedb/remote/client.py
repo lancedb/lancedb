@@ -52,7 +52,7 @@ class RestfulLanceDBClient:
 
     @functools.cached_property
     def session(self) -> aiohttp.ClientSession:
-        url = f"http://{self.db_name}.{self.region}.api.lancedb.com:10024"
+        url = f"https://{self.db_name}.{self.region}.api.lancedb.com"
         return aiohttp.ClientSession(url)
 
     async def close(self):
