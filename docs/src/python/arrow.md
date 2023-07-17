@@ -28,7 +28,7 @@ table = db.create_table("pd_table", data=data)
 ```
 
 You will find detailed instructions of creating dataset and index in
-[Basic Operations](basic.md) and [Indexing](ann_indexes.md)
+[Basic Operations](../basic.md) and [Indexing](../ann_indexes.md)
 sections.
 
 
