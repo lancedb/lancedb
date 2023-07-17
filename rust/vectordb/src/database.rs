@@ -27,6 +27,7 @@ pub struct Database {
     object_store: ObjectStore,
 
     pub(crate) uri: String,
+    pub(crate) base_path: object_store::path::Path,
 }
 
 const LANCE_EXTENSION: &str = "lance";
@@ -43,12 +44,13 @@ impl Database {
     ///
     /// * A [Database] object.
     pub async fn connect(uri: &str) -> Result<Database> {
-        let (object_store, _) = ObjectStore::from_uri(uri).await?;
+        let (object_store, base_path) = ObjectStore::from_uri(uri).await?;
         if object_store.is_local() {
             Self::try_create_dir(uri).context(CreateDirSnafu { path: uri })?;
         }
         Ok(Database {
             uri: uri.to_string(),
+            base_path,
             object_store,
         })
     }
@@ -70,7 +72,7 @@ impl Database {
     pub async fn table_names(&self) -> Result<Vec<String>> {
         let f = self
             .object_store
-            .read_dir(self.uri.as_str())
+            .read_dir(self.base_path.clone())
             .await?
             .iter()
             .map(|fname| Path::new(fname))
@@ -141,8 +143,9 @@ impl Database {
     /// # Arguments
     /// * `name` - The name of the table.
     pub async fn drop_table(&self, name: &str) -> Result<()> {
-        let dir_name = format!("{}/{}.{}", self.uri, name, LANCE_EXTENSION);
-        self.object_store.remove_dir_all(dir_name).await?;
+        let dir_name = format!("{}.{}", name, LANCE_EXTENSION);
+        let full_path = self.base_path.child(dir_name.clone());
+        self.object_store.remove_dir_all(full_path).await?;
         Ok(())
     }
 }
