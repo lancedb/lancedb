@@ -116,6 +116,39 @@ jobs:
         path: |
           node/dist/vectordb-linux*.tgz
 
+  node-windows:
+    runs-on: windows-2022
+    # Only runs on tags that matches the make-release action
+    if: startsWith(github.ref, 'refs/tags/v')
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [x86_64-pc-windows-msvc]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+      - name: Install Protoc v21.12
+        working-directory: C:\
+        run: |
+          New-Item -Path 'C:\protoc' -ItemType Directory
+          Set-Location C:\protoc
+          Invoke-WebRequest https://github.com/protocolbuffers/protobuf/releases/download/v21.12/protoc-21.12-win64.zip -OutFile C:\protoc\protoc.zip
+          7z x protoc.zip
+          Add-Content $env:GITHUB_PATH "C:\protoc\bin"
+        shell: powershell
+      - name: Install npm dependencies
+        run: |
+          cd node
+          npm ci
+      - name: Build Windows native node modules
+        run: .\ci\build_windows_artifacts.ps1 ${{ matrix.target }}
+      - name: Upload Windows Artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: windows-native
+          path: |
+            node/dist/vectordb-win32*.tgz
+
   release:
     needs: [node, node-macos, node-linux]
     runs-on: ubuntu-latest

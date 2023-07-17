@@ -8,7 +8,7 @@
     "tsc": "tsc -b",
     "build": "cargo-cp-artifact --artifact cdylib vectordb-node index.node -- cargo build --message-format=json",
     "build-release": "npm run build -- --release",
-    "test": "npm run tsc; mocha -recursive dist/test",
+    "test": "npm run tsc && mocha -recursive dist/test",
     "lint": "eslint src --ext .js,.ts",
     "clean": "rm -rf node_modules *.node dist/",
     "pack-build": "neon pack-build",
@@ -60,7 +60,8 @@
   },
   "os": [
     "darwin",
-    "linux"
+    "linux",
+    "win32"
   ],
   "cpu": [
     "x64",
@@ -71,13 +72,15 @@
       "x86_64-apple-darwin": "vectordb-darwin-x64",
       "aarch64-apple-darwin": "vectordb-darwin-arm64",
       "x86_64-unknown-linux-gnu": "vectordb-linux-x64-gnu",
-      "aarch64-unknown-linux-gnu": "vectordb-linux-arm64-gnu"
+      "aarch64-unknown-linux-gnu": "vectordb-linux-arm64-gnu",
+      "x86_64-pc-windows-msvc": "vectordb-win32-x64-msvc"
     }
   },
   "optionalDependencies": {
     "vectordb-darwin-arm64": "0.1.13",
     "vectordb-darwin-x64": "0.1.13",
+    "vectordb-linux-arm64-gnu": "0.1.13",
     "vectordb-linux-x64-gnu": "0.1.13",
-    "vectordb-linux-arm64-gnu": "0.1.13"
+    "vectordb-win32-x64-msvc": "0.1.13"
   }
 }
