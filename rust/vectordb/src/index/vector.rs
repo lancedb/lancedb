@@ -24,7 +24,7 @@ pub trait VectorIndexBuilder {
     fn get_replace(&self) -> bool;
 }
 
-#[derive(Default)]
+
 pub struct IvfPQIndexBuilder {
     column: Option<String>,
     index_name: Option<String>,
@@ -36,6 +36,12 @@ pub struct IvfPQIndexBuilder {
 
 impl IvfPQIndexBuilder {
     pub fn new() -> IvfPQIndexBuilder {
+        Default::default()
+    }
+}
+
+impl Default for IvfPQIndexBuilder {
+    fn default() -> Self {
         IvfPQIndexBuilder {
             column: None,
             index_name: None,
