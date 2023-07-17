@@ -125,8 +125,8 @@ After a table has been created, you can always add more data to it using
 ## How to delete rows from a table
 
 Use the `delete()` method on tables to delete rows from a table. To choose
-which rows to delete, you provide a filter that matches on the metadata columns.
-This can delete any number of rows that match the filter provided.
+which rows to delete, provide a filter that matches on the metadata columns.
+This can delete any number of rows that match the filter.
 
 === "Python"
       ```python

@@ -41,7 +41,7 @@
 
 #### Defined in
 
-[index.ts:430](https://github.com/lancedb/lancedb/blob/270aedc/node/src/index.ts#L430)
+[index.ts:431](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L431)
 
 ## Functions
 
@@ -63,7 +63,7 @@ Connect to a LanceDB instance at the given URI
 
 #### Defined in
 
-[index.ts:47](https://github.com/lancedb/lancedb/blob/270aedc/node/src/index.ts#L47)
+[index.ts:47](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L47)
 
 ▸ **connect**(`opts`): `Promise`<[`Connection`](interfaces/Connection.md)\>
 
@@ -79,4 +79,4 @@ Connect to a LanceDB instance at the given URI
 
 #### Defined in
 
-[index.ts:48](https://github.com/lancedb/lancedb/blob/270aedc/node/src/index.ts#L48)
+[index.ts:48](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L48)

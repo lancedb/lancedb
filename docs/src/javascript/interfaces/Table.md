@@ -52,7 +52,7 @@ The number of rows added to the table
 
 #### Defined in
 
-[index.ts:120](https://github.com/lancedb/lancedb/blob/270aedc/node/src/index.ts#L120)
+[index.ts:120](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L120)
 
 ___
 
@@ -72,7 +72,7 @@ Returns the number of rows in this table.
 
 #### Defined in
 
-[index.ts:140](https://github.com/lancedb/lancedb/blob/270aedc/node/src/index.ts#L140)
+[index.ts:140](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L140)
 
 ___
 
@@ -102,7 +102,7 @@ VectorIndexParams.
 
 #### Defined in
 
-[index.ts:135](https://github.com/lancedb/lancedb/blob/270aedc/node/src/index.ts#L135)
+[index.ts:135](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L135)
 
 ___
 
@@ -146,7 +146,7 @@ await tbl.countRows() // Returns 1
 
 | Name | Type | Description |
 | :------ | :------ | :------ |
-| `filter` | `string` | A filter in the same format used by a sql WHERE clause. |
+| `filter` | `string` | A filter in the same format used by a sql WHERE clause. The filter must not be empty. |
 
 ##### Returns
 
@@ -154,7 +154,7 @@ await tbl.countRows() // Returns 1
 
 #### Defined in
 
-[index.ts:173](https://github.com/lancedb/lancedb/blob/270aedc/node/src/index.ts#L173)
+[index.ts:174](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L174)
 
 ___
 
@@ -164,7 +164,7 @@ ___
 
 #### Defined in
 
-[index.ts:106](https://github.com/lancedb/lancedb/blob/270aedc/node/src/index.ts#L106)
+[index.ts:106](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L106)
 
 ___
 
@@ -192,7 +192,7 @@ The number of rows added to the table
 
 #### Defined in
 
-[index.ts:128](https://github.com/lancedb/lancedb/blob/270aedc/node/src/index.ts#L128)
+[index.ts:128](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L128)
 
 ___
 
@@ -218,4 +218,4 @@ Creates a search query to find the nearest neighbors of the given search term
 
 #### Defined in
 
-[index.ts:112](https://github.com/lancedb/lancedb/blob/270aedc/node/src/index.ts#L112)
+[index.ts:112](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L112)

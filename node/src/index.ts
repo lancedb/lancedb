@@ -145,7 +145,8 @@ export interface Table<T = number[]> {
    * This can be used to delete a single row, many rows, all rows, or
    * sometimes no rows (if your predicate matches nothing).
    *
-   * @param filter  A filter in the same format used by a sql WHERE clause.
+   * @param filter  A filter in the same format used by a sql WHERE clause. The
+   *                filter must not be empty.
    *
    * @examples
    *

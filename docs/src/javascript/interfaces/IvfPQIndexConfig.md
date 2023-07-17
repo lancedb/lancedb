@@ -28,7 +28,7 @@ The column to be indexed
 
 #### Defined in
 
-[index.ts:381](https://github.com/lancedb/lancedb/blob/270aedc/node/src/index.ts#L381)
+[index.ts:382](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L382)
 
 ___
 
@@ -40,7 +40,7 @@ A unique name for the index
 
 #### Defined in
 
-[index.ts:386](https://github.com/lancedb/lancedb/blob/270aedc/node/src/index.ts#L386)
+[index.ts:387](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L387)
 
 ___
 
@@ -52,7 +52,7 @@ The max number of iterations for kmeans training.
 
 #### Defined in
 
-[index.ts:401](https://github.com/lancedb/lancedb/blob/270aedc/node/src/index.ts#L401)
+[index.ts:402](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L402)
 
 ___
 
@@ -64,7 +64,7 @@ Max number of iterations to train OPQ, if `use_opq` is true.
 
 #### Defined in
 
-[index.ts:420](https://github.com/lancedb/lancedb/blob/270aedc/node/src/index.ts#L420)
+[index.ts:421](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L421)
 
 ___
 
@@ -76,7 +76,7 @@ Metric type, L2 or Cosine
 
 #### Defined in
 
-[index.ts:391](https://github.com/lancedb/lancedb/blob/270aedc/node/src/index.ts#L391)
+[index.ts:392](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L392)
 
 ___
 
@@ -88,7 +88,7 @@ The number of bits to present one PQ centroid.
 
 #### Defined in
 
-[index.ts:415](https://github.com/lancedb/lancedb/blob/270aedc/node/src/index.ts#L415)
+[index.ts:416](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L416)
 
 ___
 
@@ -100,7 +100,7 @@ The number of partitions this index
 
 #### Defined in
 
-[index.ts:396](https://github.com/lancedb/lancedb/blob/270aedc/node/src/index.ts#L396)
+[index.ts:397](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L397)
 
 ___
 
@@ -112,7 +112,7 @@ Number of subvectors to build PQ code
 
 #### Defined in
 
-[index.ts:411](https://github.com/lancedb/lancedb/blob/270aedc/node/src/index.ts#L411)
+[index.ts:412](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L412)
 
 ___
 
@@ -124,7 +124,7 @@ Replace an existing index with the same name if it exists.
 
 #### Defined in
 
-[index.ts:425](https://github.com/lancedb/lancedb/blob/270aedc/node/src/index.ts#L425)
+[index.ts:426](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L426)
 
 ___
 
@@ -134,7 +134,7 @@ ___
 
 #### Defined in
 
-[index.ts:427](https://github.com/lancedb/lancedb/blob/270aedc/node/src/index.ts#L427)
+[index.ts:428](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L428)
 
 ___
 
@@ -146,4 +146,4 @@ Train as optimized product quantization.
 
 #### Defined in
 
-[index.ts:406](https://github.com/lancedb/lancedb/blob/270aedc/node/src/index.ts#L406)
+[index.ts:407](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L407)

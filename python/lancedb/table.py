@@ -213,7 +213,7 @@ class Table(ABC):
         ----------
         where: str
             The SQL where clause to use when deleting rows. For example, 'x = 2'
-            or 'x IN (1, 2, 3)'.
+            or 'x IN (1, 2, 3)'. The filter must not be empty, or it will error.
 
         Examples
         --------
