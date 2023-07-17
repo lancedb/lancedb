@@ -16,7 +16,7 @@ from __future__ import annotations
 import os
 from abc import ABC, abstractmethod
 from functools import cached_property
-from typing import List, Union, Iterable
+from typing import Iterable, List, Union
 
 import lance
 import numpy as np

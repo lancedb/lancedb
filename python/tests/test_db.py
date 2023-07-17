@@ -87,12 +87,20 @@ def test_ingest_record_batch_iterator(tmp_path):
                 ],
                 ["vector", "item", "price"],
             )
+
     db = lancedb.connect(tmp_path)
-    tbl = db.create_table("test", batch_reader(), schema=pa.schema([
-        pa.field("vector", pa.list_(pa.float32())),
-        pa.field("item", pa.utf8()),
-        pa.field("price", pa.float32()),
-    ]))
+    tbl = db.create_table(
+        "test",
+        batch_reader(),
+        schema=pa.schema(
+            [
+                pa.field("vector", pa.list_(pa.float32())),
+                pa.field("item", pa.utf8()),
+                pa.field("price", pa.float32()),
+            ]
+        ),
+    )
+
 
 def test_create_mode(tmp_path):
     db = lancedb.connect(tmp_path)
