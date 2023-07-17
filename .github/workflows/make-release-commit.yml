@@ -45,6 +45,13 @@ jobs:
       run: |
         pip install bump2version
         bumpversion --verbose ${{ inputs.part }}
+    - name: Update package-lock.json file
+      run: |
+        npm install
+        git add package-lock.json
+        # Add this change to the commit created by bumpversion
+        git commit --amend --no-edit
+      working-directory: node
     - name: Push new version and tag
       if: ${{ inputs.dry_run }} == "false"
       uses: ad-m/github-push-action@master
