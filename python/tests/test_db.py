@@ -76,6 +76,32 @@ def test_ingest_pd(tmp_path):
     assert db.open_table("test").name == db["test"].name
 
 
+def test_ingest_record_batch_iterator(tmp_path):
+    def batch_reader():
+        for i in range(5):
+            yield pa.RecordBatch.from_arrays(
+                [
+                    pa.array([[3.1, 4.1], [5.9, 26.5]]),
+                    pa.array(["foo", "bar"]),
+                    pa.array([10.0, 20.0]),
+                ],
+                ["vector", "item", "price"],
+            )
+
+    db = lancedb.connect(tmp_path)
+    tbl = db.create_table(
+        "test",
+        batch_reader(),
+        schema=pa.schema(
+            [
+                pa.field("vector", pa.list_(pa.float32())),
+                pa.field("item", pa.utf8()),
+                pa.field("price", pa.float32()),
+            ]
+        ),
+    )
+
+
 def test_create_mode(tmp_path):
     db = lancedb.connect(tmp_path)
     data = pd.DataFrame(

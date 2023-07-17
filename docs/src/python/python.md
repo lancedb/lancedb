@@ -46,10 +46,6 @@ pip install lancedb
 
 ## Utilities
 
-::: lancedb.schema.schema_to_dict
-
-::: lancedb.schema.dict_to_schema
-
 ::: lancedb.vector
 
 ## Integrations
