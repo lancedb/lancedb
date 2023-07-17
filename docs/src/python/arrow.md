@@ -37,6 +37,7 @@ to lazily generate data:
 
 ```py
 
+from typing import Iterable
 import pyarrow as pa
 import lancedb
 
