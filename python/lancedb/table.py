@@ -16,7 +16,7 @@ from __future__ import annotations
 import os
 from abc import ABC, abstractmethod
 from functools import cached_property
-from typing import List, Union
+from typing import Iterable, List, Union
 
 import lance
 import numpy as np
@@ -44,7 +44,7 @@ def _sanitize_data(data, schema, on_bad_vectors, fill_value):
         data = _sanitize_schema(
             data, schema=schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value
         )
-    if not isinstance(data, pa.Table):
+    if not isinstance(data, (pa.Table, Iterable)):
         raise TypeError(f"Unsupported data type: {type(data)}")
     return data
 
@@ -483,7 +483,7 @@ class LanceTable(Table):
             if schema is None:
                 raise ValueError("Either data or schema must be provided")
             data = pa.Table.from_pylist([], schema=schema)
-        lance.write_dataset(data, tbl._dataset_uri, mode=mode)
+        lance.write_dataset(data, tbl._dataset_uri, schema=schema, mode=mode)
         return LanceTable(db, name)
 
     @classmethod
