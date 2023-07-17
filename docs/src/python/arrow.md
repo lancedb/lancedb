@@ -5,6 +5,8 @@ Built on top of [Apache Arrow](https://arrow.apache.org/),
 `LanceDB` is easy to integrate with the Python ecosystem, including [Pandas](https://pandas.pydata.org/)
 and PyArrow.
 
+## Create dataset
+
 First, we need to connect to a `LanceDB` database.
 
 ```py
@@ -27,10 +29,41 @@ data = pd.DataFrame({
 table = db.create_table("pd_table", data=data)
 ```
 
-You will find detailed instructions of creating dataset and index in
-[Basic Operations](../basic.md) and [Indexing](../ann_indexes.md)
+Similar to [`pyarrow.write_dataset()`](https://arrow.apache.org/docs/python/generated/pyarrow.dataset.write_dataset.html),
+[db.create_table()](../python/#lancedb.db.DBConnection.create_table) accepts a wide-range of forms of data.
+
+For example, if you have a dataset that is larger than memory size, you can create table with `Iterator[pyarrow.RecordBatch]`,
+to lazily generate data:
+
+```py
+
+import pyarrow as pa
+import lancedb
+
+def make_batches() -> Iterable[pa.RecordBatch]:
+    for i in range(5):
+        yield pa.RecordBatch.from_arrays(
+            [
+                pa.array([[3.1, 4.1], [5.9, 26.5]]),
+                pa.array(["foo", "bar"]),
+                pa.array([10.0, 20.0]),
+            ],
+            ["vector", "item", "price"])
+
+schema=pa.schema([
+    pa.field("vector", pa.list_(pa.float32())),
+    pa.field("item", pa.utf8()),
+    pa.field("price", pa.float32()),
+])
+
+table = db.create_table("iterable_table", data=make_batches(), schema=schema)
+```
+
+You will find detailed instructions of creating dataset in
+[Basic Operations](../basic.md) and [API](../python/#lancedb.db.DBConnection.create_table)
 sections.
 
+## Vector Search
 
 We can now perform similarity search via `LanceDB` Python API.
 
