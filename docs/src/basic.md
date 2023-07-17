@@ -124,8 +124,9 @@ After a table has been created, you can always add more data to it using
 
 ## How to delete rows from a table
 
-You can use the `delete()` method on tables with a SQL expression to delete rows
-from a table. 
+Use the `delete()` method on tables to delete rows from a table. To choose
+which rows to delete, you provide a filter that matches on the metadata columns.
+This can delete any number of rows that match the filter provided.
 
 === "Python"
       ```python
@@ -138,7 +139,8 @@ from a table.
       ```
 
 The deletion predicate is a SQL expression that supports the same expressions
-as the `where()` clause on a search.
+as the `where()` clause on a search. They can be as simple or complex as needed.
+To see what expressions are supported, see the [SQL filters](sql.md) section.
 
 
 === "Python"
