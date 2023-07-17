@@ -24,6 +24,7 @@ A LanceDB Table is the collection of Records. Each Record has one or more vector
 
 - [\_embeddings](LocalTable.md#_embeddings)
 - [\_name](LocalTable.md#_name)
+- [\_options](LocalTable.md#_options)
 - [\_tbl](LocalTable.md#_tbl)
 
 ### Accessors
@@ -43,7 +44,7 @@ A LanceDB Table is the collection of Records. Each Record has one or more vector
 
 ### constructor
 
-• **new LocalTable**<`T`\>(`tbl`, `name`)
+• **new LocalTable**<`T`\>(`tbl`, `name`, `options`)
 
 #### Type parameters
 
@@ -57,12 +58,13 @@ A LanceDB Table is the collection of Records. Each Record has one or more vector
 | :------ | :------ |
 | `tbl` | `any` |
 | `name` | `string` |
+| `options` | [`ConnectionOptions`](../interfaces/ConnectionOptions.md) |
 
 #### Defined in
 
-[index.ts:221](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L221)
+[index.ts:286](https://github.com/lancedb/lancedb/blob/270aedc/node/src/index.ts#L286)
 
-• **new LocalTable**<`T`\>(`tbl`, `name`, `embeddings`)
+• **new LocalTable**<`T`\>(`tbl`, `name`, `options`, `embeddings`)
 
 #### Type parameters
 
@@ -76,11 +78,12 @@ A LanceDB Table is the collection of Records. Each Record has one or more vector
 | :------ | :------ | :------ |
 | `tbl` | `any` |  |
 | `name` | `string` |  |
+| `options` | [`ConnectionOptions`](../interfaces/ConnectionOptions.md) |  |
 | `embeddings` | [`EmbeddingFunction`](../interfaces/EmbeddingFunction.md)<`T`\> | An embedding function to use when interacting with this table |
 
 #### Defined in
 
-[index.ts:227](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L227)
+[index.ts:293](https://github.com/lancedb/lancedb/blob/270aedc/node/src/index.ts#L293)
 
 ## Properties
 
@@ -90,7 +93,7 @@ A LanceDB Table is the collection of Records. Each Record has one or more vector
 
 #### Defined in
 
-[index.ts:219](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L219)
+[index.ts:283](https://github.com/lancedb/lancedb/blob/270aedc/node/src/index.ts#L283)
 
 ___
 
@@ -100,7 +103,17 @@ ___
 
 #### Defined in
 
-[index.ts:218](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L218)
+[index.ts:282](https://github.com/lancedb/lancedb/blob/270aedc/node/src/index.ts#L282)
+
+___
+
+### \_options
+
+• `Private` `Readonly` **\_options**: [`ConnectionOptions`](../interfaces/ConnectionOptions.md)
+
+#### Defined in
+
+[index.ts:284](https://github.com/lancedb/lancedb/blob/270aedc/node/src/index.ts#L284)
 
 ___
 
@@ -110,7 +123,7 @@ ___
 
 #### Defined in
 
-[index.ts:217](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L217)
+[index.ts:281](https://github.com/lancedb/lancedb/blob/270aedc/node/src/index.ts#L281)
 
 ## Accessors
 
@@ -128,7 +141,7 @@ ___
 
 #### Defined in
 
-[index.ts:234](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L234)
+[index.ts:301](https://github.com/lancedb/lancedb/blob/270aedc/node/src/index.ts#L301)
 
 ## Methods
 
@@ -156,7 +169,7 @@ The number of rows added to the table
 
 #### Defined in
 
-[index.ts:252](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L252)
+[index.ts:319](https://github.com/lancedb/lancedb/blob/270aedc/node/src/index.ts#L319)
 
 ___
 
@@ -176,7 +189,7 @@ Returns the number of rows in this table.
 
 #### Defined in
 
-[index.ts:278](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L278)
+[index.ts:361](https://github.com/lancedb/lancedb/blob/270aedc/node/src/index.ts#L361)
 
 ___
 
@@ -194,7 +207,7 @@ VectorIndexParams.
 
 | Name | Type | Description |
 | :------ | :------ | :------ |
-| `indexParams` | `IvfPQIndexConfig` | The parameters of this Index, |
+| `indexParams` | [`IvfPQIndexConfig`](../interfaces/IvfPQIndexConfig.md) | The parameters of this Index, |
 
 #### Returns
 
@@ -206,7 +219,7 @@ VectorIndexParams.
 
 #### Defined in
 
-[index.ts:271](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L271)
+[index.ts:354](https://github.com/lancedb/lancedb/blob/270aedc/node/src/index.ts#L354)
 
 ___
 
@@ -232,7 +245,7 @@ Delete rows from this table.
 
 #### Defined in
 
-[index.ts:287](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L287)
+[index.ts:370](https://github.com/lancedb/lancedb/blob/270aedc/node/src/index.ts#L370)
 
 ___
 
@@ -260,7 +273,7 @@ The number of rows added to the table
 
 #### Defined in
 
-[index.ts:262](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L262)
+[index.ts:337](https://github.com/lancedb/lancedb/blob/270aedc/node/src/index.ts#L337)
 
 ___
 
@@ -286,4 +299,4 @@ Creates a search query to find the nearest neighbors of the given search term
 
 #### Defined in
 
-[index.ts:242](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L242)
+[index.ts:309](https://github.com/lancedb/lancedb/blob/270aedc/node/src/index.ts#L309)

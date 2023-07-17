@@ -62,7 +62,7 @@ A builder for nearest neighbor queries for LanceDB.
 
 #### Defined in
 
-[index.ts:362](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L362)
+[index.ts:447](https://github.com/lancedb/lancedb/blob/270aedc/node/src/index.ts#L447)
 
 ## Properties
 
@@ -72,7 +72,7 @@ A builder for nearest neighbor queries for LanceDB.
 
 #### Defined in
 
-[index.ts:360](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L360)
+[index.ts:445](https://github.com/lancedb/lancedb/blob/270aedc/node/src/index.ts#L445)
 
 ___
 
@@ -82,7 +82,7 @@ ___
 
 #### Defined in
 
-[index.ts:358](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L358)
+[index.ts:443](https://github.com/lancedb/lancedb/blob/270aedc/node/src/index.ts#L443)
 
 ___
 
@@ -92,7 +92,7 @@ ___
 
 #### Defined in
 
-[index.ts:354](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L354)
+[index.ts:439](https://github.com/lancedb/lancedb/blob/270aedc/node/src/index.ts#L439)
 
 ___
 
@@ -102,7 +102,7 @@ ___
 
 #### Defined in
 
-[index.ts:359](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L359)
+[index.ts:444](https://github.com/lancedb/lancedb/blob/270aedc/node/src/index.ts#L444)
 
 ___
 
@@ -112,7 +112,7 @@ ___
 
 #### Defined in
 
-[index.ts:356](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L356)
+[index.ts:441](https://github.com/lancedb/lancedb/blob/270aedc/node/src/index.ts#L441)
 
 ___
 
@@ -122,7 +122,7 @@ ___
 
 #### Defined in
 
-[index.ts:352](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L352)
+[index.ts:437](https://github.com/lancedb/lancedb/blob/270aedc/node/src/index.ts#L437)
 
 ___
 
@@ -132,7 +132,7 @@ ___
 
 #### Defined in
 
-[index.ts:353](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L353)
+[index.ts:438](https://github.com/lancedb/lancedb/blob/270aedc/node/src/index.ts#L438)
 
 ___
 
@@ -142,7 +142,7 @@ ___
 
 #### Defined in
 
-[index.ts:355](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L355)
+[index.ts:440](https://github.com/lancedb/lancedb/blob/270aedc/node/src/index.ts#L440)
 
 ___
 
@@ -152,7 +152,7 @@ ___
 
 #### Defined in
 
-[index.ts:357](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L357)
+[index.ts:442](https://github.com/lancedb/lancedb/blob/270aedc/node/src/index.ts#L442)
 
 ___
 
@@ -162,7 +162,7 @@ ___
 
 #### Defined in
 
-[index.ts:351](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L351)
+[index.ts:436](https://github.com/lancedb/lancedb/blob/270aedc/node/src/index.ts#L436)
 
 ___
 
@@ -188,7 +188,7 @@ A filter statement to be applied to this query.
 
 #### Defined in
 
-[index.ts:410](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L410)
+[index.ts:495](https://github.com/lancedb/lancedb/blob/270aedc/node/src/index.ts#L495)
 
 ## Methods
 
@@ -210,7 +210,7 @@ Execute the query and return the results as an Array of Objects
 
 #### Defined in
 
-[index.ts:433](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L433)
+[index.ts:518](https://github.com/lancedb/lancedb/blob/270aedc/node/src/index.ts#L518)
 
 ___
 
@@ -232,7 +232,7 @@ A filter statement to be applied to this query.
 
 #### Defined in
 
-[index.ts:405](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L405)
+[index.ts:490](https://github.com/lancedb/lancedb/blob/270aedc/node/src/index.ts#L490)
 
 ___
 
@@ -254,7 +254,7 @@ Sets the number of results that will be returned
 
 #### Defined in
 
-[index.ts:378](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L378)
+[index.ts:463](https://github.com/lancedb/lancedb/blob/270aedc/node/src/index.ts#L463)
 
 ___
 
@@ -280,7 +280,7 @@ MetricType for the different options
 
 #### Defined in
 
-[index.ts:425](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L425)
+[index.ts:510](https://github.com/lancedb/lancedb/blob/270aedc/node/src/index.ts#L510)
 
 ___
 
@@ -302,7 +302,7 @@ The number of probes used. A higher number makes search more accurate but also s
 
 #### Defined in
 
-[index.ts:396](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L396)
+[index.ts:481](https://github.com/lancedb/lancedb/blob/270aedc/node/src/index.ts#L481)
 
 ___
 
@@ -324,7 +324,7 @@ Refine the results by reading extra elements and re-ranking them in memory.
 
 #### Defined in
 
-[index.ts:387](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L387)
+[index.ts:472](https://github.com/lancedb/lancedb/blob/270aedc/node/src/index.ts#L472)
 
 ___
 
@@ -346,4 +346,4 @@ Return only the specified columns.
 
 #### Defined in
 
-[index.ts:416](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L416)
+[index.ts:501](https://github.com/lancedb/lancedb/blob/270aedc/node/src/index.ts#L501)

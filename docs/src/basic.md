@@ -140,6 +140,15 @@ from a table.
 The deletion predicate is a SQL expression that supports the same expressions
 as the `where()` clause on a search.
 
+
+=== "Python"
+
+      Read more: [lancedb.table.Table.delete][]
+
+=== "Javascript"
+
+      Read more: [vectordb.Table.delete](javascript/interfaces/Table.md#delete)
+
 ## How to search for (approximate) nearest neighbors
 
 Once you've embedded the query, you can find its nearest neighbors using the following code:
