@@ -89,3 +89,6 @@ class RemoteTable(Table):
     def _execute_query(self, query: Query) -> pa.Table:
         result = self._conn._client.query(self._name, query)
         return self._conn._loop.run_until_complete(result).to_arrow()
+
+    def delete(self, predicate: str):
+        raise NotImplementedError
