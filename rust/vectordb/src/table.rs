@@ -18,6 +18,7 @@ use arrow_array::{Float32Array, RecordBatchReader};
 use arrow_schema::SchemaRef;
 use lance::dataset::{Dataset, WriteParams};
 use lance::index::IndexType;
+use std::path::Path;
 
 use crate::error::{Error, Result};
 use crate::index::vector::VectorIndexBuilder;
@@ -53,7 +54,13 @@ impl Table {
     /// # Returns
     ///
     /// * A [Table] object.
-    pub async fn open(uri: &str, name: &str) -> Result<Self> {
+    pub async fn open(uri: &str) -> Result<Self> {
+        let name = Self::get_table_name(uri)?;
+        Self::open_with_params(uri, &name, &ReadParams::default()).await
+    }
+
+    /// Open an Table with a given name.
+    pub async fn open_with_name(uri: &str, name: &str) -> Result<Self> {
         Self::open_with_params(uri, name, &ReadParams::default()).await
     }
 
@@ -88,7 +95,12 @@ impl Table {
 
     /// Checkout a specific version of this [`Table`]
     ///
-    pub async fn checkout(uri: &str, name: &str, version: u64) -> Result<Self> {
+    pub async fn checkout(uri: &str, version: u64) -> Result<Self> {
+        let name = Self::get_table_name(uri)?;
+        Self::checkout_with_params(uri, &name, version, &ReadParams::default()).await
+    }
+
+    pub async fn checkout_with_name(uri: &str, name: &str, version: u64) -> Result<Self> {
         Self::checkout_with_params(uri, name, version, &ReadParams::default()).await
     }
 
@@ -113,6 +125,20 @@ impl Table {
             uri: uri.to_string(),
             dataset: Arc::new(dataset),
         })
+    }
+
+    fn get_table_name(uri: &str) -> Result<String> {
+        let path = Path::new(uri);
+        let name = path
+            .file_stem()
+            .ok_or(Error::TableNotFound {
+                name: uri.to_string(),
+            })?
+            .to_str()
+            .ok_or(Error::InvalidTableName {
+                name: uri.to_string(),
+            })?;
+        Ok(name.to_string())
     }
 
     /// Creates a new Table
@@ -275,9 +301,7 @@ mod tests {
             .await
             .unwrap();
 
-        let table = Table::open(dataset_path.to_str().unwrap(), "test")
-            .await
-            .unwrap();
+        let table = Table::open(dataset_path.to_str().unwrap()).await.unwrap();
 
         assert_eq!(table.name, "test")
     }
@@ -286,7 +310,7 @@ mod tests {
     async fn test_open_not_found() {
         let tmp_dir = tempdir().unwrap();
         let uri = tmp_dir.path().to_str().unwrap();
-        let table = Table::open(uri, "test").await;
+        let table = Table::open(uri).await;
         assert!(matches!(table.unwrap_err(), Error::TableNotFound { .. }));
     }
 
@@ -384,7 +408,7 @@ mod tests {
             .await
             .unwrap();
 
-        let table = Table::open(uri, "test").await.unwrap();
+        let table = Table::open(uri).await.unwrap();
 
         let vector = Float32Array::from_iter_values([0.1, 0.2]);
         let query = table.search(vector.clone());

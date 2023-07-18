@@ -24,7 +24,6 @@ pub trait VectorIndexBuilder {
     fn get_replace(&self) -> bool;
 }
 
-
 pub struct IvfPQIndexBuilder {
     column: Option<String>,
     index_name: Option<String>,
