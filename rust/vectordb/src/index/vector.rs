@@ -35,6 +35,12 @@ pub struct IvfPQIndexBuilder {
 
 impl IvfPQIndexBuilder {
     pub fn new() -> IvfPQIndexBuilder {
+        Default::default()
+    }
+}
+
+impl Default for IvfPQIndexBuilder {
+    fn default() -> Self {
         IvfPQIndexBuilder {
             column: None,
             index_name: None,

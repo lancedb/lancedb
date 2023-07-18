@@ -12,22 +12,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::path::Path;
 use std::sync::Arc;
 
 use arrow_array::{Float32Array, RecordBatchReader};
 use arrow_schema::SchemaRef;
-use lance::dataset::{Dataset, ReadParams, WriteParams};
+use lance::dataset::{Dataset, WriteParams};
 use lance::index::IndexType;
-use snafu::prelude::*;
+use std::path::Path;
 
-use crate::error::{Error, InvalidTableNameSnafu, Result};
+use crate::error::{Error, Result};
 use crate::index::vector::VectorIndexBuilder;
 use crate::query::Query;
 use crate::WriteMode;
 
+pub use lance::dataset::ReadParams;
+
 pub const VECTOR_COLUMN_NAME: &str = "vector";
-pub const LANCE_FILE_EXTENSION: &str = "lance";
 
 /// A table in a LanceDB database.
 #[derive(Debug, Clone)]
@@ -43,24 +43,25 @@ impl std::fmt::Display for Table {
     }
 }
 
-#[derive(Default)]
-pub struct OpenTableParams {
-    pub open_table_params: ReadParams,
-}
-
 impl Table {
     /// Opens an existing Table
     ///
     /// # Arguments
     ///
-    /// * `base_path` - The base path where the table is located
-    /// * `name` The Table name
+    /// * `uri` - The uri to a [Table]
+    /// * `name` - The table name
     ///
     /// # Returns
     ///
     /// * A [Table] object.
-    pub async fn open(base_uri: &str, name: &str) -> Result<Self> {
-        Self::open_with_params(base_uri, name, OpenTableParams::default()).await
+    pub async fn open(uri: &str) -> Result<Self> {
+        let name = Self::get_table_name(uri)?;
+        Self::open_with_params(uri, &name, &ReadParams::default()).await
+    }
+
+    /// Open an Table with a given name.
+    pub async fn open_with_name(uri: &str, name: &str) -> Result<Self> {
+        Self::open_with_params(uri, name, &ReadParams::default()).await
     }
 
     /// Opens an existing Table
@@ -69,25 +70,13 @@ impl Table {
     ///
     /// * `base_path` - The base path where the table is located
     /// * `name` The Table name
-    /// * `params` The [OpenTableParams] to use when opening the table
+    /// * `params` The [ReadParams] to use when opening the table
     ///
     /// # Returns
     ///
     /// * A [Table] object.
-    pub async fn open_with_params(
-        base_uri: &str,
-        name: &str,
-        params: OpenTableParams,
-    ) -> Result<Self> {
-        let path = Path::new(base_uri);
-
-        let table_uri = path.join(format!("{}.{}", name, LANCE_FILE_EXTENSION));
-        let uri = table_uri
-            .as_path()
-            .to_str()
-            .context(InvalidTableNameSnafu { name })?;
-
-        let dataset = Dataset::open_with_params(uri, &params.open_table_params)
+    pub async fn open_with_params(uri: &str, name: &str, params: &ReadParams) -> Result<Self> {
+        let dataset = Dataset::open_with_params(uri, params)
             .await
             .map_err(|e| match e {
                 lance::Error::DatasetNotFound { .. } => Error::TableNotFound {
@@ -104,31 +93,73 @@ impl Table {
         })
     }
 
+    /// Checkout a specific version of this [`Table`]
+    ///
+    pub async fn checkout(uri: &str, version: u64) -> Result<Self> {
+        let name = Self::get_table_name(uri)?;
+        Self::checkout_with_params(uri, &name, version, &ReadParams::default()).await
+    }
+
+    pub async fn checkout_with_name(uri: &str, name: &str, version: u64) -> Result<Self> {
+        Self::checkout_with_params(uri, name, version, &ReadParams::default()).await
+    }
+
+    pub async fn checkout_with_params(
+        uri: &str,
+        name: &str,
+        version: u64,
+        params: &ReadParams,
+    ) -> Result<Self> {
+        let dataset = Dataset::checkout_with_params(uri, version, params)
+            .await
+            .map_err(|e| match e {
+                lance::Error::DatasetNotFound { .. } => Error::TableNotFound {
+                    name: name.to_string(),
+                },
+                e => Error::Lance {
+                    message: e.to_string(),
+                },
+            })?;
+        Ok(Table {
+            name: name.to_string(),
+            uri: uri.to_string(),
+            dataset: Arc::new(dataset),
+        })
+    }
+
+    fn get_table_name(uri: &str) -> Result<String> {
+        let path = Path::new(uri);
+        let name = path
+            .file_stem()
+            .ok_or(Error::TableNotFound {
+                name: uri.to_string(),
+            })?
+            .to_str()
+            .ok_or(Error::InvalidTableName {
+                name: uri.to_string(),
+            })?;
+        Ok(name.to_string())
+    }
+
     /// Creates a new Table
     ///
     /// # Arguments
     ///
-    /// * `base_path` - The base path where the table is located
+    /// * `uri` - The URI to the table.
     /// * `name` The Table name
-    /// * `batches` RecordBatch to be saved in the database
+    /// * `batches` RecordBatch to be saved in the database.
+    /// * `params` - Write parameters.
     ///
     /// # Returns
     ///
     /// * A [Table] object.
     pub async fn create(
-        base_uri: &str,
+        uri: &str,
         name: &str,
         batches: impl RecordBatchReader + Send + 'static,
         params: Option<WriteParams>,
     ) -> Result<Self> {
-        let base_path = Path::new(base_uri);
-        let table_uri = base_path.join(format!("{}.{}", name, LANCE_FILE_EXTENSION));
-        let uri = table_uri
-            .as_path()
-            .to_str()
-            .context(InvalidTableNameSnafu { name })?
-            .to_string();
-        let dataset = Dataset::write(batches, &uri, params)
+        let dataset = Dataset::write(batches, uri, params)
             .await
             .map_err(|e| match e {
                 lance::Error::DatasetAlreadyExists { .. } => Error::TableAlreadyExists {
@@ -140,7 +171,7 @@ impl Table {
             })?;
         Ok(Table {
             name: name.to_string(),
-            uri,
+            uri: uri.to_string(),
             dataset: Arc::new(dataset),
         })
     }
@@ -264,14 +295,13 @@ mod tests {
     async fn test_open() {
         let tmp_dir = tempdir().unwrap();
         let dataset_path = tmp_dir.path().join("test.lance");
-        let uri = tmp_dir.path().to_str().unwrap();
 
         let batches = make_test_batches();
         Dataset::write(batches, dataset_path.to_str().unwrap(), None)
             .await
             .unwrap();
 
-        let table = Table::open(uri, "test").await.unwrap();
+        let table = Table::open(dataset_path.to_str().unwrap()).await.unwrap();
 
         assert_eq!(table.name, "test")
     }
@@ -280,7 +310,7 @@ mod tests {
     async fn test_open_not_found() {
         let tmp_dir = tempdir().unwrap();
         let uri = tmp_dir.path().to_str().unwrap();
-        let table = Table::open(uri, "test").await;
+        let table = Table::open(uri).await;
         assert!(matches!(table.unwrap_err(), Error::TableNotFound { .. }));
     }
 
@@ -371,14 +401,14 @@ mod tests {
     async fn test_search() {
         let tmp_dir = tempdir().unwrap();
         let dataset_path = tmp_dir.path().join("test.lance");
-        let uri = tmp_dir.path().to_str().unwrap();
+        let uri = dataset_path.to_str().unwrap();
 
         let batches = make_test_batches();
         Dataset::write(batches, dataset_path.to_str().unwrap(), None)
             .await
             .unwrap();
 
-        let table = Table::open(uri, "test").await.unwrap();
+        let table = Table::open(uri).await.unwrap();
 
         let vector = Float32Array::from_iter_values([0.1, 0.2]);
         let query = table.search(vector.clone());
@@ -410,7 +440,7 @@ mod tests {
     async fn test_open_table_options() {
         let tmp_dir = tempdir().unwrap();
         let dataset_path = tmp_dir.path().join("test.lance");
-        let uri = tmp_dir.path().to_str().unwrap();
+        let uri = dataset_path.to_str().unwrap();
 
         let batches = make_test_batches();
         Dataset::write(batches, dataset_path.to_str().unwrap(), None)
@@ -421,15 +451,12 @@ mod tests {
 
         let mut object_store_params = ObjectStoreParams::default();
         object_store_params.object_store_wrapper = Some(wrapper.clone());
-        let param = OpenTableParams {
-            open_table_params: ReadParams {
-                store_options: Some(object_store_params),
-                ..ReadParams::default()
-            },
+        let param = ReadParams {
+            store_options: Some(object_store_params),
+            ..Default::default()
         };
-
         assert!(!wrapper.called());
-        let _ = Table::open_with_params(uri, "test", param).await.unwrap();
+        let _ = Table::open_with_params(uri, "test", &param).await.unwrap();
         assert!(wrapper.called());
     }
 
