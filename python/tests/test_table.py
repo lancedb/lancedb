@@ -139,8 +139,8 @@ def _add(table, schema):
     # table = LanceTable(db, "test")
     assert len(table) == 2
 
-    count = table.add([{"vector": [6.3, 100.5], "item": "new", "price": 30.0}])
-    assert count == 3
+    table.add([{"vector": [6.3, 100.5], "item": "new", "price": 30.0}])
+    assert len(table) == 3
 
     expected = pa.Table.from_arrays(
         [
