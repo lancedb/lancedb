@@ -47,7 +47,8 @@ export class RemoteConnection implements Connection {
   }
 
   async tableNames (): Promise<string[]> {
-    throw new Error('Not implemented')
+    const response = await this._client.get('/v1/table/')
+    return response.data.tables
   }
 
   async openTable (name: string): Promise<Table>
@@ -83,7 +84,6 @@ export class RemoteQuery<T = number[]> extends Query<T> {
 
   // TODO: refactor this to a base class + queryImpl pattern
   async execute<T = Record<string, unknown>>(): Promise<T[]> {
-    // TODO: remove as any hack once we refactor
     const embeddings = this._embeddings
     const query = (this as any)._query
     let queryVector: number[]
