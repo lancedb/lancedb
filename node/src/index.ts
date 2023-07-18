@@ -142,7 +142,34 @@ export interface Table<T = number[]> {
   /**
    * Delete rows from this table.
    *
-   * @param filter  A filter in the same format used by a sql WHERE clause.
+   * This can be used to delete a single row, many rows, all rows, or
+   * sometimes no rows (if your predicate matches nothing).
+   *
+   * @param filter  A filter in the same format used by a sql WHERE clause. The
+   *                filter must not be empty.
+   *
+   * @examples
+   *
+   * ```ts
+   * const con = await lancedb.connect("./.lancedb")
+   * const data = [
+   *    {id: 1, vector: [1, 2]},
+   *    {id: 2, vector: [3, 4]},
+   *    {id: 3, vector: [5, 6]},
+   * ];
+   * const tbl = await con.createTable("my_table", data)
+   * await tbl.delete("id = 2")
+   * await tbl.countRows() // Returns 2
+   * ```
+   *
+   * If you have a list of values to delete, you can combine them into a
+   * stringified list and use the `IN` operator:
+   *
+   * ```ts
+   * const to_remove = [1, 5];
+   * await tbl.delete(`id IN (${to_remove.join(",")})`)
+   * await tbl.countRows() // Returns 1
+   * ```
    */
   delete: (filter: string) => Promise<void>
 }

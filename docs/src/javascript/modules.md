@@ -18,8 +18,11 @@
 
 ### Interfaces
 
+- [AwsCredentials](interfaces/AwsCredentials.md)
 - [Connection](interfaces/Connection.md)
+- [ConnectionOptions](interfaces/ConnectionOptions.md)
 - [EmbeddingFunction](interfaces/EmbeddingFunction.md)
+- [IvfPQIndexConfig](interfaces/IvfPQIndexConfig.md)
 - [Table](interfaces/Table.md)
 
 ### Type Aliases
@@ -34,11 +37,11 @@
 
 ### VectorIndexParams
 
-Ƭ **VectorIndexParams**: `IvfPQIndexConfig`
+Ƭ **VectorIndexParams**: [`IvfPQIndexConfig`](interfaces/IvfPQIndexConfig.md)
 
 #### Defined in
 
-[index.ts:345](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L345)
+[index.ts:431](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L431)
 
 ## Functions
 
@@ -60,4 +63,20 @@ Connect to a LanceDB instance at the given URI
 
 #### Defined in
 
-[index.ts:34](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L34)
+[index.ts:47](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L47)
+
+▸ **connect**(`opts`): `Promise`<[`Connection`](interfaces/Connection.md)\>
+
+#### Parameters
+
+| Name | Type |
+| :------ | :------ |
+| `opts` | `Partial`<[`ConnectionOptions`](interfaces/ConnectionOptions.md)\> |
+
+#### Returns
+
+`Promise`<[`Connection`](interfaces/Connection.md)\>
+
+#### Defined in
+
+[index.ts:48](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L48)

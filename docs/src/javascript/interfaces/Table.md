@@ -52,7 +52,7 @@ The number of rows added to the table
 
 #### Defined in
 
-[index.ts:95](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L95)
+[index.ts:120](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L120)
 
 ___
 
@@ -72,13 +72,13 @@ Returns the number of rows in this table.
 
 #### Defined in
 
-[index.ts:115](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L115)
+[index.ts:140](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L140)
 
 ___
 
 ### createIndex
 
-• **createIndex**: (`indexParams`: `IvfPQIndexConfig`) => `Promise`<`any`\>
+• **createIndex**: (`indexParams`: [`IvfPQIndexConfig`](IvfPQIndexConfig.md)) => `Promise`<`any`\>
 
 #### Type declaration
 
@@ -94,7 +94,7 @@ VectorIndexParams.
 
 | Name | Type | Description |
 | :------ | :------ | :------ |
-| `indexParams` | `IvfPQIndexConfig` | The parameters of this Index, |
+| `indexParams` | [`IvfPQIndexConfig`](IvfPQIndexConfig.md) | The parameters of this Index, |
 
 ##### Returns
 
@@ -102,7 +102,7 @@ VectorIndexParams.
 
 #### Defined in
 
-[index.ts:110](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L110)
+[index.ts:135](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L135)
 
 ___
 
@@ -116,11 +116,37 @@ ___
 
 Delete rows from this table.
 
+This can be used to delete a single row, many rows, all rows, or
+sometimes no rows (if your predicate matches nothing).
+
+**`Examples`**
+
+```ts
+const con = await lancedb.connect("./.lancedb")
+const data = [
+   {id: 1, vector: [1, 2]},
+   {id: 2, vector: [3, 4]},
+   {id: 3, vector: [5, 6]},
+];
+const tbl = await con.createTable("my_table", data)
+await tbl.delete("id = 2")
+await tbl.countRows() // Returns 2
+```
+
+If you have a list of values to delete, you can combine them into a
+stringified list and use the `IN` operator:
+
+```ts
+const to_remove = [1, 5];
+await tbl.delete(`id IN (${to_remove.join(",")})`)
+await tbl.countRows() // Returns 1
+```
+
 ##### Parameters
 
 | Name | Type | Description |
 | :------ | :------ | :------ |
-| `filter` | `string` | A filter in the same format used by a sql WHERE clause. |
+| `filter` | `string` | A filter in the same format used by a sql WHERE clause. The filter must not be empty. |
 
 ##### Returns
 
@@ -128,7 +154,7 @@ Delete rows from this table.
 
 #### Defined in
 
-[index.ts:122](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L122)
+[index.ts:174](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L174)
 
 ___
 
@@ -138,7 +164,7 @@ ___
 
 #### Defined in
 
-[index.ts:81](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L81)
+[index.ts:106](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L106)
 
 ___
 
@@ -166,7 +192,7 @@ The number of rows added to the table
 
 #### Defined in
 
-[index.ts:103](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L103)
+[index.ts:128](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L128)
 
 ___
 
@@ -192,4 +218,4 @@ Creates a search query to find the nearest neighbors of the given search term
 
 #### Defined in
 
-[index.ts:87](https://github.com/lancedb/lancedb/blob/7247834/node/src/index.ts#L87)
+[index.ts:112](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L112)
