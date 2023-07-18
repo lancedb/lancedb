@@ -19,7 +19,7 @@ import { tableFromIPC, type Table as ArrowTable } from 'apache-arrow'
 export class HttpLancedbClient {
   private readonly _url: string
 
-  public constructor (url: string) {
+  public constructor (url: string, private readonly _apiKey: string) {
     this._url = url
   }
 
@@ -36,8 +36,9 @@ export class HttpLancedbClient {
     columns?: string[],
     filter?: string
   ): Promise<ArrowTable<any>> {
+    console.log('searching: ', this._url)
     const response = await axios.post(
-              `${this._url}/v1/table/${tableName}/`,
+              `${this._url}/v1/table/${tableName}`,
               {
                 vector,
                 k,
@@ -48,7 +49,8 @@ export class HttpLancedbClient {
               },
               {
                 headers: {
-                  'Content-Type': 'application/json'
+                  'Content-Type': 'application/json',
+                  'x-api-key': this._apiKey,
                 },
                 responseType: 'arraybuffer',
                 timeout: 10000

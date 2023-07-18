@@ -26,6 +26,7 @@ import { HttpLancedbClient } from './client'
  */
 export class RemoteConnection implements Connection {
   private readonly _client: HttpLancedbClient
+  private readonly _dbName: string
 
   constructor (opts: ConnectionOptions) {
     if (!opts.uri.startsWith('db://')) {
@@ -35,14 +36,14 @@ export class RemoteConnection implements Connection {
       throw new Error('API key and region are not supported for remote connections')
     }
 
-    const dbName = opts.uri.slice('db://'.length)
-    const server = `https://${dbName}.${opts.region}.api.lancedb.com`
-    this._client = new HttpLancedbClient(server)
+    this._dbName = opts.uri.slice('db://'.length)
+    const server = `https://${this._dbName}.${opts.region}.api.lancedb.com`
+    this._client = new HttpLancedbClient(server, opts.apiKey)
   }
 
   get uri (): string {
     // add the lancedb+ prefix back
-    return 'lancedb+' + this._client.uri
+    return 'db://' + this._client.uri
   }
 
   async tableNames (): Promise<string[]> {
