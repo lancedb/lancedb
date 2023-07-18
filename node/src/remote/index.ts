@@ -76,12 +76,9 @@ export class RemoteConnection implements Connection {
 }
 
 export class RemoteQuery<T = number[]> extends Query<T> {
-  private readonly _client: HttpLancedbClient
-
-  constructor (query: T, private readonly client: HttpLancedbClient,
-    private readonly _name: string) { //, embeddings: EmbeddingFunction<T>) {
-    super(query, undefined, undefined)
-    this._client = client
+  constructor (query: T, private readonly _client: HttpLancedbClient,
+    private readonly _name: string, embeddings?: EmbeddingFunction<T>) {
+    super(query, undefined, embeddings)
   }
 
   // TODO: refactor this to a base class + queryImpl pattern
@@ -125,9 +122,7 @@ export class RemoteQuery<T = number[]> extends Query<T> {
 // Table and Connection has both been refactored to interfaces
 export class RemoteTable<T = number[]> implements Table<T> {
   private readonly _client: HttpLancedbClient
-  // private readonly _name: string
-  // private readonly _embeddings?: EmbeddingFunction<T>
-  private readonly _embeddings_new?: EmbeddingFunction<T>
+  private readonly _embeddings?: EmbeddingFunction<T>
   private readonly _name: string
 
   constructor (client: HttpLancedbClient, name: string)
@@ -135,7 +130,7 @@ export class RemoteTable<T = number[]> implements Table<T> {
   constructor (client: HttpLancedbClient, name: string, embeddings?: EmbeddingFunction<T>) {
     this._client = client
     this._name = name
-    this._embeddings_new = embeddings
+    this._embeddings = embeddings
   }
 
   get name (): string {

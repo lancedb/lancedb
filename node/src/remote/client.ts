@@ -60,7 +60,7 @@ export class HttpLancedbClient {
     })
     if (response.status !== 200) {
       const errorData = new TextDecoder().decode(response.data)
-      throw new Error(`Server Error, status: ${response.status}, message: ${response.statusText}: ${errorData}`)
+      throw new Error(`Server Error, status: ${response.status as number}, message: ${response.statusText as string}: ${errorData}`)
     }
 
     const table = tableFromIPC(response.data)
