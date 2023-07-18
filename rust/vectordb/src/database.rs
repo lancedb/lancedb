@@ -20,8 +20,10 @@ use lance::dataset::WriteParams;
 use lance::io::object_store::ObjectStore;
 use snafu::prelude::*;
 
-use crate::error::{CreateDirSnafu, Result};
-use crate::table::{OpenTableParams, Table};
+use crate::error::{CreateDirSnafu, InvalidTableNameSnafu, Result};
+use crate::table::{ReadParams, Table};
+
+pub const LANCE_FILE_EXTENSION: &str = "lance";
 
 pub struct Database {
     object_store: ObjectStore,
@@ -59,7 +61,7 @@ impl Database {
     fn try_create_dir(path: &str) -> core::result::Result<(), std::io::Error> {
         let path = Path::new(path);
         if !path.try_exists()? {
-            create_dir_all(&path)?;
+            create_dir_all(path)?;
         }
         Ok(())
     }
@@ -75,20 +77,15 @@ impl Database {
             .read_dir(self.base_path.clone())
             .await?
             .iter()
-            .map(|fname| Path::new(fname))
+            .map(Path::new)
             .filter(|path| {
                 let is_lance = path
                     .extension()
-                    .map(|e| e.to_str().map(|e| e == LANCE_EXTENSION))
-                    .flatten();
+                    .and_then(|e| e.to_str())
+                    .map(|e| e == LANCE_EXTENSION);
                 is_lance.unwrap_or(false)
             })
-            .map(|p| {
-                p.file_stem()
-                    .map(|s| s.to_str().map(|s| String::from(s)))
-                    .flatten()
-            })
-            .flatten()
+            .filter_map(|p| p.file_stem().and_then(|s| s.to_str().map(String::from)))
             .collect();
         Ok(f)
     }
@@ -105,7 +102,8 @@ impl Database {
         batches: impl RecordBatchReader + Send + 'static,
         params: Option<WriteParams>,
     ) -> Result<Table> {
-        Table::create(&self.uri, name, batches, params).await
+        let table_uri = self.table_uri(name)?;
+        Table::create(&table_uri, name, batches, params).await
     }
 
     /// Open a table in the database.
@@ -117,7 +115,7 @@ impl Database {
     ///
     /// * A [Table] object.
     pub async fn open_table(&self, name: &str) -> Result<Table> {
-        self.open_table_with_params(name, OpenTableParams::default())
+        self.open_table_with_params(name, &ReadParams::default())
             .await
     }
 
@@ -130,12 +128,9 @@ impl Database {
     /// # Returns
     ///
     /// * A [Table] object.
-    pub async fn open_table_with_params(
-        &self,
-        name: &str,
-        params: OpenTableParams,
-    ) -> Result<Table> {
-        Table::open_with_params(&self.uri, name, params).await
+    pub async fn open_table_with_params(&self, name: &str, params: &ReadParams) -> Result<Table> {
+        let table_uri = self.table_uri(name)?;
+        Table::open_with_params(&table_uri, name, params).await
     }
 
     /// Drop a table in the database.
@@ -147,6 +142,18 @@ impl Database {
         let full_path = self.base_path.child(dir_name.clone());
         self.object_store.remove_dir_all(full_path).await?;
         Ok(())
+    }
+
+    /// Get the URI of a table in the database.
+    fn table_uri(&self, name: &str) -> Result<String> {
+        let path = Path::new(&self.uri);
+        let table_uri = path.join(format!("{}.{}", name, LANCE_FILE_EXTENSION));
+
+        let uri = table_uri
+            .as_path()
+            .to_str()
+            .context(InvalidTableNameSnafu { name })?;
+        Ok(uri.to_string())
     }
 }
 

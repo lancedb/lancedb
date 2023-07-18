@@ -21,7 +21,7 @@ use arrow_array::{Float32Array, RecordBatchIterator};
 use arrow_ipc::writer::FileWriter;
 use async_trait::async_trait;
 use futures::{TryFutureExt, TryStreamExt};
-use lance::dataset::{ReadParams, WriteMode, WriteParams};
+use lance::dataset::{WriteMode, WriteParams};
 use lance::index::vector::MetricType;
 use lance::io::object_store::ObjectStoreParams;
 use neon::prelude::*;
@@ -33,7 +33,7 @@ use tokio::runtime::Runtime;
 
 use vectordb::database::Database;
 use vectordb::error::Error;
-use vectordb::table::{OpenTableParams, Table};
+use vectordb::table::{ReadParams, Table};
 
 use crate::arrow::arrow_buffer_to_record_batch;
 
@@ -177,7 +177,7 @@ fn database_open_table(mut cx: FunctionContext) -> JsResult<JsPromise> {
         Err(err) => return err,
     };
 
-    let param = ReadParams {
+    let params = ReadParams {
         store_options: Some(ObjectStoreParams {
             aws_credentials: aws_creds,
             ..ObjectStoreParams::default()
@@ -191,14 +191,7 @@ fn database_open_table(mut cx: FunctionContext) -> JsResult<JsPromise> {
 
     let (deferred, promise) = cx.promise();
     rt.spawn(async move {
-        let table_rst = database
-            .open_table_with_params(
-                &table_name,
-                OpenTableParams {
-                    open_table_params: param,
-                },
-            )
-            .await;
+        let table_rst = database.open_table_with_params(&table_name, &params).await;
 
         deferred.settle_with(&channel, move |mut cx| {
             let table = Arc::new(Mutex::new(
