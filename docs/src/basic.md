@@ -122,6 +122,35 @@ After a table has been created, you can always add more data to it using
               {vector: [9.5, 56.2], item: "buzz", price: 200.0}])
       ```
 
+## How to delete rows from a table
+
+Use the `delete()` method on tables to delete rows from a table. To choose
+which rows to delete, provide a filter that matches on the metadata columns.
+This can delete any number of rows that match the filter.
+
+=== "Python"
+      ```python
+      tbl.delete('item = "fizz"')
+      ```
+
+=== "Javascript"
+      ```javascript
+      await tbl.delete('item = "fizz"')
+      ```
+
+The deletion predicate is a SQL expression that supports the same expressions
+as the `where()` clause on a search. They can be as simple or complex as needed.
+To see what expressions are supported, see the [SQL filters](sql.md) section.
+
+
+=== "Python"
+
+      Read more: [lancedb.table.Table.delete][]
+
+=== "Javascript"
+
+      Read more: [vectordb.Table.delete](javascript/interfaces/Table.md#delete)
+
 ## How to search for (approximate) nearest neighbors
 
 Once you've embedded the query, you can find its nearest neighbors using the following code:

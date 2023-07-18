@@ -10,6 +10,10 @@ A JavaScript / Node.js library for [LanceDB](https://github.com/lancedb/lancedb)
 npm install vectordb
 ```
 
+This will download the appropriate native library for your platform. We currently
+support x86_64 Linux, aarch64 Linux, Intel MacOS, and ARM (M1/M2) MacOS. We do not
+yet support Windows or musl-based Linux (such as Alpine Linux).
+
 ## Usage
 
 ### Basic Example
@@ -28,11 +32,33 @@ The [examples](./examples) folder contains complete examples.
 
 ## Development
 
-Run the tests with
+To build everything fresh:
+
+```bash
+npm install
+npm run tsc
+npm run build
+```
+
+Then you should be able to run the tests with:
 
 ```bash
 npm test
 ```
+
+### Rebuilding Rust library
+
+```bash
+npm run build
+```
+
+### Rebuilding Typescript
+
+```bash
+npm run tsc
+```
+
+### Fix lints
 
 To run the linter and have it automatically fix all errors
 

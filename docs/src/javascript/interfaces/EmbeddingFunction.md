@@ -45,7 +45,7 @@ Creates a vector representation for the given values.
 
 #### Defined in
 
-[embedding/embedding_function.ts:27](https://github.com/lancedb/lancedb/blob/7247834/node/src/embedding/embedding_function.ts#L27)
+[embedding/embedding_function.ts:27](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/embedding/embedding_function.ts#L27)
 
 ___
 
@@ -57,4 +57,4 @@ The name of the column that will be used as input for the Embedding Function.
 
 #### Defined in
 
-[embedding/embedding_function.ts:22](https://github.com/lancedb/lancedb/blob/7247834/node/src/embedding/embedding_function.ts#L22)
+[embedding/embedding_function.ts:22](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/embedding/embedding_function.ts#L22)
