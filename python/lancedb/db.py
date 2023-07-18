@@ -24,7 +24,7 @@ from pyarrow import fs
 
 from .common import DATA, URI
 from .table import LanceTable, Table
-from .util import get_uri_location, get_uri_scheme
+from .util import fs_from_uri, get_uri_location, get_uri_scheme
 
 
 class DBConnection(ABC):
@@ -252,7 +252,7 @@ class LanceDBConnection(DBConnection):
             A list of table names.
         """
         try:
-            filesystem, path = fs.FileSystem.from_uri(self.uri)
+            filesystem, path = fs_from_uri(self.uri)
         except pa.ArrowInvalid:
             raise NotImplementedError("Unsupported scheme: " + self.uri)
 
