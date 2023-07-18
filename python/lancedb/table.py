@@ -74,7 +74,6 @@ class Table(ABC):
     Can append new data with [Table.add()][lancedb.table.Table.add].
 
     >>> table.add([{"vector": [0.5, 1.3], "b": 4}])
-    2
 
     Can query the table with [Table.search][lancedb.table.Table.search].
 
@@ -303,7 +302,6 @@ class LanceTable(Table):
                vector    type
         0  [1.1, 0.9]  vector
         >>> table.add([{"vector": [0.5, 0.2], "type": "vector"}])
-        2
         >>> table.version
         2
         >>> table.checkout(1)
