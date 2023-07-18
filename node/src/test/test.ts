@@ -18,7 +18,8 @@ import * as chai from 'chai'
 import * as chaiAsPromised from 'chai-as-promised'
 
 import * as lancedb from '../index'
-import { type AwsCredentials, type EmbeddingFunction, MetricType, Query, WriteMode } from '../index'
+import { type AwsCredentials, type EmbeddingFunction, MetricType, WriteMode } from '../index'
+import { Query } from '../query'
 
 const expect = chai.expect
 const assert = chai.assert
@@ -268,7 +269,7 @@ describe('LanceDB client', function () {
 
 describe('Query object', function () {
   it('sets custom parameters', async function () {
-    const query = new Query(undefined, [0.1, 0.3])
+    const query = new Query([0.1, 0.3])
       .limit(1)
       .metricType(MetricType.Cosine)
       .refineFactor(100)
