@@ -536,7 +536,7 @@ class LanceTable(Table):
         tbl = cls(db, name)
         fs, path = pa.fs.FileSystem.from_uri(tbl._dataset_uri)
         file_info = fs.get_file_info(path)
-        if file_info.type == pa.fs.FileType.NotFound:
+        if file_info.type != pa.fs.FileType.Directory:
             raise FileNotFoundError(
                 f"Table {name} does not exist. Please first call db.create_table({name}, data)"
             )
