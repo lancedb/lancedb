@@ -36,7 +36,6 @@ export class HttpLancedbClient {
     columns?: string[],
     filter?: string
   ): Promise<ArrowTable<any>> {
-    console.log('searching: ', this._url)
     const response = await axios.post(
               `${this._url}/v1/table/${tableName}`,
               {
@@ -50,15 +49,18 @@ export class HttpLancedbClient {
               {
                 headers: {
                   'Content-Type': 'application/json',
-                  'x-api-key': this._apiKey,
+                  'x-api-key': this._apiKey
                 },
                 responseType: 'arraybuffer',
                 timeout: 10000
               }
-    )
-
+    ).catch((err) => {
+      console.error('error: ', err)
+      return err.response
+    })
     if (response.status !== 200) {
-      throw new Error(`Server Error, status: ${response.status}, message: ${response.statusText}`)
+      const errorData = new TextDecoder().decode(response.data)
+      throw new Error(`Server Error, status: ${response.status}, message: ${response.statusText}: ${errorData}`)
     }
 
     const table = tableFromIPC(response.data)
