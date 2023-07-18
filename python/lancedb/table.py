@@ -151,7 +151,7 @@ class Table(ABC):
         mode: str = "append",
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
-    ) -> int:
+    ):
         """Add more data to the [Table](Table).
 
         Parameters
@@ -167,10 +167,6 @@ class Table(ABC):
         fill_value: float, default 0.
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
 
-        Returns
-        -------
-        int
-            The number of vectors in the table.
         """
         raise NotImplementedError
 
@@ -409,7 +405,7 @@ class LanceTable(Table):
         mode: str = "append",
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
-    ) -> int:
+    ):
         """Add data to the table.
 
         Parameters
@@ -436,7 +432,6 @@ class LanceTable(Table):
         )
         lance.write_dataset(data, self._dataset_uri, mode=mode)
         self._reset_dataset()
-        return len(self)
 
     def search(
         self, query: Union[VEC, str], vector_column_name=VECTOR_COLUMN_NAME
