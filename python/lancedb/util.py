@@ -11,7 +11,12 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
+import os
+from typing import Tuple
 from urllib.parse import urlparse
+
+import pyarrow as pa
+import pyarrow.fs as pa_fs
 
 
 def get_uri_scheme(uri: str) -> str:
@@ -59,3 +64,14 @@ def get_uri_location(uri: str) -> str:
         return parsed.path
     else:
         return parsed.netloc + parsed.path
+
+
+def fs_from_uri(uri: str) -> Tuple[pa_fs.FileSystem, str]:
+    """
+    Get a PyArrow FileSystem from a URI, handling extra environment variables.
+    """
+    if get_uri_scheme(uri) == "s3":
+        if os.environ["AWS_ENDPOINT"]:
+            uri += "?endpoint_override=" + os.environ["AWS_ENDPOINT"]
+
+    return pa_fs.FileSystem.from_uri(uri)
