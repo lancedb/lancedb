@@ -11,6 +11,6 @@ arrow-array = "42.0"
 arrow-data = "42.0"
 arrow-schema = "42.0"
 arrow-ipc = "42.0"
-half = { "version" = "2.2.1", default-features = false }
+half = { "version" = "=2.2.1", default-features = false }
 object_store = "0.6.1"
 
