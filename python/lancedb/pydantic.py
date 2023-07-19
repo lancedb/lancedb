@@ -21,10 +21,10 @@ import types
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Dict, Generator, List, Type, Union, _GenericAlias
 
+import numpy as np
 import pyarrow as pa
 import pydantic
 import semver
-import numpy as np
 
 try:
     from pydantic_core import CoreSchema, core_schema
