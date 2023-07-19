@@ -26,3 +26,9 @@ export interface EmbeddingFunction<T> {
      */
   embed: (data: T[]) => Promise<number[][]>
 }
+
+export function isEmbeddingFunction<T> (value: any): value is EmbeddingFunction<T> {
+  return Object.keys(value).length === 2 &&
+      typeof value.sourceColumn === 'string' &&
+      typeof value.embed === 'function'
+}
