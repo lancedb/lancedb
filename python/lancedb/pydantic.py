@@ -11,7 +11,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
-"""Pydantic adapter for LanceDB"""
+"""Pydantic (v1 / v2) adapter for LanceDB"""
 
 from __future__ import annotations
 
@@ -19,11 +19,21 @@ import inspect
 import sys
 import types
 from abc import ABC, abstractmethod
-from typing import Any, List, Type, Union, _GenericAlias
+from typing import Any, Callable, Dict, Generator, List, Type, Union, _GenericAlias
 
 import pyarrow as pa
 import pydantic
-from pydantic_core import CoreSchema, core_schema
+import semver
+import numpy as np
+
+try:
+    from pydantic_core import CoreSchema, core_schema
+
+    pydantic.__version__
+except ImportError:
+    pass
+
+PYDANTIC_VERSION = semver.Version.parse(pydantic.__version__)
 
 
 class FixedSizeListMixin(ABC):
@@ -73,6 +83,9 @@ def vector(
 
     # TODO: make a public parameterized type.
     class FixedSizeList(list, FixedSizeListMixin):
+        def __repr__(self):
+            return f"FixedSizeList(dim={dim})"
+
         @staticmethod
         def dim() -> int:
             return dim
@@ -93,6 +106,23 @@ def vector(
                     items_schema=core_schema.float_schema(),
                 ),
             )
+
+        @classmethod
+        def __get_validators__(cls) -> Generator[Callable, None, None]:
+            yield cls.validate
+
+        # For pydantic v1
+        @classmethod
+        def validate(cls, v):
+            if not isinstance(v, (list, range, np.ndarray)) or len(v) != dim:
+                raise TypeError("A list of numbers or numpy.ndarray is needed")
+            return v
+
+        @classmethod
+        def __modify_schema__(cls, field_schema: Dict[str, Any]):
+            field_schema["items"] = {"type": "number"}
+            field_schema["maxItems"] = dim
+            field_schema["minItems"] = dim
 
     return FixedSizeList
 
@@ -120,11 +150,20 @@ def _py_type_to_arrow_type(py_type: Type[Any]) -> pa.DataType:
     )
 
 
-def _pydantic_model_to_fields(model: pydantic.BaseModel) -> List[pa.Field]:
-    fields = []
-    for name, field in model.model_fields.items():
-        fields.append(_pydantic_to_field(name, field))
-    return fields
+if PYDANTIC_VERSION.major < 2:
+
+    def _pydantic_model_to_fields(model: pydantic.BaseModel) -> List[pa.Field]:
+        return [
+            _pydantic_to_field(name, field) for name, field in model.__fields__.items()
+        ]
+
+else:
+
+    def _pydantic_model_to_fields(model: pydantic.BaseModel) -> List[pa.Field]:
+        return [
+            _pydantic_to_field(name, field)
+            for name, field in model.model_fields.items()
+        ]
 
 
 def _pydantic_to_arrow_type(field: pydantic.fields.FieldInfo) -> pa.DataType:
