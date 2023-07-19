@@ -74,7 +74,6 @@ class Table(ABC):
     Can append new data with [Table.add()][lancedb.table.Table.add].
 
     >>> table.add([{"vector": [0.5, 1.3], "b": 4}])
-    2
 
     Can query the table with [Table.search][lancedb.table.Table.search].
 
@@ -151,7 +150,7 @@ class Table(ABC):
         mode: str = "append",
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
-    ) -> int:
+    ):
         """Add more data to the [Table](Table).
 
         Parameters
@@ -167,10 +166,6 @@ class Table(ABC):
         fill_value: float, default 0.
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
 
-        Returns
-        -------
-        int
-            The number of vectors in the table.
         """
         raise NotImplementedError
 
@@ -307,7 +302,6 @@ class LanceTable(Table):
                vector    type
         0  [1.1, 0.9]  vector
         >>> table.add([{"vector": [0.5, 0.2], "type": "vector"}])
-        2
         >>> table.version
         2
         >>> table.checkout(1)
@@ -409,7 +403,7 @@ class LanceTable(Table):
         mode: str = "append",
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
-    ) -> int:
+    ):
         """Add data to the table.
 
         Parameters
@@ -436,7 +430,6 @@ class LanceTable(Table):
         )
         lance.write_dataset(data, self._dataset_uri, mode=mode)
         self._reset_dataset()
-        return len(self)
 
     def search(
         self, query: Union[VEC, str], vector_column_name=VECTOR_COLUMN_NAME

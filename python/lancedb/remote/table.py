@@ -79,7 +79,6 @@ class RemoteTable(Table):
                 content_type=ARROW_STREAM_CONTENT_TYPE,
             )
         )
-        return len(data)
 
     def search(
         self, query: Union[VEC, str], vector_column: str = VECTOR_COLUMN_NAME
