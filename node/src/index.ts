@@ -44,6 +44,9 @@ export interface ConnectionOptions {
   apiKey?: string
   // Region to connect
   region?: string
+
+  // override the host for the remote connections
+  hostOverride?: string
 }
 
 /**
