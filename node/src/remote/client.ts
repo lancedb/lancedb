@@ -19,7 +19,11 @@ import { tableFromIPC, type Table as ArrowTable } from 'apache-arrow'
 export class HttpLancedbClient {
   private readonly _url: string
 
-  public constructor (url: string, private readonly _apiKey: string) {
+  public constructor (
+    url: string,
+    private readonly _apiKey: string,
+    private readonly _dbName?: string
+  ) {
     this._url = url
   }
 
@@ -49,7 +53,8 @@ export class HttpLancedbClient {
               {
                 headers: {
                   'Content-Type': 'application/json',
-                  'x-api-key': this._apiKey
+                  'x-api-key': this._apiKey,
+                  ...(this._dbName !== undefined ? { 'x-lancedb-database': this._dbName } : {})
                 },
                 responseType: 'arraybuffer',
                 timeout: 10000

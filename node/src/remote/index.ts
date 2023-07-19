@@ -37,8 +37,13 @@ export class RemoteConnection implements Connection {
     }
 
     this._dbName = opts.uri.slice('db://'.length)
-    const server = `https://${this._dbName}.${opts.region}.api.lancedb.com`
-    this._client = new HttpLancedbClient(server, opts.apiKey)
+    let server: string
+    if (opts.hostOverride === undefined) {
+      server = `https://${this._dbName}.${opts.region}.api.lancedb.com`
+    } else {
+      server = opts.hostOverride
+    }
+    this._client = new HttpLancedbClient(server, opts.apiKey, opts.hostOverride === undefined ? undefined : this._dbName)
   }
 
   get uri (): string {
