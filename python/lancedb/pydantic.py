@@ -116,11 +116,13 @@ def vector(
                 raise TypeError("A list of numbers or numpy.ndarray is needed")
             return v
 
-        @classmethod
-        def __modify_schema__(cls, field_schema: Dict[str, Any]):
-            field_schema["items"] = {"type": "number"}
-            field_schema["maxItems"] = dim
-            field_schema["minItems"] = dim
+        if PYDANTIC_VERSION < (2, 0):
+
+            @classmethod
+            def __modify_schema__(cls, field_schema: Dict[str, Any]):
+                field_schema["items"] = {"type": "number"}
+                field_schema["maxItems"] = dim
+                field_schema["minItems"] = dim
 
     return FixedSizeList
 
