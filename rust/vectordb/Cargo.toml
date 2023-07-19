@@ -1,6 +1,6 @@
 [package]
 name = "vectordb"
-version = "0.1.14"
+version = "0.1.15"
 edition = "2021"
 description = "Serverless, low-latency vector database for AI applications"
 license = "Apache-2.0"
