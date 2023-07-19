@@ -132,9 +132,6 @@ export interface Connection {
    */
   createTable<T> (name: string, data: Array<Record<string, unknown>>, embeddings: EmbeddingFunction<T>, options: WriteOptions): Promise<Table<T>>
 
-  /**
-   * @ignore
-   */
   createTableArrow(name: string, table: ArrowTable): Promise<Table>
 
   /**
