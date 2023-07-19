@@ -19,22 +19,19 @@ import inspect
 import sys
 import types
 from abc import ABC, abstractmethod
-from typing import (Any, Callable, Dict, Generator, List, Type, Union,
-                    _GenericAlias)
+from typing import Any, Callable, Dict, Generator, List, Type, Union, _GenericAlias
 
 import numpy as np
 import pyarrow as pa
 import pydantic
 import semver
 
+PYDANTIC_VERSION = semver.Version.parse(pydantic.__version__)
 try:
     from pydantic_core import CoreSchema, core_schema
-
-    pydantic.__version__
 except ImportError:
-    pass
-
-PYDANTIC_VERSION = semver.Version.parse(pydantic.__version__)
+    if PYDANTIC_VERSION >= (2,):
+        raise
 
 
 class FixedSizeListMixin(ABC):
