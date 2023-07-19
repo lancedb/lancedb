@@ -20,7 +20,7 @@ import pyarrow as pa
 import pydantic
 import pytest
 
-from lancedb.pydantic import pydantic_to_schema, vector
+from lancedb.pydantic import PYDANTIC_VERSION, pydantic_to_schema, vector
 
 
 @pytest.mark.skipif(
@@ -111,10 +111,16 @@ def test_fixed_size_list_field():
         li: List[int]
 
     data = TestModel(vec=list(range(16)), li=[1, 2, 3])
-    assert json.loads(data.model_dump_json()) == {
-        "vec": list(range(16)),
-        "li": [1, 2, 3],
-    }
+    if PYDANTIC_VERSION >= (2,):
+        assert json.loads(data.model_dump_json()) == {
+            "vec": list(range(16)),
+            "li": [1, 2, 3],
+        }
+    else:
+        assert data.dict() == {
+            "vec": list(range(16)),
+            "li": [1, 2, 3],
+        }
 
     schema = pydantic_to_schema(TestModel)
     assert schema == pa.schema(
@@ -124,7 +130,11 @@ def test_fixed_size_list_field():
         ]
     )
 
-    json_schema = TestModel.model_json_schema()
+    if PYDANTIC_VERSION >= (2,):
+        json_schema = TestModel.model_json_schema()
+    else:
+        json_schema = TestModel.schema()
+
     assert json_schema == {
         "properties": {
             "vec": {
