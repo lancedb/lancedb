@@ -19,7 +19,8 @@ import inspect
 import sys
 import types
 from abc import ABC, abstractmethod
-from typing import Any, Callable, Dict, Generator, List, Type, Union, _GenericAlias
+from typing import (Any, Callable, Dict, Generator, List, Type, Union,
+                    _GenericAlias)
 
 import numpy as np
 import pyarrow as pa
