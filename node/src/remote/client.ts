@@ -41,7 +41,7 @@ export class HttpLancedbClient {
     filter?: string
   ): Promise<ArrowTable<any>> {
     const response = await axios.post(
-              `${this._url}/v1/table/${tableName}`,
+              `${this._url}/v1/table/${tableName}/query/`,
               {
                 vector,
                 k,
