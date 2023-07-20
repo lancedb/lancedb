@@ -1,0 +1,22 @@
+name: update_package_lock
+description: "Update node's package.lock"
+
+runs:
+  using: "composite"
+  steps:
+    - uses: actions/setup-node@v3
+      with:
+        node-version: 20
+    - name: Set git configs
+      shell: bash
+      run: |
+        git config user.name 'Lance Release'
+        git config user.email 'lance-dev@lancedb.com'
+    - name: Update package-lock.json file
+      working-directory: ./node
+      run: |
+        npm install
+        git add package-lock.json
+        git commit -m "Updating package-lock.json"
+        git push
+      shell: bash

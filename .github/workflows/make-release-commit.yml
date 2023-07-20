@@ -25,38 +25,25 @@ jobs:
   bump-version:
     runs-on: ubuntu-latest
     steps:
-    - name: Check out main
-      uses: actions/checkout@v3
-      with:
-        ref: main
-        persist-credentials: false
-        fetch-depth: 0
-        lfs: true
-    - name: Set git configs for bumpversion
-      shell: bash
-      run: |
-        git config user.name 'Lance Release'
-        git config user.email 'lance-dev@lancedb.com'
-    - name: Set up Python 3.10
-      uses: actions/setup-python@v4
-      with:
-        python-version: "3.10"
-    - name: Bump version, create tag and commit
-      run: |
-        pip install bump2version
-        bumpversion --verbose ${{ inputs.part }}
-    - name: Update package-lock.json file
-      run: |
-        npm install
-        git add package-lock.json
-        # Add this change to the commit created by bumpversion
-        git commit --amend --no-edit
-      working-directory: node
-    - name: Push new version and tag
-      if: ${{ inputs.dry_run }} == "false"
-      uses: ad-m/github-push-action@master
-      with:
-        github_token: ${{ secrets.LANCEDB_RELEASE_TOKEN }}
-        branch: main
-        tags: true
+      - name: Check out main
+        uses: actions/checkout@v3
+        with:
+          ref: main
+          fetch-depth: 0
+          lfs: true
+      - name: Set git configs for bumpversion
+        shell: bash
+        run: |
+          git config user.name 'Lance Release'
+          git config user.email 'lance-dev@lancedb.com'
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+      - name: Bump version, create tag and commit
+        run: |
+          pip install bump2version
+          bumpversion --verbose ${{ inputs.part }}
+          git push
+      - uses: ./.github/workflows/update_package_lock
 
