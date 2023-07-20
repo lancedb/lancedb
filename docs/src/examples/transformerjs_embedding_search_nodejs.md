@@ -1,6 +1,6 @@
 # Vector embedding search using TransformersJS
 
-## Embed and query data from LacneDB using TransformersJS
+## Embed and query data from LanceDB using TransformersJS
 
 <img id="splash" width="400" alt="transformersjs" src="https://github.com/lancedb/lancedb/assets/43097991/88a31e30-3d6f-4eef-9216-4b7c688f1b4f">
 
