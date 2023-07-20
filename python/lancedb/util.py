@@ -71,7 +71,8 @@ def fs_from_uri(uri: str) -> Tuple[pa_fs.FileSystem, str]:
     Get a PyArrow FileSystem from a URI, handling extra environment variables.
     """
     if get_uri_scheme(uri) == "s3":
-        if os.environ["AWS_ENDPOINT"]:
-            uri += "?endpoint_override=" + os.environ["AWS_ENDPOINT"]
+        fs = pa_fs.S3FileSystem(endpoint_override=os.environ.get("AWS_ENDPOINT"))
+        path = get_uri_location(uri)
+        return fs, path
 
     return pa_fs.FileSystem.from_uri(uri)
