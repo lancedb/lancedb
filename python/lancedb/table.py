@@ -23,12 +23,12 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.compute as pc
-import pyarrow.fs
 from lance import LanceDataset
 from lance.vector import vec_to_table
 
 from .common import DATA, VEC, VECTOR_COLUMN_NAME
 from .query import LanceFtsQueryBuilder, LanceQueryBuilder, Query
+from .util import fs_from_uri
 
 
 def _sanitize_data(data, schema, on_bad_vectors, fill_value):
@@ -527,7 +527,7 @@ class LanceTable(Table):
     @classmethod
     def open(cls, db, name):
         tbl = cls(db, name)
-        fs, path = pa.fs.FileSystem.from_uri(tbl._dataset_uri)
+        fs, path = fs_from_uri(tbl._dataset_uri)
         file_info = fs.get_file_info(path)
         if file_info.type != pa.fs.FileType.Directory:
             raise FileNotFoundError(
