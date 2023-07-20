@@ -35,7 +35,7 @@ jobs:
         with:
           name: node-package
           path: |
-            node/lancedb-vectordb-*.tgz
+            node/vectordb-*.tgz
 
   node-macos:
     runs-on: macos-12
