@@ -141,5 +141,7 @@ class RestfulLanceDBClient:
     @_check_not_closed
     async def query(self, table_name: str, query: VectorQuery) -> VectorQueryResult:
         """Query a table."""
-        tbl = await self.post(f"/v1/table/{table_name}/", query, deserialize=_read_ipc)
+        tbl = await self.post(
+            f"/v1/table/{table_name}/query/", query, deserialize=_read_ipc
+        )
         return VectorQueryResult(tbl)

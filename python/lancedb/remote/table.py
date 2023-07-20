@@ -33,13 +33,13 @@ class RemoteTable(Table):
         self._name = name
 
     def __repr__(self) -> str:
-        return f"RemoteTable({self._conn.db_name}.{self.name})"
+        return f"RemoteTable({self._conn.db_name}.{self._name})"
 
     @cached_property
     def schema(self) -> pa.Schema:
         """Return the schema of the table."""
         resp = self._conn._loop.run_until_complete(
-            self._conn._client.get(f"/v1/table/{self._name}/describe")
+            self._conn._client.post(f"/v1/table/{self._name}/describe/")
         )
         schema = json_to_schema(resp["schema"])
         return schema
@@ -73,7 +73,7 @@ class RemoteTable(Table):
 
         self._conn._loop.run_until_complete(
             self._conn._client.post(
-                f"/v1/table/{self._name}/insert",
+                f"/v1/table/{self._name}/insert/",
                 data=payload,
                 params={"request_id": request_id, "mode": mode},
                 content_type=ARROW_STREAM_CONTENT_TYPE,
