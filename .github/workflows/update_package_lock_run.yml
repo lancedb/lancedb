@@ -10,3 +10,5 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v3
       - uses: ./.github/workflows/update_package_lock
+        with:
+          github_token: ${{ secrets.LANCEDB_RELEASE_TOKEN }}
