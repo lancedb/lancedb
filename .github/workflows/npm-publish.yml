@@ -35,7 +35,7 @@ jobs:
         with:
           name: node-package
           path: |
-            node/vectordb-*.tgz
+            node/lancedb-vectordb-*.tgz
 
   node-macos:
     runs-on: macos-12
@@ -46,25 +46,25 @@ jobs:
       matrix:
         target: [x86_64-apple-darwin, aarch64-apple-darwin]
     steps:
-    - name: Checkout
-      uses: actions/checkout@v3
-    - name: Install system dependencies
-      run: brew install protobuf
-    - name: Install npm dependencies
-      run: |
-        cd node
-        npm ci
-    - name: Install rustup target
-      if: ${{ matrix.target == 'aarch64-apple-darwin' }}
-      run: rustup target add aarch64-apple-darwin
-    - name: Build MacOS native node modules
-      run: bash ci/build_macos_artifacts.sh ${{ matrix.target }}
-    - name: Upload Darwin Artifacts
-      uses: actions/upload-artifact@v3
-      with:
-        name: darwin-native
-        path: |
-          node/dist/vectordb-darwin*.tgz
+      - name: Checkout
+        uses: actions/checkout@v3
+      - name: Install system dependencies
+        run: brew install protobuf
+      - name: Install npm dependencies
+        run: |
+          cd node
+          npm ci
+      - name: Install rustup target
+        if: ${{ matrix.target == 'aarch64-apple-darwin' }}
+        run: rustup target add aarch64-apple-darwin
+      - name: Build MacOS native node modules
+        run: bash ci/build_macos_artifacts.sh ${{ matrix.target }}
+      - name: Upload Darwin Artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: native-darwin
+          path: |
+            node/dist/lancedb-vectordb-darwin*.tgz
 
   node-linux:
     name: node-linux (${{ matrix.arch}}-unknown-linux-${{ matrix.libc }})
@@ -84,37 +84,37 @@ jobs:
           # Building on aarch64 is too slow for now
           # - aarch64
     steps:
-    - name: Checkout
-      uses: actions/checkout@v3
-    - name: Change owner to root (for npm)
-      # The docker container is run as root, so we need the files to be owned by root
-      # Otherwise npm is a nightmare: https://github.com/npm/cli/issues/3773
-      run: sudo chown -R root:root .
-    - name: Set up QEMU
-      if: ${{ matrix.arch == 'aarch64' }}
-      uses: docker/setup-qemu-action@v2
-      with:
-        platforms: arm64
-    - name: Build Linux GNU native node modules
-      if: ${{ matrix.libc == 'gnu' }}
-      run: |
-        docker run \
-          -v $(pwd):/io -w /io \
-          rust:1.70-bookworm \
-          bash ci/build_linux_artifacts.sh ${{ matrix.arch }}-unknown-linux-gnu
-    - name: Build musl Linux native node modules
-      if: ${{ matrix.libc == 'musl' }}
-      run: |
-        docker run --platform linux/arm64/v8 \
-          -v $(pwd):/io -w /io \
-          quay.io/pypa/musllinux_1_1_${{ matrix.arch }} \
-          bash ci/build_linux_artifacts.sh ${{ matrix.arch }}-unknown-linux-musl
-    - name: Upload Linux Artifacts
-      uses: actions/upload-artifact@v3
-      with:
-        name: linux-native
-        path: |
-          node/dist/vectordb-linux*.tgz
+      - name: Checkout
+        uses: actions/checkout@v3
+      - name: Change owner to root (for npm)
+        # The docker container is run as root, so we need the files to be owned by root
+        # Otherwise npm is a nightmare: https://github.com/npm/cli/issues/3773
+        run: sudo chown -R root:root .
+      - name: Set up QEMU
+        if: ${{ matrix.arch == 'aarch64' }}
+        uses: docker/setup-qemu-action@v2
+        with:
+          platforms: arm64
+      - name: Build Linux GNU native node modules
+        if: ${{ matrix.libc == 'gnu' }}
+        run: |
+          docker run \
+            -v $(pwd):/io -w /io \
+            rust:1.70-bookworm \
+            bash ci/build_linux_artifacts.sh ${{ matrix.arch }}-unknown-linux-gnu
+      - name: Build musl Linux native node modules
+        if: ${{ matrix.libc == 'musl' }}
+        run: |
+          docker run --platform linux/arm64/v8 \
+            -v $(pwd):/io -w /io \
+            quay.io/pypa/musllinux_1_1_${{ matrix.arch }} \
+            bash ci/build_linux_artifacts.sh ${{ matrix.arch }}-unknown-linux-musl
+      - name: Upload Linux Artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: native-linux
+          path: |
+            node/dist/lancedb-vectordb-linux*.tgz
 
   node-windows:
     runs-on: windows-2022
@@ -145,12 +145,12 @@ jobs:
       - name: Upload Windows Artifacts
         uses: actions/upload-artifact@v3
         with:
-          name: windows-native
+          name: native-windows
           path: |
-            node/dist/vectordb-win32*.tgz
+            node/dist/lancedb-vectordb-win32*.tgz
 
   release:
-    needs: [node, node-macos, node-linux]
+    needs: [node, node-macos, node-linux, node-windows]
     runs-on: ubuntu-latest
     # Only runs on tags that matches the make-release action
     if: startsWith(github.ref, 'refs/tags/v')
@@ -170,3 +170,11 @@ jobs:
           for filename in *.tgz; do
             npm publish $filename
           done
+
+  update-package-lock:
+    needs: [release]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+      - uses: ./.github/workflows/update_package_lock
