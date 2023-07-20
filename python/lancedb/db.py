@@ -327,6 +327,6 @@ class LanceDBConnection(DBConnection):
         name: str
             The name of the table.
         """
-        filesystem, path = pa.fs.FileSystem.from_uri(self.uri)
+        filesystem, path = fs_from_uri(self.uri)
         table_path = os.path.join(path, name + ".lance")
         filesystem.delete_dir(table_path)
