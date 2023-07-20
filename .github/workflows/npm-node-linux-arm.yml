@@ -1,0 +1,45 @@
+name: NPM Publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'What tag should we use to build the native library'
+        required: true
+        default: ""
+        type: string
+
+jobs:
+  node-linux:
+    name: node-linux (${{ matrix.arch}}-unknown-linux-${{ matrix.libc }})
+    runs-on: buildjet-4vcpu-ubuntu-2204-arm
+    strategy:
+      fail-fast: false
+      matrix:
+        libc:
+          - gnu
+          # TODO: re-enable musl once we have refactored to pre-built containers
+          # Right now we have to build node from source which is too expensive.
+          # - musl
+        arch:
+#          - x86_64
+           - aarch64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+        with:
+          ref: ${{ inputs.tag }}
+      - name: Change owner to root (for npm)
+        # The docker container is run as root, so we need the files to be owned by root
+        # Otherwise npm is a nightmare: https://github.com/npm/cli/issues/3773
+        run: sudo chown -R root:root .
+      - name: Build Linux GNU native node modules
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          bash ci/build_linux_artifacts.sh ${{ matrix.arch }}-unknown-linux-gnu
+      - name: Upload Linux Artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: native-linux
+          path: |
+            node/dist/vectordb-linux*.tgz
