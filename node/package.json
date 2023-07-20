@@ -70,18 +70,18 @@
   ],
   "neon": {
     "targets": {
-      "x86_64-apple-darwin": "vectordb-darwin-x64",
-      "aarch64-apple-darwin": "vectordb-darwin-arm64",
-      "x86_64-unknown-linux-gnu": "vectordb-linux-x64-gnu",
-      "aarch64-unknown-linux-gnu": "vectordb-linux-arm64-gnu",
-      "x86_64-pc-windows-msvc": "vectordb-win32-x64-msvc"
+      "x86_64-apple-darwin": "@lancedb/vectordb-darwin-x64",
+      "aarch64-apple-darwin": "@lancedb/vectordb-darwin-arm64",
+      "x86_64-unknown-linux-gnu": "@lancedb/vectordb-linux-x64-gnu",
+      "aarch64-unknown-linux-gnu": "@lancedb/vectordb-linux-arm64-gnu",
+      "x86_64-pc-windows-msvc": "@lancedb/vectordb-win32-x64-msvc"
     }
   },
   "optionalDependencies": {
-    "vectordb-darwin-arm64": "0.1.15",
-    "vectordb-darwin-x64": "0.1.15",
-    "vectordb-linux-arm64-gnu": "0.1.15",
-    "vectordb-linux-x64-gnu": "0.1.15",
-    "vectordb-win32-x64-msvc": "0.1.15"
+    "@lancedb/vectordb-darwin-arm64": "0.1.15",
+    "@lancedb/vectordb-darwin-x64": "0.1.15",
+    "@lancedb/vectordb-linux-arm64-gnu": "0.1.15",
+    "@lancedb/vectordb-linux-x64-gnu": "0.1.15",
+    "@lancedb/vectordb-win32-x64-msvc": "0.1.15"
   }
 }
