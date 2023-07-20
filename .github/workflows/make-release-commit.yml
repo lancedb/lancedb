@@ -44,6 +44,15 @@ jobs:
         run: |
           pip install bump2version
           bumpversion --verbose ${{ inputs.part }}
-          git push
+      - name: Push new version and tag
+        if: ${{ inputs.dry_run }} == "false"
+        uses: ad-m/github-push-action@master
+        with:
+          github_token: ${{ secrets.LANCEDB_RELEASE_TOKEN }}
+          branch: main
+          tags: true
       - uses: ./.github/workflows/update_package_lock
+        if: ${{ inputs.dry_run }} == "false"
+        with:
+          github_token: ${{ secrets.LANCEDB_RELEASE_TOKEN }}
 
