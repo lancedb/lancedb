@@ -85,19 +85,9 @@ jobs:
         # The docker container is run as root, so we need the files to be owned by root
         # Otherwise npm is a nightmare: https://github.com/npm/cli/issues/3773
         run: sudo chown -R root:root .
-      - name: Prepare build container
+      - name: Build Linux Artifacts
         run: |
-          cd ci/manylinux_node
-          docker build \
-            -t lancedb-node-manylinux \
-            --build-arg="ARCH=${{ matrix.arch }}" \
-            .
-      - name: Build Linux GNU native node modules
-        run: |
-          docker run \
-            -v $(pwd):/io -w /io \
-            lancedb-node-manylinux \
-            bash -c "cd node && npm ci && npm run pack-build"
+          bash ci/build_linux_artifacts.sh ${{ matrix.arch }}
       - name: Upload Linux Artifacts
         uses: actions/upload-artifact@v3
         with:

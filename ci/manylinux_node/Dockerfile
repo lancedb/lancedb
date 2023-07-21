@@ -30,7 +30,6 @@ RUN echo ${ARCH} && adduser --user-group --create-home ${DOCKER_USER} && \
 USER ${DOCKER_USER}
 
 COPY prepare_manylinux_node.sh prepare_manylinux_node.sh
-# COPY nvm.sh /etc/profile.d/nvm.sh
 RUN cp /prepare_manylinux_node.sh $HOME/ && \
     cd $HOME && \
     bash ./prepare_manylinux_node.sh ${ARCH}
