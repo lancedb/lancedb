@@ -97,7 +97,7 @@ jobs:
           docker run \
             -v $(pwd):/io -w /io \
             lancedb-node-manylinux \
-            bash -c "cd node && npm ci && npm pack-build"
+            bash -c "cd node && npm ci && npm run pack-build"
       - name: Upload Linux Artifacts
         uses: actions/upload-artifact@v3
         with:
