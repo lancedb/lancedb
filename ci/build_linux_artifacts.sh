@@ -55,7 +55,11 @@ build_node_binary() {
 
     # We don't pass in target, since the native target here already matches
     # We need to pass OPENSSL_LIB_DIR and OPENSSL_INCLUDE_DIR for static build to work https://github.com/sfackler/rust-openssl/issues/877
-    OPENSSL_STATIC=1 OPENSSL_LIB_DIR=/usr/lib/x86_64-linux-gnu OPENSSL_INCLUDE_DIR=/usr/include/openssl/ npm run build-release
+    if [[ $1 == aarch64-* ]]; then
+      OPENSSL_STATIC=1 OPENSSL_LIB_DIR=/usr/lib/aarch64-linux-gnu OPENSSL_INCLUDE_DIR=/usr/include/openssl/ npm run build-release
+    else
+      OPENSSL_STATIC=1 OPENSSL_LIB_DIR=/usr/lib/x86_64-linux-gnu OPENSSL_INCLUDE_DIR=/usr/include/openssl/ npm run build-release
+    fi
     npm run pack-build
 
     popd
