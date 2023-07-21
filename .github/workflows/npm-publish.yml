@@ -74,11 +74,6 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        libc:
-          - gnu
-          # TODO: re-enable musl once we have refactored to pre-built containers
-          # Right now we have to build node from source which is too expensive.
-          # - musl
         arch:
           - x86_64
           # Building on aarch64 is too slow for now
@@ -90,25 +85,19 @@ jobs:
         # The docker container is run as root, so we need the files to be owned by root
         # Otherwise npm is a nightmare: https://github.com/npm/cli/issues/3773
         run: sudo chown -R root:root .
-      - name: Set up QEMU
-        if: ${{ matrix.arch == 'aarch64' }}
-        uses: docker/setup-qemu-action@v2
-        with:
-          platforms: arm64
+      - name: Prepare build container
+        run: |
+          cd ci/manylinux_node
+          docker build \
+            -t lancedb-node-manylinux \
+            --build-arg="ARCH=${{ matrix.arch }}" \
+            .
       - name: Build Linux GNU native node modules
-        if: ${{ matrix.libc == 'gnu' }}
         run: |
           docker run \
             -v $(pwd):/io -w /io \
-            rust:1.70-bookworm \
-            bash ci/build_linux_artifacts.sh ${{ matrix.arch }}-unknown-linux-gnu
-      - name: Build musl Linux native node modules
-        if: ${{ matrix.libc == 'musl' }}
-        run: |
-          docker run --platform linux/arm64/v8 \
-            -v $(pwd):/io -w /io \
-            quay.io/pypa/musllinux_1_1_${{ matrix.arch }} \
-            bash ci/build_linux_artifacts.sh ${{ matrix.arch }}-unknown-linux-musl
+            lancedb-node-manylinux \
+            bash -c "cd node && npm ci && npm pack-build"
       - name: Upload Linux Artifacts
         uses: actions/upload-artifact@v3
         with:
