@@ -14,7 +14,7 @@ RUN yum install -y unzip
 
 # Install static openssl
 COPY install_openssl.sh install_openssl.sh
-RUN bash ./install_openssl.sh ${ARCH}
+RUN bash ./install_openssl.sh ${ARCH} > /dev/null
 
 # Protobuf is also installed as root.
 COPY install_protobuf.sh install_protobuf.sh
@@ -33,7 +33,3 @@ COPY prepare_manylinux_node.sh prepare_manylinux_node.sh
 RUN cp /prepare_manylinux_node.sh $HOME/ && \
     cd $HOME && \
     bash ./prepare_manylinux_node.sh ${ARCH}
-
-ENV OPENSSL_STATIC=1
-ENV OPENSSL_LIB_DIR=/usr/local/lib64/
-ENV OPENSSL_INCLUDE_DIR=/usr/local/include/openssl

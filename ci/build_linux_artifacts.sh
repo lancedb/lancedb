@@ -12,4 +12,4 @@ popd
 docker run \
     -v $(pwd):/io -w /io \
     lancedb-node-manylinux \
-    bash -c "source \$HOME/.bashrc && cd node && npm ci && npm run build-release && npm run pack-build"
+    bash ci/manylinux_node/build.sh $ARCH
