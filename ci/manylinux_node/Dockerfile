@@ -9,9 +9,6 @@ FROM quay.io/pypa/manylinux2014_${ARCH}
 ARG ARCH=x86_64
 ARG DOCKER_USER=default_user
 
-# System dependencies are installed as root
-RUN yum install -y unzip
-
 # Install static openssl
 COPY install_openssl.sh install_openssl.sh
 RUN bash ./install_openssl.sh ${ARCH} > /dev/null
@@ -22,8 +19,7 @@ RUN bash ./install_protobuf.sh ${ARCH}
 
 ENV DOCKER_USER=${DOCKER_USER}
 # Create a group and user
-RUN echo ${ARCH} && adduser --user-group --create-home ${DOCKER_USER} && \
-    usermod -aG wheel ${DOCKER_USER}
+RUN echo ${ARCH} && adduser --user-group --create-home --uid ${DOCKER_USER} build_user
 
 # We switch to the user to install Rust and Node, since those like to be 
 # installed at the user level.
