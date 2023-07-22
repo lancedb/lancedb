@@ -26,7 +26,7 @@ pub(crate) fn convert_record_batch(record_batch: RecordBatch) -> RecordBatch {
         .column_by_name("vector")
         .cloned()
         .expect("vector column is missing");
-    // TODO: we should just consume the underlaying js buffer in the future instead of this arrow around a bunch of times
+    // TODO: we should just consume the underlying js buffer in the future instead of this arrow around a bunch of times
     let arr = as_list_array(column.as_ref());
     let list_size = arr.values().len() / record_batch.num_rows();
     let r =
