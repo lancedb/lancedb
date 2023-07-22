@@ -54,7 +54,7 @@ struct JsTable {
 impl Finalize for JsTable {}
 
 // TODO: object_store didn't export this type so I copied it.
-// Make a requiest to object_store to export this type
+// Make a request to object_store to export this type
 #[derive(Debug)]
 pub struct StaticCredentialProvider<T> {
     credential: Arc<T>,
