@@ -48,11 +48,16 @@ class RestfulLanceDBClient:
     db_name: str
     region: str
     api_key: Credential
+    host_override: Optional[str] = attr.field(default=None)
+
     closed: bool = attr.field(default=False, init=False)
 
     @functools.cached_property
     def session(self) -> aiohttp.ClientSession:
-        url = f"https://{self.db_name}.{self.region}.api.lancedb.com"
+        url = (
+            self.host_override
+            or f"https://{self.db_name}.{self.region}.api.lancedb.com"
+        )
         return aiohttp.ClientSession(url)
 
     async def close(self):
@@ -66,6 +71,8 @@ class RestfulLanceDBClient:
         }
         if self.region == "local":  # Local test mode
             headers["Host"] = f"{self.db_name}.{self.region}.api.lancedb.com"
+        if self.host_override:
+            headers["x-lancedb-database"] = self.db_name
         return headers
 
     @staticmethod

@@ -13,7 +13,7 @@
 
 import asyncio
 import uuid
-from typing import List
+from typing import List, Optional
 from urllib.parse import urlparse
 
 import pyarrow as pa
@@ -30,14 +30,22 @@ from .client import ARROW_STREAM_CONTENT_TYPE, RestfulLanceDBClient
 class RemoteDBConnection(DBConnection):
     """A connection to a remote LanceDB database."""
 
-    def __init__(self, db_url: str, api_key: str, region: str):
+    def __init__(
+        self,
+        db_url: str,
+        api_key: str,
+        region: str,
+        host_override: Optional[str] = None,
+    ):
         """Connect to a remote LanceDB database."""
         parsed = urlparse(db_url)
         if parsed.scheme != "db":
             raise ValueError(f"Invalid scheme: {parsed.scheme}, only accepts db://")
         self.db_name = parsed.netloc
         self.api_key = api_key
-        self._client = RestfulLanceDBClient(self.db_name, region, api_key)
+        self._client = RestfulLanceDBClient(
+            self.db_name, region, api_key, host_override
+        )
         try:
             self._loop = asyncio.get_running_loop()
         except RuntimeError:
