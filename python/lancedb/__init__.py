@@ -19,7 +19,11 @@ from .schema import vector
 
 
 def connect(
-    uri: URI, *, api_key: Optional[str] = None, region: str = "us-west-2"
+    uri: URI,
+    *,
+    api_key: Optional[str] = None,
+    region: str = "us-west-2",
+    host_override: Optional[str] = None,
 ) -> DBConnection:
     """Connect to a LanceDB database.
 
@@ -55,5 +59,5 @@ def connect(
     if isinstance(uri, str) and uri.startswith("db://"):
         if api_key is None:
             raise ValueError(f"api_key is required to connected LanceDB cloud: {uri}")
-        return RemoteDBConnection(uri, api_key, region)
+        return RemoteDBConnection(uri, api_key, region, host_override)
     return LanceDBConnection(uri)
