@@ -18,8 +18,7 @@ import * as chai from 'chai'
 import * as chaiAsPromised from 'chai-as-promised'
 
 import * as lancedb from '../index'
-import { type AwsCredentials, type EmbeddingFunction, MetricType, WriteMode } from '../index'
-import { Query } from '../query'
+import { type AwsCredentials, type EmbeddingFunction, MetricType, Query, WriteMode, DefaultWriteOptions, isWriteOptions } from '../index'
 
 const expect = chai.expect
 const assert = chai.assert
@@ -145,7 +144,7 @@ describe('LanceDB client', function () {
       ]
 
       const tableName = 'overwrite'
-      await con.createTable(tableName, data, WriteMode.Create)
+      await con.createTable(tableName, data, { writeMode: WriteMode.Create })
 
       const newData = [
         { id: 1, vector: [0.1, 0.2], price: 10 },
@@ -155,7 +154,7 @@ describe('LanceDB client', function () {
 
       await expect(con.createTable(tableName, newData)).to.be.rejectedWith(Error, 'already exists')
 
-      const table = await con.createTable(tableName, newData, WriteMode.Overwrite)
+      const table = await con.createTable(tableName, newData, { writeMode: WriteMode.Overwrite })
       assert.equal(table.name, tableName)
       assert.equal(await table.countRows(), 3)
     })
@@ -260,7 +259,7 @@ describe('LanceDB client', function () {
         { price: 10, name: 'foo' },
         { price: 50, name: 'bar' }
       ]
-      const table = await con.createTable('vectors', data, WriteMode.Create, embeddings)
+      const table = await con.createTable('vectors', data, embeddings, { writeMode: WriteMode.Create })
       const results = await table.search('foo').execute()
       assert.equal(results.length, 2)
     })
@@ -316,5 +315,22 @@ describe('Drop table', function () {
 
     await con.dropTable('t1')
     assert.deepEqual(await con.tableNames(), ['t2'])
+  })
+})
+
+describe('WriteOptions', function () {
+  context('#isWriteOptions', function () {
+    it('should not match empty object', function () {
+      assert.equal(isWriteOptions({}), false)
+    })
+    it('should match write options', function () {
+      assert.equal(isWriteOptions({ writeMode: WriteMode.Create }), true)
+    })
+    it('should match undefined write mode', function () {
+      assert.equal(isWriteOptions({ writeMode: undefined }), true)
+    })
+    it('should match default write options', function () {
+      assert.equal(isWriteOptions(new DefaultWriteOptions()), true)
+    })
   })
 })
