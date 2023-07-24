@@ -1,3 +1,4 @@
+#!/bin/bash
 # Builds openssl from source so we can statically link to it
 
 # this is to avoid the error we get with the system installation:

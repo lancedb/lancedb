@@ -1,3 +1,4 @@
+#!/bin/bash
 # Builds the node module for manylinux. Invoked by ci/build_linux_artifacts.sh.
 set -e
 ARCH=${1:-x86_64}

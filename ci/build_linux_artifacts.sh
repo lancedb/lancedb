@@ -1,3 +1,5 @@
+#!/bin/bash
+set -e
 ARCH=${1:-x86_64}
 
 # We pass down the current user so that when we later mount the local files 

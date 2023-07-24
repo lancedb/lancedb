@@ -1,4 +1,6 @@
+#!/bin/bash
 # Installs protobuf compiler. Should be run as root.
+set -e
 
 if [[ $1 == x86_64* ]]; then
     ARCH=x86_64

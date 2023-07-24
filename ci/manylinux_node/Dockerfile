@@ -11,11 +11,11 @@ ARG DOCKER_USER=default_user
 
 # Install static openssl
 COPY install_openssl.sh install_openssl.sh
-RUN bash ./install_openssl.sh ${ARCH} > /dev/null
+RUN ./install_openssl.sh ${ARCH} > /dev/null
 
 # Protobuf is also installed as root.
 COPY install_protobuf.sh install_protobuf.sh
-RUN bash ./install_protobuf.sh ${ARCH}
+RUN ./install_protobuf.sh ${ARCH}
 
 ENV DOCKER_USER=${DOCKER_USER}
 # Create a group and user
@@ -28,4 +28,4 @@ USER ${DOCKER_USER}
 COPY prepare_manylinux_node.sh prepare_manylinux_node.sh
 RUN cp /prepare_manylinux_node.sh $HOME/ && \
     cd $HOME && \
-    bash ./prepare_manylinux_node.sh ${ARCH}
+    ./prepare_manylinux_node.sh ${ARCH}

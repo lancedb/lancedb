@@ -1,3 +1,4 @@
+#!/bin/bash
 set -e
 
 install_node() {
@@ -16,7 +17,5 @@ install_rust() {
     export PATH="$PATH:/root/.cargo/bin"
 }
 
-TARGET=${1:-x86_64} # or aarch64
-
-install_node $TARGET
+install_node
 install_rust
