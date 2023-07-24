@@ -20,10 +20,12 @@ import { fromRecordsToBuffer } from './arrow'
 import type { EmbeddingFunction } from './embedding/embedding_function'
 import { RemoteConnection } from './remote'
 import { Query } from './query'
+import { isEmbeddingFunction } from './embedding/embedding_function'
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { databaseNew, databaseTableNames, databaseOpenTable, databaseDropTable, tableCreate, tableAdd, tableCreateVectorIndex, tableCountRows, tableDelete } = require('../native.js')
 
+export { Query }
 export type { EmbeddingFunction }
 export { OpenAIEmbeddingFunction } from './embedding/openai'
 
@@ -100,10 +102,35 @@ export interface Connection {
    *
    * @param {string} name - The name of the table.
    * @param data - Non-empty Array of Records to be inserted into the table
-   * @param {WriteMode} mode - The write mode to use when creating the table.
+   */
+  createTable (name: string, data: Array<Record<string, unknown>>): Promise<Table>
+
+  /**
+   * Creates a new Table and initialize it with new data.
+   *
+   * @param {string} name - The name of the table.
+   * @param data - Non-empty Array of Records to be inserted into the table
+   * @param {WriteOptions} options - The write options to use when creating the table.
+   */
+  createTable (name: string, data: Array<Record<string, unknown>>, options: WriteOptions): Promise<Table>
+
+  /**
+   * Creates a new Table and initialize it with new data.
+   *
+   * @param {string} name - The name of the table.
+   * @param data - Non-empty Array of Records to be inserted into the table
    * @param {EmbeddingFunction} embeddings - An embedding function to use on this table
    */
-  createTable<T>(name: string, data: Array<Record<string, unknown>>, mode?: WriteMode, embeddings?: EmbeddingFunction<T>): Promise<Table<T>>
+  createTable<T> (name: string, data: Array<Record<string, unknown>>, embeddings: EmbeddingFunction<T>): Promise<Table<T>>
+  /**
+   * Creates a new Table and initialize it with new data.
+   *
+   * @param {string} name - The name of the table.
+   * @param data - Non-empty Array of Records to be inserted into the table
+   * @param {EmbeddingFunction} embeddings - An embedding function to use on this table
+   * @param {WriteOptions} options - The write options to use when creating the table.
+   */
+  createTable<T> (name: string, data: Array<Record<string, unknown>>, embeddings: EmbeddingFunction<T>, options: WriteOptions): Promise<Table<T>>
 
   createTableArrow(name: string, table: ArrowTable): Promise<Table>
 
@@ -237,32 +264,19 @@ export class LocalConnection implements Connection {
     }
   }
 
-  /**
-   * Creates a new Table and initialize it with new data.
-   *
-   * @param name The name of the table.
-   * @param data Non-empty Array of Records to be inserted into the Table
-   * @param mode The write mode to use when creating the table.
-   */
-  async createTable (name: string, data: Array<Record<string, unknown>>, mode?: WriteMode): Promise<Table>
-  async createTable (name: string, data: Array<Record<string, unknown>>, mode: WriteMode): Promise<Table>
-
-  /**
-   * Creates a new Table and initialize it with new data.
-   *
-   * @param name The name of the table.
-   * @param data Non-empty Array of Records to be inserted into the Table
-   * @param mode The write mode to use when creating the table.
-   * @param embeddings An embedding function to use on this Table
-   */
-  async createTable<T> (name: string, data: Array<Record<string, unknown>>, mode: WriteMode, embeddings: EmbeddingFunction<T>): Promise<Table<T>>
-  async createTable<T> (name: string, data: Array<Record<string, unknown>>, mode: WriteMode, embeddings?: EmbeddingFunction<T>): Promise<Table<T>>
-  async createTable<T> (name: string, data: Array<Record<string, unknown>>, mode: WriteMode, embeddings?: EmbeddingFunction<T>): Promise<Table<T>> {
-    if (mode === undefined) {
-      mode = WriteMode.Create
+  async createTable<T> (name: string, data: Array<Record<string, unknown>>, optsOrEmbedding?: WriteOptions | EmbeddingFunction<T>, opt?: WriteOptions): Promise<Table<T>> {
+    let writeOptions: WriteOptions = new DefaultWriteOptions()
+    if (opt !== undefined && isWriteOptions(opt)) {
+      writeOptions = opt
+    } else if (optsOrEmbedding !== undefined && isWriteOptions(optsOrEmbedding)) {
+      writeOptions = optsOrEmbedding
     }
 
-    const createArgs = [this._db, name, await fromRecordsToBuffer(data, embeddings), mode.toLowerCase()]
+    let embeddings: undefined | EmbeddingFunction<T>
+    if (optsOrEmbedding !== undefined && isEmbeddingFunction(optsOrEmbedding)) {
+      embeddings = optsOrEmbedding
+    }
+    const createArgs = [this._db, name, await fromRecordsToBuffer(data, embeddings), writeOptions.writeMode?.toString()]
     if (this._options.awsCredentials !== undefined) {
       createArgs.push(this._options.awsCredentials.accessKeyId)
       createArgs.push(this._options.awsCredentials.secretKey)
@@ -457,6 +471,23 @@ export enum WriteMode {
   Overwrite = 'overwrite',
   /** Append new data to the table. */
   Append = 'append'
+}
+
+/**
+ * Write options when creating a Table.
+ */
+export interface WriteOptions {
+  /** A {@link WriteMode} to use on this operation */
+  writeMode?: WriteMode
+}
+
+export class DefaultWriteOptions implements WriteOptions {
+  writeMode = WriteMode.Create
+}
+
+export function isWriteOptions (value: any): value is WriteOptions {
+  return Object.keys(value).length === 1 &&
+      (value.writeMode === undefined || typeof value.writeMode === 'string')
 }
 
 /**
