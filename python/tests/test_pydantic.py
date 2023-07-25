@@ -20,7 +20,7 @@ import pyarrow as pa
 import pydantic
 import pytest
 
-from lancedb.pydantic import PYDANTIC_VERSION, pydantic_to_schema, vector
+from lancedb.pydantic import PYDANTIC_VERSION, pydantic_to_schema, vector, lancedb_model
 
 
 @pytest.mark.skipif(
@@ -163,3 +163,15 @@ def test_fixed_size_list_validation():
         TestModel(vec=range(7))
 
     TestModel(vec=range(8))
+
+
+def test_model(tmp_path):
+    class MyModel(lancedb_model(str(tmp_path), "test")):
+        text: str = pydantic.Field("string", vector_input_column=True)
+
+    with MyModel.batch():
+        MyModel(text="hamlet")
+        MyModel(text="the bible")
+        MyModel(text="lord of the rings")
+
+    assert "hamlet" == MyModel.search("play written by shakespeare", n=1)[0].text

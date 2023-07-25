@@ -135,7 +135,9 @@ def _py_type_to_arrow_type(py_type: Type[Any]) -> pa.DataType:
     TypeError
         If the type is not supported.
     """
-    if py_type == int:
+    if issubclass(py_type, FixedSizeListMixin):
+        return pa.list_(py_type.value_arrow_type(), py_type.dim())
+    elif py_type == int:
         return pa.int64()
     elif py_type == float:
         return pa.float64()
@@ -177,6 +179,7 @@ def _pydantic_to_arrow_type(field: pydantic.fields.FieldInfo) -> pa.DataType:
             child = args[0]
             return pa.list_(_py_type_to_arrow_type(child))
         elif origin == Union:
+            # Optional is Union of the type and None
             if len(args) == 2 and args[1] == type(None):
                 return _py_type_to_arrow_type(args[0])
     elif inspect.isclass(field.annotation):

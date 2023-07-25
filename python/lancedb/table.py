@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 from abc import ABC, abstractmethod
 from functools import cached_property
@@ -23,6 +24,7 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.compute as pc
+import pydantic
 from lance import LanceDataset
 from lance.vector import vec_to_table
 
@@ -254,6 +256,10 @@ class LanceTable(Table):
         self._conn = connection
         self.name = name
         self._version = version
+
+    def drop(self):
+        self._conn.drop_table(self.name)
+        self._reset_dataset()
 
     def _reset_dataset(self):
         try:

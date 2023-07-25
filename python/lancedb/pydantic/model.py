@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
-from typing import Optional
+from contextlib import ContextDecorator, contextmanager
+from typing import Optional, Union
 from uuid import uuid4
 
 import numpy as np
@@ -16,33 +17,27 @@ class SearchableModel(ABC, pydantic.BaseModel):
     An abstract mixin that provides semantic-search capabilities
     to a pydantic model using LanceDB
     """
-    embedding: vector(1536)
+
+    def __init__(self, **kwargs):
+        to_embed_name = self.__class__._find_raw_data_column()  # could be None
+        embedding_col = self.__class__._find_embedding_column()
+        if kwargs.get(embedding_col) is None and to_embed_name is not None:
+            embedding = self.generate_embeddings([kwargs[to_embed_name]])[0]
+            kwargs[embedding_col] = embedding
+        super().__init__()
 
     @classmethod
     @abstractmethod
-    def uri(cls):
+    def generate_embeddings(cls, batch: str | list[str]) -> list[np.ndarray]:
         """
-        The URI of the LanceDB database to connect to
+        Generate an embedding for a batch of input
         """
         pass
 
     @classmethod
     @abstractmethod
-    def table_name(cls):
-        """
-        The name of the LanceDB table to use
-        """
-        pass
-
-    @classmethod
     def get_table(cls) -> lancedb.table.LanceTable:
-        """
-        Get the LanceDB table for this model
-        """
-        db = lancedb.connect(cls.uri())
-        if cls.table_name() in db:
-            return db.open_table(cls.table_name())
-        return db.create_table(cls.table_name(), schema=cls.get_arrow_schema())
+        pass
 
     @classmethod
     def get_arrow_schema(cls) -> pa.Schema:
@@ -51,64 +46,103 @@ class SearchableModel(ABC, pydantic.BaseModel):
         """
         return pydantic_to_schema(cls)
 
-    @classmethod
-    @abstractmethod
-    def generate_embedding(cls, batch: str | list[str]) -> list[np.ndarray]:
-        """
-        Generate an embedding for a batch of input
-        """
-        pass
-
-    @classmethod
-    def create_instances(cls, data: list[dict]) -> list[pydantic.BaseModel]:
-        to_embed_name = cls._find_raw_data_column()  # could be None
-        schema = cls.get_arrow_schema()
-        if to_embed_name is not None:
-            arrow_table = with_embeddings(cls.generate_embedding,
-                                          pa.Table.from_pylist(data),
-                                          column=to_embed_name)
-            arrow_table = arrow_table.rename_columns(
-                [name if name != "vector" else "embedding"
-                 for name in arrow_table.schema.names])
-            arrow_table = arrow_table.select(schema.names).cast(schema)
-        else:
-            arrow_table = pa.Table.from_pylist(data, schema=schema)
-        cls.get_table().add(arrow_table)
-        return [cls(**row) for row in arrow_table.to_pylist()]
-
     if PYDANTIC_VERSION < (2, 0):
         @classmethod
         def _find_raw_data_column(cls):
             for name, field in cls.schema()["properties"].items():
-                if field.get("vector_input_column"):
+                if field.get("embedding_source"):
+                    return name
+            return None
+
+        @classmethod
+        def _find_embedding_column(cls):
+            for name, field in cls.schema()["properties"].items():
+                if (field.get("embedding") or
+                        name.lower() in ["embedding", "vector"]):
                     return name
             return None
     else:
         @classmethod
         def _find_raw_data_column(cls):
             for name, field in cls.model_fields.items():
-                if (field.json_schema_extra or {}).get("vector_input_column"):
+                if (field.json_schema_extra or {}).get("embedding_source"):
+                    return name
+            return None
+
+        @classmethod
+        def _find_embedding_column(cls):
+            for name, field in cls.model_fields.items():
+                if ((field.json_schema_extra or {}).get("embedding") or
+                        name.lower() in ["embedding", "vector"]):
                     return name
             return None
 
     @classmethod
     def search(cls, query: str, n: int = 3,
-               filter: Optional[str] = None) -> list[pydantic.BaseModel]:
+               filter: Optional[str] = None,
+               column: Optional[str] = None) -> list[pydantic.BaseModel]:
         """
         Search for the top n results matching the query
+
+        Parameters
+        ----------
+        query: str
+            To be embedded
+        n: int
+            Number of results to return
+        filter: str, default None
+            Post filter to execute after vector search
+        column: str, default None
+            The name of the embedding column to search over
+            If None, then check the fields that are marked `embedding=True`
+            or named "embedding" or "vector"
         """
+        column = column or cls._find_embedding_column()
         tbl = cls.get_table()
-        embedding = cls.generate_embedding(query)[0]
+        embedding = cls.generate_embeddings(query)[0]
         arrow_table = tbl.search(
-            embedding, vector_column_name="embedding"
+            embedding, column=column
         ).where(filter).limit(n).to_arrow()
         return [cls(**row) for row in arrow_table.to_pylist()]
 
     @classmethod
     def reset(cls):
         """Delete the table and all of the data in it"""
-        db = lancedb.connect(cls.uri())
-        db.drop_table(cls.table_name())
+        cls.get_table().drop()
+
+    @classmethod
+    @contextmanager
+    def session(cls):
+        yield Session(cls.get_table())
+
+
+class Session:
+
+    def __init__(self, table: lancedb.table.LanceTable):
+        self.table = table
+        self._buffer = []
+
+    def commit(self):
+        if len(self._buffer) == 0:
+            return
+        input_schema = pydantic_to_schema(type(self._buffer[0]))
+        arrow_table = pa.Table.from_pylist(
+            [dict(m) for m in self._buffer],
+            schema=input_schema)
+        self.table.add(
+            arrow_table
+            .select(self.table.schema.names)
+            .cast(self.table.schema)
+        )
+
+    def add(self, data: Union[pydantic.BaseModel, list[pydantic.BaseModel]]):
+        if isinstance(data, pydantic.BaseModel):
+            data = [data]
+        self._buffer.extend(data)
+
+    def __exit__(self, *exc):
+        self.commit()
+        self._buffer.clear()
 
 
 def openai_embed_func(batch):
@@ -117,7 +151,8 @@ def openai_embed_func(batch):
     return [record["embedding"] for record in rs["data"]]
 
 
-def lancedb_model(uri: str, table_name: str, embed_func=openai_embed_func):
+def lancedb_model(uri: str, table_name: str,
+                  embed_func=openai_embed_func):
     """
     Create a pydantic model that is backed by a LanceDB table.
 
@@ -132,7 +167,7 @@ def lancedb_model(uri: str, table_name: str, embed_func=openai_embed_func):
         embeddings. By default, this uses OpenAI's text-embedding-ada-002
     """
     return type(f'LanceDBMixin_{uuid4().hex}',
-                (SearchableModel,),
+                (SearchableModel, pydantic.BaseModel),
                 {
                     "uri": classmethod(lambda cls: uri),
                     "table_name": classmethod(lambda cls: table_name),
