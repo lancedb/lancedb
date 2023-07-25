@@ -103,7 +103,7 @@ class RemoteDBConnection(DBConnection):
 
         self._loop.run_until_complete(
             self._client.post(
-                f"/v1/table/{name}/create",
+                f"/v1/table/{name}/create/",
                 data=data,
                 params={"request_id": request_id},
                 content_type=ARROW_STREAM_CONTENT_TYPE,
