@@ -105,7 +105,7 @@ class RestfulLanceDBClient:
     async def post(
         self,
         uri: str,
-        data: Union[Dict[str, Any], BaseModel, bytes],
+        data: Optional[Union[Dict[str, Any], BaseModel, bytes]] = None,
         params: Optional[Dict[str, Any]] = None,
         content_type: Optional[str] = None,
         deserialize: Callable = lambda resp: resp.json(),
