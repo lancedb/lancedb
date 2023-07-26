@@ -7,7 +7,8 @@ excluded_files = [
     "../src/embedding.md",
     "../src/examples/serverless_lancedb_with_s3_and_lambda.md",
     "../src/examples/serverless_qa_bot_with_modal_and_langchain.md",
-    "../src/examples/youtube_transcript_bot_with_nodejs.md"
+    "../src/examples/youtube_transcript_bot_with_nodejs.md",
+    "../src/integrations/voxel51.md",
 ]
 
 python_prefix = "py"
