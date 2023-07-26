@@ -13,4 +13,5 @@ arrow-schema = "42.0"
 arrow-ipc = "42.0"
 half = { "version" = "=2.2.1", default-features = false }
 object_store = "0.6.1"
+snafu = "0.7.4"
 

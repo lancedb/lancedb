@@ -18,7 +18,6 @@ use std::ops::Deref;
 use std::sync::{Arc, Mutex};
 
 use arrow_array::{Float32Array, RecordBatchIterator};
-use arrow_ipc::writer::FileWriter;
 use async_trait::async_trait;
 use futures::{TryFutureExt, TryStreamExt};
 use lance::dataset::{WriteMode, WriteParams};
@@ -35,10 +34,12 @@ use vectordb::database::Database;
 use vectordb::error::Error;
 use vectordb::table::{ReadParams, Table};
 
-use crate::arrow::arrow_buffer_to_record_batch;
+use crate::arrow::{arrow_buffer_to_record_batch, record_batch_to_buffer};
+use crate::error::ResultExt;
 
 mod arrow;
 mod convert;
+mod error;
 mod index;
 
 struct JsDatabase {
@@ -86,7 +87,7 @@ fn runtime<'a, C: Context<'a>>(cx: &mut C) -> NeonResult<&'static Runtime> {
 
     LOG.get_or_init(|| env_logger::init());
 
-    RUNTIME.get_or_try_init(|| Runtime::new().or_else(|err| cx.throw_error(err.to_string())))
+    RUNTIME.get_or_try_init(|| Runtime::new().or_throw(cx))
 }
 
 fn database_new(mut cx: FunctionContext) -> JsResult<JsPromise> {
@@ -101,7 +102,7 @@ fn database_new(mut cx: FunctionContext) -> JsResult<JsPromise> {
 
         deferred.settle_with(&channel, move |mut cx| {
             let db = JsDatabase {
-                database: Arc::new(database.or_else(|err| cx.throw_error(err.to_string()))?),
+                database: Arc::new(database.or_throw(&mut cx)?),
             };
             Ok(cx.boxed(db))
         });
@@ -123,7 +124,7 @@ fn database_table_names(mut cx: FunctionContext) -> JsResult<JsPromise> {
         let tables_rst = database.table_names().await;
 
         deferred.settle_with(&channel, move |mut cx| {
-            let tables = tables_rst.or_else(|err| cx.throw_error(err.to_string()))?;
+            let tables = tables_rst.or_throw(&mut cx)?;
             let table_names = convert::vec_str_to_array(&tables, &mut cx);
             table_names
         });
@@ -194,9 +195,7 @@ fn database_open_table(mut cx: FunctionContext) -> JsResult<JsPromise> {
         let table_rst = database.open_table_with_params(&table_name, &params).await;
 
         deferred.settle_with(&channel, move |mut cx| {
-            let table = Arc::new(Mutex::new(
-                table_rst.or_else(|err| cx.throw_error(err.to_string()))?,
-            ));
+            let table = Arc::new(Mutex::new(table_rst.or_throw(&mut cx)?));
             Ok(cx.boxed(JsTable { table }))
         });
     });
@@ -217,7 +216,7 @@ fn database_drop_table(mut cx: FunctionContext) -> JsResult<JsPromise> {
     rt.spawn(async move {
         let result = database.drop_table(&table_name).await;
         deferred.settle_with(&channel, move |mut cx| {
-            result.or_else(|err| cx.throw_error(err.to_string()))?;
+            result.or_throw(&mut cx)?;
             Ok(cx.null())
         });
     });
@@ -282,26 +281,9 @@ fn table_search(mut cx: FunctionContext) -> JsResult<JsPromise> {
             .await;
 
         deferred.settle_with(&channel, move |mut cx| {
-            let results = results.or_else(|err| cx.throw_error(err.to_string()))?;
-            let vector: Vec<u8> = Vec::new();
-
-            if results.is_empty() {
-                return cx.buffer(0);
-            }
-
-            let schema = results.get(0).unwrap().schema();
-            let mut fr = FileWriter::try_new(vector, schema.deref())
-                .or_else(|err| cx.throw_error(err.to_string()))?;
-
-            for batch in results.iter() {
-                fr.write(batch)
-                    .or_else(|err| cx.throw_error(err.to_string()))?;
-            }
-            fr.finish().or_else(|err| cx.throw_error(err.to_string()))?;
-            let buf = fr
-                .into_inner()
-                .or_else(|err| cx.throw_error(err.to_string()))?;
-            Ok(JsBuffer::external(&mut cx, buf))
+            let results = results.or_throw(&mut cx)?;
+            let buffer = record_batch_to_buffer(results).or_throw(&mut cx)?;
+            Ok(JsBuffer::external(&mut cx, buffer))
         });
     });
     Ok(promise)
@@ -313,7 +295,7 @@ fn table_create(mut cx: FunctionContext) -> JsResult<JsPromise> {
         .downcast_or_throw::<JsBox<JsDatabase>, _>(&mut cx)?;
     let table_name = cx.argument::<JsString>(0)?.value(&mut cx);
     let buffer = cx.argument::<JsBuffer>(1)?;
-    let batches = arrow_buffer_to_record_batch(buffer.as_slice(&mut cx));
+    let batches = arrow_buffer_to_record_batch(buffer.as_slice(&mut cx)).or_throw(&mut cx)?;
     let schema = batches[0].schema();
 
     // Write mode
@@ -351,9 +333,7 @@ fn table_create(mut cx: FunctionContext) -> JsResult<JsPromise> {
             .await;
 
         deferred.settle_with(&channel, move |mut cx| {
-            let table = Arc::new(Mutex::new(
-                table_rst.or_else(|err| cx.throw_error(err.to_string()))?,
-            ));
+            let table = Arc::new(Mutex::new(table_rst.or_throw(&mut cx)?));
             Ok(cx.boxed(JsTable { table }))
         });
     });
@@ -370,7 +350,8 @@ fn table_add(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let js_table = cx.this().downcast_or_throw::<JsBox<JsTable>, _>(&mut cx)?;
     let buffer = cx.argument::<JsBuffer>(0)?;
     let write_mode = cx.argument::<JsString>(1)?.value(&mut cx);
-    let batches = arrow_buffer_to_record_batch(buffer.as_slice(&mut cx));
+
+    let batches = arrow_buffer_to_record_batch(buffer.as_slice(&mut cx)).or_throw(&mut cx)?;
     let schema = batches[0].schema();
 
     let rt = runtime(&mut cx)?;
@@ -399,7 +380,7 @@ fn table_add(mut cx: FunctionContext) -> JsResult<JsPromise> {
         let add_result = table.lock().unwrap().add(batch_reader, Some(params)).await;
 
         deferred.settle_with(&channel, move |mut cx| {
-            let _added = add_result.or_else(|err| cx.throw_error(err.to_string()))?;
+            let _added = add_result.or_throw(&mut cx)?;
             Ok(cx.boolean(true))
         });
     });
@@ -418,7 +399,7 @@ fn table_count_rows(mut cx: FunctionContext) -> JsResult<JsPromise> {
         let num_rows_result = table.lock().unwrap().count_rows().await;
 
         deferred.settle_with(&channel, move |mut cx| {
-            let num_rows = num_rows_result.or_else(|err| cx.throw_error(err.to_string()))?;
+            let num_rows = num_rows_result.or_throw(&mut cx)?;
             Ok(cx.number(num_rows as f64))
         });
     });
@@ -438,7 +419,7 @@ fn table_delete(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let delete_result = rt.block_on(async move { table.lock().unwrap().delete(&predicate).await });
 
     deferred.settle_with(&channel, move |mut cx| {
-        delete_result.or_else(|err| cx.throw_error(err.to_string()))?;
+        delete_result.or_throw(&mut cx)?;
         Ok(cx.undefined())
     });
 
