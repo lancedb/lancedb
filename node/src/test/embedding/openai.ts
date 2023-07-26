@@ -16,6 +16,7 @@ import { describe } from 'mocha'
 import { assert } from 'chai'
 
 import { OpenAIEmbeddingFunction } from '../../embedding/openai'
+import { isEmbeddingFunction } from '../../embedding/embedding_function'
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { OpenAIApi } = require('openai')
@@ -45,6 +46,12 @@ describe('OpenAPIEmbeddings', function () {
       assert.equal(vectors.length, 2)
       assert.deepEqual(vectors[0], stubValue.data.data[0].embedding)
       assert.deepEqual(vectors[1], stubValue.data.data[1].embedding)
+    })
+  })
+
+  describe('isEmbeddingFunction', function () {
+    it('should match the isEmbeddingFunction guard', function () {
+      assert.isTrue(isEmbeddingFunction(new OpenAIEmbeddingFunction('text', 'sk-key')))
     })
   })
 })
