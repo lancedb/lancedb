@@ -11,10 +11,14 @@ jobs:
 
     steps:
       - name: Trigger vectordb-recipes workflow
-        run: |
-          curl -X POST https://api.github.com/repos/lancedb/vectordb-recipes/dispatches \
-          -H 'Accept: application/vnd.github.everest-preview+json' \
-          -H "Content-Type: application/json" \
-          -u ${{ secrets.VECTORDB_RECIPES_ACTION_TOKEN }} \
-          -d '{"event_type": "Trigger Workflow", "client_payload": { "repository": "'"$GITHUB_REPOSITORY"'" }}'
-      - uses: actions/checkout@v3
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.VECTORDB_RECIPES_ACTION_TOKEN }}
+          script: |
+            const result = await github.rests.actions.createWorkflowDispatch({
+                'lancedb',
+                'vectordb-recipes',
+                'workflows/TEMP.yml',
+                'main',
+            });
+            console.log(result);
