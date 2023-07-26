@@ -15,7 +15,7 @@ jobs:
         with:
           github-token: ${{ secrets.VECTORDB_RECIPES_ACTION_TOKEN }}
           script: |
-            const result = await github.rests.actions.createWorkflowDispatch({
+            const result = await github.rest.actions.createWorkflowDispatch({
                 owner: 'lancedb',
                 repo: 'vectordb-recipes',
                 workflow_id: 'TEMP.yml',
