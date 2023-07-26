@@ -134,6 +134,18 @@ describe('LanceDB client', function () {
       assert.equal(await table.countRows(), 2)
     })
 
+    it('fails to create a new table when the vector column is missing', async function () {
+      const dir = await track().mkdir('lancejs')
+      const con = await lancedb.connect(dir)
+
+      const data = [
+        { id: 1, price: 10 }
+      ]
+
+      const create = con.createTable('missing_vector', data)
+      await expect(create).to.be.rejectedWith(Error, 'column \'vector\' is missing')
+    })
+
     it('use overwrite flag to overwrite existing table', async function () {
       const dir = await track().mkdir('lancejs')
       const con = await lancedb.connect(dir)
@@ -230,6 +242,14 @@ describe('LanceDB client', function () {
       // Default replace = true
       await table.createIndex({ type: 'ivf_pq', column: 'vector', num_partitions: 2, max_iters: 2, num_sub_vectors: 2 })
     }).timeout(50_000)
+
+    it('it should fail when the column is not a vector', async function () {
+      const uri = await createTestDB(32, 300)
+      const con = await lancedb.connect(uri)
+      const table = await con.openTable('vectors')
+      const createIndex = table.createIndex({ type: 'ivf_pq', column: 'name', num_partitions: 2, max_iters: 2, num_sub_vectors: 2 })
+      await expect(createIndex).to.be.rejectedWith(/VectorIndex requires the column data type to be fixed size list of float32s/)
+    })
   })
 
   describe('when using a custom embedding function', function () {
