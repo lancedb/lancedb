@@ -29,6 +29,6 @@ jobs:
         run: |
           curl -X POST https://api.github.com/repos/:userName/:repoName/dispatches \
           -H 'Accept: application/vnd.github.everest-preview+json' \
-          -u &{{ secrets.VECTORDB_RECIPES_ACTION_TOKEN }} \
+          -u ${{ secrets.VECTORDB_RECIPES_ACTION_TOKEN }} \
           --data '{"event_type": "Trigger Workflow", "client_payload": {"repository": "'"$GITHUB_REPOSITORY"'"}}'
       - uses: actions/checkout@v3
