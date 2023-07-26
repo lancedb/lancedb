@@ -2,13 +2,7 @@ name: Trigger vectordb-recipers workflow
 on:
   push:
     branches: [ main ]
-  pull_request:
   workflow_dispatch:
-    inputs:
-      workflow_02:
-        description: 'ًWorkflow 2 which will be triggered'
-        required: true
-        default: 'CI'
 
 jobs:
   build:
@@ -19,6 +13,7 @@ jobs:
         run: |
           curl -X POST https://api.github.com/repos/lancedb/vectordb-recipes/dispatches \
           -H 'Accept: application/vnd.github.everest-preview+json' \
+          -H "Content-Type: application/json" \
           -u ${{ secrets.VECTORDB_RECIPES_ACTION_TOKEN }} \
-          --data '{"event_type": "Trigger Workflow", "client_payload": { "repository": "'"$GITHUB_REPOSITORY"'" }}'
+          -d '{"event_type": "Trigger Workflow", "client_payload": { "repository": "'"$GITHUB_REPOSITORY"'" }}'
       - uses: actions/checkout@v3
