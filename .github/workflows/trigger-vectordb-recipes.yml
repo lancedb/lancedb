@@ -2,7 +2,6 @@ name: Trigger vectordb-recipers workflow
 on:
   push:
     branches: [ main ]
-  pull_request:
   workflow_dispatch:
 
 jobs:
@@ -18,7 +17,7 @@ jobs:
             const result = await github.rest.actions.createWorkflowDispatch({
                 owner: 'lancedb',
                 repo: 'vectordb-recipes',
-                workflow_id: 'TEMP.yml',
+                workflow_id: 'examples-test.yml',
                 ref: 'main'
             });
             console.log(result);
