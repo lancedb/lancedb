@@ -22,12 +22,15 @@ use neon::prelude::*;
 
 use vectordb::index::vector::{IvfPQIndexBuilder, VectorIndexBuilder};
 
+use crate::error::Error::InvalidIndexType;
+use crate::error::ResultExt;
+use crate::neon_ext::js_object_ext::JsObjectExt;
 use crate::{runtime, JsTable};
 
 pub(crate) fn table_create_vector_index(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let js_table = cx.this().downcast_or_throw::<JsBox<JsTable>, _>(&mut cx)?;
     let index_params = cx.argument::<JsObject>(0)?;
-    let index_params_builder = get_index_params_builder(&mut cx, index_params).unwrap();
+    let index_params_builder = get_index_params_builder(&mut cx, index_params).or_throw(&mut cx)?;
 
     let rt = runtime(&mut cx)?;
     let channel = cx.channel();
@@ -54,27 +57,21 @@ pub(crate) fn table_create_vector_index(mut cx: FunctionContext) -> JsResult<JsP
 fn get_index_params_builder(
     cx: &mut FunctionContext,
     obj: Handle<JsObject>,
-) -> Result<impl VectorIndexBuilder, String> {
-    let idx_type = obj
-        .get::<JsString, _, _>(cx, "type")
-        .map_err(|t| t.to_string())?
-        .value(cx);
+) -> crate::error::Result<impl VectorIndexBuilder> {
+    let idx_type = obj.get::<JsString, _, _>(cx, "type")?.value(cx);
 
     match idx_type.as_str() {
         "ivf_pq" => {
             let mut index_builder: IvfPQIndexBuilder = IvfPQIndexBuilder::new();
             let mut pq_params = PQBuildParams::default();
 
-            obj.get_opt::<JsString, _, _>(cx, "column")
-                .map_err(|t| t.to_string())?
+            obj.get_opt::<JsString, _, _>(cx, "column")?
                 .map(|s| index_builder.column(s.value(cx)));
 
-            obj.get_opt::<JsString, _, _>(cx, "index_name")
-                .map_err(|t| t.to_string())?
+            obj.get_opt::<JsString, _, _>(cx, "index_name")?
                 .map(|s| index_builder.index_name(s.value(cx)));
 
-            obj.get_opt::<JsString, _, _>(cx, "metric_type")
-                .map_err(|t| t.to_string())?
+            obj.get_opt::<JsString, _, _>(cx, "metric_type")?
                 .map(|s| MetricType::try_from(s.value(cx).as_str()))
                 .map(|mt| {
                     let metric_type = mt.unwrap();
@@ -82,15 +79,8 @@ fn get_index_params_builder(
                     pq_params.metric_type = metric_type;
                 });
 
-            let num_partitions = obj
-                .get_opt::<JsNumber, _, _>(cx, "num_partitions")
-                .map_err(|t| t.to_string())?
-                .map(|s| s.value(cx) as usize);
-
-            let max_iters = obj
-                .get_opt::<JsNumber, _, _>(cx, "max_iters")
-                .map_err(|t| t.to_string())?
-                .map(|s| s.value(cx) as usize);
+            let num_partitions = obj.get_opt_usize(cx, "num_partitions")?;
+            let max_iters = obj.get_opt_usize(cx, "max_iters")?;
 
             num_partitions.map(|np| {
                 let max_iters = max_iters.unwrap_or(50);
@@ -102,32 +92,28 @@ fn get_index_params_builder(
                 index_builder.ivf_params(ivf_params)
             });
 
-            obj.get_opt::<JsBoolean, _, _>(cx, "use_opq")
-                .map_err(|t| t.to_string())?
+            obj.get_opt::<JsBoolean, _, _>(cx, "use_opq")?
                 .map(|s| pq_params.use_opq = s.value(cx));
 
-            obj.get_opt::<JsNumber, _, _>(cx, "num_sub_vectors")
-                .map_err(|t| t.to_string())?
-                .map(|s| pq_params.num_sub_vectors = s.value(cx) as usize);
+            obj.get_opt_usize(cx, "num_sub_vectors")?
+                .map(|s| pq_params.num_sub_vectors = s);
 
-            obj.get_opt::<JsNumber, _, _>(cx, "num_bits")
-                .map_err(|t| t.to_string())?
-                .map(|s| pq_params.num_bits = s.value(cx) as usize);
+            obj.get_opt_usize(cx, "num_bits")?
+                .map(|s| pq_params.num_bits = s);
 
-            obj.get_opt::<JsNumber, _, _>(cx, "max_iters")
-                .map_err(|t| t.to_string())?
-                .map(|s| pq_params.max_iters = s.value(cx) as usize);
+            obj.get_opt_usize(cx, "max_iters")?
+                .map(|s| pq_params.max_iters = s);
 
-            obj.get_opt::<JsNumber, _, _>(cx, "max_opq_iters")
-                .map_err(|t| t.to_string())?
-                .map(|s| pq_params.max_opq_iters = s.value(cx) as usize);
+            obj.get_opt_usize(cx, "max_opq_iters")?
+                .map(|s| pq_params.max_opq_iters = s);
 
-            obj.get_opt::<JsBoolean, _, _>(cx, "replace")
-                .map_err(|t| t.to_string())?
+            obj.get_opt::<JsBoolean, _, _>(cx, "replace")?
                 .map(|s| index_builder.replace(s.value(cx)));
 
             Ok(index_builder)
         }
-        t => Err(format!("{} is not a valid index type", t).to_string()),
+        index_type => Err(InvalidIndexType {
+            index_type: index_type.into(),
+        }),
     }
 }

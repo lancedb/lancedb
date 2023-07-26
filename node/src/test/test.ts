@@ -250,6 +250,14 @@ describe('LanceDB client', function () {
       const createIndex = table.createIndex({ type: 'ivf_pq', column: 'name', num_partitions: 2, max_iters: 2, num_sub_vectors: 2 })
       await expect(createIndex).to.be.rejectedWith(/VectorIndex requires the column data type to be fixed size list of float32s/)
     })
+
+    it('it should fail when the column is not a vector', async function () {
+      const uri = await createTestDB(32, 300)
+      const con = await lancedb.connect(uri)
+      const table = await con.openTable('vectors')
+      const createIndex = table.createIndex({ type: 'ivf_pq', column: 'name', num_partitions: -1, max_iters: 2, num_sub_vectors: 2 })
+      await expect(createIndex).to.be.rejectedWith('num_partitions: must be > 0')
+    })
   })
 
   describe('when using a custom embedding function', function () {
