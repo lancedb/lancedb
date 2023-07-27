@@ -1,7 +1,7 @@
 [project]
 name = "lancedb"
 version = "0.1.15"
-dependencies = ["pylance=0.5.8", "ratelimiter", "retry", "tqdm", "aiohttp", "pydantic", "attr", "semver"]
+dependencies = ["pylance==0.5.10", "ratelimiter", "retry", "tqdm", "aiohttp", "pydantic", "attr", "semver"]
 description = "lancedb"
 authors = [
     { name = "LanceDB Devs", email = "dev@lancedb.com" },
