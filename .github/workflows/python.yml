@@ -30,7 +30,7 @@ jobs:
         python-version: 3.${{ matrix.python-minor-version }}
     - name: Install lancedb
       run: |
-        pip install -e .
+        pip install -e .[tests]
         pip install tantivy@git+https://github.com/quickwit-oss/tantivy-py#164adc87e1a033117001cf70e38c82a53014d985
         pip install pytest pytest-mock black isort
     - name: Black
@@ -59,7 +59,7 @@ jobs:
         python-version: "3.11"
     - name: Install lancedb
       run: |
-        pip install -e .
+        pip install -e .[tests]
         pip install tantivy@git+https://github.com/quickwit-oss/tantivy-py#164adc87e1a033117001cf70e38c82a53014d985
         pip install pytest pytest-mock black
     - name: Black
