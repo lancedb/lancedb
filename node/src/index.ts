@@ -152,7 +152,7 @@ export interface Table<T = number[]> {
    * Creates a search query to find the nearest neighbors of the given search term
    * @param query The query search term
    */
-  search: (query: T) => Query<T>
+  search: (query?: T) => Query<T>
 
   /**
    * Insert records into this Table.
@@ -338,7 +338,7 @@ export class LocalTable<T = number[]> implements Table<T> {
    * Creates a search query to find the nearest neighbors of the given search term
    * @param query The query search term
    */
-  search (query: T): Query<T> {
+  search (query?: T): Query<T> {
     return new Query(query, this._tbl, this._embeddings)
   }
 

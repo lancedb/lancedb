@@ -101,6 +101,25 @@ describe('LanceDB client', function () {
       assertResults(results)
     })
 
+    it('execute a query without passing providing a vector', async function () {
+      const uri = await createTestDB(2, 100)
+      const con = await lancedb.connect(uri)
+      const table = await con.openTable('vectors')
+      const results = await table.search()
+        .select(['id', 'name', 'price', 'is_active'])
+        .filter('id > 2 and id < 10 and is_active = true')
+        .execute()
+
+      const expected = [
+        { id: 3, name: 'name_2', price: 12, is_active: true },
+        { id: 5, name: 'name_4', price: 14, is_active: true },
+        { id: 7, name: 'name_6', price: 16, is_active: true },
+        { id: 9, name: 'name_8', price: 18, is_active: true }
+      ]
+
+      assert.sameDeepMembers(expected, results)
+    })
+
     it('select only a subset of columns', async function () {
       const uri = await createTestDB()
       const con = await lancedb.connect(uri)

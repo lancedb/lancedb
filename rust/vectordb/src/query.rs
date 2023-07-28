@@ -24,7 +24,7 @@ use crate::error::Result;
 /// A builder for nearest neighbor queries for LanceDB.
 pub struct Query {
     pub dataset: Arc<Dataset>,
-    pub query_vector: Float32Array,
+    pub query_vector: Option<Float32Array>,
     pub limit: usize,
     pub filter: Option<String>,
     pub select: Option<Vec<String>>,
@@ -45,10 +45,10 @@ impl Query {
     /// # Returns
     ///
     /// * A [Query] object.
-    pub(crate) fn new(dataset: Arc<Dataset>, vector: Float32Array) -> Self {
+    pub(crate) fn new(dataset: Arc<Dataset>) -> Self {
         Query {
             dataset,
-            query_vector: vector,
+            query_vector: None,
             limit: 10,
             nprobes: 20,
             refine_factor: None,
@@ -67,17 +67,21 @@ impl Query {
     pub async fn execute(&self) -> Result<DatasetRecordBatchStream> {
         let mut scanner: Scanner = self.dataset.scan();
 
-        scanner.nearest(
-            crate::table::VECTOR_COLUMN_NAME,
-            &self.query_vector,
-            self.limit,
-        )?;
-        scanner.nprobs(self.nprobes);
-        scanner.use_index(self.use_index);
+        self.query_vector.as_ref().map ( |query_vector| {
+                scanner.nearest(
+                    crate::table::VECTOR_COLUMN_NAME,
+                    query_vector,
+                    self.limit,
+                )?;
+                scanner.nprobs(self.nprobes);
+                scanner.use_index(self.use_index);
+                self.refine_factor.map(|rf| scanner.refine(rf));
+                self.metric_type.map(|mt| scanner.distance_metric(mt));
+                Ok::<(), lance::error::Error>(())
+            }
+        );
         self.select.as_ref().map(|p| scanner.project(p.as_slice()));
         self.filter.as_ref().map(|f| scanner.filter(f));
-        self.refine_factor.map(|rf| scanner.refine(rf));
-        self.metric_type.map(|mt| scanner.distance_metric(mt));
         Ok(scanner.try_into_stream().await?)
     }
 
@@ -96,7 +100,7 @@ impl Query {
     /// # Arguments
     ///
     /// * `vector` - The vector that will be used for search.
-    pub fn query_vector(mut self, query_vector: Float32Array) -> Query {
+    pub fn query_vector(mut self, query_vector: Option<Float32Array>) -> Query {
         self.query_vector = query_vector;
         self
     }
@@ -177,20 +181,20 @@ mod tests {
         let ds = Dataset::write(batches, "memory://foo", None).await.unwrap();
 
         let vector = Float32Array::from_iter_values([0.1, 0.2]);
-        let query = Query::new(Arc::new(ds), vector.clone());
-        assert_eq!(query.query_vector, vector);
+        let query = Query::new(Arc::new(ds)).query_vector(Some(vector.clone()));
+        assert_eq!(query.query_vector, Some(vector));
 
         let new_vector = Float32Array::from_iter_values([9.8, 8.7]);
 
         let query = query
-            .query_vector(new_vector.clone())
+            .query_vector(Some(new_vector.clone()))
             .limit(100)
             .nprobes(1000)
             .use_index(true)
             .metric_type(Some(MetricType::Cosine))
             .refine_factor(Some(999));
 
-        assert_eq!(query.query_vector, new_vector);
+        assert_eq!(query.query_vector, Some(new_vector));
         assert_eq!(query.limit, 100);
         assert_eq!(query.nprobes, 1000);
         assert_eq!(query.use_index, true);
@@ -204,7 +208,7 @@ mod tests {
         let ds = Dataset::write(batches, "memory://foo", None).await.unwrap();
 
         let vector = Float32Array::from_iter_values([0.1; 128]);
-        let query = Query::new(Arc::new(ds), vector.clone());
+        let query = Query::new(Arc::new(ds)).query_vector(Some(vector.clone()));
         let result = query.execute().await;
         assert_eq!(result.is_ok(), true);
     }

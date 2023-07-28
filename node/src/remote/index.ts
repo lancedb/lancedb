@@ -142,8 +142,9 @@ export class RemoteTable<T = number[]> implements Table<T> {
     return this._name
   }
 
-  search (query: T): Query<T> {
-    return new RemoteQuery(query, this._client, this._name)//, this._embeddings_new)
+  search (query?: T): Query<T> {
+    // FIXME query is optional
+    return new RemoteQuery(query as T, this._client, this._name)//, this._embeddings_new)
   }
 
   async add (data: Array<Record<string, unknown>>): Promise<number> {

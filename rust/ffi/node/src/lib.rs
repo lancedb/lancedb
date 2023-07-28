@@ -261,14 +261,17 @@ fn table_search(mut cx: FunctionContext) -> JsResult<JsPromise> {
 
     let (deferred, promise) = cx.promise();
     let table = js_table.table.clone();
-    let query_vector = query_obj.get::<JsArray, _, _>(&mut cx, "_queryVector")?;
-    let query = convert::js_array_to_vec(query_vector.deref(), &mut cx);
+    let query_vector = query_obj.get_opt::<JsArray, _, _>(&mut cx, "_queryVector")?;
+    let query = query_vector.map( |vector| {
+        Float32Array::from(convert::js_array_to_vec(vector.deref(), &mut cx))
+    });
 
     rt.spawn(async move {
         let builder = table
             .lock()
             .unwrap()
-            .search(Float32Array::from(query))
+            .search()
+            .query_vector(query)
             .limit(limit as usize)
             .refine_factor(refine_factor)
             .nprobes(nprobes)

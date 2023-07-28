@@ -239,8 +239,8 @@ impl Table {
     /// # Returns
     ///
     /// * A [Query] object.
-    pub fn search(&self, query_vector: Float32Array) -> Query {
-        Query::new(self.dataset.clone(), query_vector)
+    pub fn search(&self) -> Query {
+        Query::new(self.dataset.clone())
     }
 
     /// Returns the number of rows in this Table
@@ -411,8 +411,8 @@ mod tests {
         let table = Table::open(uri).await.unwrap();
 
         let vector = Float32Array::from_iter_values([0.1, 0.2]);
-        let query = table.search(vector.clone());
-        assert_eq!(vector, query.query_vector);
+        let query = table.search().query_vector(Some(vector.clone()));
+        assert_eq!(Some(vector), query.query_vector);
     }
 
     #[derive(Default, Debug)]
