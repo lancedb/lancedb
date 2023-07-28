@@ -22,8 +22,15 @@ use snafu::Snafu;
 pub enum Error {
     #[snafu(display("column '{name}' is missing"))]
     MissingColumn { name: String },
+    #[snafu(display("{name}: {message}"))]
+    RangeError { name: String, message: String },
+    #[snafu(display("{index_type} is not a valid index type"))]
+    InvalidIndexType { index_type: String },
+
     #[snafu(display("{message}"))]
     LanceDB { message: String },
+    #[snafu(display("{message}"))]
+    Neon { message: String },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -47,6 +54,14 @@ impl From<lance::Error> for Error {
 impl From<ArrowError> for Error {
     fn from(value: ArrowError) -> Self {
         Self::LanceDB {
+            message: value.to_string(),
+        }
+    }
+}
+
+impl From<neon::result::Throw> for Error {
+    fn from(value: neon::result::Throw) -> Self {
+        Self::Neon {
             message: value.to_string(),
         }
     }

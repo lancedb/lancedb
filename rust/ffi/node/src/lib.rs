@@ -31,16 +31,17 @@ use once_cell::sync::OnceCell;
 use tokio::runtime::Runtime;
 
 use vectordb::database::Database;
-use vectordb::error::Error;
 use vectordb::table::{ReadParams, Table};
 
 use crate::arrow::{arrow_buffer_to_record_batch, record_batch_to_buffer};
 use crate::error::ResultExt;
+use crate::neon_ext::js_object_ext::JsObjectExt;
 
 mod arrow;
 mod convert;
 mod error;
 mod index;
+mod neon_ext;
 
 struct JsDatabase {
     database: Arc<Database>,
@@ -245,12 +246,9 @@ fn table_search(mut cx: FunctionContext) -> JsResult<JsPromise> {
         .get_opt::<JsString, _, _>(&mut cx, "_filter")?
         .map(|s| s.value(&mut cx));
     let refine_factor = query_obj
-        .get_opt::<JsNumber, _, _>(&mut cx, "_refineFactor")?
-        .map(|s| s.value(&mut cx))
-        .map(|i| i as u32);
-    let nprobes = query_obj
-        .get::<JsNumber, _, _>(&mut cx, "_nprobes")?
-        .value(&mut cx) as usize;
+        .get_opt_u32(&mut cx, "_refineFactor")
+        .or_throw(&mut cx)?;
+    let nprobes = query_obj.get_usize(&mut cx, "_nprobes").or_throw(&mut cx)?;
     let metric_type = query_obj
         .get_opt::<JsString, _, _>(&mut cx, "_metricType")?
         .map(|s| s.value(&mut cx))
@@ -277,7 +275,11 @@ fn table_search(mut cx: FunctionContext) -> JsResult<JsPromise> {
             .select(select);
         let record_batch_stream = builder.execute();
         let results = record_batch_stream
-            .and_then(|stream| stream.try_collect::<Vec<_>>().map_err(Error::from))
+            .and_then(|stream| {
+                stream
+                    .try_collect::<Vec<_>>()
+                    .map_err(vectordb::error::Error::from)
+            })
             .await;
 
         deferred.settle_with(&channel, move |mut cx| {
