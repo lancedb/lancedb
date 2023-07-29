@@ -328,7 +328,7 @@ fn table_create(mut cx: FunctionContext) -> JsResult<JsPromise> {
         ..WriteParams::default()
     };
 
-    rt.block_on(async move {
+    rt.spawn(async move {
         let batch_reader = RecordBatchIterator::new(batches.into_iter().map(Ok), schema);
         let table_rst = database
             .create_table(&table_name, batch_reader, Some(params))
@@ -377,7 +377,7 @@ fn table_add(mut cx: FunctionContext) -> JsResult<JsPromise> {
         ..WriteParams::default()
     };
 
-    rt.block_on(async move {
+    rt.spawn(async move {
         let batch_reader = RecordBatchIterator::new(batches.into_iter().map(Ok), schema);
         let add_result = table.lock().unwrap().add(batch_reader, Some(params)).await;
 
@@ -397,7 +397,7 @@ fn table_count_rows(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let (deferred, promise) = cx.promise();
     let table = js_table.table.clone();
 
-    rt.block_on(async move {
+    rt.spawn(async move {
         let num_rows_result = table.lock().unwrap().count_rows().await;
 
         deferred.settle_with(&channel, move |mut cx| {
@@ -418,7 +418,7 @@ fn table_delete(mut cx: FunctionContext) -> JsResult<JsPromise> {
 
     let predicate = cx.argument::<JsString>(0)?.value(&mut cx);
 
-    let delete_result = rt.block_on(async move { table.lock().unwrap().delete(&predicate).await });
+    let delete_result = rt.spawn(async move { table.lock().unwrap().delete(&predicate).await });
 
     deferred.settle_with(&channel, move |mut cx| {
         delete_result.or_throw(&mut cx)?;

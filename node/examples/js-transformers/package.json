@@ -10,7 +10,7 @@
   "license": "Apache-2.0",
   "dependencies": {
     "@xenova/transformers": "^2.4.1",
-    "vectordb": "^0.1.12"
+    "vectordb": "file:../.."
   }
 
 }
