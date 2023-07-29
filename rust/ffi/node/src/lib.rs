@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::ops::Deref;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use arrow_array::{Float32Array, RecordBatchIterator};
 use async_trait::async_trait;
@@ -31,29 +31,25 @@ use once_cell::sync::OnceCell;
 use tokio::runtime::Runtime;
 
 use vectordb::database::Database;
-use vectordb::table::{ReadParams, Table};
+use vectordb::table::ReadParams;
 
 use crate::arrow::{arrow_buffer_to_record_batch, record_batch_to_buffer};
 use crate::error::ResultExt;
 use crate::neon_ext::js_object_ext::JsObjectExt;
+use crate::table::JsTable;
 
 mod arrow;
 mod convert;
 mod error;
 mod index;
 mod neon_ext;
+mod table;
 
 struct JsDatabase {
     database: Arc<Database>,
 }
 
 impl Finalize for JsDatabase {}
-
-struct JsTable {
-    table: Arc<Mutex<Table>>,
-}
-
-impl Finalize for JsTable {}
 
 // TODO: object_store didn't export this type so I copied it.
 // Make a request to object_store to export this type
@@ -196,8 +192,9 @@ fn database_open_table(mut cx: FunctionContext) -> JsResult<JsPromise> {
         let table_rst = database.open_table_with_params(&table_name, &params).await;
 
         deferred.settle_with(&channel, move |mut cx| {
-            let table = Arc::new(Mutex::new(table_rst.or_throw(&mut cx)?));
-            Ok(cx.boxed(JsTable { table }))
+            let table = table_rst.or_throw(&mut cx)?;
+            let js_table = JsTable::new(&mut cx, table).or_throw(&mut cx)?;
+            Ok(cx.boxed(js_table))
         });
     });
     Ok(promise)
@@ -255,39 +252,39 @@ fn table_search(mut cx: FunctionContext) -> JsResult<JsPromise> {
         .map(|s| MetricType::try_from(s.as_str()).unwrap());
 
     let rt = runtime(&mut cx)?;
-    let channel = cx.channel();
 
     let (deferred, promise) = cx.promise();
-    let table = js_table.table.clone();
     let query_vector = query_obj.get::<JsArray, _, _>(&mut cx, "_queryVector")?;
     let query = convert::js_array_to_vec(query_vector.deref(), &mut cx);
 
-    rt.spawn(async move {
-        let builder = table
-            .lock()
-            .unwrap()
-            .search(Float32Array::from(query))
-            .limit(limit as usize)
-            .refine_factor(refine_factor)
-            .nprobes(nprobes)
-            .filter(filter)
-            .metric_type(metric_type)
-            .select(select);
-        let record_batch_stream = builder.execute();
-        let results = record_batch_stream
-            .and_then(|stream| {
-                stream
-                    .try_collect::<Vec<_>>()
-                    .map_err(vectordb::error::Error::from)
-            })
-            .await;
+    js_table
+        .send(deferred, move |table, channel, deferred| {
+            rt.block_on(async move {
+                let builder = table
+                    .search(Float32Array::from(query))
+                    .limit(limit as usize)
+                    .refine_factor(refine_factor)
+                    .nprobes(nprobes)
+                    .filter(filter)
+                    .metric_type(metric_type)
+                    .select(select);
+                let record_batch_stream = builder.execute();
+                let results = record_batch_stream
+                    .and_then(|stream| {
+                        stream
+                            .try_collect::<Vec<_>>()
+                            .map_err(vectordb::error::Error::from)
+                    })
+                    .await;
 
-        deferred.settle_with(&channel, move |mut cx| {
-            let results = results.or_throw(&mut cx)?;
-            let buffer = record_batch_to_buffer(results).or_throw(&mut cx)?;
-            Ok(JsBuffer::external(&mut cx, buffer))
-        });
-    });
+                deferred.settle_with(&channel, move |mut cx| {
+                    let results = results.or_throw(&mut cx)?;
+                    let buffer = record_batch_to_buffer(results).or_throw(&mut cx)?;
+                    Ok(JsBuffer::external(&mut cx, buffer))
+                });
+            });
+        })
+        .or_throw(&mut cx)?;
     Ok(promise)
 }
 
@@ -328,15 +325,16 @@ fn table_create(mut cx: FunctionContext) -> JsResult<JsPromise> {
         ..WriteParams::default()
     };
 
-    rt.block_on(async move {
+    rt.spawn(async move {
         let batch_reader = RecordBatchIterator::new(batches.into_iter().map(Ok), schema);
         let table_rst = database
             .create_table(&table_name, batch_reader, Some(params))
             .await;
 
         deferred.settle_with(&channel, move |mut cx| {
-            let table = Arc::new(Mutex::new(table_rst.or_throw(&mut cx)?));
-            Ok(cx.boxed(JsTable { table }))
+            let table = table_rst.or_throw(&mut cx)?;
+            let js_table = JsTable::new(&mut cx, table).or_throw(&mut cx)?;
+            Ok(cx.boxed(js_table))
         });
     });
     Ok(promise)
@@ -357,10 +355,8 @@ fn table_add(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let schema = batches[0].schema();
 
     let rt = runtime(&mut cx)?;
-    let channel = cx.channel();
 
     let (deferred, promise) = cx.promise();
-    let table = js_table.table.clone();
     let write_mode = write_mode_map.get(write_mode.as_str()).cloned();
 
     let aws_creds = match get_aws_creds(&mut cx, 2) {
@@ -377,54 +373,59 @@ fn table_add(mut cx: FunctionContext) -> JsResult<JsPromise> {
         ..WriteParams::default()
     };
 
-    rt.block_on(async move {
-        let batch_reader = RecordBatchIterator::new(batches.into_iter().map(Ok), schema);
-        let add_result = table.lock().unwrap().add(batch_reader, Some(params)).await;
+    js_table
+        .send(deferred, move |table, channel, deferred| {
+            rt.block_on(async move {
+                let batch_reader = RecordBatchIterator::new(batches.into_iter().map(Ok), schema);
+                let add_result = table.add(batch_reader, Some(params)).await;
 
-        deferred.settle_with(&channel, move |mut cx| {
-            let _added = add_result.or_throw(&mut cx)?;
-            Ok(cx.boolean(true))
-        });
-    });
+                deferred.settle_with(&channel, move |mut cx| {
+                    let _added = add_result.or_throw(&mut cx)?;
+                    Ok(cx.boolean(true))
+                });
+            });
+        })
+        .or_throw(&mut cx)?;
     Ok(promise)
 }
 
 fn table_count_rows(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let js_table = cx.this().downcast_or_throw::<JsBox<JsTable>, _>(&mut cx)?;
     let rt = runtime(&mut cx)?;
-    let channel = cx.channel();
 
     let (deferred, promise) = cx.promise();
-    let table = js_table.table.clone();
 
-    rt.block_on(async move {
-        let num_rows_result = table.lock().unwrap().count_rows().await;
+    js_table
+        .send(deferred, move |table, channel, deferred| {
+            rt.block_on(async move {
+                let num_rows_result = table.count_rows().await;
 
-        deferred.settle_with(&channel, move |mut cx| {
-            let num_rows = num_rows_result.or_throw(&mut cx)?;
-            Ok(cx.number(num_rows as f64))
-        });
-    });
+                deferred.settle_with(&channel, move |mut cx| {
+                    let num_rows = num_rows_result.or_throw(&mut cx)?;
+                    Ok(cx.number(num_rows as f64))
+                });
+            });
+        })
+        .or_throw(&mut cx)?;
     Ok(promise)
 }
 
 fn table_delete(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let js_table = cx.this().downcast_or_throw::<JsBox<JsTable>, _>(&mut cx)?;
     let rt = runtime(&mut cx)?;
-    let channel = cx.channel();
-
     let (deferred, promise) = cx.promise();
-    let table = js_table.table.clone();
-
     let predicate = cx.argument::<JsString>(0)?.value(&mut cx);
 
-    let delete_result = rt.block_on(async move { table.lock().unwrap().delete(&predicate).await });
+    js_table
+        .send(deferred, move |table, channel, deferred| {
+            let delete_result = rt.block_on(async move { table.delete(&predicate).await });
 
-    deferred.settle_with(&channel, move |mut cx| {
-        delete_result.or_throw(&mut cx)?;
-        Ok(cx.undefined())
-    });
-
+            deferred.settle_with(&channel, move |mut cx| {
+                delete_result.or_throw(&mut cx)?;
+                Ok(cx.undefined())
+            });
+        })
+        .or_throw(&mut cx)?;
     Ok(promise)
 }
 

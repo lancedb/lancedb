@@ -25,7 +25,8 @@ use vectordb::index::vector::{IvfPQIndexBuilder, VectorIndexBuilder};
 use crate::error::Error::InvalidIndexType;
 use crate::error::ResultExt;
 use crate::neon_ext::js_object_ext::JsObjectExt;
-use crate::{runtime, JsTable};
+use crate::runtime;
+use crate::table::JsTable;
 
 pub(crate) fn table_create_vector_index(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let js_table = cx.this().downcast_or_throw::<JsBox<JsTable>, _>(&mut cx)?;
@@ -33,24 +34,23 @@ pub(crate) fn table_create_vector_index(mut cx: FunctionContext) -> JsResult<JsP
     let index_params_builder = get_index_params_builder(&mut cx, index_params).or_throw(&mut cx)?;
 
     let rt = runtime(&mut cx)?;
-    let channel = cx.channel();
 
     let (deferred, promise) = cx.promise();
-    let table = js_table.table.clone();
 
-    rt.block_on(async move {
-        let add_result = table
-            .lock()
-            .unwrap()
-            .create_index(&index_params_builder)
-            .await;
+    js_table
+        .send(deferred, move |table, channel, deferred| {
+            rt.block_on(async move {
+                let idx_result = table.create_index(&index_params_builder).await;
 
-        deferred.settle_with(&channel, move |mut cx| {
-            add_result
-                .map(|_| cx.undefined())
-                .or_else(|err| cx.throw_error(err.to_string()))
-        });
-    });
+                deferred.settle_with(&channel, move |mut cx| {
+                    idx_result
+                        .map(|_| cx.undefined())
+                        .or_else(|err| cx.throw_error(err.to_string()))
+                });
+            });
+        })
+        .or_throw(&mut cx)?;
+
     Ok(promise)
 }
 
