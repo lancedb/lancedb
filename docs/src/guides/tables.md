@@ -104,7 +104,7 @@ A Table is a collection of Records in a LanceDB Database.
     import pandas as pd
     import pyarrow as pa
 
-    df = pd.DataFrame({'vector': [[0,1], [2,3], [4,5],[6,7],
+    df = pd.DataFrame({'vector': [[0,1], [2,3], [4,5],[6,7]],
                         'month': [3, 5, 7, 9],
                         'day': [1, 5, 9, 13],
                         'n_legs': [2, 4, 5, 100],
