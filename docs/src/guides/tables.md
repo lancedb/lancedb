@@ -76,26 +76,26 @@ A Table is a collection of Records in a LanceDB Database.
     It is recommended to use RecordBatch itertator to add large datasets in batches when creating your table in one go. This does not create multiple versions of your dataset unlike manually adding batches using `table.add()`
 
     ```python
-      import pyarrow as pa
+    import pyarrow as pa
 
-      def make_batches():
-          for i in range(5):
-              yield pa.RecordBatch.from_arrays(
-                  [
-                      pa.array([[3.1, 4.1], [5.9, 26.5]]),
-                      pa.array(["foo", "bar"]),
-                      pa.array([10.0, 20.0]),
-                  ],
-                  ["vector", "item", "price"],
-              )
+    def make_batches():
+        for i in range(5):
+            yield pa.RecordBatch.from_arrays(
+                [
+                    pa.array([[3.1, 4.1], [5.9, 26.5]]),
+                    pa.array(["foo", "bar"]),
+                    pa.array([10.0, 20.0]),
+                ],
+                ["vector", "item", "price"],
+            )
 
-      schema = pa.schema([
-          pa.field("vector", pa.list_(pa.float32())),
-          pa.field("item", pa.utf8()),
-          pa.field("price", pa.float32()),
-      ])
+    schema = pa.schema([
+        pa.field("vector", pa.list_(pa.float32())),
+        pa.field("item", pa.utf8()),
+        pa.field("price", pa.float32()),
+    ])
 
-      db.create_table("table4", make_batches(), schema=schema)
+    db.create_table("table4", make_batches(), schema=schema)
     ```
 
     You can also use Pandas dataframe directly in the above example by converting it to `RecordBatch` object
