@@ -20,6 +20,7 @@ import pyarrow as pa
 import pytest
 
 from lancedb.db import LanceDBConnection
+from lancedb.pydantic import LanceModel, vector
 from lancedb.query import LanceQueryBuilder, Query
 from lancedb.table import LanceTable
 
@@ -62,6 +63,24 @@ def table(tmp_path) -> MockTable:
     )
     lance.write_dataset(df, tmp_path)
     return MockTable(tmp_path)
+
+
+def test_cast(table):
+    class TestModel(LanceModel):
+        vector: vector(2)
+        id: int
+        str_field: str
+        float_field: float
+
+    q = LanceQueryBuilder(table, [0, 0], "vector").limit(1)
+    results = q.to_pydantic(TestModel)
+    assert len(results) == 1
+    r0 = results[0]
+    assert isinstance(r0, TestModel)
+    assert r0.id == 1
+    assert r0.vector == [1, 2]
+    assert r0.str_field == "a"
+    assert r0.float_field == 1.0
 
 
 def test_query_builder(table):
