@@ -3,7 +3,6 @@
 [Pydantic](https://docs.pydantic.dev/latest/) is a data validation library in Python.
 LanceDB integrates with Pydantic for schema inference, data ingestion, and query result casting.
 
-
 ## Schema
 
 LanceDB supports to create Apache Arrow Schema from a

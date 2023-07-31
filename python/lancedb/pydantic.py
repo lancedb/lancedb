@@ -275,10 +275,16 @@ class LanceModel(pydantic.BaseModel):
 
     @classmethod
     def to_arrow_schema(cls):
+        """
+        Get the Arrow Schema for this model.
+        """
         return pydantic_to_schema(cls)
 
     @classmethod
     def field_names(cls) -> List[str]:
+        """
+        Get the field names of this model.
+        """
         if PYDANTIC_VERSION.major < 2:
             return list(cls.__fields__.keys())
         return list(cls.model_fields.keys())

@@ -56,4 +56,4 @@ pip install lancedb
 
 ::: lancedb.pydantic.vector
 
-
+::: lancedb.pydantic.LanceModel
