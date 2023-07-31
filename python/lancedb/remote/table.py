@@ -16,11 +16,11 @@ from functools import cached_property
 from typing import Union
 
 import pyarrow as pa
+from lance import json_to_schema
 
 from lancedb.common import DATA, VEC, VECTOR_COLUMN_NAME
 
-from ..query import LanceQueryBuilder, Query
-from ..schema import json_to_schema
+from ..query import LanceQueryBuilder
 from ..table import Query, Table, _sanitize_data
 from .arrow import to_ipc_binary
 from .client import ARROW_STREAM_CONTENT_TYPE
