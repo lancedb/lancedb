@@ -23,10 +23,7 @@ from retry import retry
 from .util import safe_import_pandas
 
 pd = safe_import_pandas()
-if pd is not None:
-    DATA = Union[pa.Table, pd.DataFrame]
-else:
-    DATA = pa.Table
+DATA = Union[pa.Table, "pd.DataFrame"]
 
 
 def with_embeddings(

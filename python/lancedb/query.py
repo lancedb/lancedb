@@ -201,7 +201,7 @@ class LanceQueryBuilder:
         self._refine_factor = refine_factor
         return self
 
-    def to_df(self):
+    def to_df(self) -> "pd.DataFrame":
         """
         Execute the query and return the results as a pandas DataFrame.
         In addition to the selected columns, LanceDB also returns a vector

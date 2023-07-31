@@ -334,7 +334,7 @@ class LanceTable(Table):
         """Return the first n rows of the table."""
         return self._dataset.head(n)
 
-    def to_pandas(self) -> pd.DataFrame:
+    def to_pandas(self) -> "pd.DataFrame":
         """Return the table as a pandas DataFrame.
 
         Returns
