@@ -13,17 +13,18 @@
 
 from __future__ import annotations
 
-from typing import List, Literal, Optional, Union
+from typing import List, Literal, Optional, Type, Union
 
 import numpy as np
 import pandas as pd
 import pyarrow as pa
-from pydantic import BaseModel
+import pydantic
 
 from .common import VECTOR_COLUMN_NAME
+from .pydantic import LanceModel
 
 
-class Query(BaseModel):
+class Query(pydantic.BaseModel):
     """A Query"""
 
     vector_column: str = VECTOR_COLUMN_NAME
@@ -229,6 +230,23 @@ class LanceQueryBuilder:
             vector_column=self._vector_column,
         )
         return self._table._execute_query(query)
+
+    def to_pydantic(self, model: Type[LanceModel]) -> List[LanceModel]:
+        """Return the table as a list of pydantic models.
+
+        Parameters
+        ----------
+        model: Type[LanceModel]
+            The pydantic model to use.
+
+        Returns
+        -------
+        List[LanceModel]
+        """
+        return [
+            model(**{k: v for k, v in row.items() if k in model.field_names()})
+            for row in self.to_arrow().to_pylist()
+        ]
 
 
 class LanceFtsQueryBuilder(LanceQueryBuilder):

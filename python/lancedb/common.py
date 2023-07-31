@@ -17,11 +17,13 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 
+from .pydantic import LanceModel
+
 VEC = Union[list, np.ndarray, pa.Array, pa.ChunkedArray]
 URI = Union[str, Path]
 
 # TODO support generator
-DATA = Union[List[dict], dict, pd.DataFrame]
+DATA = Union[List[dict], List[LanceModel], dict, pd.DataFrame]
 VECTOR_COLUMN_NAME = "vector"
 
 

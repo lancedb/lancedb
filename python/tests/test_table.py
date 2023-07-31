@@ -13,15 +13,16 @@
 
 import functools
 from pathlib import Path
+from typing import List
 from unittest.mock import PropertyMock, patch
 
 import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pytest
-from lance.vector import vec_to_table
 
 from lancedb.db import LanceDBConnection
+from lancedb.pydantic import LanceModel, vector
 from lancedb.table import LanceTable
 
 
@@ -133,6 +134,17 @@ def test_add(db):
         ],
     )
     _add(table, schema)
+
+
+def test_add_pydantic_model(db):
+    class TestModel(LanceModel):
+        vector: vector(16)
+        li: List[int]
+
+    data = TestModel(vector=list(range(16)), li=[1, 2, 3])
+    table = LanceTable.create(db, "test", data=[data])
+    assert len(table) == 1
+    assert table.schema == TestModel.to_arrow_schema()
 
 
 def _add(table, schema):
