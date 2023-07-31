@@ -12,11 +12,7 @@
 #  limitations under the License.
 
 """Schema related utilities."""
-
-from typing import Any, Dict, Type
-
 import pyarrow as pa
-from lance import json_to_schema, schema_to_json
 
 
 def vector(dimension: int, value_type: pa.DataType = pa.float32()) -> pa.DataType:

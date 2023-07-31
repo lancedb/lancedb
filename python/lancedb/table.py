@@ -20,7 +20,6 @@ from typing import Iterable, List, Union
 
 import lance
 import numpy as np
-import pandas as pd
 import pyarrow as pa
 import pyarrow.compute as pc
 from lance import LanceDataset
@@ -29,7 +28,9 @@ from lance.vector import vec_to_table
 from .common import DATA, VEC, VECTOR_COLUMN_NAME
 from .pydantic import LanceModel
 from .query import LanceFtsQueryBuilder, LanceQueryBuilder, Query
-from .util import fs_from_uri
+from .util import fs_from_uri, safe_import_pandas
+
+pd = safe_import_pandas()
 
 
 def _sanitize_data(data, schema, on_bad_vectors, fill_value):
@@ -44,7 +45,7 @@ def _sanitize_data(data, schema, on_bad_vectors, fill_value):
         )
     if isinstance(data, dict):
         data = vec_to_table(data)
-    if isinstance(data, pd.DataFrame):
+    if pd is not None and isinstance(data, pd.DataFrame):
         data = pa.Table.from_pandas(data)
         data = _sanitize_schema(
             data, schema=schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value
@@ -99,7 +100,7 @@ class Table(ABC):
         """
         raise NotImplementedError
 
-    def to_pandas(self) -> pd.DataFrame:
+    def to_pandas(self):
         """Return the table as a pandas DataFrame.
 
         Returns
@@ -333,7 +334,7 @@ class LanceTable(Table):
         """Return the first n rows of the table."""
         return self._dataset.head(n)
 
-    def to_pandas(self) -> pd.DataFrame:
+    def to_pandas(self) -> "pd.DataFrame":
         """Return the table as a pandas DataFrame.
 
         Returns

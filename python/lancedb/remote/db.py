@@ -20,7 +20,6 @@ import pyarrow as pa
 
 from lancedb.common import DATA
 from lancedb.db import DBConnection
-from lancedb.schema import schema_to_json
 from lancedb.table import Table, _sanitize_data
 
 from .arrow import to_ipc_binary

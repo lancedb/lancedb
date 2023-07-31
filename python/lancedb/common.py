@@ -11,19 +11,18 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 from pathlib import Path
-from typing import List, Union
+from typing import Iterable, List, Union
 
 import numpy as np
-import pandas as pd
 import pyarrow as pa
 
-from .pydantic import LanceModel
+from .util import safe_import_pandas
 
+pd = safe_import_pandas()
+
+DATA = Union[List[dict], dict, "pd.DataFrame", pa.Table, Iterable[pa.RecordBatch]]
 VEC = Union[list, np.ndarray, pa.Array, pa.ChunkedArray]
 URI = Union[str, Path]
-
-# TODO support generator
-DATA = Union[List[dict], List[LanceModel], dict, pd.DataFrame]
 VECTOR_COLUMN_NAME = "vector"
 
 
