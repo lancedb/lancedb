@@ -252,7 +252,26 @@ def pydantic_to_schema(model: Type[pydantic.BaseModel]) -> pa.Schema:
 
 
 class LanceModel(pydantic.BaseModel):
-    """A Pydantic Model that can be converted to a LanceDB Table."""
+    """
+    A Pydantic Model base class that can be converted to a LanceDB Table.
+
+    Examples
+    --------
+    >>> import lancedb
+    >>> from lancedb.pydantic import LanceModel, vector
+    >>>
+    >>> class TestModel(LanceModel):
+    ...     name: str
+    ...     vector: vector(2)
+    ...
+    >>> db = lancedb.connect("/tmp")
+    >>> table = db.create_table("test", schema=TestModel.to_arrow_schema())
+    >>> table.add([
+    ...     TestModel(name="test", vector=[1.0, 2.0])
+    ... ])
+    >>> table.search([0., 0.]).limit(1).to_pydantic(TestModel)
+    [TestModel(name='test', vector=FixedSizeList(dim=2))]
+    """
 
     @classmethod
     def to_arrow_schema(cls):

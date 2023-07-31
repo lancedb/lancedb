@@ -231,7 +231,7 @@ class LanceQueryBuilder:
         )
         return self._table._execute_query(query)
 
-    def to(self, model: Type[LanceModel]) -> List[LanceModel]:
+    def to_pydantic(self, model: Type[LanceModel]) -> List[LanceModel]:
         """Return the table as a list of pydantic models.
 
         Parameters

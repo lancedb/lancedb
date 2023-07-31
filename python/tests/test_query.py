@@ -73,7 +73,7 @@ def test_cast(table):
         float_field: float
 
     q = LanceQueryBuilder(table, [0, 0], "vector").limit(1)
-    results = q.to(TestModel)
+    results = q.to_pydantic(TestModel)
     assert len(results) == 1
     r0 = results[0]
     assert isinstance(r0, TestModel)

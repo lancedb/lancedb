@@ -3,34 +3,6 @@
 [Pydantic](https://docs.pydantic.dev/latest/) is a data validation library in Python.
 LanceDB integrates with Pydantic for schema inference, data ingestion, and query result casting.
 
-## Quick example
-
-```python
-import lancedb
-from lancedb.pydantic import LanceModel, vector
-
-# Define model
-
-class TestModel(LanceModel):
-    name: str
-    vector: vector(2)
-    
-db = lancedb.connect("/tmp")
-
-# Create table
-table = db.create_table("test", schema=TestModel.to_arrow_schema())
-
-# Add data
-table.add([
-    TestModel(name="test", vector=[1.0, 2.0])
-])
-
-# Convert results
-table.search([0., 0.]).limit(1).to(TestModel)
-
-# >>> table.search([0., 0.]).limit(1).to(TestModel)
-# [TestModel(name='test', vector=FixedSizeList(dim=2))]
-```
 
 ## Schema
 
