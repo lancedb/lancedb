@@ -16,15 +16,19 @@ import sys
 from typing import Callable, Union
 
 import numpy as np
-import pandas as pd
 import pyarrow as pa
 from lance.vector import vec_to_table
 from retry import retry
 
+from .util import safe_import_pandas
+
+pd = safe_import_pandas()
+DATA = Union[pa.Table, "pd.DataFrame"]
+
 
 def with_embeddings(
     func: Callable,
-    data: Union[pa.Table, pd.DataFrame],
+    data: DATA,
     column: str = "text",
     wrap_api: bool = True,
     show_progress: bool = False,
@@ -60,7 +64,7 @@ def with_embeddings(
     func = func.batch_size(batch_size)
     if show_progress:
         func = func.show_progress()
-    if isinstance(data, pd.DataFrame):
+    if pd is not None and isinstance(data, pd.DataFrame):
         data = pa.Table.from_pandas(data, preserve_index=False)
     embeddings = func(data[column].to_numpy())
     table = vec_to_table(np.array(embeddings))

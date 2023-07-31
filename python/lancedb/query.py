@@ -16,12 +16,14 @@ from __future__ import annotations
 from typing import List, Literal, Optional, Type, Union
 
 import numpy as np
-import pandas as pd
 import pyarrow as pa
 import pydantic
 
 from .common import VECTOR_COLUMN_NAME
 from .pydantic import LanceModel
+from .util import safe_import_pandas
+
+pd = safe_import_pandas()
 
 
 class Query(pydantic.BaseModel):
@@ -199,7 +201,7 @@ class LanceQueryBuilder:
         self._refine_factor = refine_factor
         return self
 
-    def to_df(self) -> pd.DataFrame:
+    def to_df(self) -> "pd.DataFrame":
         """
         Execute the query and return the results as a pandas DataFrame.
         In addition to the selected columns, LanceDB also returns a vector
@@ -250,7 +252,7 @@ class LanceQueryBuilder:
 
 
 class LanceFtsQueryBuilder(LanceQueryBuilder):
-    def to_arrow(self) -> pd.Table:
+    def to_arrow(self) -> pa.Table:
         try:
             import tantivy
         except ImportError:

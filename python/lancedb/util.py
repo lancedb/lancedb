@@ -15,7 +15,6 @@ import os
 from typing import Tuple
 from urllib.parse import urlparse
 
-import pyarrow as pa
 import pyarrow.fs as pa_fs
 
 
@@ -76,3 +75,12 @@ def fs_from_uri(uri: str) -> Tuple[pa_fs.FileSystem, str]:
         return fs, path
 
     return pa_fs.FileSystem.from_uri(uri)
+
+
+def safe_import_pandas():
+    try:
+        import pandas as pd
+
+        return pd
+    except ImportError:
+        return None

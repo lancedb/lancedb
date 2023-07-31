@@ -12,12 +12,13 @@
 #  limitations under the License.
 from __future__ import annotations
 
-import pandas as pd
-
 from .exceptions import MissingColumnError, MissingValueError
+from .util import safe_import_pandas
+
+pd = safe_import_pandas()
 
 
-def contextualize(raw_df: pd.DataFrame) -> Contextualizer:
+def contextualize(raw_df: "pd.DataFrame") -> Contextualizer:
     """Create a Contextualizer object for the given DataFrame.
 
     Used to create context windows. Context windows are rolling subsets of text
@@ -175,8 +176,12 @@ class Contextualizer:
         self._min_window_size = min_window_size
         return self
 
-    def to_df(self) -> pd.DataFrame:
+    def to_df(self) -> "pd.DataFrame":
         """Create the context windows and return a DataFrame."""
+        if pd is None:
+            raise ImportError(
+                "pandas is required to create context windows using lancedb"
+            )
 
         if self._text_col not in self._raw_df.columns.tolist():
             raise MissingColumnError(self._text_col)
