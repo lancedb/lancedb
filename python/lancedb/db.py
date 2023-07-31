@@ -319,14 +319,20 @@ class LanceDBConnection(DBConnection):
         """
         return LanceTable.open(self, name)
 
-    def drop_table(self, name: str):
+    def drop_table(self, name: str, ignore_missing: bool = False):
         """Drop a table from the database.
 
         Parameters
         ----------
         name: str
             The name of the table.
+        ignore_missing: bool, default False
+            If True, ignore if the table does not exist.
         """
-        filesystem, path = fs_from_uri(self.uri)
-        table_path = os.path.join(path, name + ".lance")
-        filesystem.delete_dir(table_path)
+        try:
+            filesystem, path = fs_from_uri(self.uri)
+            table_path = os.path.join(path, name + ".lance")
+            filesystem.delete_dir(table_path)
+        except FileNotFoundError:
+            if not ignore_missing:
+                raise
