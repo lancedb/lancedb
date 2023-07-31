@@ -18,13 +18,13 @@ from typing import List, Literal, Optional, Type, Union
 import numpy as np
 import pandas as pd
 import pyarrow as pa
-from pydantic import BaseModel
+import pydantic
 
 from .common import VECTOR_COLUMN_NAME
 from .pydantic import LanceModel
 
 
-class Query(BaseModel):
+class Query(pydantic.BaseModel):
     """A Query"""
 
     vector_column: str = VECTOR_COLUMN_NAME
