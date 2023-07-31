@@ -249,3 +249,17 @@ def pydantic_to_schema(model: Type[pydantic.BaseModel]) -> pa.Schema:
     """
     fields = _pydantic_model_to_fields(model)
     return pa.schema(fields)
+
+
+class LanceModel(pydantic.BaseModel):
+    """A Pydantic Model that can be converted to a LanceDB Table."""
+
+    @classmethod
+    def to_arrow_schema(cls):
+        return pydantic_to_schema(cls)
+
+    @classmethod
+    def field_names(cls) -> List[str]:
+        if PYDANTIC_VERSION.major < 2:
+            return list(cls.__fields__.keys())
+        return list(cls.model_fields.keys())

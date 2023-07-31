@@ -20,7 +20,7 @@ import pyarrow as pa
 import pydantic
 import pytest
 
-from lancedb.pydantic import PYDANTIC_VERSION, pydantic_to_schema, vector
+from lancedb.pydantic import PYDANTIC_VERSION, LanceModel, pydantic_to_schema, vector
 
 
 @pytest.mark.skipif(
@@ -163,3 +163,13 @@ def test_fixed_size_list_validation():
         TestModel(vec=range(7))
 
     TestModel(vec=range(8))
+
+
+def test_lance_model():
+    class TestModel(LanceModel):
+        vec: vector(16)
+        li: List[int]
+
+    schema = pydantic_to_schema(TestModel)
+    assert schema == TestModel.to_arrow_schema()
+    assert TestModel.field_names() == ["vec", "li"]

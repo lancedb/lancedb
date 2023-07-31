@@ -279,7 +279,7 @@ class LanceDBConnection(DBConnection):
     def create_table(
         self,
         name: str,
-        data: Optional[Union[List[dict], dict, pd.DataFrame]] = None,
+        data: Optional[DATA] = None,
         schema: pa.Schema = None,
         mode: str = "create",
         on_bad_vectors: str = "error",

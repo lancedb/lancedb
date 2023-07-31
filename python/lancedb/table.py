@@ -27,12 +27,17 @@ from lance import LanceDataset
 from lance.vector import vec_to_table
 
 from .common import DATA, VEC, VECTOR_COLUMN_NAME
+from .pydantic import LanceModel
 from .query import LanceFtsQueryBuilder, LanceQueryBuilder, Query
 from .util import fs_from_uri
 
 
 def _sanitize_data(data, schema, on_bad_vectors, fill_value):
     if isinstance(data, list):
+        # convert to list of dict if data is a bunch of LanceModels
+        if isinstance(data[0], LanceModel):
+            schema = data[0].__class__.to_arrow_schema()
+            data = [dict(d) for d in data]
         data = pa.Table.from_pylist(data)
         data = _sanitize_schema(
             data, schema=schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value
