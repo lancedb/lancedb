@@ -12,48 +12,36 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::HashMap;
-use std::convert::TryFrom;
-use std::ops::Deref;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use arrow_array::{Float32Array, RecordBatchIterator};
 use async_trait::async_trait;
-use futures::{TryFutureExt, TryStreamExt};
-use lance::dataset::{WriteMode, WriteParams};
-use lance::index::vector::MetricType;
 use lance::io::object_store::ObjectStoreParams;
 use neon::prelude::*;
-use neon::types::buffer::TypedArray;
 use object_store::aws::{AwsCredential, AwsCredentialProvider};
 use object_store::CredentialProvider;
 use once_cell::sync::OnceCell;
 use tokio::runtime::Runtime;
 
 use vectordb::database::Database;
-use vectordb::table::{ReadParams, Table};
+use vectordb::table::ReadParams;
 
-use crate::arrow::{arrow_buffer_to_record_batch, record_batch_to_buffer};
 use crate::error::ResultExt;
-use crate::neon_ext::js_object_ext::JsObjectExt;
+use crate::table::JsTable;
+use crate::query::JsQuery;
 
 mod arrow;
 mod convert;
 mod error;
 mod index;
 mod neon_ext;
+mod table;
+mod query;
 
 struct JsDatabase {
     database: Arc<Database>,
 }
 
 impl Finalize for JsDatabase {}
-
-struct JsTable {
-    table: Arc<Mutex<Table>>,
-}
-
-impl Finalize for JsTable {}
 
 // TODO: object_store didn't export this type so I copied it.
 // Make a request to object_store to export this type
@@ -196,8 +184,9 @@ fn database_open_table(mut cx: FunctionContext) -> JsResult<JsPromise> {
         let table_rst = database.open_table_with_params(&table_name, &params).await;
 
         deferred.settle_with(&channel, move |mut cx| {
-            let table = Arc::new(Mutex::new(table_rst.or_throw(&mut cx)?));
-            Ok(cx.boxed(JsTable { table }))
+            let table = table_rst.or_throw(&mut cx)?;
+            let js_table = JsTable::new(&mut cx, table).or_throw(&mut cx)?;
+            Ok(cx.boxed(js_table))
         });
     });
     Ok(promise)
@@ -224,209 +213,7 @@ fn database_drop_table(mut cx: FunctionContext) -> JsResult<JsPromise> {
     Ok(promise)
 }
 
-fn table_search(mut cx: FunctionContext) -> JsResult<JsPromise> {
-    let js_table = cx.this().downcast_or_throw::<JsBox<JsTable>, _>(&mut cx)?;
-    let query_obj = cx.argument::<JsObject>(0)?;
 
-    let limit = query_obj
-        .get::<JsNumber, _, _>(&mut cx, "_limit")?
-        .value(&mut cx);
-    let select = query_obj
-        .get_opt::<JsArray, _, _>(&mut cx, "_select")?
-        .map(|arr| {
-            let js_array = arr.deref();
-            let mut projection_vec: Vec<String> = Vec::new();
-            for i in 0..js_array.len(&mut cx) {
-                let entry: Handle<JsString> = js_array.get(&mut cx, i).unwrap();
-                projection_vec.push(entry.value(&mut cx));
-            }
-            projection_vec
-        });
-    let filter = query_obj
-        .get_opt::<JsString, _, _>(&mut cx, "_filter")?
-        .map(|s| s.value(&mut cx));
-    let refine_factor = query_obj
-        .get_opt_u32(&mut cx, "_refineFactor")
-        .or_throw(&mut cx)?;
-    let nprobes = query_obj.get_usize(&mut cx, "_nprobes").or_throw(&mut cx)?;
-    let metric_type = query_obj
-        .get_opt::<JsString, _, _>(&mut cx, "_metricType")?
-        .map(|s| s.value(&mut cx))
-        .map(|s| MetricType::try_from(s.as_str()).unwrap());
-
-    let rt = runtime(&mut cx)?;
-    let channel = cx.channel();
-
-    let (deferred, promise) = cx.promise();
-    let table = js_table.table.clone();
-    let query_vector = query_obj.get::<JsArray, _, _>(&mut cx, "_queryVector")?;
-    let query = convert::js_array_to_vec(query_vector.deref(), &mut cx);
-
-    rt.spawn(async move {
-        let builder = table
-            .lock()
-            .unwrap()
-            .search(Float32Array::from(query))
-            .limit(limit as usize)
-            .refine_factor(refine_factor)
-            .nprobes(nprobes)
-            .filter(filter)
-            .metric_type(metric_type)
-            .select(select);
-        let record_batch_stream = builder.execute();
-        let results = record_batch_stream
-            .and_then(|stream| {
-                stream
-                    .try_collect::<Vec<_>>()
-                    .map_err(vectordb::error::Error::from)
-            })
-            .await;
-
-        deferred.settle_with(&channel, move |mut cx| {
-            let results = results.or_throw(&mut cx)?;
-            let buffer = record_batch_to_buffer(results).or_throw(&mut cx)?;
-            Ok(JsBuffer::external(&mut cx, buffer))
-        });
-    });
-    Ok(promise)
-}
-
-fn table_create(mut cx: FunctionContext) -> JsResult<JsPromise> {
-    let db = cx
-        .this()
-        .downcast_or_throw::<JsBox<JsDatabase>, _>(&mut cx)?;
-    let table_name = cx.argument::<JsString>(0)?.value(&mut cx);
-    let buffer = cx.argument::<JsBuffer>(1)?;
-    let batches = arrow_buffer_to_record_batch(buffer.as_slice(&mut cx)).or_throw(&mut cx)?;
-    let schema = batches[0].schema();
-
-    // Write mode
-    let mode = match cx.argument::<JsString>(2)?.value(&mut cx).as_str() {
-        "overwrite" => WriteMode::Overwrite,
-        "append" => WriteMode::Append,
-        "create" => WriteMode::Create,
-        _ => return cx.throw_error("Table::create only supports 'overwrite' and 'create' modes"),
-    };
-
-    let rt = runtime(&mut cx)?;
-    let channel = cx.channel();
-
-    let (deferred, promise) = cx.promise();
-    let database = db.database.clone();
-
-    let aws_creds = match get_aws_creds(&mut cx, 3) {
-        Ok(creds) => creds,
-        Err(err) => return err,
-    };
-
-    let params = WriteParams {
-        store_params: Some(ObjectStoreParams {
-            aws_credentials: aws_creds,
-            ..ObjectStoreParams::default()
-        }),
-        mode: mode,
-        ..WriteParams::default()
-    };
-
-    rt.block_on(async move {
-        let batch_reader = RecordBatchIterator::new(batches.into_iter().map(Ok), schema);
-        let table_rst = database
-            .create_table(&table_name, batch_reader, Some(params))
-            .await;
-
-        deferred.settle_with(&channel, move |mut cx| {
-            let table = Arc::new(Mutex::new(table_rst.or_throw(&mut cx)?));
-            Ok(cx.boxed(JsTable { table }))
-        });
-    });
-    Ok(promise)
-}
-
-fn table_add(mut cx: FunctionContext) -> JsResult<JsPromise> {
-    let write_mode_map: HashMap<&str, WriteMode> = HashMap::from([
-        ("create", WriteMode::Create),
-        ("append", WriteMode::Append),
-        ("overwrite", WriteMode::Overwrite),
-    ]);
-
-    let js_table = cx.this().downcast_or_throw::<JsBox<JsTable>, _>(&mut cx)?;
-    let buffer = cx.argument::<JsBuffer>(0)?;
-    let write_mode = cx.argument::<JsString>(1)?.value(&mut cx);
-
-    let batches = arrow_buffer_to_record_batch(buffer.as_slice(&mut cx)).or_throw(&mut cx)?;
-    let schema = batches[0].schema();
-
-    let rt = runtime(&mut cx)?;
-    let channel = cx.channel();
-
-    let (deferred, promise) = cx.promise();
-    let table = js_table.table.clone();
-    let write_mode = write_mode_map.get(write_mode.as_str()).cloned();
-
-    let aws_creds = match get_aws_creds(&mut cx, 2) {
-        Ok(creds) => creds,
-        Err(err) => return err,
-    };
-
-    let params = WriteParams {
-        store_params: Some(ObjectStoreParams {
-            aws_credentials: aws_creds,
-            ..ObjectStoreParams::default()
-        }),
-        mode: write_mode.unwrap_or(WriteMode::Append),
-        ..WriteParams::default()
-    };
-
-    rt.block_on(async move {
-        let batch_reader = RecordBatchIterator::new(batches.into_iter().map(Ok), schema);
-        let add_result = table.lock().unwrap().add(batch_reader, Some(params)).await;
-
-        deferred.settle_with(&channel, move |mut cx| {
-            let _added = add_result.or_throw(&mut cx)?;
-            Ok(cx.boolean(true))
-        });
-    });
-    Ok(promise)
-}
-
-fn table_count_rows(mut cx: FunctionContext) -> JsResult<JsPromise> {
-    let js_table = cx.this().downcast_or_throw::<JsBox<JsTable>, _>(&mut cx)?;
-    let rt = runtime(&mut cx)?;
-    let channel = cx.channel();
-
-    let (deferred, promise) = cx.promise();
-    let table = js_table.table.clone();
-
-    rt.block_on(async move {
-        let num_rows_result = table.lock().unwrap().count_rows().await;
-
-        deferred.settle_with(&channel, move |mut cx| {
-            let num_rows = num_rows_result.or_throw(&mut cx)?;
-            Ok(cx.number(num_rows as f64))
-        });
-    });
-    Ok(promise)
-}
-
-fn table_delete(mut cx: FunctionContext) -> JsResult<JsPromise> {
-    let js_table = cx.this().downcast_or_throw::<JsBox<JsTable>, _>(&mut cx)?;
-    let rt = runtime(&mut cx)?;
-    let channel = cx.channel();
-
-    let (deferred, promise) = cx.promise();
-    let table = js_table.table.clone();
-
-    let predicate = cx.argument::<JsString>(0)?.value(&mut cx);
-
-    let delete_result = rt.block_on(async move { table.lock().unwrap().delete(&predicate).await });
-
-    deferred.settle_with(&channel, move |mut cx| {
-        delete_result.or_throw(&mut cx)?;
-        Ok(cx.undefined())
-    });
-
-    Ok(promise)
-}
 
 #[neon::main]
 fn main(mut cx: ModuleContext) -> NeonResult<()> {
@@ -434,11 +221,11 @@ fn main(mut cx: ModuleContext) -> NeonResult<()> {
     cx.export_function("databaseTableNames", database_table_names)?;
     cx.export_function("databaseOpenTable", database_open_table)?;
     cx.export_function("databaseDropTable", database_drop_table)?;
-    cx.export_function("tableSearch", table_search)?;
-    cx.export_function("tableCreate", table_create)?;
-    cx.export_function("tableAdd", table_add)?;
-    cx.export_function("tableCountRows", table_count_rows)?;
-    cx.export_function("tableDelete", table_delete)?;
+    cx.export_function("tableSearch", JsQuery::js_search)?;
+    cx.export_function("tableCreate", JsTable::js_create)?;
+    cx.export_function("tableAdd", JsTable::js_add)?;
+    cx.export_function("tableCountRows", JsTable::js_count_rows)?;
+    cx.export_function("tableDelete", JsTable::js_delete)?;
     cx.export_function(
         "tableCreateVectorIndex",
         index::vector::table_create_vector_index,

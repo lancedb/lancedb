@@ -50,7 +50,7 @@ async function example() {
         { id: 5, text: 'Banana', type: 'fruit' }
     ]
 
-    const table = await db.createTable('food_table', data, "create", embed_fun)
+    const table = await db.createTable('food_table', data, embed_fun)
 
 
     // Query the table
