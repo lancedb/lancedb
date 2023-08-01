@@ -9,7 +9,7 @@
     "build": "cargo-cp-artifact --artifact cdylib vectordb-node index.node -- cargo build --message-format=json",
     "build-release": "npm run build -- --release",
     "test": "npm run tsc && mocha -recursive dist/test",
-    "lint": "eslint src --ext .js,.ts",
+    "lint": "eslint native.js src --ext .js,.ts",
     "clean": "rm -rf node_modules *.node dist/",
     "pack-build": "neon pack-build",
     "check-npm": "printenv && which node && which npm && npm --version"
