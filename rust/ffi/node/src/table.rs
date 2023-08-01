@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::collections::HashMap;
 use std::sync::mpsc;
 use std::thread;
 use arrow_array::RecordBatchIterator;
@@ -131,12 +130,6 @@ impl JsTable {
     }
 
     pub(crate) fn js_add(mut cx: FunctionContext) -> JsResult<JsPromise> {
-        let write_mode_map: HashMap<&str, WriteMode> = HashMap::from([
-            ("create", WriteMode::Create),
-            ("append", WriteMode::Append),
-            ("overwrite", WriteMode::Overwrite),
-        ]);
-
         let js_table = cx.this().downcast_or_throw::<JsBox<JsTable>, _>(&mut cx)?;
         let buffer = cx.argument::<JsBuffer>(0)?;
         let write_mode = cx.argument::<JsString>(1)?.value(&mut cx);
@@ -147,8 +140,12 @@ impl JsTable {
         let rt = runtime(&mut cx)?;
 
         let (deferred, promise) = cx.promise();
-        let write_mode = write_mode_map.get(write_mode.as_str()).cloned();
-
+        let write_mode = match write_mode.as_str() {
+            "create" => WriteMode::Create,
+            "append" => WriteMode::Append,
+            "overwrite" => WriteMode::Overwrite,
+            s =>  return cx.throw_error(format!("invalid write mode {}", s)),
+        };
         let aws_creds = match get_aws_creds(&mut cx, 2) {
             Ok(creds) => creds,
             Err(err) => return err,
@@ -159,7 +156,7 @@ impl JsTable {
                 aws_credentials: aws_creds,
                 ..ObjectStoreParams::default()
             }),
-            mode: write_mode.unwrap_or(WriteMode::Append),
+            mode: write_mode,
             ..WriteParams::default()
         };
 
