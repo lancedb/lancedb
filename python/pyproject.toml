@@ -1,11 +1,18 @@
 [project]
 name = "lancedb"
 version = "0.1.16"
-dependencies = ["pylance==0.5.10", "ratelimiter", "retry", "tqdm", "aiohttp", "pydantic", "attr", "semver"]
-description = "lancedb"
-authors = [
-    { name = "LanceDB Devs", email = "dev@lancedb.com" },
+dependencies = [
+    "pylance==0.5.10",
+    "ratelimiter",
+    "retry",
+    "tqdm",
+    "aiohttp",
+    "pydantic",
+    "attr",
+    "semver>=3.0"
 ]
+description = "lancedb"
+authors = [{ name = "LanceDB Devs", email = "dev@lancedb.com" }]
 license = { file = "LICENSE" }
 readme = "README.md"
 requires-python = ">=3.8"
@@ -36,21 +43,12 @@ classifiers = [
 repository = "https://github.com/lancedb/lancedb"
 
 [project.optional-dependencies]
-tests = [
-    "pandas>=1.4", "pytest", "pytest-mock", "pytest-asyncio"
-]
-dev = [
-    "ruff", "pre-commit", "black"
-]
-docs = [
-    "mkdocs", "mkdocs-jupyter", "mkdocs-material", "mkdocstrings[python]"
-]
+tests = ["pandas>=1.4", "pytest", "pytest-mock", "pytest-asyncio"]
+dev = ["ruff", "pre-commit", "black"]
+docs = ["mkdocs", "mkdocs-jupyter", "mkdocs-material", "mkdocstrings[python]"]
 
 [build-system]
-requires = [
-  "setuptools",
-  "wheel",
-]
+requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.isort]
