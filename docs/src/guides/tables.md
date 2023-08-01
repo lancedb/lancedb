@@ -113,7 +113,27 @@ A Table is a collection of Records in a LanceDB Database.
     batch = pa.RecordBatch.from_pandas(df)
     ```
 
-
+    ## Creating Empty Table
+    You can also create empty tables in python. Initialize it with schema and later ingest data into it.
+    
+    ```python
+    import lancedb
+    import pyarrow as pa
+  
+    schema = pa.schema(
+      [
+          pa.field("vector", pa.list_(pa.float32(), 2)),
+          pa.field("item", pa.string()),
+          pa.field("price", pa.float32()),
+      ])
+    tbl = db.create_table("table5", schema=schema)
+    data = [
+        {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+        {"vector": [5.9, 26.5], "item": "bar", "price": 20.0},
+    ]
+    tbl.add(data=data)
+    ```
+    
 
 === "Javascript/Typescript"
 
@@ -125,3 +145,57 @@ A Table is a collection of Records in a LanceDB Database.
     const uri = "data/sample-lancedb";
     const db = await lancedb.connect(uri);
     ```
+
+    ### Creating a Table
+
+    You can create a LanceDB table in javascript using an array of records.
+
+    ```javascript
+    data
+    const tb = await db.createTable("my_table",
+                  data=[{"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+                        {"vector": [5.9, 26.5], "item": "bar", "price": 20.0}])
+    ```
+
+    !!! info "Note"
+    If the table already exists, LanceDB will raise an error by default. If you want to overwrite the table, you need to specify the `WriteMode` in the createTable function.
+
+    ```javascript
+    const table = await con.createTable(tableName, data, { writeMode: WriteMode.Overwrite })
+    ```
+
+## Open existing tables
+
+If you forget the name of your table, you can always get a listing of all table names:
+
+
+=== "Python"
+    ### Get a list of existing Tables
+
+    ```python
+    print(db.table_names())
+    ```
+=== "Javascript/Typescript"
+
+    ```javascript
+    console.log(await db.tableNames());
+    ```
+
+Then, you can open any existing tables
+
+=== "Python"
+
+    ```python
+    tbl = db.open_table("my_table")
+    ```
+=== "Javascript/Typescript"
+
+    ```javascript
+    const tbl = await db.openTable("my_table");
+    ```
+
+## Adding to a Table
+After a table has been created, you can always add more data to it using
+
+=== "Python"
+    Adding
