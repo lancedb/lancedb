@@ -67,6 +67,14 @@ impl From<neon::result::Throw> for Error {
     }
 }
 
+impl<T> From<std::sync::mpsc::SendError<T>> for Error {
+    fn from(value: std::sync::mpsc::SendError<T>) -> Self {
+        Self::Neon {
+            message: value.to_string(),
+        }
+    }
+}
+
 /// ResultExt is used to transform a [`Result`] into a [`NeonResult`],
 /// so it can be returned as a JavaScript error
 /// Copied from [Neon](https://github.com/neon-bindings/neon/blob/4c2e455a9e6814f1ba0178616d63caec7f4df317/crates/neon/src/result/mod.rs#L88)
