@@ -9,6 +9,9 @@ A Table is a collection of Records in a LanceDB Database.
     import lancedb
     db = lancedb.connect("./.lancedb")
     ```
+
+    LanceDB allows ingesting data from various sources - `dict`, `list[dict]`, `pd.DataFrame`, `pa.Table` or a `Iterator[pa.RecordBatch]`. Let's take a look at some of the these.
+
     ### From list of tuples or dictionaries
 
     ```python
@@ -198,4 +201,126 @@ Then, you can open any existing tables
 After a table has been created, you can always add more data to it using
 
 === "Python"
-    Adding
+    You can add any of the valid data structures accepted by LanceDB table, i.e, `dict`, `list[dict]`, `pd.DataFrame`, or a `Iterator[pa.RecordBatch]`. Here are some examples.
+
+    ### Adding Pandas DataFrame
+
+    ```python
+    df = pd.DataFrame([{"vector": [1.3, 1.4], "item": "fizz", "price": 100.0},
+                  {"vector": [9.5, 56.2], "item": "buzz", "price": 200.0}])
+    tbl.add(df)
+    ```
+
+    You can also add a large dataset batch in one go using pyArrow RecordBatch Iterator.
+
+    ### Adding RecordBatch Iterator
+    
+    ```python
+    import pyarrow as pa
+
+    def make_batches():
+        for i in range(5):
+            yield pa.RecordBatch.from_arrays(
+                [
+                    pa.array([[3.1, 4.1], [5.9, 26.5]]),
+                    pa.array(["foo", "bar"]),
+                    pa.array([10.0, 20.0]),
+                ],
+                ["vector", "item", "price"],
+            )
+    
+    tbl.add(make_batches())
+    ```
+  
+    The other arguments accepted:
+    | Name | Type | Description | Default |
+    |---|---|---|---|
+    | data | DATA | The data to insert into the table. | required |
+    | mode | str | The mode to use when writing the data. Valid values are "append" and "overwrite". | append |
+    | on_bad_vectors | str | What to do if any of the vectors are not the same size or contains NaNs. One of "error", "drop", "fill". | drop |
+    | fill value | float | The value to use when filling vectors: Only used if on_bad_vectors="fill". | 0.0 |
+
+  
+=== "Javascript/Typescript"
+
+    ```javascript
+    await tbl.add([{vector: [1.3, 1.4], item: "fizz", price: 100.0},
+        {vector: [9.5, 56.2], item: "buzz", price: 200.0}])
+    ```
+
+## Deleting from a Table
+Use the `delete()` method on tables to delete rows from a table. To choose which rows to delete, provide a filter that matches on the metadata columns. This can delete any number of rows that match the filter.
+
+=== "Python"
+
+    ```python
+    tbl.delete('item = "fizz"')
+    ```
+
+    ## Examples
+
+    ### Deleting row with specific column value
+
+    ```python
+    import lancedb
+    import pandas as pd
+
+    data = pd.DataFrame({"x": [1, 2, 3], "vector": [[1, 2], [3, 4], [5, 6]]})
+    db = lancedb.connect("./.lancedb")
+    table = db.create_table("my_table", data)
+    table.to_pandas()
+    #   x      vector
+    # 0  1  [1.0, 2.0]
+    # 1  2  [3.0, 4.0]
+    # 2  3  [5.0, 6.0]
+
+    table.delete("x = 2")
+    table.to_pandas()
+    #   x      vector
+    # 0  1  [1.0, 2.0]
+    # 1  3  [5.0, 6.0]
+    ```  
+
+    ### Delete from a list of values
+
+    ```python
+    to_remove = [1, 5]
+    to_remove = ", ".join(str(v) for v in to_remove)
+
+    table.delete(f"x IN ({to_remove})")
+    table.to_pandas()
+    #   x      vector
+    # 0  3  [5.0, 6.0]
+    ```
+  
+=== "Javascript/ Typescript"
+
+    ```javascript
+    await tbl.delete('item = "fizz"')
+    ```
+
+    ### Deleting row with specific column value
+
+    ```javascript
+    const con = await lancedb.connect("./.lancedb")
+    const data = [
+      {id: 1, vector: [1, 2]},
+      {id: 2, vector: [3, 4]},
+      {id: 3, vector: [5, 6]},
+    ];
+    const tbl = await con.createTable("my_table", data)
+    await tbl.delete("id = 2")
+    await tbl.countRows() // Returns 2
+    ```
+
+    ### Delete from a list of values
+
+    ```javascript
+    const to_remove = [1, 5];
+    await tbl.delete(`id IN (${to_remove.join(",")})`)
+    await tbl.countRows() // Returns 1
+    ```
+
+## What's Next?
+
+Learn how to Query your tables and create indices
