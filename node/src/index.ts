@@ -152,7 +152,9 @@ export interface Table<T = number[]> {
    * Creates a search query to find the nearest neighbors of the given search term
    * @param query The query search term
    */
-  search: (query?: T) => Query<T>
+  search: (query: T) => Query<T>
+
+  query: (params?: undefined | VectorSearch<T>) => Query<T>
 
   /**
    * Insert records into this Table.
@@ -309,6 +311,46 @@ export class LocalConnection implements Connection {
   }
 }
 
+export class VectorSearch<T = number[]> {
+  private readonly _query?: T
+  _refineFactor?: number
+  _nprobes: number
+  _metricType?: MetricType
+
+  constructor (readonly query: T) {
+    this._nprobes = 20
+    this._refineFactor = undefined
+    this._metricType = undefined
+  }
+
+  /**
+   * Refine the results by reading extra elements and re-ranking them in memory.
+   * @param value refine factor to use in this query.
+   */
+  refineFactor (value: number): VectorSearch<T> {
+    this._refineFactor = value
+    return this
+  }
+
+  /**
+   * The number of probes used. A higher number makes search more accurate but also slower.
+   * @param value The number of probes used.
+   */
+  nprobes (value: number): VectorSearch<T> {
+    this._nprobes = value
+    return this
+  }
+
+  /**
+   * The MetricType used for this Query.
+   * @param value The metric to the. @see MetricType for the different options
+   */
+  metricType (value: MetricType): VectorSearch<T> {
+    this._metricType = value
+    return this
+  }
+}
+
 export class LocalTable<T = number[]> implements Table<T> {
   private readonly _tbl: any
   private readonly _name: string
@@ -338,8 +380,16 @@ export class LocalTable<T = number[]> implements Table<T> {
    * Creates a search query to find the nearest neighbors of the given search term
    * @param query The query search term
    */
-  search (query?: T): Query<T> {
+  search (query: T): Query<T> {
     return new Query(query, this._tbl, this._embeddings)
+  }
+
+  query (params?: undefined | VectorSearch<T>): Query<T> {
+    const q = new Query<T>(undefined, this._tbl, this._embeddings)
+    if (params instanceof VectorSearch) {
+      q.vectorSearch(params)
+    }
+    return q
   }
 
   /**

@@ -29,7 +29,7 @@ class Query(BaseModel):
     vector_column: str = VECTOR_COLUMN_NAME
 
     # vector to search for
-    vector: List[float]
+    vector: Optional[List[float]] = None
 
     # sql filter to refine the query with
     filter: Optional[str] = None
@@ -49,6 +49,31 @@ class Query(BaseModel):
 
     # Refine factor.
     refine_factor: Optional[int] = None
+
+class VectorSearchBuilder:
+    def __init__(self, query: np.ndarray):
+        self._query = query
+        self._metric = "L2"
+        self._nprobes = 20
+        self._refine_factor = None
+
+    def metric(self, metric: Literal["L2", "cosine"]) -> LanceQueryBuilder:
+        self._metric = metric
+        return self
+
+    def get_metric(self) -> str:
+        return self._metric
+
+    def get_vector(self) -> np.ndarray:
+        return self._query
+
+    def nprobes(self, nprobes: int) -> LanceQueryBuilder:
+        self._nprobes = nprobes
+        return self
+
+    def refine_factor(self, refine_factor: int) -> LanceQueryBuilder:
+        self._refine_factor = refine_factor
+        return self
 
 
 class LanceQueryBuilder:
@@ -77,9 +102,10 @@ class LanceQueryBuilder:
     def __init__(
         self,
         table: "lancedb.table.Table",
-        query: Union[np.ndarray, str],
+        query: Union[None, np.ndarray, str] = None,
         vector_column: str = VECTOR_COLUMN_NAME,
     ):
+        self._vector_search = None
         self._metric = "L2"
         self._nprobes = 20
         self._refine_factor = None
@@ -89,6 +115,10 @@ class LanceQueryBuilder:
         self._columns = None
         self._where = None
         self._vector_column = vector_column
+
+    def vector_search(self, vector_search: VectorSearchBuilder):
+        self._vector_search = vector_search;
+        return self
 
     def limit(self, limit: int) -> LanceQueryBuilder:
         """Set the maximum number of results to return.
@@ -217,7 +247,14 @@ class LanceQueryBuilder:
         and also the "score" column which is the distance between the query
         vector and the returned vectors.
         """
-        vector = self._query if isinstance(self._query, list) else self._query.tolist()
+
+        vector = None
+        if isinstance(self._vector_search, VectorSearchBuilder):
+            vector = self._vector_search.get_vector()
+        elif isinstance(self._query, list):
+            vector = self._query
+                # isinstance(self._query, list) else self._query.tolist()
+
         query = Query(
             vector=vector,
             filter=self._where,

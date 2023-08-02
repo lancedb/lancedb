@@ -12,12 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { Vector, tableFromIPC } from 'apache-arrow'
+import { tableFromIPC, Vector } from 'apache-arrow'
 import { type EmbeddingFunction } from './embedding/embedding_function'
-import { type MetricType } from '.'
+import { MetricType, type VectorSearch } from '.'
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { tableSearch } = require('../native.js')
+
+export interface VectorSearchOpts<T> {
+  query: T
+  refineFactor?: number
+  nprobes?: number
+  metricType?: MetricType
+}
 
 /**
  * A builder for nearest neighbor queries for LanceDB.
@@ -32,6 +39,11 @@ export class Query<T = number[]> {
   private _select?: string[]
   private _filter?: string
   private _metricType?: MetricType
+
+  private _vectorSearch?: VectorSearch<T>
+
+  private vectorSearchOpts?: VectorSearchOpts<T>
+
   protected readonly _embeddings?: EmbeddingFunction<T>
 
   constructor (queryVector?: T, tbl?: any, embeddings?: EmbeddingFunction<T>) {
@@ -44,6 +56,21 @@ export class Query<T = number[]> {
     this._filter = undefined
     this._metricType = undefined
     this._embeddings = embeddings
+  }
+
+  vectorSearch (value: VectorSearch<T>): Query<T> {
+    this._vectorSearch = value
+    return this
+  }
+
+  vectorSearchOption2 (opts: Partial<VectorSearchOpts<T>>): Query<T> {
+    this.vectorSearchOpts = Object.assign({
+      query: [],
+      refineFactor: 0,
+      nprobes: 20,
+      metricType: MetricType.L2
+    }, opts)
+    return this
   }
 
   /***
@@ -116,6 +143,14 @@ export class Query<T = number[]> {
         this._queryVector = (await this._embeddings.embed([this._query]))[0]
       } else {
         this._queryVector = this._query as number[]
+      }
+    }
+
+    if (this._vectorSearch !== undefined) {
+      if (this._embeddings !== undefined) {
+        this._queryVector = (await this._embeddings.embed([this._vectorSearch.query]))[0]
+      } else {
+        this._queryVector = this._vectorSearch.query as number[]
       }
     }
 

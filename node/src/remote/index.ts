@@ -14,7 +14,7 @@
 
 import {
   type EmbeddingFunction, type Table, type VectorIndexParams, type Connection,
-  type ConnectionOptions
+  type ConnectionOptions, type VectorSearch
 } from '../index'
 import { Query } from '../query'
 
@@ -164,6 +164,10 @@ export class RemoteTable<T = number[]> implements Table<T> {
   }
 
   async delete (filter: string): Promise<void> {
+    throw new Error('Not implemented')
+  }
+
+  query (params: VectorSearch<T> | undefined): Query<T> {
     throw new Error('Not implemented')
   }
 }

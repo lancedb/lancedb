@@ -126,3 +126,45 @@ def test_query_builder_with_different_vector_column():
 
 def cosine_distance(vec1, vec2):
     return 1 - np.dot(vec1, vec2) / (np.linalg.norm(vec1) * np.linalg.norm(vec2))
+
+def test_vector_search():
+    import lancedb
+    from lancedb.query import VectorSearchBuilder
+
+    db = lancedb.connect('/tmp/lancedb-100')
+    table = db.open_table('vectors')
+
+    results = table.query(VectorSearchBuilder([0.1, 0.2])) \
+        .select(['id', 'name', 'price', 'is_active'])\
+        .where('id > 2 and id < 10 and is_active = true')
+
+    print(results.to_df())
+
+def test_vector_search_with_ann_params():
+    import lancedb
+    from lancedb.query import VectorSearchBuilder
+
+    db = lancedb.connect('/tmp/lancedb-100')
+    table = db.open_table('vectors')
+
+    vector_search = VectorSearchBuilder([0.1, 0.2])\
+        .nprobes(10)\
+        .refine_factor(10)
+
+    results = table.query(vector_search) \
+        .select(['id', 'name', 'price', 'is_active']) \
+        .where('id > 2 and id < 10 and is_active = true')
+
+    print(results.to_df())
+
+def test_table_scan():
+    import lancedb
+
+    db = lancedb.connect('/tmp/lancedb-100')
+    table = db.open_table('vectors')
+
+    results = table.query() \
+        .select(['id', 'name', 'price', 'is_active']) \
+        .where('id > 2 and id < 10 and is_active = true')
+
+    print(results.to_df())

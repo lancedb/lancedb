@@ -193,6 +193,9 @@ class Table(ABC):
         """
         raise NotImplementedError
 
+    def query(self, query_type: Union[None, FullTextSearchBuilder, VectorSearchBuilder]=None) -> LanceQueryBuilder:
+        raise NotImplementedError
+
     @abstractmethod
     def _execute_query(self, query: Query) -> pa.Table:
         pass
@@ -464,6 +467,14 @@ class LanceTable(Table):
             raise TypeError(f"Unsupported query type: {type(query)}")
         return LanceQueryBuilder(self, query, vector_column_name)
 
+    def query(self, query_type: Union[None, FullTextSearchBuilder, VectorSearchBuilder]=None) -> LanceQueryBuilder:
+        from lancedb.query import VectorSearchBuilder
+
+        builder = LanceQueryBuilder(self, None)
+        if isinstance(query_type, VectorSearchBuilder):
+            return builder.vector_search(query_type)
+        return builder
+
     @classmethod
     def create(
         cls,
@@ -540,18 +551,25 @@ class LanceTable(Table):
 
     def _execute_query(self, query: Query) -> pa.Table:
         ds = self.to_lance()
-        return ds.to_table(
-            columns=query.columns,
-            filter=query.filter,
-            nearest={
-                "column": query.vector_column,
-                "q": query.vector,
-                "k": query.k,
-                "metric": query.metric,
-                "nprobes": query.nprobes,
-                "refine_factor": query.refine_factor,
-            },
-        )
+
+        if query.vector == None:
+            return ds.to_table(
+                columns=query.columns,
+                filter=query.filter,
+            )
+        else:
+            return ds.to_table(
+                columns=query.columns,
+                filter=query.filter,
+                nearest={
+                    "column": query.vector_column,
+                    "q": query.vector,
+                    "k": query.k,
+                    "metric": query.metric,
+                    "nprobes": query.nprobes,
+                    "refine_factor": query.refine_factor,
+                },
+            )
 
 
 def _sanitize_schema(
