@@ -9,6 +9,7 @@ const excludedFiles = [
   "../src/examples/serverless_qa_bot_with_modal_and_langchain.md",
   "../src/examples/transformerjs_embedding_search_nodejs.md",
   "../src/examples/youtube_transcript_bot_with_nodejs.md",
+  "../src/guides/tables.md",
 ];
 const nodePrefix = "javascript";
 const nodeFile = ".js";

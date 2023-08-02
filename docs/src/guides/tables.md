@@ -62,6 +62,7 @@ A Table is a collection of Records in a LanceDB Database.
 
     table = db.create_table("table3", data, schema=custom_schema)
     ```
+
     ### From PyArrow Table
 
     ```python
@@ -233,6 +234,7 @@ After a table has been created, you can always add more data to it using
     ```
   
     The other arguments accepted:
+
     | Name | Type | Description | Default |
     |---|---|---|---|
     | data | DATA | The data to insert into the table. | required |
@@ -249,6 +251,7 @@ After a table has been created, you can always add more data to it using
     ```
 
 ## Deleting from a Table
+
 Use the `delete()` method on tables to delete rows from a table. To choose which rows to delete, provide a filter that matches on the metadata columns. This can delete any number of rows that match the filter.
 
 === "Python"
@@ -293,7 +296,7 @@ Use the `delete()` method on tables to delete rows from a table. To choose which
     # 0  3  [5.0, 6.0]
     ```
   
-=== "Javascript/ Typescript"
+=== "Javascript/Typescript"
 
     ```javascript
     await tbl.delete('item = "fizz"')
