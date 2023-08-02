@@ -61,6 +61,7 @@ describe('LanceDB client', function () {
       const con = await lancedb.connect(uri)
       const table = await con.openTable('vectors')
       assert.equal(table.name, 'vectors')
+      await table.close()
     })
 
     it('execute a query', async function () {
@@ -74,6 +75,7 @@ describe('LanceDB client', function () {
       const vector = results[0].vector as Float32Array
       assert.approximately(vector[0], 0.0, 0.2)
       assert.approximately(vector[0], 0.1, 0.3)
+      await table.close()
     })
 
     it('limits # of results', async function () {
@@ -83,6 +85,7 @@ describe('LanceDB client', function () {
       const results = await table.search([0.1, 0.3]).limit(1).execute()
       assert.equal(results.length, 1)
       assert.equal(results[0].id, 1)
+      await table.close()
     })
 
     it('uses a filter / where clause', async function () {
@@ -99,6 +102,7 @@ describe('LanceDB client', function () {
       assertResults(results)
       results = await table.search([0.1, 0.1]).where('id == 2').execute()
       assertResults(results)
+      await table.close()
     })
 
     it('select only a subset of columns', async function () {
@@ -115,6 +119,7 @@ describe('LanceDB client', function () {
       assert.isUndefined(results[0].id)
       assert.isUndefined(results[0].name)
       assert.isUndefined(results[0].price)
+      await table.close()
     })
   })
 
@@ -132,6 +137,7 @@ describe('LanceDB client', function () {
       const table = await con.createTable(tableName, data)
       assert.equal(table.name, tableName)
       assert.equal(await table.countRows(), 2)
+      await table.close()
     })
 
     it('fails to create a new table when the vector column is missing', async function () {
@@ -169,6 +175,7 @@ describe('LanceDB client', function () {
       const table = await con.createTable(tableName, newData, { writeMode: WriteMode.Overwrite })
       assert.equal(table.name, tableName)
       assert.equal(await table.countRows(), 3)
+      await table.close()
     })
 
     it('appends records to an existing table ', async function () {
@@ -189,6 +196,7 @@ describe('LanceDB client', function () {
       ]
       await table.add(dataAdd)
       assert.equal(await table.countRows(), 4)
+      await table.close()
     })
 
     it('overwrite all records in a table', async function () {
@@ -204,6 +212,7 @@ describe('LanceDB client', function () {
       ]
       await table.overwrite(dataOver)
       assert.equal(await table.countRows(), 2)
+      await table.close()
     })
 
     it('can delete records from a table', async function () {
@@ -215,6 +224,7 @@ describe('LanceDB client', function () {
 
       await table.delete('price = 10')
       assert.equal(await table.countRows(), 1)
+      await table.close()
     })
   })
 
@@ -224,6 +234,7 @@ describe('LanceDB client', function () {
       const con = await lancedb.connect(uri)
       const table = await con.openTable('vectors')
       await table.createIndex({ type: 'ivf_pq', column: 'vector', num_partitions: 2, max_iters: 2, num_sub_vectors: 2 })
+      await table.close()
     }).timeout(10_000) // Timeout is high partially because GH macos runner is pretty slow
 
     it('replace an existing index', async function () {
@@ -241,6 +252,7 @@ describe('LanceDB client', function () {
 
       // Default replace = true
       await table.createIndex({ type: 'ivf_pq', column: 'vector', num_partitions: 2, max_iters: 2, num_sub_vectors: 2 })
+      await table.close()
     }).timeout(50_000)
 
     it('it should fail when the column is not a vector', async function () {
@@ -249,6 +261,7 @@ describe('LanceDB client', function () {
       const table = await con.openTable('vectors')
       const createIndex = table.createIndex({ type: 'ivf_pq', column: 'name', num_partitions: 2, max_iters: 2, num_sub_vectors: 2 })
       await expect(createIndex).to.be.rejectedWith(/VectorIndex requires the column data type to be fixed size list of float32s/)
+      await table.close()
     })
 
     it('it should fail when the column is not a vector', async function () {
@@ -257,6 +270,7 @@ describe('LanceDB client', function () {
       const table = await con.openTable('vectors')
       const createIndex = table.createIndex({ type: 'ivf_pq', column: 'name', num_partitions: -1, max_iters: 2, num_sub_vectors: 2 })
       await expect(createIndex).to.be.rejectedWith('num_partitions: must be > 0')
+      await table.close()
     })
   })
 
@@ -290,6 +304,7 @@ describe('LanceDB client', function () {
       const table = await con.createTable('vectors', data, embeddings, { writeMode: WriteMode.Create })
       const results = await table.search('foo').execute()
       assert.equal(results.length, 2)
+      await table.close()
     })
   })
 })

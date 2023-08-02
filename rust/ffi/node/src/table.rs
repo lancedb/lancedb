@@ -38,6 +38,8 @@ impl Finalize for JsTable {}
 pub(crate) enum JsTableMessage {
     // Promise to resolve and callback to be executed
     Callback(Deferred, TableCallback),
+    // Forces to shutdown the thread
+    Close,
 }
 
 impl JsTable {
@@ -56,12 +58,18 @@ impl JsTable {
                 match message {
                     JsTableMessage::Callback(deferred, f) => {
                         f(&mut table, &channel, deferred);
-                    }
+                    },
+                    JsTableMessage::Close => break
                 }
             }
         });
 
         Ok(Self { tx })
+    }
+
+    pub(crate) fn close(&self) -> Result<()> {
+        self.tx.send(JsTableMessage::Close)
+            .map_err(Error::from)
     }
 
     pub(crate) fn send(
@@ -214,5 +222,13 @@ impl JsTable {
             })
             .or_throw(&mut cx)?;
         Ok(promise)
+    }
+
+    pub(crate) fn js_close(mut cx: FunctionContext) -> JsResult<JsUndefined> {
+        cx.this()
+            .downcast_or_throw::<JsBox<JsTable>, _>(&mut cx)?
+            .close()
+            .or_throw(&mut cx)?;
+        Ok(cx.undefined())
     }
 }
