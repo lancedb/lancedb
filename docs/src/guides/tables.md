@@ -75,6 +75,29 @@ A Table is a collection of Records in a LanceDB Database.
     table = db.create_table("table4", pa_table)
     ```
 
+    ### From Pydantic Models
+    LanceDB supports to create Apache Arrow Schema from a Pydantic BaseModel via pydantic_to_schema() method.
+
+    ```python
+    from lancedb.pydantic import vector, LanceModel
+
+    class Content(LanceModel):
+        movie_id: int
+        vector: vector(128)
+        genres: str
+        title: str
+        imdb_id: int
+            
+        @property
+        def imdb_url(self) -> str:
+            return f"https://www.imdb.com/title/tt{self.imdb_id}"
+
+    import pyarrow as pa
+    db = lancedb.connect("~/.lancedb")
+    table_name = "movielens_small"
+    table = db.create_table(table_name, schema=Content.to_arrow_schema())
+    ```
+
     ### Using RecordBatch Iterator / Writing Large Datasets
 
     It is recommended to use RecordBatch itertator to add large datasets in batches when creating your table in one go. This does not create multiple versions of your dataset unlike manually adding batches using `table.add()`
