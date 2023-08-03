@@ -67,6 +67,9 @@ impl JsTable {
         Ok(Self { tx })
     }
 
+    // It is not necessary to call `close` since the database will be closed when the wrapping
+    // `JsBox` is garbage collected. However, calling `close` allows the process to exit
+    // immediately instead of waiting on garbage collection. This is useful in tests.
     pub(crate) fn close(&self) -> Result<()> {
         self.tx.send(JsTableMessage::Close)
             .map_err(Error::from)
