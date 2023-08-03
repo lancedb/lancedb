@@ -18,16 +18,7 @@ import * as chai from 'chai'
 import * as chaiAsPromised from 'chai-as-promised'
 
 import * as lancedb from '../index'
-import {
-  type AwsCredentials,
-  type EmbeddingFunction,
-  MetricType,
-  Query,
-  WriteMode,
-  DefaultWriteOptions,
-  isWriteOptions,
-  type Table
-} from '../index'
+import { type AwsCredentials, type EmbeddingFunction, MetricType, Query, WriteMode, DefaultWriteOptions, isWriteOptions } from '../index'
 
 const expect = chai.expect
 const assert = chai.assert
@@ -58,27 +49,24 @@ describe('LanceDB client', function () {
     })
 
     it('should return the existing table names', async function () {
-      const dir = await track().mkdir('lancejs')
-      const con = await lancedb.connect(dir)
-      const table = await con.createTable('table', [{ vector: [1, 2] }])
-      assert.deepEqual(await con.tableNames(), ['table'])
-      await table.close()
+      const uri = await createTestDB()
+      const con = await lancedb.connect(uri)
+      assert.deepEqual(await con.tableNames(), ['vectors'])
     })
   })
 
   describe('when querying an existing dataset', function () {
     it('should open a table', async function () {
-      const dir = await track().mkdir('lancejs')
-      const con = await lancedb.connect(dir)
-      const t = await con.createTable('table', [{ vector: [1, 2] }])
-      const table = await con.openTable('table')
-      assert.equal(table.name, 'table')
-      await t.close()
-      await table.close()
+      const uri = await createTestDB()
+      const con = await lancedb.connect(uri)
+      const table = await con.openTable('vectors')
+      assert.equal(table.name, 'vectors')
     })
 
     it('execute a query', async function () {
-      const table = await createTestTable()
+      const uri = await createTestDB()
+      const con = await lancedb.connect(uri)
+      const table = await con.openTable('vectors')
       const results = await table.search([0.1, 0.3]).execute()
 
       assert.equal(results.length, 2)
@@ -86,15 +74,15 @@ describe('LanceDB client', function () {
       const vector = results[0].vector as Float32Array
       assert.approximately(vector[0], 0.0, 0.2)
       assert.approximately(vector[0], 0.1, 0.3)
-      await table.close()
     })
 
     it('limits # of results', async function () {
-      const table = await createTestTable()
+      const uri = await createTestDB()
+      const con = await lancedb.connect(uri)
+      const table = await con.openTable('vectors')
       const results = await table.search([0.1, 0.3]).limit(1).execute()
       assert.equal(results.length, 1)
       assert.equal(results[0].id, 1)
-      await table.close()
     })
 
     it('uses a filter / where clause', async function () {
@@ -104,16 +92,19 @@ describe('LanceDB client', function () {
         assert.equal(results[0].id, 2)
       }
 
-      const table = await createTestTable()
+      const uri = await createTestDB()
+      const con = await lancedb.connect(uri)
+      const table = await con.openTable('vectors')
       let results = await table.search([0.1, 0.1]).filter('id == 2').execute()
       assertResults(results)
       results = await table.search([0.1, 0.1]).where('id == 2').execute()
       assertResults(results)
-      await table.close()
     })
 
     it('select only a subset of columns', async function () {
-      const table = await createTestTable()
+      const uri = await createTestDB()
+      const con = await lancedb.connect(uri)
+      const table = await con.openTable('vectors')
       const results = await table.search([0.1, 0.1]).select(['is_active']).execute()
       assert.equal(results.length, 2)
       // vector and score are always returned
@@ -124,7 +115,6 @@ describe('LanceDB client', function () {
       assert.isUndefined(results[0].id)
       assert.isUndefined(results[0].name)
       assert.isUndefined(results[0].price)
-      await table.close()
     })
   })
 
@@ -142,7 +132,6 @@ describe('LanceDB client', function () {
       const table = await con.createTable(tableName, data)
       assert.equal(table.name, tableName)
       assert.equal(await table.countRows(), 2)
-      await table.close()
     })
 
     it('fails to create a new table when the vector column is missing', async function () {
@@ -167,8 +156,7 @@ describe('LanceDB client', function () {
       ]
 
       const tableName = 'overwrite'
-      let table = await con.createTable(tableName, data, { writeMode: WriteMode.Create })
-      await table.close()
+      await con.createTable(tableName, data, { writeMode: WriteMode.Create })
 
       const newData = [
         { id: 1, vector: [0.1, 0.2], price: 10 },
@@ -178,10 +166,9 @@ describe('LanceDB client', function () {
 
       await expect(con.createTable(tableName, newData)).to.be.rejectedWith(Error, 'already exists')
 
-      table = await con.createTable(tableName, newData, { writeMode: WriteMode.Overwrite })
+      const table = await con.createTable(tableName, newData, { writeMode: WriteMode.Overwrite })
       assert.equal(table.name, tableName)
       assert.equal(await table.countRows(), 3)
-      await table.close()
     })
 
     it('appends records to an existing table ', async function () {
@@ -202,11 +189,13 @@ describe('LanceDB client', function () {
       ]
       await table.add(dataAdd)
       assert.equal(await table.countRows(), 4)
-      await table.close()
     })
 
     it('overwrite all records in a table', async function () {
-      const table = await createTestTable()
+      const uri = await createTestDB()
+      const con = await lancedb.connect(uri)
+
+      const table = await con.openTable('vectors')
       assert.equal(await table.countRows(), 2)
 
       const dataOver = [
@@ -215,28 +204,33 @@ describe('LanceDB client', function () {
       ]
       await table.overwrite(dataOver)
       assert.equal(await table.countRows(), 2)
-      await table.close()
     })
 
     it('can delete records from a table', async function () {
-      const table = await createTestTable()
+      const uri = await createTestDB()
+      const con = await lancedb.connect(uri)
+
+      const table = await con.openTable('vectors')
       assert.equal(await table.countRows(), 2)
 
       await table.delete('price = 10')
       assert.equal(await table.countRows(), 1)
-      await table.close()
     })
   })
 
   describe('when creating a vector index', function () {
     it('overwrite all records in a table', async function () {
-      const table = await createTestTable(32, 300)
+      const uri = await createTestDB(32, 300)
+      const con = await lancedb.connect(uri)
+      const table = await con.openTable('vectors')
       await table.createIndex({ type: 'ivf_pq', column: 'vector', num_partitions: 2, max_iters: 2, num_sub_vectors: 2 })
-      await table.close()
     }).timeout(10_000) // Timeout is high partially because GH macos runner is pretty slow
 
     it('replace an existing index', async function () {
-      const table = await createTestTable(16, 300)
+      const uri = await createTestDB(16, 300)
+      const con = await lancedb.connect(uri)
+      const table = await con.openTable('vectors')
+
       await table.createIndex({ type: 'ivf_pq', column: 'vector', num_partitions: 2, max_iters: 2, num_sub_vectors: 2 })
 
       // Replace should fail if the index already exists
@@ -247,21 +241,22 @@ describe('LanceDB client', function () {
 
       // Default replace = true
       await table.createIndex({ type: 'ivf_pq', column: 'vector', num_partitions: 2, max_iters: 2, num_sub_vectors: 2 })
-      await table.close()
     }).timeout(50_000)
 
     it('it should fail when the column is not a vector', async function () {
-      const table = await createTestTable(32, 300)
+      const uri = await createTestDB(32, 300)
+      const con = await lancedb.connect(uri)
+      const table = await con.openTable('vectors')
       const createIndex = table.createIndex({ type: 'ivf_pq', column: 'name', num_partitions: 2, max_iters: 2, num_sub_vectors: 2 })
       await expect(createIndex).to.be.rejectedWith(/VectorIndex requires the column data type to be fixed size list of float32s/)
-      await table.close()
     })
 
     it('it should fail when the column is not a vector', async function () {
-      const table = await createTestTable(32, 300)
+      const uri = await createTestDB(32, 300)
+      const con = await lancedb.connect(uri)
+      const table = await con.openTable('vectors')
       const createIndex = table.createIndex({ type: 'ivf_pq', column: 'name', num_partitions: -1, max_iters: 2, num_sub_vectors: 2 })
       await expect(createIndex).to.be.rejectedWith('num_partitions: must be > 0')
-      await table.close()
     })
   })
 
@@ -295,7 +290,6 @@ describe('LanceDB client', function () {
       const table = await con.createTable('vectors', data, embeddings, { writeMode: WriteMode.Create })
       const results = await table.search('foo').execute()
       assert.equal(results.length, 2)
-      await table.close()
     })
   })
 })
@@ -318,12 +312,6 @@ describe('Query object', function () {
 
 async function createTestDB (numDimensions: number = 2, numRows: number = 2): Promise<string> {
   const dir = await track().mkdir('lancejs')
-  await lancedb.connect(dir)
-  return dir
-}
-
-async function createTestTable (numDimensions: number = 2, numRows: number = 2): Promise<Table> {
-  const dir = await track().mkdir('lancejs')
   const con = await lancedb.connect(dir)
 
   const data = []
@@ -335,7 +323,8 @@ async function createTestTable (numDimensions: number = 2, numRows: number = 2):
     data.push({ id: i + 1, name: `name_${i}`, price: i + 10, is_active: (i % 2 === 0), vector })
   }
 
-  return await con.createTable('vectors', data)
+  await con.createTable('vectors', data)
+  return dir
 }
 
 describe('Drop table', function () {
@@ -347,15 +336,13 @@ describe('Drop table', function () {
       { price: 10, name: 'foo', vector: [1, 2, 3] },
       { price: 50, name: 'bar', vector: [4, 5, 6] }
     ]
-    const t1 = await con.createTable('t1', data)
-    const t2 = await con.createTable('t2', data)
+    await con.createTable('t1', data)
+    await con.createTable('t2', data)
 
     assert.deepEqual(await con.tableNames(), ['t1', 't2'])
 
     await con.dropTable('t1')
     assert.deepEqual(await con.tableNames(), ['t2'])
-    await t1.close()
-    await t2.close()
   })
 })
 
