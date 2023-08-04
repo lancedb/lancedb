@@ -434,7 +434,7 @@ class LanceTable(Table):
         data = _sanitize_data(
             data, self.schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value
         )
-        lance.write_dataset(data, self._dataset_uri, mode=mode)
+        lance.write_dataset(data, self._dataset_uri, schema=self.schema, mode=mode)
         self._reset_dataset()
 
     def search(
