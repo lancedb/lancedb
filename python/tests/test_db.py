@@ -101,6 +101,11 @@ def test_ingest_record_batch_iterator(tmp_path):
         ),
     )
 
+    tbl_len = len(tbl)
+    tbl.add(batch_reader())
+    assert len(tbl) == tbl_len * 2
+    assert len(tbl.list_versions()) == 2
+
 
 def test_create_mode(tmp_path):
     db = lancedb.connect(tmp_path)
