@@ -66,7 +66,7 @@ def test_search_index(tmp_path, table):
     results = ldb.fts.search_index(index, query="puppy", limit=10)
     assert len(results) == 2
     assert len(results[0]) == 10  # row_ids
-    assert len(results[1]) == 10  # scores
+    assert len(results[1]) == 10  # _distance
 
 
 def test_create_index_from_table(tmp_path, table):

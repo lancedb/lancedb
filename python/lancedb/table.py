@@ -85,9 +85,9 @@ class Table(ABC):
     Can query the table with [Table.search][lancedb.table.Table.search].
 
     >>> table.search([0.4, 0.4]).select(["b"]).to_df()
-       b      vector  score
-    0  4  [0.5, 1.3]   0.82
-    1  2  [1.1, 1.2]   1.13
+       b      vector  _distance
+    0  4  [0.5, 1.3]       0.82
+    1  2  [1.1, 1.2]       1.13
 
     Search queries are much faster when an index is created. See
     [Table.create_index][lancedb.table.Table.create_index].
@@ -196,7 +196,7 @@ class Table(ABC):
         LanceQueryBuilder
             A query builder object representing the query.
             Once executed, the query returns selected columns, the vector,
-            and also the "score" column which is the distance between the query
+            and also the "_distance" column which is the distance between the query
             vector and the returned vector.
         """
         raise NotImplementedError
@@ -457,7 +457,7 @@ class LanceTable(Table):
         LanceQueryBuilder
             A query builder object representing the query.
             Once executed, the query returns selected columns, the vector,
-            and also the "score" column which is the distance between the query
+            and also the "_distance" column which is the distance between the query
             vector and the returned vector.
         """
         if isinstance(query, str):

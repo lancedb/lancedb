@@ -99,7 +99,7 @@ Output of `results`:
     id: 5,
     text: 'Banana',
     type: 'fruit',
-    score: 0.4919965863227844
+    _distance: 0.4919965863227844
   },
   {
     vector: Float32Array(384) [
@@ -111,7 +111,7 @@ Output of `results`:
     id: 1,
     text: 'Cherry',
     type: 'fruit',
-    score: 0.5540297031402588
+    _distance: 0.5540297031402588
   }
 ]
 ```

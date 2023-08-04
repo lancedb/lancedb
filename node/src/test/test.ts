@@ -107,9 +107,9 @@ describe('LanceDB client', function () {
       const table = await con.openTable('vectors')
       const results = await table.search([0.1, 0.1]).select(['is_active']).execute()
       assert.equal(results.length, 2)
-      // vector and score are always returned
+      // vector and _distance are always returned
       assert.isDefined(results[0].vector)
-      assert.isDefined(results[0].score)
+      assert.isDefined(results[0]._distance)
       assert.isDefined(results[0].is_active)
 
       assert.isUndefined(results[0].id)
