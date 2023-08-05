@@ -160,6 +160,18 @@ A Table is a collection of Records in a LanceDB Database.
     ]
     tbl.add(data=data)
     ```
+
+    You can also use Pydantic to specify the schema
+
+    ```python
+    import lancedb
+    from lancedb.pydantic import LanceModel, vector
+
+    class Model(LanceModel):
+          vector: vector(2)
+    
+    tbl = db.create_table("table5", schema=Model)
+    ```
     
 
 === "Javascript/Typescript"
