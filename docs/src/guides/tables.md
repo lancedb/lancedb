@@ -63,19 +63,6 @@ A Table is a collection of Records in a LanceDB Database.
     table = db.create_table("table3", data, schema=custom_schema)
     ```
 
-    ### From PyArrow Table
-
-    ```python
-    import pyarrow as pa
-
-    vector = pa.array([[0,1], [2,3], [4,5], [6,7]])
-    animals = pa.array(["Flamingo", "Horse", "Brittle stars", "Centipede"])
-    names = ["vector", "animals"]
-    pa_table = pa.Table.from_arrays([vector, animals], names=names)
-
-    table = db.create_table("table4", pa_table)
-    ```
-
     ### From Pydantic Models
     LanceDB supports to create Apache Arrow Schema from a Pydantic BaseModel via pydantic_to_schema() method.
 
