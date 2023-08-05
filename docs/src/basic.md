@@ -86,23 +86,9 @@ In this case, you can create an empty table and specify the schema.
 
 === "Python"
       ```python
-      import lancedb
       import pyarrow as pa
-      schema = pa.schema([pa.field("vector", pa.list_(pa.float32(), list_size=128))])
-      db = lancedb.connect("~/.lancedb")
-      tbl = db.create_table("my_table", schema=schema)
-      ```
-
-You may find it easier to use pydantic to specify the model rather than pyarrow.
-
-=== "Python"
-      ```python
-      import lancedb
-      from lancedb.pydantic import LanceModel, vector
-      class MyModel(LanceModel):
-          vector: vector(128)
-      db = lancedb.connect("~/.lancedb")
-      tbl = db.create_table("my_table", schema=MyModel)
+      schema = pa.schema([pa.field("vector", pa.list_(pa.float32(), list_size=2))])
+      tbl = db.create_table("empty_table", schema=schema)
       ```
 
 ## How to open an existing table
