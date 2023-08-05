@@ -79,6 +79,33 @@ We'll cover the basics of using LanceDB on your local machine in this section.
 
 ??? info "Under the hood, LanceDB is converting the input data into an Apache Arrow table and persisting it to disk in [Lance format](https://www.github.com/lancedb/lance)."
 
+### Creating an empty table
+
+Sometimes you may not have the data to insert into the table at creation time.
+In this case, you can create an empty table and specify the schema.
+
+=== "Python"
+      ```python
+      import lancedb
+      import pyarrow as pa
+      schema = pa.schema([pa.field("vector", pa.list_(pa.float32(), list_size=128))])
+      db = lancedb.connect("~/.lancedb")
+      tbl = db.create_table("my_table", schema=schema)
+      ```
+
+You may find it easier to use pydantic to specify the model rather than pyarrow.
+
+=== "Python"
+       ```python
+        import lancedb
+        from lancedb.pydantic import LanceModel, vector
+        class MyModel(LanceModel):
+             vector: vector(128)
+        db = lancedb.connect("~/.lancedb")
+        tbl = db.create_table("my_table", schema=MyModel)
+        ```
+
+
 ## How to open an existing table
 
 Once created, you can open a table using the following code:
@@ -122,6 +149,22 @@ After a table has been created, you can always add more data to it using
               {vector: [9.5, 56.2], item: "buzz", price: 200.0}])
       ```
 
+## How to search for (approximate) nearest neighbors
+
+Once you've embedded the query, you can find its nearest neighbors using the following code:
+
+=== "Python"
+      ```python
+      tbl.search([100, 100]).limit(2).to_df()
+      ```
+
+      This returns a pandas DataFrame with the results.
+
+=== "Javascript"
+      ```javascript
+      const query = await tbl.search([100, 100]).limit(2).execute();
+      ```
+
 ## How to delete rows from a table
 
 Use the `delete()` method on tables to delete rows from a table. To choose
@@ -151,21 +194,19 @@ To see what expressions are supported, see the [SQL filters](sql.md) section.
 
       Read more: [vectordb.Table.delete](javascript/interfaces/Table.md#delete)
 
-## How to search for (approximate) nearest neighbors
+## How to remove a table
 
-Once you've embedded the query, you can find its nearest neighbors using the following code:
+Use the `drop_table()` method on the database to remove a table.
 
 === "Python"
       ```python
-      tbl.search([100, 100]).limit(2).to_df()
+      db.drop_table("my_table")
       ```
 
-      This returns a pandas DataFrame with the results.
+This permanently removes the table and is not recoverable, unlike deleting rows.
+By default, if the table does not exist an exception is raised. To suppress this,
+you can pass in `ignore_missing=True`.
 
-=== "Javascript"
-      ```javascript
-      const query = await tbl.search([100, 100]).limit(2).execute();
-      ```
 
 ## What's next
 
