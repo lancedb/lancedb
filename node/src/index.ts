@@ -13,10 +13,10 @@
 // limitations under the License.
 
 import {
-  RecordBatchFileWriter,
-  type Table as ArrowTable
+  type Schema,
+  Table as ArrowTable
 } from 'apache-arrow'
-import { fromRecordsToBuffer } from './arrow'
+import { createEmptyTable, fromRecordsToBuffer, fromTableToBuffer } from './arrow'
 import type { EmbeddingFunction } from './embedding/embedding_function'
 import { RemoteConnection } from './remote'
 import { Query } from './query'
@@ -49,6 +49,23 @@ export interface ConnectionOptions {
 
   // override the host for the remote connections
   hostOverride?: string
+}
+
+export interface CreateTableOptions<T> {
+  // Name of Table
+  name: string
+
+  // Data to insert into the Table
+  data?: Array<Record<string, unknown>> | ArrowTable | undefined
+
+  // Optional Arrow Schema for this table
+  schema?: Schema | undefined
+
+  // Optional embedding function used to create embeddings
+  embeddingFunction?: EmbeddingFunction<T> | undefined
+
+  // WriteOptions for this operation
+  writeOptions?: WriteOptions | undefined
 }
 
 /**
@@ -98,6 +115,17 @@ export interface Connection {
   openTable<T>(name: string, embeddings?: EmbeddingFunction<T>): Promise<Table<T>>
 
   /**
+   * Creates a new Table, optionally initializing it with new data.
+   *
+   * @param {string} name - The name of the table.
+   * @param data - Non-empty Array of Records to be inserted into the table
+   * @param schema - An Arrow Schema that describe this table columns
+   * @param {EmbeddingFunction} embeddings - An embedding function to use on this table
+   * @param {WriteOptions} writeOptions - The write options to use when creating the table.
+   */
+  createTable<T> ({ name, data, schema, embeddingFunction, writeOptions }: CreateTableOptions<T>): Promise<Table<T>>
+
+  /**
    * Creates a new Table and initialize it with new data.
    *
    * @param {string} name - The name of the table.
@@ -131,8 +159,6 @@ export interface Connection {
    * @param {WriteOptions} options - The write options to use when creating the table.
    */
   createTable<T> (name: string, data: Array<Record<string, unknown>>, embeddings: EmbeddingFunction<T>, options: WriteOptions): Promise<Table<T>>
-
-  createTableArrow(name: string, table: ArrowTable): Promise<Table>
 
   /**
    * Drop an existing table.
@@ -264,40 +290,62 @@ export class LocalConnection implements Connection {
     }
   }
 
-  async createTable<T> (name: string, data: Array<Record<string, unknown>>, optsOrEmbedding?: WriteOptions | EmbeddingFunction<T>, opt?: WriteOptions): Promise<Table<T>> {
-    let writeOptions: WriteOptions = new DefaultWriteOptions()
-    if (opt !== undefined && isWriteOptions(opt)) {
-      writeOptions = opt
-    } else if (optsOrEmbedding !== undefined && isWriteOptions(optsOrEmbedding)) {
-      writeOptions = optsOrEmbedding
-    }
-
-    let embeddings: undefined | EmbeddingFunction<T>
-    if (optsOrEmbedding !== undefined && isEmbeddingFunction(optsOrEmbedding)) {
-      embeddings = optsOrEmbedding
-    }
-    const createArgs = [this._db, name, await fromRecordsToBuffer(data, embeddings), writeOptions.writeMode?.toString()]
-    if (this._options.awsCredentials !== undefined) {
-      createArgs.push(this._options.awsCredentials.accessKeyId)
-      createArgs.push(this._options.awsCredentials.secretKey)
-      if (this._options.awsCredentials.sessionToken !== undefined) {
-        createArgs.push(this._options.awsCredentials.sessionToken)
+  async createTable<T> (name: string | CreateTableOptions<T>, data?: Array<Record<string, unknown>>, optsOrEmbedding?: WriteOptions | EmbeddingFunction<T>, opt?: WriteOptions): Promise<Table<T>> {
+    if (typeof name === 'string') {
+      let writeOptions: WriteOptions = new DefaultWriteOptions()
+      if (opt !== undefined && isWriteOptions(opt)) {
+        writeOptions = opt
+      } else if (optsOrEmbedding !== undefined && isWriteOptions(optsOrEmbedding)) {
+        writeOptions = optsOrEmbedding
       }
+
+      let embeddings: undefined | EmbeddingFunction<T>
+      if (optsOrEmbedding !== undefined && isEmbeddingFunction(optsOrEmbedding)) {
+        embeddings = optsOrEmbedding
+      }
+      return await this.createTableImpl({ name, data, embeddingFunction: embeddings, writeOptions })
+    }
+    return await this.createTableImpl(name)
+  }
+
+  private async createTableImpl<T> ({ name, data, schema, embeddingFunction, writeOptions = new DefaultWriteOptions() }: {
+    name: string
+    data?: Array<Record<string, unknown>> | ArrowTable | undefined
+    schema?: Schema | undefined
+    embeddingFunction?: EmbeddingFunction<T> | undefined
+    writeOptions?: WriteOptions | undefined
+  }): Promise<Table<T>> {
+    let buffer: Buffer
+    if (data === undefined) {
+      if (schema === undefined) {
+        throw new Error('Either data or schema needs to defined')
+      }
+      buffer = await fromTableToBuffer(createEmptyTable(schema))
+    } else if (data instanceof ArrowTable) {
+      buffer = await fromTableToBuffer(data, embeddingFunction)
+    } else {
+      // data is Array<Record<...>>
+      buffer = await fromRecordsToBuffer(data, embeddingFunction)
     }
 
-    const tbl = await tableCreate.call(...createArgs)
-
-    if (embeddings !== undefined) {
-      return new LocalTable(tbl, name, this._options, embeddings)
+    const tbl = await tableCreate.call(this._db, name, buffer, writeOptions?.writeMode?.toString(), ...this.awsParams())
+    if (embeddingFunction !== undefined) {
+      return new LocalTable(tbl, name, this._options, embeddingFunction)
     } else {
       return new LocalTable(tbl, name, this._options)
     }
   }
 
-  async createTableArrow (name: string, table: ArrowTable): Promise<Table> {
-    const writer = RecordBatchFileWriter.writeAll(table)
-    await tableCreate.call(this._db, name, Buffer.from(await writer.toUint8Array()))
-    return await this.openTable(name)
+  private awsParams (): any[] {
+    const params = []
+    if (this._options.awsCredentials !== undefined) {
+      params.push(this._options.awsCredentials.accessKeyId)
+      params.push(this._options.awsCredentials.secretKey)
+      if (this._options.awsCredentials.sessionToken !== undefined) {
+        params.push(this._options.awsCredentials.sessionToken)
+      }
+    }
+    return params
   }
 
   /**
