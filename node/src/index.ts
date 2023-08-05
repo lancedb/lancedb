@@ -23,7 +23,7 @@ import { Query } from './query'
 import { isEmbeddingFunction } from './embedding/embedding_function'
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { databaseNew, databaseTableNames, databaseOpenTable, databaseDropTable, tableCreate, tableAdd, tableCreateVectorIndex, tableCountRows, tableDelete } = require('../native.js')
+const { databaseNew, databaseTableNames, databaseOpenTable, databaseDropTable, tableCreate, tableAdd, tableCreateVectorIndex, tableCountRows, tableDelete, tableClose } = require('../native.js')
 
 export { Query }
 export type { EmbeddingFunction }
@@ -241,6 +241,12 @@ export interface Table<T = number[]> {
    * ```
    */
   delete: (filter: string) => Promise<void>
+
+  /**
+   * Immediately closes the connection to this Table. After close is called,
+   * all operations on this Table will fail.
+   */
+  close: () => Promise<void>
 }
 
 /**
@@ -449,6 +455,14 @@ export class LocalTable<T = number[]> implements Table<T> {
    */
   async delete (filter: string): Promise<void> {
     return tableDelete.call(this._tbl, filter)
+  }
+
+  /**
+   * Immediately closes the connection to this Table. After close is called,
+   * all operations on this Table will fail.
+   */
+  async close (): Promise<void> {
+    return tableClose.call(this._tbl)
   }
 }
 
