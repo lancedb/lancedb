@@ -67,10 +67,11 @@ A Table is a collection of Records in a LanceDB Database.
 
     ```python
     import pyarrow as pa
-    vectors = pa.array([[0,1], [2,3], [4,5], [6,7]])
+
+    vector = pa.array([[0,1], [2,3], [4,5], [6,7]])
     animals = pa.array(["Flamingo", "Horse", "Brittle stars", "Centipede"])
-    names = ["n_legs", "animals"]
-    pa_table = pa.Table.from_arrays([n_legs, animals], names=names)
+    names = ["vector", "animals"]
+    pa_table = pa.Table.from_arrays([vector, animals], names=names)
 
     table = db.create_table("table4", pa_table)
     ```
