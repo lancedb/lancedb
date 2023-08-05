@@ -158,7 +158,7 @@ A Table is a collection of Records in a LanceDB Database.
     class Model(LanceModel):
           vector: vector(2)
     
-    tbl = db.create_table("table5", schema=Model)
+    tbl = db.create_table("table5", schema=Model.to_arrow_schema())
     ```
     
 
