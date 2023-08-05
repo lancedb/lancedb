@@ -96,15 +96,14 @@ In this case, you can create an empty table and specify the schema.
 You may find it easier to use pydantic to specify the model rather than pyarrow.
 
 === "Python"
-       ```python
-        import lancedb
-        from lancedb.pydantic import LanceModel, vector
-        class MyModel(LanceModel):
-             vector: vector(128)
-        db = lancedb.connect("~/.lancedb")
-        tbl = db.create_table("my_table", schema=MyModel)
-        ```
-
+      ```python
+      import lancedb
+      from lancedb.pydantic import LanceModel, vector
+      class MyModel(LanceModel):
+          vector: vector(128)
+      db = lancedb.connect("~/.lancedb")
+      tbl = db.create_table("my_table", schema=MyModel)
+      ```
 
 ## How to open an existing table
 
