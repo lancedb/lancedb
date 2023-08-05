@@ -22,9 +22,9 @@ import pyarrow as pa
 from pyarrow import fs
 
 from .common import DATA, URI
+from .pydantic import LanceModel
 from .table import LanceTable, Table
 from .util import fs_from_uri, get_uri_location, get_uri_scheme
-from .pydantic import LanceModel
 
 
 class DBConnection(ABC):
