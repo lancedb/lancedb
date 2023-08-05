@@ -226,6 +226,7 @@ fn main(mut cx: ModuleContext) -> NeonResult<()> {
     cx.export_function("tableAdd", JsTable::js_add)?;
     cx.export_function("tableCountRows", JsTable::js_count_rows)?;
     cx.export_function("tableDelete", JsTable::js_delete)?;
+    cx.export_function("tableClose", JsTable::js_close)?;
     cx.export_function(
         "tableCreateVectorIndex",
         index::vector::table_create_vector_index,
