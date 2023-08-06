@@ -22,6 +22,7 @@ import pyarrow as pa
 from pyarrow import fs
 
 from .common import DATA, URI
+from .pydantic import LanceModel
 from .table import LanceTable, Table
 from .util import fs_from_uri, get_uri_location, get_uri_scheme
 
@@ -39,7 +40,7 @@ class DBConnection(ABC):
         self,
         name: str,
         data: Optional[DATA] = None,
-        schema: Optional[pa.Schema] = None,
+        schema: Optional[pa.Schema, LanceModel] = None,
         mode: str = "create",
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
@@ -52,7 +53,7 @@ class DBConnection(ABC):
             The name of the table.
         data: list, tuple, dict, pd.DataFrame; optional
             The data to initialize the table. User must provide at least one of `data` or `schema`.
-        schema: pyarrow.Schema; optional
+        schema: pyarrow.Schema or LanceModel; optional
             The schema of the table.
         mode: str; default "create"
             The mode to use when creating the table. Can be either "create" or "overwrite".
@@ -277,7 +278,7 @@ class LanceDBConnection(DBConnection):
         self,
         name: str,
         data: Optional[DATA] = None,
-        schema: pa.Schema = None,
+        schema: Optional[pa.Schema, LanceModel] = None,
         mode: str = "create",
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,

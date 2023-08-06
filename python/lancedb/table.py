@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import inspect
 import os
 from abc import ABC, abstractmethod
 from functools import cached_property
@@ -506,7 +507,7 @@ class LanceTable(Table):
         data: list-of-dict, dict, pd.DataFrame, default None
             The data to insert into the table.
             At least one of `data` or `schema` must be provided.
-        schema: dict, optional
+        schema: pa.Schema or LanceModel, optional
             The schema of the table. If not provided, the schema is inferred from the data.
             At least one of `data` or `schema` must be provided.
         mode: str, default "create"
@@ -519,6 +520,8 @@ class LanceTable(Table):
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
         """
         tbl = LanceTable(db, name)
+        if inspect.isclass(schema) and issubclass(schema, LanceModel):
+            schema = schema.to_arrow_schema()
         if data is not None:
             data = _sanitize_data(
                 data, schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value
