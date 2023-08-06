@@ -17,6 +17,7 @@ import pyarrow as pa
 import pytest
 
 import lancedb
+from lancedb.pydantic import LanceModel
 
 
 def test_basic(tmp_path):
@@ -167,8 +168,14 @@ def test_empty_or_nonexistent_table(tmp_path):
     with pytest.raises(Exception):
         db.open_table("does_not_exist")
 
-    schema = pa.schema([pa.field("a", pa.int32())])
-    db.create_table("test", schema=schema)
+    schema = pa.schema([pa.field("a", pa.int64(), nullable=False)])
+    test = db.create_table("test", schema=schema)
+
+    class TestModel(LanceModel):
+        a: int
+
+    test2 = db.create_table("test2", schema=TestModel)
+    assert test.schema == test2.schema
 
 
 def test_replace_index(tmp_path):
