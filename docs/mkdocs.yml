@@ -1,5 +1,6 @@
 site_name: LanceDB Docs
 repo_url: https://github.com/lancedb/lancedb
+edit_uri: https://github.com/lancedb/lancedb/tree/main/docs/src
 repo_name: lancedb/lancedb
 docs_dir: src
 
@@ -10,6 +11,7 @@ theme:
   features:
     - content.code.copy
     - content.tabs.link
+    - content.action.edit
   icon:
     repo: fontawesome/brands/github
   custom_dir: overrides
@@ -86,3 +88,8 @@ nav:
 
 extra_css:
   - styles/global.css
+
+extra:
+  analytics:
+    provider: google
+    property: G-B7NFM40W74
