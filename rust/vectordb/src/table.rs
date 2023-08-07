@@ -187,7 +187,7 @@ impl Table {
     }
 
     /// Create index on the table.
-    pub async fn create_index(&mut self, index_builder: &impl VectorIndexBuilder) -> Result<()> {
+    pub async fn create_index(&self, index_builder: &impl VectorIndexBuilder) -> Result<Table> {
         use lance::index::DatasetIndexExt;
 
         let dataset = self
@@ -203,8 +203,7 @@ impl Table {
                 index_builder.get_replace(),
             )
             .await?;
-        self.dataset = Arc::new(dataset);
-        Ok(())
+        Ok(self.new_with_dataset(dataset))
     }
 
     /// Insert records into this Table
@@ -217,17 +216,17 @@ impl Table {
     ///
     /// * The number of rows added
     pub async fn add(
-        &mut self,
+        &self,
         batches: impl RecordBatchReader + Send + 'static,
         params: Option<WriteParams>,
-    ) -> Result<()> {
+    ) -> Result<Table> {
         let params = params.unwrap_or(WriteParams {
             mode: WriteMode::Append,
             ..WriteParams::default()
         });
 
-        self.dataset = Arc::new(Dataset::write(batches, &self.uri, Some(params)).await?);
-        Ok(())
+        let dataset = Dataset::write(batches, &self.uri, Some(params)).await?;
+        Ok(self.new_with_dataset(dataset))
     }
 
     /// Creates a new Query object that can be executed.
@@ -262,11 +261,19 @@ impl Table {
     }
 
     /// Delete rows from the table
-    pub async fn delete(&mut self, predicate: &str) -> Result<()> {
+    pub async fn delete(&self, predicate: &str) -> Result<Table> {
         let mut dataset = self.dataset.as_ref().clone();
         dataset.delete(predicate).await?;
-        self.dataset = Arc::new(dataset);
-        Ok(())
+        Ok(self.new_with_dataset(dataset))
+    }
+
+    /// Helper to close a Table pointing to a new Dataset
+    fn new_with_dataset(&self, dataset: Dataset) -> Table {
+        Table {
+            name: self.name.clone(),
+            uri: self.uri.clone(),
+            dataset: Arc::new(dataset),
+        }
     }
 }
 
@@ -347,7 +354,7 @@ mod tests {
 
         let batches = make_test_batches();
         let schema = batches.schema().clone();
-        let mut table = Table::create(&uri, "test", batches, None).await.unwrap();
+        let table = Table::create(&uri, "test", batches, None).await.unwrap();
         assert_eq!(table.count_rows().await.unwrap(), 10);
 
         let new_batches = RecordBatchIterator::new(
@@ -361,9 +368,9 @@ mod tests {
             schema.clone(),
         );
 
-        table.add(new_batches, None).await.unwrap();
-        assert_eq!(table.count_rows().await.unwrap(), 20);
-        assert_eq!(table.name, "test");
+        let new_table = table.add(new_batches, None).await.unwrap();
+        assert_eq!(new_table.count_rows().await.unwrap(), 20);
+        assert_eq!(new_table.name, "test");
     }
 
     #[tokio::test]
@@ -373,7 +380,7 @@ mod tests {
 
         let batches = make_test_batches();
         let schema = batches.schema().clone();
-        let mut table = Table::create(uri, "test", batches, None).await.unwrap();
+        let table = Table::create(uri, "test", batches, None).await.unwrap();
         assert_eq!(table.count_rows().await.unwrap(), 10);
 
         let new_batches = RecordBatchIterator::new(
@@ -392,9 +399,9 @@ mod tests {
             ..Default::default()
         };
 
-        table.add(new_batches, Some(param)).await.unwrap();
-        assert_eq!(table.count_rows().await.unwrap(), 10);
-        assert_eq!(table.name, "test");
+        let new_table = table.add(new_batches, Some(param)).await.unwrap();
+        assert_eq!(new_table.count_rows().await.unwrap(), 10);
+        assert_eq!(new_table.name, "test");
     }
 
     #[tokio::test]
@@ -508,7 +515,7 @@ mod tests {
             schema,
         );
 
-        let mut table = Table::create(uri, "test", batches, None).await.unwrap();
+        let table = Table::create(uri, "test", batches, None).await.unwrap();
         let mut i = IvfPQIndexBuilder::new();
 
         let index_builder = i
@@ -517,11 +524,11 @@ mod tests {
             .ivf_params(IvfBuildParams::new(256))
             .pq_params(PQBuildParams::default());
 
-        table.create_index(index_builder).await.unwrap();
+        let new_table = table.create_index(index_builder).await.unwrap();
 
-        assert_eq!(table.dataset.load_indices().await.unwrap().len(), 1);
-        assert_eq!(table.count_rows().await.unwrap(), 512);
-        assert_eq!(table.name, "test");
+        assert_eq!(new_table.dataset.load_indices().await.unwrap().len(), 1);
+        assert_eq!(new_table.count_rows().await.unwrap(), 512);
+        assert_eq!(new_table.name, "test");
     }
 
     fn create_fixed_size_list<T: Array>(values: T, list_size: i32) -> Result<FixedSizeListArray> {
