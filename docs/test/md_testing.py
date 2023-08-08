@@ -9,6 +9,7 @@ excluded_files = [
     "../src/examples/serverless_qa_bot_with_modal_and_langchain.md",
     "../src/examples/youtube_transcript_bot_with_nodejs.md",
     "../src/integrations/voxel51.md",
+    "../src/guides/tables.md"
 ]
 
 python_prefix = "py"

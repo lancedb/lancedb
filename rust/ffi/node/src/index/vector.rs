@@ -12,13 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::convert::TryFrom;
-
 use lance::index::vector::ivf::IvfBuildParams;
 use lance::index::vector::pq::PQBuildParams;
 use lance::index::vector::MetricType;
 use neon::context::FunctionContext;
 use neon::prelude::*;
+use std::convert::TryFrom;
 
 use vectordb::index::vector::{IvfPQIndexBuilder, VectorIndexBuilder};
 
@@ -36,21 +35,17 @@ pub(crate) fn table_create_vector_index(mut cx: FunctionContext) -> JsResult<JsP
     let rt = runtime(&mut cx)?;
 
     let (deferred, promise) = cx.promise();
+    let channel = cx.channel();
+    let mut table = js_table.table.clone();
 
-    js_table
-        .send(deferred, move |table, channel, deferred| {
-            rt.block_on(async move {
-                let idx_result = table.create_index(&index_params_builder).await;
+    rt.spawn(async move {
+        let idx_result = table.create_index(&index_params_builder).await;
 
-                deferred.settle_with(&channel, move |mut cx| {
-                    idx_result
-                        .map(|_| cx.undefined())
-                        .or_else(|err| cx.throw_error(err.to_string()))
-                });
-            });
-        })
-        .or_throw(&mut cx)?;
-
+        deferred.settle_with(&channel, move |mut cx| {
+            idx_result.or_throw(&mut cx)?;
+            Ok(cx.boxed(JsTable::from(table)))
+        });
+    });
     Ok(promise)
 }
 

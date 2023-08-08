@@ -159,8 +159,4 @@ export class RemoteTable<T = number[]> implements Table<T> {
   async delete (filter: string): Promise<void> {
     throw new Error('Not implemented')
   }
-
-  async close (): Promise<void> {
-    throw new Error('Not implemented')
-  }
 }

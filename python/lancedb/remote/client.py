@@ -97,7 +97,12 @@ class RestfulLanceDBClient:
         """Send a GET request and returns the deserialized response payload."""
         if isinstance(params, BaseModel):
             params: Dict[str, Any] = params.dict(exclude_none=True)
-        async with self.session.get(uri, params=params, headers=self.headers) as resp:
+        async with self.session.get(
+            uri,
+            params=params,
+            headers=self.headers,
+            timeout=aiohttp.ClientTimeout(total=30),
+        ) as resp:
             await self._check_status(resp)
             return await resp.json()
 
@@ -109,6 +114,7 @@ class RestfulLanceDBClient:
         params: Optional[Dict[str, Any]] = None,
         content_type: Optional[str] = None,
         deserialize: Callable = lambda resp: resp.json(),
+        request_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Send a POST request and returns the deserialized response payload.
 
@@ -117,6 +123,8 @@ class RestfulLanceDBClient:
         uri : str
             The uri to send the POST request to.
         data: Union[Dict[str, Any], BaseModel]
+        request_id: Optional[str]
+            Optional client side request id to be sent in the request headers.
 
         """
         if isinstance(data, BaseModel):
@@ -129,10 +137,13 @@ class RestfulLanceDBClient:
         headers = self.headers.copy()
         if content_type is not None:
             headers["content-type"] = content_type
+        if request_id is not None:
+            headers["x-request-id"] = request_id
         async with self.session.post(
             uri,
             headers=headers,
             params=params,
+            timeout=aiohttp.ClientTimeout(total=30),
             **req_kwargs,
         ) as resp:
             resp: aiohttp.ClientResponse = resp

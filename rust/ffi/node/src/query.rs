@@ -4,19 +4,17 @@ use std::ops::Deref;
 use arrow_array::Float32Array;
 use futures::{TryFutureExt, TryStreamExt};
 use lance::index::vector::MetricType;
-use neon::prelude::*;
 use neon::context::FunctionContext;
 use neon::handle::Handle;
+use neon::prelude::*;
 
-use crate::{convert, runtime};
 use crate::arrow::record_batch_to_buffer;
 use crate::error::ResultExt;
 use crate::neon_ext::js_object_ext::JsObjectExt;
 use crate::table::JsTable;
+use crate::{convert, runtime};
 
-pub(crate) struct JsQuery {
-
-}
+pub(crate) struct JsQuery {}
 
 impl JsQuery {
     pub(crate) fn js_search(mut cx: FunctionContext) -> JsResult<JsPromise> {
@@ -52,37 +50,35 @@ impl JsQuery {
         let rt = runtime(&mut cx)?;
 
         let (deferred, promise) = cx.promise();
+        let channel = cx.channel();
         let query_vector = query_obj.get::<JsArray, _, _>(&mut cx, "_queryVector")?;
         let query = convert::js_array_to_vec(query_vector.deref(), &mut cx);
+        let table = js_table.table.clone();
 
-        js_table
-            .send(deferred, move |table, channel, deferred| {
-                rt.block_on(async move {
-                    let builder = table
-                        .search(Float32Array::from(query))
-                        .limit(limit as usize)
-                        .refine_factor(refine_factor)
-                        .nprobes(nprobes)
-                        .filter(filter)
-                        .metric_type(metric_type)
-                        .select(select);
-                    let record_batch_stream = builder.execute();
-                    let results = record_batch_stream
-                        .and_then(|stream| {
-                            stream
-                                .try_collect::<Vec<_>>()
-                                .map_err(vectordb::error::Error::from)
-                        })
-                        .await;
+        rt.spawn(async move {
+            let builder = table
+                .search(Float32Array::from(query))
+                .limit(limit as usize)
+                .refine_factor(refine_factor)
+                .nprobes(nprobes)
+                .filter(filter)
+                .metric_type(metric_type)
+                .select(select);
+            let record_batch_stream = builder.execute();
+            let results = record_batch_stream
+                .and_then(|stream| {
+                    stream
+                        .try_collect::<Vec<_>>()
+                        .map_err(vectordb::error::Error::from)
+                })
+                .await;
 
-                    deferred.settle_with(&channel, move |mut cx| {
-                        let results = results.or_throw(&mut cx)?;
-                        let buffer = record_batch_to_buffer(results).or_throw(&mut cx)?;
-                        Ok(JsBuffer::external(&mut cx, buffer))
-                    });
-                });
-            })
-            .or_throw(&mut cx)?;
+            deferred.settle_with(&channel, move |mut cx| {
+                let results = results.or_throw(&mut cx)?;
+                let buffer = record_batch_to_buffer(results).or_throw(&mut cx)?;
+                Ok(JsBuffer::external(&mut cx, buffer))
+            });
+        });
         Ok(promise)
     }
 }
