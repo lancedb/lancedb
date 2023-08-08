@@ -15,7 +15,6 @@
 use arrow_array::RecordBatchIterator;
 use lance::dataset::{WriteMode, WriteParams};
 use lance::io::object_store::ObjectStoreParams;
-use std::sync::Arc;
 
 use crate::arrow::arrow_buffer_to_record_batch;
 use neon::prelude::*;
@@ -26,18 +25,17 @@ use crate::error::ResultExt;
 use crate::{get_aws_creds, runtime, JsDatabase};
 
 pub(crate) struct JsTable {
-    pub table: Arc<Table>,
+    pub table: Table,
 }
 
 impl Finalize for JsTable {}
 
 impl From<Table> for JsTable {
     fn from(table: Table) -> Self {
-        JsTable {
-            table: Arc::new(table),
-        }
+        JsTable { table }
     }
 }
+
 impl JsTable {
     pub(crate) fn js_create(mut cx: FunctionContext) -> JsResult<JsPromise> {
         let db = cx
@@ -102,7 +100,7 @@ impl JsTable {
 
         let rt = runtime(&mut cx)?;
         let channel = cx.channel();
-        let table = js_table.table.clone();
+        let mut table = js_table.table.clone();
 
         let (deferred, promise) = cx.promise();
         let write_mode = match write_mode.as_str() {
@@ -127,10 +125,10 @@ impl JsTable {
 
         rt.spawn(async move {
             let batch_reader = RecordBatchIterator::new(batches.into_iter().map(Ok), schema);
-            let table_rst = table.add(batch_reader, Some(params)).await;
+            let add_result = table.add(batch_reader, Some(params)).await;
 
             deferred.settle_with(&channel, move |mut cx| {
-                let table = table_rst.or_throw(&mut cx)?;
+                let _added = add_result.or_throw(&mut cx)?;
                 Ok(cx.boxed(JsTable::from(table)))
             });
         });
@@ -161,14 +159,14 @@ impl JsTable {
         let (deferred, promise) = cx.promise();
         let predicate = cx.argument::<JsString>(0)?.value(&mut cx);
         let channel = cx.channel();
-        let table = js_table.table.clone();
+        let mut table = js_table.table.clone();
 
         rt.spawn(async move {
-            let new_table = table.delete(&predicate).await;
+            let delete_result = table.delete(&predicate).await;
 
             deferred.settle_with(&channel, move |mut cx| {
-                let new_table = new_table.or_throw(&mut cx)?;
-                Ok(cx.boxed(JsTable::from(new_table)))
+                delete_result.or_throw(&mut cx)?;
+                Ok(cx.boxed(JsTable::from(table)))
             })
         });
         Ok(promise)
