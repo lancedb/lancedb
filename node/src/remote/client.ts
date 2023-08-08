@@ -104,4 +104,32 @@ export class HttpLancedbClient {
     }
     return response
   }
+
+  /**
+   * Sent POST request.
+   */
+  public async post (path: string, params?: Record<string, string | number>): Promise<AxiosResponse> {
+    const response = await axios.post(
+        `${this._url}${path}`,
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': this._apiKey()
+          },
+          params,
+          timeout: 10000
+        }
+    ).catch((err) => {
+      console.error('error: ', err)
+      return err.response
+    })
+    if (response.status !== 200) {
+      const errorData = new TextDecoder().decode(response.data)
+      throw new Error(
+          `Server Error, status: ${response.status as number}, ` +
+          `message: ${response.statusText as string}: ${errorData}`
+      )
+    }
+    return response
+  }
 }
