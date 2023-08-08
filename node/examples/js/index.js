@@ -12,38 +12,25 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-(async () => {
+'use strict'
 
-  const vectordb = require('vectordb')
-  const db = await vectordb.connect('data/sample-lancedb')
+async function example () {
+  const lancedb = require('vectordb')
+  const db = await lancedb.connect('data/sample-lancedb')
 
-  let data = []
-  for (let i = 0; i < 10_000; i++) {
-    data.push({vector: Array(1536).fill(i), id: `${i}`, content: "", longId: `${i}`},)
-  }
-  const table = await db.createTable('my_vectors', data)
+  const data = [
+    { id: 1, vector: [0.1, 0.2], price: 10 },
+    { id: 2, vector: [1.1, 1.2], price: 50 }
+  ]
 
-  console.log('Create Index')
-  await table.createIndex({ type: 'ivf_pq', column: 'vector', num_partitions: 256, num_sub_vectors: 96 })
+  const table = await db.createTable('vectors', data)
+  console.log(await db.tableNames())
 
-  console.log('results 1')
-  const results_1 = await table
-      .search(Array(1536).fill(1.2))
-      .limit(2)
-      .nprobes(20)
-      .refineFactor(10)
+  const results = await table
+      .search([0.1, 0.3])
+      .limit(20)
       .execute()
+  console.log(results)
+}
 
-  console.log('results 2')
-  const results_2 = await table
-      .search(Array(1536).fill(1.2))
-      .where("id != '1141'")
-      .execute()
-
-  console.log('results 3')
-  const results_3 = await table
-      .search(Array(1536).fill(1.2))
-      .select(["id"])
-      .execute()
-
-})();
+example()
