@@ -104,8 +104,22 @@ class RemoteDBConnection(DBConnection):
             self._client.post(
                 f"/v1/table/{name}/create/",
                 data=data,
-                params={"request_id": request_id},
+                request_id=request_id,
                 content_type=ARROW_STREAM_CONTENT_TYPE,
             )
         )
         return RemoteTable(self, name)
+
+    def drop_table(self, name: str):
+        """Drop a table from the database.
+
+        Parameters
+        ----------
+        name: str
+            The name of the table.
+        """
+        self._loop.run_until_complete(
+            self._client.post(
+                f"/v1/table/{name}/drop/",
+            )
+        )
