@@ -45,7 +45,15 @@ class RemoteTable(Table):
         return schema
 
     def to_arrow(self) -> pa.Table:
-        raise NotImplementedError
+        """Return the table as an Arrow table."""
+        raise NotImplementedError("to_arrow() is not supported on the LanceDB cloud")
+
+    def to_pandas(self):
+        """Return the table as a Pandas DataFrame.
+
+        Intercept `to_arrow()` for better error message.
+        """
+        return NotImplementedError("to_pandas() is not supported on the LanceDB cloud")
 
     def create_index(
         self,
