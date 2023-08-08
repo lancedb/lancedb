@@ -93,9 +93,10 @@ class Table(ABC):
     [Table.create_index][lancedb.table.Table.create_index].
     """
 
+    @property
     @abstractmethod
     def schema(self) -> pa.Schema:
-        """Return the [Arrow Schema](https://arrow.apache.org/docs/python/api/datatypes.html#) of
+        """The [Arrow Schema](https://arrow.apache.org/docs/python/api/datatypes.html#) of
         this [Table](Table)
 
         """
