@@ -17,14 +17,15 @@ import {
   Float32,
   makeBuilder,
   RecordBatchFileWriter,
-  Table, Utf8,
+  Utf8,
   type Vector,
   FixedSizeList,
   vectorFromArray, type Schema, Table as ArrowTable
 } from 'apache-arrow'
 import { type EmbeddingFunction } from './index'
 
-export async function convertToTable<T> (data: Array<Record<string, unknown>>, embeddings?: EmbeddingFunction<T>): Promise<Table> {
+// Converts an Array of records into an Arrow Table, optionally applying an embeddings function to it.
+export async function convertToTable<T> (data: Array<Record<string, unknown>>, embeddings?: EmbeddingFunction<T>): Promise<ArrowTable> {
   if (data.length === 0) {
     throw new Error('At least one record needs to be provided')
   }
@@ -35,7 +36,7 @@ export async function convertToTable<T> (data: Array<Record<string, unknown>>, e
   for (const columnsKey of columns) {
     if (columnsKey === 'vector') {
       const vectorSize = (data[0].vector as any[]).length
-      const listBuilder = newVectorListBuilder(vectorSize)
+      const listBuilder = newVectorBuilder(vectorSize)
       for (const datum of data) {
         if ((datum[columnsKey] as any[]).length !== vectorSize) {
           throw new Error(`Invalid vector size, expected ${vectorSize}`)
@@ -52,7 +53,7 @@ export async function convertToTable<T> (data: Array<Record<string, unknown>>, e
 
       if (columnsKey === embeddings?.sourceColumn) {
         const vectors = await embeddings.embed(values as T[])
-        records.vector = vectorFromArray(vectors, newVectorListType(vectors[0].length))
+        records.vector = vectorFromArray(vectors, newVectorType(vectors[0].length))
       }
 
       if (typeof values[0] === 'string') {
@@ -64,27 +65,30 @@ export async function convertToTable<T> (data: Array<Record<string, unknown>>, e
     }
   }
 
-  return new Table(records)
+  return new ArrowTable(records)
 }
 
 // Creates a new Arrow ListBuilder that stores a Vector column
-function newVectorListBuilder (dim: number): FixedSizeListBuilder<Float32> {
+function newVectorBuilder (dim: number): FixedSizeListBuilder<Float32> {
   return makeBuilder({
-    type: newVectorListType(dim)
+    type: newVectorType(dim)
   })
 }
 
-function newVectorListType (dim: number): FixedSizeList<Float32> {
+// Creates the Arrow Type for a Vector column with dimension `dim`
+function newVectorType (dim: number): FixedSizeList<Float32> {
   const children = new Field<Float32>('item', new Float32())
   return new FixedSizeList(dim, children)
 }
 
+// Converts an Array of records into Arrow IPC format
 export async function fromRecordsToBuffer<T> (data: Array<Record<string, unknown>>, embeddings?: EmbeddingFunction<T>): Promise<Buffer> {
   const table = await convertToTable(data, embeddings)
   const writer = RecordBatchFileWriter.writeAll(table)
   return Buffer.from(await writer.toUint8Array())
 }
 
+// Converts an Arrow Table into Arrow IPC format
 export async function fromTableToBuffer<T> (table: ArrowTable, embeddings?: EmbeddingFunction<T>): Promise<Buffer> {
   if (embeddings !== undefined) {
     const source = table.getChild(embeddings.sourceColumn)
@@ -94,13 +98,14 @@ export async function fromTableToBuffer<T> (table: ArrowTable, embeddings?: Embe
     }
 
     const vectors = await embeddings.embed(source.toArray() as T[])
-    const column = vectorFromArray(vectors, newVectorListType(vectors[0].length))
+    const column = vectorFromArray(vectors, newVectorType(vectors[0].length))
     table = table.assign(new ArrowTable({ vector: column }))
   }
   const writer = RecordBatchFileWriter.writeAll(table)
   return Buffer.from(await writer.toUint8Array())
 }
 
-export function createEmptyTable (schema: Schema): Table {
-  return new Table(schema)
+// Creates an empty Arrow Table
+export function createEmptyTable (schema: Schema): ArrowTable {
+  return new ArrowTable(schema)
 }
