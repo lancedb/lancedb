@@ -8,7 +8,7 @@
     "tsc": "tsc -b",
     "build": "cargo-cp-artifact --artifact cdylib vectordb-node index.node -- cargo build --message-format=json",
     "build-release": "npm run build -- --release",
-    "test": "npm run tsc && mocha -recursive dist/test --exit",
+    "test": "npm run tsc && mocha -recursive dist/test",
     "lint": "eslint native.js src --ext .js,.ts",
     "clean": "rm -rf node_modules *.node dist/",
     "pack-build": "neon pack-build",

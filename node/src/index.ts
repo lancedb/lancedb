@@ -23,7 +23,7 @@ import { Query } from './query'
 import { isEmbeddingFunction } from './embedding/embedding_function'
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { databaseNew, databaseTableNames, databaseOpenTable, databaseDropTable, tableCreate, tableAdd, tableCreateVectorIndex, tableCountRows, tableDelete, tableClose } = require('../native.js')
+const { databaseNew, databaseTableNames, databaseOpenTable, databaseDropTable, tableCreate, tableAdd, tableCreateVectorIndex, tableCountRows, tableDelete } = require('../native.js')
 
 export { Query }
 export type { EmbeddingFunction }
@@ -215,12 +215,6 @@ export interface Table<T = number[]> {
    * ```
    */
   delete: (filter: string) => Promise<void>
-
-  /**
-   * Immediately closes the connection to this Table. After close is called,
-   * all operations on this Table will fail.
-   */
-  close: () => Promise<void>
 }
 
 /**
@@ -316,7 +310,7 @@ export class LocalConnection implements Connection {
 }
 
 export class LocalTable<T = number[]> implements Table<T> {
-  private readonly _tbl: any
+  private _tbl: any
   private readonly _name: string
   private readonly _embeddings?: EmbeddingFunction<T>
   private readonly _options: ConnectionOptions
@@ -363,7 +357,7 @@ export class LocalTable<T = number[]> implements Table<T> {
         callArgs.push(this._options.awsCredentials.sessionToken)
       }
     }
-    return tableAdd.call(...callArgs)
+    return tableAdd.call(...callArgs).then((newTable: any) => { this._tbl = newTable })
   }
 
   /**
@@ -381,7 +375,7 @@ export class LocalTable<T = number[]> implements Table<T> {
         callArgs.push(this._options.awsCredentials.sessionToken)
       }
     }
-    return tableAdd.call(this._tbl, await fromRecordsToBuffer(data, this._embeddings), WriteMode.Overwrite.toString())
+    return tableAdd.call(...callArgs).then((newTable: any) => { this._tbl = newTable })
   }
 
   /**
@@ -390,7 +384,7 @@ export class LocalTable<T = number[]> implements Table<T> {
    * @param indexParams The parameters of this Index, @see VectorIndexParams.
    */
   async createIndex (indexParams: VectorIndexParams): Promise<any> {
-    return tableCreateVectorIndex.call(this._tbl, indexParams)
+    return tableCreateVectorIndex.call(this._tbl, indexParams).then((newTable: any) => { this._tbl = newTable })
   }
 
   /**
@@ -406,15 +400,7 @@ export class LocalTable<T = number[]> implements Table<T> {
    * @param filter A filter in the same format used by a sql WHERE clause.
    */
   async delete (filter: string): Promise<void> {
-    return tableDelete.call(this._tbl, filter)
-  }
-
-  /**
-   * Immediately closes the connection to this Table. After close is called,
-   * all operations on this Table will fail.
-   */
-  async close (): Promise<void> {
-    return tableClose.call(this._tbl)
+    return tableDelete.call(this._tbl, filter).then((newTable: any) => { this._tbl = newTable })
   }
 }
 
