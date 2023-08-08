@@ -26,16 +26,16 @@ use vectordb::database::Database;
 use vectordb::table::ReadParams;
 
 use crate::error::ResultExt;
-use crate::table::JsTable;
 use crate::query::JsQuery;
+use crate::table::JsTable;
 
 mod arrow;
 mod convert;
 mod error;
 mod index;
 mod neon_ext;
-mod table;
 mod query;
+mod table;
 
 struct JsDatabase {
     database: Arc<Database>,
@@ -184,8 +184,7 @@ fn database_open_table(mut cx: FunctionContext) -> JsResult<JsPromise> {
         let table_rst = database.open_table_with_params(&table_name, &params).await;
 
         deferred.settle_with(&channel, move |mut cx| {
-            let table = table_rst.or_throw(&mut cx)?;
-            let js_table = JsTable::new(&mut cx, table).or_throw(&mut cx)?;
+            let js_table = JsTable::from(table_rst.or_throw(&mut cx)?);
             Ok(cx.boxed(js_table))
         });
     });
@@ -213,8 +212,6 @@ fn database_drop_table(mut cx: FunctionContext) -> JsResult<JsPromise> {
     Ok(promise)
 }
 
-
-
 #[neon::main]
 fn main(mut cx: ModuleContext) -> NeonResult<()> {
     cx.export_function("databaseNew", database_new)?;
@@ -226,7 +223,6 @@ fn main(mut cx: ModuleContext) -> NeonResult<()> {
     cx.export_function("tableAdd", JsTable::js_add)?;
     cx.export_function("tableCountRows", JsTable::js_count_rows)?;
     cx.export_function("tableDelete", JsTable::js_delete)?;
-    cx.export_function("tableClose", JsTable::js_close)?;
     cx.export_function(
         "tableCreateVectorIndex",
         index::vector::table_create_vector_index,
