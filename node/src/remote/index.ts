@@ -77,7 +77,7 @@ export class RemoteConnection implements Connection {
   }
 
   async dropTable (name: string): Promise<void> {
-    await this._client.post(`/v1/table/${name}/drop`)
+    await this._client.post(`/v1/table/${name}/drop/`)
   }
 }
 

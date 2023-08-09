@@ -108,16 +108,17 @@ export class HttpLancedbClient {
   /**
    * Sent POST request.
    */
-  public async post (path: string, params?: Record<string, string | number>): Promise<AxiosResponse> {
+  public async post (path: string, data?: any, params?: Record<string, string | number>): Promise<AxiosResponse> {
     const response = await axios.post(
         `${this._url}${path}`,
+        data,
         {
           headers: {
             'Content-Type': 'application/json',
             'x-api-key': this._apiKey()
           },
           params,
-          timeout: 10000
+          timeout: 30000
         }
     ).catch((err) => {
       console.error('error: ', err)
