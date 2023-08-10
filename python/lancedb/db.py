@@ -192,6 +192,13 @@ class DBConnection(ABC):
         """
         raise NotImplementedError
 
+    def drop_database(self):
+        """
+        Drop database
+        This is the same thing as dropping all the tables
+        """
+        raise NotImplementedError
+
 
 class LanceDBConnection(DBConnection):
     """
@@ -333,3 +340,7 @@ class LanceDBConnection(DBConnection):
         except FileNotFoundError:
             if not ignore_missing:
                 raise
+
+    def drop_database(self):
+        filesystem, path = fs_from_uri(self.uri)
+        filesystem.delete_dir(path)
