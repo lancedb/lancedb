@@ -104,4 +104,34 @@ export class HttpLancedbClient {
     }
     return response
   }
+
+  /**
+   * Sent POST request.
+   */
+  public async post (path: string, data?: any, params?: Record<string, string | number>): Promise<AxiosResponse> {
+    const response = await axios.post(
+        `${this._url}${path}`,
+        data,
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': this._apiKey(),
+            ...(this._dbName !== undefined ? { 'x-lancedb-database': this._dbName } : {})
+          },
+          params,
+          timeout: 30000
+        }
+    ).catch((err) => {
+      console.error('error: ', err)
+      return err.response
+    })
+    if (response.status !== 200) {
+      const errorData = new TextDecoder().decode(response.data)
+      throw new Error(
+          `Server Error, status: ${response.status as number}, ` +
+          `message: ${response.statusText as string}: ${errorData}`
+      )
+    }
+    return response
+  }
 }
