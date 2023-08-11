@@ -69,3 +69,11 @@ To build documentation
 ```bash
 npx typedoc --plugin typedoc-plugin-markdown --out ../docs/src/javascript src/index.ts
 ```
+
+### Updating OpenAPI bindings
+
+- Copy the latest `openapi.yml` to this folder
+- Run
+```bash
+npm run gen-openapi
+```

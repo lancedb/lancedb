@@ -12,126 +12,49 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import axios, { type AxiosResponse } from 'axios'
-
-import { tableFromIPC, type Table as ArrowTable } from 'apache-arrow'
+import { Configuration, DataApi, type ResponseError, TablesApi } from '../generated-sources/openapi'
 
 export class HttpLancedbClient {
   private readonly _url: string
-  private readonly _apiKey: () => string
+  private readonly _tablesApi: TablesApi
+  private readonly _dataApi: DataApi
 
-  public constructor (
-    url: string,
+  public constructor (url: string,
     apiKey: string,
-    private readonly _dbName?: string
-  ) {
+    dbName?: string) {
+    const configuration = new Configuration({
+      basePath: url,
+      apiKey,
+      headers: {
+        ...(dbName !== undefined ? { 'x-lancedb-database': dbName } : {})
+      }
+    })
+
     this._url = url
-    this._apiKey = () => apiKey
+    this._tablesApi = new TablesApi(configuration)
+    this._dataApi = new DataApi(configuration)
+  }
+
+  get tablesApi (): TablesApi {
+    return this._tablesApi
+  }
+
+  get dataApi (): DataApi {
+    return this._dataApi
   }
 
   get uri (): string {
     return this._url
   }
+}
 
-  public async search (
-    tableName: string,
-    vector: number[],
-    k: number,
-    nprobes: number,
-    refineFactor?: number,
-    columns?: string[],
-    filter?: string
-  ): Promise<ArrowTable<any>> {
-    const response = await axios.post(
-              `${this._url}/v1/table/${tableName}/query/`,
-              {
-                vector,
-                k,
-                nprobes,
-                refineFactor,
-                columns,
-                filter
-              },
-              {
-                headers: {
-                  'Content-Type': 'application/json',
-                  'x-api-key': this._apiKey(),
-                  ...(this._dbName !== undefined ? { 'x-lancedb-database': this._dbName } : {})
-                },
-                responseType: 'arraybuffer',
-                timeout: 10000
-              }
-    ).catch((err) => {
-      console.error('error: ', err)
-      return err.response
-    })
-    if (response.status !== 200) {
-      const errorData = new TextDecoder().decode(response.data)
-      throw new Error(
-        `Server Error, status: ${response.status as number}, ` +
-        `message: ${response.statusText as string}: ${errorData}`
-      )
-    }
-
-    const table = tableFromIPC(response.data)
-    return table
-  }
-
-  /**
-   * Sent GET request.
-   */
-  public async get (path: string, params?: Record<string, string | number>): Promise<AxiosResponse> {
-    const response = await axios.get(
-      `${this._url}${path}`,
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': this._apiKey()
-        },
-        params,
-        timeout: 10000
-      }
-    ).catch((err) => {
-      console.error('error: ', err)
-      return err.response
-    })
-    if (response.status !== 200) {
-      const errorData = new TextDecoder().decode(response.data)
-      throw new Error(
-        `Server Error, status: ${response.status as number}, ` +
-        `message: ${response.statusText as string}: ${errorData}`
-      )
-    }
-    return response
-  }
-
-  /**
-   * Sent POST request.
-   */
-  public async post (path: string, data?: any, params?: Record<string, string | number>): Promise<AxiosResponse> {
-    const response = await axios.post(
-        `${this._url}${path}`,
-        data,
-        {
-          headers: {
-            'Content-Type': 'application/json',
-            'x-api-key': this._apiKey(),
-            ...(this._dbName !== undefined ? { 'x-lancedb-database': this._dbName } : {})
-          },
-          params,
-          timeout: 30000
-        }
-    ).catch((err) => {
-      console.error('error: ', err)
-      return err.response
-    })
-    if (response.status !== 200) {
-      const errorData = new TextDecoder().decode(response.data)
-      throw new Error(
-          `Server Error, status: ${response.status as number}, ` +
-          `message: ${response.statusText as string}: ${errorData}`
-      )
-    }
-    return response
+export function ErrorHandler () {
+  return async (e: ResponseError) => {
+    console.log('handling errors')
+    const errorData = await e.response.text()
+    throw new Error(
+        `Server Error, status: ${e.response.status}, ` +
+        `message: ${e.response.statusText}: ${errorData}`
+    )
   }
 }

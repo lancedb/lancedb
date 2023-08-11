@@ -9,10 +9,11 @@
     "build": "cargo-cp-artifact --artifact cdylib vectordb-node index.node -- cargo build --message-format=json",
     "build-release": "npm run build -- --release",
     "test": "npm run tsc && mocha -recursive dist/test",
-    "lint": "eslint native.js src --ext .js,.ts",
+    "lint": "eslint native.js src --ext .js,.ts --ignore-pattern generated-sources",
     "clean": "rm -rf node_modules *.node dist/",
     "pack-build": "neon pack-build",
-    "check-npm": "printenv && which node && which npm && npm --version"
+    "check-npm": "printenv && which node && which npm && npm --version",
+    "gen-openapi": "openapi-generator-cli generate -i openapi.yml -o src/generated-sources/openapi -g typescript-fetch --additional-properties=supportsES6=true,npmVersion=6.9.0,typescriptThreePlus=true"
   },
   "repository": {
     "type": "git",
@@ -28,6 +29,7 @@
   "license": "Apache-2.0",
   "devDependencies": {
     "@neon-rs/cli": "^0.0.160",
+    "@openapitools/openapi-generator-cli": "^2.7.0",
     "@types/chai": "^4.3.4",
     "@types/chai-as-promised": "^7.1.5",
     "@types/mocha": "^10.0.1",
@@ -56,8 +58,7 @@
   "dependencies": {
     "@apache-arrow/ts": "^12.0.0",
     "@neon-rs/load": "^0.0.74",
-    "apache-arrow": "^12.0.0",
-    "axios": "^1.4.0"
+    "apache-arrow": "^12.0.0"
   },
   "os": [
     "darwin",

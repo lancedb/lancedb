@@ -18,8 +18,8 @@ import {
 } from '../index'
 import { Query } from '../query'
 
-import { type Table as ArrowTable, Vector } from 'apache-arrow'
-import { HttpLancedbClient } from './client'
+import { type Table as ArrowTable, tableFromIPC, Vector } from 'apache-arrow'
+import { ErrorHandler, HttpLancedbClient } from './client'
 
 /**
  * Remote connection.
@@ -52,8 +52,8 @@ export class RemoteConnection implements Connection {
   }
 
   async tableNames (): Promise<string[]> {
-    const response = await this._client.get('/v1/table/')
-    return response.data.tables
+    const response = await this._client.tablesApi.listTables().catch(ErrorHandler())
+    return response.tables ?? []
   }
 
   async openTable (name: string): Promise<Table>
@@ -77,7 +77,7 @@ export class RemoteConnection implements Connection {
   }
 
   async dropTable (name: string): Promise<void> {
-    await this._client.post(`/v1/table/${name}/drop/`)
+    await this._client.tablesApi.dropTable({ name, body: new Blob() }).catch(ErrorHandler())
   }
 }
 
@@ -99,17 +99,22 @@ export class RemoteQuery<T = number[]> extends Query<T> {
       queryVector = query as number[]
     }
 
-    const data = await this._client.search(
-      this._name,
-      queryVector,
-      (this as any)._limit,
-      (this as any)._nprobes,
-      (this as any)._refineFactor,
-      (this as any)._select,
-      (this as any)._filter
-    )
+    const request = {
+      vector: queryVector,
+      k: (this as any)._limit,
+      nprobes: (this as any)._nprobes,
+      refineFactor: (this as any)._refineFactor,
+      columns: (this as any)._select,
+      filter: (this as any)._filter
+    }
 
-    return data.toArray().map((entry: Record<string, unknown>) => {
+    const response = await this._client.dataApi.v1TableNameQueryPost({
+      name: this._name,
+      v1TableNameQueryPostRequest: request
+    }).catch(ErrorHandler())
+    const table = await tableFromIPC(response.stream())
+
+    return table.toArray().map((entry: Record<string, unknown>) => {
       const newObject: Record<string, unknown> = {}
       Object.keys(entry).forEach((key: string) => {
         if (entry[key] instanceof Vector) {
