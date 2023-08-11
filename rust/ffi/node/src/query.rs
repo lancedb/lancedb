@@ -7,6 +7,7 @@ use lance::index::vector::MetricType;
 use neon::context::FunctionContext;
 use neon::handle::Handle;
 use neon::prelude::*;
+use neon::types::buffer::TypedArray;
 
 use crate::arrow::record_batch_to_buffer;
 use crate::error::ResultExt;
@@ -76,9 +77,17 @@ impl JsQuery {
             deferred.settle_with(&channel, move |mut cx| {
                 let results = results.or_throw(&mut cx)?;
                 let buffer = record_batch_to_buffer(results).or_throw(&mut cx)?;
-                Ok(JsBuffer::external(&mut cx, buffer))
+                Self::new_js_buffer(buffer, &mut cx)
             });
         });
         Ok(promise)
+    }
+
+    // Creates a new JsBuffer from a rust buffer. Usually we would call JsBuffer::external, but it panics on electron applications
+    fn new_js_buffer<'a>(buffer: Vec<u8>, cx: &mut TaskContext<'a>) -> NeonResult<Handle<'a, JsBuffer>> {
+        let mut js_buffer = JsBuffer::new(cx, buffer.len()).or_throw(cx)?;
+        let buffer_data = js_buffer.as_mut_slice(cx);
+        buffer_data.copy_from_slice(buffer.as_slice());
+        Ok(js_buffer)
     }
 }
