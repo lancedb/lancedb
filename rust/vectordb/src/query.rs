@@ -53,7 +53,7 @@ impl Query {
             nprobes: 20,
             refine_factor: None,
             metric_type: None,
-            use_index: false,
+            use_index: true,
             filter: None,
             select: None,
         }
