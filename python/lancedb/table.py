@@ -47,10 +47,15 @@ def _sanitize_data(data, schema, on_bad_vectors, fill_value):
     if isinstance(data, dict):
         data = vec_to_table(data)
     if pd is not None and isinstance(data, pd.DataFrame):
-        data = pa.Table.from_pandas(data)
+        data = pa.Table.from_pandas(data, preserve_index=False)
         data = _sanitize_schema(
             data, schema=schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value
         )
+        # Do not serialize Pandas metadata
+        metadata = data.schema.metadata if data.schema.metadata is not None else {}
+        metadata = {k: v for k, v in metadata.items() if k != b"pandas"}
+        schema = data.schema.with_metadata(metadata)
+        data = pa.Table.from_arrays(data.columns, schema=schema)
     if not isinstance(data, (pa.Table, Iterable)):
         raise TypeError(f"Unsupported data type: {type(data)}")
     return data
