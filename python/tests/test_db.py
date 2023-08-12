@@ -160,6 +160,47 @@ def test_delete_table(tmp_path):
     db.drop_table("does_not_exist", ignore_missing=True)
 
 
+def test_drop_database(tmp_path):
+    db = lancedb.connect(tmp_path)
+    data = pd.DataFrame(
+        {
+            "vector": [[3.1, 4.1], [5.9, 26.5]],
+            "item": ["foo", "bar"],
+            "price": [10.0, 20.0],
+        }
+    )
+    new_data = pd.DataFrame(
+        {
+            "vector": [[5.1, 4.1], [5.9, 10.5]],
+            "item": ["kiwi", "avocado"],
+            "price": [12.0, 17.0],
+        }
+    )
+    db.create_table("test", data=data)
+    with pytest.raises(Exception):
+        db.create_table("test", data=data)
+
+    assert db.table_names() == ["test"]
+
+    db.create_table("new_test", data=new_data)
+    db.drop_database()
+    assert db.table_names() == []
+
+    # it should pass when no tables are present
+    db.create_table("test", data=new_data)
+    db.drop_table("test")
+    assert db.table_names() == []
+    db.drop_database()
+    assert db.table_names() == []
+
+    # creating an empty database with schema
+    schema = pa.schema([pa.field("vector", pa.list_(pa.float32(), list_size=2))])
+    db.create_table("empty_table", schema=schema)
+    # dropping a empty database should pass
+    db.drop_database()
+    assert db.table_names() == []
+
+
 def test_empty_or_nonexistent_table(tmp_path):
     db = lancedb.connect(tmp_path)
     with pytest.raises(Exception):
