@@ -108,11 +108,11 @@ def test_query_builder_with_metric(table):
         .limit(1)
         .to_df()
     )
-    assert df_cosine.score[0] == pytest.approx(
+    assert df_cosine._distance[0] == pytest.approx(
         cosine_distance(query, df_cosine.vector[0]),
         abs=1e-6,
     )
-    assert 0 <= df_cosine.score[0] <= 1
+    assert 0 <= df_cosine._distance[0] <= 1
 
 
 def test_query_builder_with_different_vector_column():

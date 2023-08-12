@@ -94,7 +94,7 @@ There are a couple of parameters that can be used to fine-tune the search:
          .to_df()
      ```
      ```
-                                              vector       item       score
+                                              vector       item       _distance
      0  [0.44949695, 0.8444449, 0.06281311, 0.23338133...  item 1141  103.575333
      1  [0.48587373, 0.269207, 0.15095535, 0.65531915,...  item 3953  108.393867
      ```
@@ -109,9 +109,8 @@ There are a couple of parameters that can be used to fine-tune the search:
          .execute()
      ```
 
-The search will return the data requested in addition to the score of each item.
+The search will return the data requested in addition to the distance of each item.
 
-**Note:** The score is the distance between the query vector and the element. A lower number means that the result is more relevant.
 
 ### Filtering (where clause)
 
@@ -139,7 +138,7 @@ You can select the columns returned by the query using a select clause.
      tbl.search(np.random.random((1536))).select(["vector"]).to_df()
      ```
      ```
-     vector      score
+        vector                                             _distance
      0  [0.30928212, 0.022668175, 0.1756372, 0.4911822...  93.971092
      1  [0.2525465, 0.01723831, 0.261568, 0.002007689,...  95.173485
      ...

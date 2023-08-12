@@ -47,10 +47,15 @@ def _sanitize_data(data, schema, on_bad_vectors, fill_value):
     if isinstance(data, dict):
         data = vec_to_table(data)
     if pd is not None and isinstance(data, pd.DataFrame):
-        data = pa.Table.from_pandas(data)
+        data = pa.Table.from_pandas(data, preserve_index=False)
         data = _sanitize_schema(
             data, schema=schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value
         )
+        # Do not serialize Pandas metadata
+        metadata = data.schema.metadata if data.schema.metadata is not None else {}
+        metadata = {k: v for k, v in metadata.items() if k != b"pandas"}
+        schema = data.schema.with_metadata(metadata)
+        data = pa.Table.from_arrays(data.columns, schema=schema)
     if not isinstance(data, (pa.Table, Iterable)):
         raise TypeError(f"Unsupported data type: {type(data)}")
     return data
@@ -85,9 +90,9 @@ class Table(ABC):
     Can query the table with [Table.search][lancedb.table.Table.search].
 
     >>> table.search([0.4, 0.4]).select(["b"]).to_df()
-       b      vector  score
-    0  4  [0.5, 1.3]   0.82
-    1  2  [1.1, 1.2]   1.13
+       b      vector  _distance
+    0  4  [0.5, 1.3]       0.82
+    1  2  [1.1, 1.2]       1.13
 
     Search queries are much faster when an index is created. See
     [Table.create_index][lancedb.table.Table.create_index].
@@ -196,7 +201,7 @@ class Table(ABC):
         LanceQueryBuilder
             A query builder object representing the query.
             Once executed, the query returns selected columns, the vector,
-            and also the "score" column which is the distance between the query
+            and also the "_distance" column which is the distance between the query
             vector and the returned vector.
         """
         raise NotImplementedError
@@ -457,7 +462,7 @@ class LanceTable(Table):
         LanceQueryBuilder
             A query builder object representing the query.
             Once executed, the query returns selected columns, the vector,
-            and also the "score" column which is the distance between the query
+            and also the "_distance" column which is the distance between the query
             vector and the returned vector.
         """
         if isinstance(query, str):
