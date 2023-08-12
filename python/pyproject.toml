@@ -2,7 +2,7 @@
 name = "lancedb"
 version = "0.1.16"
 dependencies = [
-    "pylance==0.6.0",
+    "pylance==0.6.1",
     "ratelimiter",
     "retry",
     "tqdm",

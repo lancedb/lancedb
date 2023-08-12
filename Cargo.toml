@@ -6,11 +6,11 @@ members = [
 resolver = "2"
 
 [workspace.dependencies]
-lance = "=0.6.0"
-arrow-array = "42.0"
-arrow-data = "42.0"
-arrow-schema = "42.0"
-arrow-ipc = "42.0"
+lance = "=0.6.1"
+arrow-array = "43.0"
+arrow-data = "43.0"
+arrow-schema = "43.0"
+arrow-ipc = "43.0"
 half = { "version" = "=2.2.1", default-features = false }
 object_store = "0.6.1"
 snafu = "0.7.4"
