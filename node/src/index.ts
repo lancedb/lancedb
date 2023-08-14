@@ -256,7 +256,16 @@ export class LocalConnection implements Connection {
   async openTable<T> (name: string, embeddings: EmbeddingFunction<T>): Promise<Table<T>>
   async openTable<T> (name: string, embeddings?: EmbeddingFunction<T>): Promise<Table<T>>
   async openTable<T> (name: string, embeddings?: EmbeddingFunction<T>): Promise<Table<T>> {
-    const tbl = await databaseOpenTable.call(this._db, name)
+    // TODO: move this thing into rust
+    const callArgs = [this._db, name]
+    if (this._options.awsCredentials !== undefined) {
+      callArgs.push(this._options.awsCredentials.accessKeyId)
+      callArgs.push(this._options.awsCredentials.secretKey)
+      if (this._options.awsCredentials.sessionToken !== undefined) {
+        callArgs.push(this._options.awsCredentials.sessionToken)
+      }
+    }
+    const tbl = await databaseOpenTable.call(...callArgs)
     if (embeddings !== undefined) {
       return new LocalTable(tbl, name, this._options, embeddings)
     } else {
