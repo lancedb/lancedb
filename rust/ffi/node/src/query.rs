@@ -48,6 +48,8 @@ impl JsQuery {
             .map(|s| s.value(&mut cx))
             .map(|s| MetricType::try_from(s.as_str()).unwrap());
 
+        let is_electron = cx.argument::<JsBoolean>(1).or_throw(&mut cx)?.value(&mut cx);
+
         let rt = runtime(&mut cx)?;
 
         let (deferred, promise) = cx.promise();
@@ -77,17 +79,22 @@ impl JsQuery {
             deferred.settle_with(&channel, move |mut cx| {
                 let results = results.or_throw(&mut cx)?;
                 let buffer = record_batch_to_buffer(results).or_throw(&mut cx)?;
-                Self::new_js_buffer(buffer, &mut cx)
+                Self::new_js_buffer(buffer, &mut cx, is_electron)
             });
         });
         Ok(promise)
     }
 
-    // Creates a new JsBuffer from a rust buffer. Usually we would call JsBuffer::external, but it panics on electron applications
-    fn new_js_buffer<'a>(buffer: Vec<u8>, cx: &mut TaskContext<'a>) -> NeonResult<Handle<'a, JsBuffer>> {
-        let mut js_buffer = JsBuffer::new(cx, buffer.len()).or_throw(cx)?;
-        let buffer_data = js_buffer.as_mut_slice(cx);
-        buffer_data.copy_from_slice(buffer.as_slice());
-        Ok(js_buffer)
+    // Creates a new JsBuffer from a rust buffer with a special logic for electron
+    fn new_js_buffer<'a>(buffer: Vec<u8>, cx: &mut TaskContext<'a>, is_electron: bool) -> NeonResult<Handle<'a, JsBuffer>> {
+        if is_electron {
+            // Electron does not support `external`: https://github.com/neon-bindings/neon/pull/937
+            let mut js_buffer = JsBuffer::new(cx, buffer.len()).or_throw(cx)?;
+            let buffer_data = js_buffer.as_mut_slice(cx);
+            buffer_data.copy_from_slice(buffer.as_slice());
+            Ok(js_buffer)
+        } else {
+            Ok(JsBuffer::external(cx, buffer))
+        }
     }
 }
