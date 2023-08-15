@@ -66,9 +66,7 @@ def _sanitize_data(data, schema, on_bad_vectors, fill_value):
 def _to_record_batch_generator(data: Iterable, schema, on_bad_vectors, fill_value):
     for batch in data:
         if not isinstance(batch, pa.RecordBatch):
-            table = _sanitize_data(
-                batch, schema, on_bad_vectors, fill_value
-            )
+            table = _sanitize_data(batch, schema, on_bad_vectors, fill_value)
             for batch in table.to_batches():
                 yield batch
         yield batch
