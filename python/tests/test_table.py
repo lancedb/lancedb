@@ -268,3 +268,15 @@ def test_add_with_nans(db):
     arrow_tbl = table.to_lance().to_table(filter="item == 'bar'")
     v = arrow_tbl["vector"].to_pylist()[0]
     assert np.allclose(v, np.array([0.0, 0.0]))
+
+
+def test_restore(db):
+    table = LanceTable.create(
+        db,
+        "my_table",
+        data=[{"vector": [1.1, 0.9], "type": "vector"}],
+    )
+    table.add([{"vector": [0.5, 0.2], "type": "vector"}])
+    table.restore(1)
+    assert len(table.list_versions()) == 3
+    assert len(table) == 1
