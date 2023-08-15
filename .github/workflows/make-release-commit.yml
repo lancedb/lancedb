@@ -41,10 +41,25 @@ jobs:
         uses: actions/setup-python@v4
         with:
           python-version: "3.10"
-      - name: Bump version, create tag and commit
+      - name: Install tools
         run: |
           pip install bump2version
+          cargo install cargo-edit
+      - name: Bump version, create tag and commit
+        run: |
+          export CURRENT_VERSION=`cat VERSION`
           bumpversion --verbose ${{ inputs.part }}
+          export NEW_VERSION=`cat VERSION`
+          cargo set-version $NEW_VERSION
+          jq --arg ver "$NEW_VERSION" '
+            .version = $ver |
+            .optionalDependencies["@lancedb/vectordb-darwin-arm64"] = $ver |
+            .optionalDependencies["@lancedb/vectordb-darwin-x64"] = $ver |
+            .optionalDependencies["@lancedb/vectordb-linux-arm64-gnu"] = $ver |
+            .optionalDependencies["@lancedb/vectordb-linux-x64-gnu"] = $ver |
+            .optionalDependencies["@lancedb/vectordb-win32-x64-msvc"] = $ver' node/package.json > temp.json && mv temp.json node/package.json
+          git add node/package.json rust/ffi/node/Cargo.toml  rust/vectordb/Cargo.toml
+          git commit -m "Bump version: $CURRENT_VERSION → $NEW_VERSION"
       - name: Push new version and tag
         if: ${{ inputs.dry_run }} == "false"
         uses: ad-m/github-push-action@master
