@@ -82,46 +82,46 @@ def test_ingest_iterator(tmp_path):
         vector: vector(2)
         item: str
         price: float
-    
-    arrow_schema = pa.schema([
-        pa.field("vector", pa.list_(pa.float32(), 2)),
-        pa.field("item", pa.utf8()),
-        pa.field("price", pa.float32()),
-    ])
+
+    arrow_schema = pa.schema(
+        [
+            pa.field("vector", pa.list_(pa.float32(), 2)),
+            pa.field("item", pa.utf8()),
+            pa.field("price", pa.float32()),
+        ]
+    )
 
     def make_batches():
         for _ in range(5):
-            yield from [ 
-            # pandas
-            pd.DataFrame({
-                "vector": [[3.1, 4.1], [1, 1]],
-                "item": ["foo", "bar"],
-                "price": [10.0, 20.0],
-            }),
-            
-            # pylist
-            [
-                {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
-                {"vector": [5.9, 26.5], "item": "bar", "price": 20.0},
-            ],
-
-            # recordbatch
-            pa.RecordBatch.from_arrays(
+            yield from [
+                # pandas
+                pd.DataFrame(
+                    {
+                        "vector": [[3.1, 4.1], [1, 1]],
+                        "item": ["foo", "bar"],
+                        "price": [10.0, 20.0],
+                    }
+                ),
+                # pylist
                 [
-                    pa.array([[3.1, 4.1], [5.9, 26.5]], pa.list_(pa.float32(), 2)),
-                    pa.array(["foo", "bar"]),
-                    pa.array([10.0, 20.0]),
-                ], 
-                ["vector", "item", "price"],
-            ),
-
-            # pydantic list
-            [
-                PydanticSchema(vector=[3.1, 4.1], item="foo", price=10.0),
-                PydanticSchema(vector=[5.9, 26.5], item="bar", price=20.0),
-            ]
-
-            # TODO: test pydict separately. it is unique column number and names contraint
+                    {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+                    {"vector": [5.9, 26.5], "item": "bar", "price": 20.0},
+                ],
+                # recordbatch
+                pa.RecordBatch.from_arrays(
+                    [
+                        pa.array([[3.1, 4.1], [5.9, 26.5]], pa.list_(pa.float32(), 2)),
+                        pa.array(["foo", "bar"]),
+                        pa.array([10.0, 20.0]),
+                    ],
+                    ["vector", "item", "price"],
+                ),
+                # pydantic list
+                [
+                    PydanticSchema(vector=[3.1, 4.1], item="foo", price=10.0),
+                    PydanticSchema(vector=[5.9, 26.5], item="bar", price=20.0),
+                ]
+                # TODO: test pydict separately. it is unique column number and names contraint
             ]
 
     def run_tests(schema):
@@ -137,7 +137,7 @@ def test_ingest_iterator(tmp_path):
         assert len(tbl) == tbl_len * 2
         assert len(tbl.list_versions()) == 2
         db.drop_database()
-        
+
     run_tests(arrow_schema)
     run_tests(PydanticSchema)
 

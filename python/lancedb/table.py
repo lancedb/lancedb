@@ -62,11 +62,15 @@ def _sanitize_data(data, schema, on_bad_vectors, fill_value):
         raise TypeError(f"Unsupported data type: {type(data)}")
     return data
 
+
 def _to_record_batch_generator(data: Iterable, schema, on_bad_vectors, fill_value):
     for batch in data:
         if not isinstance(batch, pa.RecordBatch):
-            batch = _sanitize_data(batch, schema, on_bad_vectors, fill_value).to_batches()[0]
+            batch = _sanitize_data(
+                batch, schema, on_bad_vectors, fill_value
+            ).to_batches()[0]
         yield batch
+
 
 class Table(ABC):
     """
