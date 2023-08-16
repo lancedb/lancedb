@@ -67,19 +67,19 @@ A Table is a collection of Records in a LanceDB Database.
     You can also create LanceDB tables directly from pyarrow tables
     
     ```python
-        table = pa.Table.from_arrays(
-                [
-                    pa.array([[3.1, 4.1], [5.9, 26.5]],
-                            pa.list_(pa.float32(), 2)),
-                    pa.array(["foo", "bar"]),
-                    pa.array([10.0, 20.0]),
-                ],
-                ["vector", "item", "price"],
-            )
+    table = pa.Table.from_arrays(
+            [
+                pa.array([[3.1, 4.1], [5.9, 26.5]],
+                        pa.list_(pa.float32(), 2)),
+                pa.array(["foo", "bar"]),
+                pa.array([10.0, 20.0]),
+            ],
+            ["vector", "item", "price"],
+        )
 
-        db = lancedb.connect("db")
+    db = lancedb.connect("db")
 
-        tbl = db.create_table("test1", table)
+    tbl = db.create_table("test1", table)
     ```
 
     ### From Pydantic Models
