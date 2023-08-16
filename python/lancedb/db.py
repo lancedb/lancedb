@@ -149,8 +149,7 @@ class DBConnection(ABC):
         ...     for i in range(5):
         ...         yield pa.RecordBatch.from_arrays(
         ...             [
-        ...                 pa.array([[3.1, 4.1], [5.9, 26.5]],
-                                    pa.list_(pa.float32(), 2)),
+        ...                 pa.array([[3.1, 4.1], [5.9, 26.5]], pa.list_(pa.float32(), 2)),
         ...                 pa.array(["foo", "bar"]),
         ...                 pa.array([10.0, 20.0]),
         ...             ],
