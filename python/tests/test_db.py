@@ -116,6 +116,16 @@ def test_ingest_iterator(tmp_path):
                     ],
                     ["vector", "item", "price"],
                 ),
+                # pa Table
+                pa.Table.from_arrays(
+                    [
+                        pa.array([[3.1, 4.1], [5.9, 26.5]],
+                                pa.list_(pa.float32(), 2)),
+                        pa.array(["foo", "bar"]),
+                        pa.array([10.0, 20.0]),
+                    ],
+                    ["vector", "item", "price"],
+                ),
                 # pydantic list
                 [
                     PydanticSchema(vector=[3.1, 4.1], item="foo", price=10.0),
