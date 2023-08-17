@@ -119,8 +119,7 @@ def test_ingest_iterator(tmp_path):
                 # pa Table
                 pa.Table.from_arrays(
                     [
-                        pa.array([[3.1, 4.1], [5.9, 26.5]],
-                                pa.list_(pa.float32(), 2)),
+                        pa.array([[3.1, 4.1], [5.9, 26.5]], pa.list_(pa.float32(), 2)),
                         pa.array(["foo", "bar"]),
                         pa.array([10.0, 20.0]),
                     ],
