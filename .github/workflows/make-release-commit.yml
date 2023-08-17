@@ -58,7 +58,7 @@ jobs:
             .optionalDependencies["@lancedb/vectordb-linux-arm64-gnu"] = $ver |
             .optionalDependencies["@lancedb/vectordb-linux-x64-gnu"] = $ver |
             .optionalDependencies["@lancedb/vectordb-win32-x64-msvc"] = $ver' node/package.json > temp.json && mv temp.json node/package.json
-          git add node/package.json rust/ffi/node/Cargo.toml  rust/vectordb/Cargo.toml
+          git add node/package.json rust/ffi/node/Cargo.toml rust/vectordb/Cargo.toml VERSION .bumpversion.cfg
           git commit -m "Bump version: $CURRENT_VERSION → $NEW_VERSION"
       - name: Push new version and tag
         if: ${{ inputs.dry_run }} == "false"
