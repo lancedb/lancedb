@@ -56,9 +56,20 @@ def _sanitize_data(data, schema, on_bad_vectors, fill_value):
         metadata = {k: v for k, v in metadata.items() if k != b"pandas"}
         schema = data.schema.with_metadata(metadata)
         data = pa.Table.from_arrays(data.columns, schema=schema)
+    if isinstance(data, Iterable):
+        data = _to_record_batch_generator(data, schema, on_bad_vectors, fill_value)
     if not isinstance(data, (pa.Table, Iterable)):
         raise TypeError(f"Unsupported data type: {type(data)}")
     return data
+
+
+def _to_record_batch_generator(data: Iterable, schema, on_bad_vectors, fill_value):
+    for batch in data:
+        if not isinstance(batch, pa.RecordBatch):
+            table = _sanitize_data(batch, schema, on_bad_vectors, fill_value)
+            for batch in table.to_batches():
+                yield batch
+        yield batch
 
 
 class Table(ABC):
