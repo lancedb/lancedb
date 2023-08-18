@@ -12,6 +12,14 @@ theme:
     - content.code.copy
     - content.tabs.link
     - content.action.edit
+    - navigation.top
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.expand
+    - navigation.footer
+    - navigation.tracking
+    - navigation.instant
+    - navigation.indexes
   icon:
     repo: fontawesome/brands/github
   custom_dir: overrides
@@ -55,7 +63,30 @@ markdown_extensions:
 - md_in_html
 
 nav:
-- Home: index.md
+- Home:
+  - 🏢 Home: index.md
+  - 💡 Basics: basic.md
+  - 🧬 Embeddings: embedding.md
+  - 🔍 Python full-text search: fts.md
+  - 🔌 Integrations:
+    - integrations/index.md
+    - 🐼 Pandas and PyArrow: python/arrow.md
+    - 🦆 DuckDB: python/duckdb.md
+    - 🦜️ LangChain 🔗: https://python.langchain.com/en/latest/modules/indexes/vectorstores/examples/lancedb.html
+    - 🦜️ LangChain JS/TS 🔗: https://js.langchain.com/docs/modules/data_connection/vectorstores/integrations/lancedb
+    - 🦙 LlamaIndex 🦙: https://gpt-index.readthedocs.io/en/latest/examples/vector_stores/LanceDBIndexDemo.html
+    - 🐍 Pydantic: python/pydantic.md
+    - 🧱 Voxel51: integrations/voxel51.md
+    - 🛠 PromptTools: integrations/prompttools.md
+  - 🐍 Python examples:
+    - 🎥 YouTube Transcript Search: notebooks/youtube_transcript_search.ipynb
+    - 🤖 Documentation QA Bot using LangChain: notebooks/code_qa_bot.ipynb
+    - 🖼️ Multimodal search using CLIP: notebooks/multimodal_search.ipynb
+    - 🚀 Serverless QA Bot with S3 and Lambda: examples/serverless_lancedb_with_s3_and_lambda.md
+    - 🧷 Serverless QA Bot with Modal: examples/serverless_qa_bot_with_modal_and_langchain.md
+  - 🌐 Javascript examples:
+    - 🎥 YouTube Transcript Search: examples/youtube_transcript_bot_with_nodejs.md
+    - 🤖 TransformersJS Embedding Search: examples/transformerjs_embedding_search_nodejs.md
 - Basics: basic.md
 - Embeddings: embedding.md
 - Python full-text search: fts.md

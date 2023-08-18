@@ -2,19 +2,22 @@
 
 LanceDB is an open-source database for vector-search built with persistent storage, which greatly simplifies retrevial, filtering and management of embeddings.
 
-The key features of LanceDB include:
+![Illustration](/assets/illustration.png)
 
-* Production-scale vector search with no servers to manage.
+The key features of LanceDB include:
 
 * Store, query and filter vectors, metadata and multi-modal data (text, images, videos, point clouds, and more).
 
-* Support for vector similarity search, full-text search and SQL.
+* Support for production-scale vector similarity search, full-text search and SQL, with no servers to manage.
 
 * Native Python and Javascript/Typescript support.
 
 * Zero-copy, automatic versioning, manage versions of your data without needing extra infrastructure.
 
-* Ecosystem integrations with [LangChain 🦜️🔗](https://python.langchain.com/en/latest/modules/indexes/vectorstores/examples/lancedb.html), [LlamaIndex 🦙](https://gpt-index.readthedocs.io/en/latest/examples/vector_stores/LanceDBIndexDemo.html), Apache-Arrow, Pandas, Polars, DuckDB and more on the way.
+* Persisted on HDD, allowing scalability without breaking the bank.
+
+* Ingest your favorite data formats directly, like pandas DataFrames, Pydantic objects and more.
+
 
 LanceDB's core is written in Rust 🦀 and is built using <a href="https://github.com/lancedb/lance">Lance</a>, an open-source columnar format designed for performant ML workloads.
 
