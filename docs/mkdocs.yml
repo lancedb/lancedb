@@ -91,6 +91,7 @@ nav:
 - Embeddings: embedding.md
 - Python full-text search: fts.md
 - Integrations:
+  - integrations/integrations.md
   - Pandas and PyArrow: python/arrow.md
   - DuckDB: python/duckdb.md
   - LangChain 🦜️🔗: https://python.langchain.com/en/latest/modules/indexes/vectorstores/examples/lancedb.html
@@ -117,7 +118,7 @@ nav:
 - API references:
   - Python API: python/python.md
   - Javascript API: javascript/modules.md
-- LanceDB Cloud: https://noteforms.com/forms/lancedb-mailing-list-cloud-kty1o5?notionforms=1&utm_source=notionforms
+- LanceDB Cloud↗: https://noteforms.com/forms/lancedb-mailing-list-cloud-kty1o5?notionforms=1&utm_source=notionforms
 
 extra_css:
   - styles/global.css
