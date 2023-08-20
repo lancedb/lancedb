@@ -26,7 +26,7 @@ import pyarrow.compute as pc
 from lance import LanceDataset
 from lance.vector import vec_to_table
 
-from .common import DATA, VEC, VECTOR_COLUMN_NAME
+from .common import DATA, VEC, VECTOR_COLUMN_NAME, VECTOR_COLUMN_NAME_META
 from .pydantic import LanceModel
 from .query import LanceFtsQueryBuilder, LanceQueryBuilder, Query
 from .util import fs_from_uri, safe_import_pandas
@@ -34,7 +34,7 @@ from .util import fs_from_uri, safe_import_pandas
 pd = safe_import_pandas()
 
 
-def _sanitize_data(data, schema, on_bad_vectors, fill_value):
+def _sanitize_data(data, schema, on_bad_vectors, fill_value, vector_column_name: str):
     if isinstance(data, list):
         # convert to list of dict if data is a bunch of LanceModels
         if isinstance(data[0], LanceModel):
@@ -42,14 +42,22 @@ def _sanitize_data(data, schema, on_bad_vectors, fill_value):
             data = [dict(d) for d in data]
         data = pa.Table.from_pylist(data)
         data = _sanitize_schema(
-            data, schema=schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value
+            data,
+            vector_column_name,
+            schema=schema,
+            on_bad_vectors=on_bad_vectors,
+            fill_value=fill_value,
         )
     if isinstance(data, dict):
         data = vec_to_table(data)
     if pd is not None and isinstance(data, pd.DataFrame):
         data = pa.Table.from_pandas(data, preserve_index=False)
         data = _sanitize_schema(
-            data, schema=schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value
+            data,
+            vector_column_name,
+            schema=schema,
+            on_bad_vectors=on_bad_vectors,
+            fill_value=fill_value,
         )
         # Do not serialize Pandas metadata
         metadata = data.schema.metadata if data.schema.metadata is not None else {}
@@ -118,6 +126,15 @@ class Table(ABC):
         """
         raise NotImplementedError
 
+    def vector_column_name(self) -> str:
+        """Return the column name that stores vectors on this [Table](Table), defaults to 'vector'"""
+        if self.schema is not None:
+            # FIXME binary string
+            return self.schema.metadata.get(
+                b"_lancedb_vector", VECTOR_COLUMN_NAME
+            ).decode("utf-8")
+        return VECTOR_COLUMN_NAME
+
     def to_pandas(self):
         """Return the table as a pandas DataFrame.
 
@@ -142,7 +159,7 @@ class Table(ABC):
         metric="L2",
         num_partitions=256,
         num_sub_vectors=96,
-        vector_column_name: str = VECTOR_COLUMN_NAME,
+        vector_column_name: str = None,
         replace: bool = True,
     ):
         """Create an index on the table.
@@ -195,7 +212,7 @@ class Table(ABC):
 
     @abstractmethod
     def search(
-        self, query: Union[VEC, str], vector_column: str = VECTOR_COLUMN_NAME
+        self, query: Union[VEC, str], vector_column: str = None
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector.
@@ -423,9 +440,11 @@ class LanceTable(Table):
         metric="L2",
         num_partitions=256,
         num_sub_vectors=96,
-        vector_column_name=VECTOR_COLUMN_NAME,
+        vector_column_name: str = None,
         replace: bool = True,
     ):
+        if vector_column_name is None:
+            vector_column_name = self.vector_column_name()
         """Create an index on the table."""
         self._dataset.create_index(
             column=vector_column_name,
@@ -495,13 +514,17 @@ class LanceTable(Table):
         """
         # TODO: manage table listing and metadata separately
         data = _sanitize_data(
-            data, self.schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value
+            data,
+            self.schema,
+            on_bad_vectors=on_bad_vectors,
+            fill_value=fill_value,
+            vector_column_name=self.vector_column_name(),
         )
         lance.write_dataset(data, self._dataset_uri, schema=self.schema, mode=mode)
         self._reset_dataset()
 
     def search(
-        self, query: Union[VEC, str], vector_column_name=VECTOR_COLUMN_NAME
+        self, query: Union[VEC, str], vector_column_name: str = None
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector.
@@ -521,6 +544,8 @@ class LanceTable(Table):
             and also the "_distance" column which is the distance between the query
             vector and the returned vector.
         """
+        if vector_column_name is None:
+            vector_column_name = self.vector_column_name()
         if isinstance(query, str):
             # fts
             return LanceFtsQueryBuilder(self, query, vector_column_name)
@@ -543,6 +568,7 @@ class LanceTable(Table):
         mode="create",
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
+        vector_column_name: str = VECTOR_COLUMN_NAME,
     ):
         """
         Create a new table.
@@ -580,18 +606,27 @@ class LanceTable(Table):
             One of "error", "drop", "fill".
         fill_value: float, default 0.
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
+        vector_column_name: str, default "vector"
+            The name of the vector column in this table.
         """
         tbl = LanceTable(db, name)
         if inspect.isclass(schema) and issubclass(schema, LanceModel):
             schema = schema.to_arrow_schema()
         if data is not None:
             data = _sanitize_data(
-                data, schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value
+                data,
+                schema,
+                on_bad_vectors=on_bad_vectors,
+                fill_value=fill_value,
+                vector_column_name=vector_column_name,
             )
         else:
             if schema is None:
                 raise ValueError("Either data or schema must be provided")
             data = pa.Table.from_pylist([], schema=schema)
+        (data, schema) = _append_metadata(
+            data, schema, {VECTOR_COLUMN_NAME_META: vector_column_name}
+        )
         lance.write_dataset(data, tbl._dataset_uri, schema=schema, mode=mode)
         return LanceTable(db, name)
 
@@ -624,9 +659,18 @@ class LanceTable(Table):
             },
         )
 
+    def vector_column_name(self) -> str:
+        if self.schema is not None:
+            # FIXME binary string
+            return self.schema.metadata.get(
+                b"_lancedb_vector", VECTOR_COLUMN_NAME
+            ).decode("utf-8")
+        return VECTOR_COLUMN_NAME
+
 
 def _sanitize_schema(
     data: pa.Table,
+    vector_column_name: str,
     schema: pa.Schema = None,
     on_bad_vectors: str = "error",
     fill_value: float = 0.0,
@@ -653,7 +697,7 @@ def _sanitize_schema(
         data = data.combine_chunks()
         data = _sanitize_vector_column(
             data,
-            vector_column_name=VECTOR_COLUMN_NAME,
+            vector_column_name=vector_column_name,
             on_bad_vectors=on_bad_vectors,
             fill_value=fill_value,
         )
@@ -663,7 +707,7 @@ def _sanitize_schema(
     # just check the vector column
     return _sanitize_vector_column(
         data,
-        vector_column_name=VECTOR_COLUMN_NAME,
+        vector_column_name=vector_column_name,
         on_bad_vectors=on_bad_vectors,
         fill_value=fill_value,
     )
@@ -784,3 +828,13 @@ def _sanitize_nans(data, fill_value, on_bad_vectors, vec_arr, vector_column_name
         is_full = np.any(~is_value_nan.reshape(-1, vec_arr.type.list_size), axis=1)
         data = data.filter(is_full)
     return data
+
+
+def _append_metadata(data: pa.Table, schema: pa.Schema = None, metadata: dict = None):
+    if schema is not None:
+        current_meta = schema.metadata or {}
+        schema = schema.with_metadata({**current_meta, **metadata})
+    if data is not None:
+        current_meta = data.schema.metadata or {}
+        data = data.replace_schema_metadata({**current_meta, **metadata})
+    return data, schema

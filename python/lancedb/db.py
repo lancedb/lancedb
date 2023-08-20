@@ -21,7 +21,7 @@ from typing import Optional
 import pyarrow as pa
 from pyarrow import fs
 
-from .common import DATA, URI
+from .common import DATA, URI, VECTOR_COLUMN_NAME
 from .pydantic import LanceModel
 from .table import LanceTable, Table
 from .util import fs_from_uri, get_uri_location, get_uri_scheme
@@ -44,6 +44,7 @@ class DBConnection(ABC):
         mode: str = "create",
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
+        vector_column_name: str = VECTOR_COLUMN_NAME,
     ) -> Table:
         """Create a [Table][lancedb.table.Table] in the database.
 
@@ -64,6 +65,8 @@ class DBConnection(ABC):
             One of "error", "drop", "fill".
         fill_value: float
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
+        vector_column_name: str, default "vector"
+            The name of the vector column in this table.
 
         Returns
         -------
@@ -162,6 +165,7 @@ class DBConnection(ABC):
         ... ])
         >>> db.create_table("table4", make_batches(), schema=schema)
         LanceTable(table4)
+        :param vector_column_name:
 
         """
         raise NotImplementedError
@@ -289,6 +293,7 @@ class LanceDBConnection(DBConnection):
         mode: str = "create",
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
+        vector_column_name: str = VECTOR_COLUMN_NAME,
     ) -> LanceTable:
         """Create a table in the database.
 
@@ -307,6 +312,7 @@ class LanceDBConnection(DBConnection):
             mode=mode,
             on_bad_vectors=on_bad_vectors,
             fill_value=fill_value,
+            vector_column_name=vector_column_name,
         )
         return tbl
 

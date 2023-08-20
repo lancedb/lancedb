@@ -270,6 +270,22 @@ def test_add_with_nans(db):
     assert np.allclose(v, np.array([0.0, 0.0]))
 
 
+def test_custom_vector_name(db):
+    data = [
+        {"embedding": [3.1, 4.1], "item": "foo", "price": 10.0},
+        {"embedding": [5.9, 26.5], "item": "bar", "price": 20.0},
+    ]
+
+    table = LanceTable.create(
+        db, "test_embedding", data=data, vector_column_name="embedding"
+    )
+    assert table.schema.metadata[b"_lancedb_vector"] == b"embedding"
+    assert len(table) == 2
+    table.add([{"embedding": [7.1, 8.1], "item": "added", "price": 50.0}])
+    assert len(table) == 3
+    assert (len(table.search([7.1, 8.1]).to_df())) == 3
+
+
 def test_restore(db):
     table = LanceTable.create(
         db,

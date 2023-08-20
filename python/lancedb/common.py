@@ -24,6 +24,7 @@ DATA = Union[List[dict], dict, "pd.DataFrame", pa.Table, Iterable[pa.RecordBatch
 VEC = Union[list, np.ndarray, pa.Array, pa.ChunkedArray]
 URI = Union[str, Path]
 VECTOR_COLUMN_NAME = "vector"
+VECTOR_COLUMN_NAME_META = "_lancedb_vector"
 
 
 class Credential(str):

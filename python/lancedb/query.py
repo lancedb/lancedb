@@ -81,7 +81,7 @@ class LanceQueryBuilder:
         self,
         table: "lancedb.table.Table",
         query: Union[np.ndarray, str],
-        vector_column: str = VECTOR_COLUMN_NAME,
+        vector_column: str,
     ):
         self._metric = "L2"
         self._nprobes = 20

@@ -60,7 +60,7 @@ class RemoteTable(Table):
         metric="L2",
         num_partitions=256,
         num_sub_vectors=96,
-        vector_column_name: str = VECTOR_COLUMN_NAME,
+        vector_column_name: str = None,
         replace: bool = True,
     ):
         raise NotImplementedError
@@ -73,7 +73,11 @@ class RemoteTable(Table):
         fill_value: float = 0.0,
     ) -> int:
         data = _sanitize_data(
-            data, self.schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value
+            data,
+            self.schema,
+            on_bad_vectors=on_bad_vectors,
+            fill_value=fill_value,
+            vector_column_name=self.vector_column_name(),
         )
         payload = to_ipc_binary(data)
 
@@ -89,9 +93,11 @@ class RemoteTable(Table):
         )
 
     def search(
-        self, query: Union[VEC, str], vector_column: str = VECTOR_COLUMN_NAME
+        self, query: Union[VEC, str], vector_column_name: str = None
     ) -> LanceQueryBuilder:
-        return LanceQueryBuilder(self, query, vector_column)
+        if vector_column_name is None:
+            vector_column_name = self.vector_column_name()
+        return LanceQueryBuilder(self, query, vector_column_name)
 
     def _execute_query(self, query: Query) -> pa.Table:
         result = self._conn._client.query(self._name, query)
