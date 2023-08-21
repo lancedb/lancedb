@@ -12,6 +12,8 @@ theme:
     - content.code.copy
     - content.tabs.link
     - content.action.edit
+    - toc.follow
+    - toc.integrate
     - navigation.top
     - navigation.tabs
     - navigation.tabs.sticky
