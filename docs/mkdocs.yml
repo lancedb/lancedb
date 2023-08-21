@@ -112,6 +112,7 @@ nav:
 - Javascript examples:
   - examples/index.md
   - YouTube Transcript Search: examples/youtube_transcript_bot_with_nodejs.md
+  - Serverless Chatbot from any website: examples/serverless_website_chatbot.md
   - TransformersJS Embedding Search: examples/transformerjs_embedding_search_nodejs.md
 
 - Guides:
