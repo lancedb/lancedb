@@ -89,6 +89,11 @@ nav:
     - Serverless Website Chatbot: examples/serverless_website_chatbot.md
     - YouTube Transcript Search: examples/youtube_transcript_bot_with_nodejs.md
     - TransformersJS Embedding Search: examples/transformerjs_embedding_search_nodejs.md
+  - 📚 Guides:
+    - Tables: guides/tables.md
+    - Vector Search: search.md
+    - SQL filters: sql.md
+    - Indexing: ann_indexes.md
 - Basics: basic.md
 - Embeddings: embedding.md
 - Python full-text search: fts.md
