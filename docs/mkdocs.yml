@@ -85,7 +85,7 @@ nav:
     - Serverless QA Bot with S3 and Lambda: examples/serverless_lancedb_with_s3_and_lambda.md
     - Serverless QA Bot with Modal: examples/serverless_qa_bot_with_modal_and_langchain.md
   - 🌐 Javascript examples:
-    - examples/index.md
+    - examples/index_js.md
     - Serverless Website Chatbot: examples/serverless_website_chatbot.md
     - YouTube Transcript Search: examples/youtube_transcript_bot_with_nodejs.md
     - TransformersJS Embedding Search: examples/transformerjs_embedding_search_nodejs.md
@@ -115,7 +115,7 @@ nav:
   - Serverless QA Bot with S3 and Lambda: examples/serverless_lancedb_with_s3_and_lambda.md
   - Serverless QA Bot with Modal: examples/serverless_qa_bot_with_modal_and_langchain.md
 - Javascript examples:
-  - examples/index.md
+  - examples/index_js.md
   - YouTube Transcript Search: examples/youtube_transcript_bot_with_nodejs.md
   - Serverless Chatbot from any website: examples/serverless_website_chatbot.md
   - TransformersJS Embedding Search: examples/transformerjs_embedding_search_nodejs.md
