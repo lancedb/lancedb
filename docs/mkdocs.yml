@@ -78,12 +78,14 @@ nav:
     - Voxel51: integrations/voxel51.md
     - PromptTools: integrations/prompttools.md
   - 🐍 Python examples:
+    - examples/index.md
     - YouTube Transcript Search: notebooks/youtube_transcript_search.ipynb
     - Documentation QA Bot using LangChain: notebooks/code_qa_bot.ipynb
     - Multimodal search using CLIP: notebooks/multimodal_search.ipynb
     - Serverless QA Bot with S3 and Lambda: examples/serverless_lancedb_with_s3_and_lambda.md
     - Serverless QA Bot with Modal: examples/serverless_qa_bot_with_modal_and_langchain.md
   - 🌐 Javascript examples:
+    - examples/index.md
     - Serverless Website Chatbot: examples/serverless_website_chatbot.md
     - YouTube Transcript Search: examples/youtube_transcript_bot_with_nodejs.md
     - TransformersJS Embedding Search: examples/transformerjs_embedding_search_nodejs.md
@@ -91,7 +93,7 @@ nav:
 - Embeddings: embedding.md
 - Python full-text search: fts.md
 - Integrations:
-  - integrations/integrations.md
+  - integrations/index.md
   - Pandas and PyArrow: python/arrow.md
   - DuckDB: python/duckdb.md
   - LangChain 🦜️🔗: https://python.langchain.com/en/latest/modules/indexes/vectorstores/examples/lancedb.html
@@ -101,12 +103,14 @@ nav:
   - Voxel51: integrations/voxel51.md
   - PromptTools: integrations/prompttools.md
 - Python examples:
+  - examples/index.md
   - YouTube Transcript Search: notebooks/youtube_transcript_search.ipynb
   - Documentation QA Bot using LangChain: notebooks/code_qa_bot.ipynb
   - Multimodal search using CLIP: notebooks/multimodal_search.ipynb
   - Serverless QA Bot with S3 and Lambda: examples/serverless_lancedb_with_s3_and_lambda.md
   - Serverless QA Bot with Modal: examples/serverless_qa_bot_with_modal_and_langchain.md
 - Javascript examples:
+  - examples/index.md
   - YouTube Transcript Search: examples/youtube_transcript_bot_with_nodejs.md
   - TransformersJS Embedding Search: examples/transformerjs_embedding_search_nodejs.md
 
