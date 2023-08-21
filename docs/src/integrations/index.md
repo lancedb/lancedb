@@ -1,5 +1,14 @@
 # Integrations
 
+## Data Formats
+
+LanceDB supports ingesting from your favorite data tools.
+
+![Illustration](/assets/ecosystem-illustration.png)
+
+
+## Tools
+
 LanceDB is integrated with most of the popular AI tools, with more coming soon.
 Get started using these examples and quick links.
 
