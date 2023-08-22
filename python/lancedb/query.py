@@ -73,8 +73,8 @@ class LanceQueryBuilder:
     ...       .select(["b"])
     ...       .limit(2)
     ...       .to_df())
-       b      vector  score
-    0  6  [0.4, 0.4]    0.0
+       b      vector  _distance
+    0  6  [0.4, 0.4]        0.0
     """
 
     def __init__(
@@ -205,7 +205,7 @@ class LanceQueryBuilder:
         """
         Execute the query and return the results as a pandas DataFrame.
         In addition to the selected columns, LanceDB also returns a vector
-        and also the "score" column which is the distance between the query
+        and also the "_distance" column which is the distance between the query
         vector and the returned vector.
         """
 
@@ -217,7 +217,7 @@ class LanceQueryBuilder:
         [Apache Arrow Table](https://arrow.apache.org/docs/python/generated/pyarrow.Table.html#pyarrow.Table).
 
         In addition to the selected columns, LanceDB also returns a vector
-        and also the "score" column which is the distance between the query
+        and also the "_distance" column which is the distance between the query
         vector and the returned vectors.
         """
         vector = self._query if isinstance(self._query, list) else self._query.tolist()

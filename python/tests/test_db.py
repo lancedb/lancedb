@@ -17,7 +17,7 @@ import pyarrow as pa
 import pytest
 
 import lancedb
-from lancedb.pydantic import LanceModel
+from lancedb.pydantic import LanceModel, vector
 
 
 def test_basic(tmp_path):
@@ -77,35 +77,78 @@ def test_ingest_pd(tmp_path):
     assert db.open_table("test").name == db["test"].name
 
 
-def test_ingest_record_batch_iterator(tmp_path):
-    def batch_reader():
-        for i in range(5):
-            yield pa.RecordBatch.from_arrays(
-                [
-                    pa.array([[3.1, 4.1], [5.9, 26.5]]),
-                    pa.array(["foo", "bar"]),
-                    pa.array([10.0, 20.0]),
-                ],
-                ["vector", "item", "price"],
-            )
+def test_ingest_iterator(tmp_path):
+    class PydanticSchema(LanceModel):
+        vector: vector(2)
+        item: str
+        price: float
 
-    db = lancedb.connect(tmp_path)
-    tbl = db.create_table(
-        "test",
-        batch_reader(),
-        schema=pa.schema(
-            [
-                pa.field("vector", pa.list_(pa.float32())),
-                pa.field("item", pa.utf8()),
-                pa.field("price", pa.float32()),
-            ]
-        ),
+    arrow_schema = pa.schema(
+        [
+            pa.field("vector", pa.list_(pa.float32(), 2)),
+            pa.field("item", pa.utf8()),
+            pa.field("price", pa.float32()),
+        ]
     )
 
-    tbl_len = len(tbl)
-    tbl.add(batch_reader())
-    assert len(tbl) == tbl_len * 2
-    assert len(tbl.list_versions()) == 2
+    def make_batches():
+        for _ in range(5):
+            yield from [
+                # pandas
+                pd.DataFrame(
+                    {
+                        "vector": [[3.1, 4.1], [1, 1]],
+                        "item": ["foo", "bar"],
+                        "price": [10.0, 20.0],
+                    }
+                ),
+                # pylist
+                [
+                    {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+                    {"vector": [5.9, 26.5], "item": "bar", "price": 20.0},
+                ],
+                # recordbatch
+                pa.RecordBatch.from_arrays(
+                    [
+                        pa.array([[3.1, 4.1], [5.9, 26.5]], pa.list_(pa.float32(), 2)),
+                        pa.array(["foo", "bar"]),
+                        pa.array([10.0, 20.0]),
+                    ],
+                    ["vector", "item", "price"],
+                ),
+                # pa Table
+                pa.Table.from_arrays(
+                    [
+                        pa.array([[3.1, 4.1], [5.9, 26.5]], pa.list_(pa.float32(), 2)),
+                        pa.array(["foo", "bar"]),
+                        pa.array([10.0, 20.0]),
+                    ],
+                    ["vector", "item", "price"],
+                ),
+                # pydantic list
+                [
+                    PydanticSchema(vector=[3.1, 4.1], item="foo", price=10.0),
+                    PydanticSchema(vector=[5.9, 26.5], item="bar", price=20.0),
+                ]
+                # TODO: test pydict separately. it is unique column number and names contraint
+            ]
+
+    def run_tests(schema):
+        db = lancedb.connect(tmp_path)
+        tbl = db.create_table("table2", make_batches(), schema=schema, mode="overwrite")
+
+        tbl.to_pandas()
+        assert tbl.search([3.1, 4.1]).limit(1).to_df()["_distance"][0] == 0.0
+        assert tbl.search([5.9, 26.5]).limit(1).to_df()["_distance"][0] == 0.0
+
+        tbl_len = len(tbl)
+        tbl.add(make_batches())
+        assert len(tbl) == tbl_len * 2
+        assert len(tbl.list_versions()) == 2
+        db.drop_database()
+
+    run_tests(arrow_schema)
+    run_tests(PydanticSchema)
 
 
 def test_create_mode(tmp_path):
@@ -158,6 +201,47 @@ def test_delete_table(tmp_path):
     # dropping a table that does not exist should pass
     # if ignore_missing=True
     db.drop_table("does_not_exist", ignore_missing=True)
+
+
+def test_drop_database(tmp_path):
+    db = lancedb.connect(tmp_path)
+    data = pd.DataFrame(
+        {
+            "vector": [[3.1, 4.1], [5.9, 26.5]],
+            "item": ["foo", "bar"],
+            "price": [10.0, 20.0],
+        }
+    )
+    new_data = pd.DataFrame(
+        {
+            "vector": [[5.1, 4.1], [5.9, 10.5]],
+            "item": ["kiwi", "avocado"],
+            "price": [12.0, 17.0],
+        }
+    )
+    db.create_table("test", data=data)
+    with pytest.raises(Exception):
+        db.create_table("test", data=data)
+
+    assert db.table_names() == ["test"]
+
+    db.create_table("new_test", data=new_data)
+    db.drop_database()
+    assert db.table_names() == []
+
+    # it should pass when no tables are present
+    db.create_table("test", data=new_data)
+    db.drop_table("test")
+    assert db.table_names() == []
+    db.drop_database()
+    assert db.table_names() == []
+
+    # creating an empty database with schema
+    schema = pa.schema([pa.field("vector", pa.list_(pa.float32(), list_size=2))])
+    db.create_table("empty_table", schema=schema)
+    # dropping a empty database should pass
+    db.drop_database()
+    assert db.table_names() == []
 
 
 def test_empty_or_nonexistent_table(tmp_path):

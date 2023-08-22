@@ -247,16 +247,16 @@ export interface Table<T = number[]> {
  * A connection to a LanceDB database.
  */
 export class LocalConnection implements Connection {
-  private readonly _options: ConnectionOptions
+  private readonly _options: () => ConnectionOptions
   private readonly _db: any
 
   constructor (db: any, options: ConnectionOptions) {
-    this._options = options
+    this._options = () => options
     this._db = db
   }
 
   get uri (): string {
-    return this._options.uri
+    return this._options().uri
   }
 
   /**
@@ -282,11 +282,11 @@ export class LocalConnection implements Connection {
   async openTable<T> (name: string, embeddings: EmbeddingFunction<T>): Promise<Table<T>>
   async openTable<T> (name: string, embeddings?: EmbeddingFunction<T>): Promise<Table<T>>
   async openTable<T> (name: string, embeddings?: EmbeddingFunction<T>): Promise<Table<T>> {
-    const tbl = await databaseOpenTable.call(this._db, name)
+    const tbl = await databaseOpenTable.call(this._db, name, ...this.awsParams())
     if (embeddings !== undefined) {
-      return new LocalTable(tbl, name, this._options, embeddings)
+      return new LocalTable(tbl, name, this._options(), embeddings)
     } else {
-      return new LocalTable(tbl, name, this._options)
+      return new LocalTable(tbl, name, this._options())
     }
   }
 
@@ -330,19 +330,21 @@ export class LocalConnection implements Connection {
 
     const tbl = await tableCreate.call(this._db, name, buffer, writeOptions?.writeMode?.toString(), ...this.awsParams())
     if (embeddingFunction !== undefined) {
-      return new LocalTable(tbl, name, this._options, embeddingFunction)
+      return new LocalTable(tbl, name, this._options(), embeddingFunction)
     } else {
-      return new LocalTable(tbl, name, this._options)
+      return new LocalTable(tbl, name, this._options())
     }
   }
 
   private awsParams (): any[] {
+    // TODO: move this thing into rust
+    const awsCredentials = this._options().awsCredentials
     const params = []
-    if (this._options.awsCredentials !== undefined) {
-      params.push(this._options.awsCredentials.accessKeyId)
-      params.push(this._options.awsCredentials.secretKey)
-      if (this._options.awsCredentials.sessionToken !== undefined) {
-        params.push(this._options.awsCredentials.sessionToken)
+    if (awsCredentials !== undefined) {
+      params.push(awsCredentials.accessKeyId)
+      params.push(awsCredentials.secretKey)
+      if (awsCredentials.sessionToken !== undefined) {
+        params.push(awsCredentials.sessionToken)
       }
     }
     return params
@@ -361,7 +363,7 @@ export class LocalTable<T = number[]> implements Table<T> {
   private _tbl: any
   private readonly _name: string
   private readonly _embeddings?: EmbeddingFunction<T>
-  private readonly _options: ConnectionOptions
+  private readonly _options: () => ConnectionOptions
 
   constructor (tbl: any, name: string, options: ConnectionOptions)
   /**
@@ -375,7 +377,7 @@ export class LocalTable<T = number[]> implements Table<T> {
     this._tbl = tbl
     this._name = name
     this._embeddings = embeddings
-    this._options = options
+    this._options = () => options
   }
 
   get name (): string {
@@ -398,11 +400,12 @@ export class LocalTable<T = number[]> implements Table<T> {
    */
   async add (data: Array<Record<string, unknown>>): Promise<number> {
     const callArgs = [this._tbl, await fromRecordsToBuffer(data, this._embeddings), WriteMode.Append.toString()]
-    if (this._options.awsCredentials !== undefined) {
-      callArgs.push(this._options.awsCredentials.accessKeyId)
-      callArgs.push(this._options.awsCredentials.secretKey)
-      if (this._options.awsCredentials.sessionToken !== undefined) {
-        callArgs.push(this._options.awsCredentials.sessionToken)
+    const awsCredentials = this._options().awsCredentials
+    if (awsCredentials !== undefined) {
+      callArgs.push(awsCredentials.accessKeyId)
+      callArgs.push(awsCredentials.secretKey)
+      if (awsCredentials.sessionToken !== undefined) {
+        callArgs.push(awsCredentials.sessionToken)
       }
     }
     return tableAdd.call(...callArgs).then((newTable: any) => { this._tbl = newTable })
@@ -416,11 +419,12 @@ export class LocalTable<T = number[]> implements Table<T> {
    */
   async overwrite (data: Array<Record<string, unknown>>): Promise<number> {
     const callArgs = [this._tbl, await fromRecordsToBuffer(data, this._embeddings), WriteMode.Overwrite.toString()]
-    if (this._options.awsCredentials !== undefined) {
-      callArgs.push(this._options.awsCredentials.accessKeyId)
-      callArgs.push(this._options.awsCredentials.secretKey)
-      if (this._options.awsCredentials.sessionToken !== undefined) {
-        callArgs.push(this._options.awsCredentials.sessionToken)
+    const awsCredentials = this._options().awsCredentials
+    if (awsCredentials !== undefined) {
+      callArgs.push(awsCredentials.accessKeyId)
+      callArgs.push(awsCredentials.secretKey)
+      if (awsCredentials.sessionToken !== undefined) {
+        callArgs.push(awsCredentials.sessionToken)
       }
     }
     return tableAdd.call(...callArgs).then((newTable: any) => { this._tbl = newTable })

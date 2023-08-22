@@ -79,7 +79,7 @@ print(df)
 ```
 
 ```
-    vector     item  price        score
+    vector     item  price    _distance
 0  [5.9, 26.5]  bar   20.0  14257.05957
 ```
 

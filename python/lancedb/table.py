@@ -47,13 +47,29 @@ def _sanitize_data(data, schema, on_bad_vectors, fill_value):
     if isinstance(data, dict):
         data = vec_to_table(data)
     if pd is not None and isinstance(data, pd.DataFrame):
-        data = pa.Table.from_pandas(data)
+        data = pa.Table.from_pandas(data, preserve_index=False)
         data = _sanitize_schema(
             data, schema=schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value
         )
+        # Do not serialize Pandas metadata
+        metadata = data.schema.metadata if data.schema.metadata is not None else {}
+        metadata = {k: v for k, v in metadata.items() if k != b"pandas"}
+        schema = data.schema.with_metadata(metadata)
+        data = pa.Table.from_arrays(data.columns, schema=schema)
+    if isinstance(data, Iterable):
+        data = _to_record_batch_generator(data, schema, on_bad_vectors, fill_value)
     if not isinstance(data, (pa.Table, Iterable)):
         raise TypeError(f"Unsupported data type: {type(data)}")
     return data
+
+
+def _to_record_batch_generator(data: Iterable, schema, on_bad_vectors, fill_value):
+    for batch in data:
+        if not isinstance(batch, pa.RecordBatch):
+            table = _sanitize_data(batch, schema, on_bad_vectors, fill_value)
+            for batch in table.to_batches():
+                yield batch
+        yield batch
 
 
 class Table(ABC):
@@ -85,17 +101,18 @@ class Table(ABC):
     Can query the table with [Table.search][lancedb.table.Table.search].
 
     >>> table.search([0.4, 0.4]).select(["b"]).to_df()
-       b      vector  score
-    0  4  [0.5, 1.3]   0.82
-    1  2  [1.1, 1.2]   1.13
+       b      vector  _distance
+    0  4  [0.5, 1.3]       0.82
+    1  2  [1.1, 1.2]       1.13
 
     Search queries are much faster when an index is created. See
     [Table.create_index][lancedb.table.Table.create_index].
     """
 
+    @property
     @abstractmethod
     def schema(self) -> pa.Schema:
-        """Return the [Arrow Schema](https://arrow.apache.org/docs/python/api/datatypes.html#) of
+        """The [Arrow Schema](https://arrow.apache.org/docs/python/api/datatypes.html#) of
         this [Table](Table)
 
         """
@@ -195,7 +212,7 @@ class Table(ABC):
         LanceQueryBuilder
             A query builder object representing the query.
             Once executed, the query returns selected columns, the vector,
-            and also the "score" column which is the distance between the query
+            and also the "_distance" column which is the distance between the query
             vector and the returned vector.
         """
         raise NotImplementedError
@@ -262,10 +279,11 @@ class LanceTable(Table):
         self.name = name
         self._version = version
 
-    def _reset_dataset(self):
+    def _reset_dataset(self, version=None):
         try:
             if "_dataset" in self.__dict__:
                 del self.__dict__["_dataset"]
+            self._version = version
         except AttributeError:
             pass
 
@@ -291,7 +309,9 @@ class LanceTable(Table):
     def checkout(self, version: int):
         """Checkout a version of the table. This is an in-place operation.
 
-        This allows viewing previous versions of the table.
+        This allows viewing previous versions of the table. If you wish to
+        keep writing to the dataset starting from an old version, then use
+        the `restore` function instead.
 
         Parameters
         ----------
@@ -319,7 +339,49 @@ class LanceTable(Table):
         max_ver = max([v["version"] for v in self._dataset.versions()])
         if version < 1 or version > max_ver:
             raise ValueError(f"Invalid version {version}")
-        self._version = version
+        self._reset_dataset(version=version)
+
+    def restore(self, version: int):
+        """Restore a version of the table. This is an in-place operation.
+
+        This creates a new version where the data is equivalent to the
+        specified previous version. Note that this creates a new snapshot.
+
+        Parameters
+        ----------
+        version : int
+            The version to restore.
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> db = lancedb.connect("./.lancedb")
+        >>> table = db.create_table("my_table", [{"vector": [1.1, 0.9], "type": "vector"}])
+        >>> table.version
+        1
+        >>> table.to_pandas()
+               vector    type
+        0  [1.1, 0.9]  vector
+        >>> table.add([{"vector": [0.5, 0.2], "type": "vector"}])
+        >>> table.version
+        2
+        >>> table.restore(1)
+        >>> table.to_pandas()
+               vector    type
+        0  [1.1, 0.9]  vector
+        >>> len(table.list_versions())
+        3
+        """
+        max_ver = max([v["version"] for v in self._dataset.versions()])
+        if version < 1 or version >= max_ver:
+            raise ValueError(f"Invalid version {version}")
+        if version == max_ver:
+            self._reset_dataset()
+            return
+        self.checkout(version)
+        data = self.to_arrow()
+        self.checkout(max_ver)
+        self.add(data, mode="overwrite")
         self._reset_dataset()
 
     def __len__(self):
@@ -456,7 +518,7 @@ class LanceTable(Table):
         LanceQueryBuilder
             A query builder object representing the query.
             Once executed, the query returns selected columns, the vector,
-            and also the "score" column which is the distance between the query
+            and also the "_distance" column which is the distance between the query
             vector and the returned vector.
         """
         if isinstance(query, str):

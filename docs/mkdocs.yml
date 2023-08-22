@@ -67,6 +67,7 @@ nav:
   - LlamaIndex 🦙: https://gpt-index.readthedocs.io/en/latest/examples/vector_stores/LanceDBIndexDemo.html
   - Pydantic: python/pydantic.md
   - Voxel51: integrations/voxel51.md
+  - PromptTools: integrations/prompttools.md
 - Python examples:
   - YouTube Transcript Search: notebooks/youtube_transcript_search.ipynb
   - Documentation QA Bot using LangChain: notebooks/code_qa_bot.ipynb

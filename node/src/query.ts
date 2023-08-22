@@ -112,7 +112,8 @@ export class Query<T = number[]> {
       this._queryVector = this._query as number[]
     }
 
-    const buffer = await tableSearch.call(this._tbl, this)
+    const isElectron = this.isElectron()
+    const buffer = await tableSearch.call(this._tbl, this, isElectron)
     const data = tableFromIPC(buffer)
 
     return data.toArray().map((entry: Record<string, unknown>) => {
@@ -126,5 +127,15 @@ export class Query<T = number[]> {
       })
       return newObject as unknown as T
     })
+  }
+
+  // See https://github.com/electron/electron/issues/2288
+  private isElectron (): boolean {
+    try {
+      // eslint-disable-next-line no-prototype-builtins
+      return (process?.versions?.hasOwnProperty('electron') || navigator?.userAgent?.toLowerCase()?.includes(' electron'))
+    } catch (e) {
+      return false
+    }
   }
 }
