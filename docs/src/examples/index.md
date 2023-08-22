@@ -1,6 +1,6 @@
 # Examples
 
-Here are some of the examples, projects and applications using LanceDB python and native javascript library.
+Here are some of the examples, projects and applications using LanceDB python library.
 Find more on [VectorDB Recipes](https://github.com/lancedb/vectordb-recipes)
 
 | Example | Interactive Envs | Scripts  |
