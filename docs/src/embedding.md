@@ -66,7 +66,7 @@ You can also use an external API like OpenAI to generate embeddings
     to generate embeddings for each row.
 
     Say if you have a pandas DataFrame with a `text` column that you want to be embedded,
-    you can use the [with_embeddings](https://lancedb.github.io/lancedb/python/#lancedb.embeddings.with_embeddings)
+    you can use the [with_embeddings](https://lancedb.github.io/lancedb/python/python/#lancedb.embeddings.with_embeddings)
     function to generate embeddings and add create a combined pyarrow table:
 
 
