@@ -4,3 +4,12 @@
     --md-text-font: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
     --md-code-font: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
 }
+
+.md-nav__item, .md-tabs__item {
+    font-size: large;
+}
+
+/* Maximum space for text block */
+.md-grid {
+    max-width: 90%;
+  }
