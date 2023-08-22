@@ -1,6 +1,6 @@
 # Examples
 
-Here are some of the examples, projects and applications using native javascript library.
+Here are some of the examples, projects and applications using vectordb native javascript library.
 Find more on [VectorDB Recipes](https://github.com/lancedb/vectordb-recipes)
 
 | Example | Scripts  |
