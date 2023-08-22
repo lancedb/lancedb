@@ -19,6 +19,7 @@ import * as chaiAsPromised from 'chai-as-promised'
 
 import * as lancedb from '../index'
 import { type AwsCredentials, type EmbeddingFunction, MetricType, Query, WriteMode, DefaultWriteOptions, isWriteOptions } from '../index'
+import { Field, Int32, makeVector, Schema, Utf8, Table as ArrowTable, vectorFromArray } from 'apache-arrow'
 
 const expect = chai.expect
 const assert = chai.assert
@@ -119,6 +120,45 @@ describe('LanceDB client', function () {
   })
 
   describe('when creating a new dataset', function () {
+    it('create an empty table', async function () {
+      const dir = await track().mkdir('lancejs')
+      const con = await lancedb.connect(dir)
+
+      const schema = new Schema(
+        [new Field('id', new Int32()), new Field('name', new Utf8())]
+      )
+      const table = await con.createTable({ name: 'vectors', schema })
+      assert.equal(table.name, 'vectors')
+      assert.deepEqual(await con.tableNames(), ['vectors'])
+    })
+
+    it('create a table with a empty data array', async function () {
+      const dir = await track().mkdir('lancejs')
+      const con = await lancedb.connect(dir)
+
+      const schema = new Schema(
+        [new Field('id', new Int32()), new Field('name', new Utf8())]
+      )
+      const table = await con.createTable({ name: 'vectors', schema, data: [] })
+      assert.equal(table.name, 'vectors')
+      assert.deepEqual(await con.tableNames(), ['vectors'])
+    })
+
+    it('create a table from an Arrow Table', async function () {
+      const dir = await track().mkdir('lancejs')
+      const con = await lancedb.connect(dir)
+
+      const i32s = new Int32Array(new Array<number>(10))
+      const i32 = makeVector(i32s)
+
+      const data = new ArrowTable({ vector: i32 })
+
+      const table = await con.createTable({ name: 'vectors', data })
+      assert.equal(table.name, 'vectors')
+      assert.equal(await table.countRows(), 10)
+      assert.deepEqual(await con.tableNames(), ['vectors'])
+    })
+
     it('creates a new table from javascript objects', async function () {
       const dir = await track().mkdir('lancejs')
       const con = await lancedb.connect(dir)
@@ -288,6 +328,20 @@ describe('LanceDB client', function () {
         { price: 50, name: 'bar' }
       ]
       const table = await con.createTable('vectors', data, embeddings, { writeMode: WriteMode.Create })
+      const results = await table.search('foo').execute()
+      assert.equal(results.length, 2)
+    })
+
+    it('should create embeddings for Arrow Table', async function () {
+      const dir = await track().mkdir('lancejs')
+      const con = await lancedb.connect(dir)
+      const embeddingFunction = new TextEmbedding('name')
+
+      const names = vectorFromArray(['foo', 'bar'], new Utf8())
+      const data = new ArrowTable({ name: names })
+
+      const table = await con.createTable({ name: 'vectors', data, embeddingFunction })
+      assert.equal(table.name, 'vectors')
       const results = await table.search('foo').execute()
       assert.equal(results.length, 2)
     })

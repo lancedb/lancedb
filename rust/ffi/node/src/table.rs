@@ -43,8 +43,7 @@ impl JsTable {
             .downcast_or_throw::<JsBox<JsDatabase>, _>(&mut cx)?;
         let table_name = cx.argument::<JsString>(0)?.value(&mut cx);
         let buffer = cx.argument::<JsBuffer>(1)?;
-        let batches = arrow_buffer_to_record_batch(buffer.as_slice(&mut cx)).or_throw(&mut cx)?;
-        let schema = batches[0].schema();
+        let (batches, schema) = arrow_buffer_to_record_batch(buffer.as_slice(&mut cx)).or_throw(&mut cx)?;
 
         // Write mode
         let mode = match cx.argument::<JsString>(2)?.value(&mut cx).as_str() {
@@ -94,10 +93,7 @@ impl JsTable {
         let js_table = cx.this().downcast_or_throw::<JsBox<JsTable>, _>(&mut cx)?;
         let buffer = cx.argument::<JsBuffer>(0)?;
         let write_mode = cx.argument::<JsString>(1)?.value(&mut cx);
-
-        let batches = arrow_buffer_to_record_batch(buffer.as_slice(&mut cx)).or_throw(&mut cx)?;
-        let schema = batches[0].schema();
-
+        let (batches, schema) = arrow_buffer_to_record_batch(buffer.as_slice(&mut cx)).or_throw(&mut cx)?;
         let rt = runtime(&mut cx)?;
         let channel = cx.channel();
         let mut table = js_table.table.clone();
