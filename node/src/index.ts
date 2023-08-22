@@ -42,6 +42,8 @@ export interface ConnectionOptions {
 
   awsCredentials?: AwsCredentials
 
+  awsRegion?: string
+
   // API key for the remote connections
   apiKey?: string
   // Region to connect
@@ -49,6 +51,23 @@ export interface ConnectionOptions {
 
   // override the host for the remote connections
   hostOverride?: string
+}
+
+function getAwsArgs (opts: ConnectionOptions): any[] {
+  const callArgs = []
+  const awsCredentials = opts.awsCredentials
+  if (awsCredentials !== undefined) {
+    callArgs.push(awsCredentials.accessKeyId)
+    callArgs.push(awsCredentials.secretKey)
+    callArgs.push(awsCredentials.sessionToken)
+  } else {
+    callArgs.push(undefined)
+    callArgs.push(undefined)
+    callArgs.push(undefined)
+  }
+
+  callArgs.push(opts.awsRegion)
+  return callArgs
 }
 
 export interface CreateTableOptions<T> {
@@ -282,7 +301,7 @@ export class LocalConnection implements Connection {
   async openTable<T> (name: string, embeddings: EmbeddingFunction<T>): Promise<Table<T>>
   async openTable<T> (name: string, embeddings?: EmbeddingFunction<T>): Promise<Table<T>>
   async openTable<T> (name: string, embeddings?: EmbeddingFunction<T>): Promise<Table<T>> {
-    const tbl = await databaseOpenTable.call(this._db, name, ...this.awsParams())
+    const tbl = await databaseOpenTable.call(this._db, name, ...getAwsArgs(this._options()))
     if (embeddings !== undefined) {
       return new LocalTable(tbl, name, this._options(), embeddings)
     } else {
@@ -336,26 +355,12 @@ export class LocalConnection implements Connection {
       buffer = await fromRecordsToBuffer(data, embeddingFunction)
     }
 
-    const tbl = await tableCreate.call(this._db, name, buffer, writeOptions?.writeMode?.toString(), ...this.awsParams())
+    const tbl = await tableCreate.call(this._db, name, buffer, writeOptions?.writeMode?.toString(), ...getAwsArgs(this._options()))
     if (embeddingFunction !== undefined) {
       return new LocalTable(tbl, name, this._options(), embeddingFunction)
     } else {
       return new LocalTable(tbl, name, this._options())
     }
-  }
-
-  private awsParams (): any[] {
-    // TODO: move this thing into rust
-    const awsCredentials = this._options().awsCredentials
-    const params = []
-    if (awsCredentials !== undefined) {
-      params.push(awsCredentials.accessKeyId)
-      params.push(awsCredentials.secretKey)
-      if (awsCredentials.sessionToken !== undefined) {
-        params.push(awsCredentials.sessionToken)
-      }
-    }
-    return params
   }
 
   /**
@@ -407,16 +412,12 @@ export class LocalTable<T = number[]> implements Table<T> {
    * @return The number of rows added to the table
    */
   async add (data: Array<Record<string, unknown>>): Promise<number> {
-    const callArgs = [this._tbl, await fromRecordsToBuffer(data, this._embeddings), WriteMode.Append.toString()]
-    const awsCredentials = this._options().awsCredentials
-    if (awsCredentials !== undefined) {
-      callArgs.push(awsCredentials.accessKeyId)
-      callArgs.push(awsCredentials.secretKey)
-      if (awsCredentials.sessionToken !== undefined) {
-        callArgs.push(awsCredentials.sessionToken)
-      }
-    }
-    return tableAdd.call(...callArgs).then((newTable: any) => { this._tbl = newTable })
+    return tableAdd.call(
+      this._tbl,
+      await fromRecordsToBuffer(data, this._embeddings),
+      WriteMode.Append.toString(),
+      ...getAwsArgs(this._options())
+    ).then((newTable: any) => { this._tbl = newTable })
   }
 
   /**
@@ -426,16 +427,12 @@ export class LocalTable<T = number[]> implements Table<T> {
    * @return The number of rows added to the table
    */
   async overwrite (data: Array<Record<string, unknown>>): Promise<number> {
-    const callArgs = [this._tbl, await fromRecordsToBuffer(data, this._embeddings), WriteMode.Overwrite.toString()]
-    const awsCredentials = this._options().awsCredentials
-    if (awsCredentials !== undefined) {
-      callArgs.push(awsCredentials.accessKeyId)
-      callArgs.push(awsCredentials.secretKey)
-      if (awsCredentials.sessionToken !== undefined) {
-        callArgs.push(awsCredentials.sessionToken)
-      }
-    }
-    return tableAdd.call(...callArgs).then((newTable: any) => { this._tbl = newTable })
+    return tableAdd.call(
+      this._tbl,
+      await fromRecordsToBuffer(data, this._embeddings),
+      WriteMode.Overwrite.toString(),
+      ...getAwsArgs(this._options())
+    ).then((newTable: any) => { this._tbl = newTable })
   }
 
   /**

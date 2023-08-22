@@ -6,7 +6,7 @@ members = [
 resolver = "2"
 
 [workspace.dependencies]
-lance = "=0.6.2"
+lance = "=0.6.3"
 arrow-array = "43.0"
 arrow-data = "43.0"
 arrow-schema = "43.0"
