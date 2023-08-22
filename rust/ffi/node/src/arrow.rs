@@ -14,60 +14,33 @@
 
 use std::io::Cursor;
 use std::ops::Deref;
-use std::sync::Arc;
 
-use arrow_array::cast::as_list_array;
-use arrow_array::{Array, ArrayRef, FixedSizeListArray, RecordBatch};
+use arrow_array::RecordBatch;
 use arrow_ipc::reader::FileReader;
 use arrow_ipc::writer::FileWriter;
-use arrow_schema::{DataType, Field, Schema};
-use lance::arrow::{FixedSizeListArrayExt, RecordBatchExt};
+use arrow_schema::SchemaRef;
 use vectordb::table::VECTOR_COLUMN_NAME;
 
 use crate::error::{MissingColumnSnafu, Result};
 use snafu::prelude::*;
 
-pub(crate) fn convert_record_batch(record_batch: RecordBatch) -> Result<RecordBatch> {
-    let column = get_column(VECTOR_COLUMN_NAME, &record_batch)?;
-
-    // TODO: we should just consume the underlying js buffer in the future instead of this arrow around a bunch of times
-    let arr = as_list_array(column.as_ref());
-    let list_size = arr.values().len() / record_batch.num_rows();
-    let r = FixedSizeListArray::try_new_from_values(arr.values().to_owned(), list_size as i32)?;
-
-    let schema = Arc::new(Schema::new(vec![Field::new(
-        VECTOR_COLUMN_NAME,
-        DataType::FixedSizeList(
-            Arc::new(Field::new("item", DataType::Float32, true)),
-            list_size as i32,
-        ),
-        true,
-    )]));
-
-    let mut new_batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(r)])?;
-
-    if record_batch.num_columns() > 1 {
-        let rb = record_batch.drop_column(VECTOR_COLUMN_NAME)?;
-        new_batch = new_batch.merge(&rb)?;
-    }
-    Ok(new_batch)
-}
-
-fn get_column(column_name: &str, record_batch: &RecordBatch) -> Result<ArrayRef> {
+fn validate_vector_column(record_batch: &RecordBatch) -> Result<()> {
     record_batch
-        .column_by_name(column_name)
-        .cloned()
-        .context(MissingColumnSnafu { name: column_name })
+        .column_by_name(VECTOR_COLUMN_NAME)
+        .map(|_| ())
+        .context(MissingColumnSnafu { name: VECTOR_COLUMN_NAME })
 }
 
-pub(crate) fn arrow_buffer_to_record_batch(slice: &[u8]) -> Result<Vec<RecordBatch>> {
+pub(crate) fn arrow_buffer_to_record_batch(slice: &[u8]) -> Result<(Vec<RecordBatch>, SchemaRef)> {
     let mut batches: Vec<RecordBatch> = Vec::new();
     let file_reader = FileReader::try_new(Cursor::new(slice), None)?;
+    let schema = file_reader.schema().clone();
     for b in file_reader {
-        let record_batch = convert_record_batch(b?)?;
+        let record_batch = b?;
+        validate_vector_column(&record_batch)?;
         batches.push(record_batch);
     }
-    Ok(batches)
+    Ok((batches, schema))
 }
 
 pub(crate) fn record_batch_to_buffer(batches: Vec<RecordBatch>) -> Result<Vec<u8>> {

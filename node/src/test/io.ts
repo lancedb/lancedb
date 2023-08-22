@@ -47,7 +47,9 @@ describe('LanceDB S3 client', function () {
         }
       }
       const table = await createTestDB(opts, 2, 20)
+      console.log(table)
       const con = await lancedb.connect(opts)
+      console.log(con)
       assert.equal(con.uri, opts.uri)
 
       const results = await table.search([0.1, 0.3]).limit(5).execute()
@@ -70,5 +72,5 @@ async function createTestDB (opts: ConnectionOptions, numDimensions: number = 2,
     data.push({ id: i + 1, name: `name_${i}`, price: i + 10, is_active: (i % 2 === 0), vector })
   }
 
-  return await con.createTable('vectors', data)
+  return await con.createTable('vectors_2', data)
 }

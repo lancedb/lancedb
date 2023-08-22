@@ -14,11 +14,11 @@
 
 import {
   type EmbeddingFunction, type Table, type VectorIndexParams, type Connection,
-  type ConnectionOptions
+  type ConnectionOptions, type CreateTableOptions, type WriteOptions
 } from '../index'
 import { Query } from '../query'
 
-import { type Table as ArrowTable, Vector } from 'apache-arrow'
+import { Vector } from 'apache-arrow'
 import { HttpLancedbClient } from './client'
 
 /**
@@ -66,13 +66,7 @@ export class RemoteConnection implements Connection {
     }
   }
 
-  async createTable (name: string, data: Array<Record<string, unknown>>): Promise<Table>
-  async createTable<T> (name: string, data: Array<Record<string, unknown>>, embeddings: EmbeddingFunction<T>): Promise<Table<T>>
-  async createTable<T> (name: string, data: Array<Record<string, unknown>>, embeddings?: EmbeddingFunction<T>): Promise<Table<T>> {
-    throw new Error('Not implemented')
-  }
-
-  async createTableArrow (name: string, table: ArrowTable): Promise<Table> {
+  async createTable<T> (name: string | CreateTableOptions<T>, data?: Array<Record<string, unknown>>, optsOrEmbedding?: WriteOptions | EmbeddingFunction<T>, opt?: WriteOptions): Promise<Table<T>> {
     throw new Error('Not implemented')
   }
 
