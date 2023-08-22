@@ -22,7 +22,7 @@ use neon::types::buffer::TypedArray;
 use vectordb::Table;
 
 use crate::error::ResultExt;
-use crate::{get_aws_creds, runtime, JsDatabase};
+use crate::{get_aws_creds, get_aws_region, runtime, JsDatabase};
 
 pub(crate) struct JsTable {
     pub table: Table,
@@ -61,14 +61,13 @@ impl JsTable {
         let (deferred, promise) = cx.promise();
         let database = db.database.clone();
 
-        let aws_creds = match get_aws_creds(&mut cx, 3) {
-            Ok(creds) => creds,
-            Err(err) => return err,
-        };
+        let aws_creds = get_aws_creds(&mut cx, 3)?;
+        let aws_region = get_aws_region(&mut cx, 6)?;
 
         let params = WriteParams {
             store_params: Some(ObjectStoreParams {
                 aws_credentials: aws_creds,
+                aws_region,
                 ..ObjectStoreParams::default()
             }),
             mode: mode,
@@ -105,14 +104,13 @@ impl JsTable {
             "overwrite" => WriteMode::Overwrite,
             s => return cx.throw_error(format!("invalid write mode {}", s)),
         };
-        let aws_creds = match get_aws_creds(&mut cx, 2) {
-            Ok(creds) => creds,
-            Err(err) => return err,
-        };
+        let aws_creds = get_aws_creds(&mut cx, 2)?;
+        let aws_region = get_aws_region(&mut cx, 5)?;
 
         let params = WriteParams {
             store_params: Some(ObjectStoreParams {
                 aws_credentials: aws_creds,
+                aws_region,
                 ..ObjectStoreParams::default()
             }),
             mode: write_mode,

@@ -48,7 +48,10 @@ impl JsQuery {
             .map(|s| s.value(&mut cx))
             .map(|s| MetricType::try_from(s.as_str()).unwrap());
 
-        let is_electron = cx.argument::<JsBoolean>(1).or_throw(&mut cx)?.value(&mut cx);
+        let is_electron = cx
+            .argument::<JsBoolean>(1)
+            .or_throw(&mut cx)?
+            .value(&mut cx);
 
         let rt = runtime(&mut cx)?;
 
@@ -86,7 +89,11 @@ impl JsQuery {
     }
 
     // Creates a new JsBuffer from a rust buffer with a special logic for electron
-    fn new_js_buffer<'a>(buffer: Vec<u8>, cx: &mut TaskContext<'a>, is_electron: bool) -> NeonResult<Handle<'a, JsBuffer>> {
+    fn new_js_buffer<'a>(
+        buffer: Vec<u8>,
+        cx: &mut TaskContext<'a>,
+        is_electron: bool,
+    ) -> NeonResult<Handle<'a, JsBuffer>> {
         if is_electron {
             // Electron does not support `external`: https://github.com/neon-bindings/neon/pull/937
             let mut js_buffer = JsBuffer::new(cx, buffer.len()).or_throw(cx)?;

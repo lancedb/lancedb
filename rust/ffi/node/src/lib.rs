@@ -121,26 +121,28 @@ fn database_table_names(mut cx: FunctionContext) -> JsResult<JsPromise> {
     Ok(promise)
 }
 
-fn get_aws_creds<T>(
+/// Get AWS creds arguments from the context
+/// Consumes 3 arguments
+fn get_aws_creds(
     cx: &mut FunctionContext,
     arg_starting_location: i32,
-) -> Result<Option<AwsCredentialProvider>, NeonResult<T>> {
+) -> NeonResult<Option<AwsCredentialProvider>> {
     let secret_key_id = cx
         .argument_opt(arg_starting_location)
-        .map(|arg| arg.downcast_or_throw::<JsString, FunctionContext>(cx).ok())
-        .flatten()
+        .filter(|arg| arg.is_a::<JsString, _>(cx))
+        .and_then(|arg| arg.downcast_or_throw::<JsString, FunctionContext>(cx).ok())
         .map(|v| v.value(cx));
 
     let secret_key = cx
         .argument_opt(arg_starting_location + 1)
-        .map(|arg| arg.downcast_or_throw::<JsString, FunctionContext>(cx).ok())
-        .flatten()
+        .filter(|arg| arg.is_a::<JsString, _>(cx))
+        .and_then(|arg| arg.downcast_or_throw::<JsString, FunctionContext>(cx).ok())
         .map(|v| v.value(cx));
 
     let temp_token = cx
         .argument_opt(arg_starting_location + 2)
-        .map(|arg| arg.downcast_or_throw::<JsString, FunctionContext>(cx).ok())
-        .flatten()
+        .filter(|arg| arg.is_a::<JsString, _>(cx))
+        .and_then(|arg| arg.downcast_or_throw::<JsString, FunctionContext>(cx).ok())
         .map(|v| v.value(cx));
 
     match (secret_key_id, secret_key, temp_token) {
@@ -152,7 +154,21 @@ fn get_aws_creds<T>(
             }),
         ))),
         (None, None, None) => Ok(None),
-        _ => Err(cx.throw_error("Invalid credentials configuration")),
+        _ => cx.throw_error("Invalid credentials configuration"),
+    }
+}
+
+/// Get AWS region arguments from the context
+fn get_aws_region(cx: &mut FunctionContext, arg_location: i32) -> NeonResult<Option<String>> {
+    let region = cx
+        .argument_opt(arg_location)
+        .filter(|arg| arg.is_a::<JsString, _>(cx))
+        .map(|arg| arg.downcast_or_throw::<JsString, FunctionContext>(cx));
+
+    match region {
+        Some(Ok(region)) => Ok(Some(region.value(cx))),
+        None => Ok(None),
+        Some(Err(e)) => Err(e),
     }
 }
 
@@ -162,14 +178,14 @@ fn database_open_table(mut cx: FunctionContext) -> JsResult<JsPromise> {
         .downcast_or_throw::<JsBox<JsDatabase>, _>(&mut cx)?;
     let table_name = cx.argument::<JsString>(0)?.value(&mut cx);
 
-    let aws_creds = match get_aws_creds(&mut cx, 1) {
-        Ok(creds) => creds,
-        Err(err) => return err,
-    };
+    let aws_creds = get_aws_creds(&mut cx, 1)?;
+
+    let aws_region = get_aws_region(&mut cx, 4)?;
 
     let params = ReadParams {
         store_options: Some(ObjectStoreParams {
             aws_credentials: aws_creds,
+            aws_region,
             ..ObjectStoreParams::default()
         }),
         ..ReadParams::default()
