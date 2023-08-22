@@ -1,7 +1,6 @@
 # Examples
 
-Here are some of the examples, projects and applications using LanceDB python library.
-Find more on [VectorDB Recipes](https://github.com/lancedb/vectordb-recipes)
+Here are some of the examples, projects and applications using LanceDB python library. Some examples are covered in detail in the next sections. You can find more on [VectorDB Recipes](https://github.com/lancedb/vectordb-recipes)
 
 | Example | Interactive Envs | Scripts  |
 |-------- | ---------------- | ------   |
