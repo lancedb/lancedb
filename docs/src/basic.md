@@ -198,3 +198,15 @@ you can pass in `ignore_missing=True`.
 This section covered the very basics of the LanceDB API.
 LanceDB supports many additional features when creating indices to speed up search and options for search.
 These are contained in the next section of the documentation.
+
+## Note: Bundling vectorDB apps with webpack
+Since LanceDB contains a prebuilt Node binary, you must configure `next.config.js` to exclude it from webpack. This is required for both using Next.js and deploying on Vercel.
+```javascript
+/** @type {import('next').NextConfig} */
+module.exports = ({
+  webpack(config) {
+    config.externals.push({ vectordb: 'vectordb' })
+    return config;
+  }
+})
+```

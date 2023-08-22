@@ -1,4 +1,5 @@
-A Table is a collection of Records in a LanceDB Database.
+ <a href="https://colab.research.google.com/github/lancedb/lancedb/blob/main/docs/src/notebooks/tables_guide.ipynb"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"></a><br/>
+A Table is a collection of Records in a LanceDB Database. You can follow along on colab!
 
 ## Creating a LanceDB Table
 
@@ -171,7 +172,6 @@ A Table is a collection of Records in a LanceDB Database.
     
     tbl = db.create_table("table5", schema=Model.to_arrow_schema())
     ```
-    
 
 === "Javascript/Typescript"
 
@@ -246,23 +246,21 @@ After a table has been created, you can always add more data to it using
     tbl.add(df)
     ```
 
-    You can also add a large dataset batch in one go using pyArrow RecordBatch Iterator.
+    You can also add a large dataset batch in one go using Iterator of any supported data types.
 
-    ### Adding RecordBatch Iterator
+    ### Adding to table using Iterator
     
     ```python
-    import pyarrow as pa
+    import pandas as pd
 
     def make_batches():
         for i in range(5):
-            yield pa.RecordBatch.from_arrays(
-                [
-                    pa.array([[3.1, 4.1], [5.9, 26.5]]),
-                    pa.array(["foo", "bar"]),
-                    pa.array([10.0, 20.0]),
-                ],
-                ["vector", "item", "price"],
-            )
+            yield pd.DataFrame(
+                {
+                    "vector": [[3.1, 4.1], [1, 1]],
+                    "item": ["foo", "bar"],
+                    "price": [10.0, 20.0],
+                })
     
     tbl.add(make_batches())
     ```
@@ -293,8 +291,6 @@ Use the `delete()` method on tables to delete rows from a table. To choose which
     ```python
     tbl.delete('item = "fizz"')
     ```
-
-    ## Examples
 
     ### Deleting row with specific column value
 
