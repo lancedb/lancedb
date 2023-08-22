@@ -118,7 +118,7 @@ export interface Connection {
    * Creates a new Table, optionally initializing it with new data.
    *
    * @param {string} name - The name of the table.
-   * @param data - Non-empty Array of Records to be inserted into the table
+   * @param data - Array of Records to be inserted into the table
    * @param schema - An Arrow Schema that describe this table columns
    * @param {EmbeddingFunction} embeddings - An embedding function to use on this table
    * @param {WriteOptions} writeOptions - The write options to use when creating the table.
@@ -316,7 +316,15 @@ export class LocalConnection implements Connection {
     writeOptions?: WriteOptions | undefined
   }): Promise<Table<T>> {
     let buffer: Buffer
-    if (data === undefined) {
+
+    function isEmpty (data: Array<Record<string, unknown>> | ArrowTable<any>): boolean {
+      if (data instanceof ArrowTable) {
+        return data.data.length === 0
+      }
+      return data.length === 0
+    }
+
+    if ((data === undefined) || isEmpty(data)) {
       if (schema === undefined) {
         throw new Error('Either data or schema needs to defined')
       }

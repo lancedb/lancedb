@@ -14,7 +14,7 @@
 
 import {
   type EmbeddingFunction, type Table, type VectorIndexParams, type Connection,
-  type ConnectionOptions
+  type ConnectionOptions, type CreateTableOptions, type WriteOptions
 } from '../index'
 import { Query } from '../query'
 
@@ -66,7 +66,7 @@ export class RemoteConnection implements Connection {
     }
   }
 
-  async createTable<T> (...args: any[]): Promise<Table<T>> {
+  async createTable<T> (name: string | CreateTableOptions<T>, data?: Array<Record<string, unknown>>, optsOrEmbedding?: WriteOptions | EmbeddingFunction<T>, opt?: WriteOptions): Promise<Table<T>> {
     throw new Error('Not implemented')
   }
 

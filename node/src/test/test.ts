@@ -132,6 +132,18 @@ describe('LanceDB client', function () {
       assert.deepEqual(await con.tableNames(), ['vectors'])
     })
 
+    it('create a table with a empty data array', async function () {
+      const dir = await track().mkdir('lancejs')
+      const con = await lancedb.connect(dir)
+
+      const schema = new Schema(
+        [new Field('id', new Int32()), new Field('name', new Utf8())]
+      )
+      const table = await con.createTable({ name: 'vectors', schema, data: [] })
+      assert.equal(table.name, 'vectors')
+      assert.deepEqual(await con.tableNames(), ['vectors'])
+    })
+
     it('create a table from an Arrow Table', async function () {
       const dir = await track().mkdir('lancejs')
       const con = await lancedb.connect(dir)
