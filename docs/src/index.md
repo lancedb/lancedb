@@ -2,7 +2,7 @@
 
 LanceDB is an open-source database for vector-search built with persistent storage, which greatly simplifies retrevial, filtering and management of embeddings.
 
-![Illustration](/assets/ecosystem-illustration.png)
+![Illustration](/lancedb/assets/ecosystem-illustration.png)
 
 The key features of LanceDB include:
 

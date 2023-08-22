@@ -4,7 +4,7 @@
 
 LanceDB supports ingesting from your favorite data tools.
 
-![Illustration](/assets/ecosystem-illustration.png)
+![Illustration](/lancedb/assets/ecosystem-illustration.png)
 
 
 ## Tools
