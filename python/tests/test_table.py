@@ -280,3 +280,9 @@ def test_restore(db):
     table.restore(1)
     assert len(table.list_versions()) == 3
     assert len(table) == 1
+
+    expected = table.to_arrow()
+    table.checkout(1)
+    table.restore()
+    assert len(table.list_versions()) == 4
+    assert table.to_arrow() == expected
