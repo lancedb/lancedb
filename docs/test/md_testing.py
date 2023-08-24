@@ -2,12 +2,11 @@ import glob
 from typing import Iterator
 from pathlib import Path
 
-excluded_files = [
+glob_string = "../src/**/*.md"
+excluded_globs = [
     "../src/fts.md",
     "../src/embedding.md",
-    "../src/examples/serverless_lancedb_with_s3_and_lambda.md",
-    "../src/examples/serverless_qa_bot_with_modal_and_langchain.md",
-    "../src/examples/youtube_transcript_bot_with_nodejs.md",
+    "../src/examples/*.md",
     "../src/integrations/voxel51.md",
     "../src/guides/tables.md"
 ]
@@ -15,7 +14,9 @@ excluded_files = [
 python_prefix = "py"
 python_file = ".py"
 python_folder = "python"
-glob_string = "../src/**/*.md"
+
+files = glob.glob(glob_string, recursive=True)
+excluded_files = [f for excluded_glob in excluded_globs for f in glob.glob(excluded_glob, recursive=True)]
 
 def yield_lines(lines: Iterator[str], prefix: str, suffix: str):
     in_code_block = False
@@ -31,7 +32,7 @@ def yield_lines(lines: Iterator[str], prefix: str, suffix: str):
         elif in_code_block:
             yield line[strip_length:]
 
-for file in filter(lambda file: file not in excluded_files, glob.glob(glob_string, recursive=True)):
+for file in filter(lambda file: file not in excluded_files, files):
     with open(file, "r") as f:
         lines = list(yield_lines(iter(f), "```", "```"))
 
