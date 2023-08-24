@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import List
 from unittest.mock import PropertyMock, patch
 
+import lance
 import numpy as np
 import pandas as pd
 import pyarrow as pa
@@ -297,7 +298,7 @@ def test_restore(db):
         table.restore(0)
 
 
-def test_merge(db):
+def test_merge(db, tmp_path):
     table = LanceTable.create(
         db,
         "my_table",
@@ -311,3 +312,7 @@ def test_merge(db):
         schema=table.schema,
     )
     assert table.to_arrow() == expected
+
+    other_dataset = lance.write_dataset(other_table, tmp_path / "other_table.lance")
+    table.restore(1)
+    table.merge(other_dataset, left_on="id")

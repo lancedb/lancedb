@@ -518,7 +518,9 @@ class LanceTable(Table):
         Performs a left join, where the dataset is the left side and data_obj
         is the right side. Rows existing in the dataset but not on the left will
         be filled with null values, unless Lance doesn't support null values for
-        some types, in which case an error will be raised.
+        some types, in which case an error will be raised. The only overlapping
+        column allowed is the join column. If other overlapping columns exist,
+        an error will be raised.
 
         Parameters
         ----------
@@ -560,6 +562,8 @@ class LanceTable(Table):
             schema = schema.to_arrow_schema()
         if isinstance(other_table, LanceTable):
             other_table = other_table.to_lance()
+        if isinstance(other_table, LanceDataset):
+            other_table = other_table.to_table()
         self._dataset.merge(
             other_table, left_on=left_on, right_on=right_on, schema=schema
         )
