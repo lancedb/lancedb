@@ -351,8 +351,8 @@ class LanceTable(Table):
         ----------
         version : int, default None
             The version to restore. If unspecified then restores the currently
-            checkedout version. If the currently checkedout version is the latest
-            version then this is a no-op.
+            checked out version. If the currently checked out version is the
+            latest version then this is a no-op.
 
         Examples
         --------
