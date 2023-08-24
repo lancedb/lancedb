@@ -377,11 +377,8 @@ class LanceTable(Table):
         max_ver = max([v["version"] for v in self._dataset.versions()])
         if version is None:
             version = self.version
-
-        if version < 1 or version >= max_ver:
+        elif version < 1 or version > max_ver:
             raise ValueError(f"Invalid version {version}")
-        if version is None:
-            version = self.version
         else:
             self.checkout(version)
 
