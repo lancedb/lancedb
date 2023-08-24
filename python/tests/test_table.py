@@ -287,7 +287,7 @@ def test_restore(db):
     assert len(table.list_versions()) == 4
     assert table.to_arrow() == expected
 
-    table.restore(4) # latest version should be no-op
+    table.restore(4)  # latest version should be no-op
     assert len(table.list_versions()) == 4
 
     with pytest.raises(ValueError):
