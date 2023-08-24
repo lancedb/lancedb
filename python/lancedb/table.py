@@ -515,7 +515,7 @@ class LanceTable(Table):
     ):
         """Merge another table into this table.
 
-        Performs a left join, where the dataset is the left side and data_obj
+        Performs a left join, where the dataset is the left side and other_table
         is the right side. Rows existing in the dataset but not on the left will
         be filled with null values, unless Lance doesn't support null values for
         some types, in which case an error will be raised. The only overlapping
