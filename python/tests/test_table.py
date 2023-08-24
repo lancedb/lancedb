@@ -295,3 +295,19 @@ def test_restore(db):
 
     with pytest.raises(ValueError):
         table.restore(0)
+
+
+def test_merge(db):
+    table = LanceTable.create(
+        db,
+        "my_table",
+        data=[{"vector": [1.1, 0.9], "id": 0}, {"vector": [1.2, 1.9], "id": 1}],
+    )
+    other_table = pa.table({"document": ["foo", "bar"], "id": [0, 1]})
+    table.merge(other_table, left_on="id")
+    assert len(table.list_versions()) == 2
+    expected = pa.table(
+        {"vector": [[1.1, 0.9], [1.2, 1.9]], "id": [0, 1], "document": ["foo", "bar"]},
+        schema=table.schema,
+    )
+    assert table.to_arrow() == expected

@@ -17,13 +17,14 @@ import inspect
 import os
 from abc import ABC, abstractmethod
 from functools import cached_property
-from typing import Iterable, List, Union
+from typing import Iterable, List, Optional, Union
 
 import lance
 import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
 from lance import LanceDataset
+from lance.dataset import ReaderLike
 from lance.vector import vec_to_table
 
 from .common import DATA, VEC, VECTOR_COLUMN_NAME
@@ -503,6 +504,65 @@ class LanceTable(Table):
             data, self.schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value
         )
         lance.write_dataset(data, self._dataset_uri, schema=self.schema, mode=mode)
+        self._reset_dataset()
+
+    def merge(
+        self,
+        other_table: Union[LanceTable, ReaderLike],
+        left_on: str,
+        right_on: Optional[str] = None,
+        schema: Optional[pa.Schema, LanceModel] = None,
+    ):
+        """Merge another table into this table.
+
+        Performs a left join, where the dataset is the left side and data_obj
+        is the right side. Rows existing in the dataset but not on the left will
+        be filled with null values, unless Lance doesn't support null values for
+        some types, in which case an error will be raised.
+
+        Parameters
+        ----------
+        other_table: LanceTable or Reader-like
+            The data to be merged. Acceptable types are:
+            - Pandas DataFrame, Pyarrow Table, Dataset, Scanner,
+            Iterator[RecordBatch], or RecordBatchReader
+            - LanceTable
+        left_on: str
+            The name of the column in the dataset to join on.
+        right_on: str or None
+            The name of the column in other_table to join on. If None, defaults to
+            left_on.
+        schema: pa.Schema or LanceModel, optional
+            The schema of the other_table.
+            If not provided, the schema is inferred from the data.
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> import pyarrow as pa
+        >>> df = pa.table({'x': [1, 2, 3], 'y': ['a', 'b', 'c']})
+        >>> db = lancedb.connect("./.lancedb")
+        >>> table = db.create_table("dataset", df)
+        >>> table.to_pandas()
+           x  y
+        0  1  a
+        1  2  b
+        2  3  c
+        >>> new_df = pa.table({'x': [1, 2, 3], 'z': ['d', 'e', 'f']})
+        >>> table.merge(new_df, 'x')
+        >>> table.to_pandas()
+           x  y  z
+        0  1  a  d
+        1  2  b  e
+        2  3  c  f
+        """
+        if isinstance(schema, LanceModel):
+            schema = schema.to_arrow_schema()
+        if isinstance(other_table, LanceTable):
+            other_table = other_table.to_lance()
+        self._dataset.merge(
+            other_table, left_on=left_on, right_on=right_on, schema=schema
+        )
         self._reset_dataset()
 
     def search(
