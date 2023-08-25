@@ -499,6 +499,8 @@ class LanceTable(Table):
         int
             The number of vectors in the table.
         """
+        if isinstance(data, LanceModel):
+            data = [data]
         # TODO: manage table listing and metadata separately
         data = _sanitize_data(
             data, self.schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value
