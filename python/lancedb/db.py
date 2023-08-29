@@ -16,7 +16,7 @@ from __future__ import annotations
 import os
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 import pyarrow as pa
 from pyarrow import fs
@@ -40,7 +40,7 @@ class DBConnection(ABC):
         self,
         name: str,
         data: Optional[DATA] = None,
-        schema: Optional[pa.Schema, LanceModel] = None,
+        schema: Optional[Union[pa.Schema, LanceModel]] = None,
         mode: str = "create",
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
@@ -285,7 +285,7 @@ class LanceDBConnection(DBConnection):
         self,
         name: str,
         data: Optional[DATA] = None,
-        schema: Optional[pa.Schema, LanceModel] = None,
+        schema: Optional[Union[pa.Schema, LanceModel]] = None,
         mode: str = "create",
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
