@@ -717,7 +717,6 @@ class LanceTable(Table):
         orig_data = self._dataset.to_table(filter=where).combine_chunks()
         if len(orig_data) == 0:
             return
-        self.delete(where)
         for col, val in values.items():
             i = orig_data.column_names.index(col)
             if i < 0:
@@ -725,6 +724,7 @@ class LanceTable(Table):
             orig_data = orig_data.set_column(
                 i, col, pa.array([val] * len(orig_data), type=orig_data[col].type)
             )
+        self.delete(where)
         self.add(orig_data, mode="append")
         self._reset_dataset()
 
