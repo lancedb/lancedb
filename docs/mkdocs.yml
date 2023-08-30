@@ -97,6 +97,11 @@ nav:
     - SQL filters: sql.md
     - Indexing: ann_indexes.md
 - Basics: basic.md
+- Guides:
+  - Tables: guides/tables.md
+  - Vector Search: search.md
+  - SQL filters: sql.md
+  - Indexing: ann_indexes.md
 - Embeddings: embedding.md
 - Python full-text search: fts.md
 - Integrations:
@@ -121,12 +126,6 @@ nav:
   - YouTube Transcript Search: examples/youtube_transcript_bot_with_nodejs.md
   - Serverless Chatbot from any website: examples/serverless_website_chatbot.md
   - TransformersJS Embedding Search: examples/transformerjs_embedding_search_nodejs.md
-
-- Guides:
-  - Tables: guides/tables.md
-  - Vector Search: search.md
-  - SQL filters: sql.md
-  - Indexing: ann_indexes.md
 - API references:
   - Python API: python/python.md
   - Javascript API: javascript/modules.md
