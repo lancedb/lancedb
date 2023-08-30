@@ -680,7 +680,7 @@ class LanceTable(Table):
 
     def update(self, where: str, values: dict):
         """
-        Update rows in the table.
+        EXPERIMENTAL: Update rows in the table (not threadsafe).
 
         This can be used to update zero to all rows depending on how many
         rows match the where clause.
