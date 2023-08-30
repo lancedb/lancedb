@@ -32,8 +32,42 @@ pub enum Error {
     Store { message: String },
     #[snafu(display("LanceDBError: {message}"))]
     Lance { message: String },
+    #[snafu(display("Bad query: {message}"))]
+    InvalidQuery { message: String },
 }
 
+impl Error {
+    pub fn invalid_table_name(name: &str) -> Self {
+        Self::InvalidTableName {
+            name: name.to_string(),
+        }
+    }
+
+    pub fn table_not_found(name: &str) -> Self {
+        Self::TableNotFound {
+            name: name.to_string(),
+        }
+    }
+
+    pub fn table_already_exists(name: &str) -> Self {
+        Self::TableAlreadyExists {
+            name: name.to_string(),
+        }
+    }
+
+    pub fn invalid_query(message: &str) -> Self {
+        Self::InvalidQuery {
+            message: message.to_string(),
+        }
+    }
+
+    pub fn create_dir(path: &str, source: std::io::Error) -> Self {
+        Self::CreateDir {
+            path: path.to_string(),
+            source,
+        }
+    }
+}
 pub type Result<T> = std::result::Result<T, Error>;
 
 impl From<lance::Error> for Error {
