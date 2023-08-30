@@ -316,3 +316,35 @@ def test_merge(db, tmp_path):
     other_dataset = lance.write_dataset(other_table, tmp_path / "other_table.lance")
     table.restore(1)
     table.merge(other_dataset, left_on="id")
+
+
+def test_delete(db):
+    table = LanceTable.create(
+        db,
+        "my_table",
+        data=[{"vector": [1.1, 0.9], "id": 0}, {"vector": [1.2, 1.9], "id": 1}],
+    )
+    assert len(table) == 2
+    assert len(table.list_versions()) == 1
+    table.delete("id=0")
+    assert len(table.list_versions()) == 2
+    assert table.version == 2
+    assert len(table) == 1
+    assert table.to_pandas()["id"].tolist() == [1]
+
+
+def test_update(db):
+    table = LanceTable.create(
+        db,
+        "my_table",
+        data=[{"vector": [1.1, 0.9], "id": 0}, {"vector": [1.2, 1.9], "id": 1}],
+    )
+    assert len(table) == 2
+    assert len(table.list_versions()) == 1
+    table.update(where="id=0", values={"vector": [1.1, 1.1]})
+    assert len(table.list_versions()) == 3
+    assert table.version == 3
+    assert len(table) == 2
+    v = table.to_arrow()["vector"].combine_chunks()
+    v = v.values.to_numpy().reshape(2, 2)
+    assert np.allclose(v, np.array([[1.2, 1.9], [1.1, 1.1]]))
