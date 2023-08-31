@@ -1,7 +1,8 @@
 [workspace]
 members = [
-    "rust/vectordb",
-    "rust/ffi/node"
+    "python",
+    "rust/ffi/node",
+    "rust/vectordb"
 ]
 resolver = "2"
 
