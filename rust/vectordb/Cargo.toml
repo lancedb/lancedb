@@ -13,6 +13,7 @@ categories = ["database-implementations"]
 arrow-array = { workspace = true }
 arrow-data = { workspace = true }
 arrow-schema = { workspace = true }
+arrow-cast = { workspace = true }
 object_store = { workspace = true }
 snafu = { workspace = true }
 half = { workspace = true }
