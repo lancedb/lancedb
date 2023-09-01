@@ -12,10 +12,15 @@
 #  limitations under the License.
 import sys
 
+import lance
 import numpy as np
 import pyarrow as pa
 
-from lancedb.embeddings import with_embeddings
+from lancedb.embeddings import (
+    REGISTRY,
+    SentenceTransformerEmbeddingFunction,
+    with_embeddings,
+)
 
 
 def mock_embed_func(input_data):
@@ -40,3 +45,42 @@ def test_with_embeddings():
         assert data.column_names == ["text", "price", "vector"]
         assert data.column("text").to_pylist() == ["foo", "bar"]
         assert data.column("price").to_pylist() == [10.0, 20.0]
+
+
+def test_embedding_function(tmp_path):
+    # let's create a table
+    table = pa.table(
+        {
+            "text": pa.array(["hello world", "goodbye world"]),
+            "vector": [np.random.randn(784), np.random.randn(784)],
+        }
+    )
+    metadata = REGISTRY.get_table_metadata(
+        [
+            {
+                "function": "sentence-transformers",
+                "source_column": "text",
+                "vector_column": "vector",
+            }
+        ]
+    )
+    table = table.replace_schema_metadata(metadata)
+
+    # Write it to disk
+    lance.write_dataset(table, tmp_path / "test.lance")
+
+    # Load this back
+    ds = lance.dataset(tmp_path / "test.lance")
+
+    # can we get the serialized version back out?
+    functions = REGISTRY.parse_functions(ds.schema.metadata)
+
+    func = functions["vector"]["embedding_function"]
+    actual = func("hello world")
+
+    # We create an instance
+    expected_func = SentenceTransformerEmbeddingFunction()
+    # And we make sure we can call it
+    expected = expected_func("hello world")
+
+    assert np.allclose(actual, expected)
