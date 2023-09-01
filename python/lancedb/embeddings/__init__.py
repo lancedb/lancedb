@@ -14,6 +14,7 @@
 
 from .functions import (
     REGISTRY,
+    EmbeddingFunctionModel,
     EmbeddingFunctionRegistry,
     SentenceTransformerEmbeddingFunction,
 )

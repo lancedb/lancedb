@@ -16,11 +16,7 @@ import lance
 import numpy as np
 import pyarrow as pa
 
-from lancedb.embeddings import (
-    REGISTRY,
-    SentenceTransformerEmbeddingFunction,
-    with_embeddings,
-)
+from lancedb.embeddings import REGISTRY, EmbeddingFunctionModel, with_embeddings
 
 
 def mock_embed_func(input_data):
@@ -48,17 +44,25 @@ def test_with_embeddings():
 
 
 def test_embedding_function(tmp_path):
+    @REGISTRY.register("test")
+    class TestEmbeddingFunction(EmbeddingFunctionModel):
+        def __call__(self, data):
+            return [self.embed(row) for row in data]
+
+        def embed(self, row):
+            return [float(hash(c)) for c in row[:10]]
+
     # let's create a table
     table = pa.table(
         {
             "text": pa.array(["hello world", "goodbye world"]),
-            "vector": [np.random.randn(784), np.random.randn(784)],
+            "vector": [np.random.randn(10), np.random.randn(10)],
         }
     )
     metadata = REGISTRY.get_table_metadata(
         [
             {
-                "function": "sentence-transformers",
+                "function": "test",
                 "source_column": "text",
                 "vector_column": "vector",
             }
@@ -79,7 +83,7 @@ def test_embedding_function(tmp_path):
     actual = func("hello world")
 
     # We create an instance
-    expected_func = SentenceTransformerEmbeddingFunction()
+    expected_func = TestEmbeddingFunction()
     # And we make sure we can call it
     expected = expected_func("hello world")
 
