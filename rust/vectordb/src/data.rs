@@ -16,13 +16,43 @@
 
 use std::sync::Arc;
 
-use arrow_array::{Array, RecordBatch, RecordBatchIterator, RecordBatchReader, FixedSizeListArray, cast::AsArray};
-use arrow_schema::{ArrowError, DataType, Schema, Field};
-use arrow_cast::{cast, can_cast_types};
+use arrow_array::{
+    cast::AsArray,
+    types::{Float16Type, Float32Type, Float64Type},
+    Array, ArrowNumericType, FixedSizeListArray, PrimitiveArray, RecordBatch, RecordBatchIterator,
+    RecordBatchReader,
+};
+use arrow_cast::{can_cast_types, cast};
+use arrow_schema::{ArrowError, DataType, Field, Schema};
+use half::f16;
 use lance::arrow::{DataTypeExt, FixedSizeListArrayExt};
 use log::warn;
+use num_traits::{cast::AsPrimitive, Float};
 
 use crate::error::Result;
+
+fn cast_array<I: ArrowNumericType, O: ArrowNumericType>(
+    arr: &PrimitiveArray<I>,
+) -> Arc<PrimitiveArray<O>>
+where
+    I::Native: AsPrimitive<O::Native>,
+{
+    Arc::new(PrimitiveArray::<O>::from_iter_values(
+        arr.values().iter().map(|v| (*v).as_()),
+    ))
+}
+
+fn cast_float_array<I: ArrowNumericType>(arr: &PrimitiveArray<I>, dt: &DataType) -> Arc<dyn Array>
+where
+    I::Native: AsPrimitive<f64> + AsPrimitive<f32> + AsPrimitive<f16>,
+{
+    match dt {
+        DataType::Float16 => cast_array::<I, Float16Type>(arr),
+        DataType::Float32 => cast_array::<I, Float32Type>(arr),
+        DataType::Float64 => cast_array::<I, Float64Type>(arr),
+        _ => unreachable!(),
+    }
+}
 
 fn coerce_array(
     array: &Arc<dyn Array>,
@@ -32,27 +62,47 @@ fn coerce_array(
         return Ok(array.clone());
     }
     match (array.data_type(), field.data_type()) {
+        // Normal cast-able types.
+        (adt, dt) if can_cast_types(adt, dt) => cast(&array, dt),
+        // Casting between f16/f32/f64 can be lossy.
         (adt, dt) if (adt.is_floating() || dt.is_floating()) => {
             if adt.byte_width() < dt.byte_width() {
-                warn!("Coercing field {} {:?} to {:?} might lose precision", field.name(), adt, dt);
-            }
-            cast(&array, dt)
-        },
-        (adt, DataType::FixedSizeList(exp_field, exp_dim)) => {
-            match adt {
-                DataType::FixedSizeList(sub_field, dim) if dim == exp_dim => {
-                    let actual_sub = array.as_fixed_size_list();
-                    let values = coerce_array(&actual_sub.values(), exp_field)?;
-                    Ok(Arc::new(FixedSizeListArray::try_new_from_values(values.clone(), *dim)?) as Arc<dyn Array>)
-                },
-                _ => Err(ArrowError::SchemaError(format!(
-                    "Incompatible coerce fixed size list field {}: unable to coerce {:?} to {:?}",
+                warn!(
+                    "Coercing field {} {:?} to {:?} might lose precision",
                     field.name(),
-                    array.data_type(),
-                    field.data_type()
-                )))?,
+                    adt,
+                    dt
+                );
+            }
+            match adt {
+                DataType::Float16 => Ok(cast_float_array(array.as_primitive::<Float16Type>(), dt)),
+                DataType::Float32 => Ok(cast_float_array(array.as_primitive::<Float32Type>(), dt)),
+                DataType::Float64 => Ok(cast_float_array(array.as_primitive::<Float64Type>(), dt)),
+                _ => unreachable!(),
             }
         }
+        (adt, dt) if (adt.is_integer() || dt.is_integer()) => {
+            todo!("cast integers")
+        }
+        (adt, DataType::FixedSizeList(exp_field, exp_dim)) => match adt {
+            DataType::FixedSizeList(sub_field, dim) if dim == exp_dim => {
+                let actual_sub = array.as_fixed_size_list();
+                let values = coerce_array(&actual_sub.values(), exp_field)?;
+                Ok(Arc::new(FixedSizeListArray::try_new_from_values(
+                    values.clone(),
+                    *dim,
+                )?) as Arc<dyn Array>)
+            }
+            DataType::List(sub_field) => {
+                todo!("cast list to fixed size list")
+            }
+            _ => Err(ArrowError::SchemaError(format!(
+                "Incompatible coerce fixed size list field {}: unable to coerce {:?} to {:?}",
+                field.name(),
+                array.data_type(),
+                field.data_type()
+            )))?,
+        },
         _ => Err(ArrowError::SchemaError(format!(
             "Incompatible change field {}: unable to coerce {:?} to {:?}",
             field.name(),

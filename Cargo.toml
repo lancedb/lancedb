@@ -16,7 +16,7 @@ arrow-ipc = "43.0"
 arrow-schema = "43.0"
 arrow-arith = "43.0"
 arrow-cast = "43.0"
-half = { "version" = "=2.2.1", default-features = false }
+half = { "version" = "=2.2.1", default-features = false, features = ["num-traits"] }
 log = "0.4"
 object_store = "0.6.1"
 snafu = "0.7.4"
