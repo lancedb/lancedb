@@ -98,8 +98,22 @@ fn coerce_array(
                     *dim,
                 )?) as Arc<dyn Array>)
             }
-            DataType::List(sub_field) => {
-                todo!("cast list to fixed size list")
+            DataType::List(_) => {
+                let list_arr = array.as_list::<i32>();
+                if list_arr.values().len() != (*exp_dim as usize) * list_arr.len() {
+                    // TODO: fill bad values.
+                    return Err(ArrowError::SchemaError(format!(
+                        "Incompatible coerce fixed size list: expected dimension {} but got {}",
+                        exp_dim,
+                        list_arr.len()
+                    )));
+                }
+
+                let values = coerce_array(&list_arr.values(), exp_field)?;
+                Ok(Arc::new(FixedSizeListArray::try_new_from_values(
+                    values.clone(),
+                    *exp_dim,
+                )?) as Arc<dyn Array>)
             }
             _ => Err(ArrowError::SchemaError(format!(
                 "Incompatible coerce fixed size list: unable to coerce {:?} from {:?}",
