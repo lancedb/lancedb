@@ -12,8 +12,9 @@ lance = "=0.6.5"
 arrow = { version = "43.0.0", optional = false }
 arrow-array = "43.0"
 arrow-data = "43.0"
-arrow-schema = "43.0"
 arrow-ipc = "43.0"
+arrow-schema = "43.0"
 half = { "version" = "=2.2.1", default-features = false }
+log = "0.4"
 object_store = "0.6.1"
 snafu = "0.7.4"

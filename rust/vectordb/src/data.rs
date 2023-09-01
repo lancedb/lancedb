@@ -23,14 +23,35 @@ use crate::error::Result;
 
 fn coerce_schema_batch(
     batch: RecordBatch,
-    schema: &Schema,
+    schema: Arc<Schema>,
 ) -> std::result::Result<RecordBatch, ArrowError> {
-    if batch.schema().as_ref() == schema {
+    if batch.schema() == schema {
         return Ok(batch);
     }
-    todo!()
+    let columns = schema
+        .fields()
+        .iter()
+        .map(|field| {
+            batch
+                .column_by_name(field.name())
+                .map(|c| {
+                    if c.data_type() == field.data_type() {
+                        return Ok(c.clone());
+                    } else {
+                        todo!()
+                    }
+                })
+                .ok_or(|| {
+                    ArrowError::SchemaError(format!("Column {} not found in batch", field.name()))
+                })
+        })
+        .flatten()
+        .collect::<std::result::Result<Vec<_>, ArrowError>>()?;
+    RecordBatch::try_new(schema, columns)
 }
 
+/// Coerce the batch reader schema, to match the given [Schema].
+///
 pub fn coerce_schema(
     reader: impl RecordBatchReader,
     schema: Arc<Schema>,
@@ -41,9 +62,8 @@ pub fn coerce_schema(
             schema,
         ));
     }
-    let schema_ref = schema.as_ref();
     let batches = reader
-        .map(|batch| coerce_schema_batch(batch?, schema_ref))
+        .map(|batch| coerce_schema_batch(batch?, schema.clone()))
         .collect::<Vec<_>>();
     Ok(RecordBatchIterator::new(batches, schema))
 }
