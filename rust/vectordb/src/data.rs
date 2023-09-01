@@ -27,7 +27,7 @@ use arrow_schema::{ArrowError, DataType, Field, Schema};
 use half::f16;
 use lance::arrow::{DataTypeExt, FixedSizeListArrayExt};
 use log::warn;
-use num_traits::{cast::AsPrimitive, Float};
+use num_traits::cast::AsPrimitive;
 
 use crate::error::Result;
 
@@ -42,15 +42,22 @@ where
     ))
 }
 
-fn cast_float_array<I: ArrowNumericType>(arr: &PrimitiveArray<I>, dt: &DataType) -> Arc<dyn Array>
+fn cast_float_array<I: ArrowNumericType>(
+    arr: &PrimitiveArray<I>,
+    dt: &DataType,
+) -> std::result::Result<Arc<dyn Array>, ArrowError>
 where
     I::Native: AsPrimitive<f64> + AsPrimitive<f32> + AsPrimitive<f16>,
 {
     match dt {
-        DataType::Float16 => cast_array::<I, Float16Type>(arr),
-        DataType::Float32 => cast_array::<I, Float32Type>(arr),
-        DataType::Float64 => cast_array::<I, Float64Type>(arr),
-        _ => unreachable!(),
+        DataType::Float16 => Ok(cast_array::<I, Float16Type>(arr)),
+        DataType::Float32 => Ok(cast_array::<I, Float32Type>(arr)),
+        DataType::Float64 => Ok(cast_array::<I, Float64Type>(arr)),
+        _ => Err(ArrowError::SchemaError(format!(
+            "Incompatible change field: unable to coerce {:?} to {:?}",
+            arr.data_type(),
+            dt
+        ))),
     }
 }
 
@@ -75,17 +82,15 @@ fn coerce_array(
                 );
             }
             match adt {
-                DataType::Float16 => Ok(cast_float_array(array.as_primitive::<Float16Type>(), dt)),
-                DataType::Float32 => Ok(cast_float_array(array.as_primitive::<Float32Type>(), dt)),
-                DataType::Float64 => Ok(cast_float_array(array.as_primitive::<Float64Type>(), dt)),
+                DataType::Float16 => cast_float_array(array.as_primitive::<Float16Type>(), dt),
+                DataType::Float32 => cast_float_array(array.as_primitive::<Float32Type>(), dt),
+                DataType::Float64 => cast_float_array(array.as_primitive::<Float64Type>(), dt),
                 _ => unreachable!(),
             }
         }
-        (adt, dt) if (adt.is_integer() || dt.is_integer()) => {
-            todo!("cast integers")
-        }
         (adt, DataType::FixedSizeList(exp_field, exp_dim)) => match adt {
-            DataType::FixedSizeList(sub_field, dim) if dim == exp_dim => {
+            // Cast a float fixed size array with same dimension to the expected type.
+            DataType::FixedSizeList(_, dim) if dim == exp_dim => {
                 let actual_sub = array.as_fixed_size_list();
                 let values = coerce_array(&actual_sub.values(), exp_field)?;
                 Ok(Arc::new(FixedSizeListArray::try_new_from_values(
@@ -97,10 +102,9 @@ fn coerce_array(
                 todo!("cast list to fixed size list")
             }
             _ => Err(ArrowError::SchemaError(format!(
-                "Incompatible coerce fixed size list field {}: unable to coerce {:?} to {:?}",
-                field.name(),
-                array.data_type(),
-                field.data_type()
+                "Incompatible coerce fixed size list: unable to coerce {:?} from {:?}",
+                field,
+                array.data_type()
             )))?,
         },
         _ => Err(ArrowError::SchemaError(format!(
@@ -160,7 +164,8 @@ mod tests {
     use std::sync::Arc;
 
     use arrow_array::{
-        FixedSizeListArray, Float32Array, RecordBatch, RecordBatchIterator, StringArray,
+        FixedSizeListArray, Float16Array, Float32Array, Float64Array, Int32Array, Int8Array,
+        RecordBatch, RecordBatchIterator, StringArray,
     };
     use arrow_schema::Field;
     use half::f16;
@@ -175,6 +180,8 @@ mod tests {
                 true,
             ),
             Field::new("s", DataType::Utf8, true),
+            Field::new("f", DataType::Float16, true),
+            Field::new("i", DataType::Int32, true),
         ]));
 
         let batch = RecordBatch::try_new(
@@ -193,10 +200,15 @@ mod tests {
                     Some("from"),
                     Some("lance"),
                 ])),
+                Arc::new(Float16Array::from_iter_values(
+                    (0..4).map(|v| f16::from_f32(v as f32)),
+                )),
+                Arc::new(Int32Array::from_iter_values(0..4)),
             ],
         )
         .unwrap();
-        let reader = RecordBatchIterator::new(vec![batch].into_iter().map(Ok), schema.clone());
+        let reader =
+            RecordBatchIterator::new(vec![batch.clone()].into_iter().map(Ok), schema.clone());
 
         let expected_schema = Arc::new(Schema::new(vec![
             Field::new(
@@ -205,11 +217,36 @@ mod tests {
                 true,
             ),
             Field::new("s", DataType::Utf8, true),
+            Field::new("f", DataType::Float64, true),
+            Field::new("i", DataType::Int8, true),
         ]));
         let stream = coerce_schema(reader, expected_schema.clone()).unwrap();
         let batches = stream.collect::<Vec<_>>();
         assert_eq!(batches.len(), 1);
         let batch = batches[0].as_ref().unwrap();
         assert_eq!(batch.schema(), expected_schema);
+
+        let expected = RecordBatch::try_new(
+            expected_schema,
+            vec![
+                Arc::new(
+                    FixedSizeListArray::try_new_from_values(
+                        Float16Array::from_iter_values((0..256).map(|v| f16::from_f32(v as f32))),
+                        64,
+                    )
+                    .unwrap(),
+                ),
+                Arc::new(StringArray::from(vec![
+                    Some("hello"),
+                    Some("world"),
+                    Some("from"),
+                    Some("lance"),
+                ])),
+                Arc::new(Float64Array::from_iter_values((0..4).map(|v| v as f64))),
+                Arc::new(Int8Array::from_iter_values(0..4)),
+            ],
+        )
+        .unwrap();
+        assert_eq!(batch, &expected);
     }
 }
