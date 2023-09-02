@@ -24,21 +24,17 @@ class EmbeddingFunctionRegistry:
     This is a singleton class is used to register embedding functions
     and fetch them by name. It also handles serializing and deserializing
     """
+    @classmethod
+    def get_instance(cls):
+        return REGISTRY
 
     def __init__(self):
         self._functions = {}
 
-    def register(self, alias: str = None):
+    def register(self):
         """
         This creates a decorator that can be used to register
         an EmbeddingFunctionModel.
-
-        Parameters
-        ----------
-        alias : str, optional
-            The alias is used to identify the function when
-            serializing/deserializing. If no alias is supplied,
-            then the class name is used.
         """
 
         # This is a decorator for a class that inherits from BaseModel
@@ -46,11 +42,18 @@ class EmbeddingFunctionRegistry:
         def decorator(cls):
             if not issubclass(cls, EmbeddingFunctionModel):
                 raise TypeError("Must be a subclass of EmbeddingFunctionModel")
-            cls.__function_alias__ = alias or cls.__name__
-            self._functions[alias or cls.__name__] = cls
+            if cls.__name__ in self._functions:
+                raise KeyError(f"{cls.__name__} was already registered")
+            self._functions[cls.__name__] = cls
             return cls
 
         return decorator
+
+    def reset(self):
+        """
+        Reset the registry to its initial state
+        """
+        self._functions = {}
 
     def load(self, name: str):
         """
@@ -74,24 +77,18 @@ class EmbeddingFunctionRegistry:
         raw_list = json.loads(serialized.decode("utf-8"))
         functions = {}
         for obj in raw_list:
-            model = self.load(obj["schema"]["alias"])
-            functions[obj["vector_column"]] = {
-                "source_column": obj["source_column"],
-                "embedding_function": model(**obj["model"]),
-            }
+            model = self.load(obj["schema"]["title"])
+            functions[obj["model"]["vector_column"]] = model(**obj["model"])
         return functions
 
-    def function_to_metadata(self, func, source_column, vector_column):
+    def function_to_metadata(self, func):
         """
         Convert the given embedding function and source / vector column configs
         into a config dictionary that can be serialized into arrow metadata
         """
         schema = func.model_json_schema()
-        schema["alias"] = getattr(func, "__function_alias__", func.__class__.__name__)
         json_data = func.model_dump()
         return {
-            "source_column": source_column,
-            "vector_column": vector_column,
             "schema": schema,
             "model": json_data,
         }
@@ -102,24 +99,11 @@ class EmbeddingFunctionRegistry:
         into a config dictionary that can be serialized into arrow metadata
         """
         json_data = [
-            self.function_to_metadata(
-                self._maybe_to_function(func["function"]),
-                func["source_column"],
-                func["vector_column"],
-            )
-            for func in func_list
+            self.function_to_metadata(func) for func in func_list
         ]
         # Note that metadata dictionary values must be bytes so we need to json dump then utf8 encode
         metadata = json.dumps(json_data, indent=2).encode("utf-8")
         return {"embedding_functions": metadata}
-
-    def _maybe_to_function(self, func):
-        if isinstance(func, EmbeddingFunctionModel):
-            return func
-        elif isinstance(func, str):
-            return self.load(func)()
-        else:
-            raise ValueError(f"Invalid function type: {func}")
 
 
 REGISTRY = EmbeddingFunctionRegistry()
@@ -129,13 +113,15 @@ class EmbeddingFunctionModel(BaseModel, ABC):
     """
     A callable ABC for embedding functions
     """
+    source_column: str
+    vector_column: str
 
     @abstractmethod
     def __call__(self, *args, **kwargs):
         pass
 
 
-@REGISTRY.register("sentence-transformers")
+@REGISTRY.register()
 class SentenceTransformerEmbeddingFunction(EmbeddingFunctionModel):
     name: str = "all-MiniLM-L6-v2"
     device: str = "cpu"

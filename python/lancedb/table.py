@@ -28,6 +28,7 @@ from lance.dataset import ReaderLike
 from lance.vector import vec_to_table
 
 from .common import DATA, VEC, VECTOR_COLUMN_NAME
+from .embeddings import EmbeddingFunctionModel, EmbeddingFunctionRegistry
 from .pydantic import LanceModel
 from .query import LanceFtsQueryBuilder, LanceQueryBuilder, Query
 from .util import fs_from_uri, safe_import_pandas
@@ -35,7 +36,7 @@ from .util import fs_from_uri, safe_import_pandas
 pd = safe_import_pandas()
 
 
-def _sanitize_data(data, schema, on_bad_vectors, fill_value):
+def _sanitize_data(data, schema, metadata, on_bad_vectors, fill_value):
     if isinstance(data, list):
         # convert to list of dict if data is a bunch of LanceModels
         if isinstance(data[0], LanceModel):
@@ -57,17 +58,22 @@ def _sanitize_data(data, schema, on_bad_vectors, fill_value):
         metadata = {k: v for k, v in metadata.items() if k != b"pandas"}
         schema = data.schema.with_metadata(metadata)
         data = pa.Table.from_arrays(data.columns, schema=schema)
+
+    if metadata is not None:
+        metadata.update(data.schema.metadata)
+        data = data.replace_schema_metadata(metadata)
+
     if isinstance(data, Iterable):
-        data = _to_record_batch_generator(data, schema, on_bad_vectors, fill_value)
+        data = _to_record_batch_generator(data, schema, metadata, on_bad_vectors, fill_value)
     if not isinstance(data, (pa.Table, Iterable)):
         raise TypeError(f"Unsupported data type: {type(data)}")
     return data
 
 
-def _to_record_batch_generator(data: Iterable, schema, on_bad_vectors, fill_value):
+def _to_record_batch_generator(data: Iterable, schema, metadata, on_bad_vectors, fill_value):
     for batch in data:
         if not isinstance(batch, pa.RecordBatch):
-            table = _sanitize_data(batch, schema, on_bad_vectors, fill_value)
+            table = _sanitize_data(batch, schema, metadata, on_bad_vectors, fill_value)
             for batch in table.to_batches():
                 yield batch
         yield batch
@@ -274,7 +280,10 @@ class LanceTable(Table):
     """
 
     def __init__(
-        self, connection: "lancedb.db.LanceDBConnection", name: str, version: int = None
+            self,
+            connection: "lancedb.db.LanceDBConnection",
+            name: str,
+            version: int = None
     ):
         self._conn = connection
         self.name = name
@@ -501,7 +510,7 @@ class LanceTable(Table):
         """
         # TODO: manage table listing and metadata separately
         data = _sanitize_data(
-            data, self.schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value
+            data, self.schema, metadata=None, on_bad_vectors=on_bad_vectors, fill_value=fill_value
         )
         lance.write_dataset(data, self._dataset_uri, schema=self.schema, mode=mode)
         self._reset_dataset()
@@ -569,8 +578,28 @@ class LanceTable(Table):
         )
         self._reset_dataset()
 
+    def _get_embedding_function_for_vector_col(self, column_name: str):
+        metadata = self.schema.metadata
+        if metadata is None or b"embedding_functions" not in metadata:
+            return None
+        functions = EmbeddingFunctionRegistry.get_instance().parse_functions(metadata)
+        return functions.get(column_name, None)
+
+    def _get_embedding_function_for_source_col(self, column_name: str):
+        metadata = self.schema.metadata
+        if metadata is None or b"embedding_functions" not in metadata:
+            return None
+        functions = EmbeddingFunctionRegistry.get_instance().parse_functions(metadata)
+        for k, v in functions.items():
+            if v.source_column == column_name:
+                return v
+        return None
+
     def search(
-        self, query: Union[VEC, str], vector_column_name=VECTOR_COLUMN_NAME
+            self,
+            query: Union[VEC, str],
+            vector_column_name=VECTOR_COLUMN_NAME,
+            query_type: str = "auto"
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector.
@@ -581,6 +610,12 @@ class LanceTable(Table):
             The query vector.
         vector_column_name: str, default "vector"
             The name of the vector column to search.
+        query_type: str, default "auto"
+            "vector", "fts", or "auto"
+            If "auto" then the query type is inferred from the query;
+            If the query is a list/np.ndarray then the query type is "vector";
+            If the query is a string, then the query type is "vector" if the
+            table has embedding functions else the query type is "fts"
 
         Returns
         -------
@@ -590,17 +625,51 @@ class LanceTable(Table):
             and also the "_distance" column which is the distance between the query
             vector and the returned vector.
         """
+        query, query_type = self._validate_query(query, query_type, vector_column_name)
         if isinstance(query, str):
             # fts
             return LanceFtsQueryBuilder(self, query, vector_column_name)
 
         if isinstance(query, list):
-            query = np.array(query)
-        if isinstance(query, np.ndarray):
+            query = np.array(query, dtype=np.float32)
+        elif isinstance(query, np.ndarray):
             query = query.astype(np.float32)
         else:
             raise TypeError(f"Unsupported query type: {type(query)}")
+
         return LanceQueryBuilder(self, query, vector_column_name)
+
+    def _validate_query(self, query, query_type, vector_column_name):
+        # If query_type is fts, then query must be a string.
+        # otherwise raise TypeError
+        if query_type == "fts":
+            if not isinstance(query, str):
+                raise TypeError(
+                    f"Query type is 'fts' but query is not a string: {type(query)}"
+                )
+            return query, query_type
+        elif query_type == "vector":
+            # If query_type is vector, then query must be a list or np.ndarray.
+            # otherwise raise TypeError
+            if not isinstance(query, (list, np.ndarray)):
+                raise TypeError(
+                    f"Query type is 'vector' but query is not a list or np.ndarray: {type(query)}"
+                )
+            return query, query_type
+        elif query_type == "auto":
+            if isinstance(query, (list, np.ndarray)):
+                return query, "vector"
+            elif isinstance(query, str):
+                func = self._get_embedding_function_for_vector_col(vector_column_name)
+                if func is not None:
+                    query = func(query)[0]
+                    return query, "vector"
+                else:
+                    return query, "fts"
+            else:
+                raise TypeError("Query must be a list, np.ndarray, or str")
+        else:
+            raise ValueError(f"Invalid query_type, must be 'vector', 'fts', or 'auto': {query_type}")
 
     @classmethod
     def create(
@@ -612,6 +681,7 @@ class LanceTable(Table):
         mode="create",
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
+        embedding_functions: List[EmbeddingFunctionModel] = None
     ):
         """
         Create a new table.
@@ -649,17 +719,28 @@ class LanceTable(Table):
             One of "error", "drop", "fill".
         fill_value: float, default 0.
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
+        embedding_functions: list of EmbeddingFunctionModel, default None
+            The embedding functions to use when creating the table.
         """
         tbl = LanceTable(db, name)
         if inspect.isclass(schema) and issubclass(schema, LanceModel):
             schema = schema.to_arrow_schema()
+
+        metadata = None
+        if embedding_functions is not None:
+            registry = EmbeddingFunctionRegistry.get_instance()
+            metadata = registry.get_table_metadata(embedding_functions)
+
         if data is not None:
             data = _sanitize_data(
-                data, schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value
+                data, schema, metadata=metadata,
+                on_bad_vectors=on_bad_vectors, fill_value=fill_value
             )
         else:
             if schema is None:
                 raise ValueError("Either data or schema must be provided")
+            if metadata:
+                schema = schema.with_metadata(metadata)
             data = pa.Table.from_pylist([], schema=schema)
         lance.write_dataset(data, tbl._dataset_uri, schema=schema, mode=mode)
         return LanceTable(db, name)

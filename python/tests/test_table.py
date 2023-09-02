@@ -21,7 +21,7 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pytest
-
+from lancedb.conftest import MockEmbeddingFunction
 from lancedb.db import LanceDBConnection
 from lancedb.pydantic import LanceModel, vector
 from lancedb.table import LanceTable
@@ -348,3 +348,28 @@ def test_update(db):
     v = table.to_arrow()["vector"].combine_chunks()
     v = v.values.to_numpy().reshape(2, 2)
     assert np.allclose(v, np.array([[1.2, 1.9], [1.1, 1.1]]))
+
+
+def test_create_with_embedding_function(db):
+    class MyTable(LanceModel):
+        text: str
+        vector: vector(10)
+
+    func = MockEmbeddingFunction(source_column="text", vector_column="vector")
+    texts = ["hello world", "goodbye world", "foo bar baz fizz buzz"]
+    df = pd.DataFrame({"text": texts, "vector": func(texts)})
+
+    table = LanceTable.create(
+        db,
+        "my_table",
+        schema=MyTable,
+        embedding_functions=[func],
+    )
+    table.add(df)
+
+    query_str = "hi how are you?"
+    query_vector = func(query_str)[0]
+    expected = table.search(query_vector).limit(2).to_arrow()
+
+    actual = table.search(query_str).limit(2).to_arrow()
+    assert actual == expected

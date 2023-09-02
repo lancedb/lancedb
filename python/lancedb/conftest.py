@@ -1,6 +1,8 @@
 import os
 
 import pytest
+from lancedb.embeddings import EmbeddingFunctionModel, EmbeddingFunctionRegistry
+
 
 # import lancedb so we don't have to in every example
 
@@ -14,3 +16,14 @@ def doctest_setup(monkeypatch, tmpdir):
     monkeypatch.setitem(os.environ, "COLUMNS", "80")
     # Work in a temporary directory
     monkeypatch.chdir(tmpdir)
+
+
+@EmbeddingFunctionRegistry.get_instance().register()
+class MockEmbeddingFunction(EmbeddingFunctionModel):
+    def __call__(self, data):
+        if isinstance(data, str):
+            data = [data]
+        return [self.embed(row) for row in data]
+
+    def embed(self, row):
+        return [float(hash(c)) for c in row[:10]]

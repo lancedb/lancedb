@@ -15,8 +15,8 @@ import sys
 import lance
 import numpy as np
 import pyarrow as pa
-
-from lancedb.embeddings import REGISTRY, EmbeddingFunctionModel, with_embeddings
+from lancedb.conftest import MockEmbeddingFunction
+from lancedb.embeddings import EmbeddingFunctionRegistry, with_embeddings
 
 
 def mock_embed_func(input_data):
@@ -44,13 +44,7 @@ def test_with_embeddings():
 
 
 def test_embedding_function(tmp_path):
-    @REGISTRY.register("test")
-    class TestEmbeddingFunction(EmbeddingFunctionModel):
-        def __call__(self, data):
-            return [self.embed(row) for row in data]
-
-        def embed(self, row):
-            return [float(hash(c)) for c in row[:10]]
+    registry = EmbeddingFunctionRegistry.get_instance()
 
     # let's create a table
     table = pa.table(
@@ -59,15 +53,8 @@ def test_embedding_function(tmp_path):
             "vector": [np.random.randn(10), np.random.randn(10)],
         }
     )
-    metadata = REGISTRY.get_table_metadata(
-        [
-            {
-                "function": "test",
-                "source_column": "text",
-                "vector_column": "vector",
-            }
-        ]
-    )
+    func = MockEmbeddingFunction(source_column="text", vector_column="vector")
+    metadata = registry.get_table_metadata([func])
     table = table.replace_schema_metadata(metadata)
 
     # Write it to disk
@@ -77,13 +64,13 @@ def test_embedding_function(tmp_path):
     ds = lance.dataset(tmp_path / "test.lance")
 
     # can we get the serialized version back out?
-    functions = REGISTRY.parse_functions(ds.schema.metadata)
+    functions = registry.parse_functions(ds.schema.metadata)
 
-    func = functions["vector"]["embedding_function"]
+    func = functions["vector"]
     actual = func("hello world")
 
     # We create an instance
-    expected_func = TestEmbeddingFunction()
+    expected_func = MockEmbeddingFunction(source_column="text", vector_column="vector")
     # And we make sure we can call it
     expected = expected_func("hello world")
 
