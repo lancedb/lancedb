@@ -8,7 +8,7 @@ excluded_globs = [
     "../src/embedding.md",
     "../src/examples/*.md",
     "../src/integrations/voxel51.md",
-    "../src/guides/tables.md"
+    "../src/guides/tables.md",
     "../src/python/duckdb.md",
 ]
 
