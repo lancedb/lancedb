@@ -75,7 +75,7 @@ def _to_record_batch_generator(data: Iterable, schema, on_bad_vectors, fill_valu
 
 class Table(ABC):
     """
-    A [Table](Table) is a collection of Records in a LanceDB [Database](Database).
+    A Table is a collection of Records in a LanceDB Database.
 
     Examples
     --------
@@ -511,7 +511,7 @@ class LanceTable(Table):
         other_table: Union[LanceTable, ReaderLike],
         left_on: str,
         right_on: Optional[str] = None,
-        schema: Optional[pa.Schema, LanceModel] = None,
+        schema: Optional[Union[pa.Schema, LanceModel]] = None,
     ):
         """Merge another table into this table.
 
