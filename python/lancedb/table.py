@@ -64,13 +64,17 @@ def _sanitize_data(data, schema, metadata, on_bad_vectors, fill_value):
         data = data.replace_schema_metadata(metadata)
 
     if isinstance(data, Iterable):
-        data = _to_record_batch_generator(data, schema, metadata, on_bad_vectors, fill_value)
+        data = _to_record_batch_generator(
+            data, schema, metadata, on_bad_vectors, fill_value
+        )
     if not isinstance(data, (pa.Table, Iterable)):
         raise TypeError(f"Unsupported data type: {type(data)}")
     return data
 
 
-def _to_record_batch_generator(data: Iterable, schema, metadata, on_bad_vectors, fill_value):
+def _to_record_batch_generator(
+    data: Iterable, schema, metadata, on_bad_vectors, fill_value
+):
     for batch in data:
         if not isinstance(batch, pa.RecordBatch):
             table = _sanitize_data(batch, schema, metadata, on_bad_vectors, fill_value)
@@ -280,10 +284,7 @@ class LanceTable(Table):
     """
 
     def __init__(
-            self,
-            connection: "lancedb.db.LanceDBConnection",
-            name: str,
-            version: int = None
+        self, connection: "lancedb.db.LanceDBConnection", name: str, version: int = None
     ):
         self._conn = connection
         self.name = name
@@ -510,7 +511,11 @@ class LanceTable(Table):
         """
         # TODO: manage table listing and metadata separately
         data = _sanitize_data(
-            data, self.schema, metadata=None, on_bad_vectors=on_bad_vectors, fill_value=fill_value
+            data,
+            self.schema,
+            metadata=None,
+            on_bad_vectors=on_bad_vectors,
+            fill_value=fill_value,
         )
         lance.write_dataset(data, self._dataset_uri, schema=self.schema, mode=mode)
         self._reset_dataset()
@@ -596,10 +601,10 @@ class LanceTable(Table):
         return None
 
     def search(
-            self,
-            query: Union[VEC, str],
-            vector_column_name=VECTOR_COLUMN_NAME,
-            query_type: str = "auto"
+        self,
+        query: Union[VEC, str],
+        vector_column_name=VECTOR_COLUMN_NAME,
+        query_type: str = "auto",
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector.
@@ -669,7 +674,9 @@ class LanceTable(Table):
             else:
                 raise TypeError("Query must be a list, np.ndarray, or str")
         else:
-            raise ValueError(f"Invalid query_type, must be 'vector', 'fts', or 'auto': {query_type}")
+            raise ValueError(
+                f"Invalid query_type, must be 'vector', 'fts', or 'auto': {query_type}"
+            )
 
     @classmethod
     def create(
@@ -681,7 +688,7 @@ class LanceTable(Table):
         mode="create",
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
-        embedding_functions: List[EmbeddingFunctionModel] = None
+        embedding_functions: List[EmbeddingFunctionModel] = None,
     ):
         """
         Create a new table.
@@ -733,8 +740,11 @@ class LanceTable(Table):
 
         if data is not None:
             data = _sanitize_data(
-                data, schema, metadata=metadata,
-                on_bad_vectors=on_bad_vectors, fill_value=fill_value
+                data,
+                schema,
+                metadata=metadata,
+                on_bad_vectors=on_bad_vectors,
+                fill_value=fill_value,
             )
         else:
             if schema is None:

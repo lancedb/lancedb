@@ -1,8 +1,8 @@
 import os
 
 import pytest
-from lancedb.embeddings import EmbeddingFunctionModel, EmbeddingFunctionRegistry
 
+from lancedb.embeddings import EmbeddingFunctionModel, EmbeddingFunctionRegistry
 
 # import lancedb so we don't have to in every example
 

@@ -24,6 +24,7 @@ class EmbeddingFunctionRegistry:
     This is a singleton class is used to register embedding functions
     and fetch them by name. It also handles serializing and deserializing
     """
+
     @classmethod
     def get_instance(cls):
         return REGISTRY
@@ -98,9 +99,7 @@ class EmbeddingFunctionRegistry:
         Convert a list of embedding functions and source / vector column configs
         into a config dictionary that can be serialized into arrow metadata
         """
-        json_data = [
-            self.function_to_metadata(func) for func in func_list
-        ]
+        json_data = [self.function_to_metadata(func) for func in func_list]
         # Note that metadata dictionary values must be bytes so we need to json dump then utf8 encode
         metadata = json.dumps(json_data, indent=2).encode("utf-8")
         return {"embedding_functions": metadata}
@@ -113,6 +112,7 @@ class EmbeddingFunctionModel(BaseModel, ABC):
     """
     A callable ABC for embedding functions
     """
+
     source_column: str
     vector_column: str
 

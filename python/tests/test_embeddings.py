@@ -15,6 +15,7 @@ import sys
 import lance
 import numpy as np
 import pyarrow as pa
+
 from lancedb.conftest import MockEmbeddingFunction
 from lancedb.embeddings import EmbeddingFunctionRegistry, with_embeddings
 

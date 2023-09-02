@@ -17,13 +17,14 @@ from typing import Union
 
 import pyarrow as pa
 from lance import json_to_schema
+
 from lancedb.common import DATA, VEC, VECTOR_COLUMN_NAME
 
+from ..query import LanceQueryBuilder
+from ..table import Query, Table, _sanitize_data
 from .arrow import to_ipc_binary
 from .client import ARROW_STREAM_CONTENT_TYPE
 from .db import RemoteDBConnection
-from ..query import LanceQueryBuilder
-from ..table import Query, Table, _sanitize_data
 
 
 class RemoteTable(Table):
@@ -72,7 +73,11 @@ class RemoteTable(Table):
         fill_value: float = 0.0,
     ) -> int:
         data = _sanitize_data(
-            data, self.schema, metadata=None, on_bad_vectors=on_bad_vectors, fill_value=fill_value
+            data,
+            self.schema,
+            metadata=None,
+            on_bad_vectors=on_bad_vectors,
+            fill_value=fill_value,
         )
         payload = to_ipc_binary(data)
 

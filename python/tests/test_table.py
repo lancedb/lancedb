@@ -21,6 +21,7 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pytest
+
 from lancedb.conftest import MockEmbeddingFunction
 from lancedb.db import LanceDBConnection
 from lancedb.pydantic import LanceModel, vector
