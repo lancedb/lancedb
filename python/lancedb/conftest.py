@@ -18,7 +18,10 @@ def doctest_setup(monkeypatch, tmpdir):
     monkeypatch.chdir(tmpdir)
 
 
-@EmbeddingFunctionRegistry.get_instance().register()
+registry = EmbeddingFunctionRegistry.get_instance()
+
+
+@registry.register()
 class MockEmbeddingFunction(EmbeddingFunctionModel):
     def __call__(self, data):
         if isinstance(data, str):
