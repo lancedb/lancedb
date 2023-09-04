@@ -30,7 +30,7 @@ from lance.vector import vec_to_table
 from .common import DATA, VEC, VECTOR_COLUMN_NAME
 from .embeddings import EmbeddingFunctionModel, EmbeddingFunctionRegistry
 from .pydantic import LanceModel
-from .query import LanceFtsQueryBuilder, LanceQueryBuilder, Query
+from .query import LanceVectorQueryBuilder, Query
 from .util import fs_from_uri, safe_import_pandas
 
 pd = safe_import_pandas()
@@ -229,7 +229,7 @@ class Table(ABC):
     @abstractmethod
     def search(
         self, query: Union[VEC, str], vector_column: str = VECTOR_COLUMN_NAME
-    ) -> LanceQueryBuilder:
+    ) -> LanceVectorQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector.
 
@@ -242,7 +242,7 @@ class Table(ABC):
 
         Returns
         -------
-        LanceQueryBuilder
+        LanceVectorQueryBuilder
             A query builder object representing the query.
             Once executed, the query returns selected columns, the vector,
             and also the "_distance" column which is the distance between the query
@@ -605,29 +605,35 @@ class LanceTable(Table):
         )
         self._reset_dataset()
 
-    def _get_embedding_function_for_vector_col(self, column_name: str):
-        metadata = self.schema.metadata
-        if metadata is None or b"embedding_functions" not in metadata:
-            return None
-        functions = EmbeddingFunctionRegistry.get_instance().parse_functions(metadata)
-        return functions.get(column_name, None)
-
     def _get_embedding_function_for_source_col(self, column_name: str):
-        metadata = self.schema.metadata
-        if metadata is None or b"embedding_functions" not in metadata:
-            return None
-        functions = EmbeddingFunctionRegistry.get_instance().parse_functions(metadata)
-        for k, v in functions.items():
+        for k, v in self.embedding_functions.items():
             if v.source_column == column_name:
                 return v
         return None
+
+    @cached_property
+    def embedding_functions(self) -> dict:
+        """
+        Get the embedding functions for the table
+
+        Returns
+        -------
+        funcs: dict
+            A mapping of the vector column to the embedding function
+            or empty dict if not configured.
+        """
+        metadata = self.schema.metadata
+        if metadata is None or b"embedding_functions" not in metadata:
+            return {}
+        functions = EmbeddingFunctionRegistry.get_instance().parse_functions(metadata)
+        return functions
 
     def search(
         self,
         query: Union[VEC, str],
         vector_column_name=VECTOR_COLUMN_NAME,
         query_type: str = "auto",
-    ) -> LanceQueryBuilder:
+    ) -> LanceVectorQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector.
 
@@ -646,59 +652,15 @@ class LanceTable(Table):
 
         Returns
         -------
-        LanceQueryBuilder
+        LanceVectorQueryBuilder
             A query builder object representing the query.
             Once executed, the query returns selected columns, the vector,
             and also the "_distance" column which is the distance between the query
             vector and the returned vector.
         """
-        query, query_type = self._validate_query(query, query_type, vector_column_name)
-        if isinstance(query, str):
-            # fts
-            return LanceFtsQueryBuilder(self, query, vector_column_name)
-
-        if isinstance(query, list):
-            query = np.array(query, dtype=np.float32)
-        elif isinstance(query, np.ndarray):
-            query = query.astype(np.float32)
-        else:
-            raise TypeError(f"Unsupported query type: {type(query)}")
-
-        return LanceQueryBuilder(self, query, vector_column_name)
-
-    def _validate_query(self, query, query_type, vector_column_name):
-        # If query_type is fts, then query must be a string.
-        # otherwise raise TypeError
-        if query_type == "fts":
-            if not isinstance(query, str):
-                raise TypeError(
-                    f"Query type is 'fts' but query is not a string: {type(query)}"
-                )
-            return query, query_type
-        elif query_type == "vector":
-            # If query_type is vector, then query must be a list or np.ndarray.
-            # otherwise raise TypeError
-            if not isinstance(query, (list, np.ndarray)):
-                raise TypeError(
-                    f"Query type is 'vector' but query is not a list or np.ndarray: {type(query)}"
-                )
-            return query, query_type
-        elif query_type == "auto":
-            if isinstance(query, (list, np.ndarray)):
-                return query, "vector"
-            elif isinstance(query, str):
-                func = self._get_embedding_function_for_vector_col(vector_column_name)
-                if func is not None:
-                    query = func(query)[0]
-                    return query, "vector"
-                else:
-                    return query, "fts"
-            else:
-                raise TypeError("Query must be a list, np.ndarray, or str")
-        else:
-            raise ValueError(
-                f"Invalid query_type, must be 'vector', 'fts', or 'auto': {query_type}"
-            )
+        return LanceVectorQueryBuilder.create(
+            self, query, query_type, vector_column_name=vector_column_name
+        )
 
     @classmethod
     def create(
