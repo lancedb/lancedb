@@ -60,13 +60,17 @@ class LanceQueryBuilder(ABC):
     def create(
         cls,
         table: "lancedb.table.Table",
-        query: Union[np.ndarray, str],
+        query: Optional[Union[np.ndarray, str]],
         query_type: str,
         vector_column_name: str,
     ) -> LanceQueryBuilder:
+        if query is None:
+            return LanceEmptyQueryBuilder(table)
+
         query, query_type = cls._validate_query(
             table, query, query_type, vector_column_name
         )
+
         if isinstance(query, str):
             # fts
             return LanceFtsQueryBuilder(table, query)
@@ -115,13 +119,8 @@ class LanceQueryBuilder(ABC):
                 f"Invalid query_type, must be 'vector', 'fts', or 'auto': {query_type}"
             )
 
-    def __init__(
-        self,
-        table: "lancedb.table.Table",
-        query: Union[np.ndarray, str],
-    ):
+    def __init__(self, table: "lancedb.table.Table"):
         self._table = table
-        self._query = query
         self._limit = 10
         self._columns = None
         self._where = None
@@ -239,10 +238,11 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
     def __init__(
         self,
         table: "lancedb.table.Table",
-        query: Union[np.ndarray, str],
+        query: Union[np.ndarray, list],
         vector_column: str = VECTOR_COLUMN_NAME,
     ):
-        super().__init__(table, query)
+        super().__init__(table)
+        self._query = query
         self._metric = "L2"
         self._nprobes = 20
         self._refine_factor = None
@@ -332,6 +332,10 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
 
 
 class LanceFtsQueryBuilder(LanceQueryBuilder):
+    def __init__(self, table: "lancedb.table.Table", query: str):
+        super().__init__(table)
+        self._query = query
+
     def to_arrow(self) -> pa.Table:
         try:
             import tantivy
@@ -355,3 +359,13 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         output_tbl = self._table.to_lance().take(row_ids, columns=self._columns)
         output_tbl = output_tbl.append_column("score", scores)
         return output_tbl
+
+
+class LanceEmptyQueryBuilder(LanceQueryBuilder):
+    def to_arrow(self) -> pa.Table:
+        ds = self._table.to_lance()
+        return ds.to_table(
+            columns=self._columns,
+            filter=self._where,
+            limit=self._limit,
+        )

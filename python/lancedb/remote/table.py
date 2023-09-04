@@ -93,9 +93,9 @@ class RemoteTable(Table):
         )
 
     def search(
-        self, query: Union[VEC, str], vector_column: str = VECTOR_COLUMN_NAME
+        self, query: Union[VEC, str], vector_column_name: str = VECTOR_COLUMN_NAME
     ) -> LanceVectorQueryBuilder:
-        return LanceVectorQueryBuilder(self, query, vector_column)
+        return LanceVectorQueryBuilder(self, query, vector_column_name)
 
     def _execute_query(self, query: Query) -> pa.Table:
         result = self._conn._client.query(self._name, query)

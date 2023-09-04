@@ -30,7 +30,7 @@ from lance.vector import vec_to_table
 from .common import DATA, VEC, VECTOR_COLUMN_NAME
 from .embeddings import EmbeddingFunctionModel, EmbeddingFunctionRegistry
 from .pydantic import LanceModel
-from .query import LanceVectorQueryBuilder, Query
+from .query import LanceQueryBuilder, Query
 from .util import fs_from_uri, safe_import_pandas
 
 pd = safe_import_pandas()
@@ -228,21 +228,31 @@ class Table(ABC):
 
     @abstractmethod
     def search(
-        self, query: Union[VEC, str], vector_column: str = VECTOR_COLUMN_NAME
-    ) -> LanceVectorQueryBuilder:
+        self,
+        query: Optional[Union[VEC, str]] = None,
+        vector_column_name: str = VECTOR_COLUMN_NAME,
+    ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector.
 
         Parameters
         ----------
-        query: list, np.ndarray
-            The query vector.
-        vector_column: str, default "vector"
+        query: str, list, np.ndarray, default None
+            The query to search for. If None then
+            the select/where/limit clauses are applied to filter
+            the table
+        vector_column_name: str, default "vector"
             The name of the vector column to search.
+        query_type: str, default "auto"
+            "vector", "fts", or "auto"
+            If "auto" then the query type is inferred from the query;
+            If the query is a list/np.ndarray then the query type is "vector";
+            If the query is a string, then the query type is "vector" if the
+            table has embedding functions else the query type is "fts"
 
         Returns
         -------
-        LanceVectorQueryBuilder
+        LanceQueryBuilder
             A query builder object representing the query.
             Once executed, the query returns selected columns, the vector,
             and also the "_distance" column which is the distance between the query
@@ -630,17 +640,19 @@ class LanceTable(Table):
 
     def search(
         self,
-        query: Union[VEC, str],
-        vector_column_name=VECTOR_COLUMN_NAME,
+        query: Optional[Union[VEC, str]] = None,
+        vector_column_name: str = VECTOR_COLUMN_NAME,
         query_type: str = "auto",
-    ) -> LanceVectorQueryBuilder:
+    ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector.
 
         Parameters
         ----------
-        query: list, np.ndarray
-            The query vector.
+        query: str, list, np.ndarray, or None
+            The query to search for. If None then
+            the select/where/limit clauses are applied to filter
+            the table
         vector_column_name: str, default "vector"
             The name of the vector column to search.
         query_type: str, default "auto"
@@ -652,13 +664,13 @@ class LanceTable(Table):
 
         Returns
         -------
-        LanceVectorQueryBuilder
+        LanceQueryBuilder
             A query builder object representing the query.
             Once executed, the query returns selected columns, the vector,
             and also the "_distance" column which is the distance between the query
             vector and the returned vector.
         """
-        return LanceVectorQueryBuilder.create(
+        return LanceQueryBuilder.create(
             self, query, query_type, vector_column_name=vector_column_name
         )
 
@@ -863,12 +875,16 @@ def _sanitize_schema(
             return data
         # cast the columns to the expected types
         data = data.combine_chunks()
-        for field in data.schema:
+        for field in schema:
+            # TODO: we're making an assumption that fixed size list of 10 or more
+            # is a vector column. This is definitely a bit hacky.
             is_fixed_list = (
-                pa.types.is_fixed_size_list(field.type) and field.type.list_size > 10
+                pa.types.is_fixed_size_list(field.type)
+                and pa.types.is_float32(field.type.value_type)
+                and field.type.list_size >= 10
             )
             is_default = field.name == VECTOR_COLUMN_NAME
-            if is_fixed_list or is_default:
+            if field.name in data.column_names and (is_fixed_list or is_default):
                 data = _sanitize_vector_column(
                     data,
                     vector_column_name=field.name,
