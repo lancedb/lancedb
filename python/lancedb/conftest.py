@@ -1,5 +1,6 @@
 import os
 
+import pyarrow as pa
 import pytest
 
 from lancedb.embeddings import EmbeddingFunctionModel, EmbeddingFunctionRegistry
@@ -26,6 +27,11 @@ class MockEmbeddingFunction(EmbeddingFunctionModel):
     def __call__(self, data):
         if isinstance(data, str):
             data = [data]
+        elif isinstance(data, pa.ChunkedArray):
+            data = data.combine_chunks().to_pylist()
+        elif isinstance(data, pa.Array):
+            data = data.to_pylist()
+
         return [self.embed(row) for row in data]
 
     def embed(self, row):

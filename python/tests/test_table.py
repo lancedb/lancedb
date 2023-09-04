@@ -21,6 +21,7 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pytest
+
 from lancedb.conftest import MockEmbeddingFunction
 from lancedb.db import LanceDBConnection
 from lancedb.pydantic import LanceModel, vector
@@ -380,9 +381,6 @@ def test_add_with_embedding_function(db):
         text: str
         vector: vector(10)
 
-    texts = ["hello world", "goodbye world", "foo bar baz fizz buzz"]
-    df = pd.DataFrame({"text": texts})
-
     func = MockEmbeddingFunction(source_column="text", vector_column="vector")
     table = LanceTable.create(
         db,
@@ -390,7 +388,13 @@ def test_add_with_embedding_function(db):
         schema=MyTable,
         embedding_functions=[func],
     )
+
+    texts = ["hello world", "goodbye world", "foo bar baz fizz buzz"]
+    df = pd.DataFrame({"text": texts})
     table.add(df)
+
+    texts = ["the quick brown fox", "jumped over the lazy dog"]
+    table.add([{"text": t} for t in texts])
 
     query_str = "hi how are you?"
     query_vector = func(query_str)[0]

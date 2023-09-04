@@ -12,9 +12,10 @@
 #  limitations under the License.
 import json
 from abc import ABC, abstractmethod
-from typing import List, Union
+from typing import List, Optional, Union
 
 import numpy as np
+import pyarrow as pa
 from cachetools import cached
 from pydantic import BaseModel
 
@@ -113,7 +114,7 @@ class EmbeddingFunctionModel(BaseModel, ABC):
     A callable ABC for embedding functions
     """
 
-    source_column: str
+    source_column: Optional[str]
     vector_column: str
 
     @abstractmethod
@@ -147,6 +148,10 @@ class SentenceTransformerEmbeddingFunction(EmbeddingFunctionModel):
         """
         if isinstance(texts, str):
             texts = [texts]
+        elif isinstance(texts, pa.Array):
+            texts = texts.to_pylist()
+        elif isinstance(texts, pa.ChunkedArray):
+            texts = texts.combine_chunks().to_pylist()
         return self.embedding_model.encode(
             list(texts),
             convert_to_numpy=True,

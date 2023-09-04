@@ -49,7 +49,14 @@ def _sanitize_data(data, schema, metadata, on_bad_vectors, fill_value):
             )
             for vector_col, func in functions.items():
                 if vector_col not in data.columns:
-                    data = data.append_column(pa.field(), func(data[func.source_column]))
+                    col_data = func(data[func.source_column])
+                    if schema is not None:
+                        dtype = schema.field(vector_col).type
+                    else:
+                        dtype = pa.list_(pa.float32(), len(col_data[0]))
+                    data = data.append_column(
+                        pa.field(vector_col, type=dtype), pa.array(col_data, type=dtype)
+                    )
         data = _sanitize_schema(
             data, schema=schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value
         )
@@ -768,8 +775,12 @@ class LanceTable(Table):
                 schema = data.schema
             elif isinstance(data, Iterable):
                 if metadata:
-                    raise TypeError(("Persistent embedding functions not yet "
-                                     "supported for generator data input"))
+                    raise TypeError(
+                        (
+                            "Persistent embedding functions not yet "
+                            "supported for generator data input"
+                        )
+                    )
 
         if metadata:
             schema = schema.with_metadata(metadata)
