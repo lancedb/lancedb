@@ -152,7 +152,7 @@ fn coerce_schema_batch(
     RecordBatch::try_new(schema, columns)
 }
 
-/// Coerce the batch reader schema, to match the given [Schema].
+/// Coerce the reader (input data) to match the given [Schema].
 ///
 pub fn coerce_schema(
     reader: impl RecordBatchReader,
