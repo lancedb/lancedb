@@ -19,6 +19,7 @@ from typing import List, Optional
 import pyarrow as pa
 import pydantic
 import pytest
+from pydantic import Field
 
 from lancedb.pydantic import PYDANTIC_VERSION, LanceModel, pydantic_to_schema, vector
 
@@ -167,9 +168,12 @@ def test_fixed_size_list_validation():
 
 def test_lance_model():
     class TestModel(LanceModel):
-        vec: vector(16)
-        li: List[int]
+        vec: vector(16) = Field(default=[0.0] * 16)
+        li: List[int] = Field(default=[1, 2, 3])
 
     schema = pydantic_to_schema(TestModel)
     assert schema == TestModel.to_arrow_schema()
     assert TestModel.field_names() == ["vec", "li"]
+
+    t = TestModel()
+    assert t == TestModel(vec=[0.0] * 16, li=[1, 2, 3])
