@@ -17,7 +17,7 @@ import inspect
 import os
 from abc import ABC, abstractmethod
 from functools import cached_property
-from typing import Iterable, List, Optional, Union
+from typing import Any, Iterable, List, Optional, Union
 
 import lance
 import numpy as np
@@ -36,60 +36,61 @@ from .util import fs_from_uri, safe_import_pandas
 pd = safe_import_pandas()
 
 
-def _sanitize_data(data, schema, metadata, on_bad_vectors, fill_value):
+def _sanitize_data(
+    data,
+    schema: Optional[pa.Schema],
+    metadata: Optional[dict],
+    on_bad_vectors: str,
+    fill_value: Any,
+):
     if isinstance(data, list):
         # convert to list of dict if data is a bunch of LanceModels
         if isinstance(data[0], LanceModel):
             schema = data[0].__class__.to_arrow_schema()
             data = [dict(d) for d in data]
         data = pa.Table.from_pylist(data)
-        if metadata:
-            functions = EmbeddingFunctionRegistry.get_instance().parse_functions(
-                metadata
-            )
-            for vector_col, func in functions.items():
-                if vector_col not in data.columns:
-                    col_data = func(data[func.source_column])
-                    if schema is not None:
-                        dtype = schema.field(vector_col).type
-                    else:
-                        dtype = pa.list_(pa.float32(), len(col_data[0]))
-                    data = data.append_column(
-                        pa.field(vector_col, type=dtype), pa.array(col_data, type=dtype)
-                    )
-        data = _sanitize_schema(
-            data, schema=schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value
-        )
-    if isinstance(data, dict):
+    elif isinstance(data, dict):
         data = vec_to_table(data)
-    if pd is not None and isinstance(data, pd.DataFrame):
-        if metadata:
-            functions = EmbeddingFunctionRegistry.get_instance().parse_functions(
-                metadata
-            )
-            for vector_col, func in functions.items():
-                if vector_col not in data.columns:
-                    data[vector_col] = func(data[func.source_column])
+    elif pd is not None and isinstance(data, pd.DataFrame):
         data = pa.Table.from_pandas(data, preserve_index=False)
+        # Do not serialize Pandas metadata
+        meta = data.schema.metadata if data.schema.metadata is not None else {}
+        meta = {k: v for k, v in meta.items() if k != b"pandas"}
+        data = data.replace_schema_metadata(meta)
+
+    if isinstance(data, pa.Table):
+        if metadata:
+            data = _append_vector_col(data, metadata, schema)
+            metadata.update(data.schema.metadata or {})
+            data = data.replace_schema_metadata(metadata)
         data = _sanitize_schema(
             data, schema=schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value
         )
-        # Do not serialize Pandas metadata
-        metadata = data.schema.metadata if data.schema.metadata is not None else {}
-        metadata = {k: v for k, v in metadata.items() if k != b"pandas"}
-        schema = data.schema.with_metadata(metadata)
-        data = pa.Table.from_arrays(data.columns, schema=schema)
-
-    if metadata is not None:
-        metadata.update(data.schema.metadata)
-        data = data.replace_schema_metadata(metadata)
-
-    if isinstance(data, Iterable):
+    elif isinstance(data, Iterable):
         data = _to_record_batch_generator(
             data, schema, metadata, on_bad_vectors, fill_value
         )
-    if not isinstance(data, (pa.Table, Iterable)):
+    else:
         raise TypeError(f"Unsupported data type: {type(data)}")
+    return data
+
+
+def _append_vector_col(data: pa.Table, metadata: dict, schema: Optional[pa.Schema]):
+    """
+    Use the embedding function to automatically embed the source column and add the
+    vector column to the table.
+    """
+    functions = EmbeddingFunctionRegistry.get_instance().parse_functions(metadata)
+    for vector_col, func in functions.items():
+        if vector_col not in data.column_names:
+            col_data = func(data[func.source_column])
+            if schema is not None:
+                dtype = schema.field(vector_col).type
+            else:
+                dtype = pa.list_(pa.float32(), len(col_data[0]))
+            data = data.append_column(
+                pa.field(vector_col, type=dtype), pa.array(col_data, type=dtype)
+            )
     return data
 
 
