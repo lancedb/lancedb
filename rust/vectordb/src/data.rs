@@ -92,7 +92,7 @@ fn coerce_array(
             // Cast a float fixed size array with same dimension to the expected type.
             DataType::FixedSizeList(_, dim) if dim == exp_dim => {
                 let actual_sub = array.as_fixed_size_list();
-                let values = coerce_array(&actual_sub.values(), exp_field)?;
+                let values = coerce_array(actual_sub.values(), exp_field)?;
                 Ok(Arc::new(FixedSizeListArray::try_new_from_values(
                     values.clone(),
                     *dim,
@@ -109,7 +109,7 @@ fn coerce_array(
                     )));
                 }
 
-                let values = coerce_array(&list_arr.values(), exp_field)?;
+                let values = coerce_array(list_arr.values(), exp_field)?;
                 Ok(Arc::new(FixedSizeListArray::try_new_from_values(
                     values.clone(),
                     *exp_dim,
@@ -140,7 +140,7 @@ fn coerce_schema_batch(
     let columns = schema
         .fields()
         .iter()
-        .map(|field| {
+        .flat_map(|field| {
             batch
                 .column_by_name(field.name())
                 .map(|c| coerce_array(c, field))
@@ -148,7 +148,6 @@ fn coerce_schema_batch(
                     ArrowError::SchemaError(format!("Column {} not found in batch", field.name()))
                 })
         })
-        .flatten()
         .collect::<std::result::Result<Vec<_>, ArrowError>>()?;
     RecordBatch::try_new(schema, columns)
 }
