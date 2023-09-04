@@ -357,14 +357,14 @@ class LanceTable(Table):
         >>> db = lancedb.connect("./.lancedb")
         >>> table = db.create_table("my_table", [{"vector": [1.1, 0.9], "type": "vector"}])
         >>> table.version
-        1
+        2
         >>> table.to_pandas()
                vector    type
         0  [1.1, 0.9]  vector
         >>> table.add([{"vector": [0.5, 0.2], "type": "vector"}])
         >>> table.version
-        2
-        >>> table.checkout(1)
+        3
+        >>> table.checkout(2)
         >>> table.to_pandas()
                vector    type
         0  [1.1, 0.9]  vector
@@ -393,19 +393,19 @@ class LanceTable(Table):
         >>> db = lancedb.connect("./.lancedb")
         >>> table = db.create_table("my_table", [{"vector": [1.1, 0.9], "type": "vector"}])
         >>> table.version
-        1
+        2
         >>> table.to_pandas()
                vector    type
         0  [1.1, 0.9]  vector
         >>> table.add([{"vector": [0.5, 0.2], "type": "vector"}])
         >>> table.version
-        2
-        >>> table.restore(1)
+        3
+        >>> table.restore(2)
         >>> table.to_pandas()
                vector    type
         0  [1.1, 0.9]  vector
         >>> len(table.list_versions())
-        3
+        4
         """
         max_ver = max([v["version"] for v in self._dataset.versions()])
         if version is None:
@@ -863,22 +863,32 @@ def _sanitize_schema(
             return data
         # cast the columns to the expected types
         data = data.combine_chunks()
-        data = _sanitize_vector_column(
+        for field in data.schema:
+            is_fixed_list = (
+                pa.types.is_fixed_size_list(field.type) and field.type.list_size > 10
+            )
+            is_default = field.name == VECTOR_COLUMN_NAME
+            if is_fixed_list or is_default:
+                data = _sanitize_vector_column(
+                    data,
+                    vector_column_name=field.name,
+                    on_bad_vectors=on_bad_vectors,
+                    fill_value=fill_value,
+                )
+        return pa.Table.from_arrays(
+            [data[name] for name in schema.names], schema=schema
+        )
+
+    # just check the vector column
+    if VECTOR_COLUMN_NAME in data.column_names:
+        return _sanitize_vector_column(
             data,
             vector_column_name=VECTOR_COLUMN_NAME,
             on_bad_vectors=on_bad_vectors,
             fill_value=fill_value,
         )
-        return pa.Table.from_arrays(
-            [data[name] for name in schema.names], schema=schema
-        )
-    # just check the vector column
-    return _sanitize_vector_column(
-        data,
-        vector_column_name=VECTOR_COLUMN_NAME,
-        on_bad_vectors=on_bad_vectors,
-        fill_value=fill_value,
-    )
+
+    return data
 
 
 def _sanitize_vector_column(
@@ -902,8 +912,6 @@ def _sanitize_vector_column(
     fill_value: float, default 0.0
         The value to use when filling vectors. Only used if on_bad_vectors="fill".
     """
-    if vector_column_name not in data.column_names:
-        raise ValueError(f"Missing vector column: {vector_column_name}")
     # ChunkedArray is annoying to work with, so we combine chunks here
     vec_arr = data[vector_column_name].combine_chunks()
     if pa.types.is_list(data[vector_column_name].type):
