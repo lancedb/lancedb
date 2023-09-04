@@ -16,11 +16,27 @@
 
 use arrow::ffi_stream::ArrowArrayStreamReader;
 use arrow::pyarrow::FromPyArrow;
+use arrow_schema::Schema;
+use vectordb::data::sanitize::coerce_schema;
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 #[pyfunction(name = "_sanitize_table")]
 pub fn sanitize_table(data: &PyAny, schema: Option<&PyAny>) -> PyResult<()> {
     let batches = ArrowArrayStreamReader::from_pyarrow(data)?;
+    let schema: Option<Schema> = schema.map(|s| Schema::from_pyarrow(s)).transpose()?;
+    if let Some(schema) = schema {
+        for batch in batches {
+            let batch = batch.map_err(|e| {
+                PyErr::new::<PyValueError>(format!(
+                    "Error reading batch: {}",
+                    e
+                ))
+            })?;
+            let batch_schema = batch.schema();
+            let batch = coerce_schema(batch, schema.clone())?;
+        }
+    }
     Ok(())
 }
 
