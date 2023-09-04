@@ -11,12 +11,11 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
+import lancedb
 import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pytest
-
-import lancedb
 from lancedb.pydantic import LanceModel, vector
 
 
@@ -144,7 +143,7 @@ def test_ingest_iterator(tmp_path):
         tbl_len = len(tbl)
         tbl.add(make_batches())
         assert len(tbl) == tbl_len * 2
-        assert len(tbl.list_versions()) == 2
+        assert len(tbl.list_versions()) == 3
         db.drop_database()
 
     run_tests(arrow_schema)

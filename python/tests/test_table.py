@@ -21,7 +21,6 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pytest
-
 from lancedb.conftest import MockEmbeddingFunction
 from lancedb.db import LanceDBConnection
 from lancedb.pydantic import LanceModel, vector
@@ -179,16 +178,16 @@ def test_versioning(db):
         ],
     )
 
-    assert len(table.list_versions()) == 1
-    assert table.version == 1
-
-    table.add([{"vector": [6.3, 100.5], "item": "new", "price": 30.0}])
     assert len(table.list_versions()) == 2
     assert table.version == 2
+
+    table.add([{"vector": [6.3, 100.5], "item": "new", "price": 30.0}])
+    assert len(table.list_versions()) == 3
+    assert table.version == 3
     assert len(table) == 3
 
-    table.checkout(1)
-    assert table.version == 1
+    table.checkout(2)
+    assert table.version == 2
     assert len(table) == 2
 
 
@@ -279,21 +278,21 @@ def test_restore(db):
         data=[{"vector": [1.1, 0.9], "type": "vector"}],
     )
     table.add([{"vector": [0.5, 0.2], "type": "vector"}])
-    table.restore(1)
-    assert len(table.list_versions()) == 3
+    table.restore(2)
+    assert len(table.list_versions()) == 4
     assert len(table) == 1
 
     expected = table.to_arrow()
-    table.checkout(1)
+    table.checkout(2)
     table.restore()
-    assert len(table.list_versions()) == 4
+    assert len(table.list_versions()) == 5
     assert table.to_arrow() == expected
 
-    table.restore(4)  # latest version should be no-op
-    assert len(table.list_versions()) == 4
+    table.restore(5)  # latest version should be no-op
+    assert len(table.list_versions()) == 5
 
     with pytest.raises(ValueError):
-        table.restore(5)
+        table.restore(6)
 
     with pytest.raises(ValueError):
         table.restore(0)
@@ -307,7 +306,7 @@ def test_merge(db, tmp_path):
     )
     other_table = pa.table({"document": ["foo", "bar"], "id": [0, 1]})
     table.merge(other_table, left_on="id")
-    assert len(table.list_versions()) == 2
+    assert len(table.list_versions()) == 3
     expected = pa.table(
         {"vector": [[1.1, 0.9], [1.2, 1.9]], "id": [0, 1], "document": ["foo", "bar"]},
         schema=table.schema,
@@ -326,10 +325,10 @@ def test_delete(db):
         data=[{"vector": [1.1, 0.9], "id": 0}, {"vector": [1.2, 1.9], "id": 1}],
     )
     assert len(table) == 2
-    assert len(table.list_versions()) == 1
-    table.delete("id=0")
     assert len(table.list_versions()) == 2
-    assert table.version == 2
+    table.delete("id=0")
+    assert len(table.list_versions()) == 3
+    assert table.version == 3
     assert len(table) == 1
     assert table.to_pandas()["id"].tolist() == [1]
 
@@ -341,10 +340,10 @@ def test_update(db):
         data=[{"vector": [1.1, 0.9], "id": 0}, {"vector": [1.2, 1.9], "id": 1}],
     )
     assert len(table) == 2
-    assert len(table.list_versions()) == 1
+    assert len(table.list_versions()) == 2
     table.update(where="id=0", values={"vector": [1.1, 1.1]})
-    assert len(table.list_versions()) == 3
-    assert table.version == 3
+    assert len(table.list_versions()) == 4
+    assert table.version == 4
     assert len(table) == 2
     v = table.to_arrow()["vector"].combine_chunks()
     v = v.values.to_numpy().reshape(2, 2)
@@ -360,6 +359,31 @@ def test_create_with_embedding_function(db):
     texts = ["hello world", "goodbye world", "foo bar baz fizz buzz"]
     df = pd.DataFrame({"text": texts, "vector": func(texts)})
 
+    table = LanceTable.create(
+        db,
+        "my_table",
+        schema=MyTable,
+        embedding_functions=[func],
+    )
+    table.add(df)
+
+    query_str = "hi how are you?"
+    query_vector = func(query_str)[0]
+    expected = table.search(query_vector).limit(2).to_arrow()
+
+    actual = table.search(query_str).limit(2).to_arrow()
+    assert actual == expected
+
+
+def test_add_with_embedding_function(db):
+    class MyTable(LanceModel):
+        text: str
+        vector: vector(10)
+
+    texts = ["hello world", "goodbye world", "foo bar baz fizz buzz"]
+    df = pd.DataFrame({"text": texts})
+
+    func = MockEmbeddingFunction(source_column="text", vector_column="vector")
     table = LanceTable.create(
         db,
         "my_table",

@@ -43,12 +43,26 @@ def _sanitize_data(data, schema, metadata, on_bad_vectors, fill_value):
             schema = data[0].__class__.to_arrow_schema()
             data = [dict(d) for d in data]
         data = pa.Table.from_pylist(data)
+        if metadata:
+            functions = EmbeddingFunctionRegistry.get_instance().parse_functions(
+                metadata
+            )
+            for vector_col, func in functions.items():
+                if vector_col not in data.columns:
+                    data = data.append_column(pa.field(), func(data[func.source_column]))
         data = _sanitize_schema(
             data, schema=schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value
         )
     if isinstance(data, dict):
         data = vec_to_table(data)
     if pd is not None and isinstance(data, pd.DataFrame):
+        if metadata:
+            functions = EmbeddingFunctionRegistry.get_instance().parse_functions(
+                metadata
+            )
+            for vector_col, func in functions.items():
+                if vector_col not in data.columns:
+                    data[vector_col] = func(data[func.source_column])
         data = pa.Table.from_pandas(data, preserve_index=False)
         data = _sanitize_schema(
             data, schema=schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value
@@ -513,7 +527,7 @@ class LanceTable(Table):
         data = _sanitize_data(
             data,
             self.schema,
-            metadata=None,
+            metadata=self.schema.metadata,
             on_bad_vectors=on_bad_vectors,
             fill_value=fill_value,
         )
@@ -746,14 +760,28 @@ class LanceTable(Table):
                 on_bad_vectors=on_bad_vectors,
                 fill_value=fill_value,
             )
-        else:
-            if schema is None:
+
+        if schema is None:
+            if data is None:
                 raise ValueError("Either data or schema must be provided")
-            if metadata:
-                schema = schema.with_metadata(metadata)
-            data = pa.Table.from_pylist([], schema=schema)
-        lance.write_dataset(data, tbl._dataset_uri, schema=schema, mode=mode)
-        return LanceTable(db, name)
+            elif hasattr(data, "schema"):
+                schema = data.schema
+            elif isinstance(data, Iterable):
+                if metadata:
+                    raise TypeError(("Persistent embedding functions not yet "
+                                     "supported for generator data input"))
+
+        if metadata:
+            schema = schema.with_metadata(metadata)
+
+        empty = pa.Table.from_pylist([], schema=schema)
+        lance.write_dataset(empty, tbl._dataset_uri, schema=schema, mode=mode)
+        table = LanceTable(db, name)
+
+        if data is not None:
+            table.add(data)
+
+        return table
 
     @classmethod
     def open(cls, db, name):
