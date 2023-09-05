@@ -12,35 +12,38 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-/// Data cleaning and sanitization functions.
+//! Data cleaning and sanitization functions.
 
-use arrow::ffi_stream::ArrowArrayStreamReader;
-use arrow::pyarrow::FromPyArrow;
+use std::sync::Arc;
+
+use arrow::ffi_stream::{ArrowArrayStreamReader, FFI_ArrowArrayStream};
+use arrow::pyarrow::{FromPyArrow, IntoPyArrow};
+use arrow_array::RecordBatchReader;
 use arrow_schema::Schema;
-use vectordb::data::sanitize::coerce_schema;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use vectordb::data::sanitize::coerce_schema;
 
 #[pyfunction(name = "_sanitize_table")]
-pub fn sanitize_table(data: &PyAny, schema: Option<&PyAny>) -> PyResult<()> {
+pub fn sanitize_table(py: Python<'_>, data: &PyAny, schema: Option<&PyAny>) -> PyResult<PyObject> {
     let batches = ArrowArrayStreamReader::from_pyarrow(data)?;
     let schema: Option<Schema> = schema.map(|s| Schema::from_pyarrow(s)).transpose()?;
     if let Some(schema) = schema {
-        for batch in batches {
-            let batch = batch.map_err(|e| {
-                PyErr::new::<PyValueError>(format!(
-                    "Error reading batch: {}",
-                    e
-                ))
-            })?;
-            let batch_schema = batch.schema();
-            let batch = coerce_schema(batch, schema.clone())?;
-        }
+        let batches = ArrowArrayStreamReader::from_pyarrow(data)?;
+        let stream = coerce_schema(batches, Arc::new(schema)).map_err(|e| {
+            PyValueError::new_err(format!("Failed to sanitize data: {}", e.to_string()))
+        })?;
+        let boxed: Box<dyn RecordBatchReader + Send> = Box::new(stream);
+        // TODO(lei): wait for arrow-rs 47.0 to be released to run boxed.into_pyarrow(py)
+        let ffi_stream = FFI_ArrowArrayStream::new(boxed);
+        let arrow_stream_reader = ArrowArrayStreamReader::try_new(ffi_stream).map_err(|e| {
+            PyValueError::new_err(format!("Failed to sanitize data: {}", e.to_string()))
+        })?;
+        arrow_stream_reader.into_pyarrow(py)
+    } else {
+        batches.into_pyarrow(py)
     }
-    Ok(())
 }
 
 #[cfg(test)]
-mod tests {
-
-}
+mod tests {}

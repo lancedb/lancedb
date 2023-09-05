@@ -155,7 +155,7 @@ fn coerce_schema_batch(
 pub fn coerce_schema(
     reader: impl RecordBatchReader,
     schema: Arc<Schema>,
-) -> Result<impl RecordBatchReader> {
+) -> Result<impl RecordBatchReader + Send> {
     if reader.schema() == schema {
         return Ok(RecordBatchIterator::new(
             reader.into_iter().collect::<Vec<_>>(),
