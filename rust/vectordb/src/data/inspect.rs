@@ -75,6 +75,70 @@ pub fn infer_vector_columns(
 mod tests {
     use super::*;
 
+    use arrow_array::{
+        types::{Float32Type, Float64Type},
+        FixedSizeListArray, Float32Array, ListArray, RecordBatch, RecordBatchIterator, StringArray,
+    };
+    use arrow_schema::{DataType, Field, Schema};
+    use std::{sync::Arc, vec};
+
     #[test]
-    fn test_infer_vector_columns() {}
+    fn test_infer_vector_columns() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("f", DataType::Float32, false),
+            Field::new("s", DataType::Utf8, false),
+            Field::new(
+                "l1",
+                DataType::List(Arc::new(Field::new("item", DataType::Float32, false))),
+                false,
+            ),
+            Field::new(
+                "l2",
+                DataType::List(Arc::new(Field::new("item", DataType::Float64, false))),
+                false,
+            ),
+            Field::new(
+                "fl",
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float16, false)), 32),
+                false,
+            ),
+        ]));
+
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Float32Array::from(vec![1.0, 2.0, 3.0])),
+                Arc::new(StringArray::from(vec!["a", "b", "c"])),
+                Arc::new(ListArray::from_iter_primitive::<Float32Type, _, _>(
+                    (0..3).map(|_| Some(vec![Some(1.0), Some(2.0), Some(3.0), Some(4.0)])),
+                )),
+                // Var-length list
+                Arc::new(ListArray::from_iter_primitive::<Float64Type, _, _>(vec![
+                    Some(vec![Some(1.0_f64)]),
+                    Some(vec![Some(2.0_f64), Some(3.0_f64)]),
+                    Some(vec![Some(4.0_f64), Some(5.0_f64), Some(6.0_f64)]),
+                ])),
+                Arc::new(
+                    FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
+                        vec![
+                            Some(vec![Some(1.0_f32); 32]),
+                            Some(vec![Some(2.0_f32); 32]),
+                            Some(vec![Some(3.0_f32); 32]),
+                        ],
+                        32,
+                    ),
+                ),
+            ],
+        )
+        .unwrap();
+        let reader =
+            RecordBatchIterator::new(vec![batch.clone()].into_iter().map(Ok), schema.clone());
+
+        let cols = infer_vector_columns(reader, false).unwrap();
+        assert_eq!(cols, vec!["l1", "fl"]);
+
+        let reader = RecordBatchIterator::new(vec![batch].into_iter().map(Ok), schema);
+        let cols = infer_vector_columns(reader, true).unwrap();
+        assert_eq!(cols, vec!["fl"]);
+    }
 }
