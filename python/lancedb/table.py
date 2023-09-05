@@ -63,6 +63,7 @@ def _sanitize_data(
     on_bad_vectors,
     fill_value: float,
 ):
+    """Sanitize the data before writing to disk."""
     if isinstance(data, list):
         # convert to list of dict if data is a bunch of LanceModels
         if isinstance(data[0], LanceModel):
@@ -81,31 +82,38 @@ def _sanitize_data(
         metadata = {k: v for k, v in metadata.items() if k != b"pandas"}
         schema_and_metadata = data.schema.with_metadata(metadata)
         data = pa.Table.from_arrays(data.columns, schema=schema_and_metadata)
-
-    if not vector_columns:
-        vector_columns = _vector_column_candidates(data)
-    for vec_col in vector_columns:
-        data = _sanitize_schema(
-            data,
-            schema=schema,
-            vector_column=vec_col,
-            on_bad_vectors=on_bad_vectors,
-            fill_value=fill_value,
-        )
     if isinstance(data, Iterable):
-        data = _to_record_batch_generator(data, schema, on_bad_vectors, fill_value)
+        data = _to_record_batch_generator(
+            data, schema, vector_columns, on_bad_vectors, fill_value
+        )
+    else:
+        if not vector_columns:
+            vector_columns = _vector_column_candidates(data)
+        for vec_col in vector_columns:
+            data = _sanitize_schema(
+                data,
+                schema=schema,
+                vector_column=vec_col,
+                on_bad_vectors=on_bad_vectors,
+                fill_value=fill_value,
+            )
     if not isinstance(data, (pa.Table, Iterable)):
         raise TypeError(f"Unsupported data type: {type(data)}")
     return data
 
 
-def _to_record_batch_generator(data: Iterable, schema, on_bad_vectors, fill_value):
+def _to_record_batch_generator(
+    data: Iterable, schema: pa.Schema, vector_columns, on_bad_vectors, fill_value: float
+):
     for batch in data:
         if not isinstance(batch, pa.RecordBatch):
-            table = _sanitize_data(batch, schema, on_bad_vectors, fill_value)
+            table = _sanitize_data(
+                batch, schema, vector_columns, on_bad_vectors, fill_value
+            )
             for batch in table.to_batches():
                 yield batch
-        yield batch
+        else:
+            yield batch
 
 
 class Table(ABC):
