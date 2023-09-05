@@ -31,6 +31,7 @@ from .common import DATA, VEC, VECTOR_COLUMN_NAME
 from .pydantic import LanceModel
 from .query import LanceFtsQueryBuilder, LanceQueryBuilder, Query
 from .util import fs_from_uri, safe_import_pandas
+from .lancedb import _sanitize_table
 
 pd = safe_import_pandas()
 
@@ -744,6 +745,11 @@ class LanceTable(Table):
         )
 
 
+def sanitize_table(table: pa.Table, schema: pa.Schema) -> pa.Table:
+    """Ensure the table has the expected schema."""
+    reader = _sanitize_table(table.to_reader(), schema)
+    return pa.Table.from_batches(reader)
+
 def _sanitize_schema(
     data: pa.Table,
     schema: pa.Schema = None,
@@ -768,17 +774,7 @@ def _sanitize_schema(
     if schema is not None:
         if data.schema == schema:
             return data
-        # cast the columns to the expected types
-        data = data.combine_chunks()
-        data = _sanitize_vector_column(
-            data,
-            vector_column_name=VECTOR_COLUMN_NAME,
-            on_bad_vectors=on_bad_vectors,
-            fill_value=fill_value,
-        )
-        return pa.Table.from_arrays(
-            [data[name] for name in schema.names], schema=schema
-        )
+        return sanitize_table(data, schema)
     # just check the vector column
     return _sanitize_vector_column(
         data,

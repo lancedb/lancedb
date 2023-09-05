@@ -155,17 +155,17 @@ fn coerce_schema_batch(
 pub fn coerce_schema(
     reader: impl RecordBatchReader,
     schema: Arc<Schema>,
-) -> Result<impl RecordBatchReader + Send> {
+) -> Result<Box<dyn RecordBatchReader + Send>> {
     if reader.schema() == schema {
-        return Ok(RecordBatchIterator::new(
+        return Ok(Box::new(RecordBatchIterator::new(
             reader.into_iter().collect::<Vec<_>>(),
             schema,
-        ));
+        )));
     }
     let batches = reader
         .map(|batch| coerce_schema_batch(batch?, schema.clone()))
         .collect::<Vec<_>>();
-    Ok(RecordBatchIterator::new(batches, schema))
+    Ok(Box::new(RecordBatchIterator::new(batches, schema)))
 }
 
 #[cfg(test)]
