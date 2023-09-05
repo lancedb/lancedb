@@ -19,5 +19,6 @@ use pyo3::prelude::*;
 #[pymodule]
 fn lancedb(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(data::sanitize_table, m)?)?;
+    m.add_function(wrap_pyfunction!(data::infer_vector_columns, m)?)?;
     Ok(())
 }

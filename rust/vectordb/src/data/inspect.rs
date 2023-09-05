@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 
 use arrow::compute::kernels::{aggregate::bool_and, length::length};
-use arrow_array::{cast::AsArray, types::UInt32Type, RecordBatchReader};
+use arrow_array::{cast::AsArray, types::Int32Type, RecordBatchReader};
 use arrow_ord::comparison::eq_dyn_scalar;
 use arrow_schema::DataType;
 
@@ -37,10 +37,10 @@ pub fn infer_vector_columns(
     let mut columns_map: HashMap<String, Option<u32>> = HashMap::new();
     for field in reader.schema().fields() {
         match field.data_type() {
-            DataType::FixedSizeList(field, _) if field.data_type().is_floating() => {
+            DataType::FixedSizeList(sub_field, _) if sub_field.data_type().is_floating() => {
                 columns.push(field.name().to_string());
             }
-            DataType::List(field) if field.data_type().is_floating() && !strict => {
+            DataType::List(sub_field) if sub_field.data_type().is_floating() && !strict => {
                 columns_map.insert(field.name().to_string(), None);
             }
             _ => {}
@@ -58,9 +58,9 @@ pub fn infer_vector_columns(
             if len_arr.is_empty() {
                 columns_map.remove(&col_name);
             } else {
-                let len: u32 = len_arr.as_primitive::<UInt32Type>().value(0);
-                if bool_and(&eq_dyn_scalar(len_arr.as_primitive::<UInt32Type>(), len)?)
-                    == Some(true)
+                let len = len_arr.as_primitive::<Int32Type>().value(0);
+                if bool_and(&eq_dyn_scalar(len_arr.as_primitive::<Int32Type>(), len)?)
+                    != Some(true)
                 {
                     columns_map.remove(&col_name);
                 }
@@ -89,18 +89,18 @@ mod tests {
             Field::new("s", DataType::Utf8, false),
             Field::new(
                 "l1",
-                DataType::List(Arc::new(Field::new("item", DataType::Float32, false))),
+                DataType::List(Arc::new(Field::new("item", DataType::Float32, true))),
                 false,
             ),
             Field::new(
                 "l2",
-                DataType::List(Arc::new(Field::new("item", DataType::Float64, false))),
+                DataType::List(Arc::new(Field::new("item", DataType::Float64, true))),
                 false,
             ),
             Field::new(
                 "fl",
-                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float16, false)), 32),
-                false,
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 32),
+                true,
             ),
         ]));
 
@@ -121,9 +121,9 @@ mod tests {
                 Arc::new(
                     FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
                         vec![
-                            Some(vec![Some(1.0_f32); 32]),
-                            Some(vec![Some(2.0_f32); 32]),
-                            Some(vec![Some(3.0_f32); 32]),
+                            Some(vec![Some(1.0); 32]),
+                            Some(vec![Some(2.0); 32]),
+                            Some(vec![Some(3.0); 32]),
                         ],
                         32,
                     ),
@@ -135,7 +135,7 @@ mod tests {
             RecordBatchIterator::new(vec![batch.clone()].into_iter().map(Ok), schema.clone());
 
         let cols = infer_vector_columns(reader, false).unwrap();
-        assert_eq!(cols, vec!["l1", "fl"]);
+        assert_eq!(cols, vec!["fl", "l1"]);
 
         let reader = RecordBatchIterator::new(vec![batch].into_iter().map(Ok), schema);
         let cols = infer_vector_columns(reader, true).unwrap();

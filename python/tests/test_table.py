@@ -251,6 +251,7 @@ def test_add_with_nans(db):
             {"vector": [np.nan, np.nan], "item": "bar", "price": 20.0},
         ],
         on_bad_vectors="drop",
+        vector_columns=["vector"],
     )
     assert len(table) == 1
 
@@ -265,6 +266,7 @@ def test_add_with_nans(db):
         ],
         on_bad_vectors="fill",
         fill_value=0.0,
+        vector_columns=["vector"],
     )
     assert len(table) == 3
     arrow_tbl = table.to_lance().to_table(filter="item == 'bar'")

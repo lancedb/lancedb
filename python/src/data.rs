@@ -43,5 +43,13 @@ pub fn sanitize_table(py: Python<'_>, data: &PyAny, schema: Option<&PyAny>) -> P
     }
 }
 
+#[pyfunction(name = "_infer_vector_columns")]
+pub fn infer_vector_columns(data: &PyAny, strict: bool) -> PyResult<Vec<String>> {
+    let reader = ArrowArrayStreamReader::from_pyarrow(data)?;
+    vectordb::data::inspect::infer_vector_columns(reader, strict).map_err(|e| {
+        PyValueError::new_err(format!("Failed to infer vector columns: {}", e.to_string()))
+    })
+}
+
 #[cfg(test)]
 mod tests {}

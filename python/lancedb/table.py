@@ -28,7 +28,7 @@ from lance.dataset import ReaderLike
 from lance.vector import vec_to_table
 
 from .common import DATA, VEC, VECTOR_COLUMN_NAME
-from .lancedb import _sanitize_table
+from .lancedb import _infer_vector_columns, _sanitize_table
 from .pydantic import LanceModel
 from .query import LanceFtsQueryBuilder, LanceQueryBuilder, Query
 from .util import fs_from_uri, safe_import_pandas
@@ -37,23 +37,8 @@ pd = safe_import_pandas()
 
 
 def _vector_column_candidates(table: pa.Table) -> List[str]:
-    """Find all columns that could be a vector columns.
-
-    TODO: move this function to rust core
-    """
-    candidates = []
-    for name in table.schema.names:
-        field = table.schema.field(name)
-        if pa.types.is_list(field.type) and pa.types.is_floating(field.type.value_type):
-            lens = pc.list_value_length(table.column(name))
-            ndims = pc.max(lens).as_py()
-            if pc.all(pc.equal(lens, ndims)):
-                candidates.append(name)
-        elif pa.types.is_fixed_size_list(field.type) and pa.types.is_floating(
-            field.type.value_type
-        ):
-            candidates.append(name)
-    return candidates
+    """Find all columns that could be a vector columns."""
+    return _infer_vector_columns(table.to_reader(), False)
 
 
 def _sanitize_data(
