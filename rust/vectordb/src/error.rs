@@ -33,6 +33,8 @@ pub enum Error {
     Store { message: String },
     #[snafu(display("LanceDBError: {message}"))]
     Lance { message: String },
+    #[snafu(display("LanceDB Schema Error: {message}"))]
+    Schema { message: String },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

@@ -14,4 +14,5 @@
 
 //! Data types, schema coercion, and data cleaning and etc.
 
+pub mod inspect;
 pub mod sanitize;

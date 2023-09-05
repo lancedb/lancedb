@@ -10,9 +10,11 @@ categories = ["database-implementations"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [dependencies]
+arrow = { workspace = true }
 arrow-array = { workspace = true }
 arrow-data = { workspace = true }
 arrow-schema = { workspace = true }
+arrow-ord = { workspace = true }
 arrow-cast = { workspace = true }
 object_store = { workspace = true }
 snafu = { workspace = true }
