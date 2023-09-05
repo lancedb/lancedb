@@ -238,6 +238,7 @@ def test_add_with_nans(db):
                 db,
                 "error_test",
                 data=[{"vector": [3.1, 4.1], "item": "foo", "price": 10.0}, row],
+                vector_columns=["vector"],
             )
 
     table = LanceTable.create(
@@ -348,3 +349,14 @@ def test_update(db):
     v = table.to_arrow()["vector"].combine_chunks()
     v = v.values.to_numpy().reshape(2, 2)
     assert np.allclose(v, np.array([[1.2, 1.9], [1.1, 1.1]]))
+
+
+def test_create_table_without_vector_column(db):
+    table = LanceTable.create(
+        db,
+        "tbl",
+        data=[{"id": [1, 2, 3], "name": ["a", "b", "c"]}],
+    )
+    assert table.schema == pa.schema(
+        [pa.field("id", pa.list_(pa.int64())), pa.field("name", pa.list_(pa.utf8()))]
+    )

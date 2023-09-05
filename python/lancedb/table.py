@@ -17,7 +17,7 @@ import inspect
 import os
 from abc import ABC, abstractmethod
 from functools import cached_property
-from typing import Iterable, List, Optional, Union
+from typing import Any, Dict, Iterable, List, Optional, Union
 
 import lance
 import numpy as np
@@ -28,36 +28,70 @@ from lance.dataset import ReaderLike
 from lance.vector import vec_to_table
 
 from .common import DATA, VEC, VECTOR_COLUMN_NAME
+from .lancedb import _sanitize_table
 from .pydantic import LanceModel
 from .query import LanceFtsQueryBuilder, LanceQueryBuilder, Query
 from .util import fs_from_uri, safe_import_pandas
-from .lancedb import _sanitize_table
 
 pd = safe_import_pandas()
 
 
-def _sanitize_data(data, schema, on_bad_vectors, fill_value):
+def _vector_column_candidates(table: pa.Table) -> List[str]:
+    """Find all columns that could be a vector columns.
+
+    TODO: move this function to rust core
+    """
+    candidates = []
+    for name in table.schema.names:
+        field = table.schema.field(name)
+        if pa.types.is_list(field.type) and pa.types.is_floating(field.type.value_type):
+            lens = pc.list_value_length(table.column(name))
+            ndims = pc.max(lens).as_py()
+            if pc.all(pc.equal(lens, ndims)):
+                candidates.append(name)
+        elif pa.types.is_fixed_size_list(field.type) and pa.types.is_floating(
+            field.type.value_type
+        ):
+            candidates.append(name)
+    return candidates
+
+
+def _sanitize_data(
+    data,
+    schema: Optional[pa.Schema],
+    vector_columns: List[str],
+    on_bad_vectors,
+    fill_value: float,
+):
     if isinstance(data, list):
         # convert to list of dict if data is a bunch of LanceModels
         if isinstance(data[0], LanceModel):
             schema = data[0].__class__.to_arrow_schema()
             data = [dict(d) for d in data]
-        data = pa.Table.from_pylist(data)
+        data = pa.Table.from_pylist(data, schema=schema)
         data = _sanitize_schema(
             data, schema=schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value
         )
     if isinstance(data, dict):
         data = vec_to_table(data)
     if pd is not None and isinstance(data, pd.DataFrame):
-        data = pa.Table.from_pandas(data, preserve_index=False)
-        data = _sanitize_schema(
-            data, schema=schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value
-        )
+        data = pa.Table.from_pandas(data, preserve_index=False, schema=schema)
         # Do not serialize Pandas metadata
         metadata = data.schema.metadata if data.schema.metadata is not None else {}
         metadata = {k: v for k, v in metadata.items() if k != b"pandas"}
-        schema = data.schema.with_metadata(metadata)
-        data = pa.Table.from_arrays(data.columns, schema=schema)
+        schema_and_metadata = data.schema.with_metadata(metadata)
+        data = pa.Table.from_arrays(data.columns, schema=schema_and_metadata)
+
+    if not vector_columns:
+        vector_columns = _vector_column_candidates(data)
+    for vec_col in vector_columns:
+        data = _sanitize_schema(
+            data,
+            schema=schema,
+            vector_column=vec_col,
+            on_bad_vectors=on_bad_vectors,
+            fill_value=fill_value,
+        )
     if isinstance(data, Iterable):
         data = _to_record_batch_generator(data, schema, on_bad_vectors, fill_value)
     if not isinstance(data, (pa.Table, Iterable)):
@@ -502,7 +536,11 @@ class LanceTable(Table):
         """
         # TODO: manage table listing and metadata separately
         data = _sanitize_data(
-            data, self.schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value
+            data,
+            self.schema,
+            None,
+            on_bad_vectors=on_bad_vectors,
+            fill_value=fill_value,
         )
         lance.write_dataset(data, self._dataset_uri, schema=self.schema, mode=mode)
         self._reset_dataset()
@@ -607,15 +645,16 @@ class LanceTable(Table):
     def create(
         cls,
         db,
-        name,
-        data=None,
-        schema=None,
-        mode="create",
+        name: str,
+        data: Optional[Union[List[Any], Dict]] = None,
+        schema: Optional[Union[pa.Schema, LanceModel]] = None,
+        vector_columns: Optional[List[str]] = None,
+        mode: str = "create",
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
     ):
         """
-        Create a new table.
+        Create a new table. If no schema is specified, the schema is inferred from the data.
 
         Examples
         --------
@@ -656,7 +695,11 @@ class LanceTable(Table):
             schema = schema.to_arrow_schema()
         if data is not None:
             data = _sanitize_data(
-                data, schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value
+                data,
+                schema,
+                vector_columns,
+                on_bad_vectors=on_bad_vectors,
+                fill_value=fill_value,
             )
         else:
             if schema is None:
@@ -750,9 +793,11 @@ def sanitize_table(table: pa.Table, schema: pa.Schema) -> pa.Table:
     reader = _sanitize_table(table.to_reader(), schema)
     return pa.Table.from_batches(reader)
 
+
 def _sanitize_schema(
     data: pa.Table,
     schema: pa.Schema = None,
+    vector_column: str = None,
     on_bad_vectors: str = "error",
     fill_value: float = 0.0,
 ) -> pa.Table:
@@ -774,14 +819,16 @@ def _sanitize_schema(
     if schema is not None:
         if data.schema == schema:
             return data
-        return sanitize_table(data, schema)
+        data = sanitize_table(data, schema)
     # just check the vector column
-    return _sanitize_vector_column(
-        data,
-        vector_column_name=VECTOR_COLUMN_NAME,
-        on_bad_vectors=on_bad_vectors,
-        fill_value=fill_value,
-    )
+    if vector_column is not None:
+        return _sanitize_vector_column(
+            data,
+            vector_column_name=vector_column,
+            on_bad_vectors=on_bad_vectors,
+            fill_value=fill_value,
+        )
+    return data
 
 
 def _sanitize_vector_column(
