@@ -360,3 +360,19 @@ def test_create_table_without_vector_column(db):
     assert table.schema == pa.schema(
         [pa.field("id", pa.list_(pa.int64())), pa.field("name", pa.list_(pa.utf8()))]
     )
+
+
+def test_create_vectors_with_other_names(db):
+    table = LanceTable.create(
+        db,
+        "tbl",
+        data=pd.DataFrame(
+            {"id": [1, 2, 3], "embeddings": [np.random.rand(16) for _ in range(3)]}
+        ),
+    )
+    assert table.schema == pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("embeddings", pa.list_(pa.float32(), 16)),
+        ]
+    )
