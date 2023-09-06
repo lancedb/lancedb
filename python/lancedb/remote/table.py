@@ -20,7 +20,7 @@ from lance import json_to_schema
 
 from lancedb.common import DATA, VEC, VECTOR_COLUMN_NAME
 
-from ..query import LanceVectorQueryBuilder
+from ..query import LanceQueryBuilder
 from ..table import Query, Table, _sanitize_data
 from .arrow import to_ipc_binary
 from .client import ARROW_STREAM_CONTENT_TYPE
@@ -73,11 +73,7 @@ class RemoteTable(Table):
         fill_value: float = 0.0,
     ) -> int:
         data = _sanitize_data(
-            data,
-            self.schema,
-            metadata=None,
-            on_bad_vectors=on_bad_vectors,
-            fill_value=fill_value,
+            data, self.schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value
         )
         payload = to_ipc_binary(data)
 
@@ -93,9 +89,9 @@ class RemoteTable(Table):
         )
 
     def search(
-        self, query: Union[VEC, str], vector_column_name: str = VECTOR_COLUMN_NAME
-    ) -> LanceVectorQueryBuilder:
-        return LanceVectorQueryBuilder(self, query, vector_column_name)
+        self, query: Union[VEC, str], vector_column: str = VECTOR_COLUMN_NAME
+    ) -> LanceQueryBuilder:
+        return LanceQueryBuilder(self, query, vector_column)
 
     def _execute_query(self, query: Query) -> pa.Table:
         result = self._conn._client.query(self._name, query)

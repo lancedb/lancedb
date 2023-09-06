@@ -9,12 +9,11 @@ dependencies = [
     "aiohttp",
     "pydantic",
     "attr",
-    "semver>=3.0",
-    "cachetools"
+    "semver>=3.0"
 ]
 description = "lancedb"
 authors = [{ name = "LanceDB Devs", email = "dev@lancedb.com" }]
-license = { file = "LICENSE" }
+license = { file = "../LICENSE" }
 readme = "README.md"
 requires-python = ">=3.8"
 keywords = [
@@ -49,8 +48,8 @@ dev = ["ruff", "pre-commit", "black"]
 docs = ["mkdocs", "mkdocs-jupyter", "mkdocs-material", "mkdocstrings[python]"]
 
 [build-system]
-requires = ["setuptools", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["maturin>=1.2,<2"]
+build-backend = "maturin"
 
 [tool.isort]
 profile = "black"

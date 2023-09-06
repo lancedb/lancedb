@@ -16,13 +16,12 @@ from __future__ import annotations
 import os
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import Optional, Union
 
 import pyarrow as pa
 from pyarrow import fs
 
 from .common import DATA, URI
-from .embeddings import EmbeddingFunctionModel
 from .pydantic import LanceModel
 from .table import LanceTable, Table
 from .util import fs_from_uri, get_uri_location, get_uri_scheme
@@ -290,7 +289,6 @@ class LanceDBConnection(DBConnection):
         mode: str = "create",
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
-        embedding_functions: Optional[List[EmbeddingFunctionModel]] = None,
     ) -> LanceTable:
         """Create a table in the database.
 
@@ -309,7 +307,6 @@ class LanceDBConnection(DBConnection):
             mode=mode,
             on_bad_vectors=on_bad_vectors,
             fill_value=fill_value,
-            embedding_functions=embedding_functions,
         )
         return tbl
 
