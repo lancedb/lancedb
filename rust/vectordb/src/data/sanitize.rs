@@ -100,7 +100,7 @@ fn coerce_array(
             DataType::List(_) => {
                 let list_arr = array.as_list::<i32>();
                 if let Some(dim) = infer_dimension::<i32>(list_arr).map_err(|e| {
-                    ArrowError::SchemaError(format!("failed to infer dimension: {}", e.to_string()))
+                    ArrowError::SchemaError(format!("failed to infer dimension: {}", e))
                 })? {
                     if dim != *exp_dim {
                         return Err(ArrowError::SchemaError(format!(

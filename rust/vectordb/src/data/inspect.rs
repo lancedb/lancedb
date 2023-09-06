@@ -41,15 +41,17 @@ where
     if O::IS_LARGE {
         let dim = len_arr.as_primitive::<Int64Type>().value(0);
         if bool_and(&eq_dyn_scalar(len_arr.as_primitive::<Int64Type>(), dim)?) != Some(true) {
-            return Ok(None);
+            Ok(None)
+        } else {
+            Ok(Some(dim.as_()))
         }
-        return Ok(Some(dim.as_()));
     } else {
         let dim = len_arr.as_primitive::<Int32Type>().value(0);
         if bool_and(&eq_dyn_scalar(len_arr.as_primitive::<Int32Type>(), dim)?) != Some(true) {
-            return Ok(None);
+            Ok(None)
+        } else {
+            Ok(Some(dim.as_()))
         }
-        return Ok(Some(dim.as_()));
     }
 }
 
@@ -88,11 +90,11 @@ pub fn infer_vector_columns(
             let col = batch.column_by_name(&col_name).ok_or(Error::Schema {
                 message: format!("Column {} not found", col_name),
             })?;
-            if let Some(dim) = match col.data_type() {
-                &DataType::List(_) => {
+            if let Some(dim) = match *col.data_type() {
+                DataType::List(_) => {
                     infer_dimension::<i32>(col.as_list::<i32>())?.map(|d| d as i64)
                 }
-                &DataType::LargeList(_) => infer_dimension::<i64>(col.as_list::<i64>())?,
+                DataType::LargeList(_) => infer_dimension::<i64>(col.as_list::<i64>())?,
                 _ => {
                     return Err(Error::Schema {
                         message: format!("Column {} is not a list", col_name),
