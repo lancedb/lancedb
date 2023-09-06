@@ -632,11 +632,9 @@ class LanceTable(Table):
             A mapping of the vector column to the embedding function
             or empty dict if not configured.
         """
-        metadata = self.schema.metadata
-        if metadata is None or b"embedding_functions" not in metadata:
-            return {}
-        functions = EmbeddingFunctionRegistry.get_instance().parse_functions(metadata)
-        return functions
+        return EmbeddingFunctionRegistry.get_instance().parse_functions(
+            self.schema.metadata
+        )
 
     def search(
         self,
@@ -878,13 +876,15 @@ def _sanitize_schema(
         for field in schema:
             # TODO: we're making an assumption that fixed size list of 10 or more
             # is a vector column. This is definitely a bit hacky.
-            is_fixed_list = (
+            likely_vector_col = (
                 pa.types.is_fixed_size_list(field.type)
                 and pa.types.is_float32(field.type.value_type)
                 and field.type.list_size >= 10
             )
-            is_default = field.name == VECTOR_COLUMN_NAME
-            if field.name in data.column_names and (is_fixed_list or is_default):
+            is_default_vector_col = field.name == VECTOR_COLUMN_NAME
+            if field.name in data.column_names and (
+                likely_vector_col or is_default_vector_col
+            ):
                 data = _sanitize_vector_column(
                     data,
                     vector_column_name=field.name,

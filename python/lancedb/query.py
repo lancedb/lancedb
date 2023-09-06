@@ -67,7 +67,7 @@ class LanceQueryBuilder(ABC):
         if query is None:
             return LanceEmptyQueryBuilder(table)
 
-        query, query_type = cls._validate_query(
+        query, query_type = cls._resolve_query(
             table, query, query_type, vector_column_name
         )
 
@@ -85,7 +85,7 @@ class LanceQueryBuilder(ABC):
         return LanceVectorQueryBuilder(table, query, vector_column_name)
 
     @classmethod
-    def _validate_query(cls, table, query, query_type, vector_column_name):
+    def _resolve_query(cls, table, query, query_type, vector_column_name):
         # If query_type is fts, then query must be a string.
         # otherwise raise TypeError
         if query_type == "fts":

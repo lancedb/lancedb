@@ -63,7 +63,7 @@ class EmbeddingFunctionRegistry:
         """
         return self._functions[name]
 
-    def parse_functions(self, metadata: dict):
+    def parse_functions(self, metadata: Optional[dict]) -> dict:
         """
         Parse the metadata from an arrow table and
         return a mapping of the vector column to the
@@ -71,10 +71,19 @@ class EmbeddingFunctionRegistry:
 
         Parameters
         ----------
-        metadata : dict
+        metadata : Optional[dict]
             The metadata from an arrow table. Note that
-            the keys and values are bytes
+            the keys and values are bytes.
+
+        Returns
+        -------
+        functions : dict
+            A mapping of vector column name to embedding function.
+            An empty dict is returned if input is None or does not
+            contain b"embedding_functions".
         """
+        if metadata is None or b"embedding_functions" not in metadata:
+            return {}
         serialized = metadata[b"embedding_functions"]
         raw_list = json.loads(serialized.decode("utf-8"))
         functions = {}
@@ -118,12 +127,48 @@ class EmbeddingFunctionModel(BaseModel, ABC):
     vector_column: str
 
     @abstractmethod
-    def __call__(self, *args, **kwargs):
+    def __call__(self, *args, **kwargs) -> List[np.array]:
+        pass
+
+
+TEXT = Union[str, List[str], pa.Array, pa.ChunkedArray, np.ndarray]
+
+
+class TextEmbeddingFunctionModel(EmbeddingFunctionModel):
+    """
+    A callable ABC for embedding functions that take text as input
+    """
+
+    def __call__(self, texts: TEXT, *args, **kwargs) -> List[np.array]:
+        texts = self.sanitize_input(texts)
+        return self.generate_embeddings(texts)
+
+    def sanitize_input(self, texts: TEXT) -> Union[List[str], np.ndarray]:
+        """
+        Sanitize the input to the embedding function. This is called
+        before generate_embeddings() and is useful for stripping
+        whitespace, lowercasing, etc.
+        """
+        if isinstance(texts, str):
+            texts = [texts]
+        elif isinstance(texts, pa.Array):
+            texts = texts.to_pylist()
+        elif isinstance(texts, pa.ChunkedArray):
+            texts = texts.combine_chunks().to_pylist()
+        return texts
+
+    @abstractmethod
+    def generate_embeddings(
+        self, texts: Union[List[str], np.ndarray]
+    ) -> List[np.array]:
+        """
+        Generate the embeddings for the given texts
+        """
         pass
 
 
 @REGISTRY.register()
-class SentenceTransformerEmbeddingFunction(EmbeddingFunctionModel):
+class SentenceTransformerEmbeddingFunction(TextEmbeddingFunctionModel):
     name: str = "all-MiniLM-L6-v2"
     device: str = "cpu"
     normalize: bool = False
@@ -137,21 +182,17 @@ class SentenceTransformerEmbeddingFunction(EmbeddingFunctionModel):
         """
         return self.__class__.get_embedding_model(self.name, self.device)
 
-    def __call__(self, texts: Union[str, List[str]]) -> List[np.array]:
+    def generate_embeddings(
+        self, texts: Union[List[str], np.ndarray]
+    ) -> List[np.array]:
         """
         Get the embeddings for the given texts
 
         Parameters
         ----------
-        texts: str or list[str]
+        texts: list[str] or np.ndarray (of str)
             The texts to embed
         """
-        if isinstance(texts, str):
-            texts = [texts]
-        elif isinstance(texts, pa.Array):
-            texts = texts.to_pylist()
-        elif isinstance(texts, pa.ChunkedArray):
-            texts = texts.combine_chunks().to_pylist()
         return self.embedding_model.encode(
             list(texts),
             convert_to_numpy=True,
@@ -173,7 +214,7 @@ class SentenceTransformerEmbeddingFunction(EmbeddingFunctionModel):
         device : str
             The device to load the model on
 
-        TODO: use lru_cache instead with a reasonable/configurable? maxsize
+        TODO: use lru_cache instead with a reasonable/configurable maxsize
         """
         try:
             from sentence_transformers import SentenceTransformer
