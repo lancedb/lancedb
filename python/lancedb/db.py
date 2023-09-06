@@ -290,7 +290,7 @@ class LanceDBConnection(DBConnection):
         mode: str = "create",
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
-        embedding_functions: List[EmbeddingFunctionModel] = None,
+        embedding_functions: Optional[List[EmbeddingFunctionModel]] = None,
     ) -> LanceTable:
         """Create a table in the database.
 
