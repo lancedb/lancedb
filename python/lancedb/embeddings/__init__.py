@@ -17,5 +17,6 @@ from .functions import (
     EmbeddingFunctionModel,
     EmbeddingFunctionRegistry,
     SentenceTransformerEmbeddingFunction,
+    TextEmbeddingFunctionModel,
 )
 from .utils import with_embeddings
