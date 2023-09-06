@@ -61,12 +61,19 @@ jobs:
       uses: actions/setup-python@v4
       with:
         python-version: "3.11"
+    - name: Install macos dependency
+      shell: bash
+      run: |
+        brew install protobuf
+    - uses: PyO3/maturin-action@v1
+      with:
+        command: build
+        working-directory: python
     - name: Install lancedb
       run: |
-        pip install -e .[tests]
+        pip install $(ls target/wheels/pylance-*.whl)[tests,dev]
         pip install tantivy@git+https://github.com/quickwit-oss/tantivy-py#164adc87e1a033117001cf70e38c82a53014d985
-        pip install pytest pytest-mock black
-    - name: Black
+    - name: Lint
       run: black --check --diff --no-color --quiet .
     - name: Run tests
       run: pytest -x -v --durations=30 tests

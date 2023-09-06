@@ -15,7 +15,7 @@ from typing import Optional
 
 from .db import URI, DBConnection, LanceDBConnection
 from .remote.db import RemoteDBConnection
-from .schema import vector
+from .schema import vector  # noqa: F401
 
 
 def connect(
