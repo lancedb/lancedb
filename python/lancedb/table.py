@@ -17,7 +17,7 @@ import inspect
 import os
 from abc import ABC, abstractmethod
 from functools import cached_property
-from typing import Any, Dict, Iterable, List, Optional, Union
+from typing import Any, Iterable, List, Optional, Union
 
 import lance
 import numpy as np
@@ -28,77 +28,81 @@ from lance.dataset import ReaderLike
 from lance.vector import vec_to_table
 
 from .common import DATA, VEC, VECTOR_COLUMN_NAME
-from .lancedb import _infer_vector_columns, _sanitize_table
+from .embeddings import EmbeddingFunctionModel, EmbeddingFunctionRegistry
 from .pydantic import LanceModel
-from .query import LanceFtsQueryBuilder, LanceQueryBuilder, Query
+from .query import LanceQueryBuilder, Query
 from .util import fs_from_uri, safe_import_pandas
 
 pd = safe_import_pandas()
 
 
-def _vector_column_candidates(table: pa.Table) -> List[str]:
-    """Find all columns that could be a vector columns."""
-    return _infer_vector_columns(table.to_reader(), False)
-
-
 def _sanitize_data(
     data,
     schema: Optional[pa.Schema],
-    vector_columns: List[str],
-    on_bad_vectors,
-    fill_value: float,
+    metadata: Optional[dict],
+    on_bad_vectors: str,
+    fill_value: Any,
 ):
-    """Sanitize the data before writing to disk."""
     if isinstance(data, list):
         # convert to list of dict if data is a bunch of LanceModels
         if isinstance(data[0], LanceModel):
             schema = data[0].__class__.to_arrow_schema()
             data = [dict(d) for d in data]
-        data = pa.Table.from_pylist(data, schema=schema)
+        data = pa.Table.from_pylist(data)
+    elif isinstance(data, dict):
+        data = vec_to_table(data)
+    elif pd is not None and isinstance(data, pd.DataFrame):
+        data = pa.Table.from_pandas(data, preserve_index=False)
+        # Do not serialize Pandas metadata
+        meta = data.schema.metadata if data.schema.metadata is not None else {}
+        meta = {k: v for k, v in meta.items() if k != b"pandas"}
+        data = data.replace_schema_metadata(meta)
+
+    if isinstance(data, pa.Table):
+        if metadata:
+            data = _append_vector_col(data, metadata, schema)
+            metadata.update(data.schema.metadata or {})
+            data = data.replace_schema_metadata(metadata)
         data = _sanitize_schema(
             data, schema=schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value
         )
-    if isinstance(data, dict):
-        data = vec_to_table(data)
-    if pd is not None and isinstance(data, pd.DataFrame):
-        data = pa.Table.from_pandas(data, preserve_index=False, schema=schema)
-        # Do not serialize Pandas metadata
-        metadata = data.schema.metadata if data.schema.metadata is not None else {}
-        metadata = {k: v for k, v in metadata.items() if k != b"pandas"}
-        schema_and_metadata = data.schema.with_metadata(metadata)
-        data = pa.Table.from_arrays(data.columns, schema=schema_and_metadata)
-    if isinstance(data, Iterable):
+    elif isinstance(data, Iterable):
         data = _to_record_batch_generator(
-            data, schema, vector_columns, on_bad_vectors, fill_value
+            data, schema, metadata, on_bad_vectors, fill_value
         )
     else:
-        if not vector_columns:
-            vector_columns = _vector_column_candidates(data)
-        for vec_col in vector_columns:
-            data = _sanitize_schema(
-                data,
-                schema=schema,
-                vector_column=vec_col,
-                on_bad_vectors=on_bad_vectors,
-                fill_value=fill_value,
-            )
-    if not isinstance(data, (pa.Table, Iterable)):
         raise TypeError(f"Unsupported data type: {type(data)}")
     return data
 
 
+def _append_vector_col(data: pa.Table, metadata: dict, schema: Optional[pa.Schema]):
+    """
+    Use the embedding function to automatically embed the source column and add the
+    vector column to the table.
+    """
+    functions = EmbeddingFunctionRegistry.get_instance().parse_functions(metadata)
+    for vector_col, func in functions.items():
+        if vector_col not in data.column_names:
+            col_data = func(data[func.source_column])
+            if schema is not None:
+                dtype = schema.field(vector_col).type
+            else:
+                dtype = pa.list_(pa.float32(), len(col_data[0]))
+            data = data.append_column(
+                pa.field(vector_col, type=dtype), pa.array(col_data, type=dtype)
+            )
+    return data
+
+
 def _to_record_batch_generator(
-    data: Iterable, schema: pa.Schema, vector_columns, on_bad_vectors, fill_value: float
+    data: Iterable, schema, metadata, on_bad_vectors, fill_value
 ):
     for batch in data:
         if not isinstance(batch, pa.RecordBatch):
-            table = _sanitize_data(
-                batch, schema, vector_columns, on_bad_vectors, fill_value
-            )
+            table = _sanitize_data(batch, schema, metadata, on_bad_vectors, fill_value)
             for batch in table.to_batches():
                 yield batch
-        else:
-            yield batch
+        yield batch
 
 
 class Table(ABC):
@@ -224,17 +228,28 @@ class Table(ABC):
 
     @abstractmethod
     def search(
-        self, query: Union[VEC, str], vector_column: str = VECTOR_COLUMN_NAME
+        self,
+        query: Optional[Union[VEC, str]] = None,
+        vector_column_name: str = VECTOR_COLUMN_NAME,
+        query_type: str = "auto",
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector.
 
         Parameters
         ----------
-        query: list, np.ndarray
-            The query vector.
-        vector_column: str, default "vector"
+        query: str, list, np.ndarray, default None
+            The query to search for. If None then
+            the select/where/limit clauses are applied to filter
+            the table
+        vector_column_name: str, default "vector"
             The name of the vector column to search.
+        query_type: str, default "auto"
+            "vector", "fts", or "auto"
+            If "auto" then the query type is inferred from the query;
+            If `query` is a list/np.ndarray then the query type is "vector";
+            If `query` is a string, then the query type is "vector" if the
+            table has embedding functions else the query type is "fts"
 
         Returns
         -------
@@ -267,8 +282,7 @@ class Table(ABC):
         --------
         >>> import lancedb
         >>> import pandas as pd
-        >>> data = pd.DataFrame({ \
-            "x": [1, 2, 3], "vector": [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]})
+        >>> data = pd.DataFrame({"x": [1, 2, 3], "vector": [[1, 2], [3, 4], [5, 6]]})
         >>> db = lancedb.connect("./.lancedb")
         >>> table = db.create_table("my_table", data)
         >>> table.to_pandas()
@@ -354,14 +368,14 @@ class LanceTable(Table):
         >>> db = lancedb.connect("./.lancedb")
         >>> table = db.create_table("my_table", [{"vector": [1.1, 0.9], "type": "vector"}])
         >>> table.version
-        1
+        2
         >>> table.to_pandas()
                vector    type
         0  [1.1, 0.9]  vector
         >>> table.add([{"vector": [0.5, 0.2], "type": "vector"}])
         >>> table.version
-        2
-        >>> table.checkout(1)
+        3
+        >>> table.checkout(2)
         >>> table.to_pandas()
                vector    type
         0  [1.1, 0.9]  vector
@@ -390,19 +404,19 @@ class LanceTable(Table):
         >>> db = lancedb.connect("./.lancedb")
         >>> table = db.create_table("my_table", [{"vector": [1.1, 0.9], "type": "vector"}])
         >>> table.version
-        1
+        2
         >>> table.to_pandas()
                vector    type
         0  [1.1, 0.9]  vector
         >>> table.add([{"vector": [0.5, 0.2], "type": "vector"}])
         >>> table.version
-        2
-        >>> table.restore(1)
+        3
+        >>> table.restore(2)
         >>> table.to_pandas()
                vector    type
         0  [1.1, 0.9]  vector
         >>> len(table.list_versions())
-        3
+        4
         """
         max_ver = max([v["version"] for v in self._dataset.versions()])
         if version is None:
@@ -532,7 +546,7 @@ class LanceTable(Table):
         data = _sanitize_data(
             data,
             self.schema,
-            None,
+            metadata=self.schema.metadata,
             on_bad_vectors=on_bad_vectors,
             fill_value=fill_value,
         )
@@ -602,18 +616,50 @@ class LanceTable(Table):
         )
         self._reset_dataset()
 
+    def _get_embedding_function_for_source_col(self, column_name: str):
+        for k, v in self.embedding_functions.items():
+            if v.source_column == column_name:
+                return v
+        return None
+
+    @cached_property
+    def embedding_functions(self) -> dict:
+        """
+        Get the embedding functions for the table
+
+        Returns
+        -------
+        funcs: dict
+            A mapping of the vector column to the embedding function
+            or empty dict if not configured.
+        """
+        return EmbeddingFunctionRegistry.get_instance().parse_functions(
+            self.schema.metadata
+        )
+
     def search(
-        self, query: Union[VEC, str], vector_column_name=VECTOR_COLUMN_NAME
+        self,
+        query: Optional[Union[VEC, str]] = None,
+        vector_column_name: str = VECTOR_COLUMN_NAME,
+        query_type: str = "auto",
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector.
 
         Parameters
         ----------
-        query: list, np.ndarray
-            The query vector.
+        query: str, list, np.ndarray, or None
+            The query to search for. If None then
+            the select/where/limit clauses are applied to filter
+            the table
         vector_column_name: str, default "vector"
             The name of the vector column to search.
+        query_type: str, default "auto"
+            "vector", "fts", or "auto"
+            If "auto" then the query type is inferred from the query;
+            If the query is a list/np.ndarray then the query type is "vector";
+            If the query is a string, then the query type is "vector" if the
+            table has embedding functions else the query type is "fts"
 
         Returns
         -------
@@ -623,41 +669,30 @@ class LanceTable(Table):
             and also the "_distance" column which is the distance between the query
             vector and the returned vector.
         """
-        if isinstance(query, str):
-            # fts
-            return LanceFtsQueryBuilder(self, query, vector_column_name)
-
-        if isinstance(query, list):
-            query = np.array(query)
-        if isinstance(query, np.ndarray):
-            query = query.astype(np.float32)
-        else:
-            raise TypeError(f"Unsupported query type: {type(query)}")
-        return LanceQueryBuilder(self, query, vector_column_name)
+        return LanceQueryBuilder.create(
+            self, query, query_type, vector_column_name=vector_column_name
+        )
 
     @classmethod
     def create(
         cls,
         db,
-        name: str,
-        data: Optional[Union[List[Any], Dict]] = None,
-        schema: Optional[Union[pa.Schema, LanceModel]] = None,
-        vector_columns: Optional[List[str]] = None,
-        mode: str = "create",
+        name,
+        data=None,
+        schema=None,
+        mode="create",
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
+        embedding_functions: List[EmbeddingFunctionModel] = None,
     ):
         """
-        Create a new table. If no schema is specified, the schema is inferred from the data.
+        Create a new table.
 
         Examples
         --------
         >>> import lancedb
         >>> import pandas as pd
-        >>> data = pd.DataFrame({ \
-                "x": [1, 2, 3], \
-                "vector": [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]] \
-            })
+        >>> data = pd.DataFrame({"x": [1, 2, 3], "vector": [[1, 2], [3, 4], [5, 6]]})
         >>> db = lancedb.connect("./.lancedb")
         >>> table = db.create_table("my_table", data)
         >>> table.to_pandas()
@@ -686,24 +721,52 @@ class LanceTable(Table):
             One of "error", "drop", "fill".
         fill_value: float, default 0.
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
+        embedding_functions: list of EmbeddingFunctionModel, default None
+            The embedding functions to use when creating the table.
         """
         tbl = LanceTable(db, name)
         if inspect.isclass(schema) and issubclass(schema, LanceModel):
             schema = schema.to_arrow_schema()
+
+        metadata = None
+        if embedding_functions is not None:
+            registry = EmbeddingFunctionRegistry.get_instance()
+            metadata = registry.get_table_metadata(embedding_functions)
+
         if data is not None:
             data = _sanitize_data(
                 data,
                 schema,
-                vector_columns,
+                metadata=metadata,
                 on_bad_vectors=on_bad_vectors,
                 fill_value=fill_value,
             )
-        else:
-            if schema is None:
+
+        if schema is None:
+            if data is None:
                 raise ValueError("Either data or schema must be provided")
-            data = pa.Table.from_pylist([], schema=schema)
-        lance.write_dataset(data, tbl._dataset_uri, schema=schema, mode=mode)
-        return LanceTable(db, name)
+            elif hasattr(data, "schema"):
+                schema = data.schema
+            elif isinstance(data, Iterable):
+                if metadata:
+                    raise TypeError(
+                        (
+                            "Persistent embedding functions not yet "
+                            "supported for generator data input"
+                        )
+                    )
+
+        if metadata:
+            schema = schema.with_metadata(metadata)
+
+        empty = pa.Table.from_pylist([], schema=schema)
+        lance.write_dataset(empty, tbl._dataset_uri, schema=schema, mode=mode)
+        table = LanceTable(db, name)
+
+        if data is not None:
+            table.add(data)
+
+        return table
 
     @classmethod
     def open(cls, db, name):
@@ -739,8 +802,7 @@ class LanceTable(Table):
         --------
         >>> import lancedb
         >>> import pandas as pd
-        >>> data = pd.DataFrame({"x": [1, 2, 3], \
-            "vector": [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]})
+        >>> data = pd.DataFrame({"x": [1, 2, 3], "vector": [[1, 2], [3, 4], [5, 6]]})
         >>> db = lancedb.connect("./.lancedb")
         >>> table = db.create_table("my_table", data)
         >>> table.to_pandas()
@@ -786,16 +848,9 @@ class LanceTable(Table):
         )
 
 
-def sanitize_table(table: pa.Table, schema: pa.Schema) -> pa.Table:
-    """Ensure the table has the expected schema."""
-    reader = _sanitize_table(table.to_reader(), schema)
-    return pa.Table.from_batches(reader)
-
-
 def _sanitize_schema(
     data: pa.Table,
     schema: pa.Schema = None,
-    vector_column: str = None,
     on_bad_vectors: str = "error",
     fill_value: float = 0.0,
 ) -> pa.Table:
@@ -817,15 +872,39 @@ def _sanitize_schema(
     if schema is not None:
         if data.schema == schema:
             return data
-        data = sanitize_table(data, schema)
+        # cast the columns to the expected types
+        data = data.combine_chunks()
+        for field in schema:
+            # TODO: we're making an assumption that fixed size list of 10 or more
+            # is a vector column. This is definitely a bit hacky.
+            likely_vector_col = (
+                pa.types.is_fixed_size_list(field.type)
+                and pa.types.is_float32(field.type.value_type)
+                and field.type.list_size >= 10
+            )
+            is_default_vector_col = field.name == VECTOR_COLUMN_NAME
+            if field.name in data.column_names and (
+                likely_vector_col or is_default_vector_col
+            ):
+                data = _sanitize_vector_column(
+                    data,
+                    vector_column_name=field.name,
+                    on_bad_vectors=on_bad_vectors,
+                    fill_value=fill_value,
+                )
+        return pa.Table.from_arrays(
+            [data[name] for name in schema.names], schema=schema
+        )
+
     # just check the vector column
-    if vector_column is not None:
+    if VECTOR_COLUMN_NAME in data.column_names:
         return _sanitize_vector_column(
             data,
-            vector_column_name=vector_column,
+            vector_column_name=VECTOR_COLUMN_NAME,
             on_bad_vectors=on_bad_vectors,
             fill_value=fill_value,
         )
+
     return data
 
 
@@ -850,8 +929,6 @@ def _sanitize_vector_column(
     fill_value: float, default 0.0
         The value to use when filling vectors. Only used if on_bad_vectors="fill".
     """
-    if vector_column_name not in data.column_names:
-        raise ValueError(f"Missing vector column: {vector_column_name}")
     # ChunkedArray is annoying to work with, so we combine chunks here
     vec_arr = data[vector_column_name].combine_chunks()
     if pa.types.is_list(data[vector_column_name].type):

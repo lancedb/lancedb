@@ -22,6 +22,7 @@ import pandas as pd
 import pyarrow as pa
 import pytest
 
+from lancedb.conftest import MockEmbeddingFunction
 from lancedb.db import LanceDBConnection
 from lancedb.pydantic import LanceModel, vector
 from lancedb.table import LanceTable
@@ -178,16 +179,16 @@ def test_versioning(db):
         ],
     )
 
-    assert len(table.list_versions()) == 1
-    assert table.version == 1
-
-    table.add([{"vector": [6.3, 100.5], "item": "new", "price": 30.0}])
     assert len(table.list_versions()) == 2
     assert table.version == 2
+
+    table.add([{"vector": [6.3, 100.5], "item": "new", "price": 30.0}])
+    assert len(table.list_versions()) == 3
+    assert table.version == 3
     assert len(table) == 3
 
-    table.checkout(1)
-    assert table.version == 1
+    table.checkout(2)
+    assert table.version == 2
     assert len(table) == 2
 
 
@@ -238,7 +239,6 @@ def test_add_with_nans(db):
                 db,
                 "error_test",
                 data=[{"vector": [3.1, 4.1], "item": "foo", "price": 10.0}, row],
-                vector_columns=["vector"],
             )
 
     table = LanceTable.create(
@@ -251,7 +251,6 @@ def test_add_with_nans(db):
             {"vector": [np.nan, np.nan], "item": "bar", "price": 20.0},
         ],
         on_bad_vectors="drop",
-        vector_columns=["vector"],
     )
     assert len(table) == 1
 
@@ -266,7 +265,6 @@ def test_add_with_nans(db):
         ],
         on_bad_vectors="fill",
         fill_value=0.0,
-        vector_columns=["vector"],
     )
     assert len(table) == 3
     arrow_tbl = table.to_lance().to_table(filter="item == 'bar'")
@@ -281,21 +279,21 @@ def test_restore(db):
         data=[{"vector": [1.1, 0.9], "type": "vector"}],
     )
     table.add([{"vector": [0.5, 0.2], "type": "vector"}])
-    table.restore(1)
-    assert len(table.list_versions()) == 3
+    table.restore(2)
+    assert len(table.list_versions()) == 4
     assert len(table) == 1
 
     expected = table.to_arrow()
-    table.checkout(1)
+    table.checkout(2)
     table.restore()
-    assert len(table.list_versions()) == 4
+    assert len(table.list_versions()) == 5
     assert table.to_arrow() == expected
 
-    table.restore(4)  # latest version should be no-op
-    assert len(table.list_versions()) == 4
+    table.restore(5)  # latest version should be no-op
+    assert len(table.list_versions()) == 5
 
     with pytest.raises(ValueError):
-        table.restore(5)
+        table.restore(6)
 
     with pytest.raises(ValueError):
         table.restore(0)
@@ -309,7 +307,7 @@ def test_merge(db, tmp_path):
     )
     other_table = pa.table({"document": ["foo", "bar"], "id": [0, 1]})
     table.merge(other_table, left_on="id")
-    assert len(table.list_versions()) == 2
+    assert len(table.list_versions()) == 3
     expected = pa.table(
         {"vector": [[1.1, 0.9], [1.2, 1.9]], "id": [0, 1], "document": ["foo", "bar"]},
         schema=table.schema,
@@ -328,10 +326,10 @@ def test_delete(db):
         data=[{"vector": [1.1, 0.9], "id": 0}, {"vector": [1.2, 1.9], "id": 1}],
     )
     assert len(table) == 2
-    assert len(table.list_versions()) == 1
-    table.delete("id=0")
     assert len(table.list_versions()) == 2
-    assert table.version == 2
+    table.delete("id=0")
+    assert len(table.list_versions()) == 3
+    assert table.version == 3
     assert len(table) == 1
     assert table.to_pandas()["id"].tolist() == [1]
 
@@ -343,38 +341,103 @@ def test_update(db):
         data=[{"vector": [1.1, 0.9], "id": 0}, {"vector": [1.2, 1.9], "id": 1}],
     )
     assert len(table) == 2
-    assert len(table.list_versions()) == 1
+    assert len(table.list_versions()) == 2
     table.update(where="id=0", values={"vector": [1.1, 1.1]})
-    assert len(table.list_versions()) == 3
-    assert table.version == 3
+    assert len(table.list_versions()) == 4
+    assert table.version == 4
     assert len(table) == 2
     v = table.to_arrow()["vector"].combine_chunks()
     v = v.values.to_numpy().reshape(2, 2)
     assert np.allclose(v, np.array([[1.2, 1.9], [1.1, 1.1]]))
 
 
-def test_create_table_without_vector_column(db):
+def test_create_with_embedding_function(db):
+    class MyTable(LanceModel):
+        text: str
+        vector: vector(10)
+
+    func = MockEmbeddingFunction(source_column="text", vector_column="vector")
+    texts = ["hello world", "goodbye world", "foo bar baz fizz buzz"]
+    df = pd.DataFrame({"text": texts, "vector": func(texts)})
+
     table = LanceTable.create(
         db,
-        "tbl",
-        data=[{"id": [1, 2, 3], "name": ["a", "b", "c"]}],
+        "my_table",
+        schema=MyTable,
+        embedding_functions=[func],
     )
-    assert table.schema == pa.schema(
-        [pa.field("id", pa.list_(pa.int64())), pa.field("name", pa.list_(pa.utf8()))]
-    )
+    table.add(df)
+
+    query_str = "hi how are you?"
+    query_vector = func(query_str)[0]
+    expected = table.search(query_vector).limit(2).to_arrow()
+
+    actual = table.search(query_str).limit(2).to_arrow()
+    assert actual == expected
 
 
-def test_create_vectors_with_other_names(db):
+def test_add_with_embedding_function(db):
+    class MyTable(LanceModel):
+        text: str
+        vector: vector(10)
+
+    func = MockEmbeddingFunction(source_column="text", vector_column="vector")
     table = LanceTable.create(
         db,
-        "tbl",
-        data=pd.DataFrame(
-            {"id": [1, 2, 3], "embeddings": [np.random.rand(16) for _ in range(3)]}
-        ),
+        "my_table",
+        schema=MyTable,
+        embedding_functions=[func],
     )
-    assert table.schema == pa.schema(
-        [
-            pa.field("id", pa.int64()),
-            pa.field("embeddings", pa.list_(pa.float32(), 16)),
-        ]
+
+    texts = ["hello world", "goodbye world", "foo bar baz fizz buzz"]
+    df = pd.DataFrame({"text": texts})
+    table.add(df)
+
+    texts = ["the quick brown fox", "jumped over the lazy dog"]
+    table.add([{"text": t} for t in texts])
+
+    query_str = "hi how are you?"
+    query_vector = func(query_str)[0]
+    expected = table.search(query_vector).limit(2).to_arrow()
+
+    actual = table.search(query_str).limit(2).to_arrow()
+    assert actual == expected
+
+
+def test_multiple_vector_columns(db):
+    class MyTable(LanceModel):
+        text: str
+        vector1: vector(10)
+        vector2: vector(10)
+
+    table = LanceTable.create(
+        db,
+        "my_table",
+        schema=MyTable,
     )
+
+    v1 = np.random.randn(10)
+    v2 = np.random.randn(10)
+    data = [
+        {"vector1": v1, "vector2": v2, "text": "foo"},
+        {"vector1": v2, "vector2": v1, "text": "bar"},
+    ]
+    df = pd.DataFrame(data)
+    table.add(df)
+
+    q = np.random.randn(10)
+    result1 = table.search(q, vector_column_name="vector1").limit(1).to_df()
+    result2 = table.search(q, vector_column_name="vector2").limit(1).to_df()
+
+    assert result1["text"].iloc[0] != result2["text"].iloc[0]
+
+
+def test_empty_query(db):
+    table = LanceTable.create(
+        db,
+        "my_table",
+        data=[{"text": "foo", "id": 0}, {"text": "bar", "id": 1}],
+    )
+    df = table.search().select(["id"]).where("text='bar'").limit(1).to_df()
+    val = df.id.iloc[0]
+    assert val == 1
