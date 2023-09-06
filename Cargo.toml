@@ -1,16 +1,23 @@
 [workspace]
-members = [
-    "rust/vectordb",
-    "rust/ffi/node"
-]
+members = ["rust/ffi/node", "rust/vectordb"]
+# Python package needs to be built by maturin.
+exclude = ["python"]
 resolver = "2"
 
 [workspace.dependencies]
 lance = "=0.6.5"
+# Note that this one does not include pyarrow
+arrow = { version = "43.0.0", optional = false }
 arrow-array = "43.0"
 arrow-data = "43.0"
-arrow-schema = "43.0"
 arrow-ipc = "43.0"
-half = { "version" = "=2.2.1", default-features = false }
+arrow-ord = "43.0"
+arrow-schema = "43.0"
+arrow-arith = "43.0"
+arrow-cast = "43.0"
+half = { "version" = "=2.2.1", default-features = false, features = [
+    "num-traits"
+] }
+log = "0.4"
 object_store = "0.6.1"
 snafu = "0.7.4"

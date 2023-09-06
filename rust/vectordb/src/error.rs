@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use arrow_schema::ArrowError;
 use snafu::Snafu;
 
 #[derive(Debug, Snafu)]
@@ -32,9 +33,19 @@ pub enum Error {
     Store { message: String },
     #[snafu(display("LanceDBError: {message}"))]
     Lance { message: String },
+    #[snafu(display("LanceDB Schema Error: {message}"))]
+    Schema { message: String },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+impl From<ArrowError> for Error {
+    fn from(e: ArrowError) -> Self {
+        Self::Lance {
+            message: e.to_string(),
+        }
+    }
+}
 
 impl From<lance::Error> for Error {
     fn from(e: lance::Error) -> Self {
