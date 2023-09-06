@@ -72,7 +72,7 @@ fn coerce_array(
         (adt, dt) if can_cast_types(adt, dt) => cast(&array, dt),
         // Casting between f16/f32/f64 can be lossy.
         (adt, dt) if (adt.is_floating() || dt.is_floating()) => {
-            if adt.byte_width() < dt.byte_width() {
+            if adt.byte_width() > dt.byte_width() {
                 warn!(
                     "Coercing field {} {:?} to {:?} might lose precision",
                     field.name(),

@@ -66,24 +66,24 @@ pub fn infer_vector_columns(
 ) -> Result<Vec<String>> {
     let mut columns = vec![];
 
-    let mut columns_map: HashMap<String, Option<i64>> = HashMap::new();
+    let mut columns_to_infer: HashMap<String, Option<i64>> = HashMap::new();
     for field in reader.schema().fields() {
         match field.data_type() {
             DataType::FixedSizeList(sub_field, _) if sub_field.data_type().is_floating() => {
                 columns.push(field.name().to_string());
             }
             DataType::List(sub_field) if sub_field.data_type().is_floating() && !strict => {
-                columns_map.insert(field.name().to_string(), None);
+                columns_to_infer.insert(field.name().to_string(), None);
             }
             DataType::LargeList(sub_field) if sub_field.data_type().is_floating() && !strict => {
-                columns_map.insert(field.name().to_string(), None);
+                columns_to_infer.insert(field.name().to_string(), None);
             }
             _ => {}
         }
     }
     for batch in reader {
         let batch = batch?;
-        let col_names = columns_map.keys().cloned().collect::<Vec<_>>();
+        let col_names = columns_to_infer.keys().cloned().collect::<Vec<_>>();
         for col_name in col_names {
             let col = batch.column_by_name(&col_name).ok_or(Error::Schema {
                 message: format!("Column {} not found", col_name),
@@ -99,19 +99,19 @@ pub fn infer_vector_columns(
                     })
                 }
             } {
-                if let Some(Some(prev_dim)) = columns_map.get(&col_name) {
+                if let Some(Some(prev_dim)) = columns_to_infer.get(&col_name) {
                     if prev_dim != &dim {
-                        columns_map.remove(&col_name);
+                        columns_to_infer.remove(&col_name);
                     }
                 } else {
-                    columns_map.insert(col_name, Some(dim));
+                    columns_to_infer.insert(col_name, Some(dim));
                 }
             } else {
-                columns_map.remove(&col_name);
+                columns_to_infer.remove(&col_name);
             }
         }
     }
-    columns.extend(columns_map.keys().cloned());
+    columns.extend(columns_to_infer.keys().cloned());
     Ok(columns)
 }
 
