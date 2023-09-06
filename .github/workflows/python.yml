@@ -71,7 +71,7 @@ jobs:
         working-directory: python
     - name: Install lancedb
       run: |
-        pip install $(ls target/wheels/pylance-*.whl)[tests,dev]
+        pip install $(ls target/wheels/lancedb-*.whl)[tests,dev]
         pip install tantivy@git+https://github.com/quickwit-oss/tantivy-py#164adc87e1a033117001cf70e38c82a53014d985
     - name: Lint
       run: black --check --diff --no-color --quiet .
