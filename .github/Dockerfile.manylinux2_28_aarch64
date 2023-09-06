@@ -1,0 +1,8 @@
+FROM quay.io/pypa/manylinux_2_28_aarch64
+
+ENV LD_LIBRARY_PATH=/usr/local/lib
+
+RUN yum install -y openssl-devel \
+  && curl -L https://github.com/protocolbuffers/protobuf/releases/download/v24.2/protoc-24.2-linux-aarch_64.zip > /tmp/protoc.zip \
+  && unzip /tmp/protoc.zip -d /usr/local \
+  && rm -rf /tmp/*
