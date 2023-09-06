@@ -231,6 +231,7 @@ class Table(ABC):
         self,
         query: Optional[Union[VEC, str]] = None,
         vector_column_name: str = VECTOR_COLUMN_NAME,
+        query_type: str = "auto",
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector.

@@ -31,9 +31,13 @@ def connect(
     ----------
     uri: str or Path
         The uri of the database.
-    api_token: str, optional
+    api_key: str, optional
         If presented, connect to LanceDB cloud.
         Otherwise, connect to a database on file system or cloud storage.
+    region: str, default "us-west-2"
+        The region to use for LanceDB Cloud.
+    host_override: str, optional
+        The override url for LanceDB Cloud.
 
     Examples
     --------
