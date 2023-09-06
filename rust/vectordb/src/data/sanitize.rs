@@ -16,7 +16,7 @@ use std::{iter::repeat_with, sync::Arc};
 
 use arrow_array::{
     cast::AsArray,
-    types::{Float16Type, Float32Type, Float64Type},
+    types::{Float16Type, Float32Type, Float64Type, Int32Type, Int64Type},
     Array, ArrowNumericType, FixedSizeListArray, PrimitiveArray, RecordBatch, RecordBatchIterator,
     RecordBatchReader,
 };
@@ -97,27 +97,40 @@ fn coerce_array(
                     *dim,
                 )?) as Arc<dyn Array>)
             }
-            DataType::List(_) => {
-                let list_arr = array.as_list::<i32>();
-                if let Some(dim) = infer_dimension::<i32>(list_arr).map_err(|e| {
-                    ArrowError::SchemaError(format!("failed to infer dimension: {}", e))
-                })? {
-                    if dim != *exp_dim {
-                        return Err(ArrowError::SchemaError(format!(
-                            "Incompatible coerce fixed size list: expected dimension {} but got {}",
-                            exp_dim, dim
-                        )));
-                    }
-                } else {
-                    // TODO: fill bad values.
+            DataType::List(_) | DataType::LargeList(_) => {
+                let Some(dim) = (match adt {
+                    DataType::List(_) => infer_dimension::<Int32Type>(array.as_list::<i32>())
+                        .map_err(|e| {
+                            ArrowError::SchemaError(format!(
+                                "failed to infer dimension from list: {}",
+                                e
+                            ))
+                        })?
+                        .map(|d| d as i64),
+                    DataType::LargeList(_) => infer_dimension::<Int64Type>(array.as_list::<i64>())
+                        .map_err(|e| {
+                            ArrowError::SchemaError(format!(
+                                "failed to infer dimension from large list: {}",
+                                e
+                            ))
+                        })?,
+                    _ => unreachable!(),
+                }) else {
+                    return Err(ArrowError::SchemaError(format!(
+                        "Incompatible coerce fixed size list: unable to coerce {:?} from {:?}",
+                        field,
+                        array.data_type()
+                    )));
+                };
+
+                if dim != *exp_dim as i64 {
                     return Err(ArrowError::SchemaError(format!(
                         "Incompatible coerce fixed size list: expected dimension {} but got {}",
-                        exp_dim,
-                        list_arr.len()
+                        exp_dim, dim
                     )));
                 }
 
-                let values = coerce_array(list_arr.values(), exp_field)?;
+                let values = coerce_array(array, exp_field)?;
                 Ok(Arc::new(FixedSizeListArray::try_new_from_values(
                     values.clone(),
                     *exp_dim,

@@ -17,41 +17,31 @@ use std::collections::HashMap;
 use arrow::compute::kernels::{aggregate::bool_and, length::length};
 use arrow_array::{
     cast::AsArray,
-    types::{Int32Type, Int64Type},
+    types::{ArrowPrimitiveType, Int32Type, Int64Type},
     Array, GenericListArray, OffsetSizeTrait, RecordBatchReader,
 };
 use arrow_ord::comparison::eq_dyn_scalar;
 use arrow_schema::DataType;
-use num_traits::{AsPrimitive, Zero};
+use num_traits::{ToPrimitive, Zero};
 
 use crate::error::{Error, Result};
 
-pub(crate) fn infer_dimension<O: OffsetSizeTrait + Zero>(
-    list_arr: &GenericListArray<O>,
-) -> Result<Option<O>>
+pub(crate) fn infer_dimension<T: ArrowPrimitiveType>(
+    list_arr: &GenericListArray<T::Native>,
+) -> Result<Option<T::Native>>
 where
-    i32: AsPrimitive<O>,
-    i64: AsPrimitive<O>,
+    T::Native: OffsetSizeTrait + ToPrimitive,
 {
     let len_arr = length(list_arr)?;
     if len_arr.is_empty() {
         return Ok(Some(Zero::zero()));
     }
 
-    if O::IS_LARGE {
-        let dim = len_arr.as_primitive::<Int64Type>().value(0);
-        if bool_and(&eq_dyn_scalar(len_arr.as_primitive::<Int64Type>(), dim)?) != Some(true) {
-            Ok(None)
-        } else {
-            Ok(Some(dim.as_()))
-        }
+    let dim = len_arr.as_primitive::<T>().value(0);
+    if bool_and(&eq_dyn_scalar(len_arr.as_primitive::<T>(), dim)?) != Some(true) {
+        Ok(None)
     } else {
-        let dim = len_arr.as_primitive::<Int32Type>().value(0);
-        if bool_and(&eq_dyn_scalar(len_arr.as_primitive::<Int32Type>(), dim)?) != Some(true) {
-            Ok(None)
-        } else {
-            Ok(Some(dim.as_()))
-        }
+        Ok(Some(dim))
     }
 }
 
@@ -92,9 +82,9 @@ pub fn infer_vector_columns(
             })?;
             if let Some(dim) = match *col.data_type() {
                 DataType::List(_) => {
-                    infer_dimension::<i32>(col.as_list::<i32>())?.map(|d| d as i64)
+                    infer_dimension::<Int32Type>(col.as_list::<i32>())?.map(|d| d as i64)
                 }
-                DataType::LargeList(_) => infer_dimension::<i64>(col.as_list::<i64>())?,
+                DataType::LargeList(_) => infer_dimension::<Int64Type>(col.as_list::<i64>())?,
                 _ => {
                     return Err(Error::Schema {
                         message: format!("Column {} is not a list", col_name),
