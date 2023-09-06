@@ -12,10 +12,12 @@
 #  limitations under the License.
 import sys
 
+import lance
 import numpy as np
 import pyarrow as pa
 
-from lancedb.embeddings import with_embeddings
+from lancedb.conftest import MockEmbeddingFunction
+from lancedb.embeddings import EmbeddingFunctionRegistry, with_embeddings
 
 
 def mock_embed_func(input_data):
@@ -40,3 +42,37 @@ def test_with_embeddings():
         assert data.column_names == ["text", "price", "vector"]
         assert data.column("text").to_pylist() == ["foo", "bar"]
         assert data.column("price").to_pylist() == [10.0, 20.0]
+
+
+def test_embedding_function(tmp_path):
+    registry = EmbeddingFunctionRegistry.get_instance()
+
+    # let's create a table
+    table = pa.table(
+        {
+            "text": pa.array(["hello world", "goodbye world"]),
+            "vector": [np.random.randn(10), np.random.randn(10)],
+        }
+    )
+    func = MockEmbeddingFunction(source_column="text", vector_column="vector")
+    metadata = registry.get_table_metadata([func])
+    table = table.replace_schema_metadata(metadata)
+
+    # Write it to disk
+    lance.write_dataset(table, tmp_path / "test.lance")
+
+    # Load this back
+    ds = lance.dataset(tmp_path / "test.lance")
+
+    # can we get the serialized version back out?
+    functions = registry.parse_functions(ds.schema.metadata)
+
+    func = functions["vector"]
+    actual = func("hello world")
+
+    # We create an instance
+    expected_func = MockEmbeddingFunction(source_column="text", vector_column="vector")
+    # And we make sure we can call it
+    expected = expected_func("hello world")
+
+    assert np.allclose(actual, expected)
