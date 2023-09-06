@@ -22,7 +22,7 @@ from pydantic import BaseModel
 
 class EmbeddingFunctionRegistry:
     """
-    This is a singleton class is used to register embedding functions
+    This is a singleton class used to register embedding functions
     and fetch them by name. It also handles serializing and deserializing
     """
 
