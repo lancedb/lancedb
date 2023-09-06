@@ -169,6 +169,10 @@ class TextEmbeddingFunctionModel(EmbeddingFunctionModel):
 
 @REGISTRY.register()
 class SentenceTransformerEmbeddingFunction(TextEmbeddingFunctionModel):
+    """
+    An embedding function that uses the sentence-transformers library
+    """
+
     name: str = "all-MiniLM-L6-v2"
     device: str = "cpu"
     normalize: bool = False

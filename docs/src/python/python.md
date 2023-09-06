@@ -28,7 +28,13 @@ pip install lancedb
 
 ::: lancedb.embeddings.with_embeddings
 
-::: lancedb.embeddings.EmbeddingFunction
+::: lancedb.embeddings.EmbeddingFunctionRegistry
+
+::: lancedb.embeddings.EmbeddingFunctionModel,
+
+::: lancedb.embeddings.TextEmbeddingFunctionModel,
+    
+::: SentenceTransformerEmbeddingFunction,
 
 ## Context
 
