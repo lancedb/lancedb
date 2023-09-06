@@ -246,8 +246,8 @@ class Table(ABC):
         query_type: str, default "auto"
             "vector", "fts", or "auto"
             If "auto" then the query type is inferred from the query;
-            If the query is a list/np.ndarray then the query type is "vector";
-            If the query is a string, then the query type is "vector" if the
+            If `query` is a list/np.ndarray then the query type is "vector";
+            If `query` is a string, then the query type is "vector" if the
             table has embedding functions else the query type is "fts"
 
         Returns
