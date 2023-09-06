@@ -12,14 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-pub mod data;
-pub mod database;
-pub mod error;
-pub mod index;
-pub mod query;
-pub mod table;
+//! Data types, schema coercion, and data cleaning and etc.
 
-pub use database::Database;
-pub use table::Table;
-
-pub use lance::dataset::WriteMode;
+pub mod inspect;
+pub mod sanitize;
