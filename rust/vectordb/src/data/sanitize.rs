@@ -148,15 +148,13 @@ fn coerce_schema_batch(
     let columns = schema
         .fields()
         .iter()
-        .flat_map(|field| {
+        .map(|field| {
             batch
                 .column_by_name(field.name())
                 .map(|c| coerce_array(c, field))
-                .ok_or(|| {
-                    ArrowError::SchemaError(format!("Column {} not found in batch", field.name()))
-                })
+                .ok_or(ArrowError::SchemaError("Column not found".to_string()))
         })
-        .collect::<std::result::Result<Vec<_>, ArrowError>>()?;
+        .collect::<std::result::Result<std::result::Result<Vec<_>, ArrowError>, ArrowError>>()??;
     RecordBatch::try_new(schema, columns)
 }
 
