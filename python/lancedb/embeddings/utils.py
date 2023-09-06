@@ -1,4 +1,4 @@
-#  Copyright 2023 LanceDB Developers
+#  Copyright (c) 2023. LanceDB Developers
 #
 #  Licensed under the Apache License, Version 2.0 (the "License");
 #  you may not use this file except in compliance with the License.
@@ -20,7 +20,7 @@ import pyarrow as pa
 from lance.vector import vec_to_table
 from retry import retry
 
-from .util import safe_import_pandas
+from ..util import safe_import_pandas
 
 pd = safe_import_pandas()
 DATA = Union[pa.Table, "pd.DataFrame"]
@@ -58,7 +58,7 @@ def with_embeddings(
     pa.Table
         The input table with a new column called "vector" containing the embeddings.
     """
-    func = EmbeddingFunction(func)
+    func = FunctionWrapper(func)
     if wrap_api:
         func = func.retry().rate_limit()
     func = func.batch_size(batch_size)
@@ -71,7 +71,11 @@ def with_embeddings(
     return data.append_column("vector", table["vector"])
 
 
-class EmbeddingFunction:
+class FunctionWrapper:
+    """
+    A wrapper for embedding functions that adds rate limiting, retries, and batching.
+    """
+
     def __init__(self, func: Callable):
         self.func = func
         self.rate_limiter_kwargs = {}
