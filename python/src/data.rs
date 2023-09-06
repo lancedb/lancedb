@@ -29,14 +29,12 @@ pub fn sanitize_table(py: Python<'_>, data: &PyAny, schema: Option<&PyAny>) -> P
     let schema: Option<Schema> = schema.map(Schema::from_pyarrow).transpose()?;
     if let Some(schema) = schema {
         let batches = ArrowArrayStreamReader::from_pyarrow(data)?;
-        let boxed = coerce_schema(batches, Arc::new(schema)).map_err(|e| {
-            PyValueError::new_err(format!("Failed to sanitize data: {}", e))
-        })?;
+        let boxed = coerce_schema(batches, Arc::new(schema))
+            .map_err(|e| PyValueError::new_err(format!("Failed to sanitize data: {}", e)))?;
         // TODO(lei): wait for arrow-rs 47.0 to be released to run boxed.into_pyarrow(py)
         let ffi_stream = FFI_ArrowArrayStream::new(boxed);
-        let arrow_stream_reader = ArrowArrayStreamReader::try_new(ffi_stream).map_err(|e| {
-            PyValueError::new_err(format!("Failed to sanitize data: {}", e))
-        })?;
+        let arrow_stream_reader = ArrowArrayStreamReader::try_new(ffi_stream)
+            .map_err(|e| PyValueError::new_err(format!("Failed to sanitize data: {}", e)))?;
         arrow_stream_reader.into_pyarrow(py)
     } else {
         batches.into_pyarrow(py)
@@ -46,9 +44,8 @@ pub fn sanitize_table(py: Python<'_>, data: &PyAny, schema: Option<&PyAny>) -> P
 #[pyfunction(name = "_infer_vector_columns")]
 pub fn infer_vector_columns(data: &PyAny, strict: bool) -> PyResult<Vec<String>> {
     let reader = ArrowArrayStreamReader::from_pyarrow(data)?;
-    vectordb::data::inspect::infer_vector_columns(reader, strict).map_err(|e| {
-        PyValueError::new_err(format!("Failed to infer vector columns: {}", e))
-    })
+    vectordb::data::inspect::infer_vector_columns(reader, strict)
+        .map_err(|e| PyValueError::new_err(format!("Failed to infer vector columns: {}", e)))
 }
 
 #[cfg(test)]
