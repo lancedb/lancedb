@@ -15,11 +15,28 @@
 use std::collections::HashMap;
 
 use arrow::compute::kernels::{aggregate::bool_and, length::length};
-use arrow_array::{cast::AsArray, types::Int32Type, RecordBatchReader};
+use arrow_array::{cast::AsArray, types::Int32Type, Array, RecordBatchReader};
 use arrow_ord::comparison::eq_dyn_scalar;
 use arrow_schema::DataType;
 
 use crate::error::{Error, Result};
+
+pub(crate) fn infer_dimension(arr: &dyn Array) -> Result<Option<i32>> {
+    if !matches!(arr.data_type(), DataType::List(_)) {
+        return Ok(None);
+    };
+    let list_arr = arr.as_list_opt::<i32>().expect("must be a list now");
+    let len_arr = length(list_arr)?;
+    if len_arr.is_empty() {
+        return Ok(Some(0));
+    }
+
+    let dim = len_arr.as_primitive::<Int32Type>().value(0);
+    if bool_and(&eq_dyn_scalar(len_arr.as_primitive::<Int32Type>(), dim)?) != Some(true) {
+        return Ok(None);
+    }
+    return Ok(Some(dim));
+}
 
 /// Infer the vector columns from a dataset.
 ///
@@ -34,7 +51,7 @@ pub fn infer_vector_columns(
 ) -> Result<Vec<String>> {
     let mut columns = vec![];
 
-    let mut columns_map: HashMap<String, Option<u32>> = HashMap::new();
+    let mut columns_map: HashMap<String, Option<i32>> = HashMap::new();
     for field in reader.schema().fields() {
         match field.data_type() {
             DataType::FixedSizeList(sub_field, _) if sub_field.data_type().is_floating() => {
@@ -53,17 +70,16 @@ pub fn infer_vector_columns(
             let col = batch.column_by_name(&col_name).ok_or(Error::Schema {
                 message: format!("Column {} not found", col_name),
             })?;
-            let list_arr = col.as_list_opt::<i32>().expect("Must be a list array now");
-            let len_arr = length(list_arr)?;
-            if len_arr.is_empty() {
-                columns_map.remove(&col_name);
-            } else {
-                let len = len_arr.as_primitive::<Int32Type>().value(0);
-                if bool_and(&eq_dyn_scalar(len_arr.as_primitive::<Int32Type>(), len)?)
-                    != Some(true)
-                {
-                    columns_map.remove(&col_name);
+            if let Some(dim) = infer_dimension(col.as_ref())? {
+                if let Some(Some(prev_dim)) = columns_map.get(&col_name) {
+                    if prev_dim != &dim {
+                        columns_map.remove(&col_name);
+                    }
+                } else {
+                    columns_map.insert(col_name, Some(dim));
                 }
+            } else {
+                columns_map.remove(&col_name);
             }
         }
     }

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::sync::Arc;
+use std::{iter::repeat_with, sync::Arc};
 
 use arrow_array::{
     cast::AsArray,
@@ -27,6 +27,7 @@ use lance::arrow::{DataTypeExt, FixedSizeListArrayExt};
 use log::warn;
 use num_traits::cast::AsPrimitive;
 
+use super::inspect::infer_dimension;
 use crate::error::Result;
 
 fn cast_array<I: ArrowNumericType, O: ArrowNumericType>(
@@ -98,7 +99,16 @@ fn coerce_array(
             }
             DataType::List(_) => {
                 let list_arr = array.as_list::<i32>();
-                if list_arr.values().len() != (*exp_dim as usize) * list_arr.len() {
+                if let Some(dim) = infer_dimension(list_arr).map_err(|e| {
+                    ArrowError::SchemaError(format!("failed to infer dimension: {}", e.to_string()))
+                })? {
+                    if dim != *exp_dim {
+                        return Err(ArrowError::SchemaError(format!(
+                            "Incompatible coerce fixed size list: expected dimension {} but got {}",
+                            exp_dim, dim
+                        )));
+                    }
+                } else {
                     // TODO: fill bad values.
                     return Err(ArrowError::SchemaError(format!(
                         "Incompatible coerce fixed size list: expected dimension {} but got {}",
@@ -153,18 +163,16 @@ fn coerce_schema_batch(
 /// Coerce the reader (input data) to match the given [Schema].
 ///
 pub fn coerce_schema(
-    reader: impl RecordBatchReader,
+    reader: impl RecordBatchReader + Send + 'static,
     schema: Arc<Schema>,
 ) -> Result<Box<dyn RecordBatchReader + Send>> {
     if reader.schema() == schema {
-        return Ok(Box::new(RecordBatchIterator::new(
-            reader.into_iter().collect::<Vec<_>>(),
-            schema,
-        )));
+        return Ok(Box::new(RecordBatchIterator::new(reader, schema)));
     }
+    let s = schema.clone();
     let batches = reader
-        .map(|batch| coerce_schema_batch(batch?, schema.clone()))
-        .collect::<Vec<_>>();
+        .zip(repeat_with(move || s.clone()))
+        .map(|(batch, s)| coerce_schema_batch(batch?, s));
     Ok(Box::new(RecordBatchIterator::new(batches, schema)))
 }
 
