@@ -10,14 +10,19 @@ categories = ["database-implementations"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [dependencies]
+arrow = { workspace = true }
 arrow-array = { workspace = true }
 arrow-data = { workspace = true }
 arrow-schema = { workspace = true }
+arrow-ord = { workspace = true }
+arrow-cast = { workspace = true }
 object_store = { workspace = true }
 snafu = { workspace = true }
 half = { workspace = true }
 lance = { workspace = true }
 tokio = { version = "1.23", features = ["rt-multi-thread"] }
+log = { workspace = true }
+num-traits = "0"
 
 [dev-dependencies]
 tempfile = "3.5.0"
