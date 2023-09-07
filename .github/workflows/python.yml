@@ -28,14 +28,7 @@ jobs:
       uses: actions/setup-python@v4
       with:
         python-version: 3.${{ matrix.python-minor-version }}
-    - name: Install dependencies
-      run: |
-          sudo apt update
-          sudo apt install -y protobuf-compiler libssl-dev
-    - uses: PyO3/maturin-action@v1
-      with:
-        command: build
-        working-directory: python
+    - uses: ./.github/workflows/build_mac_wheel
     - name: Install lancedb
       run: |
         pip install $(ls target/wheels/lancedb-*.whl)[tests,dev]

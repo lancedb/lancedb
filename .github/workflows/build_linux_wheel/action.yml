@@ -1,0 +1,39 @@
+# We create a composite action to be re-used both for testing and for releasing
+name: build-linux-wheel
+description: "Build a manylinux wheel for lance"
+inputs:
+  python-minor-version:
+    description: "8, 9, 10, 11"
+    required: true
+  args:
+    description: "--release"
+    required: false
+    default: ""
+  arm-build:
+    description: "Build for arm64 instead of x86_64"
+    required: false
+    default: 'false'
+runs:
+  using: "composite"
+  steps:
+    - name: CONFIRM ARM BUILD
+      shell: bash
+      run: |
+        echo "ARM BUILD: ${{ inputs.arm-build }}"
+    - name: Build manylinux image
+      if: ${{ inputs.arm-build == 'false' }}
+      shell: bash
+      run: |
+        docker build -t lancedb_manylinux -f .github/Dockerfile.manylinux2_28 python
+    - name: Build manylinux image (arm)
+      if: ${{ inputs.arm-build == 'true' }}
+      shell: bash
+      run: |
+        docker build -t lancedb_manylinux -f .github/Dockerfile.manylinux2_28_aarch64 .
+    - name: Build wheel
+      uses: PyO3/maturin-action@v1
+      with:
+        command: build
+        args: ${{ inputs.args }}
+        working-directory: python
+        container: lancedb_manylinux
