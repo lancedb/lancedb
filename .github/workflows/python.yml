@@ -39,9 +39,9 @@ jobs:
         cargo clippy --all-features --tests -- -D warnings
     - name: Lint Python
       run: |
-        black --check python
-        isort --check-only python
-        # ruff check python
+        black --check lancedb tests
+        isort --check-only lancedb tests
+        # ruff check lancedb tests
   linux:
     timeout-minutes: 30
     strategy:
