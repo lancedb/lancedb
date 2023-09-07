@@ -1,4 +1,4 @@
-FROM quay.io/pypa/manylinux_2_28_x86_64
+FROM quay.io/pypa/manylinux2014_x86_64
 
 ENV LD_LIBRARY_PATH=/usr/local/lib
 

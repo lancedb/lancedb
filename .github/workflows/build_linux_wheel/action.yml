@@ -24,12 +24,12 @@ runs:
       if: ${{ inputs.arm-build == 'false' }}
       shell: bash
       run: |
-        docker build -t lancedb_manylinux -f .github/Dockerfile.manylinux2_28 python
+        docker build -t lancedb_manylinux -f .github/Dockerfile.manylinux2014 python
     - name: Build manylinux image (arm)
       if: ${{ inputs.arm-build == 'true' }}
       shell: bash
       run: |
-        docker build -t lancedb_manylinux -f .github/Dockerfile.manylinux2_28_aarch64 .
+        docker build -t lancedb_manylinux -f .github/Dockerfile.manylinux2014_aarch64 .
     - name: Build wheel
       uses: PyO3/maturin-action@v1
       with:
