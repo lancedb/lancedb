@@ -252,6 +252,7 @@ def test_add_with_nans(db):
             {"vector": [np.nan, np.nan], "item": "bar", "price": 20.0},
         ],
         on_bad_vectors="drop",
+        vector_columns=["vector"],
     )
     assert len(table) == 1
 
