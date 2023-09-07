@@ -28,7 +28,7 @@ jobs:
       uses: actions/setup-python@v4
       with:
         python-version: 3.${{ matrix.python-minor-version }}
-    - uses: ./.github/workflows/build_mac_wheel
+    - uses: ./.github/workflows/build_linux_wheel
     - name: Install lancedb
       run: |
         pip install $(ls target/wheels/lancedb-*.whl)[tests,dev]
