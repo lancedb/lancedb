@@ -28,7 +28,9 @@ fn validate_vector_column(record_batch: &RecordBatch) -> Result<()> {
     record_batch
         .column_by_name(VECTOR_COLUMN_NAME)
         .map(|_| ())
-        .context(MissingColumnSnafu { name: VECTOR_COLUMN_NAME })
+        .context(MissingColumnSnafu {
+            name: VECTOR_COLUMN_NAME,
+        })
 }
 
 pub(crate) fn arrow_buffer_to_record_batch(slice: &[u8]) -> Result<(Vec<RecordBatch>, SchemaRef)> {
