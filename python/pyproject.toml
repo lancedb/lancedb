@@ -54,3 +54,8 @@ build-backend = "maturin"
 
 [tool.isort]
 profile = "black"
+
+[tool.ruff]
+select = ["E", "F", "I", "N", "PT", "RUF", "TCH", "PTH", "C90", "PL"]
+target-version = "py311"
+ignore = ["PLR2004"]
