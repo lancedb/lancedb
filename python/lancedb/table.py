@@ -29,13 +29,11 @@ from lance.vector import vec_to_table
 
 from .common import DATA, VEC, VECTOR_COLUMN_NAME
 from .embeddings import EmbeddingFunctionModel, EmbeddingFunctionRegistry
+from .lancedb import _infer_vector_columns as _native_infer_vector_columns
+from .lancedb import _sanitize_table as _native_sanitize_table
 from .pydantic import LanceModel
 from .query import LanceQueryBuilder, Query
 from .util import fs_from_uri, safe_import_pandas
-from .lancedb import (
-    _sanitize_table as _native_sanitize_table,
-    _infer_vector_columns as _native_infer_vector_columns,
-)
 
 pd = safe_import_pandas()
 
