@@ -315,7 +315,10 @@ class Table(ABC):
         --------
         >>> import lancedb
         >>> import pandas as pd
-        >>> data = pd.DataFrame({"x": [1, 2, 3], "vector": [[1, 2], [3, 4], [5, 6]]})
+        >>> data = pd.DataFrame({ \
+                "x": [1, 2, 3], \
+                "vector": [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]] \
+            })
         >>> db = lancedb.connect("./.lancedb")
         >>> table = db.create_table("my_table", data)
         >>> table.to_pandas()
@@ -727,7 +730,9 @@ class LanceTable(Table):
         --------
         >>> import lancedb
         >>> import pandas as pd
-        >>> data = pd.DataFrame({"x": [1, 2, 3], "vector": [[1, 2], [3, 4], [5, 6]]})
+        >>> data = pd.DataFrame({ \
+                "x": [1, 2, 3], \
+                "vector": [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]})
         >>> db = lancedb.connect("./.lancedb")
         >>> table = db.create_table("my_table", data)
         >>> table.to_pandas()
@@ -841,7 +846,10 @@ class LanceTable(Table):
         --------
         >>> import lancedb
         >>> import pandas as pd
-        >>> data = pd.DataFrame({"x": [1, 2, 3], "vector": [[1, 2], [3, 4], [5, 6]]})
+        >>> data = pd.DataFrame({\
+                "x": [1, 2, 3],  \
+                "vector": [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]] \
+            })
         >>> db = lancedb.connect("./.lancedb")
         >>> table = db.create_table("my_table", data)
         >>> table.to_pandas()
