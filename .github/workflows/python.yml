@@ -68,8 +68,12 @@ jobs:
         pip install tantivy@git+https://github.com/quickwit-oss/tantivy-py#164adc87e1a033117001cf70e38c82a53014d985
     - name: Run tests
       run: pytest -x -v --durations=30 tests
-    - name: doctest
-      run: pytest --doctest-modules lancedb
+    - name: Run doctest
+      run: |
+        python -m venv venv
+        source venv/bin/activate
+        maturin develop --extras tests
+        pytest --doctest-modules lancedb
   mac:
     timeout-minutes: 30
     runs-on: "macos-12"
