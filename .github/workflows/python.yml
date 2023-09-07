@@ -42,6 +42,29 @@ jobs:
         black --check lancedb tests
         isort --check-only lancedb tests
         # ruff check lancedb tests
+  doctest:
+    timeout-minutes: 30
+    runs-on: "ubuntu-latest"
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        fetch-depth: 0
+        lfs: true
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: 3.11
+    - name: Install dependencies
+      run: |
+        sudo apt update
+        sudo apt install -y protobuf-compiler libssl-dev
+        pip install maturin
+    - name: Run doctest
+      run: |
+        python -m venv venv
+        source venv/bin/activate
+        maturin develop --extras tests
+        pytest --doctest-modules lancedb
   linux:
     timeout-minutes: 30
     strategy:
@@ -68,13 +91,6 @@ jobs:
         pip install tantivy@git+https://github.com/quickwit-oss/tantivy-py#164adc87e1a033117001cf70e38c82a53014d985
     - name: Run tests
       run: pytest -x -v --durations=30 tests
-    - name: Run doctest
-      run: |
-        python -m venv venv
-        source venv/bin/activate
-        pip install maturin
-        maturin develop --extras tests
-        pytest --doctest-modules lancedb
   mac:
     timeout-minutes: 30
     runs-on: "macos-12"
