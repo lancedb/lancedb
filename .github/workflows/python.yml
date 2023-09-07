@@ -35,7 +35,7 @@ jobs:
         sudo apt install -y protobuf-compiler libssl-dev
     - name: Lint Rust
       run: |
-        cargo fmt --all -- --check
+        cargo fmt -- --check
         cargo clippy --all-features --tests -- -D warnings
     - name: Lint Python
       run: |
