@@ -72,6 +72,7 @@ jobs:
       run: |
         python -m venv venv
         source venv/bin/activate
+        pip install maturin
         maturin develop --extras tests
         pytest --doctest-modules lancedb
   mac:
