@@ -67,6 +67,7 @@ jobs:
       run: |
         python -m venv venv
         source venv/bin/activate
+        pip install tantivy@git+https://github.com/quickwit-oss/tantivy-py#164adc87e1a033117001cf70e38c82a53014d985
         maturin develop --extras tests
         pytest --doctest-modules lancedb
   linux:
