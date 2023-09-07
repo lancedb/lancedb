@@ -9,6 +9,39 @@ on:
       - python/**
       - .github/workflows/python.yml
 jobs:
+  lint:
+    timeout-minutes: 30
+    runs-on: "ubuntu-22.04"
+    defaults:
+      run:
+        shell: bash
+        working-directory: python
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        fetch-depth: 0
+        lfs: true
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: 3.11
+    - uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: python
+    - name: Install linting tools
+      run: |
+        pip install black isort ruff maturin
+        sudo apt update
+        sudo apt install -y protobuf-compiler libssl-dev
+    - name: Lint Rust
+      run: |
+        cargo fmt --all -- --check
+        cargo clippy --all-features --tests -- -D warnings
+    - name: Lint Python
+      run: |
+        black --check python
+        isort --check-only python
+        # ruff check python
   linux:
     timeout-minutes: 30
     strategy:
@@ -33,11 +66,6 @@ jobs:
       run: |
         pip install $(ls target/wheels/lancedb-*.whl)[tests,dev]
         pip install tantivy@git+https://github.com/quickwit-oss/tantivy-py#164adc87e1a033117001cf70e38c82a53014d985
-    - name: Lint
-      run: |
-        cargo clippy -- -Dwarnings
-        black --check --diff --no-color --quiet .
-        isort --check --diff --quiet .
     - name: Run tests
       run: pytest -x -v --durations=30 tests
     - name: doctest
