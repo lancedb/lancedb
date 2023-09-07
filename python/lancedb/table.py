@@ -32,13 +32,34 @@ from .embeddings import EmbeddingFunctionModel, EmbeddingFunctionRegistry
 from .pydantic import LanceModel
 from .query import LanceQueryBuilder, Query
 from .util import fs_from_uri, safe_import_pandas
+from .lancedb import (
+    _sanitize_table,
+    _infer_vector_columns as _native_infer_vector_columns,
+)
 
 pd = safe_import_pandas()
+
+
+def _infer_vector_columns(table: pa.Table) -> List[str]:
+    """Infer the potential vector columns from the table.
+
+    Parameters
+    ----------
+    table: pa.Table
+        The table to infer the vector columns from.
+
+    Returns
+    -------
+    list of str
+        The vector column names.
+    """
+    return _native_infer_vector_columns(table.to_reader(), False)
 
 
 def _sanitize_data(
     data,
     schema: Optional[pa.Schema],
+    vector_columns: Optional[List[str]],
     metadata: Optional[dict],
     on_bad_vectors: str,
     fill_value: Any,
@@ -48,11 +69,11 @@ def _sanitize_data(
         if isinstance(data[0], LanceModel):
             schema = data[0].__class__.to_arrow_schema()
             data = [dict(d) for d in data]
-        data = pa.Table.from_pylist(data)
+        data = pa.Table.from_pylist(data, schema=schema)
     elif isinstance(data, dict):
         data = vec_to_table(data)
     elif pd is not None and isinstance(data, pd.DataFrame):
-        data = pa.Table.from_pandas(data, preserve_index=False)
+        data = pa.Table.from_pandas(data, preserve_index=False, schema=schema)
         # Do not serialize Pandas metadata
         meta = data.schema.metadata if data.schema.metadata is not None else {}
         meta = {k: v for k, v in meta.items() if k != b"pandas"}
@@ -64,11 +85,15 @@ def _sanitize_data(
             metadata.update(data.schema.metadata or {})
             data = data.replace_schema_metadata(metadata)
         data = _sanitize_schema(
-            data, schema=schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value
+            data,
+            schema=schema,
+            on_bad_vectors=on_bad_vectors,
+            fill_value=fill_value,
+            vector_columns=vector_columns,
         )
     elif isinstance(data, Iterable):
         data = _to_record_batch_generator(
-            data, schema, metadata, on_bad_vectors, fill_value
+            data, schema, vector_columns, metadata, on_bad_vectors, fill_value
         )
     else:
         raise TypeError(f"Unsupported data type: {type(data)}")
@@ -95,11 +120,13 @@ def _append_vector_col(data: pa.Table, metadata: dict, schema: Optional[pa.Schem
 
 
 def _to_record_batch_generator(
-    data: Iterable, schema, metadata, on_bad_vectors, fill_value
+    data: Iterable, schema, vector_columns, metadata, on_bad_vectors, fill_value
 ):
     for batch in data:
         if not isinstance(batch, pa.RecordBatch):
-            table = _sanitize_data(batch, schema, metadata, on_bad_vectors, fill_value)
+            table = _sanitize_data(
+                batch, schema, vector_columns, metadata, on_bad_vectors, fill_value
+            )
             for batch in table.to_batches():
                 yield batch
         yield batch
@@ -546,6 +573,7 @@ class LanceTable(Table):
         data = _sanitize_data(
             data,
             self.schema,
+            vector_columns=None,
             metadata=self.schema.metadata,
             on_bad_vectors=on_bad_vectors,
             fill_value=fill_value,
@@ -684,6 +712,7 @@ class LanceTable(Table):
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
         embedding_functions: List[EmbeddingFunctionModel] = None,
+        vector_columns: List[str] = None,
     ):
         """
         Create a new table.
@@ -723,6 +752,9 @@ class LanceTable(Table):
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
         embedding_functions: list of EmbeddingFunctionModel, default None
             The embedding functions to use when creating the table.
+        vector_columns: list of str, default None
+            Explicitly specify the vector columns. If None, the vector columns are
+            inferred from the schema or data.
         """
         tbl = LanceTable(db, name)
         if inspect.isclass(schema) and issubclass(schema, LanceModel):
@@ -737,6 +769,7 @@ class LanceTable(Table):
             data = _sanitize_data(
                 data,
                 schema,
+                vector_columns=vector_columns,
                 metadata=metadata,
                 on_bad_vectors=on_bad_vectors,
                 fill_value=fill_value,
@@ -851,6 +884,7 @@ class LanceTable(Table):
 def _sanitize_schema(
     data: pa.Table,
     schema: pa.Schema = None,
+    vector_columns: Optional[List[str]] = None,
     on_bad_vectors: str = "error",
     fill_value: float = 0.0,
 ) -> pa.Table:
@@ -872,39 +906,17 @@ def _sanitize_schema(
     if schema is not None:
         if data.schema == schema:
             return data
-        # cast the columns to the expected types
-        data = data.combine_chunks()
-        for field in schema:
-            # TODO: we're making an assumption that fixed size list of 10 or more
-            # is a vector column. This is definitely a bit hacky.
-            likely_vector_col = (
-                pa.types.is_fixed_size_list(field.type)
-                and pa.types.is_float32(field.type.value_type)
-                and field.type.list_size >= 10
-            )
-            is_default_vector_col = field.name == VECTOR_COLUMN_NAME
-            if field.name in data.column_names and (
-                likely_vector_col or is_default_vector_col
-            ):
-                data = _sanitize_vector_column(
-                    data,
-                    vector_column_name=field.name,
-                    on_bad_vectors=on_bad_vectors,
-                    fill_value=fill_value,
-                )
-        return pa.Table.from_arrays(
-            [data[name] for name in schema.names], schema=schema
-        )
-
-    # just check the vector column
-    if VECTOR_COLUMN_NAME in data.column_names:
-        return _sanitize_vector_column(
+    # Cast the columns to the expected types
+    data = data.combine_chunks()
+    if vector_columns is None or len(vector_columns) == 0:
+        vector_columns = _infer_vector_columns(data)
+    for col in vector_columns:
+        data = _sanitize_vector_column(
             data,
-            vector_column_name=VECTOR_COLUMN_NAME,
+            vector_column_name=col,
             on_bad_vectors=on_bad_vectors,
             fill_value=fill_value,
         )
-
     return data
 
 
@@ -914,8 +926,7 @@ def _sanitize_vector_column(
     on_bad_vectors: str = "error",
     fill_value: float = 0.0,
 ) -> pa.Table:
-    """
-    Ensure that the vector column exists and has type fixed_size_list(float32)
+    """Ensure that the vector column exists and has type fixed_size_list(float32)
 
     Parameters
     ----------

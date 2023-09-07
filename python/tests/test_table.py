@@ -239,6 +239,7 @@ def test_add_with_nans(db):
                 db,
                 "error_test",
                 data=[{"vector": [3.1, 4.1], "item": "foo", "price": 10.0}, row],
+                vector_columns=["vector"],
             )
 
     table = LanceTable.create(
