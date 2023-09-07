@@ -33,7 +33,7 @@ from .pydantic import LanceModel
 from .query import LanceQueryBuilder, Query
 from .util import fs_from_uri, safe_import_pandas
 from .lancedb import (
-    _sanitize_table,
+    _sanitize_table as _native_sanitize_table,
     _infer_vector_columns as _native_infer_vector_columns,
 )
 
@@ -56,6 +56,12 @@ def _infer_vector_columns(table: pa.Table) -> List[str]:
     return _native_infer_vector_columns(table.to_reader(), False)
 
 
+def _sanitize_table(table: pa.Table, schema: pa.Schema) -> pa.Table:
+    reader = table.to_reader()
+    new_reader = _native_sanitize_table(reader, schema)
+    return pa.Table.from_batches(new_reader)
+
+
 def _sanitize_data(
     data,
     schema: Optional[pa.Schema],
@@ -73,7 +79,7 @@ def _sanitize_data(
     elif isinstance(data, dict):
         data = vec_to_table(data)
     elif pd is not None and isinstance(data, pd.DataFrame):
-        data = pa.Table.from_pandas(data, preserve_index=False, schema=schema)
+        data = pa.Table.from_pandas(data, preserve_index=False)
         # Do not serialize Pandas metadata
         meta = data.schema.metadata if data.schema.metadata is not None else {}
         meta = {k: v for k, v in meta.items() if k != b"pandas"}
@@ -91,6 +97,8 @@ def _sanitize_data(
             fill_value=fill_value,
             vector_columns=vector_columns,
         )
+        if schema is not None:
+            data = _sanitize_table(data, schema)
     elif isinstance(data, Iterable):
         data = _to_record_batch_generator(
             data, schema, vector_columns, metadata, on_bad_vectors, fill_value
@@ -101,8 +109,7 @@ def _sanitize_data(
 
 
 def _append_vector_col(data: pa.Table, metadata: dict, schema: Optional[pa.Schema]):
-    """
-    Use the embedding function to automatically embed the source column and add the
+    """Use the embedding function to automatically embed the source column and add the
     vector column to the table.
     """
     functions = EmbeddingFunctionRegistry.get_instance().parse_functions(metadata)
@@ -129,7 +136,8 @@ def _to_record_batch_generator(
             )
             for batch in table.to_batches():
                 yield batch
-        yield batch
+        else:
+            yield batch
 
 
 class Table(ABC):
@@ -883,7 +891,7 @@ class LanceTable(Table):
 
 def _sanitize_schema(
     data: pa.Table,
-    schema: pa.Schema = None,
+    schema: Optional[pa.Schema] = None,
     vector_columns: Optional[List[str]] = None,
     on_bad_vectors: str = "error",
     fill_value: float = 0.0,
@@ -917,6 +925,8 @@ def _sanitize_schema(
             on_bad_vectors=on_bad_vectors,
             fill_value=fill_value,
         )
+    if schema is not None:
+        data = data.replace_schema_metadata(schema.metadata)
     return data
 
 

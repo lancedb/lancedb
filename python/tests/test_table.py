@@ -267,6 +267,7 @@ def test_add_with_nans(db):
         ],
         on_bad_vectors="fill",
         fill_value=0.0,
+        vector_columns=["vector"],
     )
     assert len(table) == 3
     arrow_tbl = table.to_lance().to_table(filter="item == 'bar'")
@@ -443,3 +444,19 @@ def test_empty_query(db):
     df = table.search().select(["id"]).where("text='bar'").limit(1).to_df()
     val = df.id.iloc[0]
     assert val == 1
+
+
+def test_create_vectors_with_other_names(db):
+    table = LanceTable.create(
+        db,
+        "tbl",
+        data=pd.DataFrame(
+            {"id": [1, 2, 3], "embeddings": [np.random.rand(16) for _ in range(3)]}
+        ),
+    )
+    assert table.schema == pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("embeddings", pa.list_(pa.float32(), 16)),
+        ]
+    )
