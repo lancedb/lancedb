@@ -5,7 +5,7 @@ exclude = ["python"]
 resolver = "2"
 
 [workspace.dependencies]
-lance = "=0.6.5"
+lance = "=0.7.3"
 # Note that this one does not include pyarrow
 arrow = { version = "43.0.0", optional = false }
 arrow-array = "43.0"
