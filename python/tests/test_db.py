@@ -143,6 +143,7 @@ def test_ingest_iterator(tmp_path):
 
         tbl_len = len(tbl)
         tbl.add(make_batches())
+        assert tbl_len == 50
         assert len(tbl) == tbl_len * 2
         assert len(tbl.list_versions()) == 3
         db.drop_database()

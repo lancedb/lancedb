@@ -102,7 +102,8 @@ def _to_record_batch_generator(
             table = _sanitize_data(batch, schema, metadata, on_bad_vectors, fill_value)
             for batch in table.to_batches():
                 yield batch
-        yield batch
+        else:
+            yield batch
 
 
 class Table(ABC):
