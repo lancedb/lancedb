@@ -10,7 +10,14 @@
 #  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
+import concurrent.futures
+import importlib
 import json
+import os
+import socket
+import urllib.error
+import urllib.parse as urlparse
+import urllib.request
 from abc import ABC, abstractmethod
 from typing import List, Optional, Union
 
@@ -116,38 +123,47 @@ class EmbeddingFunctionRegistry:
 
 
 REGISTRY = EmbeddingFunctionRegistry()
+TEXT = Union[str, List[str], pa.Array, pa.ChunkedArray, np.ndarray]
+IMAGES = Union[
+    str, bytes, List[str], List[bytes], pa.Array, pa.ChunkedArray, np.ndarray
+]
 
 
 class EmbeddingFunctionModel(BaseModel, ABC):
     """
-    A callable ABC for embedding functions
+    An ABC for embedding functions.
+
+    There are two attributes:
+    1. a source_column indicating which column in the table contains the source data for embeddings
+    2. a vector_column indicating the name of the column for the embeddings
+
+    The API has two methods:
+    1. compute_query_embeddings() which takes a query and returns a list of embeddings
+    2. get_source_embeddings() which returns a list of embeddings for the source column
+    For text data, the two will be the same. For multi-modal data, the source column
+    might be images and the vector column might be text.
     """
 
     source_column: Optional[str]
     vector_column: str
 
     @abstractmethod
-    def __call__(self, *args, **kwargs) -> List[np.array]:
+    def compute_query_embeddings(self, *args, **kwargs) -> List[np.array]:
+        """
+        Compute the embeddings for a given user query
+        """
         pass
 
-
-TEXT = Union[str, List[str], pa.Array, pa.ChunkedArray, np.ndarray]
-
-
-class TextEmbeddingFunctionModel(EmbeddingFunctionModel):
-    """
-    A callable ABC for embedding functions that take text as input
-    """
-
-    def __call__(self, texts: TEXT, *args, **kwargs) -> List[np.array]:
-        texts = self.sanitize_input(texts)
-        return self.generate_embeddings(texts)
+    @abstractmethod
+    def compute_source_embeddings(self, *args, **kwargs) -> List[np.array]:
+        """
+        Compute the embeddings for the source column in the database
+        """
+        pass
 
     def sanitize_input(self, texts: TEXT) -> Union[List[str], np.ndarray]:
         """
-        Sanitize the input to the embedding function. This is called
-        before generate_embeddings() and is useful for stripping
-        whitespace, lowercasing, etc.
+        Sanitize the input to the embedding function.
         """
         if isinstance(texts, str):
             texts = [texts]
@@ -156,6 +172,26 @@ class TextEmbeddingFunctionModel(EmbeddingFunctionModel):
         elif isinstance(texts, pa.ChunkedArray):
             texts = texts.combine_chunks().to_pylist()
         return texts
+
+    @classmethod
+    def safe_import(cls, module, mitigation=None):
+        try:
+            return importlib.import_module(module)
+        except ImportError:
+            raise ImportError(f"Please install {mitigation or module}")
+
+
+class TextEmbeddingFunctionModel(EmbeddingFunctionModel):
+    """
+    A callable ABC for embedding functions that take text as input
+    """
+
+    def compute_query_embeddings(self, query: str, *args, **kwargs) -> List[np.array]:
+        return self.compute_source_embeddings(query, *args, **kwargs)
+
+    def compute_source_embeddings(self, texts: TEXT, *args, **kwargs) -> List[np.array]:
+        texts = self.sanitize_input(texts)
+        return self.generate_embeddings(texts)
 
     @abstractmethod
     def generate_embeddings(
@@ -220,9 +256,112 @@ class SentenceTransformerEmbeddingFunction(TextEmbeddingFunctionModel):
 
         TODO: use lru_cache instead with a reasonable/configurable maxsize
         """
-        try:
-            from sentence_transformers import SentenceTransformer
+        sentence_transformers = cls.safe_import(
+            "sentence_transformers", "sentence-transformers"
+        )
+        return sentence_transformers.SentenceTransformer(name, device=device)
 
-            return SentenceTransformer(name, device=device)
-        except ImportError:
-            raise ValueError("Please install sentence_transformers")
+
+@REGISTRY.register()
+class OpenClipEmbeddingFunction(EmbeddingFunctionModel):
+    name: str = "ViT-B-32"
+    pretrained: str = "laion2b_s34b_b79k"
+    device: str = "cpu"
+    batch_size: int = 64
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        open_clip = self.safe_import("open_clip", "open-clip")
+        model, _, preprocess = open_clip.create_model_and_transforms(
+            self.name, pretrained=self.pretrained
+        )
+        model.to(self.device)
+        self._model, self._preprocess = model, preprocess
+        self._tokenizer = open_clip.get_tokenizer(self.name)
+
+    def compute_query_embeddings(self, query: str, *args, **kwargs) -> List[np.array]:
+        torch = self.safe_import("torch")
+        query = self.sanitize_input(query)
+        query = self._tokenizer(query)
+        query.to(self.device)
+        with torch.no_grad():
+            text_features = self._model.encode_text(query.to(self.device))
+            text_features /= text_features.norm(dim=-1, keepdim=True)
+            return text_features.cpu().numpy()
+
+    def sanitize_input(self, images: IMAGES) -> Union[List[bytes], np.ndarray]:
+        """
+        Sanitize the input to the embedding function.
+        """
+        if isinstance(images, (str, bytes)):
+            images = [images]
+        elif isinstance(images, pa.Array):
+            images = images.to_pylist()
+        elif isinstance(images, pa.ChunkedArray):
+            images = images.combine_chunks().to_pylist()
+        return images
+
+    def compute_source_embeddings(
+        self, images: IMAGES, *args, **kwargs
+    ) -> List[np.array]:
+        images = self.sanitize_input(images)
+        embeddings = []
+        for i in range(0, len(images), self.batch_size):
+            j = min(i + self.batch_size, len(images))
+            batch = images[i:j]
+            embeddings.extend(self._parallel_get(batch))
+        return embeddings
+
+    def _parallel_get(self, images: Union[List[str], List[bytes]]) -> List[np.ndarray]:
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            futures = [
+                executor.submit(self.generate_image_embedding, image)
+                for image in images
+            ]
+            return [future.result() for future in futures]
+
+    def generate_image_embedding(self, image: Union[str, bytes]) -> np.ndarray:
+        torch = self.safe_import("torch")
+        try:
+            image = self._to_pil(image)
+        except Exception as e:
+            print(e)
+            return np.zeros(512)
+        image = self._preprocess(image).unsqueeze(0)
+        with torch.no_grad():
+            return self._encode_and_normalize_image(image)
+
+    def _to_pil(self, image: Union[str, bytes]):
+        PIL = self.safe_import("PIL", "pillow")
+        if isinstance(image, bytes):
+            return PIL.Image.frombytes(image)
+        elif isinstance(image, str):
+            parsed = urlparse.urlparse(image)
+            # TODO handle drive letter on windows.
+            if parsed.scheme == "file":
+                return PIL.Image.open(parsed.path)
+            elif parsed.scheme == "":
+                return PIL.Image.open(image if os.name == "nt" else parsed.path)
+            elif parsed.scheme.startswith("http"):
+                return PIL.Image.frombytes(url_retrieve(image))
+            else:
+                raise NotImplementedError("Only local and http(s) urls are supported")
+
+    def _encode_and_normalize_image(self, image):
+        image_features = self._model.encode_image(image)
+        image_features /= image_features.norm(dim=-1, keepdim=True)
+        return image_features.cpu().numpy().squeeze()
+
+
+def url_retrieve(url: str):
+    """
+    Parameters
+    ----------
+    url: str
+        URL to download from
+    """
+    try:
+        with urllib.request.urlopen(url) as conn:
+            return conn.read()
+    except (socket.gaierror, urllib.error.URLError) as err:
+        raise ConnectionError("could not download {} due to {}".format(url, err))

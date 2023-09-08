@@ -1,9 +1,8 @@
 import os
 
-import pyarrow as pa
 import pytest
 
-from lancedb.embeddings import EmbeddingFunctionModel, EmbeddingFunctionRegistry
+from lancedb.embeddings import EmbeddingFunctionRegistry, TextEmbeddingFunctionModel
 
 # import lancedb so we don't have to in every example
 
@@ -23,16 +22,10 @@ registry = EmbeddingFunctionRegistry.get_instance()
 
 
 @registry.register()
-class MockEmbeddingFunction(EmbeddingFunctionModel):
-    def __call__(self, data):
-        if isinstance(data, str):
-            data = [data]
-        elif isinstance(data, pa.ChunkedArray):
-            data = data.combine_chunks().to_pylist()
-        elif isinstance(data, pa.Array):
-            data = data.to_pylist()
+class MockTextEmbeddingFunction(TextEmbeddingFunctionModel):
+    """
+    Return the hash of the first 10 characters
+    """
 
-        return [self.embed(row) for row in data]
-
-    def embed(self, row):
+    def generate_embeddings(self, row):
         return [float(hash(c)) for c in row[:10]]

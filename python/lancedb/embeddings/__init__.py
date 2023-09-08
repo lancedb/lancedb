@@ -16,6 +16,7 @@ from .functions import (
     REGISTRY,
     EmbeddingFunctionModel,
     EmbeddingFunctionRegistry,
+    OpenClipEmbeddingFunction,
     SentenceTransformerEmbeddingFunction,
     TextEmbeddingFunctionModel,
 )

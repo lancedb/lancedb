@@ -108,7 +108,7 @@ class LanceQueryBuilder(ABC):
             elif isinstance(query, str):
                 func = table.embedding_functions.get(vector_column_name, None)
                 if func is not None:
-                    query = func(query)[0]
+                    query = func.compute_query_embeddings(query)[0]
                     return query, "vector"
                 else:
                     return query, "fts"
