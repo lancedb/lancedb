@@ -49,11 +49,11 @@ A Table is a collection of Records in a LanceDB Database. You can follow along o
 
     db.create_table("table2", data)
 
-    db["table2"].head() 
+    db["table2"].head()
     ```
     !!! info "Note"
         Data is converted to Arrow before being written to disk. For maximum control over how data is saved, either provide the PyArrow schema to convert to or else provide a PyArrow Table directly.
-  
+
     ```python
     custom_schema = pa.schema([
     pa.field("vector", pa.list_(pa.float32(), 2)),
@@ -66,7 +66,7 @@ A Table is a collection of Records in a LanceDB Database. You can follow along o
 
     ### From PyArrow Tables
     You can also create LanceDB tables directly from pyarrow tables
-    
+
     ```python
     table = pa.Table.from_arrays(
             [
@@ -87,15 +87,15 @@ A Table is a collection of Records in a LanceDB Database. You can follow along o
     LanceDB supports to create Apache Arrow Schema from a Pydantic BaseModel via pydantic_to_schema() method.
 
     ```python
-    from lancedb.pydantic import vector, LanceModel
+    from lancedb.pydantic import Vector, LanceModel
 
     class Content(LanceModel):
         movie_id: int
-        vector: vector(128)
+        vector: Vector(128)
         genres: str
         title: str
         imdb_id: int
-            
+
         @property
         def imdb_url(self) -> str:
             return f"https://www.imdb.com/title/tt{self.imdb_id}"
@@ -103,7 +103,7 @@ A Table is a collection of Records in a LanceDB Database. You can follow along o
     import pyarrow as pa
     db = lancedb.connect("~/.lancedb")
     table_name = "movielens_small"
-    table = db.create_table(table_name, schema=Content.to_arrow_schema())
+    table = db.create_table(table_name, schema=Content)
     ```
 
     ### Using Iterators / Writing Large Datasets
@@ -113,7 +113,7 @@ A Table is a collection of Records in a LanceDB Database. You can follow along o
     LanceDB additionally supports pyarrow's `RecordBatch` Iterators or other generators producing supported data types.
 
     Here's an example using using `RecordBatch` iterator for creating tables.
-    
+
     ```python
     import pyarrow as pa
 
@@ -142,11 +142,11 @@ A Table is a collection of Records in a LanceDB Database. You can follow along o
 
     ## Creating Empty Table
     You can also create empty tables in python. Initialize it with schema and later ingest data into it.
-    
+
     ```python
     import lancedb
     import pyarrow as pa
-  
+
     schema = pa.schema(
       [
           pa.field("vector", pa.list_(pa.float32(), 2)),
@@ -168,8 +168,8 @@ A Table is a collection of Records in a LanceDB Database. You can follow along o
     from lancedb.pydantic import LanceModel, vector
 
     class Model(LanceModel):
-          vector: vector(2)
-    
+          vector: Vector(2)
+
     tbl = db.create_table("table5", schema=Model.to_arrow_schema())
     ```
 
@@ -249,7 +249,7 @@ After a table has been created, you can always add more data to it using
     You can also add a large dataset batch in one go using Iterator of any supported data types.
 
     ### Adding to table using Iterator
-    
+
     ```python
     import pandas as pd
 
@@ -261,10 +261,10 @@ After a table has been created, you can always add more data to it using
                     "item": ["foo", "bar"],
                     "price": [10.0, 20.0],
                 })
-    
+
     tbl.add(make_batches())
     ```
-  
+
     The other arguments accepted:
 
     | Name | Type | Description | Default |
@@ -274,7 +274,7 @@ After a table has been created, you can always add more data to it using
     | on_bad_vectors | str | What to do if any of the vectors are not the same size or contains NaNs. One of "error", "drop", "fill". | drop |
     | fill value | float | The value to use when filling vectors: Only used if on_bad_vectors="fill". | 0.0 |
 
-  
+
 === "Javascript/Typescript"
 
     ```javascript
@@ -312,7 +312,7 @@ Use the `delete()` method on tables to delete rows from a table. To choose which
     #   x      vector
     # 0  1  [1.0, 2.0]
     # 1  3  [5.0, 6.0]
-    ```  
+    ```
 
     ### Delete from a list of values
 
@@ -325,7 +325,7 @@ Use the `delete()` method on tables to delete rows from a table. To choose which
     #   x      vector
     # 0  3  [5.0, 6.0]
     ```
-  
+
 === "Javascript/Typescript"
 
     ```javascript
