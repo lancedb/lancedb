@@ -94,9 +94,9 @@ class LanceQueryBuilder(ABC):
             return query, query_type
         elif query_type == "vector":
             if not isinstance(query, (list, np.ndarray)):
-                func = table.embedding_functions.get(vector_column_name, None)
-                if func is not None:
-                    query = func.compute_query_embeddings(query)[0]
+                conf = table.embedding_functions.get(vector_column_name)
+                if conf is not None:
+                    query = conf.function.compute_query_embeddings(query)[0]
                 else:
                     msg = f"No embedding function for {vector_column_name}"
                     raise ValueError(msg)
@@ -105,9 +105,9 @@ class LanceQueryBuilder(ABC):
             if isinstance(query, (list, np.ndarray)):
                 return query, "vector"
             else:
-                func = table.embedding_functions.get(vector_column_name, None)
-                if func is not None:
-                    query = func.compute_query_embeddings(query)[0]
+                conf = table.embedding_functions.get(vector_column_name)
+                if conf is not None:
+                    query = conf.function.compute_query_embeddings(query)[0]
                     return query, "vector"
                 else:
                     return query, "fts"

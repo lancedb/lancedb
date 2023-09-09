@@ -28,7 +28,8 @@ from lance.dataset import ReaderLike
 from lance.vector import vec_to_table
 
 from .common import DATA, VEC, VECTOR_COLUMN_NAME
-from .embeddings import EmbeddingFunctionModel, EmbeddingFunctionRegistry
+from .embeddings import EmbeddingFunctionRegistry
+from .embeddings.functions import EmbeddingFunctionConfig
 from .pydantic import LanceModel
 from .query import LanceQueryBuilder, Query
 from .util import fs_from_uri, safe_import_pandas
@@ -81,15 +82,16 @@ def _append_vector_col(data: pa.Table, metadata: dict, schema: Optional[pa.Schem
     vector column to the table.
     """
     functions = EmbeddingFunctionRegistry.get_instance().parse_functions(metadata)
-    for vector_col, func in functions.items():
-        if vector_col not in data.column_names:
-            col_data = func.compute_source_embeddings(data[func.source_column])
+    for vector_column, conf in functions.items():
+        func = conf.function
+        if vector_column not in data.column_names:
+            col_data = func.compute_source_embeddings(data[conf.source_column])
             if schema is not None:
-                dtype = schema.field(vector_col).type
+                dtype = schema.field(vector_column).type
             else:
                 dtype = pa.list_(pa.float32(), len(col_data[0]))
             data = data.append_column(
-                pa.field(vector_col, type=dtype), pa.array(col_data, type=dtype)
+                pa.field(vector_column, type=dtype), pa.array(col_data, type=dtype)
             )
     return data
 
@@ -619,12 +621,6 @@ class LanceTable(Table):
         )
         self._reset_dataset()
 
-    def _get_embedding_function_for_source_col(self, column_name: str):
-        for k, v in self.embedding_functions.items():
-            if v.source_column == column_name:
-                return v
-        return None
-
     @cached_property
     def embedding_functions(self) -> dict:
         """
@@ -688,7 +684,7 @@ class LanceTable(Table):
         mode="create",
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
-        embedding_functions: List[EmbeddingFunctionModel] = None,
+        embedding_functions: List[EmbeddingFunctionConfig] = None,
     ):
         """
         Create a new table.

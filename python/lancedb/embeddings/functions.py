@@ -36,25 +36,32 @@ class EmbeddingFunctionRegistry:
 
     @classmethod
     def get_instance(cls):
-        return REGISTRY
+        return __REGISTRY__
 
     def __init__(self):
         self._functions = {}
 
-    def register(self):
+    def register(self, alias: str = None):
         """
         This creates a decorator that can be used to register
-        an EmbeddingFunctionModel.
+        an EmbeddingModel.
+
+        Parameters
+        ----------
+        alias : Optional[str]
+            If specified the model can be retrieved under this name
         """
 
         # This is a decorator for a class that inherits from BaseModel
         # It adds the class to the registry
         def decorator(cls):
-            if not issubclass(cls, EmbeddingFunctionModel):
-                raise TypeError("Must be a subclass of EmbeddingFunctionModel")
+            if not issubclass(cls, EmbeddingFunction):
+                raise TypeError("Must be a subclass of EmbeddingModel")
             if cls.__name__ in self._functions:
                 raise KeyError(f"{cls.__name__} was already registered")
-            self._functions[cls.__name__] = cls
+            key = alias or cls.__name__
+            self._functions[key] = cls
+            cls.__embedding_function_registry_alias__ = alias
             return cls
 
         return decorator
@@ -65,7 +72,7 @@ class EmbeddingFunctionRegistry:
         """
         self._functions = {}
 
-    def load(self, name: str):
+    def get(self, name: str):
         """
         Fetch an embedding function class by name
         """
@@ -94,22 +101,30 @@ class EmbeddingFunctionRegistry:
             return {}
         serialized = metadata[b"embedding_functions"]
         raw_list = json.loads(serialized.decode("utf-8"))
-        functions = {}
-        for obj in raw_list:
-            model = self.load(obj["schema"]["title"])
-            functions[obj["model"]["vector_column"]] = model(**obj["model"])
-        return functions
+        return {
+            obj["vector_column"]: EmbeddingFunctionConfig(
+                vector_column=obj["vector_column"],
+                source_column=obj["source_column"],
+                function=self.get(obj["name"])(**obj["model"]),
+            )
+            for obj in raw_list
+        }
 
-    def function_to_metadata(self, func):
+    def function_to_metadata(self, conf: "EmbeddingFunctionConfig"):
         """
         Convert the given embedding function and source / vector column configs
         into a config dictionary that can be serialized into arrow metadata
         """
-        schema = func.model_json_schema()
+        func = conf.function
+        name = getattr(
+            func, "__embedding_function_registry_alias__", func.__class__.__name__
+        )
         json_data = func.model_dump()
         return {
-            "schema": schema,
+            "name": name,
             "model": json_data,
+            "source_column": conf.source_column,
+            "vector_column": conf.vector_column,
         }
 
     def get_table_metadata(self, func_list):
@@ -123,20 +138,19 @@ class EmbeddingFunctionRegistry:
         return {"embedding_functions": metadata}
 
 
-REGISTRY = EmbeddingFunctionRegistry()
+# Global instance, do not use
+__REGISTRY__ = EmbeddingFunctionRegistry()
+
+
 TEXT = Union[str, List[str], pa.Array, pa.ChunkedArray, np.ndarray]
 IMAGES = Union[
     str, bytes, List[str], List[bytes], pa.Array, pa.ChunkedArray, np.ndarray
 ]
 
 
-class EmbeddingFunctionModel(BaseModel, ABC):
+class EmbeddingFunction(BaseModel, ABC):
     """
     An ABC for embedding functions.
-
-    There are two attributes:
-    1. a source_column indicating which column in the table contains the source data for embeddings
-    2. a vector_column indicating the name of the column for the embeddings
 
     The API has two methods:
     1. compute_query_embeddings() which takes a query and returns a list of embeddings
@@ -144,9 +158,6 @@ class EmbeddingFunctionModel(BaseModel, ABC):
     For text data, the two will be the same. For multi-modal data, the source column
     might be images and the vector column might be text.
     """
-
-    source_column: Optional[str]
-    vector_column: str
 
     @abstractmethod
     def compute_query_embeddings(self, *args, **kwargs) -> List[np.array]:
@@ -189,7 +200,18 @@ class EmbeddingFunctionModel(BaseModel, ABC):
         pass
 
 
-class TextEmbeddingFunctionModel(EmbeddingFunctionModel):
+class EmbeddingFunctionConfig(BaseModel):
+    """
+    This is a dataclass that holds the embedding function
+    and source column for a vector column
+    """
+
+    vector_column: str
+    source_column: str
+    function: EmbeddingFunction
+
+
+class TextEmbeddingFunction(EmbeddingFunction):
     """
     A callable ABC for embedding functions that take text as input
     """
@@ -211,8 +233,8 @@ class TextEmbeddingFunctionModel(EmbeddingFunctionModel):
         pass
 
 
-@REGISTRY.register()
-class SentenceTransformerEmbeddingFunction(TextEmbeddingFunctionModel):
+@EmbeddingFunctionRegistry.get_instance().register("sentence-transformers")
+class SentenceTransformerEmbeddings(TextEmbeddingFunction):
     """
     An embedding function that uses the sentence-transformers library
     """
@@ -274,8 +296,8 @@ class SentenceTransformerEmbeddingFunction(TextEmbeddingFunctionModel):
         return sentence_transformers.SentenceTransformer(name, device=device)
 
 
-@REGISTRY.register()
-class OpenAIEmbeddingFunction(TextEmbeddingFunctionModel):
+@EmbeddingFunctionRegistry.get_instance().register("openai")
+class OpenAIEmbeddings(TextEmbeddingFunction):
     """
     An embedding function that uses the OpenAI API
     """
@@ -303,8 +325,8 @@ class OpenAIEmbeddingFunction(TextEmbeddingFunctionModel):
         return [v["embedding"] for v in rs]
 
 
-@REGISTRY.register()
-class OpenClipEmbeddingFunction(EmbeddingFunctionModel):
+@EmbeddingFunctionRegistry.get_instance().register("openclip")
+class OpenClipEmbeddings(EmbeddingFunction):
     name: str = "ViT-B-32"
     pretrained: str = "laion2b_s34b_b79k"
     device: str = "cpu"

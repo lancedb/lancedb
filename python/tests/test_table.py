@@ -21,9 +21,9 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pytest
-
 from lancedb.conftest import MockTextEmbeddingFunction
 from lancedb.db import LanceDBConnection
+from lancedb.embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
 from lancedb.pydantic import LanceModel, Vector
 from lancedb.table import LanceTable
 
@@ -356,15 +356,18 @@ def test_create_with_embedding_function(db):
         text: str
         vector: Vector(10)
 
-    func = MockTextEmbeddingFunction(source_column="text", vector_column="vector")
+    func = MockTextEmbeddingFunction()
     texts = ["hello world", "goodbye world", "foo bar baz fizz buzz"]
     df = pd.DataFrame({"text": texts, "vector": func.compute_source_embeddings(texts)})
 
+    conf = EmbeddingFunctionConfig(
+        source_column="text", vector_column="vector", function=func
+    )
     table = LanceTable.create(
         db,
         "my_table",
         schema=MyTable,
-        embedding_functions=[func],
+        embedding_functions=[conf],
     )
     table.add(df)
 
@@ -381,12 +384,15 @@ def test_add_with_embedding_function(db):
         text: str
         vector: Vector(10)
 
-    func = MockTextEmbeddingFunction(source_column="text", vector_column="vector")
+    func = EmbeddingFunctionRegistry.get_instance().get("test")()
+    conf = EmbeddingFunctionConfig(
+        source_column="text", vector_column="vector", function=func
+    )
     table = LanceTable.create(
         db,
         "my_table",
         schema=MyTable,
-        embedding_functions=[func],
+        embedding_functions=[conf],
     )
 
     texts = ["hello world", "goodbye world", "foo bar baz fizz buzz"]

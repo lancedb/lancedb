@@ -13,11 +13,12 @@
 
 
 from .functions import (
-    REGISTRY,
-    EmbeddingFunctionModel,
+    EmbeddingFunction,
+    EmbeddingFunctionConfig,
     EmbeddingFunctionRegistry,
-    OpenClipEmbeddingFunction,
-    SentenceTransformerEmbeddingFunction,
-    TextEmbeddingFunctionModel,
+    OpenAIEmbeddings,
+    OpenClipEmbeddings,
+    SentenceTransformerEmbeddings,
+    TextEmbeddingFunction,
 )
 from .utils import with_embeddings

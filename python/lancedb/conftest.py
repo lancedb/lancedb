@@ -3,7 +3,7 @@ import os
 import numpy as np
 import pytest
 
-from lancedb.embeddings import EmbeddingFunctionRegistry, TextEmbeddingFunctionModel
+from .embeddings import EmbeddingFunctionRegistry, TextEmbeddingFunction
 
 # import lancedb so we don't have to in every example
 
@@ -19,11 +19,8 @@ def doctest_setup(monkeypatch, tmpdir):
     monkeypatch.chdir(tmpdir)
 
 
-registry = EmbeddingFunctionRegistry.get_instance()
-
-
-@registry.register()
-class MockTextEmbeddingFunction(TextEmbeddingFunctionModel):
+@EmbeddingFunctionRegistry.get_instance().register("test")
+class MockTextEmbeddingFunction(TextEmbeddingFunction):
     """
     Return the hash of the first 10 characters
     """
