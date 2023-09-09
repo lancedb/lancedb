@@ -230,7 +230,7 @@ class Table(ABC):
     @abstractmethod
     def search(
         self,
-        query: Optional[Union[VEC, str]] = None,
+        query: Optional[Union[VEC, str, "PIL.Image.Image"]] = None,
         vector_column_name: str = VECTOR_COLUMN_NAME,
         query_type: str = "auto",
     ) -> LanceQueryBuilder:
@@ -239,7 +239,7 @@ class Table(ABC):
 
         Parameters
         ----------
-        query: str, list, np.ndarray, default None
+        query: str, list, np.ndarray, PIL.Image.Image, default None
             The query to search for. If None then
             the select/where/limit clauses are applied to filter
             the table
@@ -249,6 +249,8 @@ class Table(ABC):
             "vector", "fts", or "auto"
             If "auto" then the query type is inferred from the query;
             If `query` is a list/np.ndarray then the query type is "vector";
+            If `query` is a PIL.Image.Image then either do vector search
+            or raise an error if no corresponding embedding function is found.
             If `query` is a string, then the query type is "vector" if the
             table has embedding functions else the query type is "fts"
 
@@ -640,7 +642,7 @@ class LanceTable(Table):
 
     def search(
         self,
-        query: Optional[Union[VEC, str]] = None,
+        query: Optional[Union[VEC, str, "PIL.Image.Image"]] = None,
         vector_column_name: str = VECTOR_COLUMN_NAME,
         query_type: str = "auto",
     ) -> LanceQueryBuilder:
@@ -649,7 +651,7 @@ class LanceTable(Table):
 
         Parameters
         ----------
-        query: str, list, np.ndarray, or None
+        query: str, list, np.ndarray, a PIL Image or None
             The query to search for. If None then
             the select/where/limit clauses are applied to filter
             the table
@@ -658,7 +660,9 @@ class LanceTable(Table):
         query_type: str, default "auto"
             "vector", "fts", or "auto"
             If "auto" then the query type is inferred from the query;
-            If the query is a list/np.ndarray then the query type is "vector";
+            If `query` is a list/np.ndarray then the query type is "vector";
+            If `query` is a PIL.Image.Image then either do vector search
+            or raise an error if no corresponding embedding function is found.
             If the query is a string, then the query type is "vector" if the
             table has embedding functions else the query type is "fts"
 

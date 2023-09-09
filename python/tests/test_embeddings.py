@@ -15,7 +15,8 @@ import sys
 import lance
 import numpy as np
 import pyarrow as pa
-from lancedb.conftest import MockEmbeddingFunction
+
+from lancedb.conftest import MockTextEmbeddingFunction
 from lancedb.embeddings import EmbeddingFunctionRegistry, with_embeddings
 
 
@@ -53,7 +54,7 @@ def test_embedding_function(tmp_path):
             "vector": [np.random.randn(10), np.random.randn(10)],
         }
     )
-    func = MockEmbeddingFunction(source_column="text", vector_column="vector")
+    func = MockTextEmbeddingFunction(source_column="text", vector_column="vector")
     metadata = registry.get_table_metadata([func])
     table = table.replace_schema_metadata(metadata)
 
@@ -70,7 +71,9 @@ def test_embedding_function(tmp_path):
     actual = func.compute_query_embeddings("hello world")
 
     # We create an instance
-    expected_func = MockEmbeddingFunction(source_column="text", vector_column="vector")
+    expected_func = MockTextEmbeddingFunction(
+        source_column="text", vector_column="vector"
+    )
     # And we make sure we can call it
     expected = expected_func.compute_query_embeddings("hello world")
 

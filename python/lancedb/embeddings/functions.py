@@ -19,6 +19,7 @@ import urllib.error
 import urllib.parse as urlparse
 import urllib.request
 from abc import ABC, abstractmethod
+from functools import cached_property
 from typing import List, Optional, Union
 
 import numpy as np
@@ -180,6 +181,13 @@ class EmbeddingFunctionModel(BaseModel, ABC):
         except ImportError:
             raise ImportError(f"Please install {mitigation or module}")
 
+    @abstractmethod
+    def vector_dimensions(self):
+        """
+        Return the dimensions of the vector column
+        """
+        pass
+
 
 class TextEmbeddingFunctionModel(EmbeddingFunctionModel):
     """
@@ -222,6 +230,10 @@ class SentenceTransformerEmbeddingFunction(TextEmbeddingFunctionModel):
         """
         return self.__class__.get_embedding_model(self.name, self.device)
 
+    @cached_property
+    def vector_dimensions(self):
+        return self.generate_embeddings(["foo"])[0].shape[0]
+
     def generate_embeddings(
         self, texts: Union[List[str], np.ndarray]
     ) -> List[np.array]:
@@ -263,11 +275,41 @@ class SentenceTransformerEmbeddingFunction(TextEmbeddingFunctionModel):
 
 
 @REGISTRY.register()
+class OpenAIEmbeddingFunction(TextEmbeddingFunctionModel):
+    """
+    An embedding function that uses the OpenAI API
+    """
+
+    name: str = "text-embedding-ada-002"
+
+    def vector_dimensions(self):
+        # TODO don't hardcode this
+        return 1536
+
+    def generate_embeddings(
+        self, texts: Union[List[str], np.ndarray]
+    ) -> List[np.array]:
+        """
+        Get the embeddings for the given texts
+
+        Parameters
+        ----------
+        texts: list[str] or np.ndarray (of str)
+            The texts to embed
+        """
+        # TODO retry, rate limit, token limit
+        openai = self.safe_import("openai")
+        rs = openai.Embedding.create(input=texts, model=self.name)["data"]
+        return [v["embedding"] for v in rs]
+
+
+@REGISTRY.register()
 class OpenClipEmbeddingFunction(EmbeddingFunctionModel):
     name: str = "ViT-B-32"
     pretrained: str = "laion2b_s34b_b79k"
     device: str = "cpu"
     batch_size: int = 64
+    normalize: bool = True
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -279,15 +321,32 @@ class OpenClipEmbeddingFunction(EmbeddingFunctionModel):
         self._model, self._preprocess = model, preprocess
         self._tokenizer = open_clip.get_tokenizer(self.name)
 
-    def compute_query_embeddings(self, query: str, *args, **kwargs) -> List[np.array]:
+    @cached_property
+    def vector_dimensions(self):
+        return self.generate_text_embeddings("foo").shape[0]
+
+    def compute_query_embeddings(
+        self, query: Union[str, "PIL.Image.Image"], *args, **kwargs
+    ) -> List[np.ndarray]:
+        if isinstance(query, str):
+            return [self.generate_text_embeddings(query)]
+        else:
+            PIL = self.safe_import("PIL", "pillow")
+            if isinstance(query, PIL.Image.Image):
+                return [self.generate_image_embedding(query)]
+            else:
+                raise TypeError("OpenClip supports str or PIL Image as query")
+
+    def generate_text_embeddings(self, text: str) -> np.ndarray:
         torch = self.safe_import("torch")
-        query = self.sanitize_input(query)
-        query = self._tokenizer(query)
-        query.to(self.device)
+        text = self.sanitize_input(text)
+        text = self._tokenizer(text)
+        text.to(self.device)
         with torch.no_grad():
-            text_features = self._model.encode_text(query.to(self.device))
-            text_features /= text_features.norm(dim=-1, keepdim=True)
-            return text_features.cpu().numpy()
+            text_features = self._model.encode_text(text.to(self.device))
+            if self.normalize:
+                text_features /= text_features.norm(dim=-1, keepdim=True)
+            return text_features.cpu().numpy().squeeze()
 
     def sanitize_input(self, images: IMAGES) -> Union[List[bytes], np.ndarray]:
         """
@@ -320,7 +379,9 @@ class OpenClipEmbeddingFunction(EmbeddingFunctionModel):
             ]
             return [future.result() for future in futures]
 
-    def generate_image_embedding(self, image: Union[str, bytes]) -> np.ndarray:
+    def generate_image_embedding(
+        self, image: Union[str, bytes, "PIL.Image.Image"]
+    ) -> np.ndarray:
         torch = self.safe_import("torch")
         try:
             image = self._to_pil(image)
@@ -335,6 +396,8 @@ class OpenClipEmbeddingFunction(EmbeddingFunctionModel):
         PIL = self.safe_import("PIL", "pillow")
         if isinstance(image, bytes):
             return PIL.Image.frombytes(image)
+        if isinstance(image, PIL.Image.Image):
+            return image
         elif isinstance(image, str):
             parsed = urlparse.urlparse(image)
             # TODO handle drive letter on windows.
@@ -349,7 +412,8 @@ class OpenClipEmbeddingFunction(EmbeddingFunctionModel):
 
     def _encode_and_normalize_image(self, image):
         image_features = self._model.encode_image(image)
-        image_features /= image_features.norm(dim=-1, keepdim=True)
+        if self.normalize:
+            image_features /= image_features.norm(dim=-1, keepdim=True)
         return image_features.cpu().numpy().squeeze()
 
 

@@ -1,5 +1,6 @@
 import os
 
+import numpy as np
 import pytest
 
 from lancedb.embeddings import EmbeddingFunctionRegistry, TextEmbeddingFunctionModel
@@ -27,5 +28,13 @@ class MockTextEmbeddingFunction(TextEmbeddingFunctionModel):
     Return the hash of the first 10 characters
     """
 
-    def generate_embeddings(self, row):
-        return [float(hash(c)) for c in row[:10]]
+    def generate_embeddings(self, texts):
+        return [self._compute_one_embedding(row) for row in texts]
+
+    def _compute_one_embedding(self, row):
+        emb = np.array([float(hash(c)) for c in row[:10]])
+        emb /= np.linalg.norm(emb)
+        return emb
+
+    def vector_dimensions(self):
+        return 10
