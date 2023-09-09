@@ -23,6 +23,7 @@ lance = { workspace = true }
 tokio = { version = "1.23", features = ["rt-multi-thread"] }
 log = { workspace = true }
 num-traits = "0"
+url = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3.5.0"
