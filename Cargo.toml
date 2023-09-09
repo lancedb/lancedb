@@ -5,7 +5,7 @@ exclude = ["python"]
 resolver = "2"
 
 [workspace.dependencies]
-lance = "=0.7.3"
+lance = { "version" = "=0.7.3", "features" = ["dynamodb"] }
 # Note that this one does not include pyarrow
 arrow = { version = "43.0.0", optional = false }
 arrow-array = "43.0"
@@ -21,3 +21,4 @@ half = { "version" = "=2.2.1", default-features = false, features = [
 log = "0.4"
 object_store = "0.6.1"
 snafu = "0.7.4"
+url = "2"
