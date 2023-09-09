@@ -21,7 +21,7 @@ import pydantic
 import pytest
 from pydantic import Field
 
-from lancedb.pydantic import PYDANTIC_VERSION, LanceModel, pydantic_to_schema, Vector
+from lancedb.pydantic import PYDANTIC_VERSION, LanceModel, Vector, pydantic_to_schema
 
 
 @pytest.mark.skipif(
