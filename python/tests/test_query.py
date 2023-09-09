@@ -20,7 +20,7 @@ import pyarrow as pa
 import pytest
 
 from lancedb.db import LanceDBConnection
-from lancedb.pydantic import LanceModel, vector
+from lancedb.pydantic import LanceModel, Vector
 from lancedb.query import LanceVectorQueryBuilder, Query
 from lancedb.table import LanceTable
 
@@ -67,7 +67,7 @@ def table(tmp_path) -> MockTable:
 
 def test_cast(table):
     class TestModel(LanceModel):
-        vector: vector(2)
+        vector: Vector(2)
         id: int
         str_field: str
         float_field: float

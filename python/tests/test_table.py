@@ -24,7 +24,7 @@ import pytest
 
 from lancedb.conftest import MockEmbeddingFunction
 from lancedb.db import LanceDBConnection
-from lancedb.pydantic import LanceModel, vector
+from lancedb.pydantic import LanceModel, Vector
 from lancedb.table import LanceTable
 
 
@@ -140,7 +140,7 @@ def test_add(db):
 
 def test_add_pydantic_model(db):
     class TestModel(LanceModel):
-        vector: vector(16)
+        vector: Vector(16)
         li: List[int]
 
     data = TestModel(vector=list(range(16)), li=[1, 2, 3])
@@ -354,7 +354,7 @@ def test_update(db):
 def test_create_with_embedding_function(db):
     class MyTable(LanceModel):
         text: str
-        vector: vector(10)
+        vector: Vector(10)
 
     func = MockEmbeddingFunction(source_column="text", vector_column="vector")
     texts = ["hello world", "goodbye world", "foo bar baz fizz buzz"]
@@ -379,7 +379,7 @@ def test_create_with_embedding_function(db):
 def test_add_with_embedding_function(db):
     class MyTable(LanceModel):
         text: str
-        vector: vector(10)
+        vector: Vector(10)
 
     func = MockEmbeddingFunction(source_column="text", vector_column="vector")
     table = LanceTable.create(
@@ -407,8 +407,8 @@ def test_add_with_embedding_function(db):
 def test_multiple_vector_columns(db):
     class MyTable(LanceModel):
         text: str
-        vector1: vector(10)
-        vector2: vector(10)
+        vector1: Vector(10)
+        vector2: Vector(10)
 
     table = LanceTable.create(
         db,

@@ -13,10 +13,10 @@ via [pydantic_to_schema()](python.md##lancedb.pydantic.pydantic_to_schema) metho
 
 ## Vector Field
 
-LanceDB provides a [`vector(dim)`](python.md#lancedb.pydantic.vector) method to define a
+LanceDB provides a [`Vector(dim)`](python.md#lancedb.pydantic.Vector) method to define a
 vector Field in a Pydantic Model.
 
-::: lancedb.pydantic.vector
+::: lancedb.pydantic.Vector
 
 ## Type Conversion
 
@@ -33,4 +33,4 @@ Current supported type conversions:
 | `str`               | `pyarrow.utf8()`    |
 | `list`              | `pyarrow.List`    |
 | `BaseModel`         | `pyarrow.Struct`    |
-| `vector(n)`         | `pyarrow.FixedSizeList(float32, n)` |
+| `Vector(n)`         | `pyarrow.FixedSizeList(float32, n)` |

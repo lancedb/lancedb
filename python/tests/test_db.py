@@ -17,7 +17,7 @@ import pyarrow as pa
 import pytest
 
 import lancedb
-from lancedb.pydantic import LanceModel, vector
+from lancedb.pydantic import LanceModel, Vector
 
 
 def test_basic(tmp_path):
@@ -79,7 +79,7 @@ def test_ingest_pd(tmp_path):
 
 def test_ingest_iterator(tmp_path):
     class PydanticSchema(LanceModel):
-        vector: vector(2)
+        vector: Vector(2)
         item: str
         price: float
 
