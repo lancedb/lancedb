@@ -19,8 +19,9 @@ from typing import List, Optional
 import pyarrow as pa
 import pydantic
 import pytest
+from pydantic import Field
 
-from lancedb.pydantic import PYDANTIC_VERSION, LanceModel, pydantic_to_schema, vector
+from lancedb.pydantic import PYDANTIC_VERSION, LanceModel, Vector, pydantic_to_schema
 
 
 @pytest.mark.skipif(
@@ -107,7 +108,7 @@ def test_pydantic_to_arrow_py38():
 
 def test_fixed_size_list_field():
     class TestModel(pydantic.BaseModel):
-        vec: vector(16)
+        vec: Vector(16)
         li: List[int]
 
     data = TestModel(vec=list(range(16)), li=[1, 2, 3])
@@ -154,7 +155,7 @@ def test_fixed_size_list_field():
 
 def test_fixed_size_list_validation():
     class TestModel(pydantic.BaseModel):
-        vec: vector(8)
+        vec: Vector(8)
 
     with pytest.raises(pydantic.ValidationError):
         TestModel(vec=range(9))
@@ -167,9 +168,12 @@ def test_fixed_size_list_validation():
 
 def test_lance_model():
     class TestModel(LanceModel):
-        vec: vector(16)
-        li: List[int]
+        vector: Vector(16) = Field(default=[0.0] * 16)
+        li: List[int] = Field(default=[1, 2, 3])
 
     schema = pydantic_to_schema(TestModel)
     assert schema == TestModel.to_arrow_schema()
-    assert TestModel.field_names() == ["vec", "li"]
+    assert TestModel.field_names() == ["vector", "li"]
+
+    t = TestModel()
+    assert t == TestModel(vec=[0.0] * 16, li=[1, 2, 3])

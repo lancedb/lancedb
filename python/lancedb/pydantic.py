@@ -46,7 +46,19 @@ class FixedSizeListMixin(ABC):
         raise NotImplementedError
 
 
-def vector(
+def vector(dim: int, value_type: pa.DataType = pa.float32()):
+    # TODO: remove in future release
+    from warnings import warn
+
+    warn(
+        "lancedb.pydantic.vector() is deprecated, use lancedb.pydantic.Vector instead."
+        "This function will be removed in future release",
+        DeprecationWarning,
+    )
+    return Vector(dim, value_type)
+
+
+def Vector(
     dim: int, value_type: pa.DataType = pa.float32()
 ) -> Type[FixedSizeListMixin]:
     """Pydantic Vector Type.
@@ -65,12 +77,12 @@ def vector(
     --------
 
     >>> import pydantic
-    >>> from lancedb.pydantic import vector
+    >>> from lancedb.pydantic import Vector
     ...
     >>> class MyModel(pydantic.BaseModel):
     ...     id: int
     ...     url: str
-    ...     embeddings: vector(768)
+    ...     embeddings: Vector(768)
     >>> schema = pydantic_to_schema(MyModel)
     >>> assert schema == pa.schema([
     ...     pa.field("id", pa.int64(), False),
@@ -258,11 +270,11 @@ class LanceModel(pydantic.BaseModel):
     Examples
     --------
     >>> import lancedb
-    >>> from lancedb.pydantic import LanceModel, vector
+    >>> from lancedb.pydantic import LanceModel, Vector
     >>>
     >>> class TestModel(LanceModel):
     ...     name: str
-    ...     vector: vector(2)
+    ...     vector: Vector(2)
     ...
     >>> db = lancedb.connect("/tmp")
     >>> table = db.create_table("test", schema=TestModel.to_arrow_schema())
