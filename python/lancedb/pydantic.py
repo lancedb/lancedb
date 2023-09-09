@@ -46,7 +46,7 @@ class FixedSizeListMixin(ABC):
         raise NotImplementedError
 
 
-def Vector(dim: int, value_type: pa.DataType = pa.float32()):
+def vector(dim: int, value_type: pa.DataType = pa.float32()):
     # TODO: remove in future release
     from warnings import warn
 
@@ -77,7 +77,7 @@ def Vector(
     --------
 
     >>> import pydantic
-    >>> from lancedb.pydantic import vector
+    >>> from lancedb.pydantic import Vector
     ...
     >>> class MyModel(pydantic.BaseModel):
     ...     id: int
@@ -270,11 +270,11 @@ class LanceModel(pydantic.BaseModel):
     Examples
     --------
     >>> import lancedb
-    >>> from lancedb.pydantic import LanceModel, vector
+    >>> from lancedb.pydantic import LanceModel, Vector
     >>>
     >>> class TestModel(LanceModel):
     ...     name: str
-    ...     vector: vector(2)
+    ...     vector: Vector(2)
     ...
     >>> db = lancedb.connect("/tmp")
     >>> table = db.create_table("test", schema=TestModel.to_arrow_schema())
