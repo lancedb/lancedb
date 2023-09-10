@@ -5,7 +5,6 @@ import pytest
 
 from .embeddings import EmbeddingFunctionRegistry, TextEmbeddingFunction
 
-
 # import lancedb so we don't have to in every example
 
 
