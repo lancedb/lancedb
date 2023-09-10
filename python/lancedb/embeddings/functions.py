@@ -12,6 +12,7 @@
 #  limitations under the License.
 import concurrent.futures
 import importlib
+import io
 import json
 import os
 import socket
@@ -140,7 +141,7 @@ class EmbeddingFunctionRegistry:
         return {"embedding_functions": metadata}
 
 
-# Global instance, do not use
+# Global instance
 __REGISTRY__ = EmbeddingFunctionRegistry()
 
 
@@ -160,6 +161,13 @@ class EmbeddingFunction(BaseModel, ABC):
     For text data, the two will be the same. For multi-modal data, the source column
     might be images and the vector column might be text.
     """
+
+    @classmethod
+    def create(cls, **kwargs):
+        """
+        Create an instance of the embedding function
+        """
+        return cls(**kwargs)
 
     @abstractmethod
     def compute_query_embeddings(self, *args, **kwargs) -> List[np.array]:
@@ -242,7 +250,10 @@ class TextEmbeddingFunction(EmbeddingFunction):
         pass
 
 
-@EmbeddingFunctionRegistry.get_instance().register("sentence-transformers")
+register = lambda name: EmbeddingFunctionRegistry.get_instance().register(name)
+
+
+@register("sentence-transformers")
 class SentenceTransformerEmbeddings(TextEmbeddingFunction):
     """
     An embedding function that uses the sentence-transformers library
@@ -305,7 +316,7 @@ class SentenceTransformerEmbeddings(TextEmbeddingFunction):
         return sentence_transformers.SentenceTransformer(name, device=device)
 
 
-@EmbeddingFunctionRegistry.get_instance().register("openai")
+@register("openai")
 class OpenAIEmbeddings(TextEmbeddingFunction):
     """
     An embedding function that uses the OpenAI API
@@ -335,7 +346,7 @@ class OpenAIEmbeddings(TextEmbeddingFunction):
         return [v["embedding"] for v in rs]
 
 
-@EmbeddingFunctionRegistry.get_instance().register("openclip")
+@register("openclip")
 class OpenClipEmbeddings(EmbeddingFunction):
     name: str = "ViT-B-32"
     pretrained: str = "laion2b_s34b_b79k"
@@ -427,7 +438,7 @@ class OpenClipEmbeddings(EmbeddingFunction):
     def _to_pil(self, image: Union[str, bytes]):
         PIL = self.safe_import("PIL", "pillow")
         if isinstance(image, bytes):
-            return PIL.Image.frombytes(image)
+            return PIL.Image.open(io.BytesIO(image))
         if isinstance(image, PIL.Image.Image):
             return image
         elif isinstance(image, str):
@@ -438,7 +449,7 @@ class OpenClipEmbeddings(EmbeddingFunction):
             elif parsed.scheme == "":
                 return PIL.Image.open(image if os.name == "nt" else parsed.path)
             elif parsed.scheme.startswith("http"):
-                return PIL.Image.frombytes(url_retrieve(image))
+                return PIL.Image.open(io.BytesIO(url_retrieve(image)))
             else:
                 raise NotImplementedError("Only local and http(s) urls are supported")
 
