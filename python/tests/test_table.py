@@ -21,6 +21,7 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pytest
+
 from lancedb.conftest import MockTextEmbeddingFunction
 from lancedb.db import LanceDBConnection
 from lancedb.embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
@@ -380,20 +381,13 @@ def test_create_with_embedding_function(db):
 
 
 def test_add_with_embedding_function(db):
-    class MyTable(LanceModel):
-        text: str
-        vector: Vector(10)
+    emb = EmbeddingFunctionRegistry.get_instance().get("test")()
 
-    func = EmbeddingFunctionRegistry.get_instance().get("test")()
-    conf = EmbeddingFunctionConfig(
-        source_column="text", vector_column="vector", function=func
-    )
-    table = LanceTable.create(
-        db,
-        "my_table",
-        schema=MyTable,
-        embedding_functions=[conf],
-    )
+    class MyTable(LanceModel):
+        text: str = emb.SourceField()
+        vector: Vector(emb.ndims) = emb.VectorField()
+
+    table = LanceTable.create(db, "my_table", schema=MyTable)
 
     texts = ["hello world", "goodbye world", "foo bar baz fizz buzz"]
     df = pd.DataFrame({"text": texts})
@@ -403,7 +397,7 @@ def test_add_with_embedding_function(db):
     table.add([{"text": t} for t in texts])
 
     query_str = "hi how are you?"
-    query_vector = func.compute_query_embeddings(query_str)[0]
+    query_vector = emb.compute_query_embeddings(query_str)[0]
     expected = table.search(query_vector).limit(2).to_arrow()
 
     actual = table.search(query_str).limit(2).to_arrow()

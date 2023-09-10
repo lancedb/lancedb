@@ -33,5 +33,6 @@ class MockTextEmbeddingFunction(TextEmbeddingFunction):
         emb /= np.linalg.norm(emb)
         return emb
 
-    def vector_dimensions(self):
+    @property
+    def ndims(self):
         return 10

@@ -25,7 +25,7 @@ from typing import List, Optional, Union
 import numpy as np
 import pyarrow as pa
 from cachetools import cached
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class EmbeddingFunctionRegistry:
@@ -132,6 +132,8 @@ class EmbeddingFunctionRegistry:
         Convert a list of embedding functions and source / vector column configs
         into a config dictionary that can be serialized into arrow metadata
         """
+        if func_list is None or len(func_list) == 0:
+            return None
         json_data = [self.function_to_metadata(func) for func in func_list]
         # Note that metadata dictionary values must be bytes so we need to json dump then utf8 encode
         metadata = json.dumps(json_data, indent=2).encode("utf-8")
@@ -192,12 +194,19 @@ class EmbeddingFunction(BaseModel, ABC):
         except ImportError:
             raise ImportError(f"Please install {mitigation or module}")
 
+    @property
     @abstractmethod
-    def vector_dimensions(self):
+    def ndims(self):
         """
         Return the dimensions of the vector column
         """
         pass
+
+    def SourceField(self, **kwargs):
+        return Field(json_schema_extra={"source_column_for": self}, **kwargs)
+
+    def VectorField(self, **kwargs):
+        return Field(json_schema_extra={"vector_column_for": self}, **kwargs)
 
 
 class EmbeddingFunctionConfig(BaseModel):
@@ -253,8 +262,8 @@ class SentenceTransformerEmbeddings(TextEmbeddingFunction):
         return self.__class__.get_embedding_model(self.name, self.device)
 
     @cached_property
-    def vector_dimensions(self):
-        return self.generate_embeddings(["foo"])[0].shape[0]
+    def ndims(self):
+        return len(self.generate_embeddings(["foo"])[0])
 
     def generate_embeddings(
         self, texts: Union[List[str], np.ndarray]
@@ -304,7 +313,8 @@ class OpenAIEmbeddings(TextEmbeddingFunction):
 
     name: str = "text-embedding-ada-002"
 
-    def vector_dimensions(self):
+    @property
+    def ndims(self):
         # TODO don't hardcode this
         return 1536
 
@@ -344,7 +354,7 @@ class OpenClipEmbeddings(EmbeddingFunction):
         self._tokenizer = open_clip.get_tokenizer(self.name)
 
     @cached_property
-    def vector_dimensions(self):
+    def ndims(self):
         return self.generate_text_embeddings("foo").shape[0]
 
     def compute_query_embeddings(
