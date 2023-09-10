@@ -381,7 +381,7 @@ class OpenAIEmbeddings(TextEmbeddingFunction):
         return [v["embedding"] for v in rs]
 
 
-@register("openclip")
+@register("open-clip")
 class OpenClipEmbeddings(EmbeddingFunction):
     """
     An embedding function that uses the OpenClip API
