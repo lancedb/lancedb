@@ -528,6 +528,9 @@ class LanceTable(Table):
         fill_value: float = 0.0,
     ):
         """Add data to the table.
+        If vector columns are missing and the table
+        has embedding functions, then the vector columns
+        are automatically computed and added.
 
         Parameters
         ----------
@@ -660,7 +663,7 @@ class LanceTable(Table):
             If `query` is a PIL.Image.Image then either do vector search
             or raise an error if no corresponding embedding function is found.
             If the query is a string, then the query type is "vector" if the
-            table has embedding functions else the query type is "fts"
+            table has embedding functions, else the query type is "fts"
 
         Returns
         -------
@@ -727,10 +730,16 @@ class LanceTable(Table):
         """
         tbl = LanceTable(db, name)
         if inspect.isclass(schema) and issubclass(schema, LanceModel):
+            # convert LanceModel to pyarrow schema
+            # note that it's possible this contains
+            # embedding function metadata already
             schema = schema.to_arrow_schema()
 
         metadata = None
         if embedding_functions is not None:
+            # If we passed in embedding functions explicitly
+            # then we'll override any schema metadata that
+            # may was implicitly specified by the LanceModel schema
             registry = EmbeddingFunctionRegistry.get_instance()
             metadata = registry.get_table_metadata(embedding_functions)
 

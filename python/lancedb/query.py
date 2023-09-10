@@ -67,6 +67,8 @@ class LanceQueryBuilder(ABC):
         if query is None:
             return LanceEmptyQueryBuilder(table)
 
+        # convert "auto" query_type to "vector" or "fts"
+        # and convert the query to vector if needed
         query, query_type = cls._resolve_query(
             table, query, query_type, vector_column_name
         )
