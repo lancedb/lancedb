@@ -12,15 +12,14 @@
 #  limitations under the License.
 import io
 
+import lancedb
 import numpy as np
 import pandas as pd
 import pytest
 import requests
-from PIL import Image
-
-import lancedb
 from lancedb.embeddings import EmbeddingFunctionRegistry
 from lancedb.pydantic import LanceModel, Vector
+
 
 # These are integration tests for embedding functions.
 # They are slow because they require downloading models
@@ -66,6 +65,8 @@ def test_sentence_transformer(alias, tmp_path):
 
 @pytest.mark.slow
 def test_openclip(tmp_path):
+    from PIL import Image
+
     db = lancedb.connect(tmp_path)
     registry = EmbeddingFunctionRegistry.get_instance()
     func = registry.get("openclip").create()
