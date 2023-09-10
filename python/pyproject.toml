@@ -44,9 +44,11 @@ classifiers = [
 repository = "https://github.com/lancedb/lancedb"
 
 [project.optional-dependencies]
-tests = ["pandas>=1.4", "pytest", "pytest-mock", "pytest-asyncio"]
+tests = ["pandas>=1.4", "pytest", "pytest-mock", "pytest-asyncio", "requests"]
 dev = ["ruff", "pre-commit", "black"]
 docs = ["mkdocs", "mkdocs-jupyter", "mkdocs-material", "mkdocstrings[python]"]
+clip = ["torch", "pillow", "open-clip"]
+embeddings = ["openai", "sentence-transformers", "torch", "pillow", "open-clip"]
 
 [build-system]
 requires = ["setuptools", "wheel"]
@@ -56,6 +58,8 @@ build-backend = "setuptools.build_meta"
 profile = "black"
 
 [tool.pytest.ini_options]
+addopts = "--strict-markers"
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "asyncio"
 ]
