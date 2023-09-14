@@ -14,7 +14,7 @@
 
 use lance::index::vector::ivf::IvfBuildParams;
 use lance::index::vector::pq::PQBuildParams;
-use lance::index::vector::MetricType;
+use lance_linalg::distance::MetricType;
 use neon::context::FunctionContext;
 use neon::prelude::*;
 use std::convert::TryFrom;
