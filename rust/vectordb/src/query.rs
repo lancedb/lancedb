@@ -17,7 +17,7 @@ use std::sync::Arc;
 use arrow_array::Float32Array;
 use lance::dataset::scanner::{DatasetRecordBatchStream, Scanner};
 use lance::dataset::Dataset;
-use lance::index::vector::MetricType;
+use lance_linalg::distance::MetricType;
 
 use crate::error::Result;
 
@@ -164,10 +164,10 @@ impl Query {
 mod tests {
     use std::sync::Arc;
 
+    use super::*;
     use arrow_array::{Float32Array, RecordBatch, RecordBatchIterator, RecordBatchReader};
     use arrow_schema::{DataType, Field as ArrowField, Schema as ArrowSchema};
     use lance::dataset::Dataset;
-    use lance::index::vector::MetricType;
 
     use crate::query::Query;
 
