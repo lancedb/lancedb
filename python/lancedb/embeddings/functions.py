@@ -45,7 +45,7 @@ class EmbeddingFunctionRegistry:
     def register(self, alias: str = None):
         """
         This creates a decorator that can be used to register
-        an EmbeddingModel.
+        an EmbeddingFunction.
 
         Parameters
         ----------
@@ -58,7 +58,7 @@ class EmbeddingFunctionRegistry:
         # It adds the class to the registry
         def decorator(cls):
             if not issubclass(cls, EmbeddingFunction):
-                raise TypeError("Must be a subclass of EmbeddingModel")
+                raise TypeError("Must be a subclass of EmbeddingFunction")
             if cls.__name__ in self._functions:
                 raise KeyError(f"{cls.__name__} was already registered")
             key = alias or cls.__name__
