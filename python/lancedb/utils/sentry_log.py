@@ -1,6 +1,7 @@
 import sys
 import logging
 from pathlib import Path
+import importlib.metadata
 from .general import is_pip_package, is_git_dir, is_pytest_running, is_github_actions_ci, is_online, ENVIRONMENT
 from . import CONFIG
 
@@ -44,15 +45,17 @@ def set_sentry():
             'sys_argv': sys.argv[0],
             'sys_argv_name': Path(sys.argv[0]).name,
             'install': 'git' if is_git_dir() else 'pip' if is_pip_package() else 'other',
-            'os': ENVIRONMENT}
+            'os': ENVIRONMENT,
+            'version': importlib.metadata.version("lancedb")
+            }
         return event
     TESTS_RUNNING = is_pytest_running() or is_github_actions_ci()
     ONLINE = is_online()
     if CONFIG['sync'] and \
             not TESTS_RUNNING and \
             ONLINE and \
-            is_pip_package() and \
-            not is_git_dir():
+            is_pip_package():
+            # and not is_git_dir(): # not running inside a git dir. Maybe too restrictive?
 
         # If sentry_sdk package is not installed then return and do not use Sentry
         try:
@@ -73,3 +76,5 @@ def set_sentry():
         for logger in 'sentry_sdk', 'sentry_sdk.errors':
             logging.getLogger(logger).setLevel(logging.CRITICAL)
 
+
+set_sentry()
