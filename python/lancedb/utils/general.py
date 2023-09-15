@@ -4,7 +4,7 @@ import sys
 import re
 import contextlib
 import subprocess
-import logging
+import logging.config
 import importlib
 import platform
 import yaml
