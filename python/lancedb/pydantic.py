@@ -26,6 +26,8 @@ import pyarrow as pa
 import pydantic
 import semver
 
+from .embeddings import EmbeddingFunctionRegistry
+
 PYDANTIC_VERSION = semver.Version.parse(pydantic.__version__)
 try:
     from pydantic_core import CoreSchema, core_schema
@@ -290,13 +292,49 @@ class LanceModel(pydantic.BaseModel):
         """
         Get the Arrow Schema for this model.
         """
-        return pydantic_to_schema(cls)
+        schema = pydantic_to_schema(cls)
+        functions = cls.parse_embedding_functions()
+        if len(functions) > 0:
+            metadata = EmbeddingFunctionRegistry.get_instance().get_table_metadata(
+                functions
+            )
+            schema = schema.with_metadata(metadata)
+        return schema
 
     @classmethod
     def field_names(cls) -> List[str]:
         """
         Get the field names of this model.
         """
+        return list(cls.safe_get_fields().keys())
+
+    @classmethod
+    def safe_get_fields(cls):
         if PYDANTIC_VERSION.major < 2:
-            return list(cls.__fields__.keys())
-        return list(cls.model_fields.keys())
+            return cls.__fields__
+        return cls.model_fields
+
+    @classmethod
+    def parse_embedding_functions(cls) -> List["EmbeddingFunctionConfig"]:
+        """
+        Parse the embedding functions from this model.
+        """
+        from .embeddings import EmbeddingFunctionConfig
+
+        vec_and_function = []
+        for name, field_info in cls.safe_get_fields().items():
+            func = (field_info.json_schema_extra or {}).get("vector_column_for")
+            if func is not None:
+                vec_and_function.append([name, func])
+
+        configs = []
+        for vec, func in vec_and_function:
+            for source, field_info in cls.safe_get_fields().items():
+                src_func = (field_info.json_schema_extra or {}).get("source_column_for")
+                if src_func == func:
+                    configs.append(
+                        EmbeddingFunctionConfig(
+                            source_column=source, vector_column=vec, function=func
+                        )
+                    )
+        return configs

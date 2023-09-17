@@ -38,7 +38,7 @@ jobs:
     - name: isort
       run: isort --check --diff --quiet .
     - name: Run tests
-      run: pytest -x -v --durations=30 tests
+      run: pytest -m "not slow" -x -v --durations=30 tests
     - name: doctest
       run: pytest --doctest-modules lancedb
   mac:
@@ -65,4 +65,4 @@ jobs:
     - name: Black
       run: black --check --diff --no-color --quiet .
     - name: Run tests
-      run: pytest -x -v --durations=30 tests
+      run: pytest -m "not slow" -x -v --durations=30 tests

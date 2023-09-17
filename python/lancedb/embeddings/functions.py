@@ -10,14 +10,23 @@
 #  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
+import concurrent.futures
+import importlib
+import io
 import json
+import os
+import socket
+import urllib.error
+import urllib.parse as urlparse
+import urllib.request
 from abc import ABC, abstractmethod
-from typing import List, Optional, Union
+from functools import cached_property
+from typing import Dict, List, Optional, Union
 
 import numpy as np
 import pyarrow as pa
 from cachetools import cached
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class EmbeddingFunctionRegistry:
@@ -28,25 +37,33 @@ class EmbeddingFunctionRegistry:
 
     @classmethod
     def get_instance(cls):
-        return REGISTRY
+        return __REGISTRY__
 
     def __init__(self):
         self._functions = {}
 
-    def register(self):
+    def register(self, alias: str = None):
         """
         This creates a decorator that can be used to register
-        an EmbeddingFunctionModel.
+        an EmbeddingFunction.
+
+        Parameters
+        ----------
+        alias : Optional[str]
+            a human friendly name for the embedding function. If not
+            provided, the class name will be used.
         """
 
         # This is a decorator for a class that inherits from BaseModel
         # It adds the class to the registry
         def decorator(cls):
-            if not issubclass(cls, EmbeddingFunctionModel):
-                raise TypeError("Must be a subclass of EmbeddingFunctionModel")
+            if not issubclass(cls, EmbeddingFunction):
+                raise TypeError("Must be a subclass of EmbeddingFunction")
             if cls.__name__ in self._functions:
                 raise KeyError(f"{cls.__name__} was already registered")
-            self._functions[cls.__name__] = cls
+            key = alias or cls.__name__
+            self._functions[key] = cls
+            cls.__embedding_function_registry_alias__ = alias
             return cls
 
         return decorator
@@ -57,13 +74,22 @@ class EmbeddingFunctionRegistry:
         """
         self._functions = {}
 
-    def load(self, name: str):
+    def get(self, name: str):
         """
         Fetch an embedding function class by name
+
+        Parameters
+        ----------
+        name : str
+            The name of the embedding function to fetch
+            Either the alias or the class name if no alias was provided
+            during registration
         """
         return self._functions[name]
 
-    def parse_functions(self, metadata: Optional[dict]) -> dict:
+    def parse_functions(
+        self, metadata: Optional[Dict[bytes, bytes]]
+    ) -> Dict[str, "EmbeddingFunctionConfig"]:
         """
         Parse the metadata from an arrow table and
         return a mapping of the vector column to the
@@ -71,9 +97,9 @@ class EmbeddingFunctionRegistry:
 
         Parameters
         ----------
-        metadata : Optional[dict]
+        metadata : Optional[Dict[bytes, bytes]]
             The metadata from an arrow table. Note that
-            the keys and values are bytes.
+            the keys and values are bytes (pyarrow api)
 
         Returns
         -------
@@ -86,68 +112,91 @@ class EmbeddingFunctionRegistry:
             return {}
         serialized = metadata[b"embedding_functions"]
         raw_list = json.loads(serialized.decode("utf-8"))
-        functions = {}
-        for obj in raw_list:
-            model = self.load(obj["schema"]["title"])
-            functions[obj["model"]["vector_column"]] = model(**obj["model"])
-        return functions
+        return {
+            obj["vector_column"]: EmbeddingFunctionConfig(
+                vector_column=obj["vector_column"],
+                source_column=obj["source_column"],
+                function=self.get(obj["name"])(**obj["model"]),
+            )
+            for obj in raw_list
+        }
 
-    def function_to_metadata(self, func):
+    def function_to_metadata(self, conf: "EmbeddingFunctionConfig"):
         """
         Convert the given embedding function and source / vector column configs
         into a config dictionary that can be serialized into arrow metadata
         """
-        schema = func.model_json_schema()
+        func = conf.function
+        name = getattr(
+            func, "__embedding_function_registry_alias__", func.__class__.__name__
+        )
         json_data = func.model_dump()
         return {
-            "schema": schema,
+            "name": name,
             "model": json_data,
+            "source_column": conf.source_column,
+            "vector_column": conf.vector_column,
         }
 
     def get_table_metadata(self, func_list):
         """
-        Convert a list of embedding functions and source / vector column configs
+        Convert a list of embedding functions and source / vector configs
         into a config dictionary that can be serialized into arrow metadata
         """
+        if func_list is None or len(func_list) == 0:
+            return None
         json_data = [self.function_to_metadata(func) for func in func_list]
-        # Note that metadata dictionary values must be bytes so we need to json dump then utf8 encode
+        # Note that metadata dictionary values must be bytes
+        # so we need to json dump then utf8 encode
         metadata = json.dumps(json_data, indent=2).encode("utf-8")
         return {"embedding_functions": metadata}
 
 
-REGISTRY = EmbeddingFunctionRegistry()
-
-
-class EmbeddingFunctionModel(BaseModel, ABC):
-    """
-    A callable ABC for embedding functions
-    """
-
-    source_column: Optional[str]
-    vector_column: str
-
-    @abstractmethod
-    def __call__(self, *args, **kwargs) -> List[np.array]:
-        pass
+# Global instance
+__REGISTRY__ = EmbeddingFunctionRegistry()
 
 
 TEXT = Union[str, List[str], pa.Array, pa.ChunkedArray, np.ndarray]
+IMAGES = Union[
+    str, bytes, List[str], List[bytes], pa.Array, pa.ChunkedArray, np.ndarray
+]
 
 
-class TextEmbeddingFunctionModel(EmbeddingFunctionModel):
+class EmbeddingFunction(BaseModel, ABC):
     """
-    A callable ABC for embedding functions that take text as input
+    An ABC for embedding functions.
+
+    The API has two methods:
+    1. compute_query_embeddings() which takes a query and returns a list of embeddings
+    2. get_source_embeddings() which returns a list of embeddings for the source column
+    For text data, the two will be the same. For multi-modal data, the source column
+    might be images and the vector column might be text.
     """
 
-    def __call__(self, texts: TEXT, *args, **kwargs) -> List[np.array]:
-        texts = self.sanitize_input(texts)
-        return self.generate_embeddings(texts)
+    @classmethod
+    def create(cls, **kwargs):
+        """
+        Create an instance of the embedding function
+        """
+        return cls(**kwargs)
+
+    @abstractmethod
+    def compute_query_embeddings(self, *args, **kwargs) -> List[np.array]:
+        """
+        Compute the embeddings for a given user query
+        """
+        pass
+
+    @abstractmethod
+    def compute_source_embeddings(self, *args, **kwargs) -> List[np.array]:
+        """
+        Compute the embeddings for the source column in the database
+        """
+        pass
 
     def sanitize_input(self, texts: TEXT) -> Union[List[str], np.ndarray]:
         """
-        Sanitize the input to the embedding function. This is called
-        before generate_embeddings() and is useful for stripping
-        whitespace, lowercasing, etc.
+        Sanitize the input to the embedding function.
         """
         if isinstance(texts, str):
             texts = [texts]
@@ -156,6 +205,71 @@ class TextEmbeddingFunctionModel(EmbeddingFunctionModel):
         elif isinstance(texts, pa.ChunkedArray):
             texts = texts.combine_chunks().to_pylist()
         return texts
+
+    @classmethod
+    def safe_import(cls, module: str, mitigation=None):
+        """
+        Import the specified module. If the module is not installed,
+        raise an ImportError with a helpful message.
+
+        Parameters
+        ----------
+        module : str
+            The name of the module to import
+        mitigation : Optional[str]
+            The package(s) to install to mitigate the error.
+            If not provided then the module name will be used.
+        """
+        try:
+            return importlib.import_module(module)
+        except ImportError:
+            raise ImportError(f"Please install {mitigation or module}")
+
+    @property
+    @abstractmethod
+    def ndims(self):
+        """
+        Return the dimensions of the vector column
+        """
+        pass
+
+    def SourceField(self, **kwargs):
+        """
+        Return a pydantic Field that can automatically indicate
+        the source column for this embedding function
+        """
+        return Field(json_schema_extra={"source_column_for": self}, **kwargs)
+
+    def VectorField(self, **kwargs):
+        """
+        Return a pydantic Field that can automatically indicate
+        the target vector column for this embedding function
+        """
+        return Field(json_schema_extra={"vector_column_for": self}, **kwargs)
+
+
+class EmbeddingFunctionConfig(BaseModel):
+    """
+    This is a dataclass that holds the embedding function
+    and source column for a vector column
+    """
+
+    vector_column: str
+    source_column: str
+    function: EmbeddingFunction
+
+
+class TextEmbeddingFunction(EmbeddingFunction):
+    """
+    A callable ABC for embedding functions that take text as input
+    """
+
+    def compute_query_embeddings(self, query: str, *args, **kwargs) -> List[np.array]:
+        return self.compute_source_embeddings(query, *args, **kwargs)
+
+    def compute_source_embeddings(self, texts: TEXT, *args, **kwargs) -> List[np.array]:
+        texts = self.sanitize_input(texts)
+        return self.generate_embeddings(texts)
 
     @abstractmethod
     def generate_embeddings(
@@ -167,15 +281,20 @@ class TextEmbeddingFunctionModel(EmbeddingFunctionModel):
         pass
 
 
-@REGISTRY.register()
-class SentenceTransformerEmbeddingFunction(TextEmbeddingFunctionModel):
+register = lambda name: EmbeddingFunctionRegistry.get_instance().register(name)
+
+
+@register("sentence-transformers")
+class SentenceTransformerEmbeddings(TextEmbeddingFunction):
     """
     An embedding function that uses the sentence-transformers library
+
+    https://huggingface.co/sentence-transformers
     """
 
     name: str = "all-MiniLM-L6-v2"
     device: str = "cpu"
-    normalize: bool = False
+    normalize: bool = True
 
     @property
     def embedding_model(self):
@@ -185,6 +304,10 @@ class SentenceTransformerEmbeddingFunction(TextEmbeddingFunctionModel):
         once per process.
         """
         return self.__class__.get_embedding_model(self.name, self.device)
+
+    @cached_property
+    def ndims(self):
+        return len(self.generate_embeddings(["foo"])[0])
 
     def generate_embeddings(
         self, texts: Union[List[str], np.ndarray]
@@ -220,9 +343,197 @@ class SentenceTransformerEmbeddingFunction(TextEmbeddingFunctionModel):
 
         TODO: use lru_cache instead with a reasonable/configurable maxsize
         """
-        try:
-            from sentence_transformers import SentenceTransformer
+        sentence_transformers = cls.safe_import(
+            "sentence_transformers", "sentence-transformers"
+        )
+        return sentence_transformers.SentenceTransformer(name, device=device)
 
-            return SentenceTransformer(name, device=device)
-        except ImportError:
-            raise ValueError("Please install sentence_transformers")
+
+@register("openai")
+class OpenAIEmbeddings(TextEmbeddingFunction):
+    """
+    An embedding function that uses the OpenAI API
+
+    https://platform.openai.com/docs/guides/embeddings
+    """
+
+    name: str = "text-embedding-ada-002"
+
+    @property
+    def ndims(self):
+        # TODO don't hardcode this
+        return 1536
+
+    def generate_embeddings(
+        self, texts: Union[List[str], np.ndarray]
+    ) -> List[np.array]:
+        """
+        Get the embeddings for the given texts
+
+        Parameters
+        ----------
+        texts: list[str] or np.ndarray (of str)
+            The texts to embed
+        """
+        # TODO retry, rate limit, token limit
+        openai = self.safe_import("openai")
+        rs = openai.Embedding.create(input=texts, model=self.name)["data"]
+        return [v["embedding"] for v in rs]
+
+
+@register("open-clip")
+class OpenClipEmbeddings(EmbeddingFunction):
+    """
+    An embedding function that uses the OpenClip API
+    For multi-modal text-to-image search
+
+    https://github.com/mlfoundations/open_clip
+    """
+
+    name: str = "ViT-B-32"
+    pretrained: str = "laion2b_s34b_b79k"
+    device: str = "cpu"
+    batch_size: int = 64
+    normalize: bool = True
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        open_clip = self.safe_import("open_clip", "open-clip")
+        model, _, preprocess = open_clip.create_model_and_transforms(
+            self.name, pretrained=self.pretrained
+        )
+        model.to(self.device)
+        self._model, self._preprocess = model, preprocess
+        self._tokenizer = open_clip.get_tokenizer(self.name)
+
+    @cached_property
+    def ndims(self):
+        return self.generate_text_embeddings("foo").shape[0]
+
+    def compute_query_embeddings(
+        self, query: Union[str, "PIL.Image.Image"], *args, **kwargs
+    ) -> List[np.ndarray]:
+        """
+        Compute the embeddings for a given user query
+
+        Parameters
+        ----------
+        query : Union[str, PIL.Image.Image]
+            The query to embed. A query can be either text or an image.
+        """
+        if isinstance(query, str):
+            return [self.generate_text_embeddings(query)]
+        else:
+            PIL = self.safe_import("PIL", "pillow")
+            if isinstance(query, PIL.Image.Image):
+                return [self.generate_image_embedding(query)]
+            else:
+                raise TypeError("OpenClip supports str or PIL Image as query")
+
+    def generate_text_embeddings(self, text: str) -> np.ndarray:
+        torch = self.safe_import("torch")
+        text = self.sanitize_input(text)
+        text = self._tokenizer(text)
+        text.to(self.device)
+        with torch.no_grad():
+            text_features = self._model.encode_text(text.to(self.device))
+            if self.normalize:
+                text_features /= text_features.norm(dim=-1, keepdim=True)
+            return text_features.cpu().numpy().squeeze()
+
+    def sanitize_input(self, images: IMAGES) -> Union[List[bytes], np.ndarray]:
+        """
+        Sanitize the input to the embedding function.
+        """
+        if isinstance(images, (str, bytes)):
+            images = [images]
+        elif isinstance(images, pa.Array):
+            images = images.to_pylist()
+        elif isinstance(images, pa.ChunkedArray):
+            images = images.combine_chunks().to_pylist()
+        return images
+
+    def compute_source_embeddings(
+        self, images: IMAGES, *args, **kwargs
+    ) -> List[np.array]:
+        """
+        Get the embeddings for the given images
+        """
+        images = self.sanitize_input(images)
+        embeddings = []
+        for i in range(0, len(images), self.batch_size):
+            j = min(i + self.batch_size, len(images))
+            batch = images[i:j]
+            embeddings.extend(self._parallel_get(batch))
+        return embeddings
+
+    def _parallel_get(self, images: Union[List[str], List[bytes]]) -> List[np.ndarray]:
+        """
+        Issue concurrent requests to retrieve the image data
+        """
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            futures = [
+                executor.submit(self.generate_image_embedding, image)
+                for image in images
+            ]
+            return [future.result() for future in futures]
+
+    def generate_image_embedding(
+        self, image: Union[str, bytes, "PIL.Image.Image"]
+    ) -> np.ndarray:
+        """
+        Generate the embedding for a single image
+
+        Parameters
+        ----------
+        image : Union[str, bytes, PIL.Image.Image]
+            The image to embed. If the image is a str, it is treated as a uri.
+            If the image is bytes, it is treated as the raw image bytes.
+        """
+        torch = self.safe_import("torch")
+        # TODO handle retry and errors for https
+        image = self._to_pil(image)
+        image = self._preprocess(image).unsqueeze(0)
+        with torch.no_grad():
+            return self._encode_and_normalize_image(image)
+
+    def _to_pil(self, image: Union[str, bytes]):
+        PIL = self.safe_import("PIL", "pillow")
+        if isinstance(image, bytes):
+            return PIL.Image.open(io.BytesIO(image))
+        if isinstance(image, PIL.Image.Image):
+            return image
+        elif isinstance(image, str):
+            parsed = urlparse.urlparse(image)
+            # TODO handle drive letter on windows.
+            if parsed.scheme == "file":
+                return PIL.Image.open(parsed.path)
+            elif parsed.scheme == "":
+                return PIL.Image.open(image if os.name == "nt" else parsed.path)
+            elif parsed.scheme.startswith("http"):
+                return PIL.Image.open(io.BytesIO(url_retrieve(image)))
+            else:
+                raise NotImplementedError("Only local and http(s) urls are supported")
+
+    def _encode_and_normalize_image(self, image_tensor: "torch.Tensor"):
+        """
+        encode a single image tensor and optionally normalize the output
+        """
+        image_features = self._model.encode_image(image_tensor)
+        if self.normalize:
+            image_features /= image_features.norm(dim=-1, keepdim=True)
+        return image_features.cpu().numpy().squeeze()
+
+
+def url_retrieve(url: str):
+    """
+    Parameters
+    ----------
+    url: str
+        URL to download from
+    """
+    try:
+        with urllib.request.urlopen(url) as conn:
+            return conn.read()
+    except (socket.gaierror, urllib.error.URLError) as err:
+        raise ConnectionError("could not download {} due to {}".format(url, err))
