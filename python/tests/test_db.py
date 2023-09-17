@@ -136,11 +136,9 @@ def test_ingest_iterator(tmp_path):
     def run_tests(schema):
         db = lancedb.connect(tmp_path)
         tbl = db.create_table("table2", make_batches(), schema=schema, mode="overwrite")
-
         tbl.to_pandas()
         assert tbl.search([3.1, 4.1]).limit(1).to_df()["_distance"][0] == 0.0
         assert tbl.search([5.9, 26.5]).limit(1).to_df()["_distance"][0] == 0.0
-
         tbl_len = len(tbl)
         tbl.add(make_batches())
         assert tbl_len == 50

@@ -25,7 +25,7 @@ from typing import Dict, List, Optional, Union
 import numpy as np
 import pyarrow as pa
 from cachetools import cached
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 
 
 class EmbeddingFunctionRegistry:
@@ -148,7 +148,7 @@ class EmbeddingFunctionRegistry:
         name = getattr(
             func, "__embedding_function_registry_alias__", func.__class__.__name__
         )
-        json_data = func.model_dump()
+        json_data = func.safe_model_dump()
         return {
             "name": name,
             "model": json_data,
@@ -191,6 +191,8 @@ class EmbeddingFunction(BaseModel, ABC):
     might be images and the vector column might be text.
     3. ndims method which returns the number of dimensions of the vector column
     """
+
+    _ndims: int = PrivateAttr()
 
     @classmethod
     def create(cls, **kwargs):
@@ -243,6 +245,13 @@ class EmbeddingFunction(BaseModel, ABC):
             return importlib.import_module(module)
         except ImportError:
             raise ImportError(f"Please install {mitigation or module}")
+
+    def safe_model_dump(self):
+        from ..pydantic import PYDANTIC_VERSION
+
+        if PYDANTIC_VERSION.major < 2:
+            return dict(self)
+        return self.model_dump()
 
     @abstractmethod
     def ndims(self):
@@ -419,6 +428,9 @@ class OpenClipEmbeddings(EmbeddingFunction):
     device: str = "cpu"
     batch_size: int = 64
     normalize: bool = True
+    _model = PrivateAttr()
+    _preprocess = PrivateAttr()
+    _tokenizer = PrivateAttr()
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

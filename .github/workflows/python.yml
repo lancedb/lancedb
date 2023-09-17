@@ -66,3 +66,36 @@ jobs:
       run: black --check --diff --no-color --quiet .
     - name: Run tests
       run: pytest -m "not slow" -x -v --durations=30 tests
+  pydantic1x:
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        python-minor-version: [ "8" ]
+    runs-on: "ubuntu-22.04"
+    defaults:
+      run:
+        shell: bash
+        working-directory: python
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        fetch-depth: 0
+        lfs: true
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: 3.8
+    - name: Install lancedb
+      run: |
+        pip install "pydantic<2"
+        pip install -e .[tests]
+        pip install tantivy@git+https://github.com/quickwit-oss/tantivy-py#164adc87e1a033117001cf70e38c82a53014d985
+        pip install pytest pytest-mock black isort
+    - name: Black
+      run: black --check --diff --no-color --quiet .
+    - name: isort
+      run: isort --check --diff --quiet .
+    - name: Run tests
+      run: pytest -m "not slow" -x -v --durations=30 tests
+    - name: doctest
+      run: pytest --doctest-modules lancedb
