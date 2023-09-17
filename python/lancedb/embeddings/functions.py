@@ -40,7 +40,6 @@ class EmbeddingFunctionRegistry:
     >>> registry = EmbeddingFunctionRegistry.get_instance()
     >>> @registry.register("my-embedding-function")
     ... class MyEmbeddingFunction(EmbeddingFunction):
-    ...     @property
     ...     def ndims(self) -> int:
     ...         return 128
     ...
@@ -317,6 +316,10 @@ class SentenceTransformerEmbeddings(TextEmbeddingFunction):
     device: str = "cpu"
     normalize: bool = True
 
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._ndims = None
+
     @property
     def embedding_model(self):
         """
@@ -326,9 +329,10 @@ class SentenceTransformerEmbeddings(TextEmbeddingFunction):
         """
         return self.__class__.get_embedding_model(self.name, self.device)
 
-    @cached(cache={})
     def ndims(self):
-        return len(self.generate_embeddings(["foo"])[0])
+        if self._ndims is None:
+            self._ndims = len(self.generate_embeddings("foo")[0])
+        return self._ndims
 
     def generate_embeddings(
         self, texts: Union[List[str], np.ndarray]
@@ -425,10 +429,12 @@ class OpenClipEmbeddings(EmbeddingFunction):
         model.to(self.device)
         self._model, self._preprocess = model, preprocess
         self._tokenizer = open_clip.get_tokenizer(self.name)
+        self._ndims = None
 
-    @cached(cache={})
     def ndims(self):
-        return self.generate_text_embeddings("foo").shape[0]
+        if self._ndims is None:
+            self._ndims = self.generate_text_embeddings("foo").shape[0]
+        return self._ndims
 
     def compute_query_embeddings(
         self, query: Union[str, "PIL.Image.Image"], *args, **kwargs
