@@ -52,7 +52,7 @@ class EmbeddingFunctionRegistry:
     ...         return [np.random.rand(self.ndims) for _ in range(len(texts))]
     ...
     >>> registry.get("my-embedding-function")
-    <class '__main__.MyEmbeddingFunction'>
+    <class 'lancedb.embeddings.functions.MyEmbeddingFunction'>
     """
 
     @classmethod
