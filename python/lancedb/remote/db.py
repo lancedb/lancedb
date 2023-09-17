@@ -18,10 +18,9 @@ from urllib.parse import urlparse
 
 import pyarrow as pa
 
-from lancedb.common import DATA
-from lancedb.db import DBConnection
-from lancedb.table import Table, _sanitize_data
-
+from ..common import DATA
+from ..db import DBConnection
+from ..table import Table, _sanitize_data
 from .arrow import to_ipc_binary
 from .client import ARROW_STREAM_CONTENT_TYPE, RestfulLanceDBClient
 
