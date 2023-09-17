@@ -20,7 +20,6 @@ import urllib.error
 import urllib.parse as urlparse
 import urllib.request
 from abc import ABC, abstractmethod
-from functools import cached_property
 from typing import Dict, List, Optional, Union
 
 import numpy as np
@@ -49,7 +48,7 @@ class EmbeddingFunctionRegistry:
     ...         return self.compute_source_embeddings(query, *args, **kwargs)
     ...
     ...     def compute_source_embeddings(self, texts: TEXT, *args, **kwargs) -> List[np.array]:
-    ...         return [np.random.rand(self.ndims) for _ in range(len(texts))]
+    ...         return [np.random.rand(self.ndims()) for _ in range(len(texts))]
     ...
     >>> registry.get("my-embedding-function")
     <class 'lancedb.embeddings.functions.MyEmbeddingFunction'>
@@ -191,7 +190,7 @@ class EmbeddingFunction(BaseModel, ABC):
     2. get_source_embeddings() which returns a list of embeddings for the source column
     For text data, the two will be the same. For multi-modal data, the source column
     might be images and the vector column might be text.
-    3. ndims property which returns the number of dimensions of the vector column
+    3. ndims method which returns the number of dimensions of the vector column
     """
 
     @classmethod
@@ -246,7 +245,6 @@ class EmbeddingFunction(BaseModel, ABC):
         except ImportError:
             raise ImportError(f"Please install {mitigation or module}")
 
-    @property
     @abstractmethod
     def ndims(self):
         """
@@ -328,7 +326,7 @@ class SentenceTransformerEmbeddings(TextEmbeddingFunction):
         """
         return self.__class__.get_embedding_model(self.name, self.device)
 
-    @cached_property
+    @cached(cache={})
     def ndims(self):
         return len(self.generate_embeddings(["foo"])[0])
 
@@ -382,7 +380,6 @@ class OpenAIEmbeddings(TextEmbeddingFunction):
 
     name: str = "text-embedding-ada-002"
 
-    @property
     def ndims(self):
         # TODO don't hardcode this
         return 1536
@@ -429,7 +426,7 @@ class OpenClipEmbeddings(EmbeddingFunction):
         self._model, self._preprocess = model, preprocess
         self._tokenizer = open_clip.get_tokenizer(self.name)
 
-    @cached_property
+    @cached(cache={})
     def ndims(self):
         return self.generate_text_embeddings("foo").shape[0]
 

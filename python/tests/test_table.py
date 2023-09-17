@@ -21,7 +21,6 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pytest
-
 from lancedb.conftest import MockTextEmbeddingFunction
 from lancedb.db import LanceDBConnection
 from lancedb.embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
@@ -385,7 +384,7 @@ def test_add_with_embedding_function(db):
 
     class MyTable(LanceModel):
         text: str = emb.SourceField()
-        vector: Vector(emb.ndims) = emb.VectorField()
+        vector: Vector(emb.ndims()) = emb.VectorField()
 
     table = LanceTable.create(db, "my_table", schema=MyTable)
 

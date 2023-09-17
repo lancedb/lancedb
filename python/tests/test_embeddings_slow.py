@@ -12,14 +12,14 @@
 #  limitations under the License.
 import io
 
+import lancedb
 import numpy as np
 import pandas as pd
 import pytest
 import requests
-
-import lancedb
 from lancedb.embeddings import EmbeddingFunctionRegistry
 from lancedb.pydantic import LanceModel, Vector
+
 
 # These are integration tests for embedding functions.
 # They are slow because they require downloading models
@@ -35,7 +35,7 @@ def test_sentence_transformer(alias, tmp_path):
 
     class Words(LanceModel):
         text: str = func.SourceField()
-        vector: Vector(func.ndims) = func.VectorField()
+        vector: Vector(func.ndims()) = func.VectorField()
 
     table = db.create_table("words", schema=Words)
     table.add(
@@ -75,8 +75,8 @@ def test_openclip(tmp_path):
         label: str
         image_uri: str = func.SourceField()
         image_bytes: bytes = func.SourceField()
-        vector: Vector(func.ndims) = func.VectorField()
-        vec_from_bytes: Vector(func.ndims) = func.VectorField()
+        vector: Vector(func.ndims()) = func.VectorField()
+        vec_from_bytes: Vector(func.ndims()) = func.VectorField()
 
     table = db.create_table("images", schema=Images)
     labels = ["cat", "cat", "dog", "dog", "horse", "horse"]
