@@ -26,18 +26,6 @@ pip install lancedb
 
 ## Embeddings
 
-::: lancedb.embeddings.functions.EmbeddingFunctionRegistry
-
-::: lancedb.embeddings.functions.EmbeddingFunction
-
-::: lancedb.embeddings.functions.TextEmbeddingFunction
-
-::: lancedb.embeddings.functions.SentenceTransformerEmbeddings
-
-::: lancedb.embeddings.functions.OpenAIEmbeddings
-
-::: lancedb.embeddings.functions.OpenClipEmbeddings
-
 ::: lancedb.embeddings.with_embeddings
 
 ## Context
