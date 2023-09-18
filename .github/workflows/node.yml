@@ -9,6 +9,7 @@ on:
       - node/**
       - rust/ffi/node/**
       - .github/workflows/node.yml
+      - docker-compose.yml
 
 env:
   # Disable full debug symbol generation to speed up CI build and keep memory down
@@ -133,7 +134,7 @@ jobs:
         cache: 'npm'
         cache-dependency-path: node/package-lock.json
     - name: start local stack
-      run: docker compose -f ../docker-compose.yml up -d 
+      run: docker compose -f ../docker-compose.yml up -d --wait
     - name: create s3
       run: aws s3 mb s3://lancedb-integtest --endpoint $AWS_ENDPOINT
     - name: create ddb

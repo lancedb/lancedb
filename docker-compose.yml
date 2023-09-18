@@ -13,3 +13,6 @@ services:
       - AWS_SECRET_ACCESS_KEY=SECRETKEY
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost:4566/health" ]
+      interval: 5s
+      retries: 3
+      start_period: 10s
