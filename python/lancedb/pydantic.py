@@ -323,14 +323,14 @@ class LanceModel(pydantic.BaseModel):
 
         vec_and_function = []
         for name, field_info in cls.safe_get_fields().items():
-            func = (field_info.json_schema_extra or {}).get("vector_column_for")
+            func = get_extras(field_info, "vector_column_for")
             if func is not None:
                 vec_and_function.append([name, func])
 
         configs = []
         for vec, func in vec_and_function:
             for source, field_info in cls.safe_get_fields().items():
-                src_func = (field_info.json_schema_extra or {}).get("source_column_for")
+                src_func = get_extras(field_info, "source_column_for")
                 if src_func == func:
                     configs.append(
                         EmbeddingFunctionConfig(
@@ -338,3 +338,12 @@ class LanceModel(pydantic.BaseModel):
                         )
                     )
         return configs
+
+
+def get_extras(field_info: pydantic.fields.FieldInfo, key: str) -> Any:
+    """
+    Get the extra metadata from a Pydantic FieldInfo.
+    """
+    if PYDANTIC_VERSION.major >= 2:
+        return (field_info.json_schema_extra or {}).get(key)
+    return (field_info.field_info.extra or {}).get("json_schema_extra", {}).get(key)

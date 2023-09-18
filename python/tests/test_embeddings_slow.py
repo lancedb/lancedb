@@ -35,7 +35,7 @@ def test_sentence_transformer(alias, tmp_path):
 
     class Words(LanceModel):
         text: str = func.SourceField()
-        vector: Vector(func.ndims) = func.VectorField()
+        vector: Vector(func.ndims()) = func.VectorField()
 
     table = db.create_table("words", schema=Words)
     table.add(
@@ -75,8 +75,8 @@ def test_openclip(tmp_path):
         label: str
         image_uri: str = func.SourceField()
         image_bytes: bytes = func.SourceField()
-        vector: Vector(func.ndims) = func.VectorField()
-        vec_from_bytes: Vector(func.ndims) = func.VectorField()
+        vector: Vector(func.ndims()) = func.VectorField()
+        vec_from_bytes: Vector(func.ndims()) = func.VectorField()
 
     table = db.create_table("images", schema=Images)
     labels = ["cat", "cat", "dog", "dog", "horse", "horse"]
