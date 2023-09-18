@@ -385,7 +385,7 @@ def test_add_with_embedding_function(db):
 
     class MyTable(LanceModel):
         text: str = emb.SourceField()
-        vector: Vector(emb.ndims) = emb.VectorField()
+        vector: Vector(emb.ndims()) = emb.VectorField()
 
     table = LanceTable.create(db, "my_table", schema=MyTable)
 
