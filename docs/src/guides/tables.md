@@ -84,8 +84,7 @@ A Table is a collection of Records in a LanceDB Database. You can follow along o
     ```
 
     ### From Pydantic Models
-    LanceDB supports creating tables by specifying a pyarrow schema or a specialized
-    pydantic model called LanceModel.
+    LanceDB supports to create Apache Arrow Schema from a Pydantic BaseModel via pydantic_to_schema() method.
 
     ```python
     from lancedb.pydantic import Vector, LanceModel
