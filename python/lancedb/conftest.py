@@ -36,6 +36,5 @@ class MockTextEmbeddingFunction(TextEmbeddingFunction):
         emb /= np.linalg.norm(emb)
         return emb
 
-    @property
     def ndims(self):
         return 10
