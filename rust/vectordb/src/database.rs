@@ -231,6 +231,7 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use std::fs::create_dir_all;
+
     use tempfile::tempdir;
 
     use crate::database::Database;
