@@ -24,7 +24,7 @@ chai.use(chaiAsPromised)
 
 describe('LanceDB AWS Integration test', function () {
   it('s3+ddb schema is processed correctly', async function () {
-    this.timeout(5000)
+    this.timeout(15000)
 
     // WARNING: specifying engine is NOT a publicly supported feature in lancedb yet
     // THE API WILL CHANGE
