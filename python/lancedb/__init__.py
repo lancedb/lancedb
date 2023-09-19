@@ -11,11 +11,14 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
+import importlib.metadata
 from typing import Optional
 
 from .db import URI, DBConnection, LanceDBConnection
 from .remote.db import RemoteDBConnection
 from .schema import vector
+
+__version__ = importlib.metadata.version("lancedb")
 
 
 def connect(
