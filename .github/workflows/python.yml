@@ -94,5 +94,5 @@ jobs:
       run: isort --check --diff --quiet .
     - name: Run tests
       run: pytest -m "not slow" -x -v --durations=30 tests
-    # - name: doctest
-    #  run: pytest --doctest-modules lancedb
+    - name: doctest
+      run: pytest --doctest-modules lancedb
