@@ -84,7 +84,17 @@ A Table is a collection of Records in a LanceDB Database. You can follow along o
     ```
 
     ### From Pydantic Models
-    LanceDB supports to create Apache Arrow Schema from a Pydantic BaseModel via pydantic_to_schema() method.
+    When you create an empty table without data, you must specify the table schema.
+    LanceDB supports creating tables by specifying a pyarrow schema or a specialized
+    pydantic model called `LanceModel`.
+
+    For example, the following Content model specifies a table with 5 columns: 
+    movie_id, vector, genres, title, and imdb_id. When you create a table, you can
+    pass the class as the value of the `schema` parameter to `create_table`. 
+    The `vector` column is a `Vector` type, which is a specialized pydantic type that
+    can be configured with the vector dimensions. It is also important to note that
+    LanceDB only understands subclasses of `lancedb.pydantic.LanceModel` 
+    (which itself derives from `pydantic.BaseModel`).
 
     ```python
     from lancedb.pydantic import Vector, LanceModel

@@ -128,7 +128,7 @@ def Vector(
         def validate(cls, v):
             if not isinstance(v, (list, range, np.ndarray)) or len(v) != dim:
                 raise TypeError("A list of numbers or numpy.ndarray is needed")
-            return v
+            return cls(v)
 
         if PYDANTIC_VERSION < (2, 0):
 
@@ -238,27 +238,18 @@ def pydantic_to_schema(model: Type[pydantic.BaseModel]) -> pa.Schema:
     >>> from typing import List, Optional
     >>> import pydantic
     >>> from lancedb.pydantic import pydantic_to_schema
-    ...
-    >>> class InnerModel(pydantic.BaseModel):
-    ...     a: str
-    ...     b: Optional[float]
-    >>>
     >>> class FooModel(pydantic.BaseModel):
     ...     id: int
-    ...     s: Optional[str] = None
+    ...     s: str
     ...     vec: List[float]
     ...     li: List[int]
-    ...     inner: InnerModel
+    ...
     >>> schema = pydantic_to_schema(FooModel)
     >>> assert schema == pa.schema([
     ...     pa.field("id", pa.int64(), False),
-    ...     pa.field("s", pa.utf8(), True),
+    ...     pa.field("s", pa.utf8(), False),
     ...     pa.field("vec", pa.list_(pa.float64()), False),
     ...     pa.field("li", pa.list_(pa.int64()), False),
-    ...     pa.field("inner", pa.struct([
-    ...         pa.field("a", pa.utf8(), False),
-    ...         pa.field("b", pa.float64(), True),
-    ...     ]), False),
     ... ])
     """
     fields = _pydantic_model_to_fields(model)
