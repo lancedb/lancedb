@@ -11,6 +11,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
+import importlib.metadata
 from typing import Optional
 
 from .db import URI, DBConnection, LanceDBConnection
@@ -18,7 +19,8 @@ from .remote.db import RemoteDBConnection
 from .schema import vector
 from .utils.sentry_log import set_sentry
 
-set_sentry()
+__version__ = importlib.metadata.version("lancedb")
+
 
 def connect(
     uri: URI,
