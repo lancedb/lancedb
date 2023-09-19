@@ -19,7 +19,7 @@ import * as chaiAsPromised from 'chai-as-promised'
 
 import * as lancedb from '../index'
 import { type AwsCredentials, type EmbeddingFunction, MetricType, Query, WriteMode, DefaultWriteOptions, isWriteOptions } from '../index'
-import { Field, Int32, makeVector, Schema, Utf8, Table as ArrowTable, vectorFromArray } from 'apache-arrow'
+import { FixedSizeList, Field, Int32, makeVector, Schema, Utf8, Table as ArrowTable, vectorFromArray, Float32 } from 'apache-arrow'
 
 const expect = chai.expect
 const assert = chai.assert
@@ -255,6 +255,36 @@ describe('LanceDB client', function () {
 
       await table.delete('price = 10')
       assert.equal(await table.countRows(), 1)
+    })
+  })
+
+  describe('when searching an empty dataset', function () {
+    it('should not fail', async function () {
+      const dir = await track().mkdir('lancejs')
+      const con = await lancedb.connect(dir)
+
+      const schema = new Schema(
+        [new Field('vector', new FixedSizeList(128, new Field('float32', new Float32())))]
+      )
+      const table = await con.createTable({ name: 'vectors', schema })
+      const result = await table.search(Array(128).fill(0.1)).execute()
+      assert.isEmpty(result)
+    })
+  })
+
+  describe('when searching an empty-after-delete dataset', function () {
+    it('should not fail', async function () {
+      const dir = await track().mkdir('lancejs')
+      const con = await lancedb.connect(dir)
+
+      const schema = new Schema(
+        [new Field('vector', new FixedSizeList(128, new Field('float32', new Float32())))]
+      )
+      const table = await con.createTable({ name: 'vectors', schema })
+      await table.add([{ vector: Array(128).fill(0.1) }])
+      await table.delete('vector IS NOT NULL')
+      const result = await table.search(Array(128).fill(0.1)).execute()
+      assert.isEmpty(result)
     })
   })
 
