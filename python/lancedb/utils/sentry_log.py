@@ -4,6 +4,7 @@ from pathlib import Path
 from .general import is_pip_package, is_git_dir, is_pytest_running, is_github_actions_ci, is_online, ENVIRONMENT
 from . import CONFIG
 
+
 def set_sentry():
     """
     Initialize the Sentry SDK for error tracking and reporting. Only used if sentry_sdk package is installed and
