@@ -11,7 +11,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
-import attr
+import attrs
 import numpy as np
 import pandas as pd
 import pyarrow as pa
@@ -21,10 +21,10 @@ from aiohttp import web
 from lancedb.remote.client import RestfulLanceDBClient, VectorQuery
 
 
-@attr.define
+@attrs.define
 class MockLanceDBServer:
-    runner: web.AppRunner = attr.field(init=False)
-    site: web.TCPSite = attr.field(init=False)
+    runner: web.AppRunner = attrs.field(init=False)
+    site: web.TCPSite = attrs.field(init=False)
 
     async def query_handler(self, request: web.Request) -> web.Response:
         table_name = request.match_info["table_name"]
