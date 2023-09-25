@@ -1,15 +1,17 @@
-import sys
-import logging
-from pathlib import Path
 import importlib.metadata
+import logging
+import sys
+from pathlib import Path
+
 from lancedb.utils import CONFIG
+
 from .general import (
-    is_pip_package,
+    ENVIRONMENT,
     is_git_dir,
-    is_pytest_running,
     is_github_actions_ci,
     is_online,
-    ENVIRONMENT,
+    is_pip_package,
+    is_pytest_running,
 )
 
 

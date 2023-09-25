@@ -1,11 +1,11 @@
-import platform
 import copy
-import os
 import hashlib
+import os
+import platform
 import uuid
 from pathlib import Path
-from .general import is_dir_writeable, yaml_load, yaml_save, LOGGER
 
+from .general import LOGGER, is_dir_writeable, yaml_load, yaml_save
 
 MACOS, LINUX, WINDOWS = (
     platform.system() == x for x in ["Darwin", "Linux", "Windows"]

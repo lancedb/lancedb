@@ -1,15 +1,15 @@
-import os
-import sys
-import re
 import contextlib
-import subprocess
-import logging.config
 import importlib
+import logging.config
+import os
 import platform
-import yaml
+import re
+import subprocess
+import sys
 from pathlib import Path
 from typing import Union
 
+import yaml
 
 LOGGING_NAME = "lancedb"
 VERBOSE = (
