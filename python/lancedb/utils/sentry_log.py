@@ -2,6 +2,7 @@ import sys
 import logging
 from pathlib import Path
 import importlib.metadata
+from lancedb.utils import CONFIG
 from .general import (
     is_pip_package,
     is_git_dir,
@@ -10,7 +11,6 @@ from .general import (
     is_online,
     ENVIRONMENT,
 )
-from . import CONFIG
 
 
 def set_sentry():
