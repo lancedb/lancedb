@@ -21,6 +21,8 @@ from .utils import sentry_log
 
 __version__ = importlib.metadata.version("lancedb")
 
+__version__ = importlib.metadata.version("lancedb")
+
 
 def connect(
     uri: URI,

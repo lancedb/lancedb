@@ -14,7 +14,7 @@
 import abc
 from typing import List, Optional
 
-import attr
+import attrs
 import pyarrow as pa
 from pydantic import BaseModel
 
@@ -44,7 +44,7 @@ class VectorQuery(BaseModel):
     refine_factor: Optional[int] = None
 
 
-@attr.define
+@attrs.define
 class VectorQueryResult:
     # for now the response is directly seralized into a pandas dataframe
     tbl: pa.Table
