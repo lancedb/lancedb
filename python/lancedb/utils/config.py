@@ -23,11 +23,11 @@ def get_user_config_dir(sub_dir="lancedb"):
         (Path): The path to the user config directory.
     """
     # Return the appropriate config directory for each operating system
-    if WINDOWS:
+    if platform.system() == "Windows":
         path = Path.home() / "AppData" / "Roaming" / sub_dir
-    elif MACOS:  # macOS
+    elif platform.system() == "Darwin":
         path = Path.home() / "Library" / "Application Support" / sub_dir
-    elif LINUX:
+    elif platform.system() == "Linux":
         path = Path.home() / ".config" / sub_dir
     else:
         raise ValueError(f"Unsupported operating system: {platform.system()}")
