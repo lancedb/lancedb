@@ -72,7 +72,9 @@ nav:
     - Vector Search: search.md
     - SQL filters: sql.md
     - Indexing: ann_indexes.md
-  - 🧬 Embeddings: embedding.md
+  - 🧬 Embeddings:
+    - embeddings/index.md
+    - Serialize Embedding Functions in Tables: embeddings/embedding_functions.md
   - 🔍 Python full-text search: fts.md
   - 🔌 Integrations:
     - integrations/index.md
@@ -102,7 +104,10 @@ nav:
   - Vector Search: search.md
   - SQL filters: sql.md
   - Indexing: ann_indexes.md
-- Embeddings: embedding.md
+- Embeddings:
+  - embeddings/index.md
+  - Serialize Embedding Functions in Tables: embeddings/embedding_functions.md
+  - MltiModal Embeddings example: notebooks/DisappearingEmbeddingFunction.ipynb
 - Python full-text search: fts.md
 - Integrations:
   - integrations/index.md
