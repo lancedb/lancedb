@@ -47,17 +47,20 @@ def set_sentry():
         """
         if "exc_info" in hint:
             exc_type, exc_value, tb = hint["exc_info"]
-            if exc_type in (KeyboardInterrupt, FileNotFoundError):
-                return None  # do not send event
+            if 'out of memory' in str(exc_value).lower():
+                return None
+
+        if is_git_dir():
+            install = "git"
+        elif is_pip_package():
+            install = "pip"
+        else:
+            install = "other"
 
         event["tags"] = {
             "sys_argv": sys.argv[0],
             "sys_argv_name": Path(sys.argv[0]).name,
-            "install": "git"
-            if is_git_dir()
-            else "pip"
-            if is_pip_package()
-            else "other",
+            "install": install,
             "os": ENVIRONMENT,
             "version": importlib.metadata.version("lancedb"),
         }

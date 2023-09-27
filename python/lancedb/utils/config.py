@@ -7,10 +7,6 @@ from pathlib import Path
 
 from .general import LOGGER, is_dir_writeable, yaml_load, yaml_save
 
-MACOS, LINUX, WINDOWS = (
-    platform.system() == x for x in ["Darwin", "Linux", "Windows"]
-)  # environment booleans
-
 
 def get_user_config_dir(sub_dir="lancedb"):
     """
