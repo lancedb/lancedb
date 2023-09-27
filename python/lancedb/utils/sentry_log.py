@@ -47,7 +47,7 @@ def set_sentry():
         """
         if "exc_info" in hint:
             exc_type, exc_value, tb = hint["exc_info"]
-            if 'out of memory' in str(exc_value).lower():
+            if "out of memory" in str(exc_value).lower():
                 return None
 
         if is_git_dir():
