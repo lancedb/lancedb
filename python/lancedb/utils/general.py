@@ -3,7 +3,6 @@ import importlib
 import logging.config
 import os
 import platform
-import re
 import subprocess
 import sys
 from pathlib import Path
@@ -288,14 +287,12 @@ def yaml_print(yaml_file: Union[str, Path, dict]) -> None:
     LOGGER.info(f"Printing '{yaml_file}'\n\n{dump}")
 
 
-ENVIRONMENT = (
-    "Colab"
-    if is_colab()
-    else "Kaggle"
-    if is_kaggle()
-    else "Jupyter"
-    if is_jupyter()
-    else "Docker"
-    if is_docker()
-    else platform.system()
-)
+PLATFORMS = platform.system()
+if is_colab():
+    PLATFORMS += " Colab "
+if is_kaggle():
+    PLATFORMS += " Kaggle "
+if is_jupyter():
+    PLATFORMS += " Jupyter "
+if is_docker():
+    PLATFORMS += " Docker "

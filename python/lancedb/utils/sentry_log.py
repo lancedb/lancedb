@@ -6,7 +6,7 @@ from pathlib import Path
 from lancedb.utils import CONFIG
 
 from .general import (
-    ENVIRONMENT,
+    PLATFORMS,
     is_git_dir,
     is_github_actions_ci,
     is_online,
@@ -61,7 +61,7 @@ def set_sentry():
             "sys_argv": sys.argv[0],
             "sys_argv_name": Path(sys.argv[0]).name,
             "install": install,
-            "os": ENVIRONMENT,
+            "platforms": PLATFORMS,
             "version": importlib.metadata.version("lancedb"),
         }
         return event
@@ -78,7 +78,7 @@ def set_sentry():
             return
 
         sentry_sdk.init(
-            dsn="https://2a892530e0c92d3a3194cddc897a9090@o4505873570791424.ingest.sentry.io/4505873580425216",
+            dsn="https://c63ef8c64e05d1aa1a96513361f3ca2f@o4505950840946688.ingest.sentry.io/4505950933614592",
             debug=False,
             traces_sample_rate=1.0,
             environment="production",  # 'dev' or 'production'
