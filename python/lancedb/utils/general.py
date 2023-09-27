@@ -287,12 +287,14 @@ def yaml_print(yaml_file: Union[str, Path, dict]) -> None:
     LOGGER.info(f"Printing '{yaml_file}'\n\n{dump}")
 
 
-PLATFORMS = platform.system()
+PLATFORMS = [platform.system()]
 if is_colab():
-    PLATFORMS += " Colab "
+    PLATFORMS.append("Colab")
 if is_kaggle():
-    PLATFORMS += " Kaggle "
+    PLATFORMS.append("Kaggle")
 if is_jupyter():
-    PLATFORMS += " Jupyter "
+    PLATFORMS.append("Jupyter")
 if is_docker():
-    PLATFORMS += " Docker "
+    PLATFORMS.append("Docker")
+
+PLATFORMS = "|".join(PLATFORMS)
