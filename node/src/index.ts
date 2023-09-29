@@ -23,7 +23,7 @@ import { Query } from './query'
 import { isEmbeddingFunction } from './embedding/embedding_function'
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { databaseNew, databaseTableNames, databaseOpenTable, databaseDropTable, tableCreate, tableAdd, tableCreateVectorIndex, tableCountRows, tableDelete } = require('../native.js')
+const { databaseNew, databaseTableNames, databaseOpenTable, databaseDropTable, tableCreate, tableAdd, tableCreateVectorIndex, tableCountRows, tableDelete, tableCleanupOldVersions, tableCompactFiles } = require('../native.js')
 
 export { Query }
 export type { EmbeddingFunction }
@@ -459,6 +459,73 @@ export class LocalTable<T = number[]> implements Table<T> {
   async delete (filter: string): Promise<void> {
     return tableDelete.call(this._tbl, filter).then((newTable: any) => { this._tbl = newTable })
   }
+
+  /**
+   * Clean up old versions of the table, freeing disk space.
+   *
+   * @param olderThan The minimum age in minutes of the versions to delete. If not
+   *                  provided, defaults to two weeks.
+   * @param deleteUnverified Because they may be part of an in-progress
+   *                  transaction, files newer than 7 days old are not deleted
+   *                  by default. If you are sure that there are no in-progress
+   *                  transactions, then you can set this to `true` to delete all
+   *                  files older than `older_than`.
+   * @returns
+   */
+  async cleanup_old_versions (olderThan?: number, deleteUnverified?: boolean): Promise<CleanupStats> {
+    return tableCleanupOldVersions.call(this._tbl, olderThan, deleteUnverified)
+  }
+
+  async compact_files (options?: CompactionOptions): Promise<CompactionMetrics> {
+    const optionsArg = (options != null) || {}
+    return tableCompactFiles.call(this._tbl, optionsArg)
+  }
+}
+
+export interface CleanupStats {
+  /**
+   * The number of bytes removed from disk.
+   */
+  bytesRemoved: number
+  /**
+   * The number of old table versions removed.
+   */
+  oldVersions: number
+}
+
+export interface CompactionOptions {
+  /**
+   * The number of rows per fragment to target. Fragments that have fewer rows
+   * will be compacted into adjacent fragments to produce larger fragments.
+   */
+  targetRowsPerFragment?: number
+  /**
+   * The maximum number of rows per group.
+   */
+  maxRowsPerGroup?: number
+  /**
+   * If true, fragments that have rows that are deleted may be compacted to
+   * remove the deleted rows. This can improve the performance of queries.
+   */
+  materializeDeletions?: boolean
+  /**
+   * A number between 0 and 1, representing the proportion of rows that must be
+   * marked deleted before a fragment is a candidate for compaction to remove
+   * the deleted rows.
+   */
+  materializeDeletionsThreshold?: number
+  /**
+   * The number of threads to use for compaction. If not provided, defaults to
+   * the number of cores on the machine.
+   */
+  numThreads?: number
+}
+
+export interface CompactionMetrics {
+  fragments_added: number
+  fragments_removed: number
+  files_removed: number
+  files_added: number
 }
 
 /// Config to build IVF_PQ index.

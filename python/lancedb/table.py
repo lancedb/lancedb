@@ -878,7 +878,7 @@ class LanceTable(Table):
         delete_unverified: bool = False,
     ) -> CleanupStats:
         """
-        Cleans up old versions of table, freeing disk space.
+        Clean up old versions of the table, freeing disk space.
 
         Parameters
         ----------

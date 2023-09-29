@@ -78,9 +78,12 @@ fn get_index_params_builder(
 
             num_partitions.map(|np| {
                 let max_iters = max_iters.unwrap_or(50);
-                let mut ivf_params = IvfBuildParams::default();
-                ivf_params.num_partitions = np;
-                ivf_params.max_iters = max_iters;
+                let ivf_params = IvfBuildParams {
+                    num_partitions: np,
+                    max_iters,
+                    centroids: None,
+                    ..Default::default()
+                };
                 index_builder.ivf_params(ivf_params)
             });
 

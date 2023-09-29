@@ -13,6 +13,8 @@
 // limitations under the License.
 
 use arrow_array::RecordBatchIterator;
+use conv::TryInto;
+use lance::dataset::optimize::CompactionOptions;
 use lance::dataset::{WriteMode, WriteParams};
 use lance::io::object_store::ObjectStoreParams;
 
@@ -159,6 +161,106 @@ impl JsTable {
             deferred.settle_with(&channel, move |mut cx| {
                 delete_result.or_throw(&mut cx)?;
                 Ok(cx.boxed(JsTable::from(table)))
+            })
+        });
+        Ok(promise)
+    }
+
+    pub(crate) fn js_cleanup(mut cx: FunctionContext) -> JsResult<JsPromise> {
+        let js_table = cx.this().downcast_or_throw::<JsBox<JsTable>, _>(&mut cx)?;
+        let rt = runtime(&mut cx)?;
+        let (deferred, promise) = cx.promise();
+        let table = js_table.table.clone();
+        let channel = cx.channel();
+
+        let older_than: i64 = cx
+            .argument_opt(0)
+            .and_then(|val| val.downcast::<JsNumber, _>(&mut cx).ok())
+            .map(|val| val.value(&mut cx) as i64)
+            .unwrap_or_else(|| 2 * 7 * 24 * 60); // 2 weeks
+        let older_than = chrono::Duration::minutes(older_than);
+        let delete_unverified: bool = cx
+            .argument_opt(1)
+            .and_then(|val| val.downcast::<JsBoolean, _>(&mut cx).ok())
+            .map(|val| val.value(&mut cx))
+            .unwrap_or_default();
+
+        rt.spawn(async move {
+            let stats = table
+                .cleanup_old_versions(older_than, Some(delete_unverified))
+                .await;
+
+            deferred.settle_with(&channel, move |mut cx| {
+                let stats = stats.or_throw(&mut cx)?;
+
+                let output = JsObject::new(&mut cx);
+                let bytes_removed = cx.number(stats.bytes_removed as f64);
+                output.set(&mut cx, "bytes_removed", bytes_removed)?;
+
+                let old_versions = cx.number(stats.old_versions as f64);
+                output.set(&mut cx, "old_versions", old_versions)?;
+
+                Ok(output)
+            })
+        });
+        Ok(promise)
+    }
+
+    pub(crate) fn js_compact(mut cx: FunctionContext) -> JsResult<JsPromise> {
+        let js_table = cx.this().downcast_or_throw::<JsBox<JsTable>, _>(&mut cx)?;
+        let rt = runtime(&mut cx)?;
+        let (deferred, promise) = cx.promise();
+        let mut table = js_table.table.clone();
+        let channel = cx.channel();
+
+        let js_options = cx.argument::<JsObject>(0)?;
+        let mut options = CompactionOptions::default();
+
+        if let Some(target_rows) =
+            js_options.get_opt::<JsNumber, _, _>(&mut cx, "target_rows_per_fragment")?
+        {
+            options.target_rows_per_fragment = target_rows.value(&mut cx) as usize;
+        }
+        if let Some(max_per_group) =
+            js_options.get_opt::<JsNumber, _, _>(&mut cx, "max_rows_per_group")?
+        {
+            options.max_rows_per_group = max_per_group.value(&mut cx) as usize;
+        }
+        if let Some(materialize_deletions) =
+            js_options.get_opt::<JsBoolean, _, _>(&mut cx, "materialize_deletions")?
+        {
+            options.materialize_deletions = materialize_deletions.value(&mut cx);
+        }
+        if let Some(materialize_deletions_threshold) =
+            js_options.get_opt::<JsNumber, _, _>(&mut cx, "materialize_deletions_threshold")?
+        {
+            options.materialize_deletions_threshold =
+                materialize_deletions_threshold.value(&mut cx) as f32;
+        }
+        if let Some(num_threads) = js_options.get_opt::<JsNumber, _, _>(&mut cx, "num_threads")? {
+            options.num_threads = num_threads.value(&mut cx) as usize;
+        }
+
+        rt.spawn(async move {
+            let stats = table.compact_files(options).await;
+
+            deferred.settle_with(&channel, move |mut cx| {
+                let stats = stats.or_throw(&mut cx)?;
+
+                let output = JsObject::new(&mut cx);
+                let fragments_removed = cx.number(stats.fragments_removed as f64);
+                output.set(&mut cx, "fragments_removed", fragments_removed)?;
+
+                let fragments_added = cx.number(stats.fragments_added as f64);
+                output.set(&mut cx, "fragments_added", fragments_added)?;
+
+                let files_removed = cx.number(stats.files_removed as f64);
+                output.set(&mut cx, "files_removed", files_removed)?;
+
+                let files_added = cx.number(stats.files_added as f64);
+                output.set(&mut cx, "files_added", files_added)?;
+
+                Ok(output)
             })
         });
         Ok(promise)

@@ -18,7 +18,7 @@ import * as chai from 'chai'
 import * as chaiAsPromised from 'chai-as-promised'
 
 import * as lancedb from '../index'
-import { type AwsCredentials, type EmbeddingFunction, MetricType, Query, WriteMode, DefaultWriteOptions, isWriteOptions } from '../index'
+import { type AwsCredentials, type EmbeddingFunction, MetricType, Query, WriteMode, DefaultWriteOptions, isWriteOptions, type LocalTable } from '../index'
 import { FixedSizeList, Field, Int32, makeVector, Schema, Utf8, Table as ArrowTable, vectorFromArray, Float32 } from 'apache-arrow'
 
 const expect = chai.expect
@@ -444,5 +444,36 @@ describe('WriteOptions', function () {
     it('should match default write options', function () {
       assert.equal(isWriteOptions(new DefaultWriteOptions()), true)
     })
+  })
+})
+
+describe('Compact and cleanup', function () {
+  it('can cleanup after compaction', async function () {
+    const dir = await track().mkdir('lancejs')
+    const con = await lancedb.connect(dir)
+
+    const data = [
+      { price: 10, name: 'foo', vector: [1, 2, 3] },
+      { price: 50, name: 'bar', vector: [4, 5, 6] }
+    ]
+    const table = await con.createTable('t1', data) as LocalTable
+
+    const newData = [
+      { price: 30, name: 'baz', vector: [7, 8, 9] }
+    ]
+    await table.add(newData)
+
+    const compactionMetrics = await table.compact_files({
+      numThreads: 2
+    })
+    assert.equal(compactionMetrics.fragments_removed, 2)
+    assert.equal(compactionMetrics.fragments_added, 1)
+    assert.equal(await table.countRows(), 3)
+
+    await table.cleanup_old_versions()
+    assert.equal(await table.countRows(), 3)
+
+    await table.cleanup_old_versions(0, true)
+    assert.equal(await table.countRows(), 3)
   })
 })

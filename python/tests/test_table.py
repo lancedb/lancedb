@@ -445,7 +445,7 @@ def test_empty_query(db):
     assert val == 1
 
 
-def test_compact_delete(db):
+def test_compact_cleanup(db):
     table = LanceTable.create(
         db,
         "my_table",

@@ -12,10 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use chrono::Duration;
 use std::sync::Arc;
 
 use arrow_array::{Float32Array, RecordBatchReader};
 use arrow_schema::SchemaRef;
+use lance::dataset::cleanup::RemovalStats;
+use lance::dataset::optimize::{compact_files, CompactionMetrics, CompactionOptions};
 use lance::dataset::{Dataset, WriteParams};
 use lance::index::IndexType;
 use lance::io::object_store::WrappingObjectStore;
@@ -304,6 +307,41 @@ impl Table {
         dataset.delete(predicate).await?;
         self.dataset = Arc::new(dataset);
         Ok(())
+    }
+
+    /// Removed old versions of the dataset from disk.
+    ///
+    /// # Arguments
+    /// * `older_than` - The duration of time to keep versions of the dataset.
+    /// * `delete_unverified` - Because they may be part of an in-progress
+    ///   transaction, files newer than 7 days old are not deleted by default.
+    ///   If you are sure that there are no in-progress transactions, then you
+    ///   can set this to True to delete all files older than `older_than`.
+    ///
+    /// This calls into [lance::dataset::Dataset::cleanup_old_versions] and
+    /// returns the result.
+    pub async fn cleanup_old_versions(
+        &self,
+        older_than: Duration,
+        delete_unverified: Option<bool>,
+    ) -> Result<RemovalStats> {
+        Ok(self
+            .dataset
+            .cleanup_old_versions(older_than, delete_unverified)
+            .await?)
+    }
+
+    /// Compact files in the dataset.
+    ///
+    /// This can be run after making several small appends to optimize the table
+    /// for faster reads.
+    ///
+    /// This calls into [lance::dataset::optimize::compact_files].
+    pub async fn compact_files(&mut self, options: CompactionOptions) -> Result<CompactionMetrics> {
+        let mut dataset = self.dataset.as_ref().clone();
+        let metrics = compact_files(&mut dataset, options).await?;
+        self.dataset = Arc::new(dataset);
+        Ok(metrics)
     }
 }
 
