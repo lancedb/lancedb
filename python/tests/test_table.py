@@ -11,6 +11,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
+from datetime import timedelta
 import functools
 from pathlib import Path
 from typing import List
@@ -442,3 +443,31 @@ def test_empty_query(db):
     df = table.search().select(["id"]).where("text='bar'").limit(1).to_df()
     val = df.id.iloc[0]
     assert val == 1
+
+
+def test_compact_delete(db):
+    table = LanceTable.create(
+        db,
+        "my_table",
+        data=[{"text": "foo", "id": 0}, {"text": "bar", "id": 1}],
+    )
+
+    table.add([{"text": "baz", "id": 2}])
+    assert len(table) == 3
+    assert table.version == 3
+
+    stats = table.compact_files()
+    assert len(table) == 3
+    assert table.version == 4
+    assert stats.fragments_removed > 0
+    assert stats.fragments_added == 1
+
+    stats = table.cleanup_old_versions()
+    assert stats.bytes_removed == 0
+
+    stats = table.cleanup_old_versions(older_than=timedelta(0), delete_unverified=True)
+    assert stats.bytes_removed > 0
+    assert table.version == 4
+
+    with pytest.raises(Exception, match="Version 3 no longer exists"):
+        table.checkout(3)
