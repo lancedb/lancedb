@@ -27,6 +27,7 @@ pub struct Query {
     pub query_vector: Float32Array,
     pub limit: usize,
     pub filter: Option<String>,
+    pub prefilter: bool,
     pub select: Option<Vec<String>>,
     pub nprobes: usize,
     pub refine_factor: Option<u32>,
@@ -55,6 +56,7 @@ impl Query {
             metric_type: None,
             use_index: true,
             filter: None,
+            prefilter: false,
             select: None,
         }
     }
@@ -76,6 +78,7 @@ impl Query {
         scanner.use_index(self.use_index);
         self.select.as_ref().map(|p| scanner.project(p.as_slice()));
         self.filter.as_ref().map(|f| scanner.filter(f));
+        scanner.prefilter(self.prefilter);
         self.refine_factor.map(|rf| scanner.refine(rf));
         self.metric_type.map(|mt| scanner.distance_metric(mt));
         Ok(scanner.try_into_stream().await?)
@@ -151,6 +154,18 @@ impl Query {
         self
     }
 
+    /// Whether to apply the filter before the nearest neighbor search
+    ///
+    /// This can give more accurate results when the filter is very selective
+    ///
+    /// # Arguments
+    ///
+    /// * `prefilter` - specify when to apply the filter
+    pub fn prefilter(mut self, prefilter: bool) -> Query {
+        self.prefilter = prefilter;
+        self
+    }
+
     /// Return only the specified columns.
     ///
     /// Only select the specified columns. If not specified, all columns will be returned.
@@ -187,6 +202,8 @@ mod tests {
             .limit(100)
             .nprobes(1000)
             .use_index(true)
+            .filter(Some("key = 1".to_string()))
+            .prefilter(true)
             .metric_type(Some(MetricType::Cosine))
             .refine_factor(Some(999));
 
@@ -196,6 +213,8 @@ mod tests {
         assert_eq!(query.use_index, true);
         assert_eq!(query.metric_type, Some(MetricType::Cosine));
         assert_eq!(query.refine_factor, Some(999));
+        assert_eq!(query.filter, Some("key = 1".to_string()));
+        assert_eq!(query.prefilter, true);
     }
 
     #[tokio::test]

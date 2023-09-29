@@ -38,6 +38,7 @@ class MockTable:
         return ds.to_table(
             columns=query.columns,
             filter=query.filter,
+            prefilter=query.prefilter,
             nearest={
                 "column": query.vector_column,
                 "q": query.vector,
@@ -97,6 +98,24 @@ def test_query_builder_with_filter(table):
     assert all(df["vector"].values[0] == [3, 4])
 
 
+def test_query_builder_with_prefilter(table):
+    df = (
+        LanceVectorQueryBuilder(table, [3, 4], "vector")
+        .limit(1)
+        .where("id = 1")
+        .to_df()
+    )
+    assert len(df) == 0
+    df = (
+        LanceVectorQueryBuilder(table, [3, 4], "vector")
+        .limit(1)
+        .where("id = 1")
+        .prefilter(True)
+        .to_df()
+    )
+    assert len(df) == 1
+
+
 def test_query_builder_with_metric(table):
     query = [4, 8]
     vector_column_name = "vector"
@@ -143,6 +162,7 @@ def test_query_builder_with_different_vector_column():
             nprobes=20,
             refine_factor=None,
             vector_column="foo_vector",
+            prefilter=False,
         )
     )
 

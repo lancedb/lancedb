@@ -190,8 +190,8 @@ impl Table {
     pub async fn create_index(&mut self, index_builder: &impl VectorIndexBuilder) -> Result<()> {
         use lance::index::DatasetIndexExt;
 
-        let dataset = self
-            .dataset
+        let mut dataset = self.dataset.as_ref().clone();
+        dataset
             .create_index(
                 &[index_builder
                     .get_column()

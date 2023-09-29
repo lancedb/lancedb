@@ -76,13 +76,16 @@ fn get_index_params_builder(
 
             let num_partitions = obj.get_opt_usize(cx, "num_partitions")?;
             let max_iters = obj.get_opt_usize(cx, "max_iters")?;
+            let sample_rate = obj.get_opt_usize(cx, "sample_rate")?;
 
             num_partitions.map(|np| {
                 let max_iters = max_iters.unwrap_or(50);
+                let sample_rate = sample_rate.unwrap_or(256);
                 let ivf_params = IvfBuildParams {
                     num_partitions: np,
                     max_iters,
                     centroids: None,
+                    sample_rate,
                 };
                 index_builder.ivf_params(ivf_params)
             });
