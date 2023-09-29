@@ -17,7 +17,7 @@ from typing import Optional
 from .db import URI, DBConnection, LanceDBConnection
 from .remote.db import RemoteDBConnection
 from .schema import vector
-from .utils import sentry_log
+from .utils import sentry_log, events
 
 __version__ = importlib.metadata.version("lancedb")
 
@@ -69,3 +69,6 @@ def connect(
             raise ValueError(f"api_key is required to connected LanceDB cloud: {uri}")
         return RemoteDBConnection(uri, api_key, region, host_override)
     return LanceDBConnection(uri)
+
+
+EVENTS = events.Events()

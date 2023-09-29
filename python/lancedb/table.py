@@ -33,6 +33,7 @@ from .embeddings.functions import EmbeddingFunctionConfig
 from .pydantic import LanceModel
 from .query import LanceQueryBuilder, Query
 from .util import fs_from_uri, safe_import_pandas
+from .utils.events import EVENTS
 
 pd = safe_import_pandas()
 
@@ -490,6 +491,7 @@ class LanceTable(Table):
             replace=replace,
         )
         self._reset_dataset()
+        EVENTS("index_created")
 
     def create_fts_index(self, field_names: Union[str, List[str]]):
         """Create a full-text search index on the table.
@@ -508,6 +510,7 @@ class LanceTable(Table):
             field_names = [field_names]
         index = create_index(self._get_fts_index_path(), field_names)
         populate_index(index, self, field_names)
+        EVENTS("create_fts_index")
 
     def _get_fts_index_path(self):
         return os.path.join(self._dataset_uri, "_indices", "tantivy")
@@ -673,6 +676,7 @@ class LanceTable(Table):
             and also the "_distance" column which is the distance between the query
             vector and the returned vector.
         """
+        EVENTS("search")
         return LanceQueryBuilder.create(
             self, query, query_type, vector_column_name=vector_column_name
         )
@@ -776,6 +780,7 @@ class LanceTable(Table):
         if data is not None:
             table.add(data)
 
+        EVENTS("create_table")
         return table
 
     @classmethod

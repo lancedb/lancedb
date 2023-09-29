@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 from lancedb.utils import CONFIG
-
+import bdb
 from .general import (
     PLATFORMS,
     is_git_dir,
@@ -83,7 +83,7 @@ def set_sentry():
             traces_sample_rate=1.0,
             environment="production",  # 'dev' or 'production'
             before_send=before_send,
-            ignore_errors=[KeyboardInterrupt, FileNotFoundError],
+            ignore_errors=[KeyboardInterrupt, FileNotFoundError, bdb.BdbQuit],
         )
         sentry_sdk.set_user({"id": CONFIG["uuid"]})  # SHA-256 anonymized UUID hash
 

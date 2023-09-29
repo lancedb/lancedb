@@ -4,6 +4,9 @@ import logging.config
 import os
 import platform
 import subprocess
+import threading
+import time
+import requests
 import sys
 from pathlib import Path
 from typing import Union
@@ -298,3 +301,78 @@ if is_docker():
     PLATFORMS.append("Docker")
 
 PLATFORMS = "|".join(PLATFORMS)
+
+
+class TryExcept(contextlib.ContextDecorator):
+    """TryExcept context manager.
+    Usage: @TryExcept() decorator or 'with TryExcept():' context manager.
+    """
+
+    def __init__(self, msg="", verbose=True):
+        self.msg = msg
+        self.verbose = verbose
+
+    def __enter__(self):
+        pass
+
+    def __exit__(self, exc_type, value, traceback):
+        if self.verbose and value:
+            LOGGER.info(f"{self.msg}{': ' if self.msg else ''}{value}")
+        return True
+
+
+def threaded_request(
+    method, url, retry=3, timeout=30, thread=True, code=-1, verbose=True, **kwargs
+):
+    """
+    Makes an HTTP request using the 'requests' library, with exponential backoff retries up to a specified timeout.
+
+    Args:
+        method (str): The HTTP method to use for the request. Choices are 'post' and 'get'.
+        url (str): The URL to make the request to.
+        retry (int, optional): Number of retries to attempt before giving up. Default is 3.
+        timeout (int, optional): Timeout in seconds after which the function will give up retrying. Default is 30.
+        thread (bool, optional): Whether to execute the request in a separate daemon thread. Default is True.
+        code (int, optional): An identifier for the request, used for logging purposes. Default is -1.
+        verbose (bool, optional): A flag to determine whether to print out to console or not. Default is True.
+        **kwargs (dict): Keyword arguments to be passed to the requests function specified in method.
+
+    Returns:
+        (requests.Response): The HTTP response object. If the request is executed in a separate thread, returns None.
+    """
+    retry_codes = ()  # retry only these codes TODO: add codes if needed in future (500, 408)
+
+    @TryExcept(verbose=verbose)
+    def func(method, url, **kwargs):
+        """Make HTTP requests with retries and timeouts, with optional progress tracking."""
+        response = None
+        t0 = time.time()
+        for i in range(retry + 1):
+            if (time.time() - t0) > timeout:
+                break
+            response = requests.request(method, url, **kwargs)
+            if response.status_code < 300:  # good return codes in the 2xx range
+                break
+            try:
+                m = response.json().get("message", "No JSON message.")
+            except AttributeError:
+                m = "Unable to read JSON."
+            if i == 0:
+                if response.status_code in retry_codes:
+                    m += f" Retrying {retry}x for {timeout}s." if retry else ""
+                elif response.status_code == 429:  # rate limit
+                    m = f"Rate limit reached"
+                if verbose:
+                    LOGGER.warning(f"{response.status_code} #{code}")
+                if response.status_code not in retry_codes:
+                    return response
+            time.sleep(2**i)  # exponential standoff
+        return response
+
+    args = method, url
+    if thread:
+        return threading.Thread(
+            target=func, args=args, kwargs=kwargs, daemon=True
+        ).start()
+    else:
+        return func(*args, **kwargs)
