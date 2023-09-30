@@ -31,6 +31,7 @@ export class Query<T = number[]> {
   private _nprobes: number
   private _select?: string[]
   private _filter?: string
+  private _prefilter?: boolean
   private _metricType?: MetricType
   protected readonly _embeddings?: EmbeddingFunction<T>
 
@@ -42,6 +43,7 @@ export class Query<T = number[]> {
     this._refineFactor = undefined
     this._select = undefined
     this._filter = undefined
+    this._prefilter = undefined
     this._metricType = undefined
     this._embeddings = embeddings
   }
@@ -83,6 +85,16 @@ export class Query<T = number[]> {
   }
 
   where = this.filter
+
+  /**
+     * If true (default is false), the filter will be applied before the search.
+     * This can be more accurate if the filter is very selective.
+     * @param value Whether to filter before the search.
+     */
+  prefilter (value: boolean): Query<T> {
+    this._prefilter = value
+    return this
+  }
 
   /** Return only the specified columns.
      *

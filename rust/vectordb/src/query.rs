@@ -27,7 +27,7 @@ pub struct Query {
     pub query_vector: Float32Array,
     pub limit: usize,
     pub filter: Option<String>,
-    pub prefilter: bool,
+    pub prefilter: Option<bool>,
     pub select: Option<Vec<String>>,
     pub nprobes: usize,
     pub refine_factor: Option<u32>,
@@ -56,7 +56,7 @@ impl Query {
             metric_type: None,
             use_index: true,
             filter: None,
-            prefilter: false,
+            prefilter: None,
             select: None,
         }
     }
@@ -78,7 +78,7 @@ impl Query {
         scanner.use_index(self.use_index);
         self.select.as_ref().map(|p| scanner.project(p.as_slice()));
         self.filter.as_ref().map(|f| scanner.filter(f));
-        scanner.prefilter(self.prefilter);
+        self.prefilter.map(|p| scanner.prefilter(p));
         self.refine_factor.map(|rf| scanner.refine(rf));
         self.metric_type.map(|mt| scanner.distance_metric(mt));
         Ok(scanner.try_into_stream().await?)
@@ -161,7 +161,7 @@ impl Query {
     /// # Arguments
     ///
     /// * `prefilter` - specify when to apply the filter
-    pub fn prefilter(mut self, prefilter: bool) -> Query {
+    pub fn prefilter(mut self, prefilter: Option<bool>) -> Query {
         self.prefilter = prefilter;
         self
     }
@@ -203,7 +203,7 @@ mod tests {
             .nprobes(1000)
             .use_index(true)
             .filter(Some("key = 1".to_string()))
-            .prefilter(true)
+            .prefilter(Some(true))
             .metric_type(Some(MetricType::Cosine))
             .refine_factor(Some(999));
 
@@ -214,7 +214,7 @@ mod tests {
         assert_eq!(query.metric_type, Some(MetricType::Cosine));
         assert_eq!(query.refine_factor, Some(999));
         assert_eq!(query.filter, Some("key = 1".to_string()));
-        assert_eq!(query.prefilter, true);
+        assert_eq!(query.prefilter, Some(true));
     }
 
     #[tokio::test]

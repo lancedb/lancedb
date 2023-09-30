@@ -40,8 +40,8 @@ impl JsQuery {
             .get_opt::<JsString, _, _>(&mut cx, "_filter")?
             .map(|s| s.value(&mut cx));
         let prefilter = query_obj
-            .get::<JsBoolean, _, _>(&mut cx, "_prefilter")?
-            .value(&mut cx);
+            .get_opt::<JsBoolean, _, _>(&mut cx, "_prefilter")?
+            .map(|s| s.value(&mut cx));
         let refine_factor = query_obj
             .get_opt_u32(&mut cx, "_refineFactor")
             .or_throw(&mut cx)?;
@@ -71,9 +71,10 @@ impl JsQuery {
                 .refine_factor(refine_factor)
                 .nprobes(nprobes)
                 .filter(filter)
-                .metric_type(metric_type)
                 .prefilter(prefilter)
+                .metric_type(metric_type)
                 .select(select);
+
             let record_batch_stream = builder.execute();
             let results = record_batch_stream
                 .and_then(|stream| {
