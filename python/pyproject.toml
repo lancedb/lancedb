@@ -10,7 +10,8 @@ dependencies = [
     "pydantic>=1.10",
     "attrs>=21.3.0",
     "semver>=3.0",
-    "cachetools"
+    "cachetools",
+    "pyyaml>=6.0"
 ]
 description = "lancedb"
 authors = [{ name = "LanceDB Devs", email = "dev@lancedb.com" }]
