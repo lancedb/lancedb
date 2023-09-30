@@ -38,11 +38,6 @@ class Query(pydantic.BaseModel):
     # sql filter to refine the query with
     filter: Optional[str] = None
 
-    # whether to apply the filter before or after
-    # vector search.  Set to True for better results
-    # when the filter is very selective.
-    prefilter: Optional[bool] = None
-
     # top k results to return
     k: int
 
@@ -128,7 +123,6 @@ class LanceQueryBuilder(ABC):
         self._limit = 10
         self._columns = None
         self._where = None
-        self._prefilter = False
 
     def to_df(self) -> "pd.DataFrame":
         """
@@ -200,7 +194,7 @@ class LanceQueryBuilder(ABC):
         self._columns = columns
         return self
 
-    def where(self, where: str, *, prefilter: bool = False) -> LanceVectorQueryBuilder:
+    def where(self, where: str) -> LanceVectorQueryBuilder:
         """Set the where clause.
 
         Parameters
@@ -214,21 +208,6 @@ class LanceQueryBuilder(ABC):
             The LanceQueryBuilder object.
         """
         self._where = where
-        return self
-
-    def prefilter(self, prefilter: bool) -> LanceVectorQueryBuilder:
-        """
-        Set whether to apply the filter before or after the vector search.
-
-        Setting this to True can improve accuracy if the filter is very
-        selective but will hurt performance if the filter matches many rows.
-
-        Parameters
-        ----------
-        prefilter: bool
-            If true, the where clause is applied before the vector search.
-        """
-        self._prefilter = prefilter
         return self
 
 
@@ -341,7 +320,6 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         query = Query(
             vector=vector,
             filter=self._where,
-            prefilter=self._prefilter,
             k=self._limit,
             metric=self._metric,
             columns=self._columns,

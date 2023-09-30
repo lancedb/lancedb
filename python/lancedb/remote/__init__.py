@@ -43,9 +43,6 @@ class VectorQuery(BaseModel):
 
     refine_factor: Optional[int] = None
 
-    # whether to apply the filter before the vector query
-    prefilter: bool = False
-
 
 @attrs.define
 class VectorQueryResult:

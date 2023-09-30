@@ -847,7 +847,6 @@ class LanceTable(Table):
         return ds.to_table(
             columns=query.columns,
             filter=query.filter,
-            prefilter=query.prefilter,
             nearest={
                 "column": query.vector_column,
                 "q": query.vector,
