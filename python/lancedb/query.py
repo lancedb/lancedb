@@ -38,6 +38,9 @@ class Query(pydantic.BaseModel):
     # sql filter to refine the query with
     filter: Optional[str] = None
 
+    # if True then apply the filter before vector search
+    is_prefilter: bool = False
+
     # top k results to return
     k: int
 
@@ -162,7 +165,7 @@ class LanceQueryBuilder(ABC):
             for row in self.to_arrow().to_pylist()
         ]
 
-    def limit(self, limit: int) -> LanceVectorQueryBuilder:
+    def limit(self, limit: int) -> LanceQueryBuilder:
         """Set the maximum number of results to return.
 
         Parameters
@@ -172,13 +175,13 @@ class LanceQueryBuilder(ABC):
 
         Returns
         -------
-        LanceVectorQueryBuilder
+        LanceQueryBuilder
             The LanceQueryBuilder object.
         """
         self._limit = limit
         return self
 
-    def select(self, columns: list) -> LanceVectorQueryBuilder:
+    def select(self, columns: list) -> LanceQueryBuilder:
         """Set the columns to return.
 
         Parameters
@@ -188,13 +191,13 @@ class LanceQueryBuilder(ABC):
 
         Returns
         -------
-        LanceVectorQueryBuilder
+        LanceQueryBuilder
             The LanceQueryBuilder object.
         """
         self._columns = columns
         return self
 
-    def where(self, where: str) -> LanceVectorQueryBuilder:
+    def where(self, where) -> LanceQueryBuilder:
         """Set the where clause.
 
         Parameters
@@ -204,7 +207,7 @@ class LanceQueryBuilder(ABC):
 
         Returns
         -------
-        LanceVectorQueryBuilder
+        LanceQueryBuilder
             The LanceQueryBuilder object.
         """
         self._where = where
@@ -246,6 +249,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         self._nprobes = 20
         self._refine_factor = None
         self._vector_column = vector_column
+        self._prefilter = False
 
     def metric(self, metric: Literal["L2", "cosine"]) -> LanceVectorQueryBuilder:
         """Set the distance metric to use.
@@ -320,6 +324,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         query = Query(
             vector=vector,
             filter=self._where,
+            is_prefilter=self._prefilter,
             k=self._limit,
             metric=self._metric,
             columns=self._columns,
@@ -328,6 +333,30 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             vector_column=self._vector_column,
         )
         return self._table._execute_query(query)
+
+    def where(self, where: str, prefilter: bool = False) -> LanceVectorQueryBuilder:
+        """Set the where clause.
+
+        Parameters
+        ----------
+        where: str
+            The where clause.
+        prefilter: bool, default False
+            If True, apply the filter before vector search, otherwise the
+            filter is applied on the result of vector search.
+            This feature is **EXPERIMENTAL** and may be removed and modified
+            without warning in the future. Currently this is only supported
+            in OSS and can only be used with a table that does not have an ANN
+            index.
+
+        Returns
+        -------
+        LanceQueryBuilder
+            The LanceQueryBuilder object.
+        """
+        self._where = where
+        self._prefilter = prefilter
+        return self
 
 
 class LanceFtsQueryBuilder(LanceQueryBuilder):
