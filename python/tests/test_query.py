@@ -38,7 +38,7 @@ class MockTable:
         return ds.to_table(
             columns=query.columns,
             filter=query.filter,
-            prefilter=query.is_prefilter,
+            prefilter=query.prefilter,
             nearest={
                 "column": query.vector_column,
                 "q": query.vector,

@@ -39,7 +39,7 @@ class Query(pydantic.BaseModel):
     filter: Optional[str] = None
 
     # if True then apply the filter before vector search
-    is_prefilter: bool = False
+    prefilter: bool = False
 
     # top k results to return
     k: int
@@ -324,7 +324,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         query = Query(
             vector=vector,
             filter=self._where,
-            is_prefilter=self._prefilter,
+            prefilter=self._prefilter,
             k=self._limit,
             metric=self._metric,
             columns=self._columns,

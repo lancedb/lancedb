@@ -844,7 +844,7 @@ class LanceTable(Table):
 
     def _execute_query(self, query: Query) -> pa.Table:
         ds = self.to_lance()
-        if query.is_prefilter:
+        if query.prefilter:
             for idx in ds.list_indices():
                 if query.vector_column in idx["fields"]:
                     raise NotImplementedError(
@@ -853,7 +853,7 @@ class LanceTable(Table):
         return ds.to_table(
             columns=query.columns,
             filter=query.filter,
-            prefilter=query.is_prefilter,
+            prefilter=query.prefilter,
             nearest={
                 "column": query.vector_column,
                 "q": query.vector,
