@@ -26,6 +26,7 @@ import numpy as np
 import pyarrow as pa
 from cachetools import cached
 from pydantic import BaseModel, Field, PrivateAttr
+from tqdm import tqdm
 
 
 class EmbeddingFunctionRegistry:
@@ -514,7 +515,7 @@ class OpenClipEmbeddings(EmbeddingFunction):
                 executor.submit(self.generate_image_embedding, image)
                 for image in images
             ]
-            return [future.result() for future in futures]
+            return [future.result() for future in tqdm(futures)]
 
     def generate_image_embedding(
         self, image: Union[str, bytes, "PIL.Image.Image"]
@@ -557,7 +558,7 @@ class OpenClipEmbeddings(EmbeddingFunction):
         """
         encode a single image tensor and optionally normalize the output
         """
-        image_features = self._model.encode_image(image_tensor)
+        image_features = self._model.encode_image(image_tensor.to(self.device))
         if self.normalize:
             image_features /= image_features.norm(dim=-1, keepdim=True)
         return image_features.cpu().numpy().squeeze()
