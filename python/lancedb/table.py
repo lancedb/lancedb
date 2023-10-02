@@ -491,7 +491,7 @@ class LanceTable(Table):
             replace=replace,
         )
         self._reset_dataset()
-        EVENTS("index_created")
+        EVENTS("create_index")
 
     def create_fts_index(self, field_names: Union[str, List[str]]):
         """Create a full-text search index on the table.
