@@ -19,7 +19,6 @@ from .remote.db import RemoteDBConnection
 from .schema import vector
 from .utils import events, sentry_log
 
-
 __version__ = importlib.metadata.version("lancedb")
 
 

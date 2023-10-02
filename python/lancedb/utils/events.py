@@ -47,6 +47,7 @@ class Events:
         Initializes the Events object with default values for events, rate_limit, and metadata.
         """
         self.events = []  # events list
+        self.max_events = 25  # max events to store in memory
         self.rate_limit = 60.0  # rate limit (seconds)
         self.time = 0.0
 
@@ -90,7 +91,7 @@ class Events:
             return
 
         if (
-            len(self.events) < 25
+            len(self.events) < self.max_events
         ):  # Events list limited to 25 events (drop any events past this)
             params["metadata"] = self.metadata
             self.events.append(
