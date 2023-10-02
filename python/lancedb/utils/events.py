@@ -49,13 +49,16 @@ class Events:
         self.events = []  # events list
         self.rate_limit = 60.0  # rate limit (seconds)
         self.time = 0.0
+
+        if is_git_dir():
+            install = "git"
+        elif is_pip_package():
+            install = "pip"
+        else:
+            install = "other"
         self.metadata = {
             "cli": sys.argv[0],
-            "install": "git"
-            if is_git_dir()
-            else "pip"
-            if is_pip_package()
-            else "other",
+            "install": install,
             "python": ".".join(platform.python_version_tuple()[:2]),
             "version": importlib.metadata.version("lancedb"),
             "platforms": PLATFORMS,
