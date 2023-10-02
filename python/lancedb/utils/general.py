@@ -338,7 +338,7 @@ def threaded_request(
         **kwargs (dict): Keyword arguments to be passed to the requests function specified in method.
 
     Returns:
-        (requests.Response): The HTTP response object. If the request is executed in a separate thread, returns None.
+        (requests.Response): The HTTP response object. If the request is executed in a separate thread, returns the thread itself.
     """
     retry_codes = ()  # retry only these codes TODO: add codes if needed in future (500, 408)
 
