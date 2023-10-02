@@ -1,18 +1,20 @@
-import sys
-import platform
-import time
 import datetime
 import importlib.metadata
+import platform
 import random
+import sys
+import time
+
 from lancedb.utils import CONFIG
+
 from .general import (
     PLATFORMS,
-    is_pytest_running,
+    get_git_origin_url,
+    is_git_dir,
     is_github_actions_ci,
     is_online,
-    is_git_dir,
     is_pip_package,
-    get_git_origin_url,
+    is_pytest_running,
     threaded_request,
 )
 

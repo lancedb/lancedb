@@ -4,13 +4,13 @@ import logging.config
 import os
 import platform
 import subprocess
+import sys
 import threading
 import time
-import requests
-import sys
 from pathlib import Path
 from typing import Union
 
+import requests
 import yaml
 
 LOGGING_NAME = "lancedb"

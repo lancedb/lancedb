@@ -1,10 +1,11 @@
+import bdb
 import importlib.metadata
 import logging
 import sys
 from pathlib import Path
 
 from lancedb.utils import CONFIG
-import bdb
+
 from .general import (
     PLATFORMS,
     is_git_dir,
