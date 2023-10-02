@@ -477,7 +477,7 @@ export class LocalTable<T = number[]> implements Table<T> {
   }
 
   async compact_files (options?: CompactionOptions): Promise<CompactionMetrics> {
-    const optionsArg = options || {}
+    const optionsArg = options ?? {}
     return tableCompactFiles.call(this._tbl, optionsArg)
   }
 }

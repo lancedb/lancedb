@@ -395,6 +395,15 @@ class LanceTable(Table):
             raise ValueError(f"Invalid version {version}")
         self._reset_dataset(version=version)
 
+        try:
+            # Accessing the property updates the cached value
+            _ = self._dataset
+        except Exception as e:
+            if 'not found' in str(e):
+                raise ValueError(f"Version {version} no longer exists. Was it cleaned up?")
+            else:
+                raise e
+
     def restore(self, version: int = None):
         """Restore a version of the table. This is an in-place operation.
 
