@@ -399,8 +399,10 @@ class LanceTable(Table):
             # Accessing the property updates the cached value
             _ = self._dataset
         except Exception as e:
-            if 'not found' in str(e):
-                raise ValueError(f"Version {version} no longer exists. Was it cleaned up?")
+            if "not found" in str(e):
+                raise ValueError(
+                    f"Version {version} no longer exists. Was it cleaned up?"
+                )
             else:
                 raise e
 

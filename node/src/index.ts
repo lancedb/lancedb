@@ -476,6 +476,17 @@ export class LocalTable<T = number[]> implements Table<T> {
     return tableCleanupOldVersions.call(this._tbl, olderThan, deleteUnverified)
   }
 
+  /**
+   * Run the compaction process on the table.
+   *
+   * This can be run after making several small appends to optimize the table
+   * for faster reads.
+   *
+   * @param options Advanced options configuring compaction. In most cases, you
+   *               can omit this arguments, as the default options are sensible
+   *               for most tables.
+   * @returns Metrics about the compaction operation.
+   */
   async compact_files (options?: CompactionOptions): Promise<CompactionMetrics> {
     const optionsArg = options ?? {}
     return tableCompactFiles.call(this._tbl, optionsArg)
