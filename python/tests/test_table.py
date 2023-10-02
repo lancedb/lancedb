@@ -11,8 +11,8 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
-from datetime import timedelta
 import functools
+from datetime import timedelta
 from pathlib import Path
 from typing import List
 from unittest.mock import PropertyMock, patch
