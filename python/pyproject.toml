@@ -11,7 +11,8 @@ dependencies = [
     "attrs>=21.3.0",
     "semver>=3.0",
     "cachetools",
-    "pyyaml>=6.0"
+    "pyyaml>=6.0",
+    "click>=8.1.7"
 ]
 description = "lancedb"
 authors = [{ name = "LanceDB Devs", email = "dev@lancedb.com" }]
