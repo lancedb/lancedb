@@ -195,7 +195,7 @@ fn database_open_table(mut cx: FunctionContext) -> JsResult<JsPromise> {
 
     let (deferred, promise) = cx.promise();
     rt.spawn(async move {
-        let table_rst = database.open_table_with_params(&table_name, &params).await;
+        let table_rst = database.open_table_with_params(&table_name, params).await;
 
         deferred.settle_with(&channel, move |mut cx| {
             let js_table = JsTable::from(table_rst.or_throw(&mut cx)?);
