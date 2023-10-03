@@ -1,6 +1,6 @@
 [project]
 name = "lancedb"
-version = "0.2.6"
+version = "0.3.0"
 dependencies = [
     "pylance==0.8.1",
     "ratelimiter~=1.0",
