@@ -1,3 +1,4 @@
+import bdb
 import importlib.metadata
 import logging
 import sys
@@ -68,7 +69,7 @@ def set_sentry():
 
     TESTS_RUNNING = is_pytest_running() or is_github_actions_ci()
     ONLINE = is_online()
-    if CONFIG["sync"] and not TESTS_RUNNING and ONLINE and is_pip_package():
+    if CONFIG["diagnostics"] and not TESTS_RUNNING and ONLINE and is_pip_package():
         # and not is_git_dir(): # not running inside a git dir. Maybe too restrictive?
 
         # If sentry_sdk package is not installed then return and do not use Sentry
@@ -83,7 +84,7 @@ def set_sentry():
             traces_sample_rate=1.0,
             environment="production",  # 'dev' or 'production'
             before_send=before_send,
-            ignore_errors=[KeyboardInterrupt, FileNotFoundError],
+            ignore_errors=[KeyboardInterrupt, FileNotFoundError, bdb.BdbQuit],
         )
         sentry_sdk.set_user({"id": CONFIG["uuid"]})  # SHA-256 anonymized UUID hash
 
