@@ -26,7 +26,7 @@ class _Events:
     disabled when ``diagnostics=False``.
 
     You can enable or disable diagnostics by running ``lancedb diagnostics --enabled`` or ``lancedb diagnostics --disabled``.
-    
+
     Attributes
     ----------
     url : str
