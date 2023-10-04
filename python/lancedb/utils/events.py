@@ -6,6 +6,7 @@ import sys
 import time
 
 from lancedb.utils import CONFIG
+from lancedb.utils.general import TryExcept
 
 from .general import (
     PLATFORMS,
@@ -19,7 +20,7 @@ from .general import (
 )
 
 
-class Events:
+class _Events:
     """
     A class for collecting anonymous event analytics. Event analytics are enabled when sync=True in config and
     disabled when sync=False.
@@ -31,16 +32,12 @@ class Events:
         enabled (bool): A flag to enable or disable Events based on certain conditions.
     """
 
+    _instance = None
+
     url = "https://app.posthog.com/capture/"
     headers = {"Content-Type": "application/json"}
     api_key = "phc_oENDjGgHtmIDrV6puUiFem2RB4JA8gGWulfdulmMdZP"
     # This api-key is write only and is safe to expose in the codebase.
-
-    def __new__(cls):
-        # Ensure singleton
-        if not hasattr(cls, "instance"):
-            cls.instance = super(Events, cls).__new__(cls)
-        return cls.instance
 
     def __init__(self):
         """
@@ -89,7 +86,6 @@ class Events:
         ### NOTE: We might need a way to tag a session with a label to check usage from a source. Setting label should be exposed to the user.
         if not self.enabled:
             return
-
         if (
             len(self.events) < self.max_events
         ):  # Events list limited to 25 events (drop any events past this)
@@ -133,4 +129,9 @@ class Events:
         self.time = t
 
 
-EVENTS = Events()
+@TryExcept(verbose=False)
+def register_event(name: str, **kwargs):
+    if _Events._instance is None:
+        _Events._instance = _Events()
+
+    _Events._instance(name, **kwargs)

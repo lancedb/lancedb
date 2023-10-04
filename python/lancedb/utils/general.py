@@ -20,7 +20,16 @@ VERBOSE = (
 
 
 def set_logging(name=LOGGING_NAME, verbose=True):
-    """Sets up logging for the given name."""
+    """Sets up logging for the given name.
+
+    Parameters
+    ----------
+    name : str, optional
+        The name of the logger. Default is 'lancedb'.
+    verbose : bool, optional
+        Whether to enable verbose logging. Default is True.
+    """
+
     rank = int(os.getenv("RANK", -1))  # rank in world for Multi-GPU trainings
     level = logging.INFO if verbose and rank in {-1, 0} else logging.ERROR
     logging.config.dictConfig(
@@ -45,14 +54,17 @@ LOGGER = logging.getLogger(LOGGING_NAME)
 
 
 def is_pip_package(filepath: str = __name__) -> bool:
-    """
-    Determines if the file at the given filepath is part of a pip package.
+    """Determines if the file at the given filepath is part of a pip package.
 
-    Args:
-        filepath (str): The filepath to check.
+    Parameters
+    ----------
+    filepath : str, optional
+        The filepath to check. Default is the current file.
 
-    Returns:
-        (bool): True if the file is part of a pip package, False otherwise.
+    Returns
+    -------
+    bool
+        True if the file is part of a pip package, False otherwise.
     """
     # Get the spec for the module
     spec = importlib.util.find_spec(filepath)
@@ -62,11 +74,12 @@ def is_pip_package(filepath: str = __name__) -> bool:
 
 
 def is_pytest_running():
-    """
-    Determines whether pytest is currently running or not.
+    """Determines whether pytest is currently running or not.
 
-    Returns:
-        (bool): True if pytest is running, False otherwise.
+    Returns
+    -------
+    bool
+        True if pytest is running, False otherwise.
     """
     return (
         ("PYTEST_CURRENT_TEST" in os.environ)
@@ -79,9 +92,12 @@ def is_github_actions_ci() -> bool:
     """
     Determine if the current environment is a GitHub Actions CI Python runner.
 
-    Returns:
-        (bool): True if the current environment is a GitHub Actions CI Python runner, False otherwise.
+    Returns
+    -------
+    bool
+        True if the current environment is a GitHub Actions CI Python runner, False otherwise.
     """
+
     return (
         "GITHUB_ACTIONS" in os.environ
         and "RUNNER_OS" in os.environ
@@ -94,8 +110,10 @@ def is_git_dir():
     Determines whether the current file is part of a git repository.
     If the current file is not part of a git repository, returns None.
 
-    Returns:
-        (bool): True if current file is part of a git repository.
+    Returns
+    -------
+    bool
+        True if current file is part of a git repository.
     """
     return get_git_dir() is not None
 
@@ -104,8 +122,10 @@ def is_online() -> bool:
     """
     Check internet connectivity by attempting to connect to a known online host.
 
-    Returns:
-        (bool): True if connection is successful, False otherwise.
+    Returns
+    -------
+    bool
+        True if connection is successful, False otherwise.
     """
     import socket
 
@@ -122,34 +142,39 @@ def is_online() -> bool:
 
 
 def is_dir_writeable(dir_path: Union[str, Path]) -> bool:
-    """
-    Check if a directory is writeable.
+    """Check if a directory is writeable.
 
-    Args:
-        dir_path (str | Path): The path to the directory.
+    Parameters
+    ----------
+    dir_path : Union[str, Path]
+        The path to the directory.
 
-    Returns:
-        (bool): True if the directory is writeable, False otherwise.
+    Returns
+    -------
+    bool
+        True if the directory is writeable, False otherwise.
     """
     return os.access(str(dir_path), os.W_OK)
 
 
 def is_colab():
-    """
-    Check if the current script is running inside a Google Colab notebook.
+    """Check if the current script is running inside a Google Colab notebook.
 
-    Returns:
-        (bool): True if running inside a Colab notebook, False otherwise.
+    Returns
+    -------
+    bool
+        True if running inside a Colab notebook, False otherwise.
     """
     return "COLAB_RELEASE_TAG" in os.environ or "COLAB_BACKEND_VERSION" in os.environ
 
 
 def is_kaggle():
-    """
-    Check if the current script is running inside a Kaggle kernel.
+    """Check if the current script is running inside a Kaggle kernel.
 
-    Returns:
-        (bool): True if running inside a Kaggle kernel, False otherwise.
+    Returns
+    -------
+    bool
+        True if running inside a Kaggle kernel, False otherwise.
     """
     return (
         os.environ.get("PWD") == "/kaggle/working"
@@ -158,12 +183,12 @@ def is_kaggle():
 
 
 def is_jupyter():
-    """
-    Check if the current script is running inside a Jupyter Notebook.
-    Verified on Colab, Jupyterlab, Kaggle, Paperspace.
+    """Check if the current script is running inside a Jupyter Notebook.
 
-    Returns:
-        (bool): True if running inside a Jupyter Notebook, False otherwise.
+    Returns
+    -------
+    bool
+        True if running inside a Jupyter Notebook, False otherwise.
     """
     with contextlib.suppress(Exception):
         from IPython import get_ipython
@@ -173,11 +198,12 @@ def is_jupyter():
 
 
 def is_docker() -> bool:
-    """
-    Determine if the script is running inside a Docker container.
+    """Determine if the script is running inside a Docker container.
 
-    Returns:
-        (bool): True if the script is running inside a Docker container, False otherwise.
+    Returns
+    -------
+    bool
+        True if the script is running inside a Docker container, False otherwise.
     """
     file = Path("/proc/self/cgroup")
     if file.exists():
@@ -188,12 +214,13 @@ def is_docker() -> bool:
 
 
 def get_git_dir():
-    """
-    Determines whether the current file is part of a git repository and if so, returns the repository root directory.
+    """Determine whether the current file is part of a git repository and if so, returns the repository root directory.
     If the current file is not part of a git repository, returns None.
 
-    Returns:
-        (Path | None): Git root directory if found or None if not found.
+    Returns
+    -------
+    Path | None
+        Git root directory if found or None if not found.
     """
     for d in Path(__file__).parents:
         if (d / ".git").is_dir():
@@ -201,11 +228,12 @@ def get_git_dir():
 
 
 def get_git_origin_url():
-    """
-    Retrieves the origin URL of a git repository.
+    """Retrieve the origin URL of a git repository.
 
-    Returns:
-        (str | None): The origin URL of the git repository or None if not git directory.
+    Returns
+    -------
+    str | None
+        The origin URL of the git repository or None if not git directory.
     """
     if is_git_dir():
         with contextlib.suppress(subprocess.CalledProcessError):
@@ -216,16 +244,16 @@ def get_git_origin_url():
 
 
 def yaml_save(file="data.yaml", data=None, header=""):
-    """
-    Save YAML data to a file.
+    """Save YAML data to a file.
 
-    Args:
-        file (str, optional): File name. Default is 'data.yaml'.
-        data (dict): Data to save in YAML format.
-        header (str, optional): YAML header to add.
-
-    Returns:
-        (None): Data is saved to the specified file.
+    Parameters
+    ----------
+    file : str, optional
+        File name, by default 'data.yaml'.
+    data : dict, optional
+        Data to save in YAML format, by default None.
+    header : str, optional
+        YAML header to add, by default "".
     """
     if data is None:
         data = {}
@@ -250,12 +278,17 @@ def yaml_load(file="data.yaml", append_filename=False):
     """
     Load YAML data from a file.
 
-    Args:
-        file (str, optional): File name. Default is 'data.yaml'.
-        append_filename (bool): Add the YAML filename to the YAML dictionary. Default is False.
+    Parameters
+    ----------
+    file : str, optional
+        File name. Default is 'data.yaml'.
+    append_filename : bool, optional
+        Add the YAML filename to the YAML dictionary. Default is False.
 
-    Returns:
-        (dict): YAML data and file name.
+    Returns
+    -------
+    dict
+        YAML data and file name.
     """
     assert Path(file).suffix in (
         ".yaml",
@@ -277,11 +310,14 @@ def yaml_print(yaml_file: Union[str, Path, dict]) -> None:
     """
     Pretty prints a YAML file or a YAML-formatted dictionary.
 
-    Args:
-        yaml_file: The file path of the YAML file or a YAML-formatted dictionary.
+    Parameters
+    ----------
+    yaml_file : Union[str, Path, dict]
+        The file path of the YAML file or a YAML-formatted dictionary.
 
-    Returns:
-        None
+    Returns
+    -------
+    None
     """
     yaml_dict = (
         yaml_load(yaml_file) if isinstance(yaml_file, (str, Path)) else yaml_file
@@ -304,11 +340,20 @@ PLATFORMS = "|".join(PLATFORMS)
 
 
 class TryExcept(contextlib.ContextDecorator):
-    """TryExcept context manager.
+    """
+    TryExcept context manager.
     Usage: @TryExcept() decorator or 'with TryExcept():' context manager.
     """
 
     def __init__(self, msg="", verbose=True):
+        """
+        Parameters
+        ----------
+        msg : str, optional
+            Custom message to display in case of exception, by default "".
+        verbose : bool, optional
+            Whether to display the message, by default True.
+        """
         self.msg = msg
         self.verbose = verbose
 
@@ -327,18 +372,27 @@ def threaded_request(
     """
     Makes an HTTP request using the 'requests' library, with exponential backoff retries up to a specified timeout.
 
-    Args:
-        method (str): The HTTP method to use for the request. Choices are 'post' and 'get'.
-        url (str): The URL to make the request to.
-        retry (int, optional): Number of retries to attempt before giving up. Default is 3.
-        timeout (int, optional): Timeout in seconds after which the function will give up retrying. Default is 30.
-        thread (bool, optional): Whether to execute the request in a separate daemon thread. Default is True.
-        code (int, optional): An identifier for the request, used for logging purposes. Default is -1.
-        verbose (bool, optional): A flag to determine whether to print out to console or not. Default is True.
-        **kwargs (dict): Keyword arguments to be passed to the requests function specified in method.
+    Parameters
+    ----------
+    method : str
+        The HTTP method to use for the request. Choices are 'post' and 'get'.
+    url : str
+        The URL to make the request to.
+    retry : int, optional
+        Number of retries to attempt before giving up, by default 3.
+    timeout : int, optional
+        Timeout in seconds after which the function will give up retrying, by default 30.
+    thread : bool, optional
+        Whether to execute the request in a separate daemon thread, by default True.
+    code : int, optional
+        An identifier for the request, used for logging purposes, by default -1.
+    verbose : bool, optional
+        A flag to determine whether to print out to console or not, by default True.
 
-    Returns:
-        (requests.Response): The HTTP response object. If the request is executed in a separate thread, returns the thread itself.
+    Returns
+    -------
+    requests.Response
+        The HTTP response object. If the request is executed in a separate thread, returns the thread itself.
     """
     retry_codes = ()  # retry only these codes TODO: add codes if needed in future (500, 408)
 
