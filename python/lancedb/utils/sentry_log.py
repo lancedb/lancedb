@@ -69,7 +69,7 @@ def set_sentry():
 
     TESTS_RUNNING = is_pytest_running() or is_github_actions_ci()
     ONLINE = is_online()
-    if CONFIG["sync"] and not TESTS_RUNNING and ONLINE and is_pip_package():
+    if CONFIG["diagnostics"] and not TESTS_RUNNING and ONLINE and is_pip_package():
         # and not is_git_dir(): # not running inside a git dir. Maybe too restrictive?
 
         # If sentry_sdk package is not installed then return and do not use Sentry

@@ -22,8 +22,8 @@ from .general import (
 
 class _Events:
     """
-    A class for collecting anonymous event analytics. Event analytics are enabled when sync=True in config and
-    disabled when sync=False.
+    A class for collecting anonymous event analytics. Event analytics are enabled when diagnostics=True in config and
+    disabled when diagnostics=False.
 
     Attributes:
         url (str): The URL to send anonymous events.
@@ -67,7 +67,7 @@ class _Events:
         TESTS_RUNNING = is_pytest_running() or is_github_actions_ci()
         ONLINE = is_online()
         self.enabled = (
-            CONFIG["sync"]
+            CONFIG["diagnostics"]
             and not TESTS_RUNNING
             and ONLINE
             and (

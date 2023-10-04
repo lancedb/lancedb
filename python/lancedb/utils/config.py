@@ -61,7 +61,7 @@ class Config(dict):
     def __init__(self, file=CONFIG_FILE):
         self.file = Path(file)
         self.defaults = {  # Default global config values
-            "sync": True,
+            "diagnostics": True,
             "uuid": hashlib.sha256(str(uuid.getnode()).encode()).hexdigest(),
         }
 
@@ -79,8 +79,7 @@ class Config(dict):
             LOGGER.warning(
                 "WARNING ⚠️ LanceDB settings reset to default values. This may be due to a possible problem "
                 "with your settings or a recent package update. "
-                f"\nView settings with 'lancedb settings' or at '{self.file}'"
-                "\nUpdate settings with 'lancedb config key=value', i.e. 'lancedb config runs_dir=path/to/dir'."
+                f"\nView settings & usage with 'lancedb settings' or at '{self.file}'"
             )
             self.reset()
 
