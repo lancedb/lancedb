@@ -33,6 +33,7 @@ from .embeddings.functions import EmbeddingFunctionConfig
 from .pydantic import LanceModel
 from .query import LanceQueryBuilder, Query
 from .util import fs_from_uri, safe_import_pandas
+from .utils.events import register_event
 
 pd = safe_import_pandas()
 
@@ -490,6 +491,7 @@ class LanceTable(Table):
             replace=replace,
         )
         self._reset_dataset()
+        register_event("create_index")
 
     def create_fts_index(self, field_names: Union[str, List[str]]):
         """Create a full-text search index on the table.
@@ -508,6 +510,7 @@ class LanceTable(Table):
             field_names = [field_names]
         index = create_index(self._get_fts_index_path(), field_names)
         populate_index(index, self, field_names)
+        register_event("create_fts_index")
 
     def _get_fts_index_path(self):
         return os.path.join(self._dataset_uri, "_indices", "tantivy")
@@ -560,6 +563,7 @@ class LanceTable(Table):
         )
         lance.write_dataset(data, self._dataset_uri, schema=self.schema, mode=mode)
         self._reset_dataset()
+        register_event("add")
 
     def merge(
         self,
@@ -623,6 +627,7 @@ class LanceTable(Table):
             other_table, left_on=left_on, right_on=right_on, schema=schema
         )
         self._reset_dataset()
+        register_event("merge")
 
     @cached_property
     def embedding_functions(self) -> dict:
@@ -673,6 +678,7 @@ class LanceTable(Table):
             and also the "_distance" column which is the distance between the query
             vector and the returned vector.
         """
+        register_event("search")
         return LanceQueryBuilder.create(
             self, query, query_type, vector_column_name=vector_column_name
         )
@@ -776,6 +782,7 @@ class LanceTable(Table):
         if data is not None:
             table.add(data)
 
+        register_event("create_table")
         return table
 
     @classmethod
@@ -841,6 +848,7 @@ class LanceTable(Table):
         self.delete(where)
         self.add(orig_data, mode="append")
         self._reset_dataset()
+        register_event("update")
 
     def _execute_query(self, query: Query) -> pa.Table:
         ds = self.to_lance()
