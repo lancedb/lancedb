@@ -22,14 +22,21 @@ from .general import (
 
 class _Events:
     """
-    A class for collecting anonymous event analytics. Event analytics are enabled when diagnostics=True in config and
-    disabled when diagnostics=False.
+    A class for collecting anonymous event analytics. Event analytics are enabled when ``diagnostics=True`` in config and
+    disabled when ``diagnostics=False``.
 
-    Attributes:
-        url (str): The URL to send anonymous events.
-        rate_limit (float): The rate limit in seconds for sending events.
-        metadata (dict): A dictionary containing metadata about the environment.
-        enabled (bool): A flag to enable or disable Events based on certain conditions.
+    You can enable or disable diagnostics by running ``lancedb diagnostics --enabled`` or ``lancedb diagnostics --disabled``.
+    
+    Attributes
+    ----------
+    url : str
+        The URL to send anonymous events.
+    rate_limit : float
+        The rate limit in seconds for sending events.
+    metadata : dict
+        A dictionary containing metadata about the environment.
+    enabled : bool
+        A flag to enable or disable Events based on certain conditions.
     """
 
     _instance = None
@@ -80,8 +87,12 @@ class _Events:
         """
         Attempts to add a new event to the events list and send events if the rate limit is reached.
 
-        Args:
-
+        Args
+        ----
+        event_name : str
+            The name of the event to be logged.
+        params : dict, optional
+            A dictionary of additional parameters to be logged with the event.
         """
         ### NOTE: We might need a way to tag a session with a label to check usage from a source. Setting label should be exposed to the user.
         if not self.enabled:
