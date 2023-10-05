@@ -134,9 +134,7 @@ belong in the same latent space and your results will be nonsensical.
      The above snippet returns an array of records with the 10 closest vectors to the query.
 
 
-## Roadmap
+## Implicit vectorization / Ingesting embedding functions
+Representing multi-modal data as vector embeddings is becoming a standard practice. So much so that the Embedding functions themselves be thought of as a part of the processing pipeline or a middleware that each request(input) has to be passed through. After initial setup these components are not expected to change for a particular project. This is main motivation behind our new embedding functions API, that allow you simply set it up once and the table remembers it, effectively making the **embedding functions disappear in the background** so you don't have to worry about modelling and simply focus on the DB aspects of VectorDB.
 
-In the near future, we'll be integrating the embedding functions deeper into LanceDB<br/>.
-The goal is that you just have to configure the function once when you create the table,
-and then you'll never have to deal with embeddings / vectors after that unless you want to.
-We'll also integrate more popular models and APIs.
+Learn more in the Next Section
