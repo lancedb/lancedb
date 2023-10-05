@@ -8,11 +8,14 @@ from lancedb.utils import CONFIG
 def cli():
     "LanceDB command line interface"
 
+
 diagnostics_help = """
 Enable or disable LanceDB diagnostics. When enabled, LanceDB will send anonymous events to help us improve LanceDB.
 These diagnostics are used only for error reporting and no data is collected. You can find more about diagnosis on
 our docs: https://lancedb.github.io/lancedb/diagnostics
 """
+
+
 @cli.command(help=diagnostics_help)
 @click.option("--enabled/--disabled", default=True)
 def diagnostics(enabled):
