@@ -13,8 +13,9 @@ from .general import (
     is_online,
     is_pip_package,
     is_pytest_running,
-    TryExcept
+    TryExcept,
 )
+
 
 @TryExcept(verbose=False)
 def set_sentry():
