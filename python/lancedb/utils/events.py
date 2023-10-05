@@ -100,7 +100,7 @@ class _Events:
         if (
             len(self.events) < self.max_events
         ):  # Events list limited to 25 events (drop any events past this)
-            params["metadata"] = self.metadata
+            params.update(self.metadata)
             self.events.append(
                 {
                     "event": event_name,
