@@ -12,6 +12,7 @@ dependencies = [
     "semver>=3.0",
     "cachetools",
     "pyyaml>=6.0",
+    "click>=8.1.7",
     "requests>=2.31.0"
 ]
 description = "lancedb"
@@ -51,6 +52,9 @@ dev = ["ruff", "pre-commit", "black"]
 docs = ["mkdocs", "mkdocs-jupyter", "mkdocs-material", "mkdocstrings[python]"]
 clip = ["torch", "pillow", "open-clip"]
 embeddings = ["openai", "sentence-transformers", "torch", "pillow", "open-clip"]
+
+[project.scripts]
+lancedb = "lancedb.cli.cli:cli"
 
 [build-system]
 requires = ["setuptools", "wheel"]
