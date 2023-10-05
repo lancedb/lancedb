@@ -21,11 +21,16 @@ snafu = { workspace = true }
 half = { workspace = true }
 lance = { workspace = true }
 lance-linalg = { workspace = true }
+lance-testing = { workspace = true }
 tokio = { version = "1.23", features = ["rt-multi-thread"] }
 log = { workspace = true }
+async-trait = "0"
+bytes = "1"
+futures = "0"
 num-traits = "0"
 url = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3.5.0"
 rand = { version = "0.8.3", features = ["small_rng"] }
+walkdir = "2"
