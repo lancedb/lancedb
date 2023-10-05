@@ -8,12 +8,12 @@ from lancedb.utils import CONFIG
 
 from .general import (
     PLATFORMS,
+    TryExcept,
     is_git_dir,
     is_github_actions_ci,
     is_online,
     is_pip_package,
     is_pytest_running,
-    TryExcept,
 )
 
 
