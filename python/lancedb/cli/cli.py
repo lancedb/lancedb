@@ -8,12 +8,16 @@ from lancedb.utils import CONFIG
 def cli():
     "LanceDB command line interface"
 
-
-@cli.command(help="Enable or disable LanceDB Sync")
+diagnostics_help = """
+Enable or disable LanceDB diagnostics. When enabled, LanceDB will send anonymous events to help us improve LanceDB.
+These diagnostics are used only for error reporting and no data is collected. You can find more about diagnosis on
+our docs: https://lancedb.github.io/lancedb/diagnostics
+"""
+@cli.command(help=diagnostics_help)
 @click.option("--enabled/--disabled", default=True)
-def sync(enabled):
-    CONFIG.update({"sync": True if enabled else False})
-    click.echo("LanceDB Sync is %s" % ("enabled" if enabled else "disabled"))
+def diagnostics(enabled):
+    CONFIG.update({"diagnostics": True if enabled else False})
+    click.echo("LanceDB diagnostics is %s" % ("enabled" if enabled else "disabled"))
 
 
 @cli.command(help="Show current LanceDB configuration")
