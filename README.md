@@ -33,6 +33,8 @@ The key features of LanceDB include:
 
 * Zero-copy, automatic versioning, manage versions of your data without needing extra infrastructure.
 
+* GPU support in building vector index(*).
+
 * Ecosystem integrations with [LangChain 🦜️🔗](https://python.langchain.com/en/latest/modules/indexes/vectorstores/examples/lanecdb.html), [LlamaIndex 🦙](https://gpt-index.readthedocs.io/en/latest/examples/vector_stores/LanceDBIndexDemo.html), Apache-Arrow, Pandas, Polars, DuckDB and more on the way.
 
 LanceDB's core is written in Rust 🦀 and is built using <a href="https://github.com/lancedb/lance">Lance</a>, an open-source columnar format designed for performant ML workloads.
@@ -48,7 +50,7 @@ npm install vectordb
 const lancedb = require('vectordb');
 const db = await lancedb.connect('data/sample-lancedb');
 
-const table = await db.createTable('vectors', 
+const table = await db.createTable('vectors',
       [{ id: 1, vector: [0.1, 0.2], item: "foo", price: 10 },
        { id: 2, vector: [1.1, 1.2], item: "bar", price: 50 }])
 

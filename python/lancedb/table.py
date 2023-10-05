@@ -180,6 +180,7 @@ class Table(ABC):
         num_sub_vectors=96,
         vector_column_name: str = VECTOR_COLUMN_NAME,
         replace: bool = True,
+        accelerator: Optional[str] = None,
     ):
         """Create an index on the table.
 
@@ -200,6 +201,9 @@ class Table(ABC):
         replace: bool, default True
             If True, replace the existing index if it exists.
             If False, raise an error if duplicate index exists.
+        accelerator: str, default None
+            If set, use the given accelerator to create the index.
+            Only support "cuda" for now.
         """
         raise NotImplementedError
 
@@ -479,6 +483,7 @@ class LanceTable(Table):
         num_sub_vectors=96,
         vector_column_name=VECTOR_COLUMN_NAME,
         replace: bool = True,
+        accelerator: Optional[str] = None,
     ):
         """Create an index on the table."""
         self._dataset.create_index(
@@ -488,6 +493,7 @@ class LanceTable(Table):
             num_partitions=num_partitions,
             num_sub_vectors=num_sub_vectors,
             replace=replace,
+            accelerator=accelerator,
         )
         self._reset_dataset()
 
