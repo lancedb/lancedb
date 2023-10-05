@@ -13,9 +13,10 @@ from .general import (
     is_online,
     is_pip_package,
     is_pytest_running,
+    TryExcept
 )
 
-
+@TryExcept(verbose=False)
 def set_sentry():
     """
     Initialize the Sentry SDK for error tracking and reporting. Only used if sentry_sdk package is installed and
@@ -81,6 +82,7 @@ def set_sentry():
         sentry_sdk.init(
             dsn="https://c63ef8c64e05d1aa1a96513361f3ca2f@o4505950840946688.ingest.sentry.io/4505950933614592",
             debug=False,
+            include_local_variables=False,
             traces_sample_rate=1.0,
             environment="production",  # 'dev' or 'production'
             before_send=before_send,
