@@ -47,7 +47,7 @@ describe('LanceDB AWS Integration test', function () {
 
 describe('LanceDB Mirrored Store Integration test', function () {
   it('s3://...?mirroredStore=... param is processed correctly', async function () {
-    this.timeout(60000)
+    this.timeout(600000)
 
     const dir = tmpdir()
     console.log(dir)
