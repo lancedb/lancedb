@@ -21,7 +21,7 @@ lancedb {config_name} --{argument}
 ```
 
 ## LanceDB Opt-in Diagnostics
-When enabled, LanceDB will send anonymous events to help us improve LanceDB. These diagnostics are used only for error reporting and no data is collected. Error & stats allow us to automates certain aspects of bug reporting, prioritization of fixes and feature requests.
+When enabled, LanceDB will send anonymous events to help us improve LanceDB. These diagnostics are used only for error reporting and no data is collected. Error & stats allow us to automate certain aspects of bug reporting, prioritization of fixes and feature requests.
 These diagnostics are opt-in and can be enabled or disabled using the `lancedb diagnostics` command. These are enabled by default.
 Get usage help.
 ```
