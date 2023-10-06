@@ -3,3 +3,6 @@ numpy
 pandas
 pylance
 duckdb
+--index-url https://download.pytorch.org/whl/cpu
+torch
+
