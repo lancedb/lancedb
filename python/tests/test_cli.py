@@ -1,6 +1,7 @@
+from click.testing import CliRunner
+
 from lancedb.cli.cli import cli
 from lancedb.utils import CONFIG
-from click.testing import CliRunner
 
 
 def test_entry():

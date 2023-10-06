@@ -1,5 +1,6 @@
 import pytest
 import requests
+
 import lancedb
 from lancedb.utils.events import _Events
 from lancedb.utils.general import threaded_request
@@ -31,7 +32,7 @@ def mock_register_event(name: str, **kwargs):
 
 # notice our test uses the custom fixture instead of monkeypatch directly
 def test_get_access_token_success(monkeypatch) -> None:
-    monkeypatch.setattr(lancedb.table, "register_event", mock_register_event)
+    monkeypatch.setattr(lancedb.table, "register_event", mock_register_event) # Force enable resitering events and strip exception handling
     monkeypatch.setattr(lancedb.utils.events, "threaded_request", mock_request)
 
     db = lancedb.connect("db")
