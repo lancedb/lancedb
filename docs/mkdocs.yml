@@ -74,7 +74,9 @@ nav:
     - Indexing: ann_indexes.md
   - 🧬 Embeddings:
     - embeddings/index.md
-    - Serialize Embedding Functions in Tables: embeddings/embedding_functions.md
+    - Ingest Embedding Functions in Tables: embeddings/embedding_functions.md
+    - Implementing Custom Embedding Functions: embeddings/api.md
+    - Example- MultiModal CLIP Embeddings: notebooks/DisappearingEmbeddingFunction.ipynb
   - 🔍 Python full-text search: fts.md
   - 🔌 Integrations:
     - integrations/index.md
@@ -106,8 +108,9 @@ nav:
   - Indexing: ann_indexes.md
 - Embeddings:
   - embeddings/index.md
-  - Serialize Embedding Functions in Tables: embeddings/embedding_functions.md
-  - MltiModal Embeddings example: notebooks/DisappearingEmbeddingFunction.ipynb
+  - Ingest Embedding Functions in Tables: embeddings/embedding_functions.md
+  - Implementing Custom Embedding Functions: embeddings/api.md
+  - Example- MultiModal CLIP Embeddings: notebooks/DisappearingEmbeddingFunction.ipynb
 - Python full-text search: fts.md
 - Integrations:
   - integrations/index.md

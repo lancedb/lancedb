@@ -22,3 +22,4 @@ from .functions import (
     TextEmbeddingFunction,
 )
 from .utils import with_embeddings
+from .functions import register
