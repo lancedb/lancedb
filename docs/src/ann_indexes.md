@@ -68,20 +68,12 @@ a single PQ code.
   <figcaption>IVF_PQ index with <code>num_partitions=2, num_sub_vectors=4</code></figcaption>
 </figure>
 
-Lance Python SDK has experimental GPU support for index creation.
+### Use GPU to build vector index
+
+Lance Python SDK has experimental GPU support for creating IVF index.
 You can specify the GPU device to train IVF partitions via
-```accelerator="cuda"```.
 
-=== "Python"
-
-     ```python
-
-     tbl.create_index(
-          num_partitions=256,
-          num_sub_vectors=96,
-          accelerator="cuda"  # Use CUDA
-     )
-     ```
+- **accelerator**: Specify to `"cuda"`` to enable GPU training.
 
 ## Querying an ANN Index
 
