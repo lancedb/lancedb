@@ -125,11 +125,11 @@ impl ObjectStore for MirroringObjectStore {
     }
 
     async fn list(&self, prefix: Option<&Path>) -> Result<BoxStream<'_, Result<ObjectMeta>>> {
-        self.list(prefix).await
+        self.primary.list(prefix).await
     }
 
     async fn list_with_delimiter(&self, prefix: Option<&Path>) -> Result<ListResult> {
-        self.list_with_delimiter(prefix).await
+        self.primary.list_with_delimiter(prefix).await
     }
 
     async fn copy(&self, from: &Path, to: &Path) -> Result<()> {
