@@ -45,3 +45,4 @@ def test_get_access_token_success(monkeypatch) -> None:
         ],
         mode="overwrite",
     )
+    # TODO: also test if Events are registered or not
