@@ -1,4 +1,4 @@
-lancedb @ git+https://github.com/lancedb/lancedb.git#egg=subdir&subdirectory=python
+-e ../../python
 numpy
 pandas
 pylance
