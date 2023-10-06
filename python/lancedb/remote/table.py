@@ -13,7 +13,7 @@
 
 import uuid
 from functools import cached_property
-from typing import Union
+from typing import Optional, Union
 
 import pyarrow as pa
 from lance import json_to_schema
@@ -62,6 +62,7 @@ class RemoteTable(Table):
         num_sub_vectors=96,
         vector_column_name: str = VECTOR_COLUMN_NAME,
         replace: bool = True,
+        accelerator: Optional[str] = None,
     ):
         raise NotImplementedError
 

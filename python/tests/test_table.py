@@ -223,6 +223,7 @@ def test_create_index_method():
                 num_partitions=256,
                 num_sub_vectors=96,
                 replace=True,
+                accelerator=None,
             )
 
 
