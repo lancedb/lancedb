@@ -1,8 +1,9 @@
 import json
 
+import pytest
+
 import lancedb
 from lancedb.utils.events import _Events
-import pytest
 
 
 @pytest.fixture(autouse=True)
