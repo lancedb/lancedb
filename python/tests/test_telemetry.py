@@ -1,42 +1,36 @@
-import pytest
-import requests
+import json
 
 import lancedb
 from lancedb.utils.events import _Events
-from lancedb.utils.general import threaded_request
+import pytest
 
 
-def mock_request(
-    method, url, retry=3, timeout=30, thread=True, code=-1, verbose=True, **kwargs
-):
-    assert method.lower() == "post"
-    json = kwargs.get("json", {})
-    # TODO: don't hardcode these here. Instead create a module level json scehma in lancedb.utils.events for better evolvability
-    batch_keys = ["api_key", "distinct_id", "batch"]
-    event_keys = ["event", "properties", "timestamp", "distinct_id"]
-    property_keys = ["cli", "install", "platforms", "version", "session_id", "blud"]
-
-    assert all([key in json for key in batch_keys])
-    assert all([key in json["batch"][0] for key in event_keys])
-    assert all([key in json["batch"][0]["properties"] for key in property_keys])
+@pytest.fixture(autouse=True)
+def request_log_path(tmp_path):
+    return tmp_path / "request.json"
 
 
 def mock_register_event(name: str, **kwargs):
     if _Events._instance is None:
         _Events._instance = _Events()
-        _Events._instance.enabled = True
-        _Events._instance.rate_limit = 0
 
+    _Events._instance.enabled = True
+    _Events._instance.rate_limit = 0
     _Events._instance(name, **kwargs)
 
 
-def test_get_access_token_success(monkeypatch) -> None:
+def test_event_reporting(monkeypatch, request_log_path, tmp_path) -> None:
+    def mock_request(**kwargs):
+        json_data = kwargs.get("json", {})
+        with open(request_log_path, "w") as f:
+            json.dump(json_data, f)
+
     monkeypatch.setattr(
         lancedb.table, "register_event", mock_register_event
     )  # Force enable registering events and strip exception handling
     monkeypatch.setattr(lancedb.utils.events, "threaded_request", mock_request)
 
-    db = lancedb.connect("db")
+    db = lancedb.connect(tmp_path)
     db.create_table(
         "test",
         data=[
@@ -45,4 +39,21 @@ def test_get_access_token_success(monkeypatch) -> None:
         ],
         mode="overwrite",
     )
-    # TODO: also test if Events are registered or not
+
+    assert request_log_path.exists()  # test if event was registered
+
+    with open(request_log_path, "r") as f:
+        json_data = json.load(f)
+
+    # TODO: don't hardcode these here. Instead create a module level json scehma in lancedb.utils.events for better evolvability
+    batch_keys = ["api_key", "distinct_id", "batch"]
+    event_keys = ["event", "properties", "timestamp", "distinct_id"]
+    property_keys = ["cli", "install", "platforms", "version", "session_id"]
+
+    assert all([key in json_data for key in batch_keys])
+    assert all([key in json_data["batch"][0] for key in event_keys])
+    assert all([key in json_data["batch"][0]["properties"] for key in property_keys])
+
+    # cleanup & reset
+    monkeypatch.undo()
+    _Events._instance = None
