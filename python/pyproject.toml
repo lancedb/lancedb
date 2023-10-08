@@ -10,7 +10,10 @@ dependencies = [
     "pydantic>=1.10",
     "attrs>=21.3.0",
     "semver>=3.0",
-    "cachetools"
+    "cachetools",
+    "pyyaml>=6.0",
+    "click>=8.1.7",
+    "requests>=2.31.0"
 ]
 description = "lancedb"
 authors = [{ name = "LanceDB Devs", email = "dev@lancedb.com" }]
@@ -49,6 +52,9 @@ dev = ["ruff", "pre-commit", "black"]
 docs = ["mkdocs", "mkdocs-jupyter", "mkdocs-material", "mkdocstrings[python]"]
 clip = ["torch", "pillow", "open-clip"]
 embeddings = ["openai", "sentence-transformers", "torch", "pillow", "open-clip"]
+
+[project.scripts]
+lancedb = "lancedb.cli.cli:cli"
 
 [build-system]
 requires = ["setuptools", "wheel"]
