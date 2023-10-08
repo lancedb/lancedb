@@ -149,7 +149,7 @@ class Table(ABC):
     @abstractmethod
     def schema(self) -> pa.Schema:
         """The [Arrow Schema](https://arrow.apache.org/docs/python/api/datatypes.html#) of
-        this [Table](Table)
+        this Table
 
         """
         raise NotImplementedError
