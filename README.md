@@ -55,7 +55,7 @@ const table = await db.createTable('vectors',
        { id: 2, vector: [1.1, 1.2], item: "bar", price: 50 }])
 
 const query = table.search([0.1, 0.3]);
-query.limit = 20;
+query.limit(20);
 const results = await query.execute();
 ```
 
