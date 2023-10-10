@@ -23,4 +23,3 @@ from .functions import (
 )
 from .utils import with_embeddings
 from .cohere import CohereEmbeddingFunction
-from .palm import PalmEmbeddingFunction
