@@ -21,6 +21,7 @@ from lance.vector import vec_to_table
 from retry import retry
 
 from ..util import safe_import_pandas
+from ..utils.general import LOGGER
 
 pd = safe_import_pandas()
 DATA = Union[pa.Table, "pd.DataFrame"]
@@ -152,3 +153,8 @@ class FunctionWrapper:
             yield from tqdm(_chunker(arr), total=math.ceil(length / self._batch_size))
         else:
             yield from _chunker(arr)
+
+
+def api_key_not_found_help(provider):
+    LOGGER.error(f"Could not find API key for {provider}.")
+    raise ValueError(f"Please set the {provider.upper()}_API_KEY environment variable.")

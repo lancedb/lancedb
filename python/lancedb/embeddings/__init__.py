@@ -21,5 +21,6 @@ from .functions import (
     SentenceTransformerEmbeddings,
     TextEmbeddingFunction,
 )
-from .cohere import CohereEmbeddingFunction
 from .utils import with_embeddings
+from .cohere import CohereEmbeddingFunction
+from .palm import PalmEmbeddingFunction

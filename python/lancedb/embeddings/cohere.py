@@ -1,9 +1,22 @@
+#  Copyright (c) 2023. LanceDB Developers
+#
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
+
 import os
 from typing import ClassVar
 from typing import List, Union
 import numpy as np
-
 from .functions import register, TextEmbeddingFunction
+from .utils import api_key_not_found_help
 
 
 @register("cohere")
@@ -17,7 +30,7 @@ class CohereEmbeddingFunction(TextEmbeddingFunction):
     ----------
     name: str, default "embed-multilingual-v2.0"
         The name of the model to use. See the Cohere documentation for a list of available models.
-    
+
     Examples
     --------
     import lancedb
@@ -42,9 +55,14 @@ class CohereEmbeddingFunction(TextEmbeddingFunction):
     name: str = "embed-multilingual-v2.0"
     client: ClassVar = None
 
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._ndims = None
+
     def ndims(self):
-        # TODO: This throws pydantic error when using an instance var to store the ndims. Investigate and make dynamic
-        return 768
+        if self._ndims is None:
+            self._ndims = len(self.generate_embeddings(["foo"])[0])
+        return self._ndims
 
     def generate_embeddings(
         self, texts: Union[List[str], np.ndarray]
@@ -58,14 +76,14 @@ class CohereEmbeddingFunction(TextEmbeddingFunction):
             The texts to embed
         """
         # TODO retry, rate limit, token limit
-        self._init_client()    
+        self._init_client()
         rs = CohereEmbeddingFunction.client.embed(texts=texts, model=self.name)
-    
+
         return [emb for emb in rs.embeddings]
-    
+
     def _init_client(self):
         cohere = self.safe_import("cohere")
         if CohereEmbeddingFunction.client is None:
             if os.environ.get("COHERE_API_KEY") is None:
-                raise ValueError("Please set the COHERE_API_KEY environment variable")
+                api_key_not_found_help("cohere")
             CohereEmbeddingFunction.client = cohere.Client(os.environ["COHERE_API_KEY"])
