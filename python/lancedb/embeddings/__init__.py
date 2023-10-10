@@ -21,4 +21,5 @@ from .functions import (
     SentenceTransformerEmbeddings,
     TextEmbeddingFunction,
 )
+from .cohere import CohereEmbeddingFunction
 from .utils import with_embeddings
