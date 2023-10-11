@@ -309,7 +309,7 @@ impl Table {
         Ok(())
     }
 
-    /// Removed old versions of the dataset from disk.
+    /// Remove old versions of the dataset from disk.
     ///
     /// # Arguments
     /// * `older_than` - The duration of time to keep versions of the dataset.

@@ -463,17 +463,28 @@ describe('Compact and cleanup', function () {
     ]
     await table.add(newData)
 
-    const compactionMetrics = await table.compact_files({
+    const compactionMetrics = await table.compactFiles({
       numThreads: 2
     })
-    assert.equal(compactionMetrics.fragments_removed, 2)
-    assert.equal(compactionMetrics.fragments_added, 1)
+    assert.equal(compactionMetrics.fragmentsRemoved, 2)
+    assert.equal(compactionMetrics.fragmentsAdded, 1)
     assert.equal(await table.countRows(), 3)
 
-    await table.cleanup_old_versions()
+    await table.cleanupOldVersions()
     assert.equal(await table.countRows(), 3)
 
-    await table.cleanup_old_versions(0, true)
+    // should have no effect, but this validates the arguments are parsed.
+    await table.compactFiles({
+      targetRowsPerFragment: 1024 * 10,
+      maxRowsPerGroup: 1024,
+      materializeDeletions: true,
+      materializeDeletionsThreshold: 0.5,
+      numThreads: 2
+    })
+
+    const cleanupMetrics = await table.cleanupOldVersions(0, true)
+    assert.isAtLeast(cleanupMetrics.bytesRemoved, 1)
+    assert.isAtLeast(cleanupMetrics.oldVersions, 1)
     assert.equal(await table.countRows(), 3)
   })
 })

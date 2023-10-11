@@ -466,14 +466,21 @@ export class LocalTable<T = number[]> implements Table<T> {
    * @param olderThan The minimum age in minutes of the versions to delete. If not
    *                  provided, defaults to two weeks.
    * @param deleteUnverified Because they may be part of an in-progress
-   *                  transaction, files newer than 7 days old are not deleted
-   *                  by default. If you are sure that there are no in-progress
-   *                  transactions, then you can set this to `true` to delete all
-   *                  files older than `older_than`.
+   *                  transaction, uncommitted files newer than 7 days old are
+   *                  not deleted by default. This means that failed transactions
+   *                  can leave around data that takes up disk space for up to
+   *                  7 days. You can override this safety mechanism by setting
+   *                 this option to `true`, only if you promise there are no
+   *                 in progress writes while you run this operation. Failure to
+   *                 uphold this promise can lead to corrupted tables.
    * @returns
    */
-  async cleanup_old_versions (olderThan?: number, deleteUnverified?: boolean): Promise<CleanupStats> {
+  async cleanupOldVersions (olderThan?: number, deleteUnverified?: boolean): Promise<CleanupStats> {
     return tableCleanupOldVersions.call(this._tbl, olderThan, deleteUnverified)
+      .then((res: { newTable: any, metrics: CleanupStats }) => {
+        this._tbl = res.newTable
+        return res.metrics
+      })
   }
 
   /**
@@ -487,9 +494,13 @@ export class LocalTable<T = number[]> implements Table<T> {
    *               for most tables.
    * @returns Metrics about the compaction operation.
    */
-  async compact_files (options?: CompactionOptions): Promise<CompactionMetrics> {
+  async compactFiles (options?: CompactionOptions): Promise<CompactionMetrics> {
     const optionsArg = options ?? {}
     return tableCompactFiles.call(this._tbl, optionsArg)
+      .then((res: { newTable: any, metrics: CompactionMetrics }) => {
+        this._tbl = res.newTable
+        return res.metrics
+      })
   }
 }
 
@@ -508,21 +519,23 @@ export interface CompactionOptions {
   /**
    * The number of rows per fragment to target. Fragments that have fewer rows
    * will be compacted into adjacent fragments to produce larger fragments.
+   * Defaults to 1024 * 1024.
    */
   targetRowsPerFragment?: number
   /**
-   * The maximum number of rows per group.
+   * The maximum number of rows per group. Defaults to 1024.
    */
   maxRowsPerGroup?: number
   /**
    * If true, fragments that have rows that are deleted may be compacted to
    * remove the deleted rows. This can improve the performance of queries.
+   * Default is true.
    */
   materializeDeletions?: boolean
   /**
    * A number between 0 and 1, representing the proportion of rows that must be
    * marked deleted before a fragment is a candidate for compaction to remove
-   * the deleted rows.
+   * the deleted rows. Default is 10%.
    */
   materializeDeletionsThreshold?: number
   /**
@@ -533,10 +546,24 @@ export interface CompactionOptions {
 }
 
 export interface CompactionMetrics {
-  fragments_added: number
-  fragments_removed: number
-  files_removed: number
-  files_added: number
+  /**
+   * The number of fragments that were removed.
+   */
+  fragmentsRemoved: number
+  /**
+   * The number of new fragments that were created.
+   */
+  fragmentsAdded: number
+  /**
+   * The number of files that were removed. Each fragment may have more than one
+   * file.
+   */
+  filesRemoved: number
+  /**
+   * The number of files added. This is typically equal to the number of
+   * fragments added.
+   */
+  filesAdded: number
 }
 
 /// Config to build IVF_PQ index.
