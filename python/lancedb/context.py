@@ -43,11 +43,11 @@ def contextualize(raw_df: "pd.DataFrame") -> Contextualizer:
     ...    {'token': 'the', 'document_id': 1},
     ...    {'token': 'lazy', 'document_id': 1},
     ...    {'token': 'dog', 'document_id': 1},
-    ...    {'token': 'I', 'document_id': 1},
+    ...    {'token': 'I', 'document_id': 2},
     ...    {'token': 'love', 'document_id': 2},
     ...    {'token': 'sandwiches', 'document_id': 2},
-    ...    {'token': 'lazy', 'document_id': 2},
     ... ])
+
     ``window`` determines how many rows to include in each window. In our case
     this how many tokens, but depending on the input data, it could be sentences,
     paragraphs, messages, etc.

@@ -101,11 +101,6 @@ class DBConnection(ABC):
         You can also pass a pandas DataFrame:
 
         >>> import pandas as pd
-        >>> data = pd.DataFrame({
-        ...    "vector": [[1.1, 1.2], [0.2, 1.8]],
-        ...    "lat": [45.5, 40.1],
-        ...    "long": [-122.7, -74.1]
-        ... })
         >>> data = pd.DataFrame([
         ...    {"vector": [1.1, 1.2], "lat": 45.5, "long": -122.7},
         ...    {"vector": [0.2, 1.8], "lat": 40.1, "long":  -74.1}
