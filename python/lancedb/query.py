@@ -16,10 +16,12 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import List, Literal, Optional, Type, Union
 
+import deprecation
 import numpy as np
 import pyarrow as pa
 import pydantic
 
+from . import __version__
 from .common import VECTOR_COLUMN_NAME
 from .pydantic import LanceModel
 from .util import safe_import_pandas
@@ -127,7 +129,24 @@ class LanceQueryBuilder(ABC):
         self._columns = None
         self._where = None
 
+    @deprecation.deprecated(
+        deprecated_in="0.3.1",
+        removed_in="0.4.0",
+        current_version=__version__,
+        details="Use the bar function instead",
+    )
     def to_df(self) -> "pd.DataFrame":
+        """
+        Deprecated alias for `to_pandas()`. Please use `to_pandas()` instead.
+
+        Execute the query and return the results as a pandas DataFrame.
+        In addition to the selected columns, LanceDB also returns a vector
+        and also the "_distance" column which is the distance between the query
+        vector and the returned vector.
+        """
+        return self.to_pandas()
+
+    def to_pandas(self) -> "pd.DataFrame":
         """
         Execute the query and return the results as a pandas DataFrame.
         In addition to the selected columns, LanceDB also returns a vector
@@ -147,6 +166,16 @@ class LanceQueryBuilder(ABC):
         vector and the returned vectors.
         """
         raise NotImplementedError
+
+    def to_list(self) -> List[dict]:
+        """
+        Execute the query and return the results as a list of dictionaries.
+
+        Each list entry is a dictionary with the selected column names as keys,
+        or all table columns if `select` is not called. The vector and the "_distance"
+        fields are returned whether or not they're explicitly selected.
+        """
+        return self.to_arrow().to_pylist()
 
     def to_pydantic(self, model: Type[LanceModel]) -> List[LanceModel]:
         """Return the table as a list of pydantic models.
@@ -232,7 +261,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
     ...       .where("b < 10")
     ...       .select(["b"])
     ...       .limit(2)
-    ...       .to_df())
+    ...       .to_pandas())
        b      vector  _distance
     0  6  [0.4, 0.4]        0.0
     """

@@ -36,11 +36,11 @@ def test_s3_io():
             {"vector": [5.9, 26.5], "item": "bar", "price": 20.0},
         ],
     )
-    rs = table.search([100, 100]).limit(1).to_df()
+    rs = table.search([100, 100]).limit(1).to_pandas()
     assert len(rs) == 1
     assert rs["item"].iloc[0] == "bar"
 
-    rs = table.search([100, 100]).where("price < 15").limit(2).to_df()
+    rs = table.search([100, 100]).where("price < 15").limit(2).to_pandas()
     assert len(rs) == 1
     assert rs["item"].iloc[0] == "foo"
 

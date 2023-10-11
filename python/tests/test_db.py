@@ -33,11 +33,11 @@ def test_basic(tmp_path):
             {"vector": [5.9, 26.5], "item": "bar", "price": 20.0},
         ],
     )
-    rs = table.search([100, 100]).limit(1).to_df()
+    rs = table.search([100, 100]).limit(1).to_pandas()
     assert len(rs) == 1
     assert rs["item"].iloc[0] == "bar"
 
-    rs = table.search([100, 100]).where("price < 15").limit(2).to_df()
+    rs = table.search([100, 100]).where("price < 15").limit(2).to_pandas()
     assert len(rs) == 1
     assert rs["item"].iloc[0] == "foo"
 
@@ -62,11 +62,11 @@ def test_ingest_pd(tmp_path):
         }
     )
     table = db.create_table("test", data=data)
-    rs = table.search([100, 100]).limit(1).to_df()
+    rs = table.search([100, 100]).limit(1).to_pandas()
     assert len(rs) == 1
     assert rs["item"].iloc[0] == "bar"
 
-    rs = table.search([100, 100]).where("price < 15").limit(2).to_df()
+    rs = table.search([100, 100]).where("price < 15").limit(2).to_pandas()
     assert len(rs) == 1
     assert rs["item"].iloc[0] == "foo"
 
@@ -137,8 +137,8 @@ def test_ingest_iterator(tmp_path):
         db = lancedb.connect(tmp_path)
         tbl = db.create_table("table2", make_batches(), schema=schema, mode="overwrite")
         tbl.to_pandas()
-        assert tbl.search([3.1, 4.1]).limit(1).to_df()["_distance"][0] == 0.0
-        assert tbl.search([5.9, 26.5]).limit(1).to_df()["_distance"][0] == 0.0
+        assert tbl.search([3.1, 4.1]).limit(1).to_pandas()["_distance"][0] == 0.0
+        assert tbl.search([5.9, 26.5]).limit(1).to_pandas()["_distance"][0] == 0.0
         tbl_len = len(tbl)
         tbl.add(make_batches())
         assert tbl_len == 50

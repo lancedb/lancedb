@@ -118,7 +118,7 @@ belong in the same latent space and your results will be nonsensical.
      ```python
      query = "What's the best pizza topping?"
      query_vector = embed_func([query])[0]
-     tbl.search(query_vector).limit(10).to_df()
+     tbl.search(query_vector).limit(10).to_pandas()
      ```
 
      The above snippet returns a pandas DataFrame with the 10 closest vectors to the query.
