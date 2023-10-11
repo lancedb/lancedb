@@ -427,8 +427,8 @@ def test_multiple_vector_columns(db):
     table.add(df)
 
     q = np.random.randn(10)
-    result1 = table.search(q, vector_column_name="vector1").limit(1).to_df()
-    result2 = table.search(q, vector_column_name="vector2").limit(1).to_df()
+    result1 = table.search(q, vector_column_name="vector1").limit(1).to_pandas()
+    result2 = table.search(q, vector_column_name="vector2").limit(1).to_pandas()
 
     assert result1["text"].iloc[0] != result2["text"].iloc[0]
 
@@ -439,6 +439,6 @@ def test_empty_query(db):
         "my_table",
         data=[{"text": "foo", "id": 0}, {"text": "bar", "id": 1}],
     )
-    df = table.search().select(["id"]).where("text='bar'").limit(1).to_df()
+    df = table.search().select(["id"]).where("text='bar'").limit(1).to_pandas()
     val = df.id.iloc[0]
     assert val == 1
