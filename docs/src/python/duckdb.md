@@ -15,11 +15,10 @@ import pandas as pd
 import lancedb
 
 db = lancedb.connect("data/sample-lancedb")
-data = pd.DataFrame({
-    "vector": [[3.1, 4.1], [5.9, 26.5]],
-    "item": ["foo", "bar"],
-    "price": [10.0, 20.0]
-})
+data = pd.DataFrame([
+    {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+    {"vector": [5.9, 26.5], "item": "bar", "price": 20.0}
+])
 table = db.create_table("pd_table", data=data)
 arrow_table = table.to_arrow()
 ```

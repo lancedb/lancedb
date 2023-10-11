@@ -106,6 +106,10 @@ class DBConnection(ABC):
         ...    "lat": [45.5, 40.1],
         ...    "long": [-122.7, -74.1]
         ... })
+        >>> data = pd.DataFrame([
+        ...    {"vector": [1.1, 1.2], "lat": 45.5, "long": -122.7},
+        ...    {"vector": [0.2, 1.8], "lat": 40.1, "long":  -74.1}
+        ... ])
         >>> db.create_table("table2", data)
         LanceTable(table2)
         >>> db["table2"].head()

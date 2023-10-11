@@ -41,11 +41,10 @@ A Table is a collection of Records in a LanceDB Database. You can follow along o
     ```python
     import pandas as pd
 
-    data = pd.DataFrame({
-        "vector": [[1.1, 1.2, 1.3, 1.4], [0.2, 1.8, 0.4, 3.6]],
-        "lat": [45.5, 40.1],
-        "long": [-122.7, -74.1]
-    })
+    data = pd.DataFrame([
+        {"vector": [1.1, 1.2, 1.3, 1.4], "lat": 45.5, "long": -122.7},
+        {"vector": [0.2, 1.8, 0.4, 3.6], "lat": 40.1, "long": -74.1},
+    ])
 
     db.create_table("table2", data)
 
@@ -265,13 +264,10 @@ After a table has been created, you can always add more data to it using
 
     def make_batches():
         for i in range(5):
-            yield pd.DataFrame(
-                {
-                    "vector": [[3.1, 4.1], [1, 1]],
-                    "item": ["foo", "bar"],
-                    "price": [10.0, 20.0],
-                })
-
+            yield pd.DataFrame([
+                    {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+                    {"vector": [5.9, 26.5], "item": "bar", "price": 20.0}
+                ])
     tbl.add(make_batches())
     ```
 
@@ -308,7 +304,9 @@ Use the `delete()` method on tables to delete rows from a table. To choose which
     import lancedb
     import pandas as pd
 
-    data = pd.DataFrame({"x": [1, 2, 3], "vector": [[1, 2], [3, 4], [5, 6]]})
+    data = pd.DataFrame([{"x": 1, "vector": [1, 2]},
+                         {"x": 2, "vector": [3, 4]},
+                         {"x": 3, "vector": [5, 6]}])
     db = lancedb.connect("./.lancedb")
     table = db.create_table("my_table", data)
     table.to_pandas()
