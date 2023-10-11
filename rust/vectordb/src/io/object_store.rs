@@ -14,7 +14,6 @@
 
 //! A mirroring object store that mirror writes to a secondary object store
 
-
 use std::{
     fmt::Formatter,
     pin::Pin,
