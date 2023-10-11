@@ -21,6 +21,7 @@ theme:
     - navigation.tracking
     - navigation.instant
     - navigation.indexes
+    - navigation.expand
   icon:
     repo: fontawesome/brands/github
   custom_dir: overrides
@@ -68,7 +69,7 @@ nav:
   - 🏢 Home: index.md
   - 💡 Basics: basic.md
   - 📚 Guides:
-    - Tables: guides/tables.md
+    - Create Ingest Update Delete: guides/tables.md
     - Vector Search: search.md
     - SQL filters: sql.md
     - Indexing: ann_indexes.md
@@ -103,7 +104,7 @@ nav:
     - TransformersJS Embedding Search: examples/transformerjs_embedding_search_nodejs.md
 - Basics: basic.md
 - Guides:
-  - Tables: guides/tables.md
+  - Create Ingest Update Delete: guides/tables.md
   - Vector Search: search.md
   - SQL filters: sql.md
   - Indexing: ann_indexes.md

@@ -364,6 +364,50 @@ Use the `delete()` method on tables to delete rows from a table. To choose which
     await tbl.countRows() // Returns 1
     ```
 
+### Updating a Table [Experimental]
+EXPERIMENTAL: Update rows in the table (not threadsafe).
+
+This can be used to update zero to all rows depending on how many rows match the where clause.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `where` | `str` | The SQL where clause to use when updating rows. For example, `'x = 2'` or `'x IN (1, 2, 3)'`. The filter must not be empty, or it will error. |
+| `values` | `dict` | The values to update. The keys are the column names and the values are the values to set. |
+
+
+=== "Python"
+
+    ```python
+    import lancedb
+    import pandas as pd
+
+    # Create a lancedb connection
+    db = lancedb.connect("./.lancedb")
+
+    # Create a table from a pandas DataFrame
+    data = pd.DataFrame({"x": [1, 2, 3], "vector": [[1, 2], [3, 4], [5, 6]]})
+    table = db.create_table("my_table", data)
+
+    # Update the table where x = 2
+    table.update(where="x = 2", values={"vector": [10, 10]})
+
+    # Get the updated table as a pandas DataFrame
+    df = table.to_pandas()
+
+    # Print the DataFrame
+    print(df)
+    ```
+
+    Output
+    ```shell
+        x  vector
+    0  1  [1.0, 2.0]
+    1  3  [5.0, 6.0]
+    2  2  [10.0, 10.0]
+    ```
+
+
+
 ## What's Next?
 
 Learn how to Query your tables and create indices
