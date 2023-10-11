@@ -146,4 +146,4 @@ def test_cohere_embedding_function():
     tbl = db.create_table("test", schema=TextModel, mode="overwrite")
 
     tbl.add(df)
-    assert len(tbl.to_pandas()["vectors"][0]) == cohere.ndims()
+    assert len(tbl.to_pandas()["vector"][0]) == cohere.ndims()
