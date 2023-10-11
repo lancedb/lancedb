@@ -67,7 +67,7 @@ await db_setup.createTable('my_vectors', data)
 
     df = tbl.search(np.random.random((1536))) \
         .limit(10) \
-        .to_df()
+        .to_list()
     ```
 
 === "JavaScript"
@@ -92,7 +92,7 @@ as well.
     df = tbl.search(np.random.random((1536))) \
         .metric("cosine") \
         .limit(10) \
-        .to_df()
+        .to_list()
     ```
 
 

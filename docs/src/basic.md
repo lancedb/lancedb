@@ -146,7 +146,7 @@ Once you've embedded the query, you can find its nearest neighbors using the fol
 
 === "Python"
       ```python
-      tbl.search([100, 100]).limit(2).to_df()
+      tbl.search([100, 100]).limit(2).to_pandas()
       ```
 
       This returns a pandas DataFrame with the results.
