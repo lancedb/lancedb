@@ -13,6 +13,7 @@ crate-type = ["cdylib"]
 arrow-array = { workspace = true }
 arrow-ipc = { workspace = true }
 arrow-schema = { workspace = true }
+chrono = { workspace = true }
 conv = "0.3.3"
 once_cell = "1"
 futures = "0.3"

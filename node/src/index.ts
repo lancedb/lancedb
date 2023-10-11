@@ -23,7 +23,7 @@ import { Query } from './query'
 import { isEmbeddingFunction } from './embedding/embedding_function'
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { databaseNew, databaseTableNames, databaseOpenTable, databaseDropTable, tableCreate, tableAdd, tableCreateVectorIndex, tableCountRows, tableDelete } = require('../native.js')
+const { databaseNew, databaseTableNames, databaseOpenTable, databaseDropTable, tableCreate, tableAdd, tableCreateVectorIndex, tableCountRows, tableDelete, tableCleanupOldVersions, tableCompactFiles } = require('../native.js')
 
 export { Query }
 export type { EmbeddingFunction }
@@ -459,6 +459,111 @@ export class LocalTable<T = number[]> implements Table<T> {
   async delete (filter: string): Promise<void> {
     return tableDelete.call(this._tbl, filter).then((newTable: any) => { this._tbl = newTable })
   }
+
+  /**
+   * Clean up old versions of the table, freeing disk space.
+   *
+   * @param olderThan The minimum age in minutes of the versions to delete. If not
+   *                  provided, defaults to two weeks.
+   * @param deleteUnverified Because they may be part of an in-progress
+   *                  transaction, uncommitted files newer than 7 days old are
+   *                  not deleted by default. This means that failed transactions
+   *                  can leave around data that takes up disk space for up to
+   *                  7 days. You can override this safety mechanism by setting
+   *                 this option to `true`, only if you promise there are no
+   *                 in progress writes while you run this operation. Failure to
+   *                 uphold this promise can lead to corrupted tables.
+   * @returns
+   */
+  async cleanupOldVersions (olderThan?: number, deleteUnverified?: boolean): Promise<CleanupStats> {
+    return tableCleanupOldVersions.call(this._tbl, olderThan, deleteUnverified)
+      .then((res: { newTable: any, metrics: CleanupStats }) => {
+        this._tbl = res.newTable
+        return res.metrics
+      })
+  }
+
+  /**
+   * Run the compaction process on the table.
+   *
+   * This can be run after making several small appends to optimize the table
+   * for faster reads.
+   *
+   * @param options Advanced options configuring compaction. In most cases, you
+   *               can omit this arguments, as the default options are sensible
+   *               for most tables.
+   * @returns Metrics about the compaction operation.
+   */
+  async compactFiles (options?: CompactionOptions): Promise<CompactionMetrics> {
+    const optionsArg = options ?? {}
+    return tableCompactFiles.call(this._tbl, optionsArg)
+      .then((res: { newTable: any, metrics: CompactionMetrics }) => {
+        this._tbl = res.newTable
+        return res.metrics
+      })
+  }
+}
+
+export interface CleanupStats {
+  /**
+   * The number of bytes removed from disk.
+   */
+  bytesRemoved: number
+  /**
+   * The number of old table versions removed.
+   */
+  oldVersions: number
+}
+
+export interface CompactionOptions {
+  /**
+   * The number of rows per fragment to target. Fragments that have fewer rows
+   * will be compacted into adjacent fragments to produce larger fragments.
+   * Defaults to 1024 * 1024.
+   */
+  targetRowsPerFragment?: number
+  /**
+   * The maximum number of rows per group. Defaults to 1024.
+   */
+  maxRowsPerGroup?: number
+  /**
+   * If true, fragments that have rows that are deleted may be compacted to
+   * remove the deleted rows. This can improve the performance of queries.
+   * Default is true.
+   */
+  materializeDeletions?: boolean
+  /**
+   * A number between 0 and 1, representing the proportion of rows that must be
+   * marked deleted before a fragment is a candidate for compaction to remove
+   * the deleted rows. Default is 10%.
+   */
+  materializeDeletionsThreshold?: number
+  /**
+   * The number of threads to use for compaction. If not provided, defaults to
+   * the number of cores on the machine.
+   */
+  numThreads?: number
+}
+
+export interface CompactionMetrics {
+  /**
+   * The number of fragments that were removed.
+   */
+  fragmentsRemoved: number
+  /**
+   * The number of new fragments that were created.
+   */
+  fragmentsAdded: number
+  /**
+   * The number of files that were removed. Each fragment may have more than one
+   * file.
+   */
+  filesRemoved: number
+  /**
+   * The number of files added. This is typically equal to the number of
+   * fragments added.
+   */
+  filesAdded: number
 }
 
 /// Config to build IVF_PQ index.
