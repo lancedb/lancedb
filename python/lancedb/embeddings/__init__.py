@@ -12,6 +12,7 @@
 #  limitations under the License.
 
 
+from .cohere import CohereEmbeddingFunction
 from .functions import (
     EmbeddingFunction,
     EmbeddingFunctionConfig,
@@ -22,4 +23,3 @@ from .functions import (
     TextEmbeddingFunction,
 )
 from .utils import with_embeddings
-from .cohere import CohereEmbeddingFunction

@@ -12,10 +12,11 @@
 #  limitations under the License.
 
 import os
-from typing import ClassVar
-from typing import List, Union
+from typing import ClassVar, List, Union
+
 import numpy as np
-from .functions import register, TextEmbeddingFunction
+
+from .functions import TextEmbeddingFunction, register
 from .utils import api_key_not_found_help
 
 
