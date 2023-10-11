@@ -12,6 +12,9 @@
 #  limitations under the License.
 from __future__ import annotations
 
+import deprecation
+
+from . import __version__
 from .exceptions import MissingColumnError, MissingValueError
 from .util import safe_import_pandas
 
@@ -43,7 +46,7 @@ def contextualize(raw_df: "pd.DataFrame") -> Contextualizer:
     this how many tokens, but depending on the input data, it could be sentences,
     paragraphs, messages, etc.
 
-    >>> contextualize(data).window(3).stride(1).text_col('token').to_df()
+    >>> contextualize(data).window(3).stride(1).text_col('token').to_pandas()
                     token  document_id
     0     The quick brown            1
     1     quick brown fox            1
@@ -56,7 +59,7 @@ def contextualize(raw_df: "pd.DataFrame") -> Contextualizer:
     8          dog I love            1
     9   I love sandwiches            2
     10    love sandwiches            2
-    >>> contextualize(data).window(7).stride(1).min_window_size(7).text_col('token').to_df()
+    >>> contextualize(data).window(7).stride(1).min_window_size(7).text_col('token').to_pandas()
                                       token  document_id
     0   The quick brown fox jumped over the            1
     1  quick brown fox jumped over the lazy            1
@@ -68,7 +71,7 @@ def contextualize(raw_df: "pd.DataFrame") -> Contextualizer:
     ``stride`` determines how many rows to skip between each window start. This can
     be used to reduce the total number of windows generated.
 
-    >>> contextualize(data).window(4).stride(2).text_col('token').to_df()
+    >>> contextualize(data).window(4).stride(2).text_col('token').to_pandas()
                         token  document_id
     0     The quick brown fox            1
     2   brown fox jumped over            1
@@ -81,7 +84,7 @@ def contextualize(raw_df: "pd.DataFrame") -> Contextualizer:
     context windows that don't cross document boundaries. In this case, we can
     pass ``document_id`` as the group by.
 
-    >>> contextualize(data).window(4).stride(2).text_col('token').groupby('document_id').to_df()
+    >>> contextualize(data).window(4).stride(2).text_col('token').groupby('document_id').to_pandas()
                        token  document_id
     0    The quick brown fox            1
     2  brown fox jumped over            1
@@ -93,14 +96,14 @@ def contextualize(raw_df: "pd.DataFrame") -> Contextualizer:
     This can be used to trim the last few context windows which have size less than
     ``min_window_size``. By default context windows of size 1 are skipped.
 
-    >>> contextualize(data).window(6).stride(3).text_col('token').groupby('document_id').to_df()
+    >>> contextualize(data).window(6).stride(3).text_col('token').groupby('document_id').to_pandas()
                                  token  document_id
     0  The quick brown fox jumped over            1
     3     fox jumped over the lazy dog            1
     6                     the lazy dog            1
     9                I love sandwiches            2
 
-    >>> contextualize(data).window(6).stride(3).min_window_size(4).text_col('token').groupby('document_id').to_df()
+    >>> contextualize(data).window(6).stride(3).min_window_size(4).text_col('token').groupby('document_id').to_pandas()
                                  token  document_id
     0  The quick brown fox jumped over            1
     3     fox jumped over the lazy dog            1
@@ -176,7 +179,16 @@ class Contextualizer:
         self._min_window_size = min_window_size
         return self
 
+    @deprecation.deprecated(
+        deprecated_in="0.3.1",
+        removed_in="0.4.0",
+        current_version=__version__,
+        details="Use the bar function instead",
+    )
     def to_df(self) -> "pd.DataFrame":
+        return self.to_pandas()
+
+    def to_pandas(self) -> "pd.DataFrame":
         """Create the context windows and return a DataFrame."""
         if pd is None:
             raise ImportError(

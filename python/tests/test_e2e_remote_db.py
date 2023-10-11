@@ -23,5 +23,5 @@ from lancedb import LanceDBConnection
 def test_against_local_server():
     conn = LanceDBConnection("lancedb+http://localhost:10024")
     table = conn.open_table("sift1m_ivf1024_pq16")
-    df = table.search(np.random.rand(128)).to_df()
+    df = table.search(np.random.rand(128)).to_pandas()
     assert len(df) == 10

@@ -86,7 +86,7 @@ async def test_e2e_with_mock_server():
                     columns=["id", "vector"],
                 ),
             )
-        ).to_df()
+        ).to_pandas()
 
         assert "vector" in df.columns
         assert "id" in df.columns

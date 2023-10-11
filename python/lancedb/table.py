@@ -137,7 +137,7 @@ class Table(ABC):
 
     Can query the table with [Table.search][lancedb.table.Table.search].
 
-    >>> table.search([0.4, 0.4]).select(["b"]).to_df()
+    >>> table.search([0.4, 0.4]).select(["b"]).to_pandas()
        b      vector  _distance
     0  4  [0.5, 1.3]       0.82
     1  2  [1.1, 1.2]       1.13
