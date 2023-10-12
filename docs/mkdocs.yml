@@ -106,7 +106,7 @@ nav:
 
 - Basics: basic.md
 - Guides:
-  - Create Custom Embedding Functions: guides/tables.md
+  - Create Ingest Update Delete: guides/tables.md
   - Vector Search: search.md
   - SQL filters: sql.md
   - Indexing: ann_indexes.md

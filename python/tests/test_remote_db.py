@@ -32,4 +32,4 @@ def test_remote_db():
     setattr(conn, "_client", FakeLanceDBClient())
 
     table = conn["test"]
-    table.search([1.0, 2.0]).to_df()
+    table.search([1.0, 2.0]).to_pandas()

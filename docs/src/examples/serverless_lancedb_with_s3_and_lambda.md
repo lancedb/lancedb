@@ -80,14 +80,14 @@ def handler(event, context):
     # Shape of SIFT is (128,1M), d=float32
     query_vector = np.array(event['query_vector'], dtype=np.float32)
 
-    rs = table.search(query_vector).limit(2).to_df()
+    rs = table.search(query_vector).limit(2).to_list()
 
     return {
         "statusCode": status_code,
         "headers": {
             "Content-Type": "application/json"
         },
-        "body": rs.to_json()
+        "body": json.dumps(rs)
     }
 ``` 
 

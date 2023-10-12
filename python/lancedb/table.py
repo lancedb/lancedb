@@ -16,6 +16,7 @@ from __future__ import annotations
 import inspect
 import os
 from abc import ABC, abstractmethod
+from datetime import timedelta
 from functools import cached_property
 from typing import Any, Iterable, List, Optional, Union
 
@@ -24,7 +25,7 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
 from lance import LanceDataset
-from lance.dataset import ReaderLike
+from lance.dataset import CleanupStats, ReaderLike
 from lance.vector import vec_to_table
 
 from .common import DATA, VEC, VECTOR_COLUMN_NAME
@@ -137,7 +138,7 @@ class Table(ABC):
 
     Can query the table with [Table.search][lancedb.table.Table.search].
 
-    >>> table.search([0.4, 0.4]).select(["b"]).to_df()
+    >>> table.search([0.4, 0.4]).select(["b"]).to_pandas()
        b      vector  _distance
     0  4  [0.5, 1.3]       0.82
     1  2  [1.1, 1.2]       1.13
@@ -394,6 +395,17 @@ class LanceTable(Table):
         if version < 1 or version > max_ver:
             raise ValueError(f"Invalid version {version}")
         self._reset_dataset(version=version)
+
+        try:
+            # Accessing the property updates the cached value
+            _ = self._dataset
+        except Exception as e:
+            if "not found" in str(e):
+                raise ValueError(
+                    f"Version {version} no longer exists. Was it cleaned up?"
+                )
+            else:
+                raise e
 
     def restore(self, version: int = None):
         """Restore a version of the table. This is an in-place operation.
@@ -877,6 +889,48 @@ class LanceTable(Table):
                 "refine_factor": query.refine_factor,
             },
         )
+
+    def cleanup_old_versions(
+        self,
+        older_than: Optional[timedelta] = None,
+        *,
+        delete_unverified: bool = False,
+    ) -> CleanupStats:
+        """
+        Clean up old versions of the table, freeing disk space.
+
+        Parameters
+        ----------
+        older_than: timedelta, default None
+            The minimum age of the version to delete. If None, then this defaults
+            to two weeks.
+        delete_unverified: bool, default False
+            Because they may be part of an in-progress transaction, files newer
+            than 7 days old are not deleted by default. If you are sure that
+            there are no in-progress transactions, then you can set this to True
+            to delete all files older than `older_than`.
+
+        Returns
+        -------
+        CleanupStats
+            The stats of the cleanup operation, including how many bytes were
+            freed.
+        """
+        return self.to_lance().cleanup_old_versions(
+            older_than, delete_unverified=delete_unverified
+        )
+
+    def compact_files(self, *args, **kwargs):
+        """
+        Run the compaction process on the table.
+
+        This can be run after making several small appends to optimize the table
+        for faster reads.
+
+        Arguments are passed onto :meth:`lance.dataset.DatasetOptimizer.compact_files`.
+        For most cases, the default should be fine.
+        """
+        return self.to_lance().optimize.compact_files(*args, **kwargs)
 
 
 def _sanitize_schema(

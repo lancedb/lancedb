@@ -17,6 +17,7 @@ arrow-ord = "43.0"
 arrow-schema = "43.0"
 arrow-arith = "43.0"
 arrow-cast = "43.0"
+chrono = "0.4.23"
 half = { "version" = "=2.2.1", default-features = false, features = [
     "num-traits"
 ] }

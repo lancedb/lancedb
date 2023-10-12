@@ -47,7 +47,7 @@ def test_contextualizer(raw_df: pd.DataFrame):
         .stride(3)
         .text_col("token")
         .groupby("document_id")
-        .to_df()["token"]
+        .to_pandas()["token"]
         .to_list()
     )
 
@@ -67,7 +67,7 @@ def test_contextualizer_with_threshold(raw_df: pd.DataFrame):
         .text_col("token")
         .groupby("document_id")
         .min_window_size(4)
-        .to_df()["token"]
+        .to_pandas()["token"]
         .to_list()
     )
 

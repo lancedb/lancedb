@@ -406,8 +406,6 @@ This can be used to update zero to all rows depending on how many rows match the
     2  2  [10.0, 10.0]
     ```
 
-
-
 ## What's Next?
 
 Learn how to Query your tables and create indices
