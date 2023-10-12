@@ -40,7 +40,7 @@ That's it! We have ingested all the information needed to embed source and query
 Now you can just add the data and it'll be vectorized automatically
 
 ```python
-table.add(pd.DataFrame({"image_uri": uris}))
+table.add([{"image_uri": u} for u in uris])
 ```
 
 Our OpenCLIP query embedding function support querying via both text and images. 

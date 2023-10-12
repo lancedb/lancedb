@@ -24,14 +24,10 @@ class Words(LanceModel):
 
 table = db.create_table("words", schema=Words)
 table.add(
-    pd.DataFrame(
-        {
-            "text": [
-                "hello world",
-                "goodbye world",
-            ]
-        }
-    )
+    [
+        {"text": "hello world"}
+        {"text": "goodbye world"}
+    ]
 )
 
 query = "greetings"
@@ -59,13 +55,11 @@ class Words(LanceModel):
 
 table = db.create_table("words", schema=Words)
 table.add(
-    pd.DataFrame(
-        {
-            "text": [
-                "hello world",
-                "goodbye world",
-                ]
-        }))
+    [
+        {"text": "hello world"}
+        {"text": "goodbye world"}
+    ]
+    )
 
 query = "greetings"
 actual = table.search(query).limit(1).to_pydantic(Words)[0]
@@ -120,7 +114,7 @@ uris = [
 # get each uri as bytes
 image_bytes = [requests.get(uri).content for uri in uris]
 table.add(
-    pd.DataFrame({"label": labels, "image_uri": uris, "image_bytes": image_bytes})
+    [{"label": labels, "image_uri": uris, "image_bytes": image_bytes}]
 )
 ```
 Now we can search using text from both the default vector column and the custom vector column
