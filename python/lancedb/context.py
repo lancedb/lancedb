@@ -33,20 +33,11 @@ def contextualize(raw_df: "pd.DataFrame") -> Contextualizer:
     --------
     >>> from lancedb.context import contextualize
     >>> import pandas as pd
-    >>> data = pd.DataFrame([
-    ...    {'token': 'The', 'document_id': 1},
-    ...    {'token': 'quick', 'document_id': 1},
-    ...    {'token': 'brown', 'document_id': 1},
-    ...    {'token': 'fox', 'document_id': 1},
-    ...    {'token': 'jumped', 'document_id': 1},
-    ...    {'token': 'over', 'document_id': 1},
-    ...    {'token': 'the', 'document_id': 1},
-    ...    {'token': 'lazy', 'document_id': 1},
-    ...    {'token': 'dog', 'document_id': 1},
-    ...    {'token': 'I', 'document_id': 2},
-    ...    {'token': 'love', 'document_id': 2},
-    ...    {'token': 'sandwiches', 'document_id': 2},
-    ... ])
+    >>> data = pd.DataFrame({
+    ...    'token': ['The', 'quick', 'brown', 'fox', 'jumped', 'over',
+    ...              'the', 'lazy', 'dog', 'I', 'love', 'sandwiches'],
+    ...    'document_id': [1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2]
+    ... })
 
     ``window`` determines how many rows to include in each window. In our case
     this how many tokens, but depending on the input data, it could be sentences,

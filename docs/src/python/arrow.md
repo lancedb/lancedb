@@ -21,10 +21,11 @@ Afterwards, we write a `Pandas DataFrame` to LanceDB directly.
 ```py
 import pandas as pd
 
-data = pd.DataFrame([
-    {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
-    {"vector": [5.9, 26.5], "item": "bar", "price": 20.0}
-])
+data = pd.DataFrame({
+    "vector": [[3.1, 4.1], [5.9, 26.5]],
+    "item": ["foo", "bar"],
+    "price": [10.0, 20.0]
+})
 table = db.create_table("pd_table", data=data)
 ```
 
@@ -38,7 +39,6 @@ to lazily generate data:
 
 from typing import Iterable
 import pyarrow as pa
-import lancedb
 
 def make_batches() -> Iterable[pa.RecordBatch]:
     for i in range(5):
