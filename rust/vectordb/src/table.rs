@@ -18,11 +18,13 @@ use arrow_array::{Float32Array, RecordBatchReader};
 use arrow_schema::SchemaRef;
 use lance::dataset::{Dataset, WriteParams};
 use lance::index::IndexType;
+use lance::io::object_store::WrappingObjectStore;
 use std::path::Path;
 
 use crate::error::{Error, Result};
 use crate::index::vector::VectorIndexBuilder;
 use crate::query::Query;
+use crate::utils::{PatchReadParam, PatchWriteParam};
 use crate::WriteMode;
 
 pub use lance::dataset::ReadParams;
@@ -35,6 +37,9 @@ pub struct Table {
     name: String,
     uri: String,
     dataset: Arc<Dataset>,
+
+    // the object store wrapper to use on write path
+    store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
 }
 
 impl std::fmt::Display for Table {
@@ -56,12 +61,12 @@ impl Table {
     /// * A [Table] object.
     pub async fn open(uri: &str) -> Result<Self> {
         let name = Self::get_table_name(uri)?;
-        Self::open_with_params(uri, &name, &ReadParams::default()).await
+        Self::open_with_params(uri, &name, None, ReadParams::default()).await
     }
 
     /// Open an Table with a given name.
     pub async fn open_with_name(uri: &str, name: &str) -> Result<Self> {
-        Self::open_with_params(uri, name, &ReadParams::default()).await
+        Self::open_with_params(uri, name, None, ReadParams::default()).await
     }
 
     /// Opens an existing Table
@@ -75,8 +80,18 @@ impl Table {
     /// # Returns
     ///
     /// * A [Table] object.
-    pub async fn open_with_params(uri: &str, name: &str, params: &ReadParams) -> Result<Self> {
-        let dataset = Dataset::open_with_params(uri, params)
+    pub async fn open_with_params(
+        uri: &str,
+        name: &str,
+        write_store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
+        params: ReadParams,
+    ) -> Result<Self> {
+        // patch the params if we have a write store wrapper
+        let params = match write_store_wrapper.clone() {
+            Some(wrapper) => params.patch_with_store_wrapper(wrapper)?,
+            None => params,
+        };
+        let dataset = Dataset::open_with_params(uri, &params)
             .await
             .map_err(|e| match e {
                 lance::Error::DatasetNotFound { .. } => Error::TableNotFound {
@@ -90,6 +105,7 @@ impl Table {
             name: name.to_string(),
             uri: uri.to_string(),
             dataset: Arc::new(dataset),
+            store_wrapper: write_store_wrapper,
         })
     }
 
@@ -97,20 +113,26 @@ impl Table {
     ///
     pub async fn checkout(uri: &str, version: u64) -> Result<Self> {
         let name = Self::get_table_name(uri)?;
-        Self::checkout_with_params(uri, &name, version, &ReadParams::default()).await
+        Self::checkout_with_params(uri, &name, version, None, ReadParams::default()).await
     }
 
     pub async fn checkout_with_name(uri: &str, name: &str, version: u64) -> Result<Self> {
-        Self::checkout_with_params(uri, name, version, &ReadParams::default()).await
+        Self::checkout_with_params(uri, name, version, None, ReadParams::default()).await
     }
 
     pub async fn checkout_with_params(
         uri: &str,
         name: &str,
         version: u64,
-        params: &ReadParams,
+        write_store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
+        params: ReadParams,
     ) -> Result<Self> {
-        let dataset = Dataset::checkout_with_params(uri, version, params)
+        // patch the params if we have a write store wrapper
+        let params = match write_store_wrapper.clone() {
+            Some(wrapper) => params.patch_with_store_wrapper(wrapper)?,
+            None => params,
+        };
+        let dataset = Dataset::checkout_with_params(uri, version, &params)
             .await
             .map_err(|e| match e {
                 lance::Error::DatasetNotFound { .. } => Error::TableNotFound {
@@ -124,6 +146,7 @@ impl Table {
             name: name.to_string(),
             uri: uri.to_string(),
             dataset: Arc::new(dataset),
+            store_wrapper: write_store_wrapper,
         })
     }
 
@@ -157,8 +180,15 @@ impl Table {
         uri: &str,
         name: &str,
         batches: impl RecordBatchReader + Send + 'static,
+        write_store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
         params: Option<WriteParams>,
     ) -> Result<Self> {
+        // patch the params if we have a write store wrapper
+        let params = match write_store_wrapper.clone() {
+            Some(wrapper) => params.patch_with_store_wrapper(wrapper)?,
+            None => params,
+        };
+
         let dataset = Dataset::write(batches, uri, params)
             .await
             .map_err(|e| match e {
@@ -173,6 +203,7 @@ impl Table {
             name: name.to_string(),
             uri: uri.to_string(),
             dataset: Arc::new(dataset),
+            store_wrapper: write_store_wrapper,
         })
     }
 
@@ -190,8 +221,8 @@ impl Table {
     pub async fn create_index(&mut self, index_builder: &impl VectorIndexBuilder) -> Result<()> {
         use lance::index::DatasetIndexExt;
 
-        let dataset = self
-            .dataset
+        let mut dataset = self.dataset.as_ref().clone();
+        dataset
             .create_index(
                 &[index_builder
                     .get_column()
@@ -221,12 +252,18 @@ impl Table {
         batches: impl RecordBatchReader + Send + 'static,
         params: Option<WriteParams>,
     ) -> Result<()> {
-        let params = params.unwrap_or(WriteParams {
+        let params = Some(params.unwrap_or(WriteParams {
             mode: WriteMode::Append,
             ..WriteParams::default()
-        });
+        }));
 
-        self.dataset = Arc::new(Dataset::write(batches, &self.uri, Some(params)).await?);
+        // patch the params if we have a write store wrapper
+        let params = match self.store_wrapper.clone() {
+            Some(wrapper) => params.patch_with_store_wrapper(wrapper)?,
+            None => params,
+        };
+
+        self.dataset = Arc::new(Dataset::write(batches, &self.uri, params).await?);
         Ok(())
     }
 
@@ -330,10 +367,12 @@ mod tests {
 
         let batches = make_test_batches();
         let _ = batches.schema().clone();
-        Table::create(&uri, "test", batches, None).await.unwrap();
+        Table::create(&uri, "test", batches, None, None)
+            .await
+            .unwrap();
 
         let batches = make_test_batches();
-        let result = Table::create(&uri, "test", batches, None).await;
+        let result = Table::create(&uri, "test", batches, None, None).await;
         assert!(matches!(
             result.unwrap_err(),
             Error::TableAlreadyExists { .. }
@@ -347,7 +386,9 @@ mod tests {
 
         let batches = make_test_batches();
         let schema = batches.schema().clone();
-        let mut table = Table::create(&uri, "test", batches, None).await.unwrap();
+        let mut table = Table::create(&uri, "test", batches, None, None)
+            .await
+            .unwrap();
         assert_eq!(table.count_rows().await.unwrap(), 10);
 
         let new_batches = RecordBatchIterator::new(
@@ -373,7 +414,9 @@ mod tests {
 
         let batches = make_test_batches();
         let schema = batches.schema().clone();
-        let mut table = Table::create(uri, "test", batches, None).await.unwrap();
+        let mut table = Table::create(uri, "test", batches, None, None)
+            .await
+            .unwrap();
         assert_eq!(table.count_rows().await.unwrap(), 10);
 
         let new_batches = RecordBatchIterator::new(
@@ -456,7 +499,9 @@ mod tests {
             ..Default::default()
         };
         assert!(!wrapper.called());
-        let _ = Table::open_with_params(uri, "test", &param).await.unwrap();
+        let _ = Table::open_with_params(uri, "test", None, param)
+            .await
+            .unwrap();
         assert!(wrapper.called());
     }
 
@@ -508,7 +553,9 @@ mod tests {
             schema,
         );
 
-        let mut table = Table::create(uri, "test", batches, None).await.unwrap();
+        let mut table = Table::create(uri, "test", batches, None, None)
+            .await
+            .unwrap();
         let mut i = IvfPQIndexBuilder::new();
 
         let index_builder = i
