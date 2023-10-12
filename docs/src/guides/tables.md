@@ -304,9 +304,9 @@ Use the `delete()` method on tables to delete rows from a table. To choose which
     import lancedb
     import pandas as pd
 
-    data = pd.DataFrame([{"x": 1, "vector": [1, 2]},
-                         {"x": 2, "vector": [3, 4]},
-                         {"x": 3, "vector": [5, 6]}])
+    data = [{"x": 1, "vector": [1, 2]},
+            {"x": 2, "vector": [3, 4]},
+            {"x": 3, "vector": [5, 6]}]
     db = lancedb.connect("./.lancedb")
     table = db.create_table("my_table", data)
     table.to_pandas()
