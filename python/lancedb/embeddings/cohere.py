@@ -37,7 +37,6 @@ class CohereEmbeddingFunction(TextEmbeddingFunction):
     import lancedb
     from lancedb.pydantic import LanceModel, Vector
     from lancedb.embeddings import EmbeddingFunctionRegistry
-    import pandas as pd
 
     cohere = EmbeddingFunctionRegistry.get_instance().get("cohere").create(name="embed-multilingual-v2.0")
 
@@ -45,25 +44,22 @@ class CohereEmbeddingFunction(TextEmbeddingFunction):
         text: str = cohere.SourceField()
         vector: Vector(cohere.ndims()) =  cohere.VectorField()
 
-    df = pd.DataFrame({"text": ["hello world", "goodbye world"]})
-    db = lancedb.connect("~/lancedb")
+    data = [ { "text": "hello world" },
+            { "text": "goodbye world" }]
+
+    db = lancedb.connect("~/.lancedb")
     tbl = db.create_table("test", schema=TextModel, mode="overwrite")
 
-    tbl.add(df)
-    print(tbl.to_pandas())
+    tbl.add(data)
+
     """
 
     name: str = "embed-multilingual-v2.0"
     client: ClassVar = None
 
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self._ndims = None
-
     def ndims(self):
-        if self._ndims is None:
-            self._ndims = len(self.generate_embeddings(["foo"])[0])
-        return self._ndims
+        # TODO: fix hardcoding
+        return 768
 
     def generate_embeddings(
         self, texts: Union[List[str], np.ndarray]
