@@ -103,7 +103,7 @@ class RemoteTable(Table):
             raise NotImplementedError("Cloud support for prefiltering is coming soon")
         if not query.use_index:
             raise NotImplementedError(
-                "Cloud does not support non-indexed queries if the table has indices"
+                "LanceDB Cloud does not yet support use_index=False"
             )
         result = self._conn._client.query(self._name, query)
         return self._conn._loop.run_until_complete(result).to_arrow()
