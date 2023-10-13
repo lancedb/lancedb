@@ -12,6 +12,7 @@
 #  limitations under the License.
 
 
+from .cohere import CohereEmbeddingFunction
 from .functions import (
     EmbeddingFunction,
     EmbeddingFunctionConfig,

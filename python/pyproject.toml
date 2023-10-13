@@ -49,7 +49,7 @@ tests = ["pandas>=1.4", "pytest", "pytest-mock", "pytest-asyncio", "requests"]
 dev = ["ruff", "pre-commit", "black"]
 docs = ["mkdocs", "mkdocs-jupyter", "mkdocs-material", "mkdocstrings[python]"]
 clip = ["torch", "pillow", "open-clip"]
-embeddings = ["openai", "sentence-transformers", "torch", "pillow", "open-clip"]
+embeddings = ["openai", "sentence-transformers", "torch", "pillow", "open-clip", "cohere"]
 
 [build-system]
 requires = ["setuptools", "wheel"]
