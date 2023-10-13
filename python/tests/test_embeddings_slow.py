@@ -11,6 +11,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 import io
+import os
 
 import numpy as np
 import pandas as pd
@@ -123,3 +124,26 @@ def test_openclip(tmp_path):
         arrow_table["vector"].combine_chunks().values.to_numpy(),
         arrow_table["vec_from_bytes"].combine_chunks().values.to_numpy(),
     )
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(
+    os.environ.get("COHERE_API_KEY") is None, reason="COHERE_API_KEY not set"
+)  # also skip if cohere not installed
+def test_cohere_embedding_function():
+    cohere = (
+        EmbeddingFunctionRegistry.get_instance()
+        .get("cohere")
+        .create(name="embed-multilingual-v2.0")
+    )
+
+    class TextModel(LanceModel):
+        text: str = cohere.SourceField()
+        vector: Vector(cohere.ndims()) = cohere.VectorField()
+
+    df = pd.DataFrame({"text": ["hello world", "goodbye world"]})
+    db = lancedb.connect("~/lancedb")
+    tbl = db.create_table("test", schema=TextModel, mode="overwrite")
+
+    tbl.add(df)
+    assert len(tbl.to_pandas()["vector"][0]) == cohere.ndims()
