@@ -12,6 +12,7 @@
 #  limitations under the License.
 
 import uuid
+import warnings
 from functools import cached_property
 from typing import Optional, Union
 
@@ -102,9 +103,7 @@ class RemoteTable(Table):
         if query.prefilter:
             raise NotImplementedError("Cloud support for prefiltering is coming soon")
         if not query.use_index:
-            raise NotImplementedError(
-                "LanceDB Cloud does not yet support use_index=False"
-            )
+            warnings.warn("LanceDB Cloud does not yet support use_index=False")
         result = self._conn._client.query(self._name, query)
         return self._conn._loop.run_until_complete(result).to_arrow()
 

@@ -94,7 +94,7 @@ export class RemoteQuery<T = number[]> extends Query<T> {
     }
 
     if ((this as any)._useIndex === false) {
-      throw new Error('LanceDB Cloud does not yet support useIndex=false')
+      console.warn('LanceDB Cloud does not yet support useIndex=false, ignoring option.')
     }
 
     const data = await this._client.search(
