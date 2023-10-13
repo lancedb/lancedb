@@ -559,7 +559,8 @@ class LanceTable(Table):
             The data to insert into the table.
         mode: str
             The mode to use when writing the data. Valid values are
-            "append" and "overwrite".
+            "append", which inserts new rows, and "overwrite", which replaces
+            the entire content of the table with the new rows.
         on_bad_vectors: str, default "error"
             What to do if any of the vectors are not the same size or contains NaNs.
             One of "error", "drop", "fill".
@@ -887,6 +888,7 @@ class LanceTable(Table):
                 "metric": query.metric,
                 "nprobes": query.nprobes,
                 "refine_factor": query.refine_factor,
+                "use_index": query.use_index,
             },
         )
 

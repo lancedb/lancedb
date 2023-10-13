@@ -117,6 +117,19 @@ describe('LanceDB client', function () {
       assert.isUndefined(results[0].name)
       assert.isUndefined(results[0].price)
     })
+
+    it('can choose to do flat search', async function () {
+      const uri = await createTestDB()
+      const con = await lancedb.connect(uri)
+      const table = await con.openTable('vectors')
+      const results = await table.search([0.1, 0.3]).useIndex(false).execute()
+
+      assert.equal(results.length, 2)
+      assert.equal(results[0].price, 10)
+      const vector = results[0].vector as Float32Array
+      assert.approximately(vector[0], 0.0, 0.2)
+      assert.approximately(vector[0], 0.1, 0.3)
+    })
   })
 
   describe('when creating a new dataset', function () {
@@ -385,11 +398,13 @@ describe('Query object', function () {
       .metricType(MetricType.Cosine)
       .refineFactor(100)
       .select(['a', 'b'])
+      .useIndex(false)
       .nprobes(20) as Record<string, any>
     assert.equal(query._limit, 1)
     assert.equal(query._metricType, MetricType.Cosine)
     assert.equal(query._refineFactor, 100)
     assert.equal(query._nprobes, 20)
+    assert.equal(query._useIndex, false)
     assert.deepEqual(query._select, ['a', 'b'])
   })
 })

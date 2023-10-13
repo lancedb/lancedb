@@ -47,6 +47,10 @@ impl JsQuery {
             .get_opt::<JsString, _, _>(&mut cx, "_metricType")?
             .map(|s| s.value(&mut cx))
             .map(|s| MetricType::try_from(s.as_str()).unwrap());
+        let use_index = query_obj
+            .get_opt::<JsBoolean, _, _>(&mut cx, "_useIndex")?
+            .map(|val| val.value(&mut cx))
+            .unwrap_or(true);
 
         let is_electron = cx
             .argument::<JsBoolean>(1)
@@ -69,7 +73,8 @@ impl JsQuery {
                 .nprobes(nprobes)
                 .filter(filter)
                 .metric_type(metric_type)
-                .select(select);
+                .select(select)
+                .use_index(use_index);
             let record_batch_stream = builder.execute();
             let results = record_batch_stream
                 .and_then(|stream| {

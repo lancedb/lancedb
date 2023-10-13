@@ -46,6 +46,7 @@ class MockTable:
                 "metric": query.metric,
                 "nprobes": query.nprobes,
                 "refine_factor": query.refine_factor,
+                "use_index": query.use_index,
             },
         )
 
@@ -84,10 +85,12 @@ def test_cast(table):
     assert r0.float_field == 1.0
 
 
-def test_query_builder(table):
+@pytest.mark.parametrize("use_index", [True, False])
+def test_query_builder(table, use_index: bool):
     rs = (
         LanceVectorQueryBuilder(table, [0, 0], "vector")
         .limit(1)
+        .use_index(use_index)
         .select(["id"])
         .to_list()
     )
