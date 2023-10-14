@@ -135,7 +135,7 @@ impl Database {
     async fn open_path(path: &str) -> Result<Database> {
         let (object_store, base_path) = ObjectStore::from_uri(path).await?;
         if object_store.is_local() {
-            Self::try_create_dir(path).context(CreateDirSnafu { path: path })?;
+            Self::try_create_dir(path).context(CreateDirSnafu { path })?;
         }
         Ok(Self {
             uri: path.to_string(),
