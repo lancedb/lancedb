@@ -10,6 +10,7 @@ excluded_globs = [
     "../src/integrations/voxel51.md",
     "../src/guides/tables.md",
     "../src/python/duckdb.md",
+    "../src/embeddings/*.md",
 ]
 
 python_prefix = "py"
