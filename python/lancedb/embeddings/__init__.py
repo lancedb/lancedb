@@ -21,5 +21,6 @@ from .functions import (
     OpenClipEmbeddings,
     SentenceTransformerEmbeddings,
     TextEmbeddingFunction,
+    register,
 )
 from .utils import with_embeddings
