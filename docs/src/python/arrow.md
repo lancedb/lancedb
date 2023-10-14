@@ -39,7 +39,6 @@ to lazily generate data:
 
 from typing import Iterable
 import pyarrow as pa
-import lancedb
 
 def make_batches() -> Iterable[pa.RecordBatch]:
     for i in range(5):
