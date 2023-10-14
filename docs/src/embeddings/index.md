@@ -1,13 +1,20 @@
-# Embedding Functions
+# Embedding
 
-Embeddings are high dimensional floating-point vector representations of your data or query.
-Anything can be embedded using some embedding model or function.
-For a given embedding function, the output will always have the same number of dimensions.
+Embeddings are high dimensional floating-point vector representations of your data or query. Anything can be embedded using some embedding model or function. Position of embedding in a high dimensional vector space has semantic significance to a degree that depends on the type of modal and training. These embeddings when projected in a 2-D space generally group similar entities close-by forming groups.
 
-## Creating an embedding function
+![](../assets/embedding_intro.png)
 
-Any function that takes as input a batch (list) of data and outputs a batch (list) of embeddings
-can be used by LanceDB as an embedding function. The input and output batch sizes should be the same.
+# Creating an embedding function
+
+LanceDB supports 2 major ways of vectorizing your data, explicit and implicit.
+
+1. By manually embedding the data before ingesting in the table
+2. By automatically embedding the data and query as they come, by ingesting embedding function information in the table itself! Covered in [Next Section](embedding_functions.md)
+
+Whatever workflow you prefer, we have the tools to support you.
+## Explicit Vectorization
+
+In this workflow, you can create your embedding function and vectorize your data using lancedb's `with_embedding` function. Let's look at some examples.
 
 ### HuggingFace example
 
@@ -134,9 +141,9 @@ belong in the same latent space and your results will be nonsensical.
      The above snippet returns an array of records with the 10 closest vectors to the query.
 
 
-## Roadmap
+## Implicit vectorization / Ingesting embedding functions
+Representing multi-modal data as vector embeddings is becoming a standard practice. Embedding functions themselves be thought of as a part of the processing pipeline that each request(input) has to be passed through. After initial setup these components are not expected to change for a particular project. 
 
-In the near future, we'll be integrating the embedding functions deeper into LanceDB<br/>.
-The goal is that you just have to configure the function once when you create the table,
-and then you'll never have to deal with embeddings / vectors after that unless you want to.
-We'll also integrate more popular models and APIs.
+This is main motivation behind our new embedding functions API, that allow you simply set it up once and the table remembers it, effectively making the **embedding functions disappear in the background** so you don't have to worry about modelling and simply focus on the DB aspects of VectorDB.
+
+Learn more in the Next Section

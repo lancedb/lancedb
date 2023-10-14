@@ -73,7 +73,12 @@ nav:
     - Vector Search: search.md
     - SQL filters: sql.md
     - Indexing: ann_indexes.md
-  - 🧬 Embeddings: embedding.md
+  - 🧬 Embeddings:
+    - embeddings/index.md
+    - Ingest Embedding Functions: embeddings/embedding_functions.md
+    - Available Functions: embeddings/default_embedding_functions.md
+    - Create Custom Embedding Functions: embeddings/api.md
+    - Example- MultiModal CLIP Embeddings: notebooks/DisappearingEmbeddingFunction.ipynb
   - 🔍 Python full-text search: fts.md
   - 🔌 Integrations:
     - integrations/index.md
@@ -105,7 +110,12 @@ nav:
   - Vector Search: search.md
   - SQL filters: sql.md
   - Indexing: ann_indexes.md
-- Embeddings: embedding.md
+- Embeddings:
+  - embeddings/index.md
+  - Ingest Embedding Functions: embeddings/embedding_functions.md
+  - Available Functions: embeddings/default_embedding_functions.md
+  - Create Custom Embedding Functions: embeddings/api.md
+  - Example- MultiModal CLIP Embeddings: notebooks/DisappearingEmbeddingFunction.ipynb
 - Python full-text search: fts.md
 - Integrations:
   - integrations/index.md
