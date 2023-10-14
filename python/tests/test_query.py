@@ -38,6 +38,7 @@ class MockTable:
         return ds.to_table(
             columns=query.columns,
             filter=query.filter,
+            prefilter=query.prefilter,
             nearest={
                 "column": query.vector_column,
                 "q": query.vector,
@@ -84,15 +85,37 @@ def test_cast(table):
 
 
 def test_query_builder(table):
-    df = (
-        LanceVectorQueryBuilder(table, [0, 0], "vector").limit(1).select(["id"]).to_df()
+    rs = (
+        LanceVectorQueryBuilder(table, [0, 0], "vector")
+        .limit(1)
+        .select(["id"])
+        .to_list()
     )
-    assert df["id"].values[0] == 1
-    assert all(df["vector"].values[0] == [1, 2])
+    assert rs[0]["id"] == 1
+    assert all(np.array(rs[0]["vector"]) == [1, 2])
 
 
 def test_query_builder_with_filter(table):
-    df = LanceVectorQueryBuilder(table, [0, 0], "vector").where("id = 2").to_df()
+    rs = LanceVectorQueryBuilder(table, [0, 0], "vector").where("id = 2").to_list()
+    assert rs[0]["id"] == 2
+    assert all(np.array(rs[0]["vector"]) == [3, 4])
+
+
+def test_query_builder_with_prefilter(table):
+    df = (
+        LanceVectorQueryBuilder(table, [0, 0], "vector")
+        .where("id = 2")
+        .limit(1)
+        .to_pandas()
+    )
+    assert len(df) == 0
+
+    df = (
+        LanceVectorQueryBuilder(table, [0, 0], "vector")
+        .where("id = 2", prefilter=True)
+        .limit(1)
+        .to_pandas()
+    )
     assert df["id"].values[0] == 2
     assert all(df["vector"].values[0] == [3, 4])
 
@@ -100,9 +123,11 @@ def test_query_builder_with_filter(table):
 def test_query_builder_with_metric(table):
     query = [4, 8]
     vector_column_name = "vector"
-    df_default = LanceVectorQueryBuilder(table, query, vector_column_name).to_df()
+    df_default = LanceVectorQueryBuilder(table, query, vector_column_name).to_pandas()
     df_l2 = (
-        LanceVectorQueryBuilder(table, query, vector_column_name).metric("L2").to_df()
+        LanceVectorQueryBuilder(table, query, vector_column_name)
+        .metric("L2")
+        .to_pandas()
     )
     tm.assert_frame_equal(df_default, df_l2)
 
@@ -110,7 +135,7 @@ def test_query_builder_with_metric(table):
         LanceVectorQueryBuilder(table, query, vector_column_name)
         .metric("cosine")
         .limit(1)
-        .to_df()
+        .to_pandas()
     )
     assert df_cosine._distance[0] == pytest.approx(
         cosine_distance(query, df_cosine.vector[0]),

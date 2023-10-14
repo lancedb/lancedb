@@ -123,9 +123,15 @@ After a table has been created, you can always add more data to it using
 
 === "Python"
       ```python
-      df = pd.DataFrame([{"vector": [1.3, 1.4], "item": "fizz", "price": 100.0},
-                        {"vector": [9.5, 56.2], "item": "buzz", "price": 200.0}])
-      tbl.add(df)
+
+      # Option 1: Add a list of dicts to a table
+      data = [{"vector": [1.3, 1.4], "item": "fizz", "price": 100.0},
+            {"vector": [9.5, 56.2], "item": "buzz", "price": 200.0}]
+      tbl.add(data)
+
+      # Option 2: Add a pandas DataFrame to a table
+      df = pd.DataFrame(data)
+      tbl.add(data)
       ```
 
 === "Javascript"
@@ -140,7 +146,7 @@ Once you've embedded the query, you can find its nearest neighbors using the fol
 
 === "Python"
       ```python
-      tbl.search([100, 100]).limit(2).to_df()
+      tbl.search([100, 100]).limit(2).to_pandas()
       ```
 
       This returns a pandas DataFrame with the results.

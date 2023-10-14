@@ -6,17 +6,19 @@ to make this available for JS as well.
 
 ## Installation
 
-To use full text search, you must install optional dependency tantivy-py:
+To use full text search, you must install the dependency `tantivy-py`:
 
-# tantivy 0.19.2
-pip install tantivy@git+https://github.com/quickwit-oss/tantivy-py#164adc87e1a033117001cf70e38c82a53014d985
+# tantivy 0.20.1
+```sh
+pip install tantivy==0.20.1
+```
 
 
 ## Quickstart
 
 Assume:
 1. `table` is a LanceDB Table
-2. `text` is the name of the Table column that we want to index
+2. `text` is the name of the `Table` column that we want to index
 
 For example,
 
@@ -41,7 +43,13 @@ table.create_fts_index("text")
 To search:
 
 ```python
-df = table.search("puppy").limit(10).select(["text"]).to_df()
+table.search("puppy").limit(10).select(["text"]).to_list()
+```
+
+Which returns a list of dictionaries:
+
+```python
+[{'text': 'Frodo was a happy puppy', 'score': 0.6931471824645996}]
 ```
 
 LanceDB automatically looks for an FTS index if the input is str.

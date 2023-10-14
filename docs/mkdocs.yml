@@ -21,6 +21,7 @@ theme:
     - navigation.tracking
     - navigation.instant
     - navigation.indexes
+    - navigation.expand
   icon:
     repo: fontawesome/brands/github
   custom_dir: overrides
@@ -68,14 +69,15 @@ nav:
   - 🏢 Home: index.md
   - 💡 Basics: basic.md
   - 📚 Guides:
-    - Tables: guides/tables.md
+    - Create Ingest Update Delete: guides/tables.md
     - Vector Search: search.md
     - SQL filters: sql.md
     - Indexing: ann_indexes.md
   - 🧬 Embeddings:
     - embeddings/index.md
-    - Ingest Embedding Functions in Tables: embeddings/embedding_functions.md
-    - Implementing Custom Embedding Functions: embeddings/api.md
+    - Ingest Embedding Functions: embeddings/embedding_functions.md
+    - Available Functions: embeddings/default_embedding_functions.md
+    - Create Custom Embedding Functions: embeddings/api.md
     - Example- MultiModal CLIP Embeddings: notebooks/DisappearingEmbeddingFunction.ipynb
   - 🔍 Python full-text search: fts.md
   - 🔌 Integrations:
@@ -100,16 +102,19 @@ nav:
     - Serverless Website Chatbot: examples/serverless_website_chatbot.md
     - YouTube Transcript Search: examples/youtube_transcript_bot_with_nodejs.md
     - TransformersJS Embedding Search: examples/transformerjs_embedding_search_nodejs.md
+  - ⚙️ CLI & Config: cli_config.md
+
 - Basics: basic.md
 - Guides:
-  - Tables: guides/tables.md
+  - Create Ingest Update Delete: guides/tables.md
   - Vector Search: search.md
   - SQL filters: sql.md
   - Indexing: ann_indexes.md
 - Embeddings:
   - embeddings/index.md
-  - Ingest Embedding Functions in Tables: embeddings/embedding_functions.md
-  - Implementing Custom Embedding Functions: embeddings/api.md
+  - Ingest Embedding Functions: embeddings/embedding_functions.md
+  - Available Functions: embeddings/default_embedding_functions.md
+  - Create Custom Embedding Functions: embeddings/api.md
   - Example- MultiModal CLIP Embeddings: notebooks/DisappearingEmbeddingFunction.ipynb
 - Python full-text search: fts.md
 - Integrations:

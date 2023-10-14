@@ -12,6 +12,7 @@
 #  limitations under the License.
 
 import functools
+from datetime import timedelta
 from pathlib import Path
 from typing import List
 from unittest.mock import PropertyMock, patch
@@ -223,6 +224,7 @@ def test_create_index_method():
                 num_partitions=256,
                 num_sub_vectors=96,
                 replace=True,
+                accelerator=None,
             )
 
 
@@ -426,8 +428,8 @@ def test_multiple_vector_columns(db):
     table.add(df)
 
     q = np.random.randn(10)
-    result1 = table.search(q, vector_column_name="vector1").limit(1).to_df()
-    result2 = table.search(q, vector_column_name="vector2").limit(1).to_df()
+    result1 = table.search(q, vector_column_name="vector1").limit(1).to_pandas()
+    result2 = table.search(q, vector_column_name="vector2").limit(1).to_pandas()
 
     assert result1["text"].iloc[0] != result2["text"].iloc[0]
 
@@ -438,6 +440,34 @@ def test_empty_query(db):
         "my_table",
         data=[{"text": "foo", "id": 0}, {"text": "bar", "id": 1}],
     )
-    df = table.search().select(["id"]).where("text='bar'").limit(1).to_df()
+    df = table.search().select(["id"]).where("text='bar'").limit(1).to_pandas()
     val = df.id.iloc[0]
     assert val == 1
+
+
+def test_compact_cleanup(db):
+    table = LanceTable.create(
+        db,
+        "my_table",
+        data=[{"text": "foo", "id": 0}, {"text": "bar", "id": 1}],
+    )
+
+    table.add([{"text": "baz", "id": 2}])
+    assert len(table) == 3
+    assert table.version == 3
+
+    stats = table.compact_files()
+    assert len(table) == 3
+    assert table.version == 4
+    assert stats.fragments_removed > 0
+    assert stats.fragments_added == 1
+
+    stats = table.cleanup_old_versions()
+    assert stats.bytes_removed == 0
+
+    stats = table.cleanup_old_versions(older_than=timedelta(0), delete_unverified=True)
+    assert stats.bytes_removed > 0
+    assert table.version == 4
+
+    with pytest.raises(Exception, match="Version 3 no longer exists"):
+        table.checkout(3)

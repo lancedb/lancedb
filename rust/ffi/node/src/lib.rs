@@ -195,7 +195,7 @@ fn database_open_table(mut cx: FunctionContext) -> JsResult<JsPromise> {
 
     let (deferred, promise) = cx.promise();
     rt.spawn(async move {
-        let table_rst = database.open_table_with_params(&table_name, &params).await;
+        let table_rst = database.open_table_with_params(&table_name, params).await;
 
         deferred.settle_with(&channel, move |mut cx| {
             let js_table = JsTable::from(table_rst.or_throw(&mut cx)?);
@@ -237,6 +237,8 @@ fn main(mut cx: ModuleContext) -> NeonResult<()> {
     cx.export_function("tableAdd", JsTable::js_add)?;
     cx.export_function("tableCountRows", JsTable::js_count_rows)?;
     cx.export_function("tableDelete", JsTable::js_delete)?;
+    cx.export_function("tableCleanupOldVersions", JsTable::js_cleanup)?;
+    cx.export_function("tableCompactFiles", JsTable::js_compact)?;
     cx.export_function(
         "tableCreateVectorIndex",
         index::vector::table_create_vector_index,

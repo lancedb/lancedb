@@ -16,10 +16,12 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import List, Literal, Optional, Type, Union
 
+import deprecation
 import numpy as np
 import pyarrow as pa
 import pydantic
 
+from . import __version__
 from .common import VECTOR_COLUMN_NAME
 from .pydantic import LanceModel
 from .util import safe_import_pandas
@@ -37,6 +39,9 @@ class Query(pydantic.BaseModel):
 
     # sql filter to refine the query with
     filter: Optional[str] = None
+
+    # if True then apply the filter before vector search
+    prefilter: bool = False
 
     # top k results to return
     k: int
@@ -124,7 +129,24 @@ class LanceQueryBuilder(ABC):
         self._columns = None
         self._where = None
 
+    @deprecation.deprecated(
+        deprecated_in="0.3.1",
+        removed_in="0.4.0",
+        current_version=__version__,
+        details="Use the bar function instead",
+    )
     def to_df(self) -> "pd.DataFrame":
+        """
+        Deprecated alias for `to_pandas()`. Please use `to_pandas()` instead.
+
+        Execute the query and return the results as a pandas DataFrame.
+        In addition to the selected columns, LanceDB also returns a vector
+        and also the "_distance" column which is the distance between the query
+        vector and the returned vector.
+        """
+        return self.to_pandas()
+
+    def to_pandas(self) -> "pd.DataFrame":
         """
         Execute the query and return the results as a pandas DataFrame.
         In addition to the selected columns, LanceDB also returns a vector
@@ -145,6 +167,16 @@ class LanceQueryBuilder(ABC):
         """
         raise NotImplementedError
 
+    def to_list(self) -> List[dict]:
+        """
+        Execute the query and return the results as a list of dictionaries.
+
+        Each list entry is a dictionary with the selected column names as keys,
+        or all table columns if `select` is not called. The vector and the "_distance"
+        fields are returned whether or not they're explicitly selected.
+        """
+        return self.to_arrow().to_pylist()
+
     def to_pydantic(self, model: Type[LanceModel]) -> List[LanceModel]:
         """Return the table as a list of pydantic models.
 
@@ -162,7 +194,7 @@ class LanceQueryBuilder(ABC):
             for row in self.to_arrow().to_pylist()
         ]
 
-    def limit(self, limit: int) -> LanceVectorQueryBuilder:
+    def limit(self, limit: int) -> LanceQueryBuilder:
         """Set the maximum number of results to return.
 
         Parameters
@@ -172,13 +204,13 @@ class LanceQueryBuilder(ABC):
 
         Returns
         -------
-        LanceVectorQueryBuilder
+        LanceQueryBuilder
             The LanceQueryBuilder object.
         """
         self._limit = limit
         return self
 
-    def select(self, columns: list) -> LanceVectorQueryBuilder:
+    def select(self, columns: list) -> LanceQueryBuilder:
         """Set the columns to return.
 
         Parameters
@@ -188,13 +220,13 @@ class LanceQueryBuilder(ABC):
 
         Returns
         -------
-        LanceVectorQueryBuilder
+        LanceQueryBuilder
             The LanceQueryBuilder object.
         """
         self._columns = columns
         return self
 
-    def where(self, where: str) -> LanceVectorQueryBuilder:
+    def where(self, where) -> LanceQueryBuilder:
         """Set the where clause.
 
         Parameters
@@ -204,7 +236,7 @@ class LanceQueryBuilder(ABC):
 
         Returns
         -------
-        LanceVectorQueryBuilder
+        LanceQueryBuilder
             The LanceQueryBuilder object.
         """
         self._where = where
@@ -229,7 +261,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
     ...       .where("b < 10")
     ...       .select(["b"])
     ...       .limit(2)
-    ...       .to_df())
+    ...       .to_pandas())
        b      vector  _distance
     0  6  [0.4, 0.4]        0.0
     """
@@ -246,6 +278,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         self._nprobes = 20
         self._refine_factor = None
         self._vector_column = vector_column
+        self._prefilter = False
 
     def metric(self, metric: Literal["L2", "cosine"]) -> LanceVectorQueryBuilder:
         """Set the distance metric to use.
@@ -320,6 +353,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         query = Query(
             vector=vector,
             filter=self._where,
+            prefilter=self._prefilter,
             k=self._limit,
             metric=self._metric,
             columns=self._columns,
@@ -328,6 +362,30 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             vector_column=self._vector_column,
         )
         return self._table._execute_query(query)
+
+    def where(self, where: str, prefilter: bool = False) -> LanceVectorQueryBuilder:
+        """Set the where clause.
+
+        Parameters
+        ----------
+        where: str
+            The where clause.
+        prefilter: bool, default False
+            If True, apply the filter before vector search, otherwise the
+            filter is applied on the result of vector search.
+            This feature is **EXPERIMENTAL** and may be removed and modified
+            without warning in the future. Currently this is only supported
+            in OSS and can only be used with a table that does not have an ANN
+            index.
+
+        Returns
+        -------
+        LanceQueryBuilder
+            The LanceQueryBuilder object.
+        """
+        self._where = where
+        self._prefilter = prefilter
+        return self
 
 
 class LanceFtsQueryBuilder(LanceQueryBuilder):

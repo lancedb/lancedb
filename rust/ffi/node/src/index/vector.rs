@@ -12,8 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use lance::index::vector::ivf::IvfBuildParams;
-use lance::index::vector::pq::PQBuildParams;
+use lance::index::vector::{ivf::IvfBuildParams, pq::PQBuildParams};
 use lance_linalg::distance::MetricType;
 use neon::context::FunctionContext;
 use neon::prelude::*;
@@ -82,7 +81,7 @@ fn get_index_params_builder(
                 let ivf_params = IvfBuildParams {
                     num_partitions: np,
                     max_iters,
-                    centroids: None,
+                    ..Default::default()
                 };
                 index_builder.ivf_params(ivf_params)
             });

@@ -13,7 +13,7 @@
 
 import uuid
 from functools import cached_property
-from typing import Union
+from typing import Optional, Union
 
 import pyarrow as pa
 from lance import json_to_schema
@@ -62,6 +62,7 @@ class RemoteTable(Table):
         num_sub_vectors=96,
         vector_column_name: str = VECTOR_COLUMN_NAME,
         replace: bool = True,
+        accelerator: Optional[str] = None,
     ):
         raise NotImplementedError
 
@@ -98,6 +99,8 @@ class RemoteTable(Table):
         return LanceVectorQueryBuilder(self, query, vector_column_name)
 
     def _execute_query(self, query: Query) -> pa.Table:
+        if query.prefilter:
+            raise NotImplementedError("Cloud support for prefiltering is coming soon")
         result = self._conn._client.query(self._name, query)
         return self._conn._loop.run_until_complete(result).to_arrow()
 
