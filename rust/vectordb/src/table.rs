@@ -339,7 +339,7 @@ impl Table {
     /// This calls into [lance::dataset::optimize::compact_files].
     pub async fn compact_files(&mut self, options: CompactionOptions) -> Result<CompactionMetrics> {
         let mut dataset = self.dataset.as_ref().clone();
-        let metrics = compact_files(&mut dataset, options).await?;
+        let metrics = compact_files(&mut dataset, options, None).await?;
         self.dataset = Arc::new(dataset);
         Ok(metrics)
     }
