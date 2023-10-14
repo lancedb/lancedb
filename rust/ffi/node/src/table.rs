@@ -70,7 +70,7 @@ impl JsTable {
             store_params: Some(ObjectStoreParams::with_aws_credentials(
                 aws_creds, aws_region,
             )),
-            mode: mode,
+            mode,
             ..WriteParams::default()
         };
 
@@ -121,7 +121,7 @@ impl JsTable {
             let add_result = table.add(batch_reader, Some(params)).await;
 
             deferred.settle_with(&channel, move |mut cx| {
-                let _added = add_result.or_throw(&mut cx)?;
+                add_result.or_throw(&mut cx)?;
                 Ok(cx.boxed(JsTable::from(table)))
             });
         });

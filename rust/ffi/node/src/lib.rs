@@ -74,7 +74,7 @@ fn runtime<'a, C: Context<'a>>(cx: &mut C) -> NeonResult<&'static Runtime> {
     static RUNTIME: OnceCell<Runtime> = OnceCell::new();
     static LOG: OnceCell<()> = OnceCell::new();
 
-    LOG.get_or_init(|| env_logger::init());
+    LOG.get_or_init(env_logger::init);
 
     RUNTIME.get_or_try_init(|| Runtime::new().or_throw(cx))
 }
@@ -148,7 +148,7 @@ fn get_aws_creds(
     match (secret_key_id, secret_key, temp_token) {
         (Some(key_id), Some(key), optional_token) => Ok(Some(Arc::new(
             StaticCredentialProvider::new(AwsCredential {
-                key_id: key_id,
+                key_id,
                 secret_key: key,
                 token: optional_token,
             }),

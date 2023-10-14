@@ -458,7 +458,8 @@ def test_compact_cleanup(db):
 
     stats = table.compact_files()
     assert len(table) == 3
-    assert table.version == 4
+    # Compact_files bump 2 versions.
+    assert table.version == 5
     assert stats.fragments_removed > 0
     assert stats.fragments_added == 1
 
@@ -467,7 +468,7 @@ def test_compact_cleanup(db):
 
     stats = table.cleanup_old_versions(older_than=timedelta(0), delete_unverified=True)
     assert stats.bytes_removed > 0
-    assert table.version == 4
+    assert table.version == 5
 
     with pytest.raises(Exception, match="Version 3 no longer exists"):
         table.checkout(3)
