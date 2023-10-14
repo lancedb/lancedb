@@ -18,9 +18,9 @@ use arrow::compute::kernels::{aggregate::bool_and, length::length};
 use arrow_array::{
     cast::AsArray,
     types::{ArrowPrimitiveType, Int32Type, Int64Type},
-    Array, GenericListArray, OffsetSizeTrait, RecordBatchReader,
+    Array, GenericListArray, OffsetSizeTrait, PrimitiveArray, RecordBatchReader,
 };
-use arrow_ord::comparison::eq_dyn_scalar;
+use arrow_ord::cmp::eq;
 use arrow_schema::DataType;
 use num_traits::{ToPrimitive, Zero};
 
@@ -38,7 +38,8 @@ where
     }
 
     let dim = len_arr.as_primitive::<T>().value(0);
-    if bool_and(&eq_dyn_scalar(len_arr.as_primitive::<T>(), dim)?) != Some(true) {
+    let datum = PrimitiveArray::<T>::new_scalar(dim);
+    if bool_and(&eq(len_arr.as_primitive::<T>(), &datum)?) != Some(true) {
         Ok(None)
     } else {
         Ok(Some(dim))
