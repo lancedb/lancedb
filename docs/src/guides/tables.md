@@ -251,8 +251,9 @@ After a table has been created, you can always add more data to it using
     ### Adding Pandas DataFrame
 
     ```python
-    df = pd.DataFrame([{"vector": [1.3, 1.4], "item": "fizz", "price": 100.0},
-                  {"vector": [9.5, 56.2], "item": "buzz", "price": 200.0}])
+    df = pd.DataFrame({
+        "vector": [[1.3, 1.4], [9.5, 56.2]], "item": ["fizz", "buzz"], "price": [100.0, 200.0]
+    })
     tbl.add(df)
     ```
 
@@ -261,17 +262,12 @@ After a table has been created, you can always add more data to it using
     ### Adding to table using Iterator
 
     ```python
-    import pandas as pd
-
     def make_batches():
         for i in range(5):
-            yield pd.DataFrame(
-                {
-                    "vector": [[3.1, 4.1], [1, 1]],
-                    "item": ["foo", "bar"],
-                    "price": [10.0, 20.0],
-                })
-
+            yield [
+                    {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+                    {"vector": [5.9, 26.5], "item": "bar", "price": 20.0}
+                ]
     tbl.add(make_batches())
     ```
 
@@ -306,9 +302,10 @@ Use the `delete()` method on tables to delete rows from a table. To choose which
 
     ```python
     import lancedb
-    import pandas as pd
 
-    data = pd.DataFrame({"x": [1, 2, 3], "vector": [[1, 2], [3, 4], [5, 6]]})
+    data = [{"x": 1, "vector": [1, 2]},
+            {"x": 2, "vector": [3, 4]},
+            {"x": 3, "vector": [5, 6]}]
     db = lancedb.connect("./.lancedb")
     table = db.create_table("my_table", data)
     table.to_pandas()
