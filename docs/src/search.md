@@ -4,7 +4,7 @@
 In a recommendation system or search engine, you can find similar products from
 the one you searched.
 In LLM and other AI applications,
-each data point can be [presented by the embeddings generated from some models](embedding.md),
+each data point can be [presented by the embeddings generated from some models](embeddings/index.md),
 it returns the most relevant features.
 
 A search in high-dimensional vector space, is to find `K-Nearest-Neighbors (KNN)` of the query vector.
