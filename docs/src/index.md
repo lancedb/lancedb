@@ -67,7 +67,7 @@ LanceDB's core is written in Rust 🦀 and is built using <a href="https://githu
 
 ## Documentation Quick Links
 * [`Basic Operations`](basic.md) - basic functionality of LanceDB.
-* [`Embedding Functions`](embedding.md) - functions for working with embeddings.
+* [`Embedding Functions`](embeddings/index.md) - functions for working with embeddings.
 * [`Indexing`](ann_indexes.md) - create vector indexes to speed up queries.
 * [`Full text search`](fts.md) - [EXPERIMENTAL] full-text search API
 * [`Ecosystem Integrations`](python/integration.md) - integrating LanceDB with python data tooling ecosystem.
