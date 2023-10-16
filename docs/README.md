@@ -15,9 +15,8 @@ unreleased features.
 4. Make sure protobuf and libssl are installed
 
 ### Building node module and create markdown files
-From `/node` subdir
-1. Run `npm run build` and `npm run tsc`
-2. Run `npx typedoc --plugin typedoc-plugin-markdown --out ../docs/src/javascript src/index.ts`
+
+See [Javascript docs README](docs/src/javascript/README.md)
 
 ### Build docs
 From LanceDB repo root:
