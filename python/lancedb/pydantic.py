@@ -19,6 +19,7 @@ import inspect
 import sys
 import types
 from abc import ABC, abstractmethod
+from datetime import date, datetime
 from typing import Any, Callable, Dict, Generator, List, Type, Union, _GenericAlias
 
 import numpy as np
@@ -159,6 +160,10 @@ def _py_type_to_arrow_type(py_type: Type[Any]) -> pa.DataType:
         return pa.bool_()
     elif py_type == bytes:
         return pa.binary()
+    elif py_type == date:
+        return pa.date32()
+    elif py_type == datetime:
+        return pa.timestamp("us")
     raise TypeError(
         f"Converting Pydantic type to Arrow Type: unsupported type {py_type}"
     )
