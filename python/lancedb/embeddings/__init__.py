@@ -11,16 +11,11 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
-
+from .base import EmbeddingFunction, EmbeddingFunctionConfig, TextEmbeddingFunction
+from .sentence_transformers import SentenceTransformerEmbeddings
+from .openai import OpenAIEmbeddings
+from .open_clip import OpenClipEmbeddings
 from .cohere import CohereEmbeddingFunction
-from .functions import (
-    EmbeddingFunction,
-    EmbeddingFunctionConfig,
-    EmbeddingFunctionRegistry,
-    OpenAIEmbeddings,
-    OpenClipEmbeddings,
-    SentenceTransformerEmbeddings,
-    TextEmbeddingFunction,
-    register,
-)
+from .registry import EmbeddingFunctionRegistry, get_registry
+
 from .utils import with_embeddings

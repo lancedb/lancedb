@@ -13,7 +13,9 @@
 
 import math
 import sys
-from typing import Callable, Union
+from typing import Callable, Union, List
+import socket
+import urllib.error
 
 import numpy as np
 import pyarrow as pa
@@ -24,7 +26,12 @@ from ..util import safe_import_pandas
 from ..utils.general import LOGGER
 
 pd = safe_import_pandas()
+
 DATA = Union[pa.Table, "pd.DataFrame"]
+TEXT = Union[str, List[str], pa.Array, pa.ChunkedArray, np.ndarray]
+IMAGES = Union[
+    str, bytes, List[str], List[bytes], pa.Array, pa.ChunkedArray, np.ndarray
+]
 
 
 def with_embeddings(
@@ -154,6 +161,18 @@ class FunctionWrapper:
         else:
             yield from _chunker(arr)
 
+def url_retrieve(url: str):
+    """
+    Parameters
+    ----------
+    url: str
+        URL to download from
+    """
+    try:
+        with urllib.request.urlopen(url) as conn:
+            return conn.read()
+    except (socket.gaierror, urllib.error.URLError) as err:
+        raise ConnectionError("could not download {} due to {}".format(url, err))
 
 def api_key_not_found_help(provider):
     LOGGER.error(f"Could not find API key for {provider}.")
