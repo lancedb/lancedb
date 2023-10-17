@@ -131,11 +131,7 @@ def test_openclip(tmp_path):
     os.environ.get("COHERE_API_KEY") is None, reason="COHERE_API_KEY not set"
 )  # also skip if cohere not installed
 def test_cohere_embedding_function():
-    cohere = (
-        get_registry()
-        .get("cohere")
-        .create(name="embed-multilingual-v2.0")
-    )
+    cohere = get_registry().get("cohere").create(name="embed-multilingual-v2.0")
 
     class TextModel(LanceModel):
         text: str = cohere.SourceField()
