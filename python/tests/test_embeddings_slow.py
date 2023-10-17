@@ -19,7 +19,7 @@ import pytest
 import requests
 
 import lancedb
-from lancedb.embeddings import EmbeddingFunctionRegistry
+from lancedb.embeddings import get_registry
 from lancedb.pydantic import LanceModel, Vector
 
 # These are integration tests for embedding functions.
@@ -31,7 +31,7 @@ from lancedb.pydantic import LanceModel, Vector
 @pytest.mark.parametrize("alias", ["sentence-transformers", "openai"])
 def test_sentence_transformer(alias, tmp_path):
     db = lancedb.connect(tmp_path)
-    registry = EmbeddingFunctionRegistry.get_instance()
+    registry = get_registry()
     func = registry.get(alias).create()
 
     class Words(LanceModel):
@@ -69,7 +69,7 @@ def test_openclip(tmp_path):
     from PIL import Image
 
     db = lancedb.connect(tmp_path)
-    registry = EmbeddingFunctionRegistry.get_instance()
+    registry = get_registry()
     func = registry.get("open-clip").create()
 
     class Images(LanceModel):
@@ -132,7 +132,7 @@ def test_openclip(tmp_path):
 )  # also skip if cohere not installed
 def test_cohere_embedding_function():
     cohere = (
-        EmbeddingFunctionRegistry.get_instance()
+        get_registry()
         .get("cohere")
         .create(name="embed-multilingual-v2.0")
     )
