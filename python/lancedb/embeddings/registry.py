@@ -11,7 +11,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 import json
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 from .base import EmbeddingFunction, EmbeddingFunctionConfig
 
@@ -26,6 +26,8 @@ class EmbeddingFunctionRegistry:
     NOTE: Here TEXT is a type alias for Union[str, List[str], pa.Array, pa.ChunkedArray, np.ndarray]
     Examples
     --------
+    >>> import numpy as np
+    >>> from typing import List
     >>> registry = EmbeddingFunctionRegistry.get_instance()
     >>> @registry.register("my-embedding-function")
     ... class MyEmbeddingFunction(EmbeddingFunction):
