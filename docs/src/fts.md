@@ -43,7 +43,13 @@ table.create_fts_index("text")
 To search:
 
 ```python
-df = table.search("puppy").limit(10).select(["text"]).to_df()
+table.search("puppy").limit(10).select(["text"]).to_list()
+```
+
+Which returns a list of dictionaries:
+
+```python
+[{'text': 'Frodo was a happy puppy', 'score': 0.6931471824645996}]
 ```
 
 LanceDB automatically looks for an FTS index if the input is str.

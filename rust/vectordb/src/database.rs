@@ -14,13 +14,16 @@
 
 use std::fs::create_dir_all;
 use std::path::Path;
+use std::sync::Arc;
 
 use arrow_array::RecordBatchReader;
 use lance::dataset::WriteParams;
-use lance::io::object_store::ObjectStore;
+use lance::io::object_store::{ObjectStore, WrappingObjectStore};
+use object_store::local::LocalFileSystem;
 use snafu::prelude::*;
 
-use crate::error::{CreateDirSnafu, InvalidTableNameSnafu, Result};
+use crate::error::{CreateDirSnafu, Error, InvalidTableNameSnafu, Result};
+use crate::io::object_store::MirroringObjectStoreWrapper;
 use crate::table::{ReadParams, Table};
 
 pub const LANCE_FILE_EXTENSION: &str = "lance";
@@ -31,10 +34,14 @@ pub struct Database {
 
     pub(crate) uri: String,
     pub(crate) base_path: object_store::path::Path,
+
+    // the object store wrapper to use on write path
+    pub(crate) store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
 }
 
 const LANCE_EXTENSION: &str = "lance";
 const ENGINE: &str = "engine";
+const MIRRORED_STORE: &str = "mirroredStore";
 
 /// A connection to LanceDB
 impl Database {
@@ -55,6 +62,7 @@ impl Database {
             Ok(mut url) => {
                 // iter thru the query params and extract the commit store param
                 let mut engine = None;
+                let mut mirrored_store = None;
                 let mut filtered_querys = vec![];
 
                 // WARNING: specifying engine is NOT a publicly supported feature in lancedb yet
@@ -62,6 +70,13 @@ impl Database {
                 for (key, value) in url.query_pairs() {
                     if key == ENGINE {
                         engine = Some(value.to_string());
+                    } else if key == MIRRORED_STORE {
+                        if cfg!(windows) {
+                            return Err(Error::Lance {
+                                message: "mirrored store is not supported on windows".into(),
+                            });
+                        }
+                        mirrored_store = Some(value.to_string());
                     } else {
                         // to owned so we can modify the url
                         filtered_querys.push((key.to_string(), value.to_string()));
@@ -96,11 +111,21 @@ impl Database {
                     Self::try_create_dir(&plain_uri).context(CreateDirSnafu { path: plain_uri })?;
                 }
 
+                let write_store_wrapper = match mirrored_store {
+                    Some(path) => {
+                        let mirrored_store = Arc::new(LocalFileSystem::new_with_prefix(path)?);
+                        let wrapper = MirroringObjectStoreWrapper::new(mirrored_store);
+                        Some(Arc::new(wrapper) as Arc<dyn WrappingObjectStore>)
+                    }
+                    None => None,
+                };
+
                 Ok(Database {
                     uri: table_base_uri,
                     query_string,
                     base_path,
                     object_store,
+                    store_wrapper: write_store_wrapper,
                 })
             }
             Err(_) => Self::open_path(uri).await,
@@ -110,13 +135,14 @@ impl Database {
     async fn open_path(path: &str) -> Result<Database> {
         let (object_store, base_path) = ObjectStore::from_uri(path).await?;
         if object_store.is_local() {
-            Self::try_create_dir(path).context(CreateDirSnafu { path: path })?;
+            Self::try_create_dir(path).context(CreateDirSnafu { path })?;
         }
         Ok(Self {
             uri: path.to_string(),
             query_string: None,
             base_path,
             object_store,
+            store_wrapper: None,
         })
     }
 
@@ -166,7 +192,15 @@ impl Database {
         params: Option<WriteParams>,
     ) -> Result<Table> {
         let table_uri = self.table_uri(name)?;
-        Table::create(&table_uri, name, batches, params).await
+
+        Table::create(
+            &table_uri,
+            name,
+            batches,
+            self.store_wrapper.clone(),
+            params,
+        )
+        .await
     }
 
     /// Open a table in the database.
@@ -178,7 +212,7 @@ impl Database {
     ///
     /// * A [Table] object.
     pub async fn open_table(&self, name: &str) -> Result<Table> {
-        self.open_table_with_params(name, &ReadParams::default())
+        self.open_table_with_params(name, ReadParams::default())
             .await
     }
 
@@ -191,9 +225,9 @@ impl Database {
     /// # Returns
     ///
     /// * A [Table] object.
-    pub async fn open_table_with_params(&self, name: &str, params: &ReadParams) -> Result<Table> {
+    pub async fn open_table_with_params(&self, name: &str, params: ReadParams) -> Result<Table> {
         let table_uri = self.table_uri(name)?;
-        Table::open_with_params(&table_uri, name, params).await
+        Table::open_with_params(&table_uri, name, self.store_wrapper.clone(), params).await
     }
 
     /// Drop a table in the database.

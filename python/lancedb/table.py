@@ -16,6 +16,7 @@ from __future__ import annotations
 import inspect
 import os
 from abc import ABC, abstractmethod
+from datetime import timedelta
 from functools import cached_property
 from typing import Any, Iterable, List, Optional, Union
 
@@ -24,7 +25,7 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
 from lance import LanceDataset
-from lance.dataset import ReaderLike
+from lance.dataset import CleanupStats, ReaderLike
 from lance.vector import vec_to_table
 
 from .common import DATA, VEC, VECTOR_COLUMN_NAME
@@ -33,6 +34,7 @@ from .embeddings.functions import EmbeddingFunctionConfig
 from .pydantic import LanceModel
 from .query import LanceQueryBuilder, Query
 from .util import fs_from_uri, safe_import_pandas
+from .utils.events import register_event
 
 pd = safe_import_pandas()
 
@@ -136,7 +138,7 @@ class Table(ABC):
 
     Can query the table with [Table.search][lancedb.table.Table.search].
 
-    >>> table.search([0.4, 0.4]).select(["b"]).to_df()
+    >>> table.search([0.4, 0.4]).select(["b"]).to_pandas()
        b      vector  _distance
     0  4  [0.5, 1.3]       0.82
     1  2  [1.1, 1.2]       1.13
@@ -149,7 +151,7 @@ class Table(ABC):
     @abstractmethod
     def schema(self) -> pa.Schema:
         """The [Arrow Schema](https://arrow.apache.org/docs/python/api/datatypes.html#) of
-        this [Table](Table)
+        this Table
 
         """
         raise NotImplementedError
@@ -180,6 +182,7 @@ class Table(ABC):
         num_sub_vectors=96,
         vector_column_name: str = VECTOR_COLUMN_NAME,
         replace: bool = True,
+        accelerator: Optional[str] = None,
     ):
         """Create an index on the table.
 
@@ -200,6 +203,9 @@ class Table(ABC):
         replace: bool, default True
             If True, replace the existing index if it exists.
             If False, raise an error if duplicate index exists.
+        accelerator: str, default None
+            If set, use the given accelerator to create the index.
+            Only support "cuda" for now.
         """
         raise NotImplementedError
 
@@ -286,8 +292,9 @@ class Table(ABC):
         Examples
         --------
         >>> import lancedb
-        >>> import pandas as pd
-        >>> data = pd.DataFrame({"x": [1, 2, 3], "vector": [[1, 2], [3, 4], [5, 6]]})
+        >>> data = [
+        ...   {"x": 1, "vector": [1, 2]}, {"x": 2, "vector": [3, 4]}, {"x": 3, "vector": [5, 6]}
+        ... ]
         >>> db = lancedb.connect("./.lancedb")
         >>> table = db.create_table("my_table", data)
         >>> table.to_pandas()
@@ -390,6 +397,17 @@ class LanceTable(Table):
             raise ValueError(f"Invalid version {version}")
         self._reset_dataset(version=version)
 
+        try:
+            # Accessing the property updates the cached value
+            _ = self._dataset
+        except Exception as e:
+            if "not found" in str(e):
+                raise ValueError(
+                    f"Version {version} no longer exists. Was it cleaned up?"
+                )
+            else:
+                raise e
+
     def restore(self, version: int = None):
         """Restore a version of the table. This is an in-place operation.
 
@@ -479,6 +497,7 @@ class LanceTable(Table):
         num_sub_vectors=96,
         vector_column_name=VECTOR_COLUMN_NAME,
         replace: bool = True,
+        accelerator: Optional[str] = None,
     ):
         """Create an index on the table."""
         self._dataset.create_index(
@@ -488,8 +507,10 @@ class LanceTable(Table):
             num_partitions=num_partitions,
             num_sub_vectors=num_sub_vectors,
             replace=replace,
+            accelerator=accelerator,
         )
         self._reset_dataset()
+        register_event("create_index")
 
     def create_fts_index(self, field_names: Union[str, List[str]]):
         """Create a full-text search index on the table.
@@ -508,6 +529,7 @@ class LanceTable(Table):
             field_names = [field_names]
         index = create_index(self._get_fts_index_path(), field_names)
         populate_index(index, self, field_names)
+        register_event("create_fts_index")
 
     def _get_fts_index_path(self):
         return os.path.join(self._dataset_uri, "_indices", "tantivy")
@@ -560,6 +582,7 @@ class LanceTable(Table):
         )
         lance.write_dataset(data, self._dataset_uri, schema=self.schema, mode=mode)
         self._reset_dataset()
+        register_event("add")
 
     def merge(
         self,
@@ -623,6 +646,7 @@ class LanceTable(Table):
             other_table, left_on=left_on, right_on=right_on, schema=schema
         )
         self._reset_dataset()
+        register_event("merge")
 
     @cached_property
     def embedding_functions(self) -> dict:
@@ -673,6 +697,7 @@ class LanceTable(Table):
             and also the "_distance" column which is the distance between the query
             vector and the returned vector.
         """
+        register_event("search")
         return LanceQueryBuilder.create(
             self, query, query_type, vector_column_name=vector_column_name
         )
@@ -695,8 +720,9 @@ class LanceTable(Table):
         Examples
         --------
         >>> import lancedb
-        >>> import pandas as pd
-        >>> data = pd.DataFrame({"x": [1, 2, 3], "vector": [[1, 2], [3, 4], [5, 6]]})
+        >>> data = [
+        ...   {"x": 1, "vector": [1, 2]}, {"x": 2, "vector": [3, 4]}, {"x": 3, "vector": [5, 6]}
+        ... ]
         >>> db = lancedb.connect("./.lancedb")
         >>> table = db.create_table("my_table", data)
         >>> table.to_pandas()
@@ -776,6 +802,7 @@ class LanceTable(Table):
         if data is not None:
             table.add(data)
 
+        register_event("create_table")
         return table
 
     @classmethod
@@ -811,8 +838,9 @@ class LanceTable(Table):
         Examples
         --------
         >>> import lancedb
-        >>> import pandas as pd
-        >>> data = pd.DataFrame({"x": [1, 2, 3], "vector": [[1, 2], [3, 4], [5, 6]]})
+        >>> data = [
+        ...   {"x": 1, "vector": [1, 2]}, {"x": 2, "vector": [3, 4]}, {"x": 3, "vector": [5, 6]}
+        ... ]
         >>> db = lancedb.connect("./.lancedb")
         >>> table = db.create_table("my_table", data)
         >>> table.to_pandas()
@@ -841,6 +869,7 @@ class LanceTable(Table):
         self.delete(where)
         self.add(orig_data, mode="append")
         self._reset_dataset()
+        register_event("update")
 
     def _execute_query(self, query: Query) -> pa.Table:
         ds = self.to_lance()
@@ -863,6 +892,48 @@ class LanceTable(Table):
                 "refine_factor": query.refine_factor,
             },
         )
+
+    def cleanup_old_versions(
+        self,
+        older_than: Optional[timedelta] = None,
+        *,
+        delete_unverified: bool = False,
+    ) -> CleanupStats:
+        """
+        Clean up old versions of the table, freeing disk space.
+
+        Parameters
+        ----------
+        older_than: timedelta, default None
+            The minimum age of the version to delete. If None, then this defaults
+            to two weeks.
+        delete_unverified: bool, default False
+            Because they may be part of an in-progress transaction, files newer
+            than 7 days old are not deleted by default. If you are sure that
+            there are no in-progress transactions, then you can set this to True
+            to delete all files older than `older_than`.
+
+        Returns
+        -------
+        CleanupStats
+            The stats of the cleanup operation, including how many bytes were
+            freed.
+        """
+        return self.to_lance().cleanup_old_versions(
+            older_than, delete_unverified=delete_unverified
+        )
+
+    def compact_files(self, *args, **kwargs):
+        """
+        Run the compaction process on the table.
+
+        This can be run after making several small appends to optimize the table
+        for faster reads.
+
+        Arguments are passed onto :meth:`lance.dataset.DatasetOptimizer.compact_files`.
+        For most cases, the default should be fine.
+        """
+        return self.to_lance().optimize.compact_files(*args, **kwargs)
 
 
 def _sanitize_schema(

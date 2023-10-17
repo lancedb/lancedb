@@ -42,7 +42,7 @@ A Table is a collection of Records in a LanceDB Database. You can follow along o
     import pandas as pd
 
     data = pd.DataFrame({
-        "vector": [[1.1, 1.2], [0.2, 1.8]],
+        "vector": [[1.1, 1.2, 1.3, 1.4], [0.2, 1.8, 0.4, 3.6]],
         "lat": [45.5, 40.1],
         "long": [-122.7, -74.1]
     })
@@ -56,7 +56,7 @@ A Table is a collection of Records in a LanceDB Database. You can follow along o
 
     ```python
     custom_schema = pa.schema([
-    pa.field("vector", pa.list_(pa.float32(), 2)),
+    pa.field("vector", pa.list_(pa.float32(), 4)),
     pa.field("lat", pa.float32()),
     pa.field("long", pa.float32())
     ])
@@ -70,8 +70,8 @@ A Table is a collection of Records in a LanceDB Database. You can follow along o
     ```python
     table = pa.Table.from_arrays(
             [
-                pa.array([[3.1, 4.1], [5.9, 26.5]],
-                        pa.list_(pa.float32(), 2)),
+                pa.array([[3.1, 4.1, 5.1, 6.1], [5.9, 26.5, 4.7, 32.8]],
+                        pa.list_(pa.float32(), 4)),
                 pa.array(["foo", "bar"]),
                 pa.array([10.0, 20.0]),
             ],
@@ -88,12 +88,12 @@ A Table is a collection of Records in a LanceDB Database. You can follow along o
     LanceDB supports creating tables by specifying a pyarrow schema or a specialized
     pydantic model called `LanceModel`.
 
-    For example, the following Content model specifies a table with 5 columns: 
+    For example, the following Content model specifies a table with 5 columns:
     movie_id, vector, genres, title, and imdb_id. When you create a table, you can
-    pass the class as the value of the `schema` parameter to `create_table`. 
+    pass the class as the value of the `schema` parameter to `create_table`.
     The `vector` column is a `Vector` type, which is a specialized pydantic type that
     can be configured with the vector dimensions. It is also important to note that
-    LanceDB only understands subclasses of `lancedb.pydantic.LanceModel` 
+    LanceDB only understands subclasses of `lancedb.pydantic.LanceModel`
     (which itself derives from `pydantic.BaseModel`).
 
     ```python
@@ -131,8 +131,8 @@ A Table is a collection of Records in a LanceDB Database. You can follow along o
         for i in range(5):
             yield pa.RecordBatch.from_arrays(
                 [
-                    pa.array([[3.1, 4.1], [5.9, 26.5]],
-                            pa.list_(pa.float32(), 2)),
+                    pa.array([[3.1, 4.1, 5.1, 6.1], [5.9, 26.5, 4.7, 32.8]],
+                            pa.list_(pa.float32(), 4)),
                     pa.array(["foo", "bar"]),
                     pa.array([10.0, 20.0]),
                 ],
@@ -140,7 +140,7 @@ A Table is a collection of Records in a LanceDB Database. You can follow along o
             )
 
     schema = pa.schema([
-        pa.field("vector", pa.list_(pa.float32(), 2)),
+        pa.field("vector", pa.list_(pa.float32(), 4)),
         pa.field("item", pa.utf8()),
         pa.field("price", pa.float32()),
     ])
@@ -251,8 +251,9 @@ After a table has been created, you can always add more data to it using
     ### Adding Pandas DataFrame
 
     ```python
-    df = pd.DataFrame([{"vector": [1.3, 1.4], "item": "fizz", "price": 100.0},
-                  {"vector": [9.5, 56.2], "item": "buzz", "price": 200.0}])
+    df = pd.DataFrame({
+        "vector": [[1.3, 1.4], [9.5, 56.2]], "item": ["fizz", "buzz"], "price": [100.0, 200.0]
+    })
     tbl.add(df)
     ```
 
@@ -261,17 +262,12 @@ After a table has been created, you can always add more data to it using
     ### Adding to table using Iterator
 
     ```python
-    import pandas as pd
-
     def make_batches():
         for i in range(5):
-            yield pd.DataFrame(
-                {
-                    "vector": [[3.1, 4.1], [1, 1]],
-                    "item": ["foo", "bar"],
-                    "price": [10.0, 20.0],
-                })
-
+            yield [
+                    {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+                    {"vector": [5.9, 26.5], "item": "bar", "price": 20.0}
+                ]
     tbl.add(make_batches())
     ```
 
@@ -306,9 +302,10 @@ Use the `delete()` method on tables to delete rows from a table. To choose which
 
     ```python
     import lancedb
-    import pandas as pd
 
-    data = pd.DataFrame({"x": [1, 2, 3], "vector": [[1, 2], [3, 4], [5, 6]]})
+    data = [{"x": 1, "vector": [1, 2]},
+            {"x": 2, "vector": [3, 4]},
+            {"x": 3, "vector": [5, 6]}]
     db = lancedb.connect("./.lancedb")
     table = db.create_table("my_table", data)
     table.to_pandas()
@@ -362,6 +359,48 @@ Use the `delete()` method on tables to delete rows from a table. To choose which
     const to_remove = [1, 5];
     await tbl.delete(`id IN (${to_remove.join(",")})`)
     await tbl.countRows() // Returns 1
+    ```
+
+### Updating a Table [Experimental]
+EXPERIMENTAL: Update rows in the table (not threadsafe).
+
+This can be used to update zero to all rows depending on how many rows match the where clause.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `where` | `str` | The SQL where clause to use when updating rows. For example, `'x = 2'` or `'x IN (1, 2, 3)'`. The filter must not be empty, or it will error. |
+| `values` | `dict` | The values to update. The keys are the column names and the values are the values to set. |
+
+
+=== "Python"
+
+    ```python
+    import lancedb
+    import pandas as pd
+
+    # Create a lancedb connection
+    db = lancedb.connect("./.lancedb")
+
+    # Create a table from a pandas DataFrame
+    data = pd.DataFrame({"x": [1, 2, 3], "vector": [[1, 2], [3, 4], [5, 6]]})
+    table = db.create_table("my_table", data)
+
+    # Update the table where x = 2
+    table.update(where="x = 2", values={"vector": [10, 10]})
+
+    # Get the updated table as a pandas DataFrame
+    df = table.to_pandas()
+
+    # Print the DataFrame
+    print(df)
+    ```
+
+    Output
+    ```shell
+        x  vector
+    0  1  [1.0, 2.0]
+    1  3  [5.0, 6.0]
+    2  2  [10.0, 10.0]
     ```
 
 ## What's Next?

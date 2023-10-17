@@ -12,6 +12,7 @@
 #  limitations under the License.
 
 
+from .cohere import CohereEmbeddingFunction
 from .functions import (
     EmbeddingFunction,
     EmbeddingFunctionConfig,
@@ -20,5 +21,6 @@ from .functions import (
     OpenClipEmbeddings,
     SentenceTransformerEmbeddings,
     TextEmbeddingFunction,
+    register,
 )
 from .utils import with_embeddings

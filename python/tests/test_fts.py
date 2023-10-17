@@ -71,14 +71,14 @@ def test_search_index(tmp_path, table):
 
 def test_create_index_from_table(tmp_path, table):
     table.create_fts_index("text")
-    df = table.search("puppy").limit(10).select(["text"]).to_df()
+    df = table.search("puppy").limit(10).select(["text"]).to_pandas()
     assert len(df) == 10
     assert "text" in df.columns
 
 
 def test_create_index_multiple_columns(tmp_path, table):
     table.create_fts_index(["text", "text2"])
-    df = table.search("puppy").limit(10).to_df()
+    df = table.search("puppy").limit(10).to_pandas()
     assert len(df) == 10
     assert "text" in df.columns
     assert "text2" in df.columns
@@ -87,5 +87,5 @@ def test_create_index_multiple_columns(tmp_path, table):
 def test_empty_rs(tmp_path, table, mocker):
     table.create_fts_index(["text", "text2"])
     mocker.patch("lancedb.fts.search_index", return_value=([], []))
-    df = table.search("puppy").limit(10).to_df()
+    df = table.search("puppy").limit(10).to_pandas()
     assert len(df) == 0

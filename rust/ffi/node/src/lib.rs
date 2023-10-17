@@ -74,7 +74,7 @@ fn runtime<'a, C: Context<'a>>(cx: &mut C) -> NeonResult<&'static Runtime> {
     static RUNTIME: OnceCell<Runtime> = OnceCell::new();
     static LOG: OnceCell<()> = OnceCell::new();
 
-    LOG.get_or_init(|| env_logger::init());
+    LOG.get_or_init(env_logger::init);
 
     RUNTIME.get_or_try_init(|| Runtime::new().or_throw(cx))
 }
@@ -148,7 +148,7 @@ fn get_aws_creds(
     match (secret_key_id, secret_key, temp_token) {
         (Some(key_id), Some(key), optional_token) => Ok(Some(Arc::new(
             StaticCredentialProvider::new(AwsCredential {
-                key_id: key_id,
+                key_id,
                 secret_key: key,
                 token: optional_token,
             }),
@@ -195,7 +195,7 @@ fn database_open_table(mut cx: FunctionContext) -> JsResult<JsPromise> {
 
     let (deferred, promise) = cx.promise();
     rt.spawn(async move {
-        let table_rst = database.open_table_with_params(&table_name, &params).await;
+        let table_rst = database.open_table_with_params(&table_name, params).await;
 
         deferred.settle_with(&channel, move |mut cx| {
             let js_table = JsTable::from(table_rst.or_throw(&mut cx)?);
@@ -237,6 +237,8 @@ fn main(mut cx: ModuleContext) -> NeonResult<()> {
     cx.export_function("tableAdd", JsTable::js_add)?;
     cx.export_function("tableCountRows", JsTable::js_count_rows)?;
     cx.export_function("tableDelete", JsTable::js_delete)?;
+    cx.export_function("tableCleanupOldVersions", JsTable::js_cleanup)?;
+    cx.export_function("tableCompactFiles", JsTable::js_compact)?;
     cx.export_function(
         "tableCreateVectorIndex",
         index::vector::table_create_vector_index,

@@ -39,7 +39,6 @@ to lazily generate data:
 
 from typing import Iterable
 import pyarrow as pa
-import lancedb
 
 def make_batches() -> Iterable[pa.RecordBatch]:
     for i in range(5):
@@ -74,7 +73,7 @@ table = db.open_table("pd_table")
 
 query_vector = [100, 100]
 # Pandas DataFrame
-df = table.search(query_vector).limit(1).to_df()
+df = table.search(query_vector).limit(1).to_pandas()
 print(df)
 ```
 
@@ -89,12 +88,12 @@ If you have more complex criteria, you can always apply the filter to the result
 ```python
 
 # Apply the filter via LanceDB
-results = table.search([100, 100]).where("price < 15").to_df()
+results = table.search([100, 100]).where("price < 15").to_pandas()
 assert len(results) == 1
 assert results["item"].iloc[0] == "foo"
 
 # Apply the filter via Pandas
-df = results = table.search([100, 100]).to_df()
+df = results = table.search([100, 100]).to_pandas()
 results = df[df.price < 15]
 assert len(results) == 1
 assert results["item"].iloc[0] == "foo"

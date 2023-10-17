@@ -68,6 +68,12 @@ a single PQ code.
   <figcaption>IVF_PQ index with <code>num_partitions=2, num_sub_vectors=4</code></figcaption>
 </figure>
 
+### Use GPU to build vector index
+
+Lance Python SDK has experimental GPU support for creating IVF index.
+You can specify the GPU device to train IVF partitions via
+
+- **accelerator**: Specify to `"cuda"`` to enable GPU training.
 
 ## Querying an ANN Index
 
@@ -91,7 +97,7 @@ There are a couple of parameters that can be used to fine-tune the search:
          .limit(2) \
          .nprobes(20) \
          .refine_factor(10) \
-         .to_df()
+         .to_pandas()
      ```
      ```
                                               vector       item       _distance
@@ -118,7 +124,7 @@ You can further filter the elements returned by a search using a where clause.
 
 === "Python"
      ```python
-     tbl.search(np.random.random((1536))).where("item != 'item 1141'").to_df()
+     tbl.search(np.random.random((1536))).where("item != 'item 1141'").to_pandas()
      ```
 
 === "Javascript"
@@ -135,7 +141,7 @@ You can select the columns returned by the query using a select clause.
 
 === "Python"
      ```python
-     tbl.search(np.random.random((1536))).select(["vector"]).to_df()
+     tbl.search(np.random.random((1536))).select(["vector"]).to_pandas()
      ```
      ```
         vector                                             _distance

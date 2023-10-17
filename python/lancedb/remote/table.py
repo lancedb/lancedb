@@ -13,7 +13,7 @@
 
 import uuid
 from functools import cached_property
-from typing import Union
+from typing import Optional, Union
 
 import pyarrow as pa
 from lance import json_to_schema
@@ -62,6 +62,7 @@ class RemoteTable(Table):
         num_sub_vectors=96,
         vector_column_name: str = VECTOR_COLUMN_NAME,
         replace: bool = True,
+        accelerator: Optional[str] = None,
     ):
         raise NotImplementedError
 
@@ -104,4 +105,8 @@ class RemoteTable(Table):
         return self._conn._loop.run_until_complete(result).to_arrow()
 
     def delete(self, predicate: str):
-        raise NotImplementedError
+        """Delete rows from the table."""
+        payload = {"predicate": predicate}
+        self._conn._loop.run_until_complete(
+            self._conn._client.post(f"/v1/table/{self._name}/delete/", data=payload)
+        )

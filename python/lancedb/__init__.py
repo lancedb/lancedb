@@ -14,11 +14,12 @@
 import importlib.metadata
 from typing import Optional
 
+__version__ = importlib.metadata.version("lancedb")
+
 from .db import URI, DBConnection, LanceDBConnection
 from .remote.db import RemoteDBConnection
 from .schema import vector
-
-__version__ = importlib.metadata.version("lancedb")
+from .utils import sentry_log
 
 
 def connect(
