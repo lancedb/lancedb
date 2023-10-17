@@ -26,18 +26,16 @@ class EmbeddingFunctionRegistry:
     NOTE: Here TEXT is a type alias for Union[str, List[str], pa.Array, pa.ChunkedArray, np.ndarray]
     Examples
     --------
-    >>> import numpy as np
-    >>> from typing import List
     >>> registry = EmbeddingFunctionRegistry.get_instance()
     >>> @registry.register("my-embedding-function")
     ... class MyEmbeddingFunction(EmbeddingFunction):
     ...     def ndims(self) -> int:
     ...         return 128
     ...
-    ...     def compute_query_embeddings(self, query: str, *args, **kwargs) -> List[np.array]:
+    ...     def compute_query_embeddings(self, query: str, *args, **kwargs):
     ...         return self.compute_source_embeddings(query, *args, **kwargs)
     ...
-    ...     def compute_source_embeddings(self, texts: TEXT, *args, **kwargs) -> List[np.array]:
+    ...     def compute_source_embeddings(self, texts, *args, **kwargs):
     ...         return [np.random.rand(self.ndims()) for _ in range(len(texts))]
     ...
     >>> registry.get("my-embedding-function")
