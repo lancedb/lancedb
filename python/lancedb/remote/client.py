@@ -159,7 +159,7 @@ class RestfulLanceDBClient:
             )
             return json["tables"]
         except StopAsyncIteration:
-            return None
+            return []
 
     @_check_not_closed
     async def query(self, table_name: str, query: VectorQuery) -> VectorQueryResult:
