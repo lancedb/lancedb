@@ -13,7 +13,7 @@
 
 import asyncio
 import uuid
-from typing import List, Optional
+from typing import Iterator, Optional
 from urllib.parse import urlparse
 
 import pyarrow as pa
@@ -52,18 +52,27 @@ class RemoteDBConnection(DBConnection):
     def __repr__(self) -> str:
         return f"RemoveConnect(name={self.db_name})"
 
-    def table_names(self, limit: int):
-        """List the names of all tables in the database."""
-        page_token = ""
+    def table_names(self, last_token: str, limit=10) -> Iterator[str]:
+        """List the names of all tables in the database.
+        Parameters
+        ----------
+        last_token: str
+            The last token to start the new page.
+
+        Returns
+        -------
+        An iterator of table names.
+        """
         while True:
-            done, result = self._loop.run_until_complete(
-                self._client.list_tables(limit, page_token)
+            result = self._loop.run_until_complete(
+                self._client.list_tables(limit, last_token)
             )
             if len(result) > 0:
-                page_token = result[len(result) - 1]
-            if done or len(result) == 0:
+                last_token = result[len(result) - 1]
+            else:
                 break
-            yield result
+            for item in result:
+                yield result
 
     def open_table(self, name: str) -> Table:
         """Open a Lance Table in the database.
