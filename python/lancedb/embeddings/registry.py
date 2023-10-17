@@ -11,7 +11,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 import json
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 
 from .base import EmbeddingFunction, EmbeddingFunctionConfig
 
