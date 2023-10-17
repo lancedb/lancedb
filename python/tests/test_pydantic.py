@@ -14,6 +14,7 @@
 
 import json
 import sys
+from datetime import date, datetime
 from typing import List, Optional
 
 import pyarrow as pa
@@ -40,10 +41,18 @@ def test_pydantic_to_arrow():
         li: List[int]
         opt: Optional[str] = None
         st: StructModel
+        dt: date
+        dtt: datetime
         # d: dict
 
     m = TestModel(
-        id=1, s="hello", vec=[1.0, 2.0, 3.0], li=[2, 3, 4], st=StructModel(a="a", b=1.0)
+        id=1,
+        s="hello",
+        vec=[1.0, 2.0, 3.0],
+        li=[2, 3, 4],
+        st=StructModel(a="a", b=1.0),
+        dt=date.today(),
+        dtt=datetime.now(),
     )
 
     schema = pydantic_to_schema(TestModel)
@@ -62,6 +71,8 @@ def test_pydantic_to_arrow():
                 ),
                 False,
             ),
+            pa.field("dt", pa.date32(), False),
+            pa.field("dtt", pa.timestamp("us"), False),
         ]
     )
     assert schema == expect_schema
@@ -79,10 +90,18 @@ def test_pydantic_to_arrow_py38():
         li: List[int]
         opt: Optional[str] = None
         st: StructModel
+        dt: date
+        dtt: datetime
         # d: dict
 
     m = TestModel(
-        id=1, s="hello", vec=[1.0, 2.0, 3.0], li=[2, 3, 4], st=StructModel(a="a", b=1.0)
+        id=1,
+        s="hello",
+        vec=[1.0, 2.0, 3.0],
+        li=[2, 3, 4],
+        st=StructModel(a="a", b=1.0),
+        dt=date.today(),
+        dtt=datetime.now(),
     )
 
     schema = pydantic_to_schema(TestModel)
@@ -101,6 +120,8 @@ def test_pydantic_to_arrow_py38():
                 ),
                 False,
             ),
+            pa.field("dt", pa.date32(), False),
+            pa.field("dtt", pa.timestamp("us"), False),
         ]
     )
     assert schema == expect_schema
