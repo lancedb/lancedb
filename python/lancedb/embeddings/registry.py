@@ -12,6 +12,7 @@
 #  limitations under the License.
 import json
 from typing import Dict, Optional
+
 from .base import EmbeddingFunction, EmbeddingFunctionConfig
 
 
@@ -165,6 +166,7 @@ __REGISTRY__ = EmbeddingFunctionRegistry()
 # @EmbeddingFunctionRegistry.get_instance().register(name) doesn't work in 3.8
 register = lambda name: EmbeddingFunctionRegistry.get_instance().register(name)
 
+
 def get_registry():
     """
     Utility function to get the global instance of the registry
@@ -173,11 +175,11 @@ def get_registry():
     -------
     EmbeddingFunctionRegistry
         The global registry instance
-    
+
     Examples
     --------
     from lancedb.embeddings import get_registry
-    
+
     registry = get_registry()
     openai = registry.get("openai").create()
     """

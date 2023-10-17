@@ -1,7 +1,10 @@
 from typing import List, Union
+
 import numpy as np
-from .registry import register
+
 from .base import TextEmbeddingFunction
+from .registry import register
+
 
 @register("openai")
 class OpenAIEmbeddings(TextEmbeddingFunction):

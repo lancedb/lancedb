@@ -1,8 +1,11 @@
 from typing import List, Union
-from cachetools import cached
+
 import numpy as np
-from .registry import register
+from cachetools import cached
+
 from .base import TextEmbeddingFunction
+from .registry import register
+
 
 @register("sentence-transformers")
 class SentenceTransformerEmbeddings(TextEmbeddingFunction):
@@ -72,4 +75,3 @@ class SentenceTransformerEmbeddings(TextEmbeddingFunction):
             "sentence_transformers", "sentence-transformers"
         )
         return sentence_transformers.SentenceTransformer(name, device=device)
-

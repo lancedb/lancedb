@@ -12,10 +12,10 @@
 #  limitations under the License.
 
 import math
-import sys
-from typing import Callable, Union, List
 import socket
+import sys
 import urllib.error
+from typing import Callable, List, Union
 
 import numpy as np
 import pyarrow as pa
@@ -161,6 +161,7 @@ class FunctionWrapper:
         else:
             yield from _chunker(arr)
 
+
 def url_retrieve(url: str):
     """
     Parameters
@@ -173,6 +174,7 @@ def url_retrieve(url: str):
             return conn.read()
     except (socket.gaierror, urllib.error.URLError) as err:
         raise ConnectionError("could not download {} due to {}".format(url, err))
+
 
 def api_key_not_found_help(provider):
     LOGGER.error(f"Could not find API key for {provider}.")

@@ -12,10 +12,9 @@
 #  limitations under the License.
 
 from .base import EmbeddingFunction, EmbeddingFunctionConfig, TextEmbeddingFunction
-from .sentence_transformers import SentenceTransformerEmbeddings
-from .openai import OpenAIEmbeddings
-from .open_clip import OpenClipEmbeddings
 from .cohere import CohereEmbeddingFunction
+from .open_clip import OpenClipEmbeddings
+from .openai import OpenAIEmbeddings
 from .registry import EmbeddingFunctionRegistry, get_registry
-
+from .sentence_transformers import SentenceTransformerEmbeddings
 from .utils import with_embeddings

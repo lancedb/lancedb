@@ -1,10 +1,13 @@
 import importlib
 from abc import ABC, abstractmethod
 from typing import List, Union
-from pydantic import BaseModel, Field, PrivateAttr
-import pyarrow as pa
+
 import numpy as np
+import pyarrow as pa
+from pydantic import BaseModel, Field, PrivateAttr
+
 from .utils import TEXT
+
 
 class EmbeddingFunction(BaseModel, ABC):
     """

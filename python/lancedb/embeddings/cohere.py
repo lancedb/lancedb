@@ -16,8 +16,8 @@ from typing import ClassVar, List, Union
 
 import numpy as np
 
-from .registry import register
 from .base import TextEmbeddingFunction
+from .registry import register
 from .utils import api_key_not_found_help
 
 

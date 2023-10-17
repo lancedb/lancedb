@@ -1,15 +1,17 @@
+import concurrent.futures
 import io
 import os
-import concurrent.futures
+import urllib.parse as urlparse
 from typing import List, Union
-from pydantic import PrivateAttr
+
 import numpy as np
 import pyarrow as pa
-import urllib.parse as urlparse
+from pydantic import PrivateAttr
 from tqdm import tqdm
-from .utils import url_retrieve, IMAGES
-from .registry import register
+
 from .base import EmbeddingFunction
+from .registry import register
+from .utils import IMAGES, url_retrieve
 
 
 @register("open-clip")
