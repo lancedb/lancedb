@@ -12,8 +12,10 @@
 #  limitations under the License.
 
 import math
+import socket
 import sys
-from typing import Callable, Union
+import urllib.error
+from typing import Callable, List, Union
 
 import numpy as np
 import pyarrow as pa
@@ -24,7 +26,12 @@ from ..util import safe_import_pandas
 from ..utils.general import LOGGER
 
 pd = safe_import_pandas()
+
 DATA = Union[pa.Table, "pd.DataFrame"]
+TEXT = Union[str, List[str], pa.Array, pa.ChunkedArray, np.ndarray]
+IMAGES = Union[
+    str, bytes, List[str], List[bytes], pa.Array, pa.ChunkedArray, np.ndarray
+]
 
 
 def with_embeddings(
@@ -153,6 +160,20 @@ class FunctionWrapper:
             yield from tqdm(_chunker(arr), total=math.ceil(length / self._batch_size))
         else:
             yield from _chunker(arr)
+
+
+def url_retrieve(url: str):
+    """
+    Parameters
+    ----------
+    url: str
+        URL to download from
+    """
+    try:
+        with urllib.request.urlopen(url) as conn:
+            return conn.read()
+    except (socket.gaierror, urllib.error.URLError) as err:
+        raise ConnectionError("could not download {} due to {}".format(url, err))
 
 
 def api_key_not_found_help(provider):
