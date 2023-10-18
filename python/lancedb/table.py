@@ -29,8 +29,7 @@ from lance.dataset import CleanupStats, ReaderLike
 from lance.vector import vec_to_table
 
 from .common import DATA, VEC, VECTOR_COLUMN_NAME
-from .embeddings import EmbeddingFunctionRegistry
-from .embeddings.functions import EmbeddingFunctionConfig
+from .embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
 from .pydantic import LanceModel
 from .query import LanceQueryBuilder, Query
 from .util import fs_from_uri, safe_import_pandas
