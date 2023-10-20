@@ -72,6 +72,7 @@ nav:
     - Vector Search: search.md
     - SQL filters: sql.md
     - Indexing: ann_indexes.md
+    - Versioning & Reproducibility: notebooks/reproducibility.ipynb
   - 🧬 Embeddings: embedding.md
   - 🔍 Python full-text search: fts.md
   - 🔌 Integrations:
