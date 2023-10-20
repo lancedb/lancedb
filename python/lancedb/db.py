@@ -22,7 +22,7 @@ import pyarrow as pa
 from pyarrow import fs
 
 from .common import DATA, URI
-from .embeddings import EmbeddingFunctionModel
+from .embeddings import EmbeddingFunctionConfig
 from .pydantic import LanceModel
 from .table import LanceTable, Table
 from .util import fs_from_uri, get_uri_location, get_uri_scheme
@@ -290,7 +290,7 @@ class LanceDBConnection(DBConnection):
         mode: str = "create",
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
-        embedding_functions: Optional[List[EmbeddingFunctionModel]] = None,
+        embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
     ) -> LanceTable:
         """Create a table in the database.
 

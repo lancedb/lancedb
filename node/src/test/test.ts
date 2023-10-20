@@ -18,8 +18,8 @@ import * as chai from 'chai'
 import * as chaiAsPromised from 'chai-as-promised'
 
 import * as lancedb from '../index'
-import { type AwsCredentials, type EmbeddingFunction, MetricType, Query, WriteMode, DefaultWriteOptions, isWriteOptions } from '../index'
-import { Field, Int32, makeVector, Schema, Utf8, Table as ArrowTable, vectorFromArray } from 'apache-arrow'
+import { type AwsCredentials, type EmbeddingFunction, MetricType, Query, WriteMode, DefaultWriteOptions, isWriteOptions, type LocalTable } from '../index'
+import { FixedSizeList, Field, Int32, makeVector, Schema, Utf8, Table as ArrowTable, vectorFromArray, Float32 } from 'apache-arrow'
 
 const expect = chai.expect
 const assert = chai.assert
@@ -258,6 +258,36 @@ describe('LanceDB client', function () {
     })
   })
 
+  describe('when searching an empty dataset', function () {
+    it('should not fail', async function () {
+      const dir = await track().mkdir('lancejs')
+      const con = await lancedb.connect(dir)
+
+      const schema = new Schema(
+        [new Field('vector', new FixedSizeList(128, new Field('float32', new Float32())))]
+      )
+      const table = await con.createTable({ name: 'vectors', schema })
+      const result = await table.search(Array(128).fill(0.1)).execute()
+      assert.isEmpty(result)
+    })
+  })
+
+  describe('when searching an empty-after-delete dataset', function () {
+    it('should not fail', async function () {
+      const dir = await track().mkdir('lancejs')
+      const con = await lancedb.connect(dir)
+
+      const schema = new Schema(
+        [new Field('vector', new FixedSizeList(128, new Field('float32', new Float32())))]
+      )
+      const table = await con.createTable({ name: 'vectors', schema })
+      await table.add([{ vector: Array(128).fill(0.1) }])
+      await table.delete('vector IS NOT NULL')
+      const result = await table.search(Array(128).fill(0.1)).execute()
+      assert.isEmpty(result)
+    })
+  })
+
   describe('when creating a vector index', function () {
     it('overwrite all records in a table', async function () {
       const uri = await createTestDB(32, 300)
@@ -414,5 +444,47 @@ describe('WriteOptions', function () {
     it('should match default write options', function () {
       assert.equal(isWriteOptions(new DefaultWriteOptions()), true)
     })
+  })
+})
+
+describe('Compact and cleanup', function () {
+  it('can cleanup after compaction', async function () {
+    const dir = await track().mkdir('lancejs')
+    const con = await lancedb.connect(dir)
+
+    const data = [
+      { price: 10, name: 'foo', vector: [1, 2, 3] },
+      { price: 50, name: 'bar', vector: [4, 5, 6] }
+    ]
+    const table = await con.createTable('t1', data) as LocalTable
+
+    const newData = [
+      { price: 30, name: 'baz', vector: [7, 8, 9] }
+    ]
+    await table.add(newData)
+
+    const compactionMetrics = await table.compactFiles({
+      numThreads: 2
+    })
+    assert.equal(compactionMetrics.fragmentsRemoved, 2)
+    assert.equal(compactionMetrics.fragmentsAdded, 1)
+    assert.equal(await table.countRows(), 3)
+
+    await table.cleanupOldVersions()
+    assert.equal(await table.countRows(), 3)
+
+    // should have no effect, but this validates the arguments are parsed.
+    await table.compactFiles({
+      targetRowsPerFragment: 1024 * 10,
+      maxRowsPerGroup: 1024,
+      materializeDeletions: true,
+      materializeDeletionsThreshold: 0.5,
+      numThreads: 2
+    })
+
+    const cleanupMetrics = await table.cleanupOldVersions(0, true)
+    assert.isAtLeast(cleanupMetrics.bytesRemoved, 1)
+    assert.isAtLeast(cleanupMetrics.oldVersions, 1)
+    assert.equal(await table.countRows(), 3)
   })
 })

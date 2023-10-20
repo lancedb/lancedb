@@ -19,12 +19,15 @@ import inspect
 import sys
 import types
 from abc import ABC, abstractmethod
+from datetime import date, datetime
 from typing import Any, Callable, Dict, Generator, List, Type, Union, _GenericAlias
 
 import numpy as np
 import pyarrow as pa
 import pydantic
 import semver
+
+from .embeddings import EmbeddingFunctionRegistry
 
 PYDANTIC_VERSION = semver.Version.parse(pydantic.__version__)
 try:
@@ -46,7 +49,19 @@ class FixedSizeListMixin(ABC):
         raise NotImplementedError
 
 
-def vector(
+def vector(dim: int, value_type: pa.DataType = pa.float32()):
+    # TODO: remove in future release
+    from warnings import warn
+
+    warn(
+        "lancedb.pydantic.vector() is deprecated, use lancedb.pydantic.Vector instead."
+        "This function will be removed in future release",
+        DeprecationWarning,
+    )
+    return Vector(dim, value_type)
+
+
+def Vector(
     dim: int, value_type: pa.DataType = pa.float32()
 ) -> Type[FixedSizeListMixin]:
     """Pydantic Vector Type.
@@ -65,12 +80,12 @@ def vector(
     --------
 
     >>> import pydantic
-    >>> from lancedb.pydantic import vector
+    >>> from lancedb.pydantic import Vector
     ...
     >>> class MyModel(pydantic.BaseModel):
     ...     id: int
     ...     url: str
-    ...     embeddings: vector(768)
+    ...     embeddings: Vector(768)
     >>> schema = pydantic_to_schema(MyModel)
     >>> assert schema == pa.schema([
     ...     pa.field("id", pa.int64(), False),
@@ -114,7 +129,7 @@ def vector(
         def validate(cls, v):
             if not isinstance(v, (list, range, np.ndarray)) or len(v) != dim:
                 raise TypeError("A list of numbers or numpy.ndarray is needed")
-            return v
+            return cls(v)
 
         if PYDANTIC_VERSION < (2, 0):
 
@@ -145,6 +160,10 @@ def _py_type_to_arrow_type(py_type: Type[Any]) -> pa.DataType:
         return pa.bool_()
     elif py_type == bytes:
         return pa.binary()
+    elif py_type == date:
+        return pa.date32()
+    elif py_type == datetime:
+        return pa.timestamp("us")
     raise TypeError(
         f"Converting Pydantic type to Arrow Type: unsupported type {py_type}"
     )
@@ -224,27 +243,18 @@ def pydantic_to_schema(model: Type[pydantic.BaseModel]) -> pa.Schema:
     >>> from typing import List, Optional
     >>> import pydantic
     >>> from lancedb.pydantic import pydantic_to_schema
-    ...
-    >>> class InnerModel(pydantic.BaseModel):
-    ...     a: str
-    ...     b: Optional[float]
-    >>>
     >>> class FooModel(pydantic.BaseModel):
     ...     id: int
-    ...     s: Optional[str] = None
+    ...     s: str
     ...     vec: List[float]
     ...     li: List[int]
-    ...     inner: InnerModel
+    ...
     >>> schema = pydantic_to_schema(FooModel)
     >>> assert schema == pa.schema([
     ...     pa.field("id", pa.int64(), False),
-    ...     pa.field("s", pa.utf8(), True),
+    ...     pa.field("s", pa.utf8(), False),
     ...     pa.field("vec", pa.list_(pa.float64()), False),
     ...     pa.field("li", pa.list_(pa.int64()), False),
-    ...     pa.field("inner", pa.struct([
-    ...         pa.field("a", pa.utf8(), False),
-    ...         pa.field("b", pa.float64(), True),
-    ...     ]), False),
     ... ])
     """
     fields = _pydantic_model_to_fields(model)
@@ -258,11 +268,11 @@ class LanceModel(pydantic.BaseModel):
     Examples
     --------
     >>> import lancedb
-    >>> from lancedb.pydantic import LanceModel, vector
+    >>> from lancedb.pydantic import LanceModel, Vector
     >>>
     >>> class TestModel(LanceModel):
     ...     name: str
-    ...     vector: vector(2)
+    ...     vector: Vector(2)
     ...
     >>> db = lancedb.connect("/tmp")
     >>> table = db.create_table("test", schema=TestModel.to_arrow_schema())
@@ -278,13 +288,58 @@ class LanceModel(pydantic.BaseModel):
         """
         Get the Arrow Schema for this model.
         """
-        return pydantic_to_schema(cls)
+        schema = pydantic_to_schema(cls)
+        functions = cls.parse_embedding_functions()
+        if len(functions) > 0:
+            metadata = EmbeddingFunctionRegistry.get_instance().get_table_metadata(
+                functions
+            )
+            schema = schema.with_metadata(metadata)
+        return schema
 
     @classmethod
     def field_names(cls) -> List[str]:
         """
         Get the field names of this model.
         """
+        return list(cls.safe_get_fields().keys())
+
+    @classmethod
+    def safe_get_fields(cls):
         if PYDANTIC_VERSION.major < 2:
-            return list(cls.__fields__.keys())
-        return list(cls.model_fields.keys())
+            return cls.__fields__
+        return cls.model_fields
+
+    @classmethod
+    def parse_embedding_functions(cls) -> List["EmbeddingFunctionConfig"]:
+        """
+        Parse the embedding functions from this model.
+        """
+        from .embeddings import EmbeddingFunctionConfig
+
+        vec_and_function = []
+        for name, field_info in cls.safe_get_fields().items():
+            func = get_extras(field_info, "vector_column_for")
+            if func is not None:
+                vec_and_function.append([name, func])
+
+        configs = []
+        for vec, func in vec_and_function:
+            for source, field_info in cls.safe_get_fields().items():
+                src_func = get_extras(field_info, "source_column_for")
+                if src_func == func:
+                    configs.append(
+                        EmbeddingFunctionConfig(
+                            source_column=source, vector_column=vec, function=func
+                        )
+                    )
+        return configs
+
+
+def get_extras(field_info: pydantic.fields.FieldInfo, key: str) -> Any:
+    """
+    Get the extra metadata from a Pydantic FieldInfo.
+    """
+    if PYDANTIC_VERSION.major >= 2:
+        return (field_info.json_schema_extra or {}).get(key)
+    return (field_info.field_info.extra or {}).get("json_schema_extra", {}).get(key)

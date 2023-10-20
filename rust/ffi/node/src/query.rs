@@ -3,7 +3,7 @@ use std::ops::Deref;
 
 use arrow_array::Float32Array;
 use futures::{TryFutureExt, TryStreamExt};
-use lance::index::vector::MetricType;
+use lance_linalg::distance::MetricType;
 use neon::context::FunctionContext;
 use neon::handle::Handle;
 use neon::prelude::*;

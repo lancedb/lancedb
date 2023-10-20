@@ -16,7 +16,7 @@ pip install lancedb
 import lancedb
 db = lancedb.connect('<PATH_TO_LANCEDB_DATASET>')
 table = db.open_table('my_table')
-results = table.search([0.1, 0.3]).limit(20).to_df()
+results = table.search([0.1, 0.3]).limit(20).to_list()
 print(results)
 ```
 

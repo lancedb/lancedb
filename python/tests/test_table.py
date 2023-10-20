@@ -12,6 +12,7 @@
 #  limitations under the License.
 
 import functools
+from datetime import timedelta
 from pathlib import Path
 from typing import List
 from unittest.mock import PropertyMock, patch
@@ -22,9 +23,10 @@ import pandas as pd
 import pyarrow as pa
 import pytest
 
-from lancedb.conftest import MockEmbeddingFunction
+from lancedb.conftest import MockTextEmbeddingFunction
 from lancedb.db import LanceDBConnection
-from lancedb.pydantic import LanceModel, vector
+from lancedb.embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
+from lancedb.pydantic import LanceModel, Vector
 from lancedb.table import LanceTable
 
 
@@ -140,7 +142,7 @@ def test_add(db):
 
 def test_add_pydantic_model(db):
     class TestModel(LanceModel):
-        vector: vector(16)
+        vector: Vector(16)
         li: List[int]
 
     data = TestModel(vector=list(range(16)), li=[1, 2, 3])
@@ -222,6 +224,7 @@ def test_create_index_method():
                 num_partitions=256,
                 num_sub_vectors=96,
                 replace=True,
+                accelerator=None,
             )
 
 
@@ -354,22 +357,25 @@ def test_update(db):
 def test_create_with_embedding_function(db):
     class MyTable(LanceModel):
         text: str
-        vector: vector(10)
+        vector: Vector(10)
 
-    func = MockEmbeddingFunction(source_column="text", vector_column="vector")
+    func = MockTextEmbeddingFunction()
     texts = ["hello world", "goodbye world", "foo bar baz fizz buzz"]
-    df = pd.DataFrame({"text": texts, "vector": func(texts)})
+    df = pd.DataFrame({"text": texts, "vector": func.compute_source_embeddings(texts)})
 
+    conf = EmbeddingFunctionConfig(
+        source_column="text", vector_column="vector", function=func
+    )
     table = LanceTable.create(
         db,
         "my_table",
         schema=MyTable,
-        embedding_functions=[func],
+        embedding_functions=[conf],
     )
     table.add(df)
 
     query_str = "hi how are you?"
-    query_vector = func(query_str)[0]
+    query_vector = func.compute_query_embeddings(query_str)[0]
     expected = table.search(query_vector).limit(2).to_arrow()
 
     actual = table.search(query_str).limit(2).to_arrow()
@@ -377,17 +383,13 @@ def test_create_with_embedding_function(db):
 
 
 def test_add_with_embedding_function(db):
-    class MyTable(LanceModel):
-        text: str
-        vector: vector(10)
+    emb = EmbeddingFunctionRegistry.get_instance().get("test")()
 
-    func = MockEmbeddingFunction(source_column="text", vector_column="vector")
-    table = LanceTable.create(
-        db,
-        "my_table",
-        schema=MyTable,
-        embedding_functions=[func],
-    )
+    class MyTable(LanceModel):
+        text: str = emb.SourceField()
+        vector: Vector(emb.ndims()) = emb.VectorField()
+
+    table = LanceTable.create(db, "my_table", schema=MyTable)
 
     texts = ["hello world", "goodbye world", "foo bar baz fizz buzz"]
     df = pd.DataFrame({"text": texts})
@@ -397,7 +399,7 @@ def test_add_with_embedding_function(db):
     table.add([{"text": t} for t in texts])
 
     query_str = "hi how are you?"
-    query_vector = func(query_str)[0]
+    query_vector = emb.compute_query_embeddings(query_str)[0]
     expected = table.search(query_vector).limit(2).to_arrow()
 
     actual = table.search(query_str).limit(2).to_arrow()
@@ -407,8 +409,8 @@ def test_add_with_embedding_function(db):
 def test_multiple_vector_columns(db):
     class MyTable(LanceModel):
         text: str
-        vector1: vector(10)
-        vector2: vector(10)
+        vector1: Vector(10)
+        vector2: Vector(10)
 
     table = LanceTable.create(
         db,
@@ -426,8 +428,8 @@ def test_multiple_vector_columns(db):
     table.add(df)
 
     q = np.random.randn(10)
-    result1 = table.search(q, vector_column_name="vector1").limit(1).to_df()
-    result2 = table.search(q, vector_column_name="vector2").limit(1).to_df()
+    result1 = table.search(q, vector_column_name="vector1").limit(1).to_pandas()
+    result2 = table.search(q, vector_column_name="vector2").limit(1).to_pandas()
 
     assert result1["text"].iloc[0] != result2["text"].iloc[0]
 
@@ -438,6 +440,35 @@ def test_empty_query(db):
         "my_table",
         data=[{"text": "foo", "id": 0}, {"text": "bar", "id": 1}],
     )
-    df = table.search().select(["id"]).where("text='bar'").limit(1).to_df()
+    df = table.search().select(["id"]).where("text='bar'").limit(1).to_pandas()
     val = df.id.iloc[0]
     assert val == 1
+
+
+def test_compact_cleanup(db):
+    table = LanceTable.create(
+        db,
+        "my_table",
+        data=[{"text": "foo", "id": 0}, {"text": "bar", "id": 1}],
+    )
+
+    table.add([{"text": "baz", "id": 2}])
+    assert len(table) == 3
+    assert table.version == 3
+
+    stats = table.compact_files()
+    assert len(table) == 3
+    # Compact_files bump 2 versions.
+    assert table.version == 5
+    assert stats.fragments_removed > 0
+    assert stats.fragments_added == 1
+
+    stats = table.cleanup_old_versions()
+    assert stats.bytes_removed == 0
+
+    stats = table.cleanup_old_versions(older_than=timedelta(0), delete_unverified=True)
+    assert stats.bytes_removed > 0
+    assert table.version == 5
+
+    with pytest.raises(Exception, match="Version 3 no longer exists"):
+        table.checkout(3)

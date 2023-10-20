@@ -6,7 +6,7 @@ LanceDB provides many parameters to fine-tune the index's size, the speed of que
 
 Currently, LanceDB does *not* automatically create the ANN index.
 LanceDB has optimized code for KNN as well. For many use-cases, datasets under 100K vectors won't require index creation at all.
-If you can live with <100ms latency, skipping index creation is a simpler workflow while guaranteeing 100% recall.
+If you can live with < 100ms latency, skipping index creation is a simpler workflow while guaranteeing 100% recall.
 
 In the future we will look to automatically create and configure the ANN index.
 
@@ -68,6 +68,12 @@ a single PQ code.
   <figcaption>IVF_PQ index with <code>num_partitions=2, num_sub_vectors=4</code></figcaption>
 </figure>
 
+### Use GPU to build vector index
+
+Lance Python SDK has experimental GPU support for creating IVF index.
+You can specify the GPU device to train IVF partitions via
+
+- **accelerator**: Specify to `"cuda"`` to enable GPU training.
 
 ## Querying an ANN Index
 
@@ -91,7 +97,7 @@ There are a couple of parameters that can be used to fine-tune the search:
          .limit(2) \
          .nprobes(20) \
          .refine_factor(10) \
-         .to_df()
+         .to_pandas()
      ```
      ```
                                               vector       item       _distance
@@ -118,7 +124,7 @@ You can further filter the elements returned by a search using a where clause.
 
 === "Python"
      ```python
-     tbl.search(np.random.random((1536))).where("item != 'item 1141'").to_df()
+     tbl.search(np.random.random((1536))).where("item != 'item 1141'").to_pandas()
      ```
 
 === "Javascript"
@@ -135,7 +141,7 @@ You can select the columns returned by the query using a select clause.
 
 === "Python"
      ```python
-     tbl.search(np.random.random((1536))).select(["vector"]).to_df()
+     tbl.search(np.random.random((1536))).select(["vector"]).to_pandas()
      ```
      ```
         vector                                             _distance
@@ -154,28 +160,28 @@ You can select the columns returned by the query using a select clause.
 
 ## FAQ
 
-### When is it necessary to create an ANN vector index.
+### When is it necessary to create an ANN vector index?
 
-`LanceDB` has manually tuned SIMD code for computing vector distances.
-In our benchmarks, computing 100K pairs of 1K dimension vectors only take less than 20ms.
-For small dataset (<100K rows) or the applications which can accept 100ms latency, vector indices are usually not necessary.
+`LanceDB` has manually-tuned SIMD code for computing vector distances.
+In our benchmarks, computing 100K pairs of 1K dimension vectors takes **less than 20ms**.
+For small datasets (< 100K rows) or applications that can accept 100ms latency, vector indices are usually not necessary.
 
 For large-scale or higher dimension vectors, it is beneficial to create vector index.
 
-### How big is my index, and how many memory will it take.
+### How big is my index, and how many memory will it take?
 
-In LanceDB, all vector indices are disk-based, meaning that when responding to a vector query, only the relevant pages from the index file are loaded from disk and cached in memory. Additionally, each sub-vector is usually encoded into 1 byte PQ code.
+In LanceDB, all vector indices are **disk-based**, meaning that when responding to a vector query, only the relevant pages from the index file are loaded from disk and cached in memory. Additionally, each sub-vector is usually encoded into 1 byte PQ code.
 
 For example, with a 1024-dimension dataset, if we choose `num_sub_vectors=64`, each sub-vector has `1024 / 64 = 16` float32 numbers.
 Product quantization can lead to approximately `16 * sizeof(float32) / 1 = 64` times of space reduction.
 
-### How to choose `num_partitions` and `num_sub_vectors` for `IVF_PQ` index.
+### How to choose `num_partitions` and `num_sub_vectors` for `IVF_PQ` index?
 
 `num_partitions` is used to decide how many partitions the first level `IVF` index uses.
 Higher number of partitions could lead to more efficient I/O during queries and better accuracy, but it takes much more time to train.
 On `SIFT-1M` dataset, our benchmark shows that keeping each partition 1K-4K rows lead to a good latency / recall.
 
-`num_sub_vectors` decides how many Product Quantization code to generate on each vector. Because
-Product Quantization is a lossy compression of the original vector, the more `num_sub_vectors` usually results to
-less space distortion, and thus yield better accuracy. However, similarly, more `num_sub_vectors` causes heavier I/O and
-more PQ computation, thus, higher latency. `dimension / num_sub_vectors` should be aligned with 8 for better SIMD efficiency.
+`num_sub_vectors` specifies how many Product Quantization (PQ) short codes to generate on each vector. Because
+PQ is a lossy compression of the original vector, a higher `num_sub_vectors` usually results in
+less space distortion, and thus yields better accuracy. However, a higher `num_sub_vectors` also causes heavier I/O and
+more PQ computation, and thus, higher latency. `dimension / num_sub_vectors` should be a multiple of 8 for optimum SIMD efficiency.

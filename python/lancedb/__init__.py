@@ -11,11 +11,15 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
+import importlib.metadata
 from typing import Optional
+
+__version__ = importlib.metadata.version("lancedb")
 
 from .db import URI, DBConnection, LanceDBConnection
 from .remote.db import RemoteDBConnection
 from .schema import vector
+from .utils import sentry_log
 
 
 def connect(

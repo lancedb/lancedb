@@ -16,6 +16,7 @@ from __future__ import annotations
 import inspect
 import os
 from abc import ABC, abstractmethod
+from datetime import timedelta
 from functools import cached_property
 from typing import Any, Iterable, List, Optional, Union
 
@@ -24,14 +25,15 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
 from lance import LanceDataset
-from lance.dataset import ReaderLike
+from lance.dataset import CleanupStats, ReaderLike
 from lance.vector import vec_to_table
 
 from .common import DATA, VEC, VECTOR_COLUMN_NAME
-from .embeddings import EmbeddingFunctionModel, EmbeddingFunctionRegistry
+from .embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
 from .pydantic import LanceModel
 from .query import LanceQueryBuilder, Query
 from .util import fs_from_uri, safe_import_pandas
+from .utils.events import register_event
 
 pd = safe_import_pandas()
 
@@ -81,15 +83,16 @@ def _append_vector_col(data: pa.Table, metadata: dict, schema: Optional[pa.Schem
     vector column to the table.
     """
     functions = EmbeddingFunctionRegistry.get_instance().parse_functions(metadata)
-    for vector_col, func in functions.items():
-        if vector_col not in data.column_names:
-            col_data = func(data[func.source_column])
+    for vector_column, conf in functions.items():
+        func = conf.function
+        if vector_column not in data.column_names:
+            col_data = func.compute_source_embeddings(data[conf.source_column])
             if schema is not None:
-                dtype = schema.field(vector_col).type
+                dtype = schema.field(vector_column).type
             else:
                 dtype = pa.list_(pa.float32(), len(col_data[0]))
             data = data.append_column(
-                pa.field(vector_col, type=dtype), pa.array(col_data, type=dtype)
+                pa.field(vector_column, type=dtype), pa.array(col_data, type=dtype)
             )
     return data
 
@@ -102,7 +105,8 @@ def _to_record_batch_generator(
             table = _sanitize_data(batch, schema, metadata, on_bad_vectors, fill_value)
             for batch in table.to_batches():
                 yield batch
-        yield batch
+        else:
+            yield batch
 
 
 class Table(ABC):
@@ -133,7 +137,7 @@ class Table(ABC):
 
     Can query the table with [Table.search][lancedb.table.Table.search].
 
-    >>> table.search([0.4, 0.4]).select(["b"]).to_df()
+    >>> table.search([0.4, 0.4]).select(["b"]).to_pandas()
        b      vector  _distance
     0  4  [0.5, 1.3]       0.82
     1  2  [1.1, 1.2]       1.13
@@ -146,7 +150,7 @@ class Table(ABC):
     @abstractmethod
     def schema(self) -> pa.Schema:
         """The [Arrow Schema](https://arrow.apache.org/docs/python/api/datatypes.html#) of
-        this [Table](Table)
+        this Table
 
         """
         raise NotImplementedError
@@ -177,6 +181,7 @@ class Table(ABC):
         num_sub_vectors=96,
         vector_column_name: str = VECTOR_COLUMN_NAME,
         replace: bool = True,
+        accelerator: Optional[str] = None,
     ):
         """Create an index on the table.
 
@@ -197,6 +202,9 @@ class Table(ABC):
         replace: bool, default True
             If True, replace the existing index if it exists.
             If False, raise an error if duplicate index exists.
+        accelerator: str, default None
+            If set, use the given accelerator to create the index.
+            Only support "cuda" for now.
         """
         raise NotImplementedError
 
@@ -229,7 +237,7 @@ class Table(ABC):
     @abstractmethod
     def search(
         self,
-        query: Optional[Union[VEC, str]] = None,
+        query: Optional[Union[VEC, str, "PIL.Image.Image"]] = None,
         vector_column_name: str = VECTOR_COLUMN_NAME,
         query_type: str = "auto",
     ) -> LanceQueryBuilder:
@@ -238,7 +246,7 @@ class Table(ABC):
 
         Parameters
         ----------
-        query: str, list, np.ndarray, default None
+        query: str, list, np.ndarray, PIL.Image.Image, default None
             The query to search for. If None then
             the select/where/limit clauses are applied to filter
             the table
@@ -248,6 +256,8 @@ class Table(ABC):
             "vector", "fts", or "auto"
             If "auto" then the query type is inferred from the query;
             If `query` is a list/np.ndarray then the query type is "vector";
+            If `query` is a PIL.Image.Image then either do vector search
+            or raise an error if no corresponding embedding function is found.
             If `query` is a string, then the query type is "vector" if the
             table has embedding functions else the query type is "fts"
 
@@ -281,8 +291,9 @@ class Table(ABC):
         Examples
         --------
         >>> import lancedb
-        >>> import pandas as pd
-        >>> data = pd.DataFrame({"x": [1, 2, 3], "vector": [[1, 2], [3, 4], [5, 6]]})
+        >>> data = [
+        ...   {"x": 1, "vector": [1, 2]}, {"x": 2, "vector": [3, 4]}, {"x": 3, "vector": [5, 6]}
+        ... ]
         >>> db = lancedb.connect("./.lancedb")
         >>> table = db.create_table("my_table", data)
         >>> table.to_pandas()
@@ -385,6 +396,17 @@ class LanceTable(Table):
             raise ValueError(f"Invalid version {version}")
         self._reset_dataset(version=version)
 
+        try:
+            # Accessing the property updates the cached value
+            _ = self._dataset
+        except Exception as e:
+            if "not found" in str(e):
+                raise ValueError(
+                    f"Version {version} no longer exists. Was it cleaned up?"
+                )
+            else:
+                raise e
+
     def restore(self, version: int = None):
         """Restore a version of the table. This is an in-place operation.
 
@@ -474,6 +496,7 @@ class LanceTable(Table):
         num_sub_vectors=96,
         vector_column_name=VECTOR_COLUMN_NAME,
         replace: bool = True,
+        accelerator: Optional[str] = None,
     ):
         """Create an index on the table."""
         self._dataset.create_index(
@@ -483,8 +506,10 @@ class LanceTable(Table):
             num_partitions=num_partitions,
             num_sub_vectors=num_sub_vectors,
             replace=replace,
+            accelerator=accelerator,
         )
         self._reset_dataset()
+        register_event("create_index")
 
     def create_fts_index(self, field_names: Union[str, List[str]]):
         """Create a full-text search index on the table.
@@ -503,6 +528,7 @@ class LanceTable(Table):
             field_names = [field_names]
         index = create_index(self._get_fts_index_path(), field_names)
         populate_index(index, self, field_names)
+        register_event("create_fts_index")
 
     def _get_fts_index_path(self):
         return os.path.join(self._dataset_uri, "_indices", "tantivy")
@@ -523,6 +549,9 @@ class LanceTable(Table):
         fill_value: float = 0.0,
     ):
         """Add data to the table.
+        If vector columns are missing and the table
+        has embedding functions, then the vector columns
+        are automatically computed and added.
 
         Parameters
         ----------
@@ -552,6 +581,7 @@ class LanceTable(Table):
         )
         lance.write_dataset(data, self._dataset_uri, schema=self.schema, mode=mode)
         self._reset_dataset()
+        register_event("add")
 
     def merge(
         self,
@@ -615,12 +645,7 @@ class LanceTable(Table):
             other_table, left_on=left_on, right_on=right_on, schema=schema
         )
         self._reset_dataset()
-
-    def _get_embedding_function_for_source_col(self, column_name: str):
-        for k, v in self.embedding_functions.items():
-            if v.source_column == column_name:
-                return v
-        return None
+        register_event("merge")
 
     @cached_property
     def embedding_functions(self) -> dict:
@@ -639,7 +664,7 @@ class LanceTable(Table):
 
     def search(
         self,
-        query: Optional[Union[VEC, str]] = None,
+        query: Optional[Union[VEC, str, "PIL.Image.Image"]] = None,
         vector_column_name: str = VECTOR_COLUMN_NAME,
         query_type: str = "auto",
     ) -> LanceQueryBuilder:
@@ -648,7 +673,7 @@ class LanceTable(Table):
 
         Parameters
         ----------
-        query: str, list, np.ndarray, or None
+        query: str, list, np.ndarray, a PIL Image or None
             The query to search for. If None then
             the select/where/limit clauses are applied to filter
             the table
@@ -657,9 +682,11 @@ class LanceTable(Table):
         query_type: str, default "auto"
             "vector", "fts", or "auto"
             If "auto" then the query type is inferred from the query;
-            If the query is a list/np.ndarray then the query type is "vector";
+            If `query` is a list/np.ndarray then the query type is "vector";
+            If `query` is a PIL.Image.Image then either do vector search
+            or raise an error if no corresponding embedding function is found.
             If the query is a string, then the query type is "vector" if the
-            table has embedding functions else the query type is "fts"
+            table has embedding functions, else the query type is "fts"
 
         Returns
         -------
@@ -669,6 +696,7 @@ class LanceTable(Table):
             and also the "_distance" column which is the distance between the query
             vector and the returned vector.
         """
+        register_event("search")
         return LanceQueryBuilder.create(
             self, query, query_type, vector_column_name=vector_column_name
         )
@@ -683,7 +711,7 @@ class LanceTable(Table):
         mode="create",
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
-        embedding_functions: List[EmbeddingFunctionModel] = None,
+        embedding_functions: List[EmbeddingFunctionConfig] = None,
     ):
         """
         Create a new table.
@@ -691,8 +719,9 @@ class LanceTable(Table):
         Examples
         --------
         >>> import lancedb
-        >>> import pandas as pd
-        >>> data = pd.DataFrame({"x": [1, 2, 3], "vector": [[1, 2], [3, 4], [5, 6]]})
+        >>> data = [
+        ...   {"x": 1, "vector": [1, 2]}, {"x": 2, "vector": [3, 4]}, {"x": 3, "vector": [5, 6]}
+        ... ]
         >>> db = lancedb.connect("./.lancedb")
         >>> table = db.create_table("my_table", data)
         >>> table.to_pandas()
@@ -726,10 +755,16 @@ class LanceTable(Table):
         """
         tbl = LanceTable(db, name)
         if inspect.isclass(schema) and issubclass(schema, LanceModel):
+            # convert LanceModel to pyarrow schema
+            # note that it's possible this contains
+            # embedding function metadata already
             schema = schema.to_arrow_schema()
 
         metadata = None
         if embedding_functions is not None:
+            # If we passed in embedding functions explicitly
+            # then we'll override any schema metadata that
+            # may was implicitly specified by the LanceModel schema
             registry = EmbeddingFunctionRegistry.get_instance()
             metadata = registry.get_table_metadata(embedding_functions)
 
@@ -766,6 +801,7 @@ class LanceTable(Table):
         if data is not None:
             table.add(data)
 
+        register_event("create_table")
         return table
 
     @classmethod
@@ -801,8 +837,9 @@ class LanceTable(Table):
         Examples
         --------
         >>> import lancedb
-        >>> import pandas as pd
-        >>> data = pd.DataFrame({"x": [1, 2, 3], "vector": [[1, 2], [3, 4], [5, 6]]})
+        >>> data = [
+        ...   {"x": 1, "vector": [1, 2]}, {"x": 2, "vector": [3, 4]}, {"x": 3, "vector": [5, 6]}
+        ... ]
         >>> db = lancedb.connect("./.lancedb")
         >>> table = db.create_table("my_table", data)
         >>> table.to_pandas()
@@ -831,12 +868,20 @@ class LanceTable(Table):
         self.delete(where)
         self.add(orig_data, mode="append")
         self._reset_dataset()
+        register_event("update")
 
     def _execute_query(self, query: Query) -> pa.Table:
         ds = self.to_lance()
+        if query.prefilter:
+            for idx in ds.list_indices():
+                if query.vector_column in idx["fields"]:
+                    raise NotImplementedError(
+                        "Prefiltering for indexed vector column is coming soon."
+                    )
         return ds.to_table(
             columns=query.columns,
             filter=query.filter,
+            prefilter=query.prefilter,
             nearest={
                 "column": query.vector_column,
                 "q": query.vector,
@@ -846,6 +891,48 @@ class LanceTable(Table):
                 "refine_factor": query.refine_factor,
             },
         )
+
+    def cleanup_old_versions(
+        self,
+        older_than: Optional[timedelta] = None,
+        *,
+        delete_unverified: bool = False,
+    ) -> CleanupStats:
+        """
+        Clean up old versions of the table, freeing disk space.
+
+        Parameters
+        ----------
+        older_than: timedelta, default None
+            The minimum age of the version to delete. If None, then this defaults
+            to two weeks.
+        delete_unverified: bool, default False
+            Because they may be part of an in-progress transaction, files newer
+            than 7 days old are not deleted by default. If you are sure that
+            there are no in-progress transactions, then you can set this to True
+            to delete all files older than `older_than`.
+
+        Returns
+        -------
+        CleanupStats
+            The stats of the cleanup operation, including how many bytes were
+            freed.
+        """
+        return self.to_lance().cleanup_old_versions(
+            older_than, delete_unverified=delete_unverified
+        )
+
+    def compact_files(self, *args, **kwargs):
+        """
+        Run the compaction process on the table.
+
+        This can be run after making several small appends to optimize the table
+        for faster reads.
+
+        Arguments are passed onto :meth:`lance.dataset.DatasetOptimizer.compact_files`.
+        For most cases, the default should be fine.
+        """
+        return self.to_lance().optimize.compact_files(*args, **kwargs)
 
 
 def _sanitize_schema(

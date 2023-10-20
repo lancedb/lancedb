@@ -16,7 +16,7 @@ import functools
 from typing import Any, Callable, Dict, Optional, Union
 
 import aiohttp
-import attr
+import attrs
 import pyarrow as pa
 from pydantic import BaseModel
 
@@ -43,14 +43,14 @@ async def _read_ipc(resp: aiohttp.ClientResponse) -> pa.Table:
         return reader.read_all()
 
 
-@attr.define(slots=False)
+@attrs.define(slots=False)
 class RestfulLanceDBClient:
     db_name: str
     region: str
     api_key: Credential
-    host_override: Optional[str] = attr.field(default=None)
+    host_override: Optional[str] = attrs.field(default=None)
 
-    closed: bool = attr.field(default=False, init=False)
+    closed: bool = attrs.field(default=False, init=False)
 
     @functools.cached_property
     def session(self) -> aiohttp.ClientSession:
@@ -151,10 +151,15 @@ class RestfulLanceDBClient:
             return await deserialize(resp)
 
     @_check_not_closed
-    async def list_tables(self):
+    async def list_tables(self, limit: int, page_token: str):
         """List all tables in the database."""
-        json = await self.get("/v1/table/", {})
-        return json["tables"]
+        try:
+            json = await self.get(
+                "/v1/table/", {"limit": limit, "page_token": page_token}
+            )
+            return json["tables"]
+        except StopAsyncIteration:
+            return []
 
     @_check_not_closed
     async def query(self, table_name: str, query: VectorQuery) -> VectorQueryResult:

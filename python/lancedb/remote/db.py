@@ -13,15 +13,14 @@
 
 import asyncio
 import uuid
-from typing import List, Optional
+from typing import Iterator, Optional
 from urllib.parse import urlparse
 
 import pyarrow as pa
 
-from lancedb.common import DATA
-from lancedb.db import DBConnection
-from lancedb.table import Table, _sanitize_data
-
+from ..common import DATA
+from ..db import DBConnection
+from ..table import Table, _sanitize_data
 from .arrow import to_ipc_binary
 from .client import ARROW_STREAM_CONTENT_TYPE, RestfulLanceDBClient
 
@@ -53,10 +52,27 @@ class RemoteDBConnection(DBConnection):
     def __repr__(self) -> str:
         return f"RemoveConnect(name={self.db_name})"
 
-    def table_names(self) -> List[str]:
-        """List the names of all tables in the database."""
-        result = self._loop.run_until_complete(self._client.list_tables())
-        return result
+    def table_names(self, last_token: str, limit=10) -> Iterator[str]:
+        """List the names of all tables in the database.
+        Parameters
+        ----------
+        last_token: str
+            The last token to start the new page.
+
+        Returns
+        -------
+        An iterator of table names.
+        """
+        while True:
+            result = self._loop.run_until_complete(
+                self._client.list_tables(limit, last_token)
+            )
+            if len(result) > 0:
+                last_token = result[len(result) - 1]
+            else:
+                break
+            for item in result:
+                yield result
 
     def open_table(self, name: str) -> Table:
         """Open a Lance Table in the database.
@@ -123,3 +139,8 @@ class RemoteDBConnection(DBConnection):
                 f"/v1/table/{name}/drop/",
             )
         )
+
+    async def close(self):
+        """Close the connection to the database."""
+        self._loop.close()
+        await self._client.close()

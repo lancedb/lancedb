@@ -14,7 +14,8 @@
 
 use lance::index::vector::ivf::IvfBuildParams;
 use lance::index::vector::pq::PQBuildParams;
-use lance::index::vector::{MetricType, VectorIndexParams};
+use lance::index::vector::VectorIndexParams;
+use lance_linalg::distance::MetricType;
 
 pub trait VectorIndexBuilder {
     fn get_column(&self) -> Option<String>;
@@ -94,8 +95,8 @@ impl VectorIndexBuilder for IvfPQIndexBuilder {
     }
 
     fn build(&self) -> VectorIndexParams {
-        let ivf_params = self.ivf_params.clone().unwrap_or(IvfBuildParams::default());
-        let pq_params = self.pq_params.clone().unwrap_or(PQBuildParams::default());
+        let ivf_params = self.ivf_params.clone().unwrap_or_default();
+        let pq_params = self.pq_params.clone().unwrap_or_default();
 
         VectorIndexParams::with_ivf_pq_params(pq_params.metric_type, ivf_params, pq_params)
     }
@@ -107,9 +108,11 @@ impl VectorIndexBuilder for IvfPQIndexBuilder {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     use lance::index::vector::ivf::IvfBuildParams;
     use lance::index::vector::pq::PQBuildParams;
-    use lance::index::vector::{MetricType, StageParams};
+    use lance::index::vector::StageParams;
 
     use crate::index::vector::{IvfPQIndexBuilder, VectorIndexBuilder};
 

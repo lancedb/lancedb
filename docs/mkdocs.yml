@@ -21,6 +21,7 @@ theme:
     - navigation.tracking
     - navigation.instant
     - navigation.indexes
+    - navigation.expand
   icon:
     repo: fontawesome/brands/github
   custom_dir: overrides
@@ -36,7 +37,7 @@ plugins:
           docstring_style: numpy
         rendering:
           heading_level: 4
-          show_source: false
+          show_source: true
           show_symbol_type_in_heading: true
           show_signature_annotations: true
           show_root_heading: true
@@ -68,12 +69,17 @@ nav:
   - 🏢 Home: index.md
   - 💡 Basics: basic.md
   - 📚 Guides:
-    - Tables: guides/tables.md
+    - Create Ingest Update Delete: guides/tables.md
     - Vector Search: search.md
     - SQL filters: sql.md
     - Indexing: ann_indexes.md
     - Versioning & Reproducibility: notebooks/reproducibility.ipynb
-  - 🧬 Embeddings: embedding.md
+  - 🧬 Embeddings:
+    - embeddings/index.md
+    - Ingest Embedding Functions: embeddings/embedding_functions.md
+    - Available Functions: embeddings/default_embedding_functions.md
+    - Create Custom Embedding Functions: embeddings/api.md
+    - Example- MultiModal CLIP Embeddings: notebooks/DisappearingEmbeddingFunction.ipynb
   - 🔍 Python full-text search: fts.md
   - 🔌 Integrations:
     - integrations/index.md
@@ -97,13 +103,20 @@ nav:
     - Serverless Website Chatbot: examples/serverless_website_chatbot.md
     - YouTube Transcript Search: examples/youtube_transcript_bot_with_nodejs.md
     - TransformersJS Embedding Search: examples/transformerjs_embedding_search_nodejs.md
+  - ⚙️ CLI & Config: cli_config.md
+
 - Basics: basic.md
 - Guides:
-  - Tables: guides/tables.md
+  - Create Ingest Update Delete: guides/tables.md
   - Vector Search: search.md
   - SQL filters: sql.md
   - Indexing: ann_indexes.md
-- Embeddings: embedding.md
+- Embeddings:
+  - embeddings/index.md
+  - Ingest Embedding Functions: embeddings/embedding_functions.md
+  - Available Functions: embeddings/default_embedding_functions.md
+  - Create Custom Embedding Functions: embeddings/api.md
+  - Example- MultiModal CLIP Embeddings: notebooks/DisappearingEmbeddingFunction.ipynb
 - Python full-text search: fts.md
 - Integrations:
   - integrations/index.md
@@ -134,6 +147,8 @@ nav:
 
 extra_css:
   - styles/global.css
+extra_javascript:
+  - scripts/posthog.js
 
 extra:
   analytics:

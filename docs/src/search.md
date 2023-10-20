@@ -4,7 +4,7 @@
 In a recommendation system or search engine, you can find similar products from
 the one you searched.
 In LLM and other AI applications,
-each data point can be [presented by the embeddings generated from some models](embedding.md),
+each data point can be [presented by the embeddings generated from some models](embeddings/index.md),
 it returns the most relevant features.
 
 A search in high-dimensional vector space, is to find `K-Nearest-Neighbors (KNN)` of the query vector.
@@ -25,8 +25,8 @@ Currently, we support the following metrics:
 
 ### Flat Search
 
-If LanceDB does not create a vector index, LanceDB would need to scan (`Flat Search`) the entire vector column
-and compute the distance for each vector in order to find the closest matches.
+If you do not create a vector index, LanceDB would need to exhaustively scan the entire vector column (via `Flat Search`)
+and compute the distance for *every* vector in order to find the closest matches. This is effectively a KNN search.
 
 
 <!-- Setup Code
@@ -67,7 +67,7 @@ await db_setup.createTable('my_vectors', data)
 
     df = tbl.search(np.random.random((1536))) \
         .limit(10) \
-        .to_df()
+        .to_list()
     ```
 
 === "JavaScript"
@@ -92,7 +92,7 @@ as well.
     df = tbl.search(np.random.random((1536))) \
         .metric("cosine") \
         .limit(10) \
-        .to_df()
+        .to_list()
     ```
 
 
@@ -110,7 +110,7 @@ as well.
 
 To accelerate vector retrievals, it is common to build vector indices.
 A vector index is a data structure specifically designed to efficiently organize and
-search vector data based on their similarity or distance metrics.
+search vector data based on their similarity via the chosen distance metric.
 By constructing a vector index, you can reduce the search space and avoid the need
 for brute-force scanning of the entire vector column.
 

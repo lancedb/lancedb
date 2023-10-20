@@ -14,13 +14,15 @@
 
 import json
 import sys
+from datetime import date, datetime
 from typing import List, Optional
 
 import pyarrow as pa
 import pydantic
 import pytest
+from pydantic import Field
 
-from lancedb.pydantic import PYDANTIC_VERSION, LanceModel, pydantic_to_schema, vector
+from lancedb.pydantic import PYDANTIC_VERSION, LanceModel, Vector, pydantic_to_schema
 
 
 @pytest.mark.skipif(
@@ -39,10 +41,18 @@ def test_pydantic_to_arrow():
         li: List[int]
         opt: Optional[str] = None
         st: StructModel
+        dt: date
+        dtt: datetime
         # d: dict
 
     m = TestModel(
-        id=1, s="hello", vec=[1.0, 2.0, 3.0], li=[2, 3, 4], st=StructModel(a="a", b=1.0)
+        id=1,
+        s="hello",
+        vec=[1.0, 2.0, 3.0],
+        li=[2, 3, 4],
+        st=StructModel(a="a", b=1.0),
+        dt=date.today(),
+        dtt=datetime.now(),
     )
 
     schema = pydantic_to_schema(TestModel)
@@ -61,6 +71,8 @@ def test_pydantic_to_arrow():
                 ),
                 False,
             ),
+            pa.field("dt", pa.date32(), False),
+            pa.field("dtt", pa.timestamp("us"), False),
         ]
     )
     assert schema == expect_schema
@@ -78,10 +90,18 @@ def test_pydantic_to_arrow_py38():
         li: List[int]
         opt: Optional[str] = None
         st: StructModel
+        dt: date
+        dtt: datetime
         # d: dict
 
     m = TestModel(
-        id=1, s="hello", vec=[1.0, 2.0, 3.0], li=[2, 3, 4], st=StructModel(a="a", b=1.0)
+        id=1,
+        s="hello",
+        vec=[1.0, 2.0, 3.0],
+        li=[2, 3, 4],
+        st=StructModel(a="a", b=1.0),
+        dt=date.today(),
+        dtt=datetime.now(),
     )
 
     schema = pydantic_to_schema(TestModel)
@@ -100,6 +120,8 @@ def test_pydantic_to_arrow_py38():
                 ),
                 False,
             ),
+            pa.field("dt", pa.date32(), False),
+            pa.field("dtt", pa.timestamp("us"), False),
         ]
     )
     assert schema == expect_schema
@@ -107,7 +129,7 @@ def test_pydantic_to_arrow_py38():
 
 def test_fixed_size_list_field():
     class TestModel(pydantic.BaseModel):
-        vec: vector(16)
+        vec: Vector(16)
         li: List[int]
 
     data = TestModel(vec=list(range(16)), li=[1, 2, 3])
@@ -154,7 +176,7 @@ def test_fixed_size_list_field():
 
 def test_fixed_size_list_validation():
     class TestModel(pydantic.BaseModel):
-        vec: vector(8)
+        vec: Vector(8)
 
     with pytest.raises(pydantic.ValidationError):
         TestModel(vec=range(9))
@@ -167,9 +189,12 @@ def test_fixed_size_list_validation():
 
 def test_lance_model():
     class TestModel(LanceModel):
-        vec: vector(16)
-        li: List[int]
+        vector: Vector(16) = Field(default=[0.0] * 16)
+        li: List[int] = Field(default=[1, 2, 3])
 
     schema = pydantic_to_schema(TestModel)
     assert schema == TestModel.to_arrow_schema()
-    assert TestModel.field_names() == ["vec", "li"]
+    assert TestModel.field_names() == ["vector", "li"]
+
+    t = TestModel()
+    assert t == TestModel(vec=[0.0] * 16, li=[1, 2, 3])

@@ -18,8 +18,10 @@ import {
 } from '../index'
 import { Query } from '../query'
 
-import { Vector } from 'apache-arrow'
+import { Vector, Table as ArrowTable } from 'apache-arrow'
 import { HttpLancedbClient } from './client'
+import { isEmbeddingFunction } from '../embedding/embedding_function'
+import { createEmptyTable, fromRecordsToStreamBuffer, fromTableToStreamBuffer } from '../arrow'
 
 /**
  * Remote connection.
@@ -66,8 +68,60 @@ export class RemoteConnection implements Connection {
     }
   }
 
-  async createTable<T> (name: string | CreateTableOptions<T>, data?: Array<Record<string, unknown>>, optsOrEmbedding?: WriteOptions | EmbeddingFunction<T>, opt?: WriteOptions): Promise<Table<T>> {
-    throw new Error('Not implemented')
+  async createTable<T> (nameOrOpts: string | CreateTableOptions<T>, data?: Array<Record<string, unknown>>, optsOrEmbedding?: WriteOptions | EmbeddingFunction<T>, opt?: WriteOptions): Promise<Table<T>> {
+    // Logic copied from LocatlConnection, refactor these to a base class + connectionImpl pattern
+    let schema
+    let embeddings: undefined | EmbeddingFunction<T>
+    let tableName: string
+    if (typeof nameOrOpts === 'string') {
+      if (optsOrEmbedding !== undefined && isEmbeddingFunction(optsOrEmbedding)) {
+        embeddings = optsOrEmbedding
+      }
+      tableName = nameOrOpts
+    } else {
+      schema = nameOrOpts.schema
+      embeddings = nameOrOpts.embeddingFunction
+      tableName = nameOrOpts.name
+    }
+
+    let buffer: Buffer
+
+    function isEmpty (data: Array<Record<string, unknown>> | ArrowTable<any>): boolean {
+      if (data instanceof ArrowTable) {
+        return data.data.length === 0
+      }
+      return data.length === 0
+    }
+
+    if ((data === undefined) || isEmpty(data)) {
+      if (schema === undefined) {
+        throw new Error('Either data or schema needs to defined')
+      }
+      buffer = await fromTableToStreamBuffer(createEmptyTable(schema))
+    } else if (data instanceof ArrowTable) {
+      buffer = await fromTableToStreamBuffer(data, embeddings)
+    } else {
+      // data is Array<Record<...>>
+      buffer = await fromRecordsToStreamBuffer(data, embeddings)
+    }
+
+    const res = await this._client.post(
+      `/v1/table/${tableName}/create/`,
+      buffer,
+      undefined,
+      'application/vnd.apache.arrow.stream'
+    )
+    if (res.status !== 200) {
+      throw new Error(`Server Error, status: ${res.status}, ` +
+      // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
+        `message: ${res.statusText}: ${res.data}`)
+    }
+
+    if (embeddings === undefined) {
+      return new RemoteTable(this._client, tableName)
+    } else {
+      return new RemoteTable(this._client, tableName, embeddings)
+    }
   }
 
   async dropTable (name: string): Promise<void> {
@@ -141,11 +195,39 @@ export class RemoteTable<T = number[]> implements Table<T> {
   }
 
   async add (data: Array<Record<string, unknown>>): Promise<number> {
-    throw new Error('Not implemented')
+    const buffer = await fromRecordsToStreamBuffer(data, this._embeddings)
+    const res = await this._client.post(
+      `/v1/table/${this._name}/insert/`,
+      buffer,
+      {
+        mode: 'append'
+      },
+      'application/vnd.apache.arrow.stream'
+    )
+    if (res.status !== 200) {
+      throw new Error(`Server Error, status: ${res.status}, ` +
+      // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
+        `message: ${res.statusText}: ${res.data}`)
+    }
+    return data.length
   }
 
   async overwrite (data: Array<Record<string, unknown>>): Promise<number> {
-    throw new Error('Not implemented')
+    const buffer = await fromRecordsToStreamBuffer(data, this._embeddings)
+    const res = await this._client.post(
+      `/v1/table/${this._name}/insert/`,
+      buffer,
+      {
+        mode: 'overwrite'
+      },
+      'application/vnd.apache.arrow.stream'
+    )
+    if (res.status !== 200) {
+      throw new Error(`Server Error, status: ${res.status}, ` +
+      // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
+        `message: ${res.statusText}: ${res.data}`)
+    }
+    return data.length
   }
 
   async createIndex (indexParams: VectorIndexParams): Promise<any> {
@@ -157,6 +239,6 @@ export class RemoteTable<T = number[]> implements Table<T> {
   }
 
   async delete (filter: string): Promise<void> {
-    throw new Error('Not implemented')
+    await this._client.post(`/v1/table/${this._name}/delete/`, { predicate: filter })
   }
 }

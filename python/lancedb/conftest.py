@@ -1,9 +1,9 @@
 import os
 
-import pyarrow as pa
+import numpy as np
 import pytest
 
-from lancedb.embeddings import EmbeddingFunctionModel, EmbeddingFunctionRegistry
+from .embeddings import EmbeddingFunctionRegistry, TextEmbeddingFunction
 
 # import lancedb so we don't have to in every example
 
@@ -22,17 +22,19 @@ def doctest_setup(monkeypatch, tmpdir):
 registry = EmbeddingFunctionRegistry.get_instance()
 
 
-@registry.register()
-class MockEmbeddingFunction(EmbeddingFunctionModel):
-    def __call__(self, data):
-        if isinstance(data, str):
-            data = [data]
-        elif isinstance(data, pa.ChunkedArray):
-            data = data.combine_chunks().to_pylist()
-        elif isinstance(data, pa.Array):
-            data = data.to_pylist()
+@registry.register("test")
+class MockTextEmbeddingFunction(TextEmbeddingFunction):
+    """
+    Return the hash of the first 10 characters
+    """
 
-        return [self.embed(row) for row in data]
+    def generate_embeddings(self, texts):
+        return [self._compute_one_embedding(row) for row in texts]
 
-    def embed(self, row):
-        return [float(hash(c)) for c in row[:10]]
+    def _compute_one_embedding(self, row):
+        emb = np.array([float(hash(c)) for c in row[:10]])
+        emb /= np.linalg.norm(emb)
+        return emb
+
+    def ndims(self):
+        return 10

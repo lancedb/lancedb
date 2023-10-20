@@ -12,11 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+pub mod data;
 pub mod database;
 pub mod error;
 pub mod index;
+pub mod io;
 pub mod query;
 pub mod table;
+pub mod utils;
 
 pub use database::Database;
 pub use table::Table;
