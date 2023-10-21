@@ -65,8 +65,8 @@ describe('LanceDB Mirrored Store Integration test', function () {
     const mirroredPath = path.join(dir, `${tableName}.lance`)
     fs.readdir(mirroredPath, { withFileTypes: true }, (err, files) => {
       if (err != null) throw err
-      // there should be two dirs
-      assert.equal(files.length, 2)
+      // there should be three dirs
+      assert.equal(files.length, 3)
       assert.isTrue(files[0].isDirectory())
       assert.isTrue(files[1].isDirectory())
 
@@ -74,6 +74,12 @@ describe('LanceDB Mirrored Store Integration test', function () {
         if (err != null) throw err
         assert.equal(files.length, 1)
         assert.isTrue(files[0].name.endsWith('.txn'))
+      })
+
+      fs.readdir(path.join(mirroredPath, '_versions'), { withFileTypes: true }, (err, files) => {
+        if (err != null) throw err
+        assert.equal(files.length, 1)
+        assert.isTrue(files[0].name.endsWith('.manifest'))
       })
 
       fs.readdir(path.join(mirroredPath, 'data'), { withFileTypes: true }, (err, files) => {
@@ -88,8 +94,8 @@ describe('LanceDB Mirrored Store Integration test', function () {
 
     fs.readdir(mirroredPath, { withFileTypes: true }, (err, files) => {
       if (err != null) throw err
-      // there should be two dirs
-      assert.equal(files.length, 3)
+      // there should be four dirs
+      assert.equal(files.length, 4)
       assert.isTrue(files[0].isDirectory())
       assert.isTrue(files[1].isDirectory())
       assert.isTrue(files[2].isDirectory())
@@ -128,12 +134,13 @@ describe('LanceDB Mirrored Store Integration test', function () {
 
     fs.readdir(mirroredPath, { withFileTypes: true }, (err, files) => {
       if (err != null) throw err
-      // there should be two dirs
-      assert.equal(files.length, 4)
+      // there should be five dirs
+      assert.equal(files.length, 5)
       assert.isTrue(files[0].isDirectory())
       assert.isTrue(files[1].isDirectory())
       assert.isTrue(files[2].isDirectory())
       assert.isTrue(files[3].isDirectory())
+      assert.isTrue(files[4].isDirectory())
 
       // Three TXs now
       fs.readdir(path.join(mirroredPath, '_transactions'), { withFileTypes: true }, (err, files) => {
