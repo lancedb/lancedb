@@ -57,7 +57,7 @@ trait PrimaryOnly {
 
 impl PrimaryOnly for Path {
     fn primary_only(&self) -> bool {
-        self.to_string().contains("manifest")
+        self.filename().unwrap_or("") == "_latest.manifest"
     }
 }
 
@@ -118,8 +118,10 @@ impl ObjectStore for MirroringObjectStore {
         self.primary.head(location).await
     }
 
-    // garbage collection on secondary will happen async from other means
     async fn delete(&self, location: &Path) -> Result<()> {
+        if !location.primary_only() {
+            self.secondary.delete(location).await?;
+        }
         self.primary.delete(location).await
     }
 
@@ -132,7 +134,7 @@ impl ObjectStore for MirroringObjectStore {
     }
 
     async fn copy(&self, from: &Path, to: &Path) -> Result<()> {
-        if from.primary_only() {
+        if to.primary_only() {
             self.primary.copy(from, to).await
         } else {
             self.secondary.copy(from, to).await?;
@@ -142,6 +144,9 @@ impl ObjectStore for MirroringObjectStore {
     }
 
     async fn copy_if_not_exists(&self, from: &Path, to: &Path) -> Result<()> {
+        if !to.primary_only() {
+            self.secondary.copy(from, to).await?;
+        }
         self.primary.copy_if_not_exists(from, to).await
     }
 }
@@ -379,7 +384,7 @@ mod test {
             let primary_f = primary_elem.unwrap().unwrap();
             // hit manifest, skip, _versions contains all the manifest and should not exist on secondary
             let primary_raw_path = primary_f.file_name().to_str().unwrap();
-            if primary_raw_path.contains("manifest") || primary_raw_path.contains("_versions") {
+            if primary_raw_path.contains("_latest.manifest") {
                 primary_elem = primary_iter.next();
                 continue;
             }
