@@ -153,6 +153,22 @@ impl Table {
         })
     }
 
+    pub async fn checkout_latest(&self) -> Result<Self> {
+        let latest_version_id = self.dataset.latest_version_id().await?;
+        let dataset = if latest_version_id == self.dataset.version().version {
+            self.dataset.clone()
+        } else {
+            Arc::new(self.dataset.checkout_version(latest_version_id).await?)
+        };
+
+        Ok(Table {
+            name: self.name.clone(),
+            uri: self.uri.clone(),
+            dataset,
+            store_wrapper: self.store_wrapper.clone(),
+        })
+    }
+
     fn get_table_name(uri: &str) -> Result<String> {
         let path = Path::new(uri);
         let name = path
