@@ -33,10 +33,13 @@ def test_sentence_transformer(alias, tmp_path):
     db = lancedb.connect(tmp_path)
     registry = get_registry()
     func = registry.get(alias).create()
+    func2 = registry.get(alias).create()
 
     class Words(LanceModel):
         text: str = func.SourceField()
+        text2: str = func2.SourceField()
         vector: Vector(func.ndims()) = func.VectorField()
+        vector2: Vector(func2.ndims()) = func2.VectorField()
 
     table = db.create_table("words", schema=Words)
     table.add(
@@ -50,7 +53,16 @@ def test_sentence_transformer(alias, tmp_path):
                     "foo",
                     "bar",
                     "baz",
-                ]
+                ],
+                "text2": [
+                    "to be or not to be",
+                    "that is the question",
+                    "for whether tis nobler",
+                    "in the mind to suffer",
+                    "the slings and arrows",
+                    "of outrageous fortune",
+                    "or to take arms",
+                ],
             }
         )
     )
@@ -62,6 +74,13 @@ def test_sentence_transformer(alias, tmp_path):
     expected = table.search(vec).limit(1).to_pydantic(Words)[0]
     assert actual.text == expected.text
     assert actual.text == "hello world"
+    assert not np.allclose(actual.vector, actual.vector2)
+
+    actual = (
+        table.search(query, vector_column_name="vector2").limit(1).to_pydantic(Words)[0]
+    )
+    assert actual.text != "hello world"
+    assert not np.allclose(actual.vector, actual.vector2)
 
 
 @pytest.mark.slow
