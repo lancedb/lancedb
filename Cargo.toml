@@ -5,9 +5,9 @@ exclude = ["python"]
 resolver = "2"
 
 [workspace.dependencies]
-lance = { "version" = "=0.8.6", "features" = ["dynamodb"] }
-lance-linalg = { "version" = "=0.8.6" }
-lance-testing = { "version" = "=0.8.6" }
+lance = { "version" = "=0.8.7", "features" = ["dynamodb"] }
+lance-linalg = { "version" = "=0.8.7" }
+lance-testing = { "version" = "=0.8.7" }
 # Note that this one does not include pyarrow
 arrow = { version = "47.0.0", optional = false }
 arrow-array = "47.0"
@@ -18,7 +18,7 @@ arrow-schema = "47.0"
 arrow-arith = "47.0"
 arrow-cast = "47.0"
 chrono = "0.4.23"
-half = { "version" = "=2.2.1", default-features = false, features = [
+half = { "version" = "=2.3.1", default-features = false, features = [
     "num-traits"
 ] }
 log = "0.4"
