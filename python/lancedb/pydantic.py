@@ -327,7 +327,12 @@ class LanceModel(pydantic.BaseModel):
         for vec, func in vec_and_function:
             for source, field_info in cls.safe_get_fields().items():
                 src_func = get_extras(field_info, "source_column_for")
-                if src_func == func:
+                if src_func is func:
+                    # note we can't use == here since the function is a pydantic
+                    # model so two instances of the same function are ==, so if you
+                    # have multiple vector columns from multiple sources, both will
+                    # be mapped to the same source column
+                    # GH594
                     configs.append(
                         EmbeddingFunctionConfig(
                             source_column=source, vector_column=vec, function=func
