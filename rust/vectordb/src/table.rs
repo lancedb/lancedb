@@ -384,12 +384,12 @@ impl Table {
         self.dataset.num_small_files(max_rows_per_group)
     }
 
-    pub async fn count_indexed_rows(&self, index_name: &str) -> Result<Option<usize>> {
-        Ok(self.dataset.count_indexed_rows(index_name).await?)
+    pub async fn count_indexed_rows(&self, index_uuid: &str) -> Result<Option<usize>> {
+        Ok(self.dataset.count_indexed_rows(index_uuid).await?)
     }
 
-    pub async fn count_unindexed_rows(&self, index_name: &str) -> Result<Option<usize>> {
-        Ok(self.dataset.count_unindexed_rows(index_name).await?)
+    pub async fn count_unindexed_rows(&self, index_uuid: &str) -> Result<Option<usize>> {
+        Ok(self.dataset.count_unindexed_rows(index_uuid).await?)
     }
 }
 
