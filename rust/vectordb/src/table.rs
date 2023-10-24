@@ -371,6 +371,22 @@ impl Table {
         self.dataset = Arc::new(dataset);
         Ok(metrics)
     }
+
+    pub fn count_fragments(&self) -> usize {
+        self.dataset.count_fragments()
+    }
+
+    pub fn num_small_files(&self, max_rows_per_group: usize) -> usize {
+        self.dataset.num_small_files(max_rows_per_group)
+    }
+
+    pub async fn count_indexed_rows(&self, index_name: &str) -> Result<Option<usize>> {
+        Ok(self.dataset.count_indexed_rows(index_name).await?)
+    }
+
+    pub async fn count_unindexed_rows(&self, index_name: &str) -> Result<Option<usize>> {
+        Ok(self.dataset.count_unindexed_rows(index_name).await?)
+    }
 }
 
 #[cfg(test)]
