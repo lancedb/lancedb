@@ -13,14 +13,14 @@
 import io
 import os
 
-import lancedb
 import numpy as np
 import pandas as pd
 import pytest
 import requests
+
+import lancedb
 from lancedb.embeddings import get_registry
 from lancedb.pydantic import LanceModel, Vector
-
 
 # These are integration tests for embedding functions.
 # They are slow because they require downloading models
