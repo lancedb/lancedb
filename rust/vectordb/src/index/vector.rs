@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use lance::format::{Index, Manifest};
 use lance::index::vector::ivf::IvfBuildParams;
 use lance::index::vector::pq::PQBuildParams;
 use lance::index::vector::VectorIndexParams;
@@ -103,6 +104,27 @@ impl VectorIndexBuilder for IvfPQIndexBuilder {
 
     fn get_replace(&self) -> bool {
         self.replace
+    }
+}
+
+pub struct VectorIndex {
+    pub columns: Vec<String>,
+    pub index_name: String,
+    pub index_uuid: String,
+}
+
+impl VectorIndex {
+    pub fn new_from_format(manifest: &Manifest, index: &Index) -> VectorIndex {
+        let fields = index
+            .fields
+            .iter()
+            .map(|i| manifest.schema.fields[*i as usize].name.clone())
+            .collect();
+        VectorIndex {
+            columns: fields,
+            index_name: index.name.clone(),
+            index_uuid: index.uuid.to_string(),
+        }
     }
 }
 
