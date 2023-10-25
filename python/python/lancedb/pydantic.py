@@ -186,6 +186,129 @@ def _py_type_to_arrow_type(py_type: Type[Any], field: FieldInfo) -> pa.DataType:
     )
 
 
+class ImageMixin(ABC):
+    @staticmethod
+    @abstractmethod
+    def value_arrow_type() -> pa.DataType:
+        raise NotImplementedError
+
+
+def EncodedImage() -> Type[ImageMixin]:
+    """Pydantic EncodedImage Type.
+
+    !!! warning
+        Experimental feature.
+
+    Examples
+    --------
+
+    >>> import pydantic
+    >>> from lancedb.pydantic import EncodedImage
+    ...
+    >>> class MyModel(pydantic.BaseModel):
+    ...     image: EncodedImage()
+    >>> schema = pydantic_to_schema(MyModel)
+    >>> assert schema == pa.schema([
+    ...     pa.field("image", pa.binary(), False)
+    ... ])
+    """
+
+    class EncodedImage(bytes, ImageMixin):
+        def __repr__(self):
+            return "EncodedImage()"
+
+        @staticmethod
+        def value_arrow_type() -> pa.DataType:
+            return pa.binary()
+
+        @classmethod
+        def __get_pydantic_core_schema__(
+            cls, _source_type: Any, _handler: pydantic.GetCoreSchemaHandler
+        ) -> CoreSchema:
+            return core_schema.no_info_after_validator_function(
+                cls,
+                core_schema.binary_schema(),
+            )
+
+        @classmethod
+        def __get_validators__(cls) -> Generator[Callable, None, None]:
+            yield cls.validate
+
+        # For pydantic v1
+        @classmethod
+        def validate(cls, v):
+            if not isinstance(v, bytes):
+                raise TypeError("A bytes is needed")
+            return cls(v)
+
+        if PYDANTIC_VERSION < (2, 0):
+
+            @classmethod
+            def __modify_schema__(cls, field_schema: Dict[str, Any]):
+                field_schema["type"] = "string"
+                field_schema["format"] = "binary"
+
+    return EncodedImage
+
+
+def ImageURI() -> Type[ImageMixin]:
+    """Pydantic ImageUri Type.
+
+    !!! warning
+        Experimental feature.
+
+    Examples
+    --------
+
+    >>> import pydantic
+    >>> from lancedb.pydantic import ImageURI
+    ...
+    >>> class MyModel(pydantic.BaseModel):
+    ...     url: ImageURI()
+    >>> schema = pydantic_to_schema(MyModel)
+    >>> assert schema == pa.schema([
+    ...     pa.field("url", pa.utf8(), False),
+    ... ])
+    """
+
+    class ImageURI(str, ImageMixin):
+        def __repr__(self):
+            return "ImageURI()"
+
+        @staticmethod
+        def value_arrow_type() -> pa.DataType:
+            return pa.string()
+
+        @classmethod
+        def __get_pydantic_core_schema__(
+            cls, _source_type: Any, _handler: pydantic.GetCoreSchemaHandler
+        ) -> CoreSchema:
+            return core_schema.no_info_after_validator_function(
+                cls,
+                core_schema.string_schema(),
+            )
+
+        @classmethod
+        def __get_validators__(cls) -> Generator[Callable, None, None]:
+            yield cls.validate
+
+        # For pydantic v1
+        @classmethod
+        def validate(cls, v):
+            if not isinstance(v, str):
+                raise TypeError("A str is needed")
+            return cls(v)
+
+        if PYDANTIC_VERSION < (2, 0):
+
+            @classmethod
+            def __modify_schema__(cls, field_schema: Dict[str, Any]):
+                field_schema["type"] = "string"
+                field_schema["format"] = "string"
+
+    return ImageURI
+
+
 if PYDANTIC_VERSION.major < 2:
 
     def _pydantic_model_to_fields(model: pydantic.BaseModel) -> List[pa.Field]:
