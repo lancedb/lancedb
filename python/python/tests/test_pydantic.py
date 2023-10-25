@@ -30,6 +30,15 @@ from lancedb.pydantic import (
 )
 from pydantic import Field
 
+from lancedb.pydantic import (
+    PYDANTIC_VERSION,
+    LanceModel,
+    Vector,
+    pydantic_to_schema,
+    EncodedImage,
+    ImageURI,
+)
+
 
 @pytest.mark.skipif(
     sys.version_info < (3, 9),
