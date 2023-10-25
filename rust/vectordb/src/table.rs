@@ -20,7 +20,7 @@ use arrow_schema::SchemaRef;
 use lance::dataset::cleanup::RemovalStats;
 use lance::dataset::optimize::{compact_files, CompactionMetrics, CompactionOptions};
 use lance::dataset::{Dataset, WriteParams};
-use lance::index::IndexType;
+use lance::index::{DatasetIndexExt, IndexType};
 use lance::io::object_store::WrappingObjectStore;
 use std::path::Path;
 
@@ -238,8 +238,6 @@ impl Table {
 
     /// Create index on the table.
     pub async fn create_index(&mut self, index_builder: &impl VectorIndexBuilder) -> Result<()> {
-        use lance::index::DatasetIndexExt;
-
         let mut dataset = self.dataset.as_ref().clone();
         dataset
             .create_index(
@@ -254,6 +252,14 @@ impl Table {
             )
             .await?;
         self.dataset = Arc::new(dataset);
+        Ok(())
+    }
+
+    pub async fn optimize_indices(&mut self) -> Result<()> {
+        let mut dataset = self.dataset.as_ref().clone();
+
+        dataset.optimize_indices().await?;
+
         Ok(())
     }
 
