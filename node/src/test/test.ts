@@ -328,13 +328,31 @@ describe('LanceDB client', function () {
       const createIndex = table.createIndex({ type: 'ivf_pq', column: 'name', num_partitions: -1, max_iters: 2, num_sub_vectors: 2 })
       await expect(createIndex).to.be.rejectedWith('num_partitions: must be > 0')
     })
+
+    it('should be able to list index and stats', async function () {
+      const uri = await createTestDB(32, 300)
+      const con = await lancedb.connect(uri)
+      const table = await con.openTable('vectors')
+      await table.createIndex({ type: 'ivf_pq', column: 'vector', num_partitions: 2, max_iters: 2, num_sub_vectors: 2 })
+
+      const indices = await table.listIndices()
+      expect(indices).to.have.lengthOf(1)
+      expect(indices[0].name).to.equal('vector_idx')
+      expect(indices[0].uuid).to.not.be.undefined
+      expect(indices[0].columns).to.have.lengthOf(1)
+      expect(indices[0].columns[0]).to.equal('vector')
+
+      const stats = await table.indexStats(indices[0].uuid)
+      expect(stats.numIndexedRows).to.equal(300)
+      expect(stats.numUnindexedRows).to.equal(0)
+    }).timeout(50_000)
   })
 
   describe('when using a custom embedding function', function () {
     class TextEmbedding implements EmbeddingFunction<string> {
       sourceColumn: string
 
-      constructor (targetColumn: string) {
+      constructor(targetColumn: string) {
         this.sourceColumn = targetColumn
       }
 
@@ -343,7 +361,7 @@ describe('LanceDB client', function () {
         ['bar', [3.1, 3.2]]
       ])
 
-      async embed (data: string[]): Promise<number[][]> {
+      async embed(data: string[]): Promise<number[][]> {
         return data.map(datum => this._embedding_map.get(datum) ?? [0.0, 0.0])
       }
     }
@@ -394,7 +412,7 @@ describe('Query object', function () {
   })
 })
 
-async function createTestDB (numDimensions: number = 2, numRows: number = 2): Promise<string> {
+async function createTestDB(numDimensions: number = 2, numRows: number = 2): Promise<string> {
   const dir = await track().mkdir('lancejs')
   const con = await lancedb.connect(dir)
 
