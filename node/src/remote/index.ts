@@ -245,7 +245,7 @@ export class RemoteTable<T = number[]> implements Table<T> {
   }
 
   async listIndices(): Promise<VectorIndex[]> {
-    const results = await this._client.post(`/v1/table/${this._name}/index/list`)
+    const results = await this._client.post(`/v1/table/${this._name}/index/list/`)
     return results.data.indexes?.map((index: any) => ({
       columns: index.columns,
       name: index.index_name,
@@ -254,7 +254,7 @@ export class RemoteTable<T = number[]> implements Table<T> {
   }
 
   async indexStats(indexUuid: string): Promise<IndexStats> {
-    const results = await this._client.post(`/v1/table/${this._name}/index/${indexUuid}/stats`)
+    const results = await this._client.post(`/v1/table/${this._name}/index/${indexUuid}/stats/`)
     return {
       numIndexedRows: results.data.num_indexed_rows,
       numUnindexedRows: results.data.num_unindexed_rows,

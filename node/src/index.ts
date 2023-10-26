@@ -263,22 +263,24 @@ export interface Table<T = number[]> {
 
   /**
    * List the indicies on this table.
-   * 
    */
   listIndices: () => Promise<VectorIndex[]>
 
+  /**
+   * Get statistics about an index.
+   */
   indexStats: (indexUuid: string) => Promise<IndexStats>
 }
 
-export type VectorIndex = {
+export interface VectorIndex {
   columns: string[]
   name: string
   uuid: string
 }
 
-export type IndexStats = {
-  numIndexedRows: number | null,
-  numUnindexedRows: number | null,
+export interface IndexStats {
+  numIndexedRows: number | null
+  numUnindexedRows: number | null
 }
 
 /**
