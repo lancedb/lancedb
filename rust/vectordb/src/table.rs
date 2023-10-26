@@ -27,7 +27,7 @@ use lance::io::object_store::WrappingObjectStore;
 use std::path::Path;
 
 use crate::error::{Error, Result};
-use crate::index::vector::VectorIndexBuilder;
+use crate::index::vector::{VectorIndexBuilder, VectorIndex};
 use crate::query::Query;
 use crate::utils::{PatchReadParam, PatchWriteParam};
 use crate::WriteMode;
@@ -370,6 +370,34 @@ impl Table {
         let metrics = compact_files(&mut dataset, options, remap_options).await?;
         self.dataset = Arc::new(dataset);
         Ok(metrics)
+    }
+
+    pub fn count_fragments(&self) -> usize {
+        self.dataset.count_fragments()
+    }
+
+    pub fn count_deleted_rows(&self) -> usize {
+        self.dataset.count_deleted_rows()
+    }
+
+    pub fn num_small_files(&self, max_rows_per_group: usize) -> usize {
+        self.dataset.num_small_files(max_rows_per_group)
+    }
+
+    pub async fn count_indexed_rows(&self, index_uuid: &str) -> Result<Option<usize>> {
+        Ok(self.dataset.count_indexed_rows(index_uuid).await?)
+    }
+
+    pub async fn count_unindexed_rows(&self, index_uuid: &str) -> Result<Option<usize>> {
+        Ok(self.dataset.count_unindexed_rows(index_uuid).await?)
+    }
+
+    pub async fn load_indices(&self) -> Result<Vec<VectorIndex>> {
+        let (indices, mf) = futures::try_join!(
+            self.dataset.load_indices(),
+            self.dataset.latest_manifest()
+        )?;
+        Ok(indices.iter().map(|i| VectorIndex::new_from_format(&mf, i)).collect())
     }
 }
 
