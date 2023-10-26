@@ -18,7 +18,9 @@ use std::sync::Arc;
 use arrow_array::{Float32Array, RecordBatchReader};
 use arrow_schema::SchemaRef;
 use lance::dataset::cleanup::RemovalStats;
-use lance::dataset::optimize::{compact_files, CompactionMetrics, CompactionOptions};
+use lance::dataset::optimize::{
+    compact_files, CompactionMetrics, CompactionOptions, IndexRemapperOptions,
+};
 use lance::dataset::{Dataset, WriteParams};
 use lance::index::{DatasetIndexExt, IndexType};
 use lance::io::object_store::WrappingObjectStore;
@@ -359,9 +361,13 @@ impl Table {
     /// for faster reads.
     ///
     /// This calls into [lance::dataset::optimize::compact_files].
-    pub async fn compact_files(&mut self, options: CompactionOptions) -> Result<CompactionMetrics> {
+    pub async fn compact_files(
+        &mut self,
+        options: CompactionOptions,
+        remap_options: Option<Arc<dyn IndexRemapperOptions>>,
+    ) -> Result<CompactionMetrics> {
         let mut dataset = self.dataset.as_ref().clone();
-        let metrics = compact_files(&mut dataset, options, None).await?;
+        let metrics = compact_files(&mut dataset, options, remap_options).await?;
         self.dataset = Arc::new(dataset);
         Ok(metrics)
     }

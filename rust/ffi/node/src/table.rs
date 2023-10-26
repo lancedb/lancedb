@@ -247,7 +247,7 @@ impl JsTable {
         }
 
         rt.spawn(async move {
-            let stats = table.compact_files(options).await;
+            let stats = table.compact_files(options, None).await;
 
             deferred.settle_with(&channel, move |mut cx| {
                 let stats = stats.or_throw(&mut cx)?;
