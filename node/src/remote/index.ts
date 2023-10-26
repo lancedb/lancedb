@@ -61,8 +61,8 @@ export class RemoteConnection implements Connection {
   }
 
   async openTable (name: string): Promise<Table>
-  async openTable<T>(name: string, embeddings: EmbeddingFunction<T>): Promise<Table<T>>
-  async openTable<T>(name: string, embeddings?: EmbeddingFunction<T>): Promise<Table<T>> {
+  async openTable<T> (name: string, embeddings: EmbeddingFunction<T>): Promise<Table<T>>
+  async openTable<T> (name: string, embeddings?: EmbeddingFunction<T>): Promise<Table<T>> {
     if (embeddings !== undefined) {
       return new RemoteTable(this._client, name, embeddings)
     } else {
@@ -70,7 +70,7 @@ export class RemoteConnection implements Connection {
     }
   }
 
-  async createTable<T>(nameOrOpts: string | CreateTableOptions<T>, data?: Array<Record<string, unknown>>, optsOrEmbedding?: WriteOptions | EmbeddingFunction<T>, opt?: WriteOptions): Promise<Table<T>> {
+  async createTable<T> (nameOrOpts: string | CreateTableOptions<T>, data?: Array<Record<string, unknown>>, optsOrEmbedding?: WriteOptions | EmbeddingFunction<T>, opt?: WriteOptions): Promise<Table<T>> {
     // Logic copied from LocatlConnection, refactor these to a base class + connectionImpl pattern
     let schema
     let embeddings: undefined | EmbeddingFunction<T>
@@ -115,7 +115,7 @@ export class RemoteConnection implements Connection {
     )
     if (res.status !== 200) {
       throw new Error(`Server Error, status: ${res.status}, ` +
-        // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
+      // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
         `message: ${res.statusText}: ${res.data}`)
     }
 
@@ -208,7 +208,7 @@ export class RemoteTable<T = number[]> implements Table<T> {
     )
     if (res.status !== 200) {
       throw new Error(`Server Error, status: ${res.status}, ` +
-        // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
+      // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
         `message: ${res.statusText}: ${res.data}`)
     }
     return data.length
@@ -226,7 +226,7 @@ export class RemoteTable<T = number[]> implements Table<T> {
     )
     if (res.status !== 200) {
       throw new Error(`Server Error, status: ${res.status}, ` +
-        // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
+      // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
         `message: ${res.statusText}: ${res.data}`)
     }
     return data.length

@@ -43,24 +43,24 @@ export class HttpLancedbClient {
     filter?: string
   ): Promise<ArrowTable<any>> {
     const response = await axios.post(
-      `${this._url}/v1/table/${tableName}/query/`,
-      {
-        vector,
-        k,
-        nprobes,
-        refineFactor,
-        columns,
-        filter
-      },
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': this._apiKey(),
-          ...(this._dbName !== undefined ? { 'x-lancedb-database': this._dbName } : {})
-        },
-        responseType: 'arraybuffer',
-        timeout: 10000
-      }
+              `${this._url}/v1/table/${tableName}/query/`,
+              {
+                vector,
+                k,
+                nprobes,
+                refineFactor,
+                columns,
+                filter
+              },
+              {
+                headers: {
+                  'Content-Type': 'application/json',
+                  'x-api-key': this._apiKey(),
+                  ...(this._dbName !== undefined ? { 'x-lancedb-database': this._dbName } : {})
+                },
+                responseType: 'arraybuffer',
+                timeout: 10000
+              }
     ).catch((err) => {
       console.error('error: ', err)
       return err.response
@@ -82,15 +82,15 @@ export class HttpLancedbClient {
    */
   public async get (path: string, params?: Record<string, string | number>): Promise<AxiosResponse> {
     const response = await axios.get(
-      `${this._url}${path}`,
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': this._apiKey()
-        },
-        params,
-        timeout: 10000
-      }
+        `${this._url}${path}`,
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': this._apiKey()
+          },
+          params,
+          timeout: 10000
+        }
     ).catch((err) => {
       console.error('error: ', err)
       return err.response
@@ -131,11 +131,10 @@ export class HttpLancedbClient {
       return err.response
     })
     if (response.status !== 200) {
-      // console.log(response.data)
       const errorData = new TextDecoder().decode(response.data)
       throw new Error(
-        `Server Error, status: ${response.status as number}, ` +
-        `message: ${response.statusText as string}: ${errorData}`
+          `Server Error, status: ${response.status as number}, ` +
+          `message: ${response.statusText as string}: ${errorData}`
       )
     }
     return response
