@@ -276,4 +276,91 @@ impl JsTable {
         });
         Ok(promise)
     }
+
+    pub(crate) fn js_list_indices(mut cx: FunctionContext) -> JsResult<JsPromise> {
+        let js_table = cx.this().downcast_or_throw::<JsBox<JsTable>, _>(&mut cx)?;
+        let rt = runtime(&mut cx)?;
+        let (deferred, promise) = cx.promise();
+        // let predicate = cx.argument::<JsString>(0)?.value(&mut cx);
+        let channel = cx.channel();
+        let table = js_table.table.clone();
+
+        rt.spawn(async move {
+            let indices = table.load_indices().await;
+
+            deferred.settle_with(&channel, move |mut cx| {
+                let indices = indices.or_throw(&mut cx)?;
+
+                let output = JsArray::new(&mut cx, indices.len() as u32);
+                for (i, index) in indices.iter().enumerate() {
+                    let js_index = JsObject::new(&mut cx);
+                    let index_name = cx.string(index.index_name.clone());
+                    js_index.set(&mut cx, "name", index_name)?;
+
+                    let index_uuid = cx.string(index.index_uuid.clone());
+                    js_index.set(&mut cx, "uuid", index_uuid)?;
+
+                    let js_index_columns = JsArray::new(&mut cx, index.columns.len() as u32);
+                    for (j, column) in index.columns.iter().enumerate() {
+                        let js_column = cx.string(column.clone());
+                        js_index_columns.set(&mut cx, j as u32, js_column)?;
+                    }
+                    js_index.set(&mut cx, "columns", js_index_columns)?;
+
+                    output.set(&mut cx, i as u32, js_index)?;
+                }
+
+                Ok(output)
+            })
+        });
+        Ok(promise)
+    }
+
+    pub(crate) fn js_index_stats(mut cx: FunctionContext) -> JsResult<JsPromise> {
+        let js_table = cx.this().downcast_or_throw::<JsBox<JsTable>, _>(&mut cx)?;
+        let rt = runtime(&mut cx)?;
+        let (deferred, promise) = cx.promise();
+        let index_uuid = cx.argument::<JsString>(0)?.value(&mut cx);
+        let channel = cx.channel();
+        let table = js_table.table.clone();
+
+        rt.spawn(async move {
+            let load_stats = futures::try_join!(
+                table.count_indexed_rows(&index_uuid),
+                table.count_unindexed_rows(&index_uuid)
+            );
+
+            deferred.settle_with(&channel, move |mut cx| {
+                let (indexed_rows, unindexed_rows) = load_stats.or_throw(&mut cx)?;
+
+                let output = JsObject::new(&mut cx);
+
+                match indexed_rows {
+                    Some(x) => {
+                        let i = cx.number(x as f64);
+                        output.set(&mut cx, "numIndexedRows", i)?;
+                    }
+                    None => {
+                        let null = cx.null();
+                        output.set(&mut cx, "numIndexedRows", null)?;
+                    }
+                };
+
+                match unindexed_rows {
+                    Some(x) => {
+                        let i = cx.number(x as f64);
+                        output.set(&mut cx, "numUnindexedRows", i)?;
+                    }
+                    None => {
+                        let null = cx.null();
+                        output.set(&mut cx, "numUnindexedRows", null)?;
+                    }
+                };
+
+                Ok(output)
+            })
+        });
+
+        Ok(promise)
+    }
 }
