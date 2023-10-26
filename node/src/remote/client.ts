@@ -82,15 +82,15 @@ export class HttpLancedbClient {
    */
   public async get (path: string, params?: Record<string, string | number>): Promise<AxiosResponse> {
     const response = await axios.get(
-        `${this._url}${path}`,
-        {
-          headers: {
-            'Content-Type': 'application/json',
-            'x-api-key': this._apiKey()
-          },
-          params,
-          timeout: 10000
-        }
+      `${this._url}${path}`,
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': this._apiKey()
+        },
+        params,
+        timeout: 10000
+      }
     ).catch((err) => {
       console.error('error: ', err)
       return err.response
@@ -115,17 +115,17 @@ export class HttpLancedbClient {
     content?: string | undefined
   ): Promise<AxiosResponse> {
     const response = await axios.post(
-      `${this._url}${path}`,
-      data,
-      {
-        headers: {
-          'Content-Type': content ?? 'application/json',
-          'x-api-key': this._apiKey(),
-          ...(this._dbName !== undefined ? { 'x-lancedb-database': this._dbName } : {})
-        },
-        params,
-        timeout: 30000
-      }
+        `${this._url}${path}`,
+        data,
+        {
+          headers: {
+            'Content-Type': content ?? 'application/json',
+            'x-api-key': this._apiKey(),
+            ...(this._dbName !== undefined ? { 'x-lancedb-database': this._dbName } : {})
+          },
+          params,
+          timeout: 30000
+        }
     ).catch((err) => {
       console.error('error: ', err)
       return err.response
