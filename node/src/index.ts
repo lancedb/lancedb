@@ -23,7 +23,7 @@ import { Query } from './query'
 import { isEmbeddingFunction } from './embedding/embedding_function'
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { databaseNew, databaseTableNames, databaseOpenTable, databaseDropTable, tableCreate, tableAdd, tableCreateVectorIndex, tableCountRows, tableDelete, tableCleanupOldVersions, tableCompactFiles } = require('../native.js')
+const { databaseNew, databaseTableNames, databaseOpenTable, databaseDropTable, tableCreate, tableAdd, tableCreateVectorIndex, tableCountRows, tableDelete, tableCleanupOldVersions, tableCompactFiles, tableListIndices, tableIndexStats } = require('../native.js')
 
 export { Query }
 export type { EmbeddingFunction }
@@ -260,6 +260,27 @@ export interface Table<T = number[]> {
    * ```
    */
   delete: (filter: string) => Promise<void>
+
+  /**
+   * List the indicies on this table.
+   */
+  listIndices: () => Promise<VectorIndex[]>
+
+  /**
+   * Get statistics about an index.
+   */
+  indexStats: (indexUuid: string) => Promise<IndexStats>
+}
+
+export interface VectorIndex {
+  columns: string[]
+  name: string
+  uuid: string
+}
+
+export interface IndexStats {
+  numIndexedRows: number | null
+  numUnindexedRows: number | null
 }
 
 /**
@@ -501,6 +522,14 @@ export class LocalTable<T = number[]> implements Table<T> {
         this._tbl = res.newTable
         return res.metrics
       })
+  }
+
+  async listIndices (): Promise<VectorIndex[]> {
+    return tableListIndices.call(this._tbl)
+  }
+
+  async indexStats (indexUuid: string): Promise<IndexStats> {
+    return tableIndexStats.call(this._tbl, indexUuid)
   }
 }
 

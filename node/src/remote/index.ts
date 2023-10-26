@@ -14,7 +14,9 @@
 
 import {
   type EmbeddingFunction, type Table, type VectorIndexParams, type Connection,
-  type ConnectionOptions, type CreateTableOptions, type WriteOptions
+  type ConnectionOptions, type CreateTableOptions, type VectorIndex,
+  type WriteOptions,
+  type IndexStats
 } from '../index'
 import { Query } from '../query'
 
@@ -240,5 +242,22 @@ export class RemoteTable<T = number[]> implements Table<T> {
 
   async delete (filter: string): Promise<void> {
     await this._client.post(`/v1/table/${this._name}/delete/`, { predicate: filter })
+  }
+
+  async listIndices (): Promise<VectorIndex[]> {
+    const results = await this._client.post(`/v1/table/${this._name}/index/list/`)
+    return results.data.indexes?.map((index: any) => ({
+      columns: index.columns,
+      name: index.index_name,
+      uuid: index.index_uuid
+    }))
+  }
+
+  async indexStats (indexUuid: string): Promise<IndexStats> {
+    const results = await this._client.post(`/v1/table/${this._name}/index/${indexUuid}/stats/`)
+    return {
+      numIndexedRows: results.data.num_indexed_rows,
+      numUnindexedRows: results.data.num_unindexed_rows
+    }
   }
 }
