@@ -54,7 +54,7 @@ export interface ConnectionOptions {
   hostOverride?: string
 }
 
-function getAwsArgs(opts: ConnectionOptions): any[] {
+function getAwsArgs (opts: ConnectionOptions): any[] {
   const callArgs = []
   const awsCredentials = opts.awsCredentials
   if (awsCredentials !== undefined) {
@@ -92,9 +92,9 @@ export interface CreateTableOptions<T> {
  * Connect to a LanceDB instance at the given URI
  * @param uri The uri of the database.
  */
-export async function connect(uri: string): Promise<Connection>
-export async function connect(opts: Partial<ConnectionOptions>): Promise<Connection>
-export async function connect(arg: string | Partial<ConnectionOptions>): Promise<Connection> {
+export async function connect (uri: string): Promise<Connection>
+export async function connect (opts: Partial<ConnectionOptions>): Promise<Connection>
+export async function connect (arg: string | Partial<ConnectionOptions>): Promise<Connection> {
   let opts: ConnectionOptions
   if (typeof arg === 'string') {
     opts = { uri: arg }
@@ -290,19 +290,19 @@ export class LocalConnection implements Connection {
   private readonly _options: () => ConnectionOptions
   private readonly _db: any
 
-  constructor(db: any, options: ConnectionOptions) {
+  constructor (db: any, options: ConnectionOptions) {
     this._options = () => options
     this._db = db
   }
 
-  get uri(): string {
+  get uri (): string {
     return this._options().uri
   }
 
   /**
    * Get the names of all tables in the database.
    */
-  async tableNames(): Promise<string[]> {
+  async tableNames (): Promise<string[]> {
     return databaseTableNames.call(this._db)
   }
 
@@ -311,7 +311,7 @@ export class LocalConnection implements Connection {
    *
    * @param name The name of the table.
    */
-  async openTable(name: string): Promise<Table>
+  async openTable (name: string): Promise<Table>
 
   /**
    * Open a table in the database.
@@ -357,7 +357,7 @@ export class LocalConnection implements Connection {
   }): Promise<Table<T>> {
     let buffer: Buffer
 
-    function isEmpty(data: Array<Record<string, unknown>> | ArrowTable<any>): boolean {
+    function isEmpty (data: Array<Record<string, unknown>> | ArrowTable<any>): boolean {
       if (data instanceof ArrowTable) {
         return data.data.length === 0
       }
@@ -388,7 +388,7 @@ export class LocalConnection implements Connection {
    * Drop an existing table.
    * @param name The name of the table to drop.
    */
-  async dropTable(name: string): Promise<void> {
+  async dropTable (name: string): Promise<void> {
     await databaseDropTable.call(this._db, name)
   }
 }
@@ -399,22 +399,22 @@ export class LocalTable<T = number[]> implements Table<T> {
   private readonly _embeddings?: EmbeddingFunction<T>
   private readonly _options: () => ConnectionOptions
 
-  constructor(tbl: any, name: string, options: ConnectionOptions)
+  constructor (tbl: any, name: string, options: ConnectionOptions)
   /**
    * @param tbl
    * @param name
    * @param options
    * @param embeddings An embedding function to use when interacting with this table
    */
-  constructor(tbl: any, name: string, options: ConnectionOptions, embeddings: EmbeddingFunction<T>)
-  constructor(tbl: any, name: string, options: ConnectionOptions, embeddings?: EmbeddingFunction<T>) {
+  constructor (tbl: any, name: string, options: ConnectionOptions, embeddings: EmbeddingFunction<T>)
+  constructor (tbl: any, name: string, options: ConnectionOptions, embeddings?: EmbeddingFunction<T>) {
     this._tbl = tbl
     this._name = name
     this._embeddings = embeddings
     this._options = () => options
   }
 
-  get name(): string {
+  get name (): string {
     return this._name
   }
 
@@ -422,7 +422,7 @@ export class LocalTable<T = number[]> implements Table<T> {
    * Creates a search query to find the nearest neighbors of the given search term
    * @param query The query search term
    */
-  search(query: T): Query<T> {
+  search (query: T): Query<T> {
     return new Query(query, this._tbl, this._embeddings)
   }
 
@@ -432,7 +432,7 @@ export class LocalTable<T = number[]> implements Table<T> {
    * @param data Records to be inserted into the Table
    * @return The number of rows added to the table
    */
-  async add(data: Array<Record<string, unknown>>): Promise<number> {
+  async add (data: Array<Record<string, unknown>>): Promise<number> {
     return tableAdd.call(
       this._tbl,
       await fromRecordsToBuffer(data, this._embeddings),
@@ -447,7 +447,7 @@ export class LocalTable<T = number[]> implements Table<T> {
    * @param data Records to be inserted into the Table
    * @return The number of rows added to the table
    */
-  async overwrite(data: Array<Record<string, unknown>>): Promise<number> {
+  async overwrite (data: Array<Record<string, unknown>>): Promise<number> {
     return tableAdd.call(
       this._tbl,
       await fromRecordsToBuffer(data, this._embeddings),
@@ -461,14 +461,14 @@ export class LocalTable<T = number[]> implements Table<T> {
    *
    * @param indexParams The parameters of this Index, @see VectorIndexParams.
    */
-  async createIndex(indexParams: VectorIndexParams): Promise<any> {
+  async createIndex (indexParams: VectorIndexParams): Promise<any> {
     return tableCreateVectorIndex.call(this._tbl, indexParams).then((newTable: any) => { this._tbl = newTable })
   }
 
   /**
    * Returns the number of rows in this table.
    */
-  async countRows(): Promise<number> {
+  async countRows (): Promise<number> {
     return tableCountRows.call(this._tbl)
   }
 
@@ -477,7 +477,7 @@ export class LocalTable<T = number[]> implements Table<T> {
    *
    * @param filter A filter in the same format used by a sql WHERE clause.
    */
-  async delete(filter: string): Promise<void> {
+  async delete (filter: string): Promise<void> {
     return tableDelete.call(this._tbl, filter).then((newTable: any) => { this._tbl = newTable })
   }
 
@@ -496,7 +496,7 @@ export class LocalTable<T = number[]> implements Table<T> {
    *                 uphold this promise can lead to corrupted tables.
    * @returns
    */
-  async cleanupOldVersions(olderThan?: number, deleteUnverified?: boolean): Promise<CleanupStats> {
+  async cleanupOldVersions (olderThan?: number, deleteUnverified?: boolean): Promise<CleanupStats> {
     return tableCleanupOldVersions.call(this._tbl, olderThan, deleteUnverified)
       .then((res: { newTable: any, metrics: CleanupStats }) => {
         this._tbl = res.newTable
@@ -515,7 +515,7 @@ export class LocalTable<T = number[]> implements Table<T> {
    *               for most tables.
    * @returns Metrics about the compaction operation.
    */
-  async compactFiles(options?: CompactionOptions): Promise<CompactionMetrics> {
+  async compactFiles (options?: CompactionOptions): Promise<CompactionMetrics> {
     const optionsArg = options ?? {}
     return tableCompactFiles.call(this._tbl, optionsArg)
       .then((res: { newTable: any, metrics: CompactionMetrics }) => {
@@ -524,11 +524,11 @@ export class LocalTable<T = number[]> implements Table<T> {
       })
   }
 
-  async listIndices(): Promise<VectorIndex[]> {
+  async listIndices (): Promise<VectorIndex[]> {
     return tableListIndices.call(this._tbl)
   }
 
-  async indexStats(indexUuid: string): Promise<IndexStats> {
+  async indexStats (indexUuid: string): Promise<IndexStats> {
     return tableIndexStats.call(this._tbl, indexUuid)
   }
 }
@@ -676,7 +676,7 @@ export class DefaultWriteOptions implements WriteOptions {
   writeMode = WriteMode.Create
 }
 
-export function isWriteOptions(value: any): value is WriteOptions {
+export function isWriteOptions (value: any): value is WriteOptions {
   return Object.keys(value).length === 1 &&
     (value.writeMode === undefined || typeof value.writeMode === 'string')
 }

@@ -16,7 +16,7 @@ import {
   type EmbeddingFunction, type Table, type VectorIndexParams, type Connection,
   type ConnectionOptions, type CreateTableOptions, type VectorIndex,
   type WriteOptions,
-  IndexStats
+  type IndexStats
 } from '../index'
 import { Query } from '../query'
 
@@ -32,7 +32,7 @@ export class RemoteConnection implements Connection {
   private readonly _client: HttpLancedbClient
   private readonly _dbName: string
 
-  constructor(opts: ConnectionOptions) {
+  constructor (opts: ConnectionOptions) {
     if (!opts.uri.startsWith('db://')) {
       throw new Error(`Invalid remote DB URI: ${opts.uri}`)
     }
@@ -50,17 +50,17 @@ export class RemoteConnection implements Connection {
     this._client = new HttpLancedbClient(server, opts.apiKey, opts.hostOverride === undefined ? undefined : this._dbName)
   }
 
-  get uri(): string {
+  get uri (): string {
     // add the lancedb+ prefix back
     return 'db://' + this._client.uri
   }
 
-  async tableNames(): Promise<string[]> {
+  async tableNames (): Promise<string[]> {
     const response = await this._client.get('/v1/table/')
     return response.data.tables
   }
 
-  async openTable(name: string): Promise<Table>
+  async openTable (name: string): Promise<Table>
   async openTable<T>(name: string, embeddings: EmbeddingFunction<T>): Promise<Table<T>>
   async openTable<T>(name: string, embeddings?: EmbeddingFunction<T>): Promise<Table<T>> {
     if (embeddings !== undefined) {
@@ -88,7 +88,7 @@ export class RemoteConnection implements Connection {
 
     let buffer: Buffer
 
-    function isEmpty(data: Array<Record<string, unknown>> | ArrowTable<any>): boolean {
+    function isEmpty (data: Array<Record<string, unknown>> | ArrowTable<any>): boolean {
       if (data instanceof ArrowTable) {
         return data.data.length === 0
       }
@@ -126,13 +126,13 @@ export class RemoteConnection implements Connection {
     }
   }
 
-  async dropTable(name: string): Promise<void> {
+  async dropTable (name: string): Promise<void> {
     await this._client.post(`/v1/table/${name}/drop/`)
   }
 }
 
 export class RemoteQuery<T = number[]> extends Query<T> {
-  constructor(query: T, private readonly _client: HttpLancedbClient,
+  constructor (query: T, private readonly _client: HttpLancedbClient,
     private readonly _name: string, embeddings?: EmbeddingFunction<T>) {
     super(query, undefined, embeddings)
   }
@@ -180,23 +180,23 @@ export class RemoteTable<T = number[]> implements Table<T> {
   private readonly _embeddings?: EmbeddingFunction<T>
   private readonly _name: string
 
-  constructor(client: HttpLancedbClient, name: string)
-  constructor(client: HttpLancedbClient, name: string, embeddings: EmbeddingFunction<T>)
-  constructor(client: HttpLancedbClient, name: string, embeddings?: EmbeddingFunction<T>) {
+  constructor (client: HttpLancedbClient, name: string)
+  constructor (client: HttpLancedbClient, name: string, embeddings: EmbeddingFunction<T>)
+  constructor (client: HttpLancedbClient, name: string, embeddings?: EmbeddingFunction<T>) {
     this._client = client
     this._name = name
     this._embeddings = embeddings
   }
 
-  get name(): string {
+  get name (): string {
     return this._name
   }
 
-  search(query: T): Query<T> {
+  search (query: T): Query<T> {
     return new RemoteQuery(query, this._client, this._name)//, this._embeddings_new)
   }
 
-  async add(data: Array<Record<string, unknown>>): Promise<number> {
+  async add (data: Array<Record<string, unknown>>): Promise<number> {
     const buffer = await fromRecordsToStreamBuffer(data, this._embeddings)
     const res = await this._client.post(
       `/v1/table/${this._name}/insert/`,
@@ -214,7 +214,7 @@ export class RemoteTable<T = number[]> implements Table<T> {
     return data.length
   }
 
-  async overwrite(data: Array<Record<string, unknown>>): Promise<number> {
+  async overwrite (data: Array<Record<string, unknown>>): Promise<number> {
     const buffer = await fromRecordsToStreamBuffer(data, this._embeddings)
     const res = await this._client.post(
       `/v1/table/${this._name}/insert/`,
@@ -232,32 +232,32 @@ export class RemoteTable<T = number[]> implements Table<T> {
     return data.length
   }
 
-  async createIndex(indexParams: VectorIndexParams): Promise<any> {
+  async createIndex (indexParams: VectorIndexParams): Promise<any> {
     throw new Error('Not implemented')
   }
 
-  async countRows(): Promise<number> {
+  async countRows (): Promise<number> {
     throw new Error('Not implemented')
   }
 
-  async delete(filter: string): Promise<void> {
+  async delete (filter: string): Promise<void> {
     await this._client.post(`/v1/table/${this._name}/delete/`, { predicate: filter })
   }
 
-  async listIndices(): Promise<VectorIndex[]> {
+  async listIndices (): Promise<VectorIndex[]> {
     const results = await this._client.post(`/v1/table/${this._name}/index/list/`)
     return results.data.indexes?.map((index: any) => ({
       columns: index.columns,
       name: index.index_name,
-      uuid: index.index_uuid,
+      uuid: index.index_uuid
     }))
   }
 
-  async indexStats(indexUuid: string): Promise<IndexStats> {
+  async indexStats (indexUuid: string): Promise<IndexStats> {
     const results = await this._client.post(`/v1/table/${this._name}/index/${indexUuid}/stats/`)
     return {
       numIndexedRows: results.data.num_indexed_rows,
-      numUnindexedRows: results.data.num_unindexed_rows,
+      numUnindexedRows: results.data.num_unindexed_rows
     }
   }
 }

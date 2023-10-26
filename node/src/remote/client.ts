@@ -20,7 +20,7 @@ export class HttpLancedbClient {
   private readonly _url: string
   private readonly _apiKey: () => string
 
-  public constructor(
+  public constructor (
     url: string,
     apiKey: string,
     private readonly _dbName?: string
@@ -29,11 +29,11 @@ export class HttpLancedbClient {
     this._apiKey = () => apiKey
   }
 
-  get uri(): string {
+  get uri (): string {
     return this._url
   }
 
-  public async search(
+  public async search (
     tableName: string,
     vector: number[],
     k: number,
@@ -80,7 +80,7 @@ export class HttpLancedbClient {
   /**
    * Sent GET request.
    */
-  public async get(path: string, params?: Record<string, string | number>): Promise<AxiosResponse> {
+  public async get (path: string, params?: Record<string, string | number>): Promise<AxiosResponse> {
     const response = await axios.get(
       `${this._url}${path}`,
       {
@@ -108,7 +108,7 @@ export class HttpLancedbClient {
   /**
    * Sent POST request.
    */
-  public async post(
+  public async post (
     path: string,
     data?: any,
     params?: Record<string, string | number>,
