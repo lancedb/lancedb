@@ -150,8 +150,6 @@ nav:
 
 extra_css:
   - styles/global.css
-extra_javascript:
-  - scripts/posthog.js
 
 extra:
   analytics:
