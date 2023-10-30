@@ -288,11 +288,12 @@ def test_replace_index(tmp_path):
         replace=True,
     )
 
+
 def test_prefilter_with_index(tmp_path):
     db = lancedb.connect(uri=tmp_path)
     data = [
-            {"vector": np.random.rand(128), "item": "foo", "price": float(i)}
-            for i in range(1000)
+        {"vector": np.random.rand(128), "item": "foo", "price": float(i)}
+        for i in range(1000)
     ]
     sample_key = data[100]["vector"]
     table = db.create_table(
@@ -303,5 +304,10 @@ def test_prefilter_with_index(tmp_path):
         num_partitions=2,
         num_sub_vectors=4,
     )
-    table = table.search(sample_key).where("price == 500", prefilter=True).limit(5).to_arrow()
+    table = (
+        table.search(sample_key)
+        .where("price == 500", prefilter=True)
+        .limit(5)
+        .to_arrow()
+    )
     assert table.num_rows == 1
