@@ -872,12 +872,6 @@ class LanceTable(Table):
 
     def _execute_query(self, query: Query) -> pa.Table:
         ds = self.to_lance()
-        if query.prefilter:
-            for idx in ds.list_indices():
-                if query.vector_column in idx["fields"]:
-                    raise NotImplementedError(
-                        "Prefiltering for indexed vector column is coming soon."
-                    )
         return ds.to_table(
             columns=query.columns,
             filter=query.filter,
