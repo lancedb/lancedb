@@ -80,7 +80,7 @@ You can specify the GPU device to train IVF partitions via
 === "Linux"
 
      <!-- skip-test -->
-     ```py
+     ``` { .python .copy }
      # Create index using CUDA on Nvidia GPUs.
      tbl.create_index(
           num_partitions=256,
@@ -100,6 +100,11 @@ You can specify the GPU device to train IVF partitions via
           accelerator="mps"
      )
      ```
+
+Trouble shootings:
+
+If you see ``AssertionError: Torch not compiled with CUDA enabled``, you need to [install
+PyTorch with CUDA support](https://pytorch.org/get-started/locally/).
 
 
 ## Querying an ANN Index
