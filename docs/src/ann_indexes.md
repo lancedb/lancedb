@@ -71,9 +71,34 @@ a single PQ code.
 ### Use GPU to build vector index
 
 Lance Python SDK has experimental GPU support for creating IVF index.
+Using GPU for index creation requires [PyTorch>2.0](https://pytorch.org/) being installed.
+
 You can specify the GPU device to train IVF partitions via
 
-- **accelerator**: Specify to `"cuda"`` to enable GPU training.
+- **accelerator**: Specify to ``cuda`` or ``mps`` (on Apple Silicon) to enable GPU training.
+
+=== "Linux"
+
+     ```python
+     # Create index using CUDA on Nvidia GPUs.
+     tbl.create_index(
+          num_partitions=256,
+          num_sub_vectors=96,
+          accelerator="cuda"
+     )
+     ```
+
+=== "Macos"
+
+     ```python
+     # Create index using MPS on Apple Silicon.
+     tbl.create_index(
+          num_partitions=256,
+          num_sub_vectors=96,
+          accelerator="mps"
+     )
+     ```
+
 
 ## Querying an ANN Index
 
