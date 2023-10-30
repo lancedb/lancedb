@@ -183,7 +183,7 @@ class Contextualizer:
         deprecated_in="0.3.1",
         removed_in="0.4.0",
         current_version=__version__,
-        details="Use the bar function instead",
+        details="Use to_pandas() instead",
     )
     def to_df(self) -> "pd.DataFrame":
         return self.to_pandas()

@@ -155,7 +155,7 @@ class Table(ABC):
         """
         raise NotImplementedError
 
-    def to_pandas(self):
+    def to_pandas(self) -> pd.DataFrame:
         """Return the table as a pandas DataFrame.
 
         Returns
@@ -191,17 +191,18 @@ class Table(ABC):
             The distance metric to use when creating the index.
             Valid values are "L2", "cosine", or "dot".
             L2 is euclidean distance.
-        num_partitions: int
+        num_partitions: int, default 256
             The number of IVF partitions to use when creating the index.
             Default is 256.
-        num_sub_vectors: int
+        num_sub_vectors: int, default 96
             The number of PQ sub-vectors to use when creating the index.
             Default is 96.
         vector_column_name: str, default "vector"
             The vector column name to create the index.
         replace: bool, default True
-            If True, replace the existing index if it exists.
-            If False, raise an error if duplicate index exists.
+            - If True, replace the existing index if it exists.
+
+            - If False, raise an error if duplicate index exists.
         accelerator: str, default None
             If set, use the given accelerator to create the index.
             Only support "cuda" for now.
@@ -220,8 +221,9 @@ class Table(ABC):
 
         Parameters
         ----------
-        data: list-of-dict, dict, pd.DataFrame
-            The data to insert into the table.
+        data: DATA
+            The data to insert into the table. Acceptable types are:
+            list-of-dict, dict, pd.DataFrame
         mode: str
             The mode to use when writing the data. Valid values are
             "append" and "overwrite".
@@ -246,27 +248,43 @@ class Table(ABC):
 
         Parameters
         ----------
-        query: str, list, np.ndarray, PIL.Image.Image, default None
-            The query to search for. If None then
-            the select/where/limit clauses are applied to filter
+        query: str, default None
+            The query to search for. 
+
+            - *default None*. 
+            Acceptable types are: list, np.ndarray, PIL.Image.Image
+
+            - If None then the select/where/limit clauses are applied to filter
             the table
-        vector_column_name: str, default "vector"
+        vector_column_name: str 
             The name of the vector column to search.
-        query_type: str, default "auto"
-            "vector", "fts", or "auto"
-            If "auto" then the query type is inferred from the query;
-            If `query` is a list/np.ndarray then the query type is "vector";
-            If `query` is a PIL.Image.Image then either do vector search
-            or raise an error if no corresponding embedding function is found.
-            If `query` is a string, then the query type is "vector" if the
+            *default "vector"*
+        query_type: str 
+            *default "auto"*.
+            Acceptable types are: "vector", "fts", or "auto"
+
+            - If "auto" then the query type is inferred from the query;
+
+                - If `query` is a list/np.ndarray then the query type is "vector";
+
+                - If `query` is a PIL.Image.Image then either do vector search
+
+                - or raise an error if no corresponding embedding function is found.
+
+            - If `query` is a string, then the query type is "vector" if the
             table has embedding functions else the query type is "fts"
 
         Returns
         -------
         LanceQueryBuilder
             A query builder object representing the query.
-            Once executed, the query returns selected columns, the vector,
-            and also the "_distance" column which is the distance between the query
+            Once executed, the query returns 
+
+            - selected columns
+
+            - the vector
+
+            - and also the "_distance" column which is the distance between the query
             vector and the returned vector.
         """
         raise NotImplementedError
@@ -285,8 +303,11 @@ class Table(ABC):
         Parameters
         ----------
         where: str
-            The SQL where clause to use when deleting rows. For example, 'x = 2'
-            or 'x IN (1, 2, 3)'. The filter must not be empty, or it will error.
+            The SQL where clause to use when deleting rows. 
+
+            - For example, 'x = 2' or 'x IN (1, 2, 3)'. 
+            
+            The filter must not be empty, or it will error.
 
         Examples
         --------
