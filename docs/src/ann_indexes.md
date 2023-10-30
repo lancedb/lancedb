@@ -79,7 +79,8 @@ You can specify the GPU device to train IVF partitions via
 
 === "Linux"
 
-     ```python
+     <!-- skip-test -->
+     ```py
      # Create index using CUDA on Nvidia GPUs.
      tbl.create_index(
           num_partitions=256,
@@ -90,6 +91,7 @@ You can specify the GPU device to train IVF partitions via
 
 === "Macos"
 
+     <!-- skip-test -->
      ```python
      # Create index using MPS on Apple Silicon.
      tbl.create_index(
