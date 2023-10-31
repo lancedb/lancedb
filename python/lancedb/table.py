@@ -256,11 +256,23 @@ class Table(ABC):
 
         Examples
         --------
-        >>> table.search(query, vector_column_name="img_emb")
-        ...     .where("original_width > 1000", prefilter=True)
-        ...     .select(["caption", "url", "original_width"])
-        ...     .limit(10)
-        ...     .to_arrow()
+        >>> import lancedb
+        >>> db = lancedb.connect("./.lancedb")
+        >>> data = [
+        ...    {"original_width": 100, "caption": "bar", "vector": [0.1, 2.3, 4.5]},
+        ...    {"original_width": 2000, "caption": "foo",  "vector": [0.5, 3.4, 1.3]},
+        ...    {"original_width": 3000, "caption": "test", "vector": [0.3, 6.2, 2.6]}
+        ... ]
+        >>> table = db.create_table("my_table", data)
+        >>> query = [0.4, 1.4, 2.4]
+        >>> (table.search(query, vector_column_name="vector")
+        ...     .where("original_width > 1000", prefilter=True)  
+        ...     .select(["caption", "original_width"]) 
+        ...     .limit(2) 
+        ...     .to_pandas())
+          caption  original_width           vector  _distance
+        0     foo            2000  [0.5, 3.4, 1.3]   5.220000
+        1    test            3000  [0.3, 6.2, 2.6]  23.089996
 
         Parameters
         ----------
@@ -712,14 +724,25 @@ class LanceTable(Table):
         of the given query vector. We currently support [vector search][search]
         and [full-text search][search].
 
-
         Examples
         --------
-        >>> table.search(query, vector_column_name="img_emb")
-        ...     .where("original_width > 1000", prefilter=True)
-        ...     .select(["caption", "url", "original_width"])
-        ...     .limit(10)
-        ...     .to_arrow()
+        >>> import lancedb
+        >>> db = lancedb.connect("./.lancedb")
+        >>> data = [
+        ...    {"original_width": 100, "caption": "bar", "vector": [0.1, 2.3, 4.5]},
+        ...    {"original_width": 2000, "caption": "foo",  "vector": [0.5, 3.4, 1.3]},
+        ...    {"original_width": 3000, "caption": "test", "vector": [0.3, 6.2, 2.6]}
+        ... ]
+        >>> table = db.create_table("my_table", data)
+        >>> query = [0.4, 1.4, 2.4]
+        >>> (table.search(query, vector_column_name="vector")
+        ...     .where("original_width > 1000", prefilter=True)  
+        ...     .select(["caption", "original_width"]) 
+        ...     .limit(2) 
+        ...     .to_pandas())
+          caption  original_width           vector  _distance
+        0     foo            2000  [0.5, 3.4, 1.3]   5.220000
+        1    test            3000  [0.3, 6.2, 2.6]  23.089996
 
         Parameters
         ----------
@@ -892,7 +915,7 @@ class LanceTable(Table):
         >>> import lancedb
         >>> data = [
         ...    {"x": 1, "vector": [1, 2]},
-        ...    "x": 2, "vector": [3, 4]},
+        ...    {"x": 2, "vector": [3, 4]},
         ...    {"x": 3, "vector": [5, 6]}
         ... ]
         >>> db = lancedb.connect("./.lancedb")
