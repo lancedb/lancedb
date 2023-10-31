@@ -104,7 +104,11 @@ class RemoteDBConnection(DBConnection):
             raise ValueError("Either data or schema must be provided.")
         if data is not None:
             data = _sanitize_data(
-                data, schema, metadata=None, on_bad_vectors=on_bad_vectors, fill_value=fill_value
+                data,
+                schema,
+                metadata=None,
+                on_bad_vectors=on_bad_vectors,
+                fill_value=fill_value,
             )
         else:
             if schema is None:
