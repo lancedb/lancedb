@@ -149,8 +149,8 @@ class Table(ABC):
     @property
     @abstractmethod
     def schema(self) -> pa.Schema:
-        """The [Arrow Schema](https://arrow.apache.org/docs/python/api/datatypes.html#) of
-        this Table
+        """The [Arrow Schema](https://arrow.apache.org/docs/python/api/datatypes.html#)
+        of this Table
 
         """
         raise NotImplementedError
@@ -257,10 +257,10 @@ class Table(ABC):
         Examples
         --------
         >>> table.search(query, vector_column_name="img_emb")
-        ...   .where("original_width > 1000", prefilter=True)
-        ...   .select(["caption", "url", "original_width"])
-        ...   .limit(10)
-        ...   .to_arrow()
+        ...     .where("original_width > 1000", prefilter=True)
+        ...     .select(["caption", "url", "original_width"])
+        ...     .limit(10)
+        ...     .to_arrow()
 
         Parameters
         ----------
@@ -328,7 +328,9 @@ class Table(ABC):
         --------
         >>> import lancedb
         >>> data = [
-        ...   {"x": 1, "vector": [1, 2]}, {"x": 2, "vector": [3, 4]}, {"x": 3, "vector": [5, 6]}
+        ...    {"x": 1, "vector": [1, 2]}, 
+        ...    {"x": 2, "vector": [3, 4]}, 
+        ...    {"x": 3, "vector": [5, 6]}
         ... ]
         >>> db = lancedb.connect("./.lancedb")
         >>> table = db.create_table("my_table", data)
@@ -413,7 +415,8 @@ class LanceTable(Table):
         --------
         >>> import lancedb
         >>> db = lancedb.connect("./.lancedb")
-        >>> table = db.create_table("my_table", [{"vector": [1.1, 0.9], "type": "vector"}])
+        >>> table = db.create_table("my_table", 
+        ...    [{"vector": [1.1, 0.9], "type": "vector"}])
         >>> table.version
         2
         >>> table.to_pandas()
@@ -460,7 +463,8 @@ class LanceTable(Table):
         --------
         >>> import lancedb
         >>> db = lancedb.connect("./.lancedb")
-        >>> table = db.create_table("my_table", [{"vector": [1.1, 0.9], "type": "vector"}])
+        >>> table = db.create_table("my_table", [
+        ...     {"vector": [1.1, 0.9], "type": "vector"}])
         >>> table.version
         2
         >>> table.to_pandas()
@@ -712,10 +716,10 @@ class LanceTable(Table):
         Examples
         --------
         >>> table.search(query, vector_column_name="img_emb")
-        ... .where("original_width > 1000", prefilter=True)
-        ... .select(["caption", "url", "original_width"])
-        ... .limit(10)
-        ... .to_arrow()
+        ...     .where("original_width > 1000", prefilter=True)
+        ...     .select(["caption", "url", "original_width"])
+        ...     .limit(10)
+        ...     .to_arrow()
 
         Parameters
         ----------
@@ -766,7 +770,9 @@ class LanceTable(Table):
         --------
         >>> import lancedb
         >>> data = [
-        ...   {"x": 1, "vector": [1, 2]}, {"x": 2, "vector": [3, 4]}, {"x": 3, "vector": [5, 6]}
+        ...    {"x": 1, "vector": [1, 2]}, 
+        ...    {"x": 2, "vector": [3, 4]}, 
+        ...    {"x": 3, "vector": [5, 6]}
         ... ]
         >>> db = lancedb.connect("./.lancedb")
         >>> table = db.create_table("my_table", data)
@@ -786,7 +792,8 @@ class LanceTable(Table):
             The data to insert into the table.
             At least one of `data` or `schema` must be provided.
         schema: pa.Schema or LanceModel, optional
-            The schema of the table. If not provided, the schema is inferred from the data.
+            The schema of the table. If not provided, 
+            the schema is inferred from the data.
             At least one of `data` or `schema` must be provided.
         mode: str, default "create"
             The mode to use when writing the data. Valid values are
@@ -884,7 +891,9 @@ class LanceTable(Table):
         --------
         >>> import lancedb
         >>> data = [
-        ...   {"x": 1, "vector": [1, 2]}, {"x": 2, "vector": [3, 4]}, {"x": 3, "vector": [5, 6]}
+        ...    {"x": 1, "vector": [1, 2]}, 
+        ...    "x": 2, "vector": [3, 4]}, 
+        ...    {"x": 3, "vector": [5, 6]}
         ... ]
         >>> db = lancedb.connect("./.lancedb")
         >>> table = db.create_table("my_table", data)
@@ -1065,7 +1074,8 @@ def _sanitize_vector_column(
     # ChunkedArray is annoying to work with, so we combine chunks here
     vec_arr = data[vector_column_name].combine_chunks()
     if pa.types.is_list(data[vector_column_name].type):
-        # if it's a variable size list array we make sure the dimensions are all the same
+        # if it's a variable size list array,
+        # we make sure the dimensions are all the same
         has_jagged_ndims = len(vec_arr.values) % len(data) != 0
         if has_jagged_ndims:
             data = _sanitize_jagged(

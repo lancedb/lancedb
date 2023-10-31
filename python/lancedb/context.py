@@ -59,7 +59,9 @@ def contextualize(raw_df: "pd.DataFrame") -> Contextualizer:
     8          dog I love            1
     9   I love sandwiches            2
     10    love sandwiches            2
-    >>> contextualize(data).window(7).stride(1).min_window_size(7).text_col('token').to_pandas()
+    >>> contextualize(data)
+    ...     .window(7).stride(1).min_window_size(7).text_col('token')
+    ...     .to_pandas()
                                       token  document_id
     0   The quick brown fox jumped over the            1
     1  quick brown fox jumped over the lazy            1
@@ -84,7 +86,9 @@ def contextualize(raw_df: "pd.DataFrame") -> Contextualizer:
     context windows that don't cross document boundaries. In this case, we can
     pass ``document_id`` as the group by.
 
-    >>> contextualize(data).window(4).stride(2).text_col('token').groupby('document_id').to_pandas()
+    >>> contextualize(data)
+    ...     .window(4).stride(2).text_col('token').groupby('document_id')
+    ...     .to_pandas()
                        token  document_id
     0    The quick brown fox            1
     2  brown fox jumped over            1
@@ -92,18 +96,24 @@ def contextualize(raw_df: "pd.DataFrame") -> Contextualizer:
     6           the lazy dog            1
     9      I love sandwiches            2
 
-    ``min_window_size`` determines the minimum size of the  context windows that are generated
-    This can be used to trim the last few context windows which have size less than
-    ``min_window_size``. By default context windows of size 1 are skipped.
+    ``min_window_size`` determines the minimum size of the context windows
+    that are generated.This can be used to trim the last few context windows
+    which have size less than ``min_window_size``.
+    By default context windows of size 1 are skipped.
 
-    >>> contextualize(data).window(6).stride(3).text_col('token').groupby('document_id').to_pandas()
+    >>> contextualize(data)
+    ...     .window(6).stride(3).text_col('token').groupby('document_id')
+    ...     .to_pandas()
                                  token  document_id
     0  The quick brown fox jumped over            1
     3     fox jumped over the lazy dog            1
     6                     the lazy dog            1
     9                I love sandwiches            2
 
-    >>> contextualize(data).window(6).stride(3).min_window_size(4).text_col('token').groupby('document_id').to_pandas()
+    >>> contextualize(data)
+    ...     .window(6).stride(3).min_window_size(4).text_col('token')
+    ...     .groupby('document_id')
+    ...     .to_pandas()
                                  token  document_id
     0  The quick brown fox jumped over            1
     3     fox jumped over the lazy dog            1
@@ -113,7 +123,9 @@ def contextualize(raw_df: "pd.DataFrame") -> Contextualizer:
 
 
 class Contextualizer:
-    """Create context windows from a DataFrame. See [lancedb.context.contextualize][]."""
+    """Create context windows from a DataFrame. 
+    See [lancedb.context.contextualize][].
+    """
 
     def __init__(self, raw_df):
         self._text_col = None

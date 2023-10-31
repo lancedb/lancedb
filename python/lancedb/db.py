@@ -68,7 +68,8 @@ class DBConnection(ABC):
             
             - [LanceModel][lancedb.pydantic.LanceModel]
         mode: str; default "create"
-            The mode to use when creating the table. Can be either "create" or "overwrite".
+            The mode to use when creating the table. 
+            Can be either "create" or "overwrite".
             By default, if the table already exists, an exception is raised.
             If you want to overwrite the table, use mode="overwrite".
         on_bad_vectors: str, default "error"
@@ -161,7 +162,8 @@ class DBConnection(ABC):
         ...     for i in range(5):
         ...         yield pa.RecordBatch.from_arrays(
         ...             [
-        ...                 pa.array([[3.1, 4.1], [5.9, 26.5]], pa.list_(pa.float32(), 2)),
+        ...                 pa.array([[3.1, 4.1], [5.9, 26.5]], 
+        ...                     pa.list_(pa.float32(), 2)),
         ...                 pa.array(["foo", "bar"]),
         ...                 pa.array([10.0, 20.0]),
         ...             ],
