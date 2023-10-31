@@ -1,5 +1,5 @@
-from typing import List
 from functools import lru_cache
+from typing import List
 
 import numpy as np
 
@@ -11,7 +11,7 @@ from .utils import TEXT, weak_lru
 @register("instructor")
 class InstuctorEmbeddingFunction(TextEmbeddingFunction):
     """
-    An embedding function that uses the InstructorEmbedding library. Instructor models support multi-task learning, and can be used for a 
+    An embedding function that uses the InstructorEmbedding library. Instructor models support multi-task learning, and can be used for a
     variety of tasks, including text classification, sentence similarity, and document retrieval.
     If you want to calculate customized embeddings for specific sentences, you may follow the unified template to write instructions:
         "Represent the `domain` `text_type` for `task_objective`":
@@ -19,7 +19,7 @@ class InstuctorEmbeddingFunction(TextEmbeddingFunction):
         * domain is optional, and it specifies the domain of the text, e.g., science, finance, medicine, etc.
         * text_type is required, and it specifies the encoding unit, e.g., sentence, document, paragraph, etc.
         * task_objective is optional, and it specifies the objective of embedding, e.g., retrieve a document, classify the sentence, etc.
-    
+
     For example, if you want to calculate embeddings for a document, you may write the instruction as follows:
         "Represent the document for retreival"
 
@@ -42,7 +42,7 @@ class InstuctorEmbeddingFunction(TextEmbeddingFunction):
         The instruction for the source column
     query_instruction: str, default "represent the document for retreiving the most similar documents"
         The instruction for the query
-    
+
     Examples
     --------
     import lancedb
@@ -50,7 +50,7 @@ class InstuctorEmbeddingFunction(TextEmbeddingFunction):
     from lancedb.embeddings import get_registry, InstuctorEmbeddingFunction
 
     instructor = get_registry().get("instructor").create(
-                                source_instruction="represent the docuement for retreival", 
+                                source_instruction="represent the docuement for retreival",
                                 query_instruction="represent the document for retreiving the most similar documents"
                                 )
 
@@ -64,7 +64,7 @@ class InstuctorEmbeddingFunction(TextEmbeddingFunction):
     texts = [{"text": "Capitalism has been dominant in the Western world since the end of feudalism, but most feel[who?] that..."},
             {"text": "The disparate impact theory is especially controversial under the Fair Housing Act because the Act..."},
             {"text": "Disparate impact in United States labor law refers to practices in employment, housing, and other areas that.."}]
-    
+
     tbl.add(texts)
 
     """
@@ -99,7 +99,7 @@ class InstuctorEmbeddingFunction(TextEmbeddingFunction):
 
     def generate_embeddings(self, texts: List) -> List:
         model = self.get_model()
-        res =  model.encode(
+        res = model.encode(
             texts,
             batch_size=self.batch_size,
             show_progress_bar=self.show_progress_bar,
@@ -116,8 +116,11 @@ class InstuctorEmbeddingFunction(TextEmbeddingFunction):
 
         model = instructor_embedding.INSTRUCTOR(self.name)
         if self.quantize:
-            if 'qnnpack' in torch.backends.quantized.supported_engines: # fix for https://github.com/pytorch/pytorch/issues/29327
-                torch.backends.quantized.engine = 'qnnpack'
-            model = torch.quantization.quantize_dynamic(model, {torch.nn.Linear}, dtype=torch.qint8)
+            if (
+                "qnnpack" in torch.backends.quantized.supported_engines
+            ):  # fix for https://github.com/pytorch/pytorch/issues/29327
+                torch.backends.quantized.engine = "qnnpack"
+            model = torch.quantization.quantize_dynamic(
+                model, {torch.nn.Linear}, dtype=torch.qint8
+            )
         return model
-

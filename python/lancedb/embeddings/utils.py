@@ -11,12 +11,12 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
+import functools
 import math
 import socket
 import sys
-import functools
-import weakref
 import urllib.error
+import weakref
 from typing import Callable, List, Union
 
 import numpy as np
@@ -173,12 +173,12 @@ def weak_lru(maxsize=128):
     ----------
     maxsize : int, default 128
         The maximum number of objects to cache.
-    
+
     Returns
     -------
     Callable
         A decorator that can be applied to a method.
-    
+
     Examples
     --------
     >>> class Foo:
@@ -193,8 +193,8 @@ def weak_lru(maxsize=128):
     >>> foo.bar(1)
     1
     """
-    def wrapper(func):
 
+    def wrapper(func):
         @functools.lru_cache(maxsize)
         def _func(_self, *args, **kwargs):
             return func(_self(), *args, **kwargs)
@@ -206,6 +206,7 @@ def weak_lru(maxsize=128):
         return inner
 
     return wrapper
+
 
 def url_retrieve(url: str):
     """

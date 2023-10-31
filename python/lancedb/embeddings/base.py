@@ -102,10 +102,10 @@ class EmbeddingFunction(BaseModel, ABC):
         the target vector column for this embedding function
         """
         return Field(json_schema_extra={"vector_column_for": self}, **kwargs)
-    
+
     def __eq__(self, __value: object) -> bool:
         return vars(self) == vars(__value)
-    
+
     def __hash__(self) -> int:
         return hash(frozenset(vars(self).items()))
 
