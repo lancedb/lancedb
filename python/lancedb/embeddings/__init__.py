@@ -19,4 +19,3 @@ from .registry import EmbeddingFunctionRegistry, get_registry
 from .sentence_transformers import SentenceTransformerEmbeddings
 from .instructor import InstuctorEmbeddingFunction
 from .utils import with_embeddings
-

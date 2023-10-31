@@ -5,6 +5,7 @@ from cachetools import cached
 
 from .base import TextEmbeddingFunction
 from .registry import register
+from .utils import weak_lru
 
 
 @register("sentence-transformers")
@@ -54,8 +55,7 @@ class SentenceTransformerEmbeddings(TextEmbeddingFunction):
             normalize_embeddings=self.normalize,
         ).tolist()
 
-    @classmethod
-    @cached(cache={})
+    @weak_lru(maxsize=1)
     def get_embedding_model(cls, name, device):
         """
         Get the sentence-transformers embedding model specified by the

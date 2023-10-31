@@ -162,3 +162,17 @@ def test_cohere_embedding_function():
 
     tbl.add(df)
     assert len(tbl.to_pandas()["vector"][0]) == cohere.ndims()
+
+def test_instructor_embedding():
+    model = get_registry().get("instructor").create()
+
+    class TextModel(LanceModel):
+        text: str = model.SourceField()
+        vector: Vector(model.ndims()) = model.VectorField()
+
+    df = pd.DataFrame({"text": ["hello world", "goodbye world"]})
+    db = lancedb.connect("~/lancedb")
+    tbl = db.create_table("test", schema=TextModel, mode="overwrite")
+
+    tbl.add(df)
+    assert len(tbl.to_pandas()["vector"][0]) == model.ndims()

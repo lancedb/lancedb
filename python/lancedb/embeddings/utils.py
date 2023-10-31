@@ -14,6 +14,8 @@
 import math
 import socket
 import sys
+import functools
+import weakref
 import urllib.error
 from typing import Callable, List, Union
 
@@ -161,6 +163,49 @@ class FunctionWrapper:
         else:
             yield from _chunker(arr)
 
+
+def weak_lru(maxsize=128):
+    """
+    LRU cache that keeps weak references to the objects it caches. Only caches the latest instance of the objects to make sure memory usage
+    is bounded.
+
+    Parameters
+    ----------
+    maxsize : int, default 128
+        The maximum number of objects to cache.
+    
+    Returns
+    -------
+    Callable
+        A decorator that can be applied to a method.
+    
+    Examples
+    --------
+    >>> class Foo:
+    ...     @weak_lru()
+    ...     def bar(self, x):
+    ...         return x
+    >>> foo = Foo()
+    >>> foo.bar(1)
+    1
+    >>> foo.bar(2)
+    2
+    >>> foo.bar(1)
+    1
+    """
+    def wrapper(func):
+
+        @functools.lru_cache(maxsize)
+        def _func(_self, *args, **kwargs):
+            return func(_self(), *args, **kwargs)
+
+        @functools.wraps(func)
+        def inner(self, *args, **kwargs):
+            return _func(weakref.ref(self), *args, **kwargs)
+
+        return inner
+
+    return wrapper
 
 def url_retrieve(url: str):
     """
