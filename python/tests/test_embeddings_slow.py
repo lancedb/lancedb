@@ -163,7 +163,7 @@ def test_cohere_embedding_function():
     tbl.add(df)
     assert len(tbl.to_pandas()["vector"][0]) == cohere.ndims()
 
-
+@pytest.mark.slow
 def test_instructor_embedding():
     model = get_registry().get("instructor").create()
 
