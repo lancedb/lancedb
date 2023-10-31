@@ -384,9 +384,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             If True, apply the filter before vector search, otherwise the
             filter is applied on the result of vector search.
             This feature is **EXPERIMENTAL** and may be removed and modified
-            without warning in the future. Currently this is only supported
-            in OSS and can only be used with a table that does not have an ANN
-            index.
+            without warning in the future.
 
         Returns
         -------
