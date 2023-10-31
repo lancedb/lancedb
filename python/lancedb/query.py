@@ -103,7 +103,7 @@ class LanceQueryBuilder(ABC):
             if not isinstance(query, (list, np.ndarray)):
                 conf = table.embedding_functions.get(vector_column_name)
                 if conf is not None:
-                    query = conf.function.compute_query_embeddings(query)[0]
+                    query = conf.function.compute_query_embeddings_with_retry(query)[0]
                 else:
                     msg = f"No embedding function for {vector_column_name}"
                     raise ValueError(msg)
@@ -114,7 +114,7 @@ class LanceQueryBuilder(ABC):
             else:
                 conf = table.embedding_functions.get(vector_column_name)
                 if conf is not None:
-                    query = conf.function.compute_query_embeddings(query)[0]
+                    query = conf.function.compute_query_embeddings_with_retry(query)[0]
                     return query, "vector"
                 else:
                     return query, "fts"

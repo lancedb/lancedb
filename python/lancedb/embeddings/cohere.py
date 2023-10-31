@@ -18,7 +18,7 @@ import numpy as np
 
 from .base import TextEmbeddingFunction
 from .registry import register
-from .utils import api_key_not_found_help
+from .utils import api_key_not_found_help, retry_with_exponential_backoff
 
 
 @register("cohere")
