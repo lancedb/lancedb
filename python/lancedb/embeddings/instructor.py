@@ -1,6 +1,4 @@
-import os
-from typing import ClassVar, List, Union
-from cachetools import cached
+from typing import List
 from functools import lru_cache
 
 import numpy as np
@@ -44,6 +42,31 @@ class InstuctorEmbeddingFunction(TextEmbeddingFunction):
         The instruction for the source column
     query_instruction: str, default "represent the document for retreiving the most similar documents"
         The instruction for the query
+    
+    Examples
+    --------
+    import lancedb
+    from lancedb.pydantic import LanceModel, Vector
+    from lancedb.embeddings import get_registry, InstuctorEmbeddingFunction
+
+    instructor = get_registry().get("instructor").create(
+                                source_instruction="represent the docuement for retreival", 
+                                query_instruction="represent the document for retreiving the most similar documents"
+                                )
+
+    class Schema(LanceModel):
+        vector: Vector(instructor.ndims()) = instructor.VectorField()
+        text: str = instructor.SourceField()
+
+    db = lancedb.connect("~/.lancedb")
+    tbl = db.create_table("test", schema=Schema, mode="overwrite")
+
+    texts = [{"text": "Capitalism has been dominant in the Western world since the end of feudalism, but most feel[who?] that..."},
+            {"text": "The disparate impact theory is especially controversial under the Fair Housing Act because the Act..."},
+            {"text": "Disparate impact in United States labor law refers to practices in employment, housing, and other areas that.."}]
+    
+    tbl.add(texts)
+
     """
 
     name: str = "hkunlp/instructor-base"
