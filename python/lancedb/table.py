@@ -223,7 +223,12 @@ class Table(ABC):
         ----------
         data: DATA
             The data to insert into the table. Acceptable types are:
-            list-of-dict, dict, pd.DataFrame
+            
+            - dict or list-of-dict
+            
+            - pandas.DataFrame
+
+            - pyarrow.Table or pyarrow.RecordBatch
         mode: str
             The mode to use when writing the data. Valid values are
             "append" and "overwrite".
@@ -244,7 +249,18 @@ class Table(ABC):
         query_type: str = "auto",
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
-        of the given query vector.
+        of the given query vector. We currently support [vector search][search] 
+        and [full-text search][experimental-full-text-search].
+
+        All query options are defined in [Query][lancedb.query.Query].
+
+        Examples
+        --------
+        >>> table.search(query, vector_column_name="img_emb")
+        ...   .where("original_width > 1000", prefilter=True)
+        ...   .select(["caption", "url", "original_width"])
+        ...   .limit(10)
+        ...   .to_arrow()
 
         Parameters
         ----------
@@ -267,9 +283,8 @@ class Table(ABC):
 
                 - If `query` is a list/np.ndarray then the query type is "vector";
 
-                - If `query` is a PIL.Image.Image then either do vector search
-
-                - or raise an error if no corresponding embedding function is found.
+                - If `query` is a PIL.Image.Image then either do vector search, 
+                or raise an error if no corresponding embedding function is found.
 
             - If `query` is a string, then the query type is "vector" if the
             table has embedding functions else the query type is "fts"
@@ -690,13 +705,23 @@ class LanceTable(Table):
         query_type: str = "auto",
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
-        of the given query vector.
+        of the given query vector. We currently support [vector search][search] 
+        and [full-text search][search].
+
+
+        Examples
+        --------
+        >>> table.search(query, vector_column_name="img_emb")
+        ... .where("original_width > 1000", prefilter=True)
+        ... .select(["caption", "url", "original_width"])
+        ... .limit(10)
+        ... .to_arrow()
 
         Parameters
         ----------
         query: str, list, np.ndarray, a PIL Image or None
             The query to search for. If None then
-            the select/where/limit clauses are applied to filter
+            the select/[where][sql]/limit clauses are applied to filter
             the table
         vector_column_name: str, default "vector"
             The name of the vector column to search.

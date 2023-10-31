@@ -52,10 +52,21 @@ class DBConnection(ABC):
         ----------
         name: str
             The name of the table.
-        data: list, tuple, dict, pd.DataFrame; optional
-            The data to initialize the table. User must provide at least one of `data` or `schema`.
-        schema: pyarrow.Schema or LanceModel; optional
-            The schema of the table.
+        data: The data to initialize the table, *optional*
+            User must provide at least one of `data` or `schema`.
+            Acceptable types are:
+            
+            - dict or list-of-dict
+            
+            - pandas.DataFrame
+
+            - pyarrow.Table or pyarrow.RecordBatch
+        schema: The schema of the table, *optional*
+            Acceptable types are:
+
+            - pyarrow.Schema 
+            
+            - [LanceModel][lancedb.pydantic.LanceModel]
         mode: str; default "create"
             The mode to use when creating the table. Can be either "create" or "overwrite".
             By default, if the table already exists, an exception is raised.

@@ -32,8 +32,6 @@ pd = safe_import_pandas()
 class Query(pydantic.BaseModel):
     """The LanceDB Query
 
-    ...
-
     Attributes
     ----------
     vector : List[float]
@@ -45,8 +43,10 @@ class Query(pydantic.BaseModel):
     k : int
         top k results to return
     metric : str
-        the distance metric between a pair of vectors
-        can support L2 (default), Cosine and Dot
+        the distance metric between a pair of vectors, 
+        
+        can support L2 (default), Cosine and Dot. 
+        [metric definitions][search]
     columns : Optional[List[str]]
         which columns to return in the results
     nprobes : int
@@ -94,6 +94,9 @@ class Query(pydantic.BaseModel):
 
 
 class LanceQueryBuilder(ABC):
+    """LanceDB Query based on specific query type: 
+    vector or full text search.
+    """
     @classmethod
     def create(
         cls,
