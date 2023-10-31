@@ -226,13 +226,22 @@ class LanceQueryBuilder(ABC):
         self._columns = columns
         return self
 
-    def where(self, where) -> LanceQueryBuilder:
+    def where(self, where: str, prefilter: bool = False) -> LanceQueryBuilder:
         """Set the where clause.
 
         Parameters
         ----------
         where: str
-            The where clause.
+            The where clause which is a valid SQL where clause. See
+            `Lance filter pushdown <https://lancedb.github.io/lance/read_and_write.html#filter-push-down>`_
+            for valid SQL expressions.
+        prefilter: bool, default False
+            If True, apply the filter before vector search, otherwise the
+            filter is applied on the result of vector search.
+            This feature is **EXPERIMENTAL** and may be removed and modified
+            without warning in the future. Currently this is only supported
+            in OSS and can only be used with a table that does not have an ANN
+            index.
 
         Returns
         -------
@@ -240,6 +249,7 @@ class LanceQueryBuilder(ABC):
             The LanceQueryBuilder object.
         """
         self._where = where
+        self._prefilter = prefilter
         return self
 
 
@@ -369,7 +379,9 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         Parameters
         ----------
         where: str
-            The where clause.
+            The where clause which is a valid SQL where clause. See
+            `Lance filter pushdown <https://lancedb.github.io/lance/read_and_write.html#filter-push-down>`_
+            for valid SQL expressions.
         prefilter: bool, default False
             If True, apply the filter before vector search, otherwise the
             filter is applied on the result of vector search.
