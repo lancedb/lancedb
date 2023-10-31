@@ -266,9 +266,9 @@ class Table(ABC):
         >>> table = db.create_table("my_table", data)
         >>> query = [0.4, 1.4, 2.4]
         >>> (table.search(query, vector_column_name="vector")
-        ...     .where("original_width > 1000", prefilter=True)  
-        ...     .select(["caption", "original_width"]) 
-        ...     .limit(2) 
+        ...     .where("original_width > 1000", prefilter=True)
+        ...     .select(["caption", "original_width"])
+        ...     .limit(2)
         ...     .to_pandas())
           caption  original_width           vector  _distance
         0     foo            2000  [0.5, 3.4, 1.3]   5.220000
@@ -736,9 +736,9 @@ class LanceTable(Table):
         >>> table = db.create_table("my_table", data)
         >>> query = [0.4, 1.4, 2.4]
         >>> (table.search(query, vector_column_name="vector")
-        ...     .where("original_width > 1000", prefilter=True)  
-        ...     .select(["caption", "original_width"]) 
-        ...     .limit(2) 
+        ...     .where("original_width > 1000", prefilter=True)
+        ...     .select(["caption", "original_width"])
+        ...     .limit(2)
         ...     .to_pandas())
           caption  original_width           vector  _distance
         0     foo            2000  [0.5, 3.4, 1.3]   5.220000
