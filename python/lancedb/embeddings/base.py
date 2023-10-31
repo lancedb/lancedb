@@ -108,7 +108,7 @@ class EmbeddingFunction(BaseModel, ABC):
         return vars(self) == vars(__value)
     
     def __hash__(self) -> int:
-        return hash(tuple(sorted(str(vars(self).values()))))
+        return hash(frozenset(vars(self).items()))
 
 
 class EmbeddingFunctionConfig(BaseModel):
