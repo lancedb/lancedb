@@ -97,3 +97,4 @@ class InstuctorEmbeddingFunction(TextEmbeddingFunction):
                 torch.backends.quantized.engine = 'qnnpack'
             model = torch.quantization.quantize_dynamic(model, {torch.nn.Linear}, dtype=torch.qint8)
         return model
+

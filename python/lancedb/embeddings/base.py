@@ -103,7 +103,6 @@ class EmbeddingFunction(BaseModel, ABC):
         """
         return Field(json_schema_extra={"vector_column_for": self}, **kwargs)
     
-    # Temp impl for hashing
     def __eq__(self, __value: object) -> bool:
         return vars(self) == vars(__value)
     
