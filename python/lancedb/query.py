@@ -43,9 +43,9 @@ class Query(pydantic.BaseModel):
     k : int
         top k results to return
     metric : str
-        the distance metric between a pair of vectors, 
-        
-        can support L2 (default), Cosine and Dot. 
+        the distance metric between a pair of vectors,
+
+        can support L2 (default), Cosine and Dot.
         [metric definitions][search]
     columns : Optional[List[str]]
         which columns to return in the results
@@ -57,7 +57,7 @@ class Query(pydantic.BaseModel):
         - See discussion in [Querying an ANN Index][querying-an-ann-index] for
           tuning advice.
     refine_factor : Optional[int]
-        Refine the results by reading extra elements and re-ranking them in memory - optional 
+        Refine the results by reading extra elements and re-ranking them in memory - optional
 
         - A higher number makes search more accurate but also slower.
 
@@ -94,9 +94,10 @@ class Query(pydantic.BaseModel):
 
 
 class LanceQueryBuilder(ABC):
-    """LanceDB Query based on specific query type: 
+    """Build LanceDB query based on specific query type:
     vector or full text search.
     """
+
     @classmethod
     def create(
         cls,
@@ -423,8 +424,8 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
 
 
 class LanceFtsQueryBuilder(LanceQueryBuilder):
-    """A builder for full text search for LanceDB.
-    """
+    """A builder for full text search for LanceDB."""
+
     def __init__(self, table: "lancedb.table.Table", query: str):
         super().__init__(table)
         self._query = query

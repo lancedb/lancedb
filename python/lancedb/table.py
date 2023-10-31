@@ -223,9 +223,9 @@ class Table(ABC):
         ----------
         data: DATA
             The data to insert into the table. Acceptable types are:
-            
+
             - dict or list-of-dict
-            
+
             - pandas.DataFrame
 
             - pyarrow.Table or pyarrow.RecordBatch
@@ -249,7 +249,7 @@ class Table(ABC):
         query_type: str = "auto",
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
-        of the given query vector. We currently support [vector search][search] 
+        of the given query vector. We currently support [vector search][search]
         and [full-text search][experimental-full-text-search].
 
         All query options are defined in [Query][lancedb.query.Query].
@@ -265,17 +265,17 @@ class Table(ABC):
         Parameters
         ----------
         query: str, default None
-            The query to search for. 
+            The query to search for.
 
-            - *default None*. 
+            - *default None*.
             Acceptable types are: list, np.ndarray, PIL.Image.Image
 
             - If None then the select/where/limit clauses are applied to filter
             the table
-        vector_column_name: str 
+        vector_column_name: str
             The name of the vector column to search.
             *default "vector"*
-        query_type: str 
+        query_type: str
             *default "auto"*.
             Acceptable types are: "vector", "fts", or "auto"
 
@@ -283,7 +283,7 @@ class Table(ABC):
 
                 - If `query` is a list/np.ndarray then the query type is "vector";
 
-                - If `query` is a PIL.Image.Image then either do vector search, 
+                - If `query` is a PIL.Image.Image then either do vector search,
                 or raise an error if no corresponding embedding function is found.
 
             - If `query` is a string, then the query type is "vector" if the
@@ -293,7 +293,7 @@ class Table(ABC):
         -------
         LanceQueryBuilder
             A query builder object representing the query.
-            Once executed, the query returns 
+            Once executed, the query returns
 
             - selected columns
 
@@ -318,18 +318,18 @@ class Table(ABC):
         Parameters
         ----------
         where: str
-            The SQL where clause to use when deleting rows. 
+            The SQL where clause to use when deleting rows.
 
-            - For example, 'x = 2' or 'x IN (1, 2, 3)'. 
-            
+            - For example, 'x = 2' or 'x IN (1, 2, 3)'.
+
             The filter must not be empty, or it will error.
 
         Examples
         --------
         >>> import lancedb
         >>> data = [
-        ...    {"x": 1, "vector": [1, 2]}, 
-        ...    {"x": 2, "vector": [3, 4]}, 
+        ...    {"x": 1, "vector": [1, 2]},
+        ...    {"x": 2, "vector": [3, 4]},
         ...    {"x": 3, "vector": [5, 6]}
         ... ]
         >>> db = lancedb.connect("./.lancedb")
@@ -415,7 +415,7 @@ class LanceTable(Table):
         --------
         >>> import lancedb
         >>> db = lancedb.connect("./.lancedb")
-        >>> table = db.create_table("my_table", 
+        >>> table = db.create_table("my_table",
         ...    [{"vector": [1.1, 0.9], "type": "vector"}])
         >>> table.version
         2
@@ -709,7 +709,7 @@ class LanceTable(Table):
         query_type: str = "auto",
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
-        of the given query vector. We currently support [vector search][search] 
+        of the given query vector. We currently support [vector search][search]
         and [full-text search][search].
 
 
@@ -770,8 +770,8 @@ class LanceTable(Table):
         --------
         >>> import lancedb
         >>> data = [
-        ...    {"x": 1, "vector": [1, 2]}, 
-        ...    {"x": 2, "vector": [3, 4]}, 
+        ...    {"x": 1, "vector": [1, 2]},
+        ...    {"x": 2, "vector": [3, 4]},
         ...    {"x": 3, "vector": [5, 6]}
         ... ]
         >>> db = lancedb.connect("./.lancedb")
@@ -792,7 +792,7 @@ class LanceTable(Table):
             The data to insert into the table.
             At least one of `data` or `schema` must be provided.
         schema: pa.Schema or LanceModel, optional
-            The schema of the table. If not provided, 
+            The schema of the table. If not provided,
             the schema is inferred from the data.
             At least one of `data` or `schema` must be provided.
         mode: str, default "create"
@@ -891,8 +891,8 @@ class LanceTable(Table):
         --------
         >>> import lancedb
         >>> data = [
-        ...    {"x": 1, "vector": [1, 2]}, 
-        ...    "x": 2, "vector": [3, 4]}, 
+        ...    {"x": 1, "vector": [1, 2]},
+        ...    "x": 2, "vector": [3, 4]},
         ...    {"x": 3, "vector": [5, 6]}
         ... ]
         >>> db = lancedb.connect("./.lancedb")

@@ -54,7 +54,7 @@ pip install lancedb
 
 ## Utilities
 
-::: lancedb.vector
+::: lancedb.schema.vector
 
 ## Integrations
 

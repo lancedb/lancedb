@@ -123,7 +123,7 @@ def contextualize(raw_df: "pd.DataFrame") -> Contextualizer:
 
 
 class Contextualizer:
-    """Create context windows from a DataFrame. 
+    """Create context windows from a DataFrame.
     See [lancedb.context.contextualize][].
     """
 
