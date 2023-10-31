@@ -82,7 +82,7 @@ class InstuctorEmbeddingFunction(TextEmbeddingFunction):
         "represent the document for retreiving the most similar documents"
     )
 
-    @lru_cache(maxsize=1)
+    @weak_lru(maxsize=1)
     def ndims(self):
         model = self.get_model()
         return model.encode("foo").shape[0]
