@@ -44,7 +44,7 @@ jobs:
     - name: Run tests
       run: cargo test --all-features
   macos:
-    runs-on: macos-12
+    runs-on: macos-13
     timeout-minutes: 30
     defaults:
       run:

@@ -38,7 +38,7 @@ jobs:
             node/vectordb-*.tgz
 
   node-macos:
-    runs-on: macos-12
+    runs-on: macos-13
     # Only runs on tags that matches the make-release action
     if: startsWith(github.ref, 'refs/tags/v')
     strategy:
