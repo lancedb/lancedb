@@ -30,7 +30,40 @@ pd = safe_import_pandas()
 
 
 class Query(pydantic.BaseModel):
-    """A Query"""
+    """The LanceDB Query
+
+    Attributes
+    ----------
+    vector : List[float]
+        the vector to search for
+    filter : Optional[str]
+        sql filter to refine the query with, optional
+    prefilter : bool
+        if True then apply the filter before vector search
+    k : int
+        top k results to return
+    metric : str
+        the distance metric between a pair of vectors,
+
+        can support L2 (default), Cosine and Dot.
+        [metric definitions][search]
+    columns : Optional[List[str]]
+        which columns to return in the results
+    nprobes : int
+        The number of probes used - optional
+
+        - A higher number makes search more accurate but also slower.
+
+        - See discussion in [Querying an ANN Index][querying-an-ann-index] for
+          tuning advice.
+    refine_factor : Optional[int]
+        Refine the results by reading extra elements and re-ranking them in memory - optional
+
+        - A higher number makes search more accurate but also slower.
+
+        - See discussion in [Querying an ANN Index][querying-an-ann-index] for
+          tuning advice.
+    """
 
     vector_column: str = VECTOR_COLUMN_NAME
 
@@ -61,6 +94,10 @@ class Query(pydantic.BaseModel):
 
 
 class LanceQueryBuilder(ABC):
+    """Build LanceDB query based on specific query type:
+    vector or full text search.
+    """
+
     @classmethod
     def create(
         cls,
@@ -133,11 +170,11 @@ class LanceQueryBuilder(ABC):
         deprecated_in="0.3.1",
         removed_in="0.4.0",
         current_version=__version__,
-        details="Use the bar function instead",
+        details="Use to_pandas() instead",
     )
     def to_df(self) -> "pd.DataFrame":
         """
-        Deprecated alias for `to_pandas()`. Please use `to_pandas()` instead.
+        *Deprecated alias for `to_pandas()`. Please use `to_pandas()` instead.*
 
         Execute the query and return the results as a pandas DataFrame.
         In addition to the selected columns, LanceDB also returns a vector
@@ -253,8 +290,6 @@ class LanceQueryBuilder(ABC):
 
 class LanceVectorQueryBuilder(LanceQueryBuilder):
     """
-    A builder for nearest neighbor queries for LanceDB.
-
     Examples
     --------
     >>> import lancedb
@@ -310,7 +345,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         Higher values will yield better recall (more likely to find vectors if
         they exist) at the expense of latency.
 
-        See discussion in [Querying an ANN Index][../querying-an-ann-index] for
+        See discussion in [Querying an ANN Index][querying-an-ann-index] for
         tuning advice.
 
         Parameters
@@ -397,6 +432,8 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
 
 
 class LanceFtsQueryBuilder(LanceQueryBuilder):
+    """A builder for full text search for LanceDB."""
+
     def __init__(self, table: "lancedb.table.Table", query: str):
         super().__init__(table)
         self._query = query
