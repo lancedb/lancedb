@@ -263,7 +263,7 @@ class LanceDBConnection(DBConnection):
         return self._uri
 
     def table_names(self) -> list[str]:
-        """Get the names of all tables in the database.
+        """Get the names of all tables in the database. The names are sorted.
 
         Returns
         -------
@@ -287,6 +287,7 @@ class LanceDBConnection(DBConnection):
             for file_info in paths
             if file_info.extension == "lance"
         ]
+        tables.sort()
         return tables
 
     def __len__(self) -> int:
