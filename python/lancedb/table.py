@@ -155,7 +155,7 @@ class Table(ABC):
         """
         raise NotImplementedError
 
-    def to_pandas(self) -> pd.DataFrame:
+    def to_pandas(self) -> "pd.DataFrame":
         """Return the table as a pandas DataFrame.
 
         Returns
@@ -276,8 +276,8 @@ class Table(ABC):
 
         Parameters
         ----------
-        query: str, default None
-            The query to search for.
+        query: list/np.ndarray/str/PIL.Image.Image, default None
+            The targetted vector to search for.
 
             - *default None*.
             Acceptable types are: list, np.ndarray, PIL.Image.Image
@@ -293,7 +293,8 @@ class Table(ABC):
 
             - If "auto" then the query type is inferred from the query;
 
-                - If `query` is a list/np.ndarray then the query type is "vector";
+                - If `query` is a list/np.ndarray then the query type is
+                "vector";
 
                 - If `query` is a PIL.Image.Image then either do vector search,
                 or raise an error if no corresponding embedding function is found.
@@ -746,10 +747,14 @@ class LanceTable(Table):
 
         Parameters
         ----------
-        query: str, list, np.ndarray, a PIL Image or None
-            The query to search for. If None then
-            the select/[where][sql]/limit clauses are applied to filter
-            the table
+        query: list/np.ndarray/str/PIL.Image.Image, default None
+            The targetted vector to search for.
+
+            - *default None*.
+            Acceptable types are: list, np.ndarray, PIL.Image.Image
+
+            - If None then the select/[where][sql]/limit clauses are applied
+            to filter the table
         vector_column_name: str, default "vector"
             The name of the vector column to search.
         query_type: str, default "auto"
@@ -758,7 +763,7 @@ class LanceTable(Table):
             If `query` is a list/np.ndarray then the query type is "vector";
             If `query` is a PIL.Image.Image then either do vector search
             or raise an error if no corresponding embedding function is found.
-            If the query is a string, then the query type is "vector" if the
+            If the `query` is a string, then the query type is "vector" if the
             table has embedding functions, else the query type is "fts"
 
         Returns
@@ -887,7 +892,8 @@ class LanceTable(Table):
         file_info = fs.get_file_info(path)
         if file_info.type != pa.fs.FileType.Directory:
             raise FileNotFoundError(
-                f"Table {name} does not exist. Please first call db.create_table({name}, data)"
+                f"Table {name} does not exist."
+                f"Please first call db.create_table({name}, data)"
             )
         return tbl
 
