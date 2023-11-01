@@ -149,13 +149,13 @@ class Table(ABC):
     @property
     @abstractmethod
     def schema(self) -> pa.Schema:
-        """The [Arrow Schema](https://arrow.apache.org/docs/python/api/datatypes.html#) of
-        this Table
+        """The [Arrow Schema](https://arrow.apache.org/docs/python/api/datatypes.html#)
+        of this Table
 
         """
         raise NotImplementedError
 
-    def to_pandas(self):
+    def to_pandas(self) -> "pd.DataFrame":
         """Return the table as a pandas DataFrame.
 
         Returns
@@ -191,17 +191,18 @@ class Table(ABC):
             The distance metric to use when creating the index.
             Valid values are "L2", "cosine", or "dot".
             L2 is euclidean distance.
-        num_partitions: int
+        num_partitions: int, default 256
             The number of IVF partitions to use when creating the index.
             Default is 256.
-        num_sub_vectors: int
+        num_sub_vectors: int, default 96
             The number of PQ sub-vectors to use when creating the index.
             Default is 96.
         vector_column_name: str, default "vector"
             The vector column name to create the index.
         replace: bool, default True
-            If True, replace the existing index if it exists.
-            If False, raise an error if duplicate index exists.
+            - If True, replace the existing index if it exists.
+
+            - If False, raise an error if duplicate index exists.
         accelerator: str, default None
             If set, use the given accelerator to create the index.
             Only support "cuda" for now.
@@ -220,8 +221,14 @@ class Table(ABC):
 
         Parameters
         ----------
-        data: list-of-dict, dict, pd.DataFrame
-            The data to insert into the table.
+        data: DATA
+            The data to insert into the table. Acceptable types are:
+
+            - dict or list-of-dict
+
+            - pandas.DataFrame
+
+            - pyarrow.Table or pyarrow.RecordBatch
         mode: str
             The mode to use when writing the data. Valid values are
             "append" and "overwrite".
@@ -242,31 +249,70 @@ class Table(ABC):
         query_type: str = "auto",
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
-        of the given query vector.
+        of the given query vector. We currently support [vector search][search]
+        and [full-text search][experimental-full-text-search].
+
+        All query options are defined in [Query][lancedb.query.Query].
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> db = lancedb.connect("./.lancedb")
+        >>> data = [
+        ...    {"original_width": 100, "caption": "bar", "vector": [0.1, 2.3, 4.5]},
+        ...    {"original_width": 2000, "caption": "foo",  "vector": [0.5, 3.4, 1.3]},
+        ...    {"original_width": 3000, "caption": "test", "vector": [0.3, 6.2, 2.6]}
+        ... ]
+        >>> table = db.create_table("my_table", data)
+        >>> query = [0.4, 1.4, 2.4]
+        >>> (table.search(query, vector_column_name="vector")
+        ...     .where("original_width > 1000", prefilter=True)
+        ...     .select(["caption", "original_width"])
+        ...     .limit(2)
+        ...     .to_pandas())
+          caption  original_width           vector  _distance
+        0     foo            2000  [0.5, 3.4, 1.3]   5.220000
+        1    test            3000  [0.3, 6.2, 2.6]  23.089996
 
         Parameters
         ----------
-        query: str, list, np.ndarray, PIL.Image.Image, default None
-            The query to search for. If None then
-            the select/where/limit clauses are applied to filter
+        query: list/np.ndarray/str/PIL.Image.Image, default None
+            The targetted vector to search for.
+
+            - *default None*.
+            Acceptable types are: list, np.ndarray, PIL.Image.Image
+
+            - If None then the select/where/limit clauses are applied to filter
             the table
-        vector_column_name: str, default "vector"
+        vector_column_name: str
             The name of the vector column to search.
-        query_type: str, default "auto"
-            "vector", "fts", or "auto"
-            If "auto" then the query type is inferred from the query;
-            If `query` is a list/np.ndarray then the query type is "vector";
-            If `query` is a PIL.Image.Image then either do vector search
-            or raise an error if no corresponding embedding function is found.
-            If `query` is a string, then the query type is "vector" if the
+            *default "vector"*
+        query_type: str
+            *default "auto"*.
+            Acceptable types are: "vector", "fts", or "auto"
+
+            - If "auto" then the query type is inferred from the query;
+
+                - If `query` is a list/np.ndarray then the query type is
+                "vector";
+
+                - If `query` is a PIL.Image.Image then either do vector search,
+                or raise an error if no corresponding embedding function is found.
+
+            - If `query` is a string, then the query type is "vector" if the
             table has embedding functions else the query type is "fts"
 
         Returns
         -------
         LanceQueryBuilder
             A query builder object representing the query.
-            Once executed, the query returns selected columns, the vector,
-            and also the "_distance" column which is the distance between the query
+            Once executed, the query returns
+
+            - selected columns
+
+            - the vector
+
+            - and also the "_distance" column which is the distance between the query
             vector and the returned vector.
         """
         raise NotImplementedError
@@ -285,14 +331,19 @@ class Table(ABC):
         Parameters
         ----------
         where: str
-            The SQL where clause to use when deleting rows. For example, 'x = 2'
-            or 'x IN (1, 2, 3)'. The filter must not be empty, or it will error.
+            The SQL where clause to use when deleting rows.
+
+            - For example, 'x = 2' or 'x IN (1, 2, 3)'.
+
+            The filter must not be empty, or it will error.
 
         Examples
         --------
         >>> import lancedb
         >>> data = [
-        ...   {"x": 1, "vector": [1, 2]}, {"x": 2, "vector": [3, 4]}, {"x": 3, "vector": [5, 6]}
+        ...    {"x": 1, "vector": [1, 2]},
+        ...    {"x": 2, "vector": [3, 4]},
+        ...    {"x": 3, "vector": [5, 6]}
         ... ]
         >>> db = lancedb.connect("./.lancedb")
         >>> table = db.create_table("my_table", data)
@@ -377,7 +428,8 @@ class LanceTable(Table):
         --------
         >>> import lancedb
         >>> db = lancedb.connect("./.lancedb")
-        >>> table = db.create_table("my_table", [{"vector": [1.1, 0.9], "type": "vector"}])
+        >>> table = db.create_table("my_table",
+        ...    [{"vector": [1.1, 0.9], "type": "vector"}])
         >>> table.version
         2
         >>> table.to_pandas()
@@ -424,7 +476,8 @@ class LanceTable(Table):
         --------
         >>> import lancedb
         >>> db = lancedb.connect("./.lancedb")
-        >>> table = db.create_table("my_table", [{"vector": [1.1, 0.9], "type": "vector"}])
+        >>> table = db.create_table("my_table", [
+        ...     {"vector": [1.1, 0.9], "type": "vector"}])
         >>> table.version
         2
         >>> table.to_pandas()
@@ -669,14 +722,39 @@ class LanceTable(Table):
         query_type: str = "auto",
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
-        of the given query vector.
+        of the given query vector. We currently support [vector search][search]
+        and [full-text search][search].
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> db = lancedb.connect("./.lancedb")
+        >>> data = [
+        ...    {"original_width": 100, "caption": "bar", "vector": [0.1, 2.3, 4.5]},
+        ...    {"original_width": 2000, "caption": "foo",  "vector": [0.5, 3.4, 1.3]},
+        ...    {"original_width": 3000, "caption": "test", "vector": [0.3, 6.2, 2.6]}
+        ... ]
+        >>> table = db.create_table("my_table", data)
+        >>> query = [0.4, 1.4, 2.4]
+        >>> (table.search(query, vector_column_name="vector")
+        ...     .where("original_width > 1000", prefilter=True)
+        ...     .select(["caption", "original_width"])
+        ...     .limit(2)
+        ...     .to_pandas())
+          caption  original_width           vector  _distance
+        0     foo            2000  [0.5, 3.4, 1.3]   5.220000
+        1    test            3000  [0.3, 6.2, 2.6]  23.089996
 
         Parameters
         ----------
-        query: str, list, np.ndarray, a PIL Image or None
-            The query to search for. If None then
-            the select/where/limit clauses are applied to filter
-            the table
+        query: list/np.ndarray/str/PIL.Image.Image, default None
+            The targetted vector to search for.
+
+            - *default None*.
+            Acceptable types are: list, np.ndarray, PIL.Image.Image
+
+            - If None then the select/[where][sql]/limit clauses are applied
+            to filter the table
         vector_column_name: str, default "vector"
             The name of the vector column to search.
         query_type: str, default "auto"
@@ -685,7 +763,7 @@ class LanceTable(Table):
             If `query` is a list/np.ndarray then the query type is "vector";
             If `query` is a PIL.Image.Image then either do vector search
             or raise an error if no corresponding embedding function is found.
-            If the query is a string, then the query type is "vector" if the
+            If the `query` is a string, then the query type is "vector" if the
             table has embedding functions, else the query type is "fts"
 
         Returns
@@ -720,7 +798,9 @@ class LanceTable(Table):
         --------
         >>> import lancedb
         >>> data = [
-        ...   {"x": 1, "vector": [1, 2]}, {"x": 2, "vector": [3, 4]}, {"x": 3, "vector": [5, 6]}
+        ...    {"x": 1, "vector": [1, 2]},
+        ...    {"x": 2, "vector": [3, 4]},
+        ...    {"x": 3, "vector": [5, 6]}
         ... ]
         >>> db = lancedb.connect("./.lancedb")
         >>> table = db.create_table("my_table", data)
@@ -740,7 +820,8 @@ class LanceTable(Table):
             The data to insert into the table.
             At least one of `data` or `schema` must be provided.
         schema: pa.Schema or LanceModel, optional
-            The schema of the table. If not provided, the schema is inferred from the data.
+            The schema of the table. If not provided,
+            the schema is inferred from the data.
             At least one of `data` or `schema` must be provided.
         mode: str, default "create"
             The mode to use when writing the data. Valid values are
@@ -811,7 +892,8 @@ class LanceTable(Table):
         file_info = fs.get_file_info(path)
         if file_info.type != pa.fs.FileType.Directory:
             raise FileNotFoundError(
-                f"Table {name} does not exist. Please first call db.create_table({name}, data)"
+                f"Table {name} does not exist."
+                f"Please first call db.create_table({name}, data)"
             )
         return tbl
 
@@ -838,7 +920,9 @@ class LanceTable(Table):
         --------
         >>> import lancedb
         >>> data = [
-        ...   {"x": 1, "vector": [1, 2]}, {"x": 2, "vector": [3, 4]}, {"x": 3, "vector": [5, 6]}
+        ...    {"x": 1, "vector": [1, 2]},
+        ...    {"x": 2, "vector": [3, 4]},
+        ...    {"x": 3, "vector": [5, 6]}
         ... ]
         >>> db = lancedb.connect("./.lancedb")
         >>> table = db.create_table("my_table", data)
@@ -1013,7 +1097,8 @@ def _sanitize_vector_column(
     # ChunkedArray is annoying to work with, so we combine chunks here
     vec_arr = data[vector_column_name].combine_chunks()
     if pa.types.is_list(data[vector_column_name].type):
-        # if it's a variable size list array we make sure the dimensions are all the same
+        # if it's a variable size list array,
+        # we make sure the dimensions are all the same
         has_jagged_ndims = len(vec_arr.values) % len(data) != 0
         if has_jagged_ndims:
             data = _sanitize_jagged(

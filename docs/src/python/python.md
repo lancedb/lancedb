@@ -22,8 +22,6 @@ pip install lancedb
 
 ::: lancedb.query.LanceQueryBuilder
 
-::: lancedb.query.LanceFtsQueryBuilder
-
 ## Embeddings
 
 ::: lancedb.embeddings.registry.EmbeddingFunctionRegistry
@@ -56,7 +54,7 @@ pip install lancedb
 
 ## Utilities
 
-::: lancedb.vector
+::: lancedb.schema.vector
 
 ## Integrations
 
