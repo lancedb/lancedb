@@ -184,7 +184,6 @@ mod tests {
         pq_params.max_iters = 1;
         pq_params.num_bits = 8;
         pq_params.num_sub_vectors = 50;
-        pq_params.metric_type = MetricType::Cosine;
         pq_params.max_opq_iters = 2;
         index_builder.ivf_params(ivf_params);
         index_builder.pq_params(pq_params);
@@ -202,7 +201,6 @@ mod tests {
             assert_eq!(pq_params.max_iters, 1);
             assert_eq!(pq_params.num_bits, 8);
             assert_eq!(pq_params.num_sub_vectors, 50);
-            assert_eq!(pq_params.metric_type, MetricType::Cosine);
             assert_eq!(pq_params.max_opq_iters, 2);
         } else {
             assert!(false, "Expected second stage to be pq")
