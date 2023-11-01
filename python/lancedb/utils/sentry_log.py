@@ -63,7 +63,8 @@ def set_sentry():
         """
         if "exc_info" in hint:
             exc_type, exc_value, tb = hint["exc_info"]
-            if "out of memory" in str(exc_value).lower():
+            ignored_errors = ["out of memory", "no space left on device", "testing"]
+            if any(error in str(exc_value).lower() for error in ignored_errors):
                 return None
 
         if is_git_dir():
@@ -97,7 +98,7 @@ def set_sentry():
             dsn="https://c63ef8c64e05d1aa1a96513361f3ca2f@o4505950840946688.ingest.sentry.io/4505950933614592",
             debug=False,
             include_local_variables=False,
-            traces_sample_rate=1.0,
+            traces_sample_rate=0.5,
             environment="production",  # 'dev' or 'production'
             before_send=before_send,
             ignore_errors=[KeyboardInterrupt, FileNotFoundError, bdb.BdbQuit],
