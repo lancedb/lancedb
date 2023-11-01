@@ -11,6 +11,10 @@ on:
       - .github/workflows/node.yml
       - docker-compose.yml
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 env:
   # Disable full debug symbol generation to speed up CI build and keep memory down
   # "1" means line tables only, which is useful for panic tracebacks.
