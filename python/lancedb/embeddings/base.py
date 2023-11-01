@@ -19,8 +19,11 @@ class EmbeddingFunction(BaseModel, ABC):
     For text data, the two will be the same. For multi-modal data, the source column
     might be images and the vector column might be text.
     3. ndims method which returns the number of dimensions of the vector column
-    """ 
-    max_retries: int = 10 # Setitng 0 disables retires. Maybe this should not be enabled by default,
+    """
+
+    max_retries: int = (
+        10  # Setitng 0 disables retires. Maybe this should not be enabled by default,
+    )
     _ndims: int = PrivateAttr()
 
     @classmethod
@@ -48,13 +51,20 @@ class EmbeddingFunction(BaseModel, ABC):
         """
         Compute the embeddings for a given user query with retries
         """
-        return retry_with_exponential_backoff(self.compute_query_embeddings, max_retries=self.max_retries)(*args, **kwargs,)
-    
+        return retry_with_exponential_backoff(
+            self.compute_query_embeddings, max_retries=self.max_retries
+        )(
+            *args,
+            **kwargs,
+        )
+
     def compute_source_embeddings_with_rety(self, *args, **kwargs) -> List[np.array]:
         """
         Compute the embeddings for the source column in the database with retries
         """
-        return retry_with_exponential_backoff(self.compute_source_embeddings, max_retries=self.max_retries)( *args, **kwargs)
+        return retry_with_exponential_backoff(
+            self.compute_source_embeddings, max_retries=self.max_retries
+        )(*args, **kwargs)
 
     def sanitize_input(self, texts: TEXT) -> Union[List[str], np.ndarray]:
         """

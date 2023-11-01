@@ -14,8 +14,8 @@
 import math
 import random
 import socket
-import time
 import sys
+import time
 import urllib.error
 from typing import Callable, List, Union
 
@@ -170,10 +170,10 @@ def retry_with_exponential_backoff(
     exponential_base: float = 2,
     jitter: bool = True,
     max_retries: int = 10,
-    #errors: tuple = (),
+    # errors: tuple = (),
 ):
     """Retry a function with exponential backoff.
-    
+
     Args:
         func (function): The function to be retried.
         initial_delay (float): Initial delay in seconds (default is 1).
@@ -196,7 +196,7 @@ def retry_with_exponential_backoff(
                 return func(*args, **kwargs)
 
             # Currently retrying on all exceptions as there is no way to know the format of the error msgs used by different APIs
-            # We'll log the error and say that it is assumed that if this portion errors out, it's due to rate limit but the user 
+            # We'll log the error and say that it is assumed that if this portion errors out, it's due to rate limit but the user
             # should check the error message to be sure
             except Exception as e:
                 num_retries += 1
@@ -208,7 +208,6 @@ def retry_with_exponential_backoff(
 
                 delay *= exponential_base * (1 + jitter * random.random())
                 LOGGER.info(f"Retrying in {delay:.2f} seconds due to {e}")
-
                 time.sleep(delay)
 
     return wrapper
