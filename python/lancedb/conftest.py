@@ -1,9 +1,10 @@
 import os
 import time
+from typing import Any
 
 import numpy as np
 import pytest
-from typing import Any
+
 from .embeddings import EmbeddingFunctionRegistry, TextEmbeddingFunction
 
 # import lancedb so we don't have to in every example
