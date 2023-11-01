@@ -99,7 +99,11 @@ impl VectorIndexBuilder for IvfPQIndexBuilder {
         let ivf_params = self.ivf_params.clone().unwrap_or_default();
         let pq_params = self.pq_params.clone().unwrap_or_default();
 
-        VectorIndexParams::with_ivf_pq_params(pq_params.metric_type, ivf_params, pq_params)
+        VectorIndexParams::with_ivf_pq_params(
+            self.metric_type.unwrap_or(MetricType::L2),
+            ivf_params,
+            pq_params,
+        )
     }
 
     fn get_replace(&self) -> bool {
