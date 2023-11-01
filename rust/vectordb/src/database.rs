@@ -161,7 +161,7 @@ impl Database {
     ///
     /// * A [Vec<String>] with all table names.
     pub async fn table_names(&self) -> Result<Vec<String>> {
-        let f = self
+        let mut f = self
             .object_store
             .read_dir(self.base_path.clone())
             .await?
@@ -175,7 +175,8 @@ impl Database {
                 is_lance.unwrap_or(false)
             })
             .filter_map(|p| p.file_stem().and_then(|s| s.to_str().map(String::from)))
-            .collect();
+            .collect::<Vec<String>>();
+        f.sort();
         Ok(f)
     }
 
@@ -312,8 +313,8 @@ mod tests {
         let db = Database::connect(uri).await.unwrap();
         let tables = db.table_names().await.unwrap();
         assert_eq!(tables.len(), 2);
-        assert!(tables.contains(&String::from("table1")));
-        assert!(tables.contains(&String::from("table2")));
+        assert!(tables[0].eq(&String::from("table1")));
+        assert!(tables[1].eq(&String::from("table2")));
     }
 
     #[tokio::test]
