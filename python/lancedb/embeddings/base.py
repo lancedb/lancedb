@@ -47,7 +47,7 @@ class EmbeddingFunction(BaseModel, ABC):
         """
         pass
 
-    def compute_query_embeddings_with_rety(self, *args, **kwargs) -> List[np.array]:
+    def compute_query_embeddings_with_retry(self, *args, **kwargs) -> List[np.array]:
         """
         Compute the embeddings for a given user query with retries
         """
@@ -58,7 +58,7 @@ class EmbeddingFunction(BaseModel, ABC):
             **kwargs,
         )
 
-    def compute_source_embeddings_with_rety(self, *args, **kwargs) -> List[np.array]:
+    def compute_source_embeddings_with_retry(self, *args, **kwargs) -> List[np.array]:
         """
         Compute the embeddings for the source column in the database with retries
         """
