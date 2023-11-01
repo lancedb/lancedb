@@ -150,6 +150,21 @@ def test_ingest_iterator(tmp_path):
     run_tests(PydanticSchema)
 
 
+def test_table_names(tmp_path):
+    db = lancedb.connect(tmp_path)
+    data = pd.DataFrame(
+        {
+            "vector": [[3.1, 4.1], [5.9, 26.5]],
+            "item": ["foo", "bar"],
+            "price": [10.0, 20.0],
+        }
+    )
+    db.create_table("test2", data=data)
+    db.create_table("test1", data=data)
+    db.create_table("test3", data=data)
+    assert db.table_names() == ["test1", "test2", "test3"]
+
+
 def test_create_mode(tmp_path):
     db = lancedb.connect(tmp_path)
     data = pd.DataFrame(
