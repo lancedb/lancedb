@@ -20,7 +20,7 @@ from .utils import TEXT, weak_lru
 
 
 @register("instructor")
-class InstuctorEmbeddingFunction(TextEmbeddingFunction):
+class InstructorEmbeddingFunction(TextEmbeddingFunction):
     """
     An embedding function that uses the InstructorEmbedding library. Instructor models support multi-task learning, and can be used for a
     variety of tasks, including text classification, sentence similarity, and document retrieval.

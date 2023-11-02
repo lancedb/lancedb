@@ -13,7 +13,7 @@
 
 from .base import EmbeddingFunction, EmbeddingFunctionConfig, TextEmbeddingFunction
 from .cohere import CohereEmbeddingFunction
-from .instructor import InstuctorEmbeddingFunction
+from .instructor import InstructorEmbeddingFunction
 from .open_clip import OpenClipEmbeddings
 from .openai import OpenAIEmbeddings
 from .registry import EmbeddingFunctionRegistry, get_registry
