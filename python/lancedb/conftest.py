@@ -1,4 +1,6 @@
 import os
+import time
+from typing import Any
 
 import numpy as np
 import pytest
@@ -38,3 +40,26 @@ class MockTextEmbeddingFunction(TextEmbeddingFunction):
 
     def ndims(self):
         return 10
+
+
+class RateLimitedAPI:
+    rate_limit = 0.1  # 1 request per 0.1 second
+    last_request_time = 0
+
+    @staticmethod
+    def make_request():
+        current_time = time.time()
+
+        if current_time - RateLimitedAPI.last_request_time < RateLimitedAPI.rate_limit:
+            raise Exception("Rate limit exceeded. Please try again later.")
+
+        # Simulate a successful request
+        RateLimitedAPI.last_request_time = current_time
+        return "Request successful"
+
+
+@registry.register("test-rate-limited")
+class MockRateLimitedEmbeddingFunction(MockTextEmbeddingFunction):
+    def generate_embeddings(self, texts):
+        RateLimitedAPI.make_request()
+        return [self._compute_one_embedding(row) for row in texts]

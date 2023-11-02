@@ -15,13 +15,16 @@ import sys
 import lance
 import numpy as np
 import pyarrow as pa
+import pytest
 
-from lancedb.conftest import MockTextEmbeddingFunction
+import lancedb
+from lancedb.conftest import MockRateLimitedEmbeddingFunction, MockTextEmbeddingFunction
 from lancedb.embeddings import (
     EmbeddingFunctionConfig,
     EmbeddingFunctionRegistry,
     with_embeddings,
 )
+from lancedb.pydantic import LanceModel, Vector
 
 
 def mock_embed_func(input_data):
@@ -83,3 +86,29 @@ def test_embedding_function(tmp_path):
     expected = func.compute_query_embeddings("hello world")
 
     assert np.allclose(actual, expected)
+
+
+def test_embedding_function_rate_limit(tmp_path):
+    def _get_schema_from_model(model):
+        class Schema(LanceModel):
+            text: str = model.SourceField()
+            vector: Vector(model.ndims()) = model.VectorField()
+
+        return Schema
+
+    db = lancedb.connect(tmp_path)
+    registry = EmbeddingFunctionRegistry.get_instance()
+    model = registry.get("test-rate-limited").create(max_retries=0)
+    schema = _get_schema_from_model(model)
+    table = db.create_table("test", schema=schema, mode="overwrite")
+    table.add([{"text": "hello world"}])
+    with pytest.raises(Exception):
+        table.add([{"text": "hello world"}])
+    assert len(table) == 1
+
+    model = registry.get("test-rate-limited").create()
+    schema = _get_schema_from_model(model)
+    table = db.create_table("test", schema=schema, mode="overwrite")
+    table.add([{"text": "hello world"}])
+    table.add([{"text": "hello world"}])
+    assert len(table) == 2
