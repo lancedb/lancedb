@@ -86,7 +86,9 @@ def _append_vector_col(data: pa.Table, metadata: dict, schema: Optional[pa.Schem
     for vector_column, conf in functions.items():
         func = conf.function
         if vector_column not in data.column_names:
-            col_data = func.compute_source_embeddings(data[conf.source_column])
+            col_data = func.compute_source_embeddings_with_retry(
+                data[conf.source_column]
+            )
             if schema is not None:
                 dtype = schema.field(vector_column).type
             else:

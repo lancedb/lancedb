@@ -6,7 +6,7 @@ import numpy as np
 import pyarrow as pa
 from pydantic import BaseModel, Field, PrivateAttr
 
-from .utils import TEXT
+from .utils import TEXT, retry_with_exponential_backoff
 
 
 class EmbeddingFunction(BaseModel, ABC):
@@ -21,6 +21,9 @@ class EmbeddingFunction(BaseModel, ABC):
     3. ndims method which returns the number of dimensions of the vector column
     """
 
+    max_retries: int = (
+        7  # Setitng 0 disables retires. Maybe this should not be enabled by default,
+    )
     _ndims: int = PrivateAttr()
 
     @classmethod
@@ -43,6 +46,25 @@ class EmbeddingFunction(BaseModel, ABC):
         Compute the embeddings for the source column in the database
         """
         pass
+
+    def compute_query_embeddings_with_retry(self, *args, **kwargs) -> List[np.array]:
+        """
+        Compute the embeddings for a given user query with retries
+        """
+        return retry_with_exponential_backoff(
+            self.compute_query_embeddings, max_retries=self.max_retries
+        )(
+            *args,
+            **kwargs,
+        )
+
+    def compute_source_embeddings_with_retry(self, *args, **kwargs) -> List[np.array]:
+        """
+        Compute the embeddings for the source column in the database with retries
+        """
+        return retry_with_exponential_backoff(
+            self.compute_source_embeddings, max_retries=self.max_retries
+        )(*args, **kwargs)
 
     def sanitize_input(self, texts: TEXT) -> Union[List[str], np.ndarray]:
         """
