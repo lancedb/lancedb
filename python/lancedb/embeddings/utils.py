@@ -206,7 +206,7 @@ def weak_lru(maxsize=128):
             return _func(weakref.ref(self), *args, **kwargs)
 
         return inner
-    
+
     return wrapper
 
 
