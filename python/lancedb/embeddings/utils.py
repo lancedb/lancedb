@@ -169,7 +169,7 @@ def retry_with_exponential_backoff(
     initial_delay: float = 1,
     exponential_base: float = 2,
     jitter: bool = True,
-    max_retries: int = 10,
+    max_retries: int = 7,
     # errors: tuple = (),
 ):
     """Retry a function with exponential backoff.
