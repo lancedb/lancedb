@@ -27,7 +27,7 @@ use lance::io::object_store::WrappingObjectStore;
 use std::path::Path;
 
 use crate::error::{Error, Result};
-use crate::index::vector::{VectorIndexBuilder, VectorIndex};
+use crate::index::vector::{VectorIndex, VectorIndexBuilder};
 use crate::query::Query;
 use crate::utils::{PatchReadParam, PatchWriteParam};
 use crate::WriteMode;
@@ -393,11 +393,12 @@ impl Table {
     }
 
     pub async fn load_indices(&self) -> Result<Vec<VectorIndex>> {
-        let (indices, mf) = futures::try_join!(
-            self.dataset.load_indices(),
-            self.dataset.latest_manifest()
-        )?;
-        Ok(indices.iter().map(|i| VectorIndex::new_from_format(&mf, i)).collect())
+        let (indices, mf) =
+            futures::try_join!(self.dataset.load_indices(), self.dataset.latest_manifest())?;
+        Ok(indices
+            .iter()
+            .map(|i| VectorIndex::new_from_format(&mf, i))
+            .collect())
     }
 }
 

@@ -150,6 +150,21 @@ def test_ingest_iterator(tmp_path):
     run_tests(PydanticSchema)
 
 
+def test_table_names(tmp_path):
+    db = lancedb.connect(tmp_path)
+    data = pd.DataFrame(
+        {
+            "vector": [[3.1, 4.1], [5.9, 26.5]],
+            "item": ["foo", "bar"],
+            "price": [10.0, 20.0],
+        }
+    )
+    db.create_table("test2", data=data)
+    db.create_table("test1", data=data)
+    db.create_table("test3", data=data)
+    assert db.table_names() == ["test1", "test2", "test3"]
+
+
 def test_create_mode(tmp_path):
     db = lancedb.connect(tmp_path)
     data = pd.DataFrame(
@@ -287,3 +302,27 @@ def test_replace_index(tmp_path):
         num_sub_vectors=4,
         replace=True,
     )
+
+
+def test_prefilter_with_index(tmp_path):
+    db = lancedb.connect(uri=tmp_path)
+    data = [
+        {"vector": np.random.rand(128), "item": "foo", "price": float(i)}
+        for i in range(1000)
+    ]
+    sample_key = data[100]["vector"]
+    table = db.create_table(
+        "test",
+        data,
+    )
+    table.create_index(
+        num_partitions=2,
+        num_sub_vectors=4,
+    )
+    table = (
+        table.search(sample_key)
+        .where("price == 500", prefilter=True)
+        .limit(5)
+        .to_arrow()
+    )
+    assert table.num_rows == 1

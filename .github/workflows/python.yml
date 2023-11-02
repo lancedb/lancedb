@@ -8,6 +8,11 @@ on:
     paths:
       - python/**
       - .github/workflows/python.yml
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   linux:
     timeout-minutes: 30
@@ -43,7 +48,7 @@ jobs:
       run: pytest --doctest-modules lancedb
   mac:
     timeout-minutes: 30
-    runs-on: "macos-12"
+    runs-on: "macos-13"
     defaults:
       run:
         shell: bash

@@ -13,8 +13,10 @@
 
 import functools
 import math
+import random
 import socket
 import sys
+import time
 import urllib.error
 import weakref
 from typing import Callable, List, Union
@@ -204,6 +206,52 @@ def weak_lru(maxsize=128):
             return _func(weakref.ref(self), *args, **kwargs)
 
         return inner
+
+def retry_with_exponential_backoff(
+    func,
+    initial_delay: float = 1,
+    exponential_base: float = 2,
+    jitter: bool = True,
+    max_retries: int = 7,
+    # errors: tuple = (),
+):
+    """Retry a function with exponential backoff.
+
+    Args:
+        func (function): The function to be retried.
+        initial_delay (float): Initial delay in seconds (default is 1).
+        exponential_base (float): The base for exponential backoff (default is 2).
+        jitter (bool): Whether to add jitter to the delay (default is True).
+        max_retries (int): Maximum number of retries (default is 10).
+        errors (tuple): Tuple of specific exceptions to retry on (default is (openai.error.RateLimitError,)).
+
+    Returns:
+        function: The decorated function.
+    """
+
+    def wrapper(*args, **kwargs):
+        num_retries = 0
+        delay = initial_delay
+
+        # Loop until a successful response or max_retries is hit or an exception is raised
+        while True:
+            try:
+                return func(*args, **kwargs)
+
+            # Currently retrying on all exceptions as there is no way to know the format of the error msgs used by different APIs
+            # We'll log the error and say that it is assumed that if this portion errors out, it's due to rate limit but the user
+            # should check the error message to be sure
+            except Exception as e:
+                num_retries += 1
+
+                if num_retries > max_retries:
+                    raise Exception(
+                        f"Maximum number of retries ({max_retries}) exceeded."
+                    )
+
+                delay *= exponential_base * (1 + jitter * random.random())
+                LOGGER.info(f"Retrying in {delay:.2f} seconds due to {e}")
+                time.sleep(delay)
 
     return wrapper
 

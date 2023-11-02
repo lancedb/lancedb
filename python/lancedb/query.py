@@ -30,7 +30,40 @@ pd = safe_import_pandas()
 
 
 class Query(pydantic.BaseModel):
-    """A Query"""
+    """The LanceDB Query
+
+    Attributes
+    ----------
+    vector : List[float]
+        the vector to search for
+    filter : Optional[str]
+        sql filter to refine the query with, optional
+    prefilter : bool
+        if True then apply the filter before vector search
+    k : int
+        top k results to return
+    metric : str
+        the distance metric between a pair of vectors,
+
+        can support L2 (default), Cosine and Dot.
+        [metric definitions][search]
+    columns : Optional[List[str]]
+        which columns to return in the results
+    nprobes : int
+        The number of probes used - optional
+
+        - A higher number makes search more accurate but also slower.
+
+        - See discussion in [Querying an ANN Index][querying-an-ann-index] for
+          tuning advice.
+    refine_factor : Optional[int]
+        Refine the results by reading extra elements and re-ranking them in memory - optional
+
+        - A higher number makes search more accurate but also slower.
+
+        - See discussion in [Querying an ANN Index][querying-an-ann-index] for
+          tuning advice.
+    """
 
     vector_column: str = VECTOR_COLUMN_NAME
 
@@ -61,6 +94,10 @@ class Query(pydantic.BaseModel):
 
 
 class LanceQueryBuilder(ABC):
+    """Build LanceDB query based on specific query type:
+    vector or full text search.
+    """
+
     @classmethod
     def create(
         cls,
@@ -103,7 +140,7 @@ class LanceQueryBuilder(ABC):
             if not isinstance(query, (list, np.ndarray)):
                 conf = table.embedding_functions.get(vector_column_name)
                 if conf is not None:
-                    query = conf.function.compute_query_embeddings(query)[0]
+                    query = conf.function.compute_query_embeddings_with_retry(query)[0]
                 else:
                     msg = f"No embedding function for {vector_column_name}"
                     raise ValueError(msg)
@@ -114,7 +151,7 @@ class LanceQueryBuilder(ABC):
             else:
                 conf = table.embedding_functions.get(vector_column_name)
                 if conf is not None:
-                    query = conf.function.compute_query_embeddings(query)[0]
+                    query = conf.function.compute_query_embeddings_with_retry(query)[0]
                     return query, "vector"
                 else:
                     return query, "fts"
@@ -133,11 +170,11 @@ class LanceQueryBuilder(ABC):
         deprecated_in="0.3.1",
         removed_in="0.4.0",
         current_version=__version__,
-        details="Use the bar function instead",
+        details="Use to_pandas() instead",
     )
     def to_df(self) -> "pd.DataFrame":
         """
-        Deprecated alias for `to_pandas()`. Please use `to_pandas()` instead.
+        *Deprecated alias for `to_pandas()`. Please use `to_pandas()` instead.*
 
         Execute the query and return the results as a pandas DataFrame.
         In addition to the selected columns, LanceDB also returns a vector
@@ -226,13 +263,20 @@ class LanceQueryBuilder(ABC):
         self._columns = columns
         return self
 
-    def where(self, where) -> LanceQueryBuilder:
+    def where(self, where: str, prefilter: bool = False) -> LanceQueryBuilder:
         """Set the where clause.
 
         Parameters
         ----------
         where: str
-            The where clause.
+            The where clause which is a valid SQL where clause. See
+            `Lance filter pushdown <https://lancedb.github.io/lance/read_and_write.html#filter-push-down>`_
+            for valid SQL expressions.
+        prefilter: bool, default False
+            If True, apply the filter before vector search, otherwise the
+            filter is applied on the result of vector search.
+            This feature is **EXPERIMENTAL** and may be removed and modified
+            without warning in the future.
 
         Returns
         -------
@@ -240,13 +284,12 @@ class LanceQueryBuilder(ABC):
             The LanceQueryBuilder object.
         """
         self._where = where
+        self._prefilter = prefilter
         return self
 
 
 class LanceVectorQueryBuilder(LanceQueryBuilder):
     """
-    A builder for nearest neighbor queries for LanceDB.
-
     Examples
     --------
     >>> import lancedb
@@ -302,7 +345,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         Higher values will yield better recall (more likely to find vectors if
         they exist) at the expense of latency.
 
-        See discussion in [Querying an ANN Index][../querying-an-ann-index] for
+        See discussion in [Querying an ANN Index][querying-an-ann-index] for
         tuning advice.
 
         Parameters
@@ -369,14 +412,14 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         Parameters
         ----------
         where: str
-            The where clause.
+            The where clause which is a valid SQL where clause. See
+            `Lance filter pushdown <https://lancedb.github.io/lance/read_and_write.html#filter-push-down>`_
+            for valid SQL expressions.
         prefilter: bool, default False
             If True, apply the filter before vector search, otherwise the
             filter is applied on the result of vector search.
             This feature is **EXPERIMENTAL** and may be removed and modified
-            without warning in the future. Currently this is only supported
-            in OSS and can only be used with a table that does not have an ANN
-            index.
+            without warning in the future.
 
         Returns
         -------
@@ -389,6 +432,8 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
 
 
 class LanceFtsQueryBuilder(LanceQueryBuilder):
+    """A builder for full text search for LanceDB."""
+
     def __init__(self, table: "lancedb.table.Table", query: str):
         super().__init__(table)
         self._query = query

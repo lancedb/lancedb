@@ -70,7 +70,6 @@ fn get_index_params_builder(
                 .map(|mt| {
                     let metric_type = mt.unwrap();
                     index_builder.metric_type(metric_type);
-                    pq_params.metric_type = metric_type;
                 });
 
             let num_partitions = obj.get_opt_usize(cx, "num_partitions")?;
