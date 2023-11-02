@@ -22,7 +22,7 @@ class EmbeddingFunction(BaseModel, ABC):
     """
 
     max_retries: int = (
-        10  # Setitng 0 disables retires. Maybe this should not be enabled by default,
+        7  # Setitng 0 disables retires. Maybe this should not be enabled by default,
     )
     _ndims: int = PrivateAttr()
 
