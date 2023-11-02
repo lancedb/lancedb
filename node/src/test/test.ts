@@ -396,6 +396,40 @@ describe('LanceDB client', function () {
   })
 })
 
+describe('Remote LanceDB client', function () {
+  describe('when the server is not reachable', function () {
+    it('produces a network error', async function () {
+      const con = await lancedb.connect({
+        uri: 'db://test-1234',
+        region: 'asdfasfasfdf',
+        apiKey: 'some-api-key'
+      })
+
+      // GET
+      try {
+        await con.tableNames()
+      } catch (err) {
+        expect(err).to.have.property('message', 'Network Error: getaddrinfo ENOTFOUND test-1234.asdfasfasfdf.api.lancedb.com')
+      }
+
+      // POST
+      try {
+        await con.createTable({ name: 'vectors', schema: new Schema([]) })
+      } catch (err) {
+        expect(err).to.have.property('message', 'Network Error: getaddrinfo ENOTFOUND test-1234.asdfasfasfdf.api.lancedb.com')
+      }
+
+      // Search
+      const table = await con.openTable('vectors')
+      try {
+        await table.search([0.1, 0.3]).execute()
+      } catch (err) {
+        expect(err).to.have.property('message', 'Network Error: getaddrinfo ENOTFOUND test-1234.asdfasfasfdf.api.lancedb.com')
+      }
+    })
+  })
+})
+
 describe('Query object', function () {
   it('sets custom parameters', async function () {
     const query = new Query([0.1, 0.3])
