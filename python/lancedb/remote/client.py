@@ -13,7 +13,7 @@
 
 
 import functools
-from typing import Any, Callable, Dict, Optional, Union
+from typing import Any, Callable, Dict, Iterable, Optional, Union
 
 import aiohttp
 import attrs
@@ -151,7 +151,9 @@ class RestfulLanceDBClient:
             return await deserialize(resp)
 
     @_check_not_closed
-    async def list_tables(self, limit: int, page_token: str):
+    async def list_tables(
+        self, limit: int, page_token: Optional[str] = None
+    ) -> Iterable[str]:
         """List all tables in the database."""
         try:
             json = await self.get(

@@ -16,16 +16,14 @@ from __future__ import annotations
 import inspect
 import os
 from abc import ABC, abstractmethod
-from datetime import timedelta
 from functools import cached_property
-from typing import Any, Iterable, List, Optional, Union
+from typing import TYPE_CHECKING, Any, Iterable, List, Optional, Union
 
 import lance
 import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
 from lance import LanceDataset
-from lance.dataset import CleanupStats, ReaderLike
 from lance.vector import vec_to_table
 
 from .common import DATA, VEC, VECTOR_COLUMN_NAME
@@ -33,6 +31,12 @@ from .embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
 from .pydantic import LanceModel
 from .query import LanceQueryBuilder, Query
 from .util import fs_from_uri, safe_import_pandas
+
+if TYPE_CHECKING:
+    from datetime import timedelta
+
+    from lance.dataset import CleanupStats, ReaderLike
+
 
 pd = safe_import_pandas()
 

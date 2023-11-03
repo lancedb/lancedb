@@ -11,7 +11,8 @@ dependencies = [
     "pydantic>=1.10",
     "attrs>=21.3.0",
     "semver>=3.0",
-    "cachetools"
+    "cachetools",
+    "overrides>=0.7"
 ]
 description = "lancedb"
 authors = [{ name = "LanceDB Devs", email = "dev@lancedb.com" }]
@@ -57,6 +58,9 @@ build-backend = "setuptools.build_meta"
 
 [tool.isort]
 profile = "black"
+
+[tool.ruff]
+select = ["F", "E", "W", "I", "G", "TCH", "PERF"]
 
 [tool.pytest.ini_options]
 addopts = "--strict-markers"
