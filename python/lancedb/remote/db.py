@@ -113,6 +113,11 @@ class RemoteDBConnection(DBConnection):
     ) -> Table:
         if data is None and schema is None:
             raise ValueError("Either data or schema must be provided.")
+        if embedding_functions is not None:
+            raise NotImplementedError(
+                "embedding_functions is not supported for remote databases."
+                "Please vote <link> for this feature."
+            )
 
         if inspect.isclass(schema) and issubclass(schema, LanceModel):
             # convert LanceModel to pyarrow schema
