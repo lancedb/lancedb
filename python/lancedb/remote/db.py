@@ -14,7 +14,7 @@
 import asyncio
 import inspect
 import uuid
-from typing import TYPE_CHECKING, Iterable, List, Optional, Union
+from typing import Iterable, List, Optional, Union
 from urllib.parse import urlparse
 
 import pyarrow as pa
@@ -22,13 +22,11 @@ from overrides import override
 
 from ..common import DATA
 from ..db import DBConnection
+from ..embeddings import EmbeddingFunctionConfig
 from ..pydantic import LanceModel
 from ..table import Table, _sanitize_data
 from .arrow import to_ipc_binary
 from .client import ARROW_STREAM_CONTENT_TYPE, RestfulLanceDBClient
-
-if TYPE_CHECKING:
-    from ..embeddings import EmbeddingFunctionConfig
 
 
 class RemoteDBConnection(DBConnection):
@@ -116,7 +114,8 @@ class RemoteDBConnection(DBConnection):
         if embedding_functions is not None:
             raise NotImplementedError(
                 "embedding_functions is not supported for remote databases."
-                "Please vote <link> for this feature."
+                "Please vote https://github.com/lancedb/lancedb/issues/626 "
+                "for this feature."
             )
 
         if inspect.isclass(schema) and issubclass(schema, LanceModel):
