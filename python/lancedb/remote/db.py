@@ -12,14 +12,18 @@
 #  limitations under the License.
 
 import asyncio
+import inspect
 import uuid
-from typing import Iterator, Optional
+from typing import Iterable, List, Optional, Union
 from urllib.parse import urlparse
 
 import pyarrow as pa
+from overrides import override
 
 from ..common import DATA
 from ..db import DBConnection
+from ..embeddings import EmbeddingFunctionConfig
+from ..pydantic import LanceModel
 from ..table import Table, _sanitize_data
 from .arrow import to_ipc_binary
 from .client import ARROW_STREAM_CONTENT_TYPE, RestfulLanceDBClient
@@ -52,8 +56,10 @@ class RemoteDBConnection(DBConnection):
     def __repr__(self) -> str:
         return f"RemoveConnect(name={self.db_name})"
 
-    def table_names(self, last_token: str, limit=10) -> Iterator[str]:
+    @override
+    def table_names(self, page_token: Optional[str] = None, limit=10) -> Iterable[str]:
         """List the names of all tables in the database.
+
         Parameters
         ----------
         last_token: str
@@ -65,15 +71,16 @@ class RemoteDBConnection(DBConnection):
         """
         while True:
             result = self._loop.run_until_complete(
-                self._client.list_tables(limit, last_token)
+                self._client.list_tables(limit, page_token)
             )
             if len(result) > 0:
-                last_token = result[len(result) - 1]
+                page_token = result[len(result) - 1]
             else:
                 break
             for item in result:
-                yield result
+                yield item
 
+    @override
     def open_table(self, name: str) -> Table:
         """Open a Lance Table in the database.
 
@@ -92,16 +99,31 @@ class RemoteDBConnection(DBConnection):
 
         return RemoteTable(self, name)
 
+    @override
     def create_table(
         self,
         name: str,
         data: DATA = None,
-        schema: pa.Schema = None,
+        schema: Optional[Union[pa.Schema, LanceModel]] = None,
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
+        embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
     ) -> Table:
         if data is None and schema is None:
             raise ValueError("Either data or schema must be provided.")
+        if embedding_functions is not None:
+            raise NotImplementedError(
+                "embedding_functions is not supported for remote databases."
+                "Please vote https://github.com/lancedb/lancedb/issues/626 "
+                "for this feature."
+            )
+
+        if inspect.isclass(schema) and issubclass(schema, LanceModel):
+            # convert LanceModel to pyarrow schema
+            # note that it's possible this contains
+            # embedding function metadata already
+            schema = schema.to_arrow_schema()
+
         if data is not None:
             data = _sanitize_data(
                 data,
@@ -130,6 +152,7 @@ class RemoteDBConnection(DBConnection):
         )
         return RemoteTable(self, name)
 
+    @override
     def drop_table(self, name: str):
         """Drop a table from the database.
 
