@@ -63,6 +63,9 @@ export class HttpLancedbClient {
               }
     ).catch((err) => {
       console.error('error: ', err)
+      if (err.response === undefined) {
+        throw new Error(`Network Error: ${err.message as string}`)
+      }
       return err.response
     })
     if (response.status !== 200) {
@@ -93,6 +96,9 @@ export class HttpLancedbClient {
       }
     ).catch((err) => {
       console.error('error: ', err)
+      if (err.response === undefined) {
+        throw new Error(`Network Error: ${err.message as string}`)
+      }
       return err.response
     })
     if (response.status !== 200) {
@@ -128,6 +134,9 @@ export class HttpLancedbClient {
         }
     ).catch((err) => {
       console.error('error: ', err)
+      if (err.response === undefined) {
+        throw new Error(`Network Error: ${err.message as string}`)
+      }
       return err.response
     })
     if (response.status !== 200) {
