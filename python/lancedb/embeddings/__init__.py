@@ -11,6 +11,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
+# ruff: noqa: F401
 from .base import EmbeddingFunction, EmbeddingFunctionConfig, TextEmbeddingFunction
 from .cohere import CohereEmbeddingFunction
 from .open_clip import OpenClipEmbeddings
