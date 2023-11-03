@@ -14,7 +14,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import List, Literal, Optional, Type, Union
+from typing import TYPE_CHECKING, List, Literal, Optional, Type, Union
 
 import deprecation
 import numpy as np
@@ -23,8 +23,10 @@ import pydantic
 
 from . import __version__
 from .common import VECTOR_COLUMN_NAME
-from .pydantic import LanceModel
 from .util import safe_import_pandas
+
+if TYPE_CHECKING:
+    from .pydantic import LanceModel
 
 pd = safe_import_pandas()
 

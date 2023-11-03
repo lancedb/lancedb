@@ -31,7 +31,8 @@ class CohereEmbeddingFunction(TextEmbeddingFunction):
     Parameters
     ----------
     name: str, default "embed-multilingual-v2.0"
-        The name of the model to use. See the Cohere documentation for a list of available models.
+        The name of the model to use. See the Cohere documentation for
+        a list of available models.
 
     Examples
     --------
@@ -39,7 +40,10 @@ class CohereEmbeddingFunction(TextEmbeddingFunction):
     from lancedb.pydantic import LanceModel, Vector
     from lancedb.embeddings import EmbeddingFunctionRegistry
 
-    cohere = EmbeddingFunctionRegistry.get_instance().get("cohere").create(name="embed-multilingual-v2.0")
+    cohere = EmbeddingFunctionRegistry
+        .get_instance()
+        .get("cohere")
+        .create(name="embed-multilingual-v2.0")
 
     class TextModel(LanceModel):
         text: str = cohere.SourceField()
