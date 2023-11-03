@@ -151,7 +151,9 @@ class RestfulLanceDBClient:
             return await deserialize(resp)
 
     @_check_not_closed
-    async def list_tables(self, limit: int, page_token: str):
+    async def list_tables(
+        self, limit: int, page_token: Optional[str] = None
+    ) -> list[str]:
         """List all tables in the database."""
         try:
             json = await self.get(

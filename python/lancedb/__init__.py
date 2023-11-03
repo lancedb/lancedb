@@ -16,10 +16,11 @@ from typing import Optional
 
 __version__ = importlib.metadata.version("lancedb")
 
-from .db import URI, DBConnection, LanceDBConnection
+from .db import DBConnection, LanceDBConnection
 from .remote.db import RemoteDBConnection
 from .schema import vector
 from .utils import sentry_log
+from .common import URI
 
 
 def connect(
