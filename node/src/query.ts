@@ -33,6 +33,7 @@ export class Query<T = number[]> {
   private _filter?: string
   private _metricType?: MetricType
   protected readonly _embeddings?: EmbeddingFunction<T>
+  private _useIndex: boolean
 
   constructor (query: T, tbl?: any, embeddings?: EmbeddingFunction<T>) {
     this._tbl = tbl
@@ -44,6 +45,7 @@ export class Query<T = number[]> {
     this._filter = undefined
     this._metricType = undefined
     this._embeddings = embeddings
+    this._useIndex = true
   }
 
   /***
@@ -99,6 +101,20 @@ export class Query<T = number[]> {
      */
   metricType (value: MetricType): Query<T> {
     this._metricType = value
+    return this
+  }
+
+  /**
+     * Whether or not to use the ANN index for this query. If set to false,
+     * the query will run exact KNN on a full scan of the table. The default is
+     * true (use the index).
+     *
+     * Setting this option to false is not currently supported by LanceDB Cloud.
+     *
+     * @param value Whether or not to use the index for this query.
+     */
+  useIndex (value: boolean): Query<T> {
+    this._useIndex = value
     return this
   }
 

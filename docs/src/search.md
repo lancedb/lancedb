@@ -27,6 +27,8 @@ Currently, we support the following metrics:
 
 If you do not create a vector index, LanceDB would need to exhaustively scan the entire vector column (via `Flat Search`)
 and compute the distance for *every* vector in order to find the closest matches. This is effectively a KNN search.
+(Even if you create a vector index, you can force this behavior in LanceDB OSS by setting `use_index=False`,
+as shown below.)
 
 
 <!-- Setup Code
@@ -67,6 +69,7 @@ await db_setup.createTable('my_vectors', data)
 
     df = tbl.search(np.random.random((1536))) \
         .limit(10) \
+        .use_index(False) \
         .to_list()
     ```
 
@@ -80,6 +83,7 @@ await db_setup.createTable('my_vectors', data)
 
     const results_1 = await tbl.search(Array(1536).fill(1.2))
         .limit(10)
+        .useIndex(false)
         .execute()
     ```
 

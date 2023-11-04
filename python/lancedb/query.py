@@ -94,6 +94,8 @@ class Query(pydantic.BaseModel):
     # Refine factor.
     refine_factor: Optional[int] = None
 
+    use_index: bool = True
+
 
 class LanceQueryBuilder(ABC):
     """Build LanceDB query based on specific query type:
@@ -324,6 +326,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         self._refine_factor = None
         self._vector_column = vector_column
         self._prefilter = False
+        self._use_index = True
 
     def metric(self, metric: Literal["L2", "cosine"]) -> LanceVectorQueryBuilder:
         """Set the distance metric to use.
@@ -385,6 +388,21 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         self._refine_factor = refine_factor
         return self
 
+    def use_index(self, use_index: bool) -> LanceVectorQueryBuilder:
+        """
+        Choose whether to use an ANN index or not. Default is True.
+
+        Setting this to False is not yet supported on LanceDB Cloud.
+
+        Parameters
+        ----------
+        use_index: bool
+            If True, use an ANN index if one exists, otherwise perform exact KNN
+            on a full table scan.
+        """
+        self._use_index = use_index
+        return self
+
     def to_arrow(self) -> pa.Table:
         """
         Execute the query and return the results as an
@@ -405,6 +423,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             nprobes=self._nprobes,
             refine_factor=self._refine_factor,
             vector_column=self._vector_column,
+            use_index=self._use_index,
         )
         return self._table._execute_query(query)
 
