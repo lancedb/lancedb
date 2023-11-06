@@ -88,9 +88,9 @@ class InstructorEmbeddingFunction(TextEmbeddingFunction):
     quantize: bool = False
     # convert_to_numpy: bool = True # Hardcoding this as numpy can be ingested directly
 
-    source_instruction: str = "represent the docuement for retreival"
+    source_instruction: str = "represent the document for retrieval"
     query_instruction: str = (
-        "represent the document for retreiving the most similar documents"
+        "represent the document for retrieving the most similar documents"
     )
 
     @weak_lru(maxsize=1)
