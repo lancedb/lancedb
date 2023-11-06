@@ -165,7 +165,7 @@ def test_cohere_embedding_function():
 
 
 @pytest.mark.slow
-def test_instructor_embedding():
+def test_instructor_embedding(tmp_path):
     model = get_registry().get("instructor").create()
 
     class TextModel(LanceModel):
@@ -173,7 +173,7 @@ def test_instructor_embedding():
         vector: Vector(model.ndims()) = model.VectorField()
 
     df = pd.DataFrame({"text": ["hello world", "goodbye world"]})
-    db = lancedb.connect("~/lancedb")
+    db = lancedb.connect(tmp_path)
     tbl = db.create_table("test", schema=TextModel, mode="overwrite")
 
     tbl.add(df)
