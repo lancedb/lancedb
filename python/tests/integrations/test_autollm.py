@@ -12,7 +12,7 @@ except ImportError:
 
 
 @pytest.mark.skipif(
-    autollm is None or os.environ["OPENAI_API_KEY"] is None,
+    autollm is None or os.environ.get("OPENAI_API_KEY") is None,
     reason="autollm not installed",
 )
 def test_auto_vector_store():
