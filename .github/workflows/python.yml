@@ -46,7 +46,10 @@ jobs:
       run: pytest --doctest-modules lancedb
   mac:
     timeout-minutes: 30
-    runs-on: "macos-13"
+    strategy:
+      matrix:
+        mac-runner: [ "macos-13", "macos-13-xlarge" ]
+    runs-on: "${{ matrix.mac-runner }}"
     defaults:
       run:
         shell: bash
