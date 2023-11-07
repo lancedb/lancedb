@@ -48,8 +48,11 @@ jobs:
     - name: Run tests
       run: cargo test --all-features
   macos:
-    runs-on: macos-13
     timeout-minutes: 30
+    strategy:
+      matrix:
+        mac-runner: [ "macos-13", "macos-13-xlarge" ]
+    runs-on: "${{ matrix.mac-runner }}"
     defaults:
       run:
         shell: bash
