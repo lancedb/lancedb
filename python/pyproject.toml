@@ -54,6 +54,7 @@ dev = ["ruff", "pre-commit", "black"]
 docs = ["mkdocs", "mkdocs-jupyter", "mkdocs-material", "mkdocstrings[python]"]
 clip = ["torch", "pillow", "open-clip"]
 embeddings = ["openai", "sentence-transformers", "torch", "pillow", "open-clip-torch", "cohere"]
+integrations = ["langchain", "llama-index", "autollm"]
 
 [project.scripts]
 lancedb = "lancedb.cli.cli:cli"
