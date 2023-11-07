@@ -1,11 +1,13 @@
-import pytest
-import lancedb
 from typing import List
+
+import pytest
+
+import lancedb
 
 try:
     import langchain
-    from langchain.vectorstores import LanceDB
     from langchain.schema.embeddings import Embeddings
+    from langchain.vectorstores import LanceDB
 except ImportError:
     langchain = None
 
@@ -29,7 +31,6 @@ class TestLangchain:
         result = store.similarity_search("text 1")
         result_texts = [doc.page_content for doc in result]
         assert "text 1" in result_texts
-
 
     def test_lancedb_add_texts(self) -> None:
         embeddings = self._fake_embeddings()
@@ -72,5 +73,5 @@ class TestLangchain:
 
             async def aembed_query(self, text: str) -> List[float]:
                 return self.embed_query(text)
-        
+
         return FakeEmbeddings()

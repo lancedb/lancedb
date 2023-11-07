@@ -1,3 +1,5 @@
+import os
+
 import pytest
 
 try:
@@ -8,12 +10,17 @@ try:
 except ImportError:
     autollm = None
 
-@pytest.mark.skipif(autollm is None, reason="autollm not installed")
+
+@pytest.mark.skipif(
+    autollm is None or os.environ["OPENAI_API_KEY"] is None,
+    reason="autollm not installed",
+)
 def test_auto_vector_store():
     documents = [Document.example()]
 
     vector_store_index = AutoVectorStoreIndex.from_defaults(
-        vector_store_type="SimpleVectorStore", documents=documents)
+        vector_store_type="SimpleVectorStore", documents=documents
+    )
 
     # Check if the vector_store_index is an instance of VectorStoreIndex
     assert isinstance(vector_store_index, VectorStoreIndex)

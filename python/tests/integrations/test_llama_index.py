@@ -1,8 +1,8 @@
-import pytest
 from typing import List
 
 import numpy as np
 import pandas as pd
+import pytest
 
 try:
     import llama_index
@@ -21,6 +21,7 @@ data_stub = {
     "ref_doc_id": ["ref1", "ref2", "ref3"],
 }
 
+
 @pytest.mark.skipif(llama_index is None, reason="llama_index not installed")
 class TestLlamaIndex:
     def test_to_llama_similarities_from_df_w_score(self) -> None:
@@ -37,7 +38,6 @@ class TestLlamaIndex:
         llama_sim_array = _to_llama_similarities(df)
         assert np.allclose(llama_sim_array, [1, 0.5, 0.25])
 
-
     def test_to_llama_similarities_from_df_w_distance(self) -> None:
         data = dict(data_stub)
         distances: List[float] = [np.log(4 / 3), np.log(2), np.log(4)]
@@ -51,7 +51,6 @@ class TestLlamaIndex:
         df = pd.DataFrame(data)
         llama_sim_array = _to_llama_similarities(df)
         assert np.allclose(llama_sim_array, [0.75, 0.5, 0.25])
-
 
     def test_to_llama_similarity_from_df_ordinal(self) -> None:
         data = dict(data_stub)
