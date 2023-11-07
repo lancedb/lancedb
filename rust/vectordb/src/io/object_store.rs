@@ -25,7 +25,8 @@ use bytes::Bytes;
 use futures::{stream::BoxStream, FutureExt, StreamExt};
 use lance::io::object_store::WrappingObjectStore;
 use object_store::{
-    path::Path, GetOptions, GetResult, ListResult, MultipartId, ObjectMeta, ObjectStore, Result,
+    path::Path, Error, GetOptions, GetResult, ListResult, MultipartId, ObjectMeta, ObjectStore,
+    Result,
 };
 
 use async_trait::async_trait;
@@ -120,7 +121,10 @@ impl ObjectStore for MirroringObjectStore {
 
     async fn delete(&self, location: &Path) -> Result<()> {
         if !location.primary_only() {
-            self.secondary.delete(location).await?;
+            match self.secondary.delete(location).await {
+                Err(Error::NotFound { .. }) | Ok(_) => {}
+                Err(e) => return Err(e),
+            }
         }
         self.primary.delete(location).await
     }
