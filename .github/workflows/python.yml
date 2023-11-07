@@ -50,7 +50,6 @@ jobs:
       matrix:
         mac-runner: [ "macos-13", "macos-13-xlarge" ]
     runs-on: "${{ matrix.mac-runner }}"
-    name: macOS "$RUNNER_ARCH"
     defaults:
       run:
         shell: bash
