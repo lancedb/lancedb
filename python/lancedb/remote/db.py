@@ -13,6 +13,7 @@
 
 import asyncio
 import inspect
+import logging
 import uuid
 from typing import Iterable, List, Optional, Union
 from urllib.parse import urlparse
@@ -57,12 +58,12 @@ class RemoteDBConnection(DBConnection):
         return f"RemoveConnect(name={self.db_name})"
 
     @override
-    def table_names(self, page_token: Optional[str] = None, limit=10) -> Iterable[str]:
+    def table_names(self, page_token: Optional[str] = "", limit=10) -> Iterable[str]:
         """List the names of all tables in the database.
 
         Parameters
         ----------
-        last_token: str
+        page_token: str
             The last token to start the new page.
 
         Returns
@@ -95,8 +96,16 @@ class RemoteDBConnection(DBConnection):
         """
         from .table import RemoteTable
 
-        # TODO: check if table exists
-
+        # check if table exists
+        try:
+            self._loop.run_until_complete(
+                self._client.post(f"/v1/table/{name}/describe/")
+            )
+        except Exception:
+            logging.error(
+                "Table {name} does not exist."
+                "Please first call db.create_table({name}, data)"
+            )
         return RemoteTable(self, name)
 
     @override
