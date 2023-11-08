@@ -152,9 +152,11 @@ class RestfulLanceDBClient:
 
     @_check_not_closed
     async def list_tables(
-        self, limit: int, page_token: Optional[str] = ""
+        self, limit: int, page_token: Optional[str] = None
     ) -> Iterable[str]:
         """List all tables in the database."""
+        if page_token is None:
+            page_token = ""
         json = await self.get("/v1/table/", {"limit": limit, "page_token": page_token})
         return json["tables"]
 
