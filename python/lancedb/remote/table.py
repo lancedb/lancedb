@@ -99,8 +99,6 @@ class RemoteTable(Table):
         return LanceVectorQueryBuilder(self, query, vector_column_name)
 
     def _execute_query(self, query: Query) -> pa.Table:
-        if query.prefilter:
-            raise NotImplementedError("Cloud support for prefiltering is coming soon")
         result = self._conn._client.query(self._name, query)
         return self._conn._loop.run_until_complete(result).to_arrow()
 

@@ -155,13 +155,10 @@ class RestfulLanceDBClient:
         self, limit: int, page_token: Optional[str] = None
     ) -> Iterable[str]:
         """List all tables in the database."""
-        try:
-            json = await self.get(
-                "/v1/table/", {"limit": limit, "page_token": page_token}
-            )
-            return json["tables"]
-        except StopAsyncIteration:
-            return []
+        if page_token is None:
+            page_token = ""
+        json = await self.get("/v1/table/", {"limit": limit, "page_token": page_token})
+        return json["tables"]
 
     @_check_not_closed
     async def query(self, table_name: str, query: VectorQuery) -> VectorQueryResult:
