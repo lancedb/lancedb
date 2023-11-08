@@ -376,12 +376,12 @@ impl Table {
         self.dataset.count_fragments()
     }
 
-    pub fn count_deleted_rows(&self) -> usize {
-        self.dataset.count_deleted_rows()
+    pub async fn count_deleted_rows(&self) -> Result<usize> {
+        Ok(self.dataset.count_deleted_rows().await?)
     }
 
-    pub fn num_small_files(&self, max_rows_per_group: usize) -> usize {
-        self.dataset.num_small_files(max_rows_per_group)
+    pub async fn num_small_files(&self, max_rows_per_group: usize) -> usize {
+        self.dataset.num_small_files(max_rows_per_group).await
     }
 
     pub async fn count_indexed_rows(&self, index_uuid: &str) -> Result<Option<usize>> {
