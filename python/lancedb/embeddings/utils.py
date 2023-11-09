@@ -11,12 +11,14 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
+import functools
 import math
 import random
 import socket
 import sys
 import time
 import urllib.error
+import weakref
 from typing import Callable, List, Union
 
 import numpy as np
@@ -162,6 +164,50 @@ class FunctionWrapper:
             yield from tqdm(_chunker(arr), total=math.ceil(length / self._batch_size))
         else:
             yield from _chunker(arr)
+
+
+def weak_lru(maxsize=128):
+    """
+    LRU cache that keeps weak references to the objects it caches. Only caches the latest instance of the objects to make sure memory usage
+    is bounded.
+
+    Parameters
+    ----------
+    maxsize : int, default 128
+        The maximum number of objects to cache.
+
+    Returns
+    -------
+    Callable
+        A decorator that can be applied to a method.
+
+    Examples
+    --------
+    >>> class Foo:
+    ...     @weak_lru()
+    ...     def bar(self, x):
+    ...         return x
+    >>> foo = Foo()
+    >>> foo.bar(1)
+    1
+    >>> foo.bar(2)
+    2
+    >>> foo.bar(1)
+    1
+    """
+
+    def wrapper(func):
+        @functools.lru_cache(maxsize)
+        def _func(_self, *args, **kwargs):
+            return func(_self(), *args, **kwargs)
+
+        @functools.wraps(func)
+        def inner(self, *args, **kwargs):
+            return _func(weakref.ref(self), *args, **kwargs)
+
+        return inner
+
+    return wrapper
 
 
 def retry_with_exponential_backoff(

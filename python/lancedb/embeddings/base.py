@@ -1,3 +1,15 @@
+#  Copyright (c) 2023. LanceDB Developers
+#
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
 import importlib
 from abc import ABC, abstractmethod
 from typing import List, Union
@@ -124,6 +136,14 @@ class EmbeddingFunction(BaseModel, ABC):
         the target vector column for this embedding function
         """
         return Field(json_schema_extra={"vector_column_for": self}, **kwargs)
+
+    def __eq__(self, __value: object) -> bool:
+        if not hasattr(__value, "__dict__"):
+            return False
+        return vars(self) == vars(__value)
+
+    def __hash__(self) -> int:
+        return hash(frozenset(vars(self).items()))
 
 
 class EmbeddingFunctionConfig(BaseModel):
