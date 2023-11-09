@@ -1,3 +1,15 @@
+#  Copyright (c) 2023. LanceDB Developers
+#
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
 from typing import List, Union
 
 import numpy as np
@@ -5,6 +17,7 @@ from cachetools import cached
 
 from .base import TextEmbeddingFunction
 from .registry import register
+from .utils import weak_lru
 
 
 @register("sentence-transformers")
@@ -30,7 +43,7 @@ class SentenceTransformerEmbeddings(TextEmbeddingFunction):
         name and device. This is cached so that the model is only loaded
         once per process.
         """
-        return self.__class__.get_embedding_model(self.name, self.device)
+        return self.get_embedding_model()
 
     def ndims(self):
         if self._ndims is None:
@@ -54,9 +67,8 @@ class SentenceTransformerEmbeddings(TextEmbeddingFunction):
             normalize_embeddings=self.normalize,
         ).tolist()
 
-    @classmethod
-    @cached(cache={})
-    def get_embedding_model(cls, name, device):
+    @weak_lru(maxsize=1)
+    def get_embedding_model(self):
         """
         Get the sentence-transformers embedding model specified by the
         name and device. This is cached so that the model is only loaded
@@ -71,7 +83,7 @@ class SentenceTransformerEmbeddings(TextEmbeddingFunction):
 
         TODO: use lru_cache instead with a reasonable/configurable maxsize
         """
-        sentence_transformers = cls.safe_import(
+        sentence_transformers = self.safe_import(
             "sentence_transformers", "sentence-transformers"
         )
-        return sentence_transformers.SentenceTransformer(name, device=device)
+        return sentence_transformers.SentenceTransformer(self.name, device=self.device)

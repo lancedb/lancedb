@@ -32,8 +32,8 @@ from lancedb.pydantic import LanceModel, Vector
 def test_sentence_transformer(alias, tmp_path):
     db = lancedb.connect(tmp_path)
     registry = get_registry()
-    func = registry.get(alias).create()
-    func2 = registry.get(alias).create()
+    func = registry.get(alias).create(max_retries=0)
+    func2 = registry.get(alias).create(max_retries=0)
 
     class Words(LanceModel):
         text: str = func.SourceField()
@@ -150,7 +150,11 @@ def test_openclip(tmp_path):
     os.environ.get("COHERE_API_KEY") is None, reason="COHERE_API_KEY not set"
 )  # also skip if cohere not installed
 def test_cohere_embedding_function():
-    cohere = get_registry().get("cohere").create(name="embed-multilingual-v2.0")
+    cohere = (
+        get_registry()
+        .get("cohere")
+        .create(name="embed-multilingual-v2.0", max_retries=0)
+    )
 
     class TextModel(LanceModel):
         text: str = cohere.SourceField()
@@ -162,3 +166,19 @@ def test_cohere_embedding_function():
 
     tbl.add(df)
     assert len(tbl.to_pandas()["vector"][0]) == cohere.ndims()
+
+
+@pytest.mark.slow
+def test_instructor_embedding(tmp_path):
+    model = get_registry().get("instructor").create()
+
+    class TextModel(LanceModel):
+        text: str = model.SourceField()
+        vector: Vector(model.ndims()) = model.VectorField()
+
+    df = pd.DataFrame({"text": ["hello world", "goodbye world"]})
+    db = lancedb.connect(tmp_path)
+    tbl = db.create_table("test", schema=TextModel, mode="overwrite")
+
+    tbl.add(df)
+    assert len(tbl.to_pandas()["vector"][0]) == model.ndims()
