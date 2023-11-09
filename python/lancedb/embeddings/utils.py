@@ -204,11 +204,13 @@ def weak_lru(maxsize=128):
 
         @functools.wraps(func)
         def inner(self, *args, **kwargs):
-            ref = weakref.ref(self)
-            if ref is not None:
-                return _func(ref, *args, **kwargs)
-            else:
-                return func(self, *args, **kwargs)
+            try:
+                ref = weakref.ref(self)
+                if ref is not None:
+                    return _func(ref, *args, **kwargs)
+            except TypeError:
+                pass  # Fall back to using regular LRU cache without weakref if weakref cannot be created in some environments
+            return _func(self, *args, **kwargs)
 
         return inner
 
