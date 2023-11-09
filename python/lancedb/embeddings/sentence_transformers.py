@@ -43,7 +43,7 @@ class SentenceTransformerEmbeddings(TextEmbeddingFunction):
         name and device. This is cached so that the model is only loaded
         once per process.
         """
-        return self.__class__.get_embedding_model(self.name, self.device)
+        return self.get_embedding_model()
 
     def ndims(self):
         if self._ndims is None:
@@ -68,7 +68,7 @@ class SentenceTransformerEmbeddings(TextEmbeddingFunction):
         ).tolist()
 
     @weak_lru(maxsize=1)
-    def get_embedding_model(cls, name, device):
+    def get_embedding_model(self):
         """
         Get the sentence-transformers embedding model specified by the
         name and device. This is cached so that the model is only loaded
@@ -83,7 +83,7 @@ class SentenceTransformerEmbeddings(TextEmbeddingFunction):
 
         TODO: use lru_cache instead with a reasonable/configurable maxsize
         """
-        sentence_transformers = cls.safe_import(
+        sentence_transformers = self.safe_import(
             "sentence_transformers", "sentence-transformers"
         )
-        return sentence_transformers.SentenceTransformer(name, device=device)
+        return sentence_transformers.SentenceTransformer(self.name, device=self.device)
