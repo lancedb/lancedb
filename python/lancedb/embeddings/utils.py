@@ -170,6 +170,7 @@ def weak_lru(maxsize=128):
     """
     LRU cache that keeps weak references to the objects it caches. Only caches the latest instance of the objects to make sure memory usage
     is bounded.
+    Note: This automatically switches back to regular LRU cache if weakref to the object cannot be created.
 
     Parameters
     ----------
@@ -203,7 +204,11 @@ def weak_lru(maxsize=128):
 
         @functools.wraps(func)
         def inner(self, *args, **kwargs):
-            return _func(weakref.ref(self), *args, **kwargs)
+            ref = weakref.ref(self)
+            if ref is not None:
+                return _func(ref, *args, **kwargs)
+            else:
+                return func(self, *args, **kwargs)
 
         return inner
 
