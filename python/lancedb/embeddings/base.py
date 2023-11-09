@@ -138,6 +138,8 @@ class EmbeddingFunction(BaseModel, ABC):
         return Field(json_schema_extra={"vector_column_for": self}, **kwargs)
 
     def __eq__(self, __value: object) -> bool:
+        if not hasattr(__value, "dict"):
+            return False
         return vars(self) == vars(__value)
 
     def __hash__(self) -> int:
