@@ -33,7 +33,7 @@ class EmbeddingFunction(BaseModel, ABC):
     3. ndims method which returns the number of dimensions of the vector column
     """
 
-    __slots__ = ("__weakref__",) # pydantic 1.x compatibility
+    __slots__ = ("__weakref__",)  # pydantic 1.x compatibility
     max_retries: int = (
         7  # Setitng 0 disables retires. Maybe this should not be enabled by default,
     )
