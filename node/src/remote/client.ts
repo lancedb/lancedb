@@ -89,7 +89,8 @@ export class HttpLancedbClient {
       {
         headers: {
           'Content-Type': 'application/json',
-          'x-api-key': this._apiKey()
+          'x-api-key': this._apiKey(),
+          ...(this._dbName !== undefined ? { 'x-lancedb-database': this._dbName } : {})
         },
         params,
         timeout: 10000
