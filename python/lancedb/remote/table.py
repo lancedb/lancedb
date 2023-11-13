@@ -44,6 +44,14 @@ class RemoteTable(Table):
         schema = json_to_schema(resp["schema"])
         return schema
 
+    @property
+    def version(self) -> int:
+        """Get the current version of the table"""
+        resp = self._conn._loop.run_until_complete(
+            self._conn._client.post(f"/v1/table/{self._name}/describe/")
+        )
+        return resp["version"]
+
     def to_arrow(self) -> pa.Table:
         """Return the table as an Arrow table."""
         raise NotImplementedError("to_arrow() is not supported on the LanceDB cloud")
