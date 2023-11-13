@@ -237,7 +237,8 @@ export class RemoteTable<T = number[]> implements Table<T> {
   }
 
   async countRows (): Promise<number> {
-    throw new Error('Not implemented')
+    const result = await this._client.post(`/v1/table/${this._name}/describe/`)
+    return result.data?.stats?.num_rows
   }
 
   async delete (filter: string): Promise<void> {
