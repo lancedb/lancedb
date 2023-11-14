@@ -91,23 +91,23 @@ class RemoteTable(Table):
 
         Examples
         --------
-        >>> import lancedb # doctest: +SKIP
-        >>> import uuid
-        >>> from lancedb.schema import vector
-        >>> conn = lancedb.connect("db://...", api_key="...", region="...")
-        >>> table_name = uuid.uuid4().hex
-        >>> schema = pa.schema(
-        ...     [
-        ...             pa.field("id", pa.uint32(), False),
-        ...             pa.field("vector", vector(128), False),
-        ...             pa.field("s", pa.string(), False),
-        ...     ]
-        ... )
-        >>> table = conn.create_table(
-        ...     table_name,
-        ...     schema=schema,
-        ... )
-        >>> table.create_index()
+        import lancedb
+        import uuid
+        from lancedb.schema import vector
+        conn = lancedb.connect("db://...", api_key="...", region="...")
+        table_name = uuid.uuid4().hex
+        schema = pa.schema(
+            [
+                    pa.field("id", pa.uint32(), False),
+                    pa.field("vector", vector(128), False),
+                    pa.field("s", pa.string(), False),
+            ]
+        )
+        table = conn.create_table(
+            table_name,
+            schema=schema,
+        )
+        table.create_index()
         """
         index_type = "vector"
 
