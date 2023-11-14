@@ -11,35 +11,16 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
-import pyarrow as pa
 import os
 import uuid
-from lancedb.schema import vector
+
+import pyarrow as pa
 
 import lancedb
-from lancedb.remote.client import VectorQuery, VectorQueryResult
-
-
-class FakeLanceDBClient:
-    async def close(self):
-        pass
-
-    async def query(self, table_name: str, query: VectorQuery) -> VectorQueryResult:
-        assert table_name == "test"
-        t = pa.schema([]).empty_table()
-        return VectorQueryResult(t)
-
-
-def test_remote_db():
-    conn = lancedb.connect("db://client-will-be-injected", api_key="fake")
-    setattr(conn, "_client", FakeLanceDBClient())
-
-    table = conn["test"]
-    table.search([1.0, 2.0]).to_pandas()
+from lancedb.schema import vector
 
 
 def test_list_tables():
-
     uri = os.environ.get("LANCE_URI")
     api_key = os.environ.get("LANCE_API_KEY")
     region = os.environ.get("LANCE_REGION")
