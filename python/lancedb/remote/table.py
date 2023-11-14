@@ -91,7 +91,7 @@ class RemoteTable(Table):
 
         Examples
         --------
-        >>> import lancedb
+        >>> import lancedb # doctest: +SKIP
         >>> import uuid
         >>> from lancedb.schema import vector
         >>> conn = lancedb.connect("db://...", api_key="...", region="...")
