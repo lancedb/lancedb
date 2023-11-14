@@ -98,9 +98,9 @@ class RemoteTable(Table):
         >>> table_name = uuid.uuid4().hex
         >>> schema = pa.schema(
         ...     [
-        ...         pa.field("id", pa.uint32(), False),
-        ...         pa.field("vector", vector(128), False),
-        ...         pa.field("s", pa.string(), False),
+        ...             pa.field("id", pa.uint32(), False),
+        ...             pa.field("vector", vector(128), False),
+        ...             pa.field("s", pa.string(), False),
         ...     ]
         ... )
         >>> table = conn.create_table(
