@@ -72,7 +72,17 @@ class RemoteTable(Table):
         replace: bool = True,
         accelerator: Optional[str] = None,
     ):
-        raise NotImplementedError
+        index_type = "vector"
+
+        data = {
+            "column": vector_column_name,
+            "index_type": index_type,
+            "metric_type": metric,
+        }
+        resp = self._conn._loop.run_until_complete(
+            self._conn._client.post(f"/v1/table/{self._name}/create_index/", data=data)
+        )
+        return resp
 
     def add(
         self,
