@@ -1,7 +1,9 @@
 There are various Embedding functions available out of the box with lancedb. We're working on supporting other popular embedding APIs.
 
 ## Text Embedding Functions
-Here are the text embedding functions registered by default
+Here are the text embedding functions registered by default.
+Embedding functions have inbuilt rate limit handler wrapper for source and query embedding function calls that retry with exponential standoff. 
+Each `EmbeddingFunction` implementation automatically takes `max_retries` as an argument which has the deafult value of 7.
 
 ### Sentence Transformers
 Here are the parameters that you can set when registering a `sentence-transformers` object, and their default values:
