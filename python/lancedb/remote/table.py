@@ -72,7 +72,54 @@ class RemoteTable(Table):
         replace: bool = True,
         accelerator: Optional[str] = None,
     ):
-        raise NotImplementedError
+        """Create an index on the table.
+        Currently, the only parameters that matter are
+        the metric and the vector column name.
+
+        Parameters
+        ----------
+        metric : str
+            The metric to use for the index. Default is "L2".
+        num_partitions : int
+            The number of partitions to use for the index. Default is 256.
+        num_sub_vectors : int
+            The number of sub-vectors to use for the index. Default is 96.
+        vector_column_name : str
+            The name of the vector column. Default is "vector".
+        replace : bool
+            Whether to replace the existing index. Default is True.
+
+        Examples
+        --------
+        import lancedb
+        import uuid
+        from lancedb.schema import vector
+        conn = lancedb.connect("db://...", api_key="...", region="...")
+        table_name = uuid.uuid4().hex
+        schema = pa.schema(
+            [
+                    pa.field("id", pa.uint32(), False),
+                    pa.field("vector", vector(128), False),
+                    pa.field("s", pa.string(), False),
+            ]
+        )
+        table = conn.create_table(
+            table_name,
+            schema=schema,
+        )
+        table.create_index()
+        """
+        index_type = "vector"
+
+        data = {
+            "column": vector_column_name,
+            "index_type": index_type,
+            "metric_type": metric,
+        }
+        resp = self._conn._loop.run_until_complete(
+            self._conn._client.post(f"/v1/table/{self._name}/create_index/", data=data)
+        )
+        return resp
 
     def add(
         self,
