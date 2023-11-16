@@ -12,7 +12,7 @@
 #  limitations under the License.
 
 import functools
-from datetime import timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import List
 from unittest.mock import PropertyMock, patch
@@ -348,12 +348,77 @@ def test_update(db):
     assert len(table) == 2
     assert len(table.list_versions()) == 2
     table.update(where="id=0", values={"vector": [1.1, 1.1]})
-    assert len(table.list_versions()) == 4
-    assert table.version == 4
+    assert len(table.list_versions()) == 3
+    assert table.version == 3
     assert len(table) == 2
     v = table.to_arrow()["vector"].combine_chunks()
     v = v.values.to_numpy().reshape(2, 2)
     assert np.allclose(v, np.array([[1.2, 1.9], [1.1, 1.1]]))
+
+
+def test_update_types(db):
+    table = LanceTable.create(
+        db,
+        "my_table",
+        data=[
+            {
+                "id": 0,
+                "str": "foo",
+                "float": 1.1,
+                "timestamp": datetime(2021, 1, 1),
+                "date": date(2021, 1, 1),
+                "vector1": [1.0, 0.0],
+                "vector2": [1.0, 1.0],
+            }
+        ],
+    )
+    # Update with SQL
+    table.update(
+        values_sql=dict(
+            id="1",
+            str="'bar'",
+            float="2.2",
+            timestamp="TIMESTAMP '2021-01-02 00:00:00'",
+            date="DATE '2021-01-02'",
+            vector1="[2.0, 2.0]",
+            vector2="[3.0, 3.0]",
+        )
+    )
+    actual = table.to_arrow().to_pylist()[0]
+    expected = dict(
+        id=1,
+        str="bar",
+        float=2.2,
+        timestamp=datetime(2021, 1, 2),
+        date=date(2021, 1, 2),
+        vector1=[2.0, 2.0],
+        vector2=[3.0, 3.0],
+    )
+    assert actual == expected
+
+    # Update with values
+    table.update(
+        values=dict(
+            id=2,
+            str="baz",
+            float=3.3,
+            timestamp=datetime(2021, 1, 3),
+            date=date(2021, 1, 3),
+            vector1=[3.0, 3.0],
+            vector2=np.array([4.0, 4.0]),
+        )
+    )
+    actual = table.to_arrow().to_pylist()[0]
+    expected = dict(
+        id=2,
+        str="baz",
+        float=3.3,
+        timestamp=datetime(2021, 1, 3),
+        date=date(2021, 1, 3),
+        vector1=[3.0, 3.0],
+        vector2=[4.0, 4.0],
+    )
+    assert actual == expected
 
 
 def test_create_with_embedding_function(db):
