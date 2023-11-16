@@ -183,9 +183,10 @@ fn database_open_table(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let aws_region = get_aws_region(&mut cx, 4)?;
 
     let params = ReadParams {
-        store_options: Some(ObjectStoreParams::with_aws_credentials(
-            aws_creds, aws_region,
-        )),
+        store_options: Some(ObjectStoreParams{
+            aws_credentials: aws_creds,
+            ..ObjectStoreParams::default()
+        }),
         ..ReadParams::default()
     };
 

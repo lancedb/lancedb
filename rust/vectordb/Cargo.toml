@@ -22,6 +22,7 @@ snafu = { workspace = true }
 half = { workspace = true }
 lance = { workspace = true }
 lance-linalg = { workspace = true }
+lance-index = { workspace = true }
 lance-testing = { workspace = true }
 tokio = { version = "1.23", features = ["rt-multi-thread"] }
 log = { workspace = true }

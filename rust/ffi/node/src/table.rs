@@ -67,9 +67,10 @@ impl JsTable {
         let aws_region = get_aws_region(&mut cx, 6)?;
 
         let params = WriteParams {
-            store_params: Some(ObjectStoreParams::with_aws_credentials(
-                aws_creds, aws_region,
-            )),
+            store_params: Some(ObjectStoreParams{
+                aws_credentials: aws_creds,
+                ..ObjectStoreParams::default()
+            }),
             mode,
             ..WriteParams::default()
         };
@@ -109,9 +110,10 @@ impl JsTable {
         let aws_region = get_aws_region(&mut cx, 5)?;
 
         let params = WriteParams {
-            store_params: Some(ObjectStoreParams::with_aws_credentials(
-                aws_creds, aws_region,
-            )),
+            store_params: Some(ObjectStoreParams{
+                aws_credentials: aws_creds,
+                ..ObjectStoreParams::default()
+            }),
             mode: write_mode,
             ..WriteParams::default()
         };

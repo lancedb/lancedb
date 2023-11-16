@@ -20,6 +20,7 @@ futures = "0.3"
 half = { workspace = true }
 lance = { workspace = true }
 lance-linalg = { workspace = true }
+lance-index = { workspace = true }
 vectordb = { path = "../../vectordb" }
 tokio = { version = "1.23", features = ["rt-multi-thread"] }
 neon = {version = "0.10.1", default-features = false, features = ["channel-api", "napi-6", "promise-api", "task-api"] }

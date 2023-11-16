@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use chrono::Duration;
+use lance_index::IndexType;
 use std::sync::Arc;
 
 use arrow_array::{Float32Array, RecordBatchReader};
@@ -22,7 +23,7 @@ use lance::dataset::optimize::{
     compact_files, CompactionMetrics, CompactionOptions, IndexRemapperOptions,
 };
 use lance::dataset::{Dataset, WriteParams};
-use lance::index::{DatasetIndexExt, IndexType};
+use lance::index::DatasetIndexExt;
 use lance::io::object_store::WrappingObjectStore;
 use std::path::Path;
 

@@ -13,9 +13,9 @@
 // limitations under the License.
 
 use lance::format::{Index, Manifest};
-use lance::index::vector::ivf::IvfBuildParams;
 use lance::index::vector::pq::PQBuildParams;
 use lance::index::vector::VectorIndexParams;
+use lance_index::vector::ivf::IvfBuildParams;
 use lance_linalg::distance::MetricType;
 
 pub trait VectorIndexBuilder {
@@ -136,7 +136,6 @@ impl VectorIndex {
 mod tests {
     use super::*;
 
-    use lance::index::vector::ivf::IvfBuildParams;
     use lance::index::vector::pq::PQBuildParams;
     use lance::index::vector::StageParams;
 

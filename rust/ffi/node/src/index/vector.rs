@@ -12,7 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use lance::index::vector::{ivf::IvfBuildParams, pq::PQBuildParams};
+use lance::index::vector::pq::PQBuildParams;
+use lance_index::vector::ivf::IvfBuildParams;
 use lance_linalg::distance::MetricType;
 use neon::context::FunctionContext;
 use neon::prelude::*;
