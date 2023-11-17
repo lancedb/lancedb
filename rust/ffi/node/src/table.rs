@@ -64,7 +64,7 @@ impl JsTable {
         let database = db.database.clone();
 
         let aws_creds = get_aws_creds(&mut cx, 3)?;
-        let aws_region = get_aws_region(&mut cx, 6)?;
+        let _aws_region = get_aws_region(&mut cx, 6)?;
 
         let params = WriteParams {
             store_params: Some(ObjectStoreParams{
@@ -107,7 +107,7 @@ impl JsTable {
             s => return cx.throw_error(format!("invalid write mode {}", s)),
         };
         let aws_creds = get_aws_creds(&mut cx, 2)?;
-        let aws_region = get_aws_region(&mut cx, 5)?;
+        let _aws_region = get_aws_region(&mut cx, 5)?;
 
         let params = WriteParams {
             store_params: Some(ObjectStoreParams{

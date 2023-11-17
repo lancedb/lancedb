@@ -180,7 +180,7 @@ fn database_open_table(mut cx: FunctionContext) -> JsResult<JsPromise> {
 
     let aws_creds = get_aws_creds(&mut cx, 1)?;
 
-    let aws_region = get_aws_region(&mut cx, 4)?;
+    let _aws_region = get_aws_region(&mut cx, 4)?;
 
     let params = ReadParams {
         store_options: Some(ObjectStoreParams{
