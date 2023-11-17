@@ -301,6 +301,7 @@ def test_replace_index(tmp_path):
         num_partitions=2,
         num_sub_vectors=4,
         replace=True,
+        index_cache_size=10,
     )
 
 

@@ -71,6 +71,7 @@ class RemoteTable(Table):
         vector_column_name: str = VECTOR_COLUMN_NAME,
         replace: bool = True,
         accelerator: Optional[str] = None,
+        index_cache_size: Optional[int] = None,
     ):
         """Create an index on the table.
         Currently, the only parameters that matter are
@@ -88,6 +89,11 @@ class RemoteTable(Table):
             The name of the vector column. Default is "vector".
         replace : bool
             Whether to replace the existing index. Default is True.
+        accelerator : str, optional
+            If set, use the given accelerator to create the index.
+            Default is None. Currently not supported.
+        index_cache_size : int, optional
+            The size of the index cache in number of entries. Default value is 256.
 
         Examples
         --------
@@ -115,6 +121,7 @@ class RemoteTable(Table):
             "column": vector_column_name,
             "index_type": index_type,
             "metric_type": metric,
+            "index_cache_size": index_cache_size,
         }
         resp = self._conn._loop.run_until_complete(
             self._conn._client.post(f"/v1/table/{self._name}/create_index/", data=data)

@@ -188,6 +188,7 @@ class Table(ABC):
         vector_column_name: str = VECTOR_COLUMN_NAME,
         replace: bool = True,
         accelerator: Optional[str] = None,
+        index_cache_size: Optional[int] = None,
     ):
         """Create an index on the table.
 
@@ -212,6 +213,8 @@ class Table(ABC):
         accelerator: str, default None
             If set, use the given accelerator to create the index.
             Only support "cuda" for now.
+        index_cache_size : int, optional
+            The size of the index cache in number of entries. Default value is 256.
         """
         raise NotImplementedError
 
