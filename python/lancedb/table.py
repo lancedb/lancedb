@@ -559,6 +559,7 @@ class LanceTable(Table):
         vector_column_name=VECTOR_COLUMN_NAME,
         replace: bool = True,
         accelerator: Optional[str] = None,
+        index_cache_size: Optional[int] = None,
     ):
         """Create an index on the table."""
         self._dataset.create_index(
