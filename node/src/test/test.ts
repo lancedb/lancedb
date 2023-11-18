@@ -282,7 +282,8 @@ describe('LanceDB client', function () {
       )
       const table = await con.createTable({ name: 'vectors', schema })
       await table.add([{ vector: Array(128).fill(0.1) }])
-      await table.delete('vector IS NOT NULL')
+      // https://github.com/lancedb/lance/issues/1635
+      await table.delete('true')
       const result = await table.search(Array(128).fill(0.1)).execute()
       assert.isEmpty(result)
     })
