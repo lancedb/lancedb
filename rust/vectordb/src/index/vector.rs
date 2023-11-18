@@ -136,9 +136,9 @@ impl VectorIndex {
 mod tests {
     use super::*;
 
+    use lance::index::vector::StageParams;
     use lance_index::vector::ivf::IvfBuildParams;
     use lance_index::vector::pq::PQBuildParams;
-    use lance::index::vector::StageParams;
 
     use crate::index::vector::{IvfPQIndexBuilder, VectorIndexBuilder};
 

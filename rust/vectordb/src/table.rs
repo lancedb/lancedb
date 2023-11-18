@@ -419,9 +419,9 @@ mod tests {
     use arrow_data::ArrayDataBuilder;
     use arrow_schema::{DataType, Field, Schema};
     use lance::dataset::{Dataset, WriteMode};
-    use lance_index::vector::ivf::IvfBuildParams;
     use lance::index::vector::pq::PQBuildParams;
     use lance::io::object_store::{ObjectStoreParams, WrappingObjectStore};
+    use lance_index::vector::ivf::IvfBuildParams;
     use rand::Rng;
     use tempfile::tempdir;
 
