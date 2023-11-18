@@ -13,6 +13,8 @@
 // limitations under the License.
 
 use chrono::Duration;
+use lance::dataset::builder::DatasetBuilder;
+use lance_index::IndexType;
 use std::sync::Arc;
 
 use arrow_array::{Float32Array, RecordBatchReader};
@@ -22,7 +24,7 @@ use lance::dataset::optimize::{
     compact_files, CompactionMetrics, CompactionOptions, IndexRemapperOptions,
 };
 use lance::dataset::{Dataset, WriteParams};
-use lance::index::{DatasetIndexExt, IndexType};
+use lance::index::DatasetIndexExt;
 use lance::io::object_store::WrappingObjectStore;
 use std::path::Path;
 
@@ -96,7 +98,10 @@ impl Table {
             Some(wrapper) => params.patch_with_store_wrapper(wrapper)?,
             None => params,
         };
-        let dataset = Dataset::open_with_params(uri, &params)
+
+        let dataset = DatasetBuilder::from_uri(uri)
+            .with_read_params(params)
+            .load()
             .await
             .map_err(|e| match e {
                 lance::Error::DatasetNotFound { .. } => Error::TableNotFound {
@@ -414,7 +419,7 @@ mod tests {
     use arrow_data::ArrayDataBuilder;
     use arrow_schema::{DataType, Field, Schema};
     use lance::dataset::{Dataset, WriteMode};
-    use lance::index::vector::ivf::IvfBuildParams;
+    use lance_index::vector::ivf::IvfBuildParams;
     use lance::index::vector::pq::PQBuildParams;
     use lance::io::object_store::{ObjectStoreParams, WrappingObjectStore};
     use rand::Rng;
