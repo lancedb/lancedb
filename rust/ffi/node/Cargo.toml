@@ -19,6 +19,7 @@ once_cell = "1"
 futures = "0.3"
 half = { workspace = true }
 lance = { workspace = true }
+lance-index = { workspace = true }
 lance-linalg = { workspace = true }
 vectordb = { path = "../../vectordb" }
 tokio = { version = "1.23", features = ["rt-multi-thread"] }
