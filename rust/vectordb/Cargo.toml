@@ -21,6 +21,7 @@ object_store = { workspace = true }
 snafu = { workspace = true }
 half = { workspace = true }
 lance = { workspace = true }
+lance-index = { workspace = true }
 lance-linalg = { workspace = true }
 lance-testing = { workspace = true }
 tokio = { version = "1.23", features = ["rt-multi-thread"] }
