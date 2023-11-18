@@ -57,6 +57,19 @@ query_image = Image.open(p)
 table.search(query_image)
 
 ```
+### Rate limit Handling
+`EmbeddingFunction` class wraps the calls for source and query embedding generation inside a rate limit handler that retries the requests with exponential backoff after successive failures. By default the maximum retires is set to 7. You can tune it by setting it to a different number or disable it by setting it to 0.
+Example
+----
+
+```python
+clip = registry.get("open-clip").create() # Defaults to 7 max retries
+clip = registry.get("open-clip").create(max_retries=10) # Increase max retries to 10
+clip = registry.get("open-clip").create(max_retries=0) # Retries disabled
+````
+
+NOTE:
+Embedding functions can also fail due to other errors that have nothing to do with rate limits. This is why the error is also logged.
 
 ### A little fun with PyDantic
 LanceDB is integrated with PyDantic. Infact we've used the integration in the above example to define the schema. It is also being used behing the scene by the embdding function API to ingest useful information as table metadata.
