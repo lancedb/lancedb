@@ -213,6 +213,7 @@ def test_create_index_method():
                 num_sub_vectors=96,
                 vector_column_name="vector",
                 replace=True,
+                index_cache_size=256,
             )
 
             # Check that the _dataset.create_index method was called
@@ -225,6 +226,7 @@ def test_create_index_method():
                 num_sub_vectors=96,
                 replace=True,
                 accelerator=None,
+                index_cache_size=256,
             )
 
 
