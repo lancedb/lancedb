@@ -570,6 +570,7 @@ class LanceTable(Table):
             num_sub_vectors=num_sub_vectors,
             replace=replace,
             accelerator=accelerator,
+            index_cache_size=index_cache_size,
         )
         self._reset_dataset()
         register_event("create_index")
