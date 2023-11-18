@@ -1,4 +1,5 @@
 site_name: LanceDB Docs
+site_url: https://lancedb.github.io/lancedb/
 repo_url: https://github.com/lancedb/lancedb
 edit_uri: https://github.com/lancedb/lancedb/tree/main/docs/src
 repo_name: lancedb/lancedb
