@@ -30,6 +30,7 @@ from .arrow import to_ipc_binary
 from .client import ARROW_STREAM_CONTENT_TYPE, RestfulLanceDBClient
 from .errors import LanceDBClientError
 
+
 class RemoteDBConnection(DBConnection):
     """A connection to a remote LanceDB database."""
 
