@@ -28,6 +28,7 @@ from ..pydantic import LanceModel
 from ..table import Table, _sanitize_data
 from .arrow import to_ipc_binary
 from .client import ARROW_STREAM_CONTENT_TYPE, RestfulLanceDBClient
+from .errors import LanceDBClientError
 
 
 class RemoteDBConnection(DBConnection):
@@ -101,11 +102,12 @@ class RemoteDBConnection(DBConnection):
             self._loop.run_until_complete(
                 self._client.post(f"/v1/table/{name}/describe/")
             )
-        except Exception:
-            logging.error(
-                "Table {name} does not exist."
-                "Please first call db.create_table({name}, data)"
-            )
+        except LanceDBClientError as err:
+            if str(err).startswith("Not found"):
+                logging.error(
+                    f"Table {name} does not exist. "
+                    f"Please first call db.create_table({name}, data)"
+                )
         return RemoteTable(self, name)
 
     @override
