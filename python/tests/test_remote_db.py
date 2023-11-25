@@ -26,6 +26,9 @@ class FakeLanceDBClient:
         t = pa.schema([]).empty_table()
         return VectorQueryResult(t)
 
+    async def post(self, path: str):
+        pass
+
 
 def test_remote_db():
     conn = lancedb.connect("db://client-will-be-injected", api_key="fake")
