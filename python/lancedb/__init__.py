@@ -22,6 +22,8 @@ from .remote.db import RemoteDBConnection
 from .schema import vector  # noqa: F401
 from .utils import sentry_log  # noqa: F401
 
+import requests
+
 
 def connect(
     uri: URI,
@@ -70,3 +72,33 @@ def connect(
             raise ValueError(f"api_key is required to connected LanceDB cloud: {uri}")
         return RemoteDBConnection(uri, api_key, region, host_override)
     return LanceDBConnection(uri)
+
+def drop_database(uri: URI, api_key: str, region: str = "us-west-2"):
+    """Drop a LanceDB database.
+
+    Parameters
+    ----------
+    uri: str or Path
+        The uri of the database.
+
+    Examples
+    --------
+
+    For a local directory, provide a path for the database:
+
+    >>> import lancedb
+    >>> lancedb.drop_database("~/.lancedb")
+
+    For object storage, use a URI prefix:
+
+    >>> lancedb.drop_database("s3://my-bucket/lancedb")
+
+    """
+    if isinstance(uri, str) and uri.startswith("db://"):
+        control_plane_url = f"control-plane.{region}.api.lancedb.com"
+        requests.delete(
+            f"https://{control_plane_url}/api/v1/auth/token/delete",
+            json={"api_key": api_key}
+        )
+    return LanceDBConnection(uri).drop_database()
+
