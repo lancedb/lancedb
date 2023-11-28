@@ -84,14 +84,7 @@ def drop_database(uri: URI, api_key: str, region: str = "us-west-2"):
     Examples
     --------
 
-    For a local directory, provide a path for the database:
-
-    >>> import lancedb
-    >>> lancedb.drop_database("~/.lancedb")
-
-    For object storage, use a URI prefix:
-
-    >>> lancedb.drop_database("s3://my-bucket/lancedb")
+    >>> lancedb.drop_database(uri="db://", api_key="sk_...", region="...")
 
     """
     if isinstance(uri, str) and uri.startswith("db://"):
