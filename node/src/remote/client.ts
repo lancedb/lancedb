@@ -38,6 +38,7 @@ export class HttpLancedbClient {
     vector: number[],
     k: number,
     nprobes: number,
+    prefilter: boolean,
     refineFactor?: number,
     columns?: string[],
     filter?: string
@@ -50,7 +51,8 @@ export class HttpLancedbClient {
                 nprobes,
                 refineFactor,
                 columns,
-                filter
+                filter,
+                prefilter
               },
               {
                 headers: {

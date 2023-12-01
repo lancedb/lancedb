@@ -32,6 +32,7 @@ export class Query<T = number[]> {
   private _select?: string[]
   private _filter?: string
   private _metricType?: MetricType
+  private _prefilter: boolean
   protected readonly _embeddings?: EmbeddingFunction<T>
 
   constructor (query: T, tbl?: any, embeddings?: EmbeddingFunction<T>) {
@@ -44,6 +45,7 @@ export class Query<T = number[]> {
     this._filter = undefined
     this._metricType = undefined
     this._embeddings = embeddings
+    this._prefilter = false
   }
 
   /***
@@ -99,6 +101,11 @@ export class Query<T = number[]> {
      */
   metricType (value: MetricType): Query<T> {
     this._metricType = value
+    return this
+  }
+
+  prefilter (value: boolean): Query<T> {
+    this._prefilter = value
     return this
   }
 
