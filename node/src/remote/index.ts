@@ -156,7 +156,8 @@ export class RemoteQuery<T = number[]> extends Query<T> {
       (this as any)._nprobes,
       (this as any)._refineFactor,
       (this as any)._select,
-      (this as any)._filter
+      (this as any)._filter,
+      (this as any)._prefilter
     )
 
     return data.toArray().map((entry: Record<string, unknown>) => {
