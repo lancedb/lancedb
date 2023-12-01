@@ -102,6 +102,20 @@ describe('LanceDB client', function () {
       assertResults(results)
     })
 
+    it('should correctly process prefilter/postfilter', async function () {
+      const uri = await createTestDB(16, 300)
+      const con = await lancedb.connect(uri)
+      const table = await con.openTable('vectors')
+      await table.createIndex({ type: 'ivf_pq', column: 'vector', num_partitions: 2, max_iters: 2, num_sub_vectors: 2 })
+      // post filter should return less than the limit
+      let results = await table.search(new Array(16).fill(0.1)).limit(10).filter('id >= 10').prefilter(false).execute()
+      assert.isTrue(results.length < 10)
+
+      // pre filter should return exactly the limit
+      results = await table.search(new Array(16).fill(0.1)).limit(10).filter('id >= 10').prefilter(true).execute()
+      assert.isTrue(results.length === 10)
+    })
+
     it('select only a subset of columns', async function () {
       const uri = await createTestDB()
       const con = await lancedb.connect(uri)
