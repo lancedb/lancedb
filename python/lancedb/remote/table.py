@@ -64,6 +64,10 @@ class RemoteTable(Table):
         """to_pandas() is not supported on the LanceDB cloud"""
         return NotImplementedError("to_pandas() is not supported on the LanceDB cloud")
 
+    def create_scalar_index(self, *args, **kwargs):
+        """Creates a scalar index"""
+        return NotImplementedError("create_scalar_index() is not supported on the LanceDB cloud")
+
     def create_index(
         self,
         metric="L2",
