@@ -9,6 +9,19 @@ theme:
   name: "material"
   logo: assets/logo.png
   favicon: assets/logo.png
+  palette:
+    # Palette toggle for light mode
+    - scheme: default
+      primary: custom
+      toggle:
+        icon: material/lightbulb 
+        name: Switch to dark mode
+    # Palette toggle for dark mode
+    - scheme: slate
+      primary: custom
+      toggle:
+        icon: material/lightbulb-outline
+        name: Switch to light mode
   features:
     - content.code.copy
     - content.tabs.link
@@ -34,15 +47,22 @@ plugins:
     handlers:
       python:
         paths: [../python]
-        selection:
-          docstring_style: numpy
-        rendering:
-          heading_level: 4
-          show_source: true
-          show_symbol_type_in_heading: true
-          show_signature_annotations: true
+        options:
           show_root_heading: true
+          show_root_toc_entry: true
+          show_if_no_docstring: true
+          inherited_members: true
           members_order: source
+          separate_signature: true
+          show_signature_annotations: false
+          unwrap_annotated: true
+          filters: ["!^_"]
+          merge_init_into_class: true
+          docstring_style: numpy
+          # docstring_section_style: spacy
+          signature_crossrefs: true
+          show_symbol_type_heading: true
+          show_symbol_type_toc: true
         import:
           # for cross references
           - https://arrow.apache.org/docs/objects.inv
