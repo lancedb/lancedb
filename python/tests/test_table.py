@@ -533,7 +533,13 @@ def test_multiple_vector_columns(db):
 
 
 def test_create_scalar_index(db):
-    table = LanceTable.create(db, "my_table", data=pa.Table.from_pydict({"x": ["c", "b", "a", "e", "b"], "y": [1, 2, 3, 4, 5]}))
+    table = LanceTable.create(
+        db,
+        "my_table",
+        data=pa.Table.from_pydict(
+            {"x": ["c", "b", "a", "e", "b"], "y": [1, 2, 3, 4, 5]}
+        ),
+    )
     table.create_scalar_index("x")
     results = table.search().where("x = 'c'").to_arrow()
     assert results == pa.Table.from_pydict({"x": ["c"], "y": [1]})
