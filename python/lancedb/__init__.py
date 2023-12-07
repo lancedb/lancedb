@@ -26,7 +26,7 @@ def connect(
     uri: URI,
     *,
     api_key: Optional[str] = None,
-    region: str = "us-west-2",
+    region: str = "us-east-1",
     host_override: Optional[str] = None,
 ) -> DBConnection:
     """Connect to a LanceDB database.
@@ -38,7 +38,7 @@ def connect(
     api_key: str, optional
         If presented, connect to LanceDB cloud.
         Otherwise, connect to a database on file system or cloud storage.
-    region: str, default "us-west-2"
+    region: str, default "us-east-1"
         The region to use for LanceDB Cloud.
     host_override: str, optional
         The override url for LanceDB Cloud.
