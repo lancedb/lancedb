@@ -85,7 +85,7 @@ class RemoteTable(Table):
         >>> import lancedb
         >>> import uuid
         >>> from lancedb.schema import vector
-        >>> conn = lancedb.connect("db://...", api_key="...", region="...")
+        >>> db = lancedb.connect("db://...", api_key="...", region="...") # doctest: +SKIP
         >>> table_name = uuid.uuid4().hex
         >>> schema = pa.schema(
         ...     [
@@ -94,11 +94,11 @@ class RemoteTable(Table):
         ...             pa.field("s", pa.string(), False),
         ...     ]
         ... )
-        >>> table = conn.create_table(
-        >>>     table_name,
-        >>>     schema=schema,
-        >>> )
-        >>> table.create_index("L2", "vector")
+        >>> table = db.create_table( # doctest: +SKIP
+        ...     table_name, # doctest: +SKIP
+        ...     schema=schema, # doctest: +SKIP
+        ... )
+        >>> table.create_index("L2", "vector") # doctest: +SKIP
         """
         index_type = "vector"
 
@@ -173,7 +173,7 @@ class RemoteTable(Table):
         Examples
         --------
         >>> import lancedb
-        >>> db = lancedb.connect("db://...", api_key="...", region="...")
+        >>> db = lancedb.connect("./.lancedb")
         >>> data = [
         ...    {"original_width": 100, "caption": "bar", "vector": [0.1, 2.3, 4.5]},
         ...    {"original_width": 2000, "caption": "foo",  "vector": [0.5, 3.4, 1.3]},
@@ -246,30 +246,28 @@ class RemoteTable(Table):
         ...    {"x": 2, "vector": [3, 4]},
         ...    {"x": 3, "vector": [5, 6]}
         ... ]
-        >>> db = lancedb.connect("db://...", api_key="...", region="...")
-        >>> table = db.create_table("my_table", data)
-        >>> table.search([10,10]).to_pandas()
-           x      vector  _distance
-        0  3  [5.0, 6.0]       41.0
-        1  2  [3.0, 4.0]       85.0
-        2  1  [1.0, 2.0]      145.0
-        >>> table.delete("x = 2")
-        >>> table.search([10,10]).to_pandas()
-           x      vector  _distance
-        0  3  [5.0, 6.0]       41.0
-        1  1  [1.0, 2.0]      145.0
+        >>> db = lancedb.connect("db://my-test", api_key="sk...") # doctest: +SKIP
+        >>> table = db.create_table("my_table", data) # doctest: +SKIP
+        >>> table.search([10,10]).to_pandas() # doctest: +SKIP
+           x      vector  _distance # doctest: +SKIP
+        0  3  [5.0, 6.0]       41.0 # doctest: +SKIP
+        1  2  [3.0, 4.0]       85.0 # doctest: +SKIP
+        2  1  [1.0, 2.0]      145.0 # doctest: +SKIP
+        >>> table.delete("x = 2") # doctest: +SKIP
+        >>> table.search([10,10]).to_pandas() # doctest: +SKIP
+           x      vector  _distance # doctest: +SKIP
+        0  3  [5.0, 6.0]       41.0 # doctest: +SKIP
+        1  1  [1.0, 2.0]      145.0 # doctest: +SKIP
 
         If you have a list of values to delete, you can combine them into a
         stringified list and use the `IN` operator:
 
-        >>> to_remove = [1, 3]
-        >>> to_remove = ", ".join([str(v) for v in to_remove])
-        >>> to_remove
-        '1, 3'
-        >>> table.delete(f"x IN ({to_remove})")
-        >>> table.search([10,10]).to_pandas()
-           x      vector  _distance
-        0  2  [3.0, 4.0]       85.0
+        >>> to_remove = [1, 3] # doctest: +SKIP
+        >>> to_remove = ", ".join([str(v) for v in to_remove]) # doctest: +SKIP
+        >>> table.delete(f"x IN ({to_remove})") # doctest: +SKIP
+        >>> table.search([10,10]).to_pandas() # doctest: +SKIP
+           x      vector  _distance # doctest: +SKIP
+        0  2  [3.0, 4.0]       85.0 # doctest: +SKIP
         """
         payload = {"predicate": predicate}
         self._conn._loop.run_until_complete(

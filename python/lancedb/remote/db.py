@@ -167,10 +167,10 @@ class RemoteDBConnection(DBConnection):
         Can create with list of tuples or dictionaries:
 
         >>> import lancedb
-        >>> db = lancedb.connect("db://test-project-8f45eb")
+        >>> db = lancedb.connect("db://...", api_key="...", region="...") # doctest: +SKIP
         >>> data = [{"vector": [1.1, 1.2], "lat": 45.5, "long": -122.7},
         ...         {"vector": [0.2, 1.8], "lat": 40.1, "long":  -74.1}]
-        >>> db.create_table("my_table", data)
+        >>> db.create_table("my_table", data) # doctest: +SKIP
         LanceTable(my_table)
 
         You can also pass a pandas DataFrame:
@@ -181,7 +181,7 @@ class RemoteDBConnection(DBConnection):
         ...    "lat": [45.5, 40.1],
         ...    "long": [-122.7, -74.1]
         ... })
-        >>> db.create_table("table2", data)
+        >>> db.create_table("table2", data) # doctest: +SKIP
         LanceTable(table2)
 
         >>> custom_schema = pa.schema([
@@ -189,7 +189,7 @@ class RemoteDBConnection(DBConnection):
         ...   pa.field("lat", pa.float32()),
         ...   pa.field("long", pa.float32())
         ... ])
-        >>> db.create_table("table3", data, schema = custom_schema)
+        >>> db.create_table("table3", data, schema = custom_schema) # doctest: +SKIP
         LanceTable(table3)
 
         It is also possible to create an table from `[Iterable[pa.RecordBatch]]`:
@@ -211,7 +211,7 @@ class RemoteDBConnection(DBConnection):
         ...     pa.field("item", pa.utf8()),
         ...     pa.field("price", pa.float32()),
         ... ])
-        >>> db.create_table("table4", make_batches(), schema=schema)
+        >>> db.create_table("table4", make_batches(), schema=schema) # doctest: +SKIP
         LanceTable(table4)
 
         """
