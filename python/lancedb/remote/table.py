@@ -56,15 +56,11 @@ class RemoteTable(Table):
         return resp["version"]
 
     def to_arrow(self) -> pa.Table:
-        """to_arrow() is not supported on the LanceDB cloud
-
-        """
+        """to_arrow() is not supported on the LanceDB cloud"""
         raise NotImplementedError("to_arrow() is not supported on the LanceDB cloud")
 
     def to_pandas(self):
-        """to_pandas() is not supported on the LanceDB cloud
-        
-        """
+        """to_pandas() is not supported on the LanceDB cloud"""
         return NotImplementedError("to_pandas() is not supported on the LanceDB cloud")
 
     def create_index(
@@ -83,7 +79,7 @@ class RemoteTable(Table):
             The metric to use for the index. Default is "L2".
         vector_column_name : str
             The name of the vector column. Default is "vector".
-        
+
         Examples
         --------
         >>> import lancedb

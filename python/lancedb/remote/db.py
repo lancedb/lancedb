@@ -59,7 +59,9 @@ class RemoteDBConnection(DBConnection):
         return f"RemoveConnect(name={self.db_name})"
 
     @override
-    def table_names(self, page_token: Optional[str] = None, limit: int = 10) -> Iterable[str]:
+    def table_names(
+        self, page_token: Optional[str] = None, limit: int = 10
+    ) -> Iterable[str]:
         """List the names of all tables in the database.
 
         Parameters
