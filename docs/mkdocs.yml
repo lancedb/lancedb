@@ -146,7 +146,8 @@ nav:
   - Serverless Chatbot from any website: examples/serverless_website_chatbot.md
   - TransformersJS Embedding Search: examples/transformerjs_embedding_search_nodejs.md
 - API references:
-  - Python API: python/python.md
+  - OSS Python API: python/python.md
+  - SaaS Python API: python/saas-python.md
   - Javascript API: javascript/modules.md
 - LanceDB Cloud↗: https://noteforms.com/forms/lancedb-mailing-list-cloud-kty1o5?notionforms=1&utm_source=notionforms
 

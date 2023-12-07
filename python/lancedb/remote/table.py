@@ -37,7 +37,10 @@ class RemoteTable(Table):
 
     @cached_property
     def schema(self) -> pa.Schema:
-        """Return the schema of the table."""
+        """The [Arrow Schema](https://arrow.apache.org/docs/python/api/datatypes.html#)
+        of this Table
+
+        """
         resp = self._conn._loop.run_until_complete(
             self._conn._client.post(f"/v1/table/{self._name}/describe/")
         )
@@ -53,24 +56,21 @@ class RemoteTable(Table):
         return resp["version"]
 
     def to_arrow(self) -> pa.Table:
-        """Return the table as an Arrow table."""
+        """to_arrow() is not supported on the LanceDB cloud
+
+        """
         raise NotImplementedError("to_arrow() is not supported on the LanceDB cloud")
 
     def to_pandas(self):
-        """Return the table as a Pandas DataFrame.
-
-        Intercept `to_arrow()` for better error message.
+        """to_pandas() is not supported on the LanceDB cloud
+        
         """
         return NotImplementedError("to_pandas() is not supported on the LanceDB cloud")
 
     def create_index(
         self,
         metric="L2",
-        num_partitions=256,
-        num_sub_vectors=96,
         vector_column_name: str = VECTOR_COLUMN_NAME,
-        replace: bool = True,
-        accelerator: Optional[str] = None,
         index_cache_size: Optional[int] = None,
     ):
         """Create an index on the table.
@@ -81,39 +81,28 @@ class RemoteTable(Table):
         ----------
         metric : str
             The metric to use for the index. Default is "L2".
-        num_partitions : int
-            The number of partitions to use for the index. Default is 256.
-        num_sub_vectors : int
-            The number of sub-vectors to use for the index. Default is 96.
         vector_column_name : str
             The name of the vector column. Default is "vector".
-        replace : bool
-            Whether to replace the existing index. Default is True.
-        accelerator : str, optional
-            If set, use the given accelerator to create the index.
-            Default is None. Currently not supported.
-        index_cache_size : int, optional
-            The size of the index cache in number of entries. Default value is 256.
-
+        
         Examples
         --------
-        import lancedb
-        import uuid
-        from lancedb.schema import vector
-        conn = lancedb.connect("db://...", api_key="...", region="...")
-        table_name = uuid.uuid4().hex
-        schema = pa.schema(
-            [
-                    pa.field("id", pa.uint32(), False),
-                    pa.field("vector", vector(128), False),
-                    pa.field("s", pa.string(), False),
-            ]
-        )
-        table = conn.create_table(
-            table_name,
-            schema=schema,
-        )
-        table.create_index()
+        >>> import lancedb
+        >>> import uuid
+        >>> from lancedb.schema import vector
+        >>> conn = lancedb.connect("db://...", api_key="...", region="...")
+        >>> table_name = uuid.uuid4().hex
+        >>> schema = pa.schema(
+        ...     [
+        ...             pa.field("id", pa.uint32(), False),
+        ...            pa.field("vector", vector(128), False),
+        ...             pa.field("s", pa.string(), False),
+        ...     ]
+        ... )
+        >>> table = conn.create_table(
+        >>>     table_name,
+        >>>     schema=schema,
+        >>> )
+        >>> table.create_index("L2", "vector")
         """
         index_type = "vector"
 
@@ -135,6 +124,28 @@ class RemoteTable(Table):
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
     ) -> int:
+        """Add more data to the [Table](Table). It has the same API signature as the OSS version.
+
+        Parameters
+        ----------
+        data: DATA
+            The data to insert into the table. Acceptable types are:
+
+            - dict or list-of-dict
+
+            - pandas.DataFrame
+
+            - pyarrow.Table or pyarrow.RecordBatch
+        mode: str
+            The mode to use when writing the data. Valid values are
+            "append" and "overwrite".
+        on_bad_vectors: str, default "error"
+            What to do if any of the vectors are not the same size or contains NaNs.
+            One of "error", "drop", "fill".
+        fill_value: float, default 0.
+            The value to use when filling vectors. Only used if on_bad_vectors="fill".
+
+        """
         data = _sanitize_data(
             data,
             self.schema,
@@ -158,6 +169,58 @@ class RemoteTable(Table):
     def search(
         self, query: Union[VEC, str], vector_column_name: str = VECTOR_COLUMN_NAME
     ) -> LanceVectorQueryBuilder:
+        """Create a search query to find the nearest neighbors
+        of the given query vector. We currently support [vector search][search]
+
+        All query options are defined in [Query][lancedb.query.Query].
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> db = lancedb.connect("db://...", api_key="...", region="...")
+        >>> data = [
+        ...    {"original_width": 100, "caption": "bar", "vector": [0.1, 2.3, 4.5]},
+        ...    {"original_width": 2000, "caption": "foo",  "vector": [0.5, 3.4, 1.3]},
+        ...    {"original_width": 3000, "caption": "test", "vector": [0.3, 6.2, 2.6]}
+        ... ]
+        >>> table = db.create_table("my_table", data)
+        >>> query = [0.4, 1.4, 2.4]
+        >>> (table.search(query, vector_column_name="vector")
+        ...     .where("original_width > 1000", prefilter=True)
+        ...     .select(["caption", "original_width"])
+        ...     .limit(2)
+        ...     .to_pandas())
+          caption  original_width           vector  _distance
+        0     foo            2000  [0.5, 3.4, 1.3]   5.220000
+        1    test            3000  [0.3, 6.2, 2.6]  23.089996
+
+        Parameters
+        ----------
+        query: list/np.ndarray/str/PIL.Image.Image, default None
+            The targetted vector to search for.
+
+            - *default None*.
+            Acceptable types are: list, np.ndarray, PIL.Image.Image
+
+            - If None then the select/where/limit clauses are applied to filter
+            the table
+        vector_column_name: str
+            The name of the vector column to search.
+            *default "vector"*
+
+        Returns
+        -------
+        LanceQueryBuilder
+            A query builder object representing the query.
+            Once executed, the query returns
+
+            - selected columns
+
+            - the vector
+
+            - and also the "_distance" column which is the distance between the query
+            vector and the returned vector.
+        """
         return LanceVectorQueryBuilder(self, query, vector_column_name)
 
     def _execute_query(self, query: Query) -> pa.Table:
@@ -165,7 +228,53 @@ class RemoteTable(Table):
         return self._conn._loop.run_until_complete(result).to_arrow()
 
     def delete(self, predicate: str):
-        """Delete rows from the table."""
+        """Delete rows from the table.
+
+        This can be used to delete a single row, many rows, all rows, or
+        sometimes no rows (if your predicate matches nothing).
+
+        Parameters
+        ----------
+        predicate: str
+            The SQL where clause to use when deleting rows.
+
+            - For example, 'x = 2' or 'x IN (1, 2, 3)'.
+
+            The filter must not be empty, or it will error.
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> data = [
+        ...    {"x": 1, "vector": [1, 2]},
+        ...    {"x": 2, "vector": [3, 4]},
+        ...    {"x": 3, "vector": [5, 6]}
+        ... ]
+        >>> db = lancedb.connect("db://...", api_key="...", region="...")
+        >>> table = db.create_table("my_table", data)
+        >>> table.search([10,10]).to_pandas()
+           x      vector  _distance
+        0  3  [5.0, 6.0]       41.0
+        1  2  [3.0, 4.0]       85.0
+        2  1  [1.0, 2.0]      145.0
+        >>> table.delete("x = 2")
+        >>> table.search([10,10]).to_pandas()
+           x      vector  _distance
+        0  3  [5.0, 6.0]       41.0
+        1  1  [1.0, 2.0]      145.0
+
+        If you have a list of values to delete, you can combine them into a
+        stringified list and use the `IN` operator:
+
+        >>> to_remove = [1, 3]
+        >>> to_remove = ", ".join([str(v) for v in to_remove])
+        >>> to_remove
+        '1, 3'
+        >>> table.delete(f"x IN ({to_remove})")
+        >>> table.search([10,10]).to_pandas()
+           x      vector  _distance
+        0  2  [3.0, 4.0]       85.0
+        """
         payload = {"predicate": predicate}
         self._conn._loop.run_until_complete(
             self._conn._client.post(f"/v1/table/{self._name}/delete/", data=payload)
