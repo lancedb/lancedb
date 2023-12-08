@@ -59,7 +59,7 @@ plugins:
           filters: ["!^_"]
           merge_init_into_class: true
           docstring_style: numpy
-          # docstring_section_style: spacy
+          docstring_section_style: spacy
           signature_crossrefs: true
           show_symbol_type_heading: true
           show_symbol_type_toc: true
