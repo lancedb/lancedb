@@ -56,7 +56,7 @@ class RemoteDBConnection(DBConnection):
             self._loop = asyncio.get_event_loop()
 
     def __repr__(self) -> str:
-        return f"RemoveConnect(name={self.db_name})"
+        return f"RemoteConnect(name={self.db_name})"
 
     @override
     def table_names(
