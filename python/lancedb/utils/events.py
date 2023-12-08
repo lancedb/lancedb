@@ -64,8 +64,10 @@ class _Events:
         Initializes the Events object with default values for events, rate_limit, and metadata.
         """
         self.events = []  # events list
-        self.max_events = 25  # max events to store in memory
-        self.rate_limit = 60.0  # rate limit (seconds)
+        self.throttled_event_names = ["search_table"]
+        self.throttled_events = set()
+        self.max_events = 5  # max events to store in memory
+        self.rate_limit = 60.0 * 5  # rate limit (seconds)
         self.time = 0.0
 
         if is_git_dir():
@@ -112,18 +114,21 @@ class _Events:
             return
         if (
             len(self.events) < self.max_events
-        ):  # Events list limited to 25 events (drop any events past this)
+        ):  # Events list limited to self.max_events (drop any events past this)
             params.update(self.metadata)
-            self.events.append(
-                {
-                    "event": event_name,
-                    "properties": params,
-                    "timestamp": datetime.datetime.now(
-                        tz=datetime.timezone.utc
-                    ).isoformat(),
-                    "distinct_id": CONFIG["uuid"],
-                }
-            )
+            event = {
+                "event": event_name,
+                "properties": params,
+                "timestamp": datetime.datetime.now(
+                    tz=datetime.timezone.utc
+                ).isoformat(),
+                "distinct_id": CONFIG["uuid"],
+            }
+            if event_name not in self.throttled_event_names:
+                self.events.append(event)
+            elif event_name not in self.throttled_events:
+                self.throttled_events.add(event_name)
+                self.events.append(event)
 
         # Check rate limit
         t = time.time()
@@ -135,7 +140,6 @@ class _Events:
             "distinct_id": CONFIG["uuid"],  # posthog needs this to accepts the event
             "batch": self.events,
         }
-
         # POST equivalent to requests.post(self.url, json=data).
         # threaded request is used to avoid blocking, retries are disabled, and verbose is disabled
         # to avoid any possible disruption in the console.
@@ -150,6 +154,7 @@ class _Events:
 
         # Flush & Reset
         self.events = []
+        self.throttled_events = set()
         self.time = t
 
 
