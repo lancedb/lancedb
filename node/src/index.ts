@@ -486,9 +486,6 @@ export class LocalTable<T = number[]> implements Table<T> {
 
   async update (filter: string, updates: { [key: string]: string }): Promise<void> {
     return tableUpdate.call(this._tbl, filter, updates).then((newTable: any) => { this._tbl = newTable })
-
-    // console.log({ this_: this._tbl })
-    // return tableUpdate.call(this._tbl, filter, updates).then((newTable: any) => { this._tbl = newTable })
   }
 
   /**

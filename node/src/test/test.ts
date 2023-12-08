@@ -273,6 +273,7 @@ describe('LanceDB client', function () {
 
       let results = await table.search([0.1, 0.2]).execute()
       console.log({ results })
+      // TODO assert results ...
     })
 
     it('can delete records from a table', async function () {

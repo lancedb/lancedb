@@ -570,8 +570,6 @@ mod tests {
         let dataset_path = tmp_dir.path().join("test.lance");
         let uri = dataset_path.to_str().unwrap();
 
-        // Dataset::write()
-
         let schema = Arc::new(Schema::new(vec![
             Field::new("int32", DataType::Int32, false),
             Field::new("int64", DataType::Int64, false),
@@ -654,7 +652,6 @@ mod tests {
         Dataset::write(record_batch_iter, uri, None).await.unwrap();
         let mut table = Table::open(uri).await.unwrap();
         table.update(None, vec![("string", "'foo'")]).await.unwrap();
-        // table.
 
         let ds_after = Dataset::open(uri).await.unwrap();
         let mut batches = ds_after
@@ -668,7 +665,6 @@ mod tests {
             .await
             .unwrap();
 
-        println!("{:?}", batches);
         let batch = batches.pop().unwrap();
         let values = batch
             .column(0)
@@ -682,7 +678,7 @@ mod tests {
             assert_eq!(v, Some("foo"));
         }
 
-        // ds.t
+        // TODO finish this test ...
     }
 
     #[tokio::test]

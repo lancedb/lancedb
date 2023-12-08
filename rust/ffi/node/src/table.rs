@@ -173,6 +173,7 @@ impl JsTable {
         let (deferred, promise) = cx.promise();
         let channel = cx.channel();
 
+        // TODO -- handle case where predicate is not passed ...
         let predicate = cx.argument::<JsString>(0)?.value(&mut cx);
         println!("predicate = {}", predicate);
 
@@ -194,8 +195,6 @@ impl JsTable {
             let value = value.value(&mut cx);
             updates.push((property, value));
         }
-
-        println!("updates = {:?}", updates);
 
         rt.spawn(async move {
             let updates_arg = updates
