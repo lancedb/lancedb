@@ -439,8 +439,10 @@ mod tests {
         RecordBatchReader, StringArray, TimestampMillisecondArray, TimestampNanosecondArray,
         UInt32Array,
     };
+    use arrow::array::AsArray;
     use arrow_data::ArrayDataBuilder;
     use arrow_schema::{DataType, Field, Schema, TimeUnit};
+    use chrono::format::Fixed;
     use futures::TryStreamExt;
     use lance::dataset::{Dataset, WriteMode};
     use lance::index::vector::pq::PQBuildParams;
@@ -651,12 +653,45 @@ mod tests {
 
         Dataset::write(record_batch_iter, uri, None).await.unwrap();
         let mut table = Table::open(uri).await.unwrap();
-        table.update(None, vec![("string", "'foo'")]).await.unwrap();
+
+        // check it can do update for each type
+        let updates: Vec<(&str, &str)> = vec![
+            ("string", "'foo'"),
+            ("large_string", "'large_foo'"),
+            ("int32", "1"),
+            ("int64", "1"),
+            ("uint32", "1"),
+            ("float32", "1.0"),
+            ("float64", "1.0"),
+            ("bool", "true"),
+            ("date32", "1"),
+            ("timestamp_ns", "1"),
+            ("timestamp_ms", "1"),
+            ("vec_f32", "[1.0, 1.0]"),
+            ("vec_f64", "[1.0, 1.0]"),
+        ];
+
+        // for (column, value) in test_cases {
+        table.update(None, updates).await.unwrap();
 
         let ds_after = Dataset::open(uri).await.unwrap();
         let mut batches = ds_after
             .scan()
-            .project(&["string"])
+            .project(&[
+                "string",
+                "large_string",
+                "int32",
+                "int64",
+                "uint32",
+                "float32",
+                "float64",
+                "bool",
+                "date32",
+                "timestamp_ns",
+                "timestamp_ms",
+                "vec_f32",
+                "vec_f64",
+            ])
             .unwrap()
             .try_into_stream()
             .await
@@ -664,21 +699,62 @@ mod tests {
             .try_collect::<Vec<_>>()
             .await
             .unwrap();
-
         let batch = batches.pop().unwrap();
-        let values = batch
-            .column(0)
+
+        macro_rules! assert_column {
+            ($column:expr, $array_type:ty, $expected:expr) => {
+                let array = $column
+                    .as_any()
+                    .downcast_ref::<$array_type>()
+                    .unwrap()
+                    .iter()
+                    .collect::<Vec<_>>();
+                for v in array {
+                    assert_eq!(v, Some($expected));
+                }
+            };
+        }
+
+        assert_column!(batch.column(0), StringArray, "foo");
+        assert_column!(batch.column(1), LargeStringArray, "large_foo");
+        assert_column!(batch.column(2), Int32Array, 1);
+        assert_column!(batch.column(3), Int64Array, 1);
+        assert_column!(batch.column(4), UInt32Array, 1);
+        assert_column!(batch.column(5), Float32Array, 1.0);
+        assert_column!(batch.column(6), Float64Array, 1.0);
+        assert_column!(batch.column(7), BooleanArray, true);
+        assert_column!(batch.column(8), Date32Array, 1);
+        assert_column!(batch.column(9), TimestampNanosecondArray, 1);
+        assert_column!(batch.column(10), TimestampMillisecondArray, 1);
+        // assert_column!(
+        //     batch.column(11),
+        //     FixedSizeListArray,
+        //     Arc::new(Float32Array::from_iter_values(vec![1.0, 1.0]))
+        // );
+
+        let array = batch
+            .column(11)
             .as_any()
-            .downcast_ref::<StringArray>()
+            .downcast_ref::<FixedSizeListArray>()
             .unwrap()
             .iter()
             .collect::<Vec<_>>();
-
-        for v in values {
-            assert_eq!(v, Some("foo"));
+        for v in array {
+            v.unwrap().as_fixed_size_list(); // TODO finish here?
+            let mut first = v.into_iter().next().unwrap();
+            let mut my_first = first.to_owned();
+            println!("{:?}", my_first.data_type());
+            let fsl = my_first.as_fixed_size_list();
+            // v.unwrap().eq(&Float32Array::from_iter_values(vec![1.0, 1.0]));
+            // let v = v.unwrap();
+            let g = create_fixed_size_list(
+                Float64Array::from_iter_values((0..20).into_iter().map(|i| i as f64)),
+                2,
+            ).unwrap();
+            assert_eq!(*fsl, g);
+            // .unwrap();
+            // assert_eq!(v, g);
         }
-
-        // TODO finish this test ...
     }
 
     #[tokio::test]

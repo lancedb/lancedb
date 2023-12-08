@@ -180,7 +180,8 @@ impl JsTable {
         let updates_arg = cx.argument::<JsObject>(1)?;
         let properties = updates_arg.get_own_property_names(&mut cx)?;
 
-        let mut updates: Vec<(String, String)> = Vec::with_capacity(properties.len(&mut cx) as usize);
+        let mut updates: Vec<(String, String)> =
+            Vec::with_capacity(properties.len(&mut cx) as usize);
 
         let len_properties = properties.len(&mut cx);
         for i in 0..len_properties {
