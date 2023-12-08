@@ -246,7 +246,7 @@ class RemoteTable(Table):
         ...    {"x": 2, "vector": [3, 4]},
         ...    {"x": 3, "vector": [5, 6]}
         ... ]
-        >>> db = lancedb.connect("db://my-test", api_key="sk...") # doctest: +SKIP
+        >>> db = lancedb.connect("db://...", api_key="...", region="...") # doctest: +SKIP
         >>> table = db.create_table("my_table", data) # doctest: +SKIP
         >>> table.search([10,10]).to_pandas() # doctest: +SKIP
            x      vector  _distance # doctest: +SKIP
