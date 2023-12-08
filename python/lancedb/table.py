@@ -899,6 +899,8 @@ class LanceTable(Table):
                 f"Table {name} does not exist."
                 f"Please first call db.create_table({name}, data)"
             )
+        register_event("open_table")
+
         return tbl
 
     def delete(self, where: str):
