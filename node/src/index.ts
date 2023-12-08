@@ -23,7 +23,7 @@ import { Query } from './query'
 import { isEmbeddingFunction } from './embedding/embedding_function'
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { databaseNew, databaseTableNames, databaseOpenTable, databaseDropTable, tableCreate, tableAdd, tableCreateVectorIndex, tableCountRows, tableDelete, tableCleanupOldVersions, tableCompactFiles, tableListIndices, tableIndexStats } = require('../native.js')
+const { databaseNew, databaseTableNames, databaseOpenTable, databaseDropTable, tableCreate, tableAdd, tableCreateVectorIndex, tableCountRows, tableDelete, tableUpdate, tableCleanupOldVersions, tableCompactFiles, tableListIndices, tableIndexStats } = require('../native.js')
 
 export { Query }
 export type { EmbeddingFunction }
@@ -261,6 +261,9 @@ export interface Table<T = number[]> {
    */
   delete: (filter: string) => Promise<void>
 
+  // TODO add comments here
+  update: (filter: string, updates: { [key: string]: string }) => Promise<void>
+
   /**
    * List the indicies on this table.
    */
@@ -479,6 +482,13 @@ export class LocalTable<T = number[]> implements Table<T> {
    */
   async delete (filter: string): Promise<void> {
     return tableDelete.call(this._tbl, filter).then((newTable: any) => { this._tbl = newTable })
+  }
+
+  async update (filter: string, updates: { [key: string]: string }): Promise<void> {
+    return tableUpdate.call(this._tbl, filter, updates).then((newTable: any) => { this._tbl = newTable })
+
+    // console.log({ this_: this._tbl })
+    // return tableUpdate.call(this._tbl, filter, updates).then((newTable: any) => { this._tbl = newTable })
   }
 
   /**

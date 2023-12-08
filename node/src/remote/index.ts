@@ -246,6 +246,10 @@ export class RemoteTable<T = number[]> implements Table<T> {
     await this._client.post(`/v1/table/${this._name}/delete/`, { predicate: filter })
   }
 
+  async update (filter: string, updates: { [key: string]: string }): Promise<void> {
+    throw new Error('Not implemented')
+  }
+
   async listIndices (): Promise<VectorIndex[]> {
     const results = await this._client.post(`/v1/table/${this._name}/index/list/`)
     return results.data.indexes?.map((index: any) => ({

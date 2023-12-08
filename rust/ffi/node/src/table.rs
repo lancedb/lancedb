@@ -165,6 +165,54 @@ impl JsTable {
         Ok(promise)
     }
 
+    pub(crate) fn js_update(mut cx: FunctionContext) -> JsResult<JsPromise> {
+        let js_table = cx.this().downcast_or_throw::<JsBox<JsTable>, _>(&mut cx)?;
+        let mut table = js_table.table.clone();
+
+        let rt = runtime(&mut cx)?;
+        let (deferred, promise) = cx.promise();
+        let channel = cx.channel();
+
+        let predicate = cx.argument::<JsString>(0)?.value(&mut cx);
+        println!("predicate = {}", predicate);
+
+        let updates_arg = cx.argument::<JsObject>(1)?;
+        let properties = updates_arg.get_own_property_names(&mut cx)?;
+
+        let mut updates: Vec<(String, String)> = Vec::with_capacity(properties.len(&mut cx) as usize);
+
+        let len_properties = properties.len(&mut cx);
+        for i in 0..len_properties {
+            let property = properties
+                .get_value(&mut cx, i)?
+                .downcast_or_throw::<JsString, _>(&mut cx)?;
+            let value = updates_arg
+                .get_value(&mut cx, property.clone())?
+                .downcast_or_throw::<JsString, _>(&mut cx)?;
+
+            let property = property.value(&mut cx);
+            let value = value.value(&mut cx);
+            updates.push((property, value));
+        }
+
+        println!("updates = {:?}", updates);
+
+        rt.spawn(async move {
+            let updates_arg = updates
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str()))
+                .collect::<Vec<_>>();
+
+            let update_result = table.update(Some(&predicate), updates_arg).await;
+            deferred.settle_with(&channel, move |mut cx| {
+                update_result.or_throw(&mut cx)?;
+                Ok(cx.boxed(JsTable::from(table)))
+            })
+        });
+
+        Ok(promise)
+    }
+
     pub(crate) fn js_cleanup(mut cx: FunctionContext) -> JsResult<JsPromise> {
         let js_table = cx.this().downcast_or_throw::<JsBox<JsTable>, _>(&mut cx)?;
         let rt = runtime(&mut cx)?;
