@@ -37,14 +37,10 @@ jobs:
           path: |
             node/vectordb-*.tgz
 
-  node-macos:
+  node-macos-x86:
     runs-on: macos-13
     # Only runs on tags that matches the make-release action
     if: startsWith(github.ref, 'refs/tags/v')
-    strategy:
-      fail-fast: false
-      matrix:
-        target: [x86_64-apple-darwin, aarch64-apple-darwin]
     steps:
       - name: Checkout
         uses: actions/checkout@v3
@@ -54,17 +50,36 @@ jobs:
         run: |
           cd node
           npm ci
-      - name: Install rustup target
-        if: ${{ matrix.target == 'aarch64-apple-darwin' }}
-        run: rustup target add aarch64-apple-darwin
       - name: Build MacOS native node modules
-        run: bash ci/build_macos_artifacts.sh ${{ matrix.target }}
+        run: bash ci/build_macos_artifacts.sh x86_64-apple-darwin
       - name: Upload Darwin Artifacts
         uses: actions/upload-artifact@v3
         with:
           name: native-darwin
           path: |
             node/dist/lancedb-vectordb-darwin*.tgz
+
+  node-macos-arm64:
+    runs-on: macos-13-xlarge
+    # Only runs on tags that matches the make-release action
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+      - name: Install system dependencies
+        run: brew install protobuf
+      - name: Install npm dependencies
+        run: |
+          cd node
+          npm ci
+      - name: Build MacOS native node modules
+        run: bash ci/build_macos_artifacts.sh aarch64-apple-darwin
+      - name: Upload Darwin Artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: native-darwin
+          path: |
+            node/dist/lancedb-vectordb-darwin*.tgz            
 
   node-linux:
     name: node-linux (${{ matrix.config.arch}}-unknown-linux-gnu

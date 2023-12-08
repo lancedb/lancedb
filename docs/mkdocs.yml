@@ -100,7 +100,6 @@ nav:
     - Ingest Embedding Functions: embeddings/embedding_functions.md
     - Available Functions: embeddings/default_embedding_functions.md
     - Create Custom Embedding Functions: embeddings/api.md
-    - Example - Calculate CLIP Embeddings with Roboflow Inference: examples/image_embeddings_roboflow.md
     - Example - Multi-lingual semantic search: notebooks/multi_lingual_example.ipynb
     - Example - MultiModal CLIP Embeddings: notebooks/DisappearingEmbeddingFunction.ipynb
   - 🔍 Python full-text search: fts.md
@@ -119,6 +118,7 @@ nav:
     - YouTube Transcript Search: notebooks/youtube_transcript_search.ipynb
     - Documentation QA Bot using LangChain: notebooks/code_qa_bot.ipynb
     - Multimodal search using CLIP: notebooks/multimodal_search.ipynb
+    - Example - Calculate CLIP Embeddings with Roboflow Inference: examples/image_embeddings_roboflow.md
     - Serverless QA Bot with S3 and Lambda: examples/serverless_lancedb_with_s3_and_lambda.md
     - Serverless QA Bot with Modal: examples/serverless_qa_bot_with_modal_and_langchain.md
   - 🌐 Javascript examples:
@@ -166,7 +166,8 @@ nav:
   - Serverless Chatbot from any website: examples/serverless_website_chatbot.md
   - TransformersJS Embedding Search: examples/transformerjs_embedding_search_nodejs.md
 - API references:
-  - Python API: python/python.md
+  - OSS Python API: python/python.md
+  - SaaS Python API: python/saas-python.md
   - Javascript API: javascript/modules.md
 - LanceDB Cloud↗: https://noteforms.com/forms/lancedb-mailing-list-cloud-kty1o5?notionforms=1&utm_source=notionforms
 

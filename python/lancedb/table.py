@@ -785,7 +785,7 @@ class LanceTable(Table):
             and also the "_distance" column which is the distance between the query
             vector and the returned vector.
         """
-        register_event("search")
+        register_event("search_table")
         return LanceQueryBuilder.create(
             self, query, query_type, vector_column_name=vector_column_name
         )
@@ -906,6 +906,8 @@ class LanceTable(Table):
                 f"Table {name} does not exist."
                 f"Please first call db.create_table({name}, data)"
             )
+        register_event("open_table")
+
         return tbl
 
     def delete(self, where: str):
