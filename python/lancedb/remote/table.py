@@ -173,22 +173,22 @@ class RemoteTable(Table):
         Examples
         --------
         >>> import lancedb
-        >>> db = lancedb.connect("./.lancedb")
+        >>> db = lancedb.connect("db://...", api_key="...", region="...") # doctest: +SKIP
         >>> data = [
         ...    {"original_width": 100, "caption": "bar", "vector": [0.1, 2.3, 4.5]},
         ...    {"original_width": 2000, "caption": "foo",  "vector": [0.5, 3.4, 1.3]},
         ...    {"original_width": 3000, "caption": "test", "vector": [0.3, 6.2, 2.6]}
         ... ]
-        >>> table = db.create_table("my_table", data)
+        >>> table = db.create_table("my_table", data) # doctest: +SKIP
         >>> query = [0.4, 1.4, 2.4]
-        >>> (table.search(query, vector_column_name="vector")
-        ...     .where("original_width > 1000", prefilter=True)
-        ...     .select(["caption", "original_width"])
-        ...     .limit(2)
-        ...     .to_pandas())
-          caption  original_width           vector  _distance
-        0     foo            2000  [0.5, 3.4, 1.3]   5.220000
-        1    test            3000  [0.3, 6.2, 2.6]  23.089996
+        >>> (table.search(query, vector_column_name="vector") # doctest: +SKIP
+        ...     .where("original_width > 1000", prefilter=True) # doctest: +SKIP
+        ...     .select(["caption", "original_width"]) # doctest: +SKIP
+        ...     .limit(2) # doctest: +SKIP
+        ...     .to_pandas()) # doctest: +SKIP
+          caption  original_width           vector  _distance # doctest: +SKIP
+        0     foo            2000  [0.5, 3.4, 1.3]   5.220000 # doctest: +SKIP
+        1    test            3000  [0.3, 6.2, 2.6]  23.089996 # doctest: +SKIP
 
         Parameters
         ----------
@@ -246,7 +246,7 @@ class RemoteTable(Table):
         ...    {"x": 2, "vector": [3, 4]},
         ...    {"x": 3, "vector": [5, 6]}
         ... ]
-        >>> db = lancedb.connect("db://my-test", api_key="sk...") # doctest: +SKIP
+        >>> db = lancedb.connect("db://...", api_key="...", region="...") # doctest: +SKIP
         >>> table = db.create_table("my_table", data) # doctest: +SKIP
         >>> table.search([10,10]).to_pandas() # doctest: +SKIP
            x      vector  _distance # doctest: +SKIP
