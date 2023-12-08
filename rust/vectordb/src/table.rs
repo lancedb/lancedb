@@ -23,7 +23,7 @@ use lance::dataset::cleanup::RemovalStats;
 use lance::dataset::optimize::{
     compact_files, CompactionMetrics, CompactionOptions, IndexRemapperOptions,
 };
-use lance::dataset::{Dataset, WriteParams};
+use lance::dataset::{Dataset, UpdateBuilder, WriteParams};
 use lance::index::DatasetIndexExt;
 use lance::io::object_store::WrappingObjectStore;
 use std::path::Path;
@@ -338,6 +338,27 @@ impl Table {
         Ok(())
     }
 
+    pub async fn update(
+        &mut self,
+        predicate: Option<&str>,
+        updates: Vec<(&str, &str)>,
+    ) -> Result<()> {
+        let mut builder = UpdateBuilder::new(self.dataset.clone());
+        if let Some(predicate) = predicate {
+            builder = builder.update_where(predicate)?;
+        }
+
+        for (column, value) in updates {
+            builder = builder.set(column, value)?;
+        }
+
+        let operation = builder.build()?;
+        let new_ds = operation.execute().await?;
+        self.dataset = new_ds;
+
+        Ok(())
+    }
+
     /// Remove old versions of the dataset from disk.
     ///
     /// # Arguments
@@ -413,11 +434,14 @@ mod tests {
     use std::sync::Arc;
 
     use arrow_array::{
-        Array, FixedSizeListArray, Float32Array, Int32Array, RecordBatch, RecordBatchIterator,
-        RecordBatchReader,
+        Array, BooleanArray, Date32Array, FixedSizeListArray, Float32Array, Float64Array,
+        Int32Array, Int64Array, LargeStringArray, RecordBatch, RecordBatchIterator,
+        RecordBatchReader, StringArray, TimestampMillisecondArray, TimestampNanosecondArray,
+        UInt32Array,
     };
     use arrow_data::ArrayDataBuilder;
-    use arrow_schema::{DataType, Field, Schema};
+    use arrow_schema::{DataType, Field, Schema, TimeUnit};
+    use futures::TryStreamExt;
     use lance::dataset::{Dataset, WriteMode};
     use lance::index::vector::pq::PQBuildParams;
     use lance::io::object_store::{ObjectStoreParams, WrappingObjectStore};
@@ -538,6 +562,127 @@ mod tests {
         table.add(new_batches, Some(param)).await.unwrap();
         assert_eq!(table.count_rows().await.unwrap(), 10);
         assert_eq!(table.name, "test");
+    }
+
+    #[tokio::test]
+    async fn test_update() {
+        let tmp_dir = tempdir().unwrap();
+        let dataset_path = tmp_dir.path().join("test.lance");
+        let uri = dataset_path.to_str().unwrap();
+
+        // Dataset::write()
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("int32", DataType::Int32, false),
+            Field::new("int64", DataType::Int64, false),
+            Field::new("uint32", DataType::UInt32, false),
+            Field::new("string", DataType::Utf8, false),
+            Field::new("large_string", DataType::LargeUtf8, false),
+            Field::new("float32", DataType::Float32, false),
+            Field::new("float64", DataType::Float64, false),
+            Field::new("bool", DataType::Boolean, false),
+            Field::new("date32", DataType::Date32, false),
+            Field::new(
+                "timestamp_ns",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new(
+                "timestamp_ms",
+                DataType::Timestamp(TimeUnit::Millisecond, None),
+                false,
+            ),
+            Field::new(
+                "vec_f32",
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 2),
+                false,
+            ),
+            Field::new(
+                "vec_f64",
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float64, true)), 2),
+                false,
+            ),
+        ]));
+
+        let record_batch_iter = RecordBatchIterator::new(
+            vec![RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    Arc::new(Int32Array::from_iter_values(0..10)),
+                    Arc::new(Int64Array::from_iter_values(0..10)),
+                    Arc::new(UInt32Array::from_iter_values(0..10)),
+                    Arc::new(StringArray::from_iter_values(vec![
+                        "a", "b", "c", "d", "e", "f", "g", "h", "i", "j",
+                    ])),
+                    Arc::new(LargeStringArray::from_iter_values(vec![
+                        "a", "b", "c", "d", "e", "f", "g", "h", "i", "j",
+                    ])),
+                    Arc::new(Float32Array::from_iter_values(
+                        (0..10).into_iter().map(|i| i as f32),
+                    )),
+                    Arc::new(Float64Array::from_iter_values(
+                        (0..10).into_iter().map(|i| i as f64),
+                    )),
+                    Arc::new(Into::<BooleanArray>::into(vec![
+                        true, false, true, false, true, false, true, false, true, false,
+                    ])),
+                    Arc::new(Date32Array::from_iter_values(0..10)),
+                    Arc::new(TimestampNanosecondArray::from_iter_values(0..10)),
+                    Arc::new(TimestampMillisecondArray::from_iter_values(0..10)),
+                    Arc::new(
+                        create_fixed_size_list(
+                            Float32Array::from_iter_values((0..20).into_iter().map(|i| i as f32)),
+                            2,
+                        )
+                        .unwrap(),
+                    ),
+                    Arc::new(
+                        create_fixed_size_list(
+                            Float64Array::from_iter_values((0..20).into_iter().map(|i| i as f64)),
+                            2,
+                        )
+                        .unwrap(),
+                    ),
+                ],
+            )
+            .unwrap()]
+            .into_iter()
+            .map(Ok),
+            schema.clone(),
+        );
+
+        Dataset::write(record_batch_iter, uri, None).await.unwrap();
+        let mut table = Table::open(uri).await.unwrap();
+        table.update(None, vec![("string", "'foo'")]).await.unwrap();
+        // table.
+
+        let ds_after = Dataset::open(uri).await.unwrap();
+        let mut batches = ds_after
+            .scan()
+            .project(&["string"])
+            .unwrap()
+            .try_into_stream()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+
+        println!("{:?}", batches);
+        let batch = batches.pop().unwrap();
+        let values = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap()
+            .iter()
+            .collect::<Vec<_>>();
+
+        for v in values {
+            assert_eq!(v, Some("foo"));
+        }
+
+        // ds.t
     }
 
     #[tokio::test]
