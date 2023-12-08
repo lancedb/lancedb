@@ -14,7 +14,7 @@ theme:
     - scheme: default
       primary: custom
       toggle:
-        icon: material/lightbulb 
+        icon: material/lightbulb
         name: Switch to dark mode
     # Palette toggle for dark mode
     - scheme: slate
@@ -72,7 +72,6 @@ plugins:
 markdown_extensions:
 - admonition
 - footnotes
-- pymdownx.superfences
 - pymdownx.details
 - pymdownx.highlight:
     anchor_linenums: true
@@ -121,7 +120,7 @@ nav:
     - Example - Calculate CLIP Embeddings with Roboflow Inference: examples/image_embeddings_roboflow.md
     - Serverless QA Bot with S3 and Lambda: examples/serverless_lancedb_with_s3_and_lambda.md
     - Serverless QA Bot with Modal: examples/serverless_qa_bot_with_modal_and_langchain.md
-  - 🌐 Javascript examples:
+  - 👾 Javascript examples:
     - Examples: examples/index_js.md
     - Serverless Website Chatbot: examples/serverless_website_chatbot.md
     - YouTube Transcript Search: examples/youtube_transcript_bot_with_nodejs.md
