@@ -75,12 +75,6 @@ table = db.create_table("my_table",
 result = table.search([100, 100]).limit(2).to_pandas()
 ```
 
-## Let's jump to cooking some cool applications using LanceDB.
-
-<img max-width="750px" alt="LanceDB Multimodal Search" src="vectordb.gif"> 
-
-<a href="https://github.com/lancedb/vectordb-recipes/tree/main">**VectorDB recipes**</a> is high-quality examples and tutorials repo for learning VectorDB and it's applications.
-
 ## Blogs, Tutorials & Videos
 * 📈 <a href="https://blog.eto.ai/benchmarking-random-access-in-lance-ed690757a826">2000x better performance with Lance over Parquet</a>
 * 🤖 <a href="https://github.com/lancedb/lancedb/blob/main/docs/src/notebooks/youtube_transcript_search.ipynb">Build a question and answer bot with LanceDB</a>
