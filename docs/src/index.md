@@ -19,7 +19,7 @@ The key features of LanceDB include:
 * Ingest your favorite data formats directly, like pandas DataFrames, Pydantic objects and more.
 
 
-LanceDB's core is written in Rust 🦀 and is built using <a href="https://github.com/lancedb/lance">Lance</a>, an open-source columnar format designed for performant ML workloads.
+LanceDB's core is written in Rust 🦀 and is built using [Lance](https://github.com/lancedb/lance), an open-source columnar format designed for performant ML workloads.
 
 ## Quick Start
 

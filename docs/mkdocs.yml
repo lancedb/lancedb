@@ -11,16 +11,16 @@ theme:
   favicon: assets/logo.png
   palette:
     # Palette toggle for light mode
-    - scheme: default
+    - scheme: lancedb
       primary: custom
       toggle:
-        icon: material/lightbulb
+        icon: material/weather-night
         name: Switch to dark mode
     # Palette toggle for dark mode
     - scheme: slate
       primary: custom
       toggle:
-        icon: material/lightbulb-outline
+        icon: material/weather-sunny
         name: Switch to light mode
   features:
     - content.code.copy
@@ -34,8 +34,6 @@ theme:
     - navigation.footer
     - navigation.tracking
     - navigation.instant
-    - navigation.indexes
-    - navigation.expand
   icon:
     repo: fontawesome/brands/github
   custom_dir: overrides
@@ -48,21 +46,13 @@ plugins:
       python:
         paths: [../python]
         options:
-          show_root_heading: true
-          show_root_toc_entry: true
-          show_if_no_docstring: true
-          inherited_members: true
-          members_order: source
-          separate_signature: true
-          show_signature_annotations: false
-          unwrap_annotated: true
-          filters: ["!^_"]
-          merge_init_into_class: true
           docstring_style: numpy
-          docstring_section_style: spacy
-          signature_crossrefs: true
-          show_symbol_type_heading: true
-          show_symbol_type_toc: true
+          heading_level: 4
+          show_source: true
+          show_symbol_type_in_heading: true
+          show_signature_annotations: true
+          show_root_heading: true
+          members_order: source
         import:
           # for cross references
           - https://arrow.apache.org/docs/objects.inv
@@ -89,7 +79,7 @@ nav:
   - 🏢 Home: index.md
   - 💡 Basics: basic.md
   - 📚 Guides:
-    - Create Ingest Update Delete: guides/tables.md
+    - CRUD: guides/tables.md
     - Vector Search: search.md
     - SQL filters: sql.md
     - Indexing: ann_indexes.md
@@ -172,6 +162,7 @@ nav:
 
 extra_css:
   - styles/global.css
+  - styles/extra.css
 
 extra:
   analytics:

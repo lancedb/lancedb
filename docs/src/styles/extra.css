@@ -1,0 +1,26 @@
+.md-grid {
+    max-width: 90%;
+  }
+  
+  @media (min-width: 1220px) {
+    .md-main__inner {
+      margin-top: 0;
+    }
+    .md-sidebar {
+      height: auto;
+    }
+    .md-sidebar--primary {
+      border-right: 1px solid var(--md-default-fg-color--lightest);
+    }
+    .md-nav {
+      font-size: 16px;
+    }
+    .md-nav .md-nav__title {
+      display: none;
+    }
+    .md-nav__icon {
+      width: 1.2rem;
+      height: 1.2rem;
+      margin-top: -.1rem;
+    }
+  }
