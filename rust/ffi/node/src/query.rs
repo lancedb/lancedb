@@ -61,13 +61,13 @@ impl JsQuery {
 
         let (deferred, promise) = cx.promise();
         let channel = cx.channel();
-        let query_vector = query_obj.get::<JsArray, _, _>(&mut cx, "_queryVector")?;
-        let query = convert::js_array_to_vec(query_vector.deref(), &mut cx);
+        let query_vector = query_obj.get_opt::<JsArray, _, _>(&mut cx, "_queryVector")?;
         let table = js_table.table.clone();
+        let query = query_vector.map(|q| convert::js_array_to_vec(q.deref(), &mut cx));
 
         rt.spawn(async move {
             let builder = table
-                .search(Float32Array::from(query))
+                .search(query.map(|q| Float32Array::from(q)))
                 .limit(limit as usize)
                 .refine_factor(refine_factor)
                 .nprobes(nprobes)

@@ -86,6 +86,22 @@ describe('LanceDB client', function () {
       assert.equal(results[0].id, 1)
     })
 
+    it('uses a filter / where clause without vector search', async function () {
+      // eslint-disable-next-line @typescript-eslint/explicit-function-return-type
+      const assertResults = (results: Array<Record<string, unknown>>) => {
+        assert.equal(results.length, 1)
+        assert.equal(results[0].id, 2)
+      }
+
+      const uri = await createTestDB()
+      const con = await lancedb.connect(uri)
+      const table = (await con.openTable('vectors')) as LocalTable
+      let results = await table.filter('id == 2').execute()
+      assertResults(results)
+      results = await table.where('id == 2').execute()
+      assertResults(results)
+    })
+
     it('uses a filter / where clause', async function () {
       // eslint-disable-next-line @typescript-eslint/explicit-function-return-type
       const assertResults = (results: Array<Record<string, unknown>>) => {

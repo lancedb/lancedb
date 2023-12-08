@@ -23,7 +23,7 @@ const { tableSearch } = require('../native.js')
  * A builder for nearest neighbor queries for LanceDB.
  */
 export class Query<T = number[]> {
-  private readonly _query: T
+  private readonly _query?: T
   private readonly _tbl?: any
   private _queryVector?: number[]
   private _limit: number
@@ -35,7 +35,7 @@ export class Query<T = number[]> {
   private _prefilter: boolean
   protected readonly _embeddings?: EmbeddingFunction<T>
 
-  constructor (query: T, tbl?: any, embeddings?: EmbeddingFunction<T>) {
+  constructor (query?: T, tbl?: any, embeddings?: EmbeddingFunction<T>) {
     this._tbl = tbl
     this._query = query
     this._limit = 10
@@ -113,10 +113,12 @@ export class Query<T = number[]> {
      * Execute the query and return the results as an Array of Objects
      */
   async execute<T = Record<string, unknown>> (): Promise<T[]> {
-    if (this._embeddings !== undefined) {
-      this._queryVector = (await this._embeddings.embed([this._query]))[0]
-    } else {
-      this._queryVector = this._query as number[]
+    if (this._query !== undefined) {
+      if (this._embeddings !== undefined) {
+        this._queryVector = (await this._embeddings.embed([this._query]))[0]
+      } else {
+        this._queryVector = this._query as number[]
+      }
     }
 
     const isElectron = this.isElectron()
