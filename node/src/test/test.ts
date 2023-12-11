@@ -267,14 +267,26 @@ describe('LanceDB client', function () {
       const table = await con.openTable('vectors')
       assert.equal(await table.countRows(), 2)
 
-
       await table.update('price = 10', { price: "100" })
+      let results = await table.search([0.1, 0.2]).execute()
+      assert.equal(results[0].price, 100)
+      assert.equal(results[1].price, 11)
+    })
+
+    it.only('can update every record in the table', async function() {
+      const uri = await createTestDB()
+      const con = await lancedb.connect(uri)
+
+      const table = await con.openTable('vectors')
       assert.equal(await table.countRows(), 2)
 
+      await table.update(null, { "price": "100" })
       let results = await table.search([0.1, 0.2]).execute()
-      console.log({ results })
-      // TODO assert results ...
+
+      assert.equal(results[0].price, 100)
+      assert.equal(results[1].price, 100)
     })
+
 
     it('can delete records from a table', async function () {
       const uri = await createTestDB()

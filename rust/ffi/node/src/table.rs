@@ -173,11 +173,8 @@ impl JsTable {
         let (deferred, promise) = cx.promise();
         let channel = cx.channel();
 
-        // TODO -- handle case where predicate is not passed ...
-        let predicate = cx.argument::<JsString>(0)?.value(&mut cx);
-        println!("predicate = {}", predicate);
-
         let updates_arg = cx.argument::<JsObject>(1)?;
+
         let properties = updates_arg.get_own_property_names(&mut cx)?;
 
         let mut updates: Vec<(String, String)> =
@@ -188,6 +185,7 @@ impl JsTable {
             let property = properties
                 .get_value(&mut cx, i)?
                 .downcast_or_throw::<JsString, _>(&mut cx)?;
+            
             let value = updates_arg
                 .get_value(&mut cx, property.clone())?
                 .downcast_or_throw::<JsString, _>(&mut cx)?;
@@ -197,13 +195,32 @@ impl JsTable {
             updates.push((property, value));
         }
 
+        let predicate = cx.argument_opt(0);
+        let predicate = predicate.unwrap().downcast::<JsString, _>(&mut cx);
+
+        let predicate = match predicate {
+            Ok(_) => {
+                let val = predicate.map(|s| s.value(&mut cx)).unwrap();
+                Some(val)
+            },
+            Err(_) => {
+                // if the predicate is not string, check it's null otherwise an invalid
+                // type was passed
+                cx.argument::<JsNull>(0)?;
+                None
+            }
+        };
+
         rt.spawn(async move {
             let updates_arg = updates
                 .iter()
                 .map(|(k, v)| (k.as_str(), v.as_str()))
                 .collect::<Vec<_>>();
 
-            let update_result = table.update(Some(&predicate), updates_arg).await;
+
+            let predicate = predicate.as_ref().map(|s| s.as_str());
+
+            let update_result = table.update(predicate, updates_arg).await;
             deferred.settle_with(&channel, move |mut cx| {
                 update_result.or_throw(&mut cx)?;
                 Ok(cx.boxed(JsTable::from(table)))
