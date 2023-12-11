@@ -185,7 +185,7 @@ impl JsTable {
             let property = properties
                 .get_value(&mut cx, i)?
                 .downcast_or_throw::<JsString, _>(&mut cx)?;
-            
+
             let value = updates_arg
                 .get_value(&mut cx, property.clone())?
                 .downcast_or_throw::<JsString, _>(&mut cx)?;
@@ -202,7 +202,7 @@ impl JsTable {
             Ok(_) => {
                 let val = predicate.map(|s| s.value(&mut cx)).unwrap();
                 Some(val)
-            },
+            }
             Err(_) => {
                 // if the predicate is not string, check it's null otherwise an invalid
                 // type was passed
@@ -216,7 +216,6 @@ impl JsTable {
                 .iter()
                 .map(|(k, v)| (k.as_str(), v.as_str()))
                 .collect::<Vec<_>>();
-
 
             let predicate = predicate.as_ref().map(|s| s.as_str());
 
