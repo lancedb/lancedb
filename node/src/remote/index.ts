@@ -246,7 +246,7 @@ export class RemoteTable<T = number[]> implements Table<T> {
     await this._client.post(`/v1/table/${this._name}/delete/`, { predicate: filter })
   }
 
-  async update (filter: string | null, updates: { [key: string]: string }): Promise<void> {
+  async update (filter: string | null, updates: Record<string, string>): Promise<void> {
     throw new Error('Not implemented')
   }
 
