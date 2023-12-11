@@ -433,13 +433,14 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
 
+    use arrow::array::AsArray;
+    use arrow_array::types::Float32Type;
     use arrow_array::{
         Array, BooleanArray, Date32Array, FixedSizeListArray, Float32Array, Float64Array,
-        Int32Array, Int64Array, LargeStringArray, RecordBatch, RecordBatchIterator,
+        Int32Array, Int64Array, LargeStringArray, PrimitiveArray, RecordBatch, RecordBatchIterator,
         RecordBatchReader, StringArray, TimestampMillisecondArray, TimestampNanosecondArray,
         UInt32Array,
     };
-    use arrow::array::AsArray;
     use arrow_data::ArrayDataBuilder;
     use arrow_schema::{DataType, Field, Schema, TimeUnit};
     use chrono::format::Fixed;
@@ -726,11 +727,6 @@ mod tests {
         assert_column!(batch.column(8), Date32Array, 1);
         assert_column!(batch.column(9), TimestampNanosecondArray, 1);
         assert_column!(batch.column(10), TimestampMillisecondArray, 1);
-        // assert_column!(
-        //     batch.column(11),
-        //     FixedSizeListArray,
-        //     Arc::new(Float32Array::from_iter_values(vec![1.0, 1.0]))
-        // );
 
         let array = batch
             .column(11)
@@ -740,20 +736,26 @@ mod tests {
             .iter()
             .collect::<Vec<_>>();
         for v in array {
-            v.unwrap().as_fixed_size_list(); // TODO finish here?
-            let mut first = v.into_iter().next().unwrap();
-            let mut my_first = first.to_owned();
-            println!("{:?}", my_first.data_type());
-            let fsl = my_first.as_fixed_size_list();
-            // v.unwrap().eq(&Float32Array::from_iter_values(vec![1.0, 1.0]));
-            // let v = v.unwrap();
-            let g = create_fixed_size_list(
-                Float64Array::from_iter_values((0..20).into_iter().map(|i| i as f64)),
-                2,
-            ).unwrap();
-            assert_eq!(*fsl, g);
-            // .unwrap();
-            // assert_eq!(v, g);
+            let v = v.unwrap();
+            let f32array = v.as_any().downcast_ref::<Float32Array>().unwrap();
+            for v in f32array {
+                assert_eq!(v, Some(1.0));
+            }
+        }
+
+        let array = batch
+            .column(12)
+            .as_any()
+            .downcast_ref::<FixedSizeListArray>()
+            .unwrap()
+            .iter()
+            .collect::<Vec<_>>();
+        for v in array {
+            let v = v.unwrap();
+            let f64array = v.as_any().downcast_ref::<Float64Array>().unwrap();
+            for v in f64array {
+                assert_eq!(v, Some(1.0));
+            }
         }
     }
 
