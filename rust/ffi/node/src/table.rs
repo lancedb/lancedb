@@ -173,10 +173,9 @@ impl JsTable {
         let (deferred, promise) = cx.promise();
         let channel = cx.channel();
 
+        // create a vector of updates from the passed map
         let updates_arg = cx.argument::<JsObject>(1)?;
-
         let properties = updates_arg.get_own_property_names(&mut cx)?;
-
         let mut updates: Vec<(String, String)> =
             Vec::with_capacity(properties.len(&mut cx) as usize);
 
@@ -195,9 +194,9 @@ impl JsTable {
             updates.push((property, value));
         }
 
+        // get the filter/predicate if the user passed one
         let predicate = cx.argument_opt(0);
         let predicate = predicate.unwrap().downcast::<JsString, _>(&mut cx);
-
         let predicate = match predicate {
             Ok(_) => {
                 let val = predicate.map(|s| s.value(&mut cx)).unwrap();

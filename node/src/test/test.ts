@@ -260,7 +260,7 @@ describe('LanceDB client', function () {
       assert.equal(await table.countRows(), 2)
     })
 
-    it.only('can update records in the table', async function() {
+    it('can update records in the table', async function() {
       const uri = await createTestDB()
       const con = await lancedb.connect(uri)
 
@@ -273,7 +273,7 @@ describe('LanceDB client', function () {
       assert.equal(results[1].price, 11)
     })
 
-    it.only('can update every record in the table', async function() {
+    it('can update every record in the table', async function() {
       const uri = await createTestDB()
       const con = await lancedb.connect(uri)
 

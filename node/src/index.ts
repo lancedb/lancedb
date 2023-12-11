@@ -263,17 +263,17 @@ export interface Table<T = number[]> {
 
   /**
    * Update rows in this table.
-   * 
+   *
    * This can be used to update a single row, many rows, all rows, or
    * sometimes no rows (if your predicate matches nothing).
-   * 
+   *
    * @param filter  A filter in the same format used by a sql WHERE clause. The
    *                filter may be empty, in which case all rows will be updated.
    * @param updates A key-value map of updates. The keys are the column names, and the
    *                values are the new values to set as SQL expressions.
    *
    * @examples
-   * 
+   *
    * ```ts
    * const con = await lancedb.connect("./.lancedb")
    * const data = [
@@ -281,18 +281,18 @@ export interface Table<T = number[]> {
    *    {id: 2, vector: [4, 4], name: 'Mike'},
    * ];
    * const tbl = await con.createTable("my_table", data)
-   * 
+   *
    * await tbl.update("id = 2", { vector: '[2, 2]', name: "'Michael'" })
-   * 
+   *
    * let results = yield tbl.search([1, 1]).execute();
    * // Returns [
    * //   {id: 2, vector: [2, 2], name: 'Michael'}
    * //   {id: 1, vector: [3, 3], name: 'Ye'}
    * // ]
-   * ``` 
-   * 
+   * ```
+   *
    */
-  update: (filter: string | null, updates: { [key: string]: string }) => Promise<void>
+  update: (filter: string | null, updates: Record<string, string>) => Promise<void>
 
   /**
    * List the indicies on this table.
@@ -516,14 +516,14 @@ export class LocalTable<T = number[]> implements Table<T> {
 
   /**
    * Update rows in this table.
-   * 
+   *
    * @param filter A filter for the rows to update, in the same format used by a sql
    *              WHERE clause.
    * @param updates A key-value map of updates. The keys are the column names, and the
    *             values are the new values to set as SQL expressions.
-   * @returns 
+   * @returns
    */
-  async update (filter: string | null, updates: { [key: string]: string }): Promise<void> {
+  async update (filter: string | null, updates: Record<string, string>): Promise<void> {
     return tableUpdate.call(this._tbl, filter, updates).then((newTable: any) => { this._tbl = newTable })
   }
 
