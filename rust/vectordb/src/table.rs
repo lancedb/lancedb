@@ -433,17 +433,14 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
 
-    use arrow::array::AsArray;
-    use arrow_array::types::Float32Type;
     use arrow_array::{
         Array, BooleanArray, Date32Array, FixedSizeListArray, Float32Array, Float64Array,
-        Int32Array, Int64Array, LargeStringArray, PrimitiveArray, RecordBatch, RecordBatchIterator,
+        Int32Array, Int64Array, LargeStringArray, RecordBatch, RecordBatchIterator,
         RecordBatchReader, StringArray, TimestampMillisecondArray, TimestampNanosecondArray,
         UInt32Array,
     };
     use arrow_data::ArrayDataBuilder;
     use arrow_schema::{DataType, Field, Schema, TimeUnit};
-    use chrono::format::Fixed;
     use futures::TryStreamExt;
     use lance::dataset::{Dataset, WriteMode};
     use lance::index::vector::pq::PQBuildParams;
@@ -568,7 +565,81 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_update() {
+    async fn test_update_with_predicate() {
+        let tmp_dir = tempdir().unwrap();
+        let dataset_path = tmp_dir.path().join("test.lance");
+        let uri = dataset_path.to_str().unwrap();
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", DataType::Utf8, false),
+        ]));
+
+        let record_batch_iter = RecordBatchIterator::new(
+            vec![RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    Arc::new(Int32Array::from_iter_values(0..10)),
+                    Arc::new(StringArray::from_iter_values(vec![
+                        "a", "b", "c", "d", "e", "f", "g", "h", "i", "j",
+                    ])),
+                ],
+            )
+            .unwrap()]
+            .into_iter()
+            .map(Ok),
+            schema.clone(),
+        );
+
+        Dataset::write(record_batch_iter, uri, None).await.unwrap();
+        let mut table = Table::open(uri).await.unwrap();
+
+        table
+            .update(Some("id > 5"), vec![("name", "'foo'")])
+            .await
+            .unwrap();
+
+        let ds_after = Dataset::open(uri).await.unwrap();
+        let mut batches = ds_after
+            .scan()
+            .project(&["id", "name"])
+            .unwrap()
+            .try_into_stream()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+
+        while let Some(batch) = batches.pop() {
+            let ids = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int32Array>()
+                .unwrap()
+                .iter()
+                .collect::<Vec<_>>();
+            let names = batch
+                .column(1)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap()
+                .iter()
+                .collect::<Vec<_>>();
+            for (i, name) in names.iter().enumerate() {
+                let id = ids[i].unwrap();
+                let name = name.unwrap();
+                if id > 5 {
+                    assert_eq!(name, "foo");
+                } else {
+                    assert_eq!(name, &format!("{}", (b'a' + id as u8) as char));
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_update_all_types() {
         let tmp_dir = tempdir().unwrap();
         let dataset_path = tmp_dir.path().join("test.lance");
         let uri = dataset_path.to_str().unwrap();
