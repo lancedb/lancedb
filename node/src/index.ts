@@ -546,10 +546,8 @@ export class LocalTable<T = number[]> implements Table<T> {
   /**
    * Update rows in this table.
    *
-   * @param filter A filter for the rows to update, in the same format used by a sql
-   *              WHERE clause.
-   * @param updates A key-value map of updates. The keys are the column names, and the
-   *             values are the new values to set as SQL expressions.
+   * @param args see {@link UpdateArgs} and {@link UpdateSqlArgs} for more details
+   *
    * @returns
    */
   async update (args: UpdateArgs | UpdateSqlArgs): Promise<void> {
