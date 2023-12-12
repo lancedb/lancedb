@@ -268,7 +268,7 @@ export interface Table<T = number[]> {
    * sometimes no rows (if your predicate matches nothing).
    *
    * @param filter  A filter in the same format used by a sql WHERE clause. The
-   *                filter may be empty, in which case all rows will be updated.
+   *                filter may be null, in which case all rows will be updated.
    * @param updates A key-value map of updates. The keys are the column names, and the
    *                values are the new values to set as SQL expressions.
    *
