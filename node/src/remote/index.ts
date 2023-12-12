@@ -16,7 +16,8 @@ import {
   type EmbeddingFunction, type Table, type VectorIndexParams, type Connection,
   type ConnectionOptions, type CreateTableOptions, type VectorIndex,
   type WriteOptions,
-  type IndexStats
+  type IndexStats,
+  type UpdateArgs, type UpdateSqlArgs
 } from '../index'
 import { Query } from '../query'
 
@@ -246,7 +247,7 @@ export class RemoteTable<T = number[]> implements Table<T> {
     await this._client.post(`/v1/table/${this._name}/delete/`, { predicate: filter })
   }
 
-  async update (filter: string | null, updates: Record<string, string>): Promise<void> {
+  async update (args: UpdateArgs | UpdateSqlArgs): Promise<void> {
     throw new Error('Not implemented')
   }
 

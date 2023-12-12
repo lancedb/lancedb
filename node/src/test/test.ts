@@ -267,7 +267,20 @@ describe('LanceDB client', function () {
       const table = await con.openTable('vectors')
       assert.equal(await table.countRows(), 2)
 
-      await table.update('price = 10', { price: '100' })
+      await table.update({ filter: 'price = 10', updatesSql: { price: '100' } })
+      const results = await table.search([0.1, 0.2]).execute()
+      assert.equal(results[0].price, 100)
+      assert.equal(results[1].price, 11)
+    })
+
+    it('can update the records using a literal value', async function () {
+      const uri = await createTestDB()
+      const con = await lancedb.connect(uri)
+
+      const table = await con.openTable('vectors')
+      assert.equal(await table.countRows(), 2)
+
+      await table.update({ filter: 'price = 10', updates: { price: 100 } })
       const results = await table.search([0.1, 0.2]).execute()
       assert.equal(results[0].price, 100)
       assert.equal(results[1].price, 11)
@@ -280,7 +293,7 @@ describe('LanceDB client', function () {
       const table = await con.openTable('vectors')
       assert.equal(await table.countRows(), 2)
 
-      await table.update(null, { price: '100' })
+      await table.update({ updatesSql: { price: '100' } })
       const results = await table.search([0.1, 0.2]).execute()
 
       assert.equal(results[0].price, 100)
@@ -569,7 +582,7 @@ describe('Compact and cleanup', function () {
 
     // should have no effect, but this validates the arguments are parsed.
     await table.compactFiles({
-      targetRowsPerFragment: 1024 * 10,
+      targetRowsPerFragment: 102410,
       maxRowsPerGroup: 1024,
       materializeDeletions: true,
       materializeDeletionsThreshold: 0.5,

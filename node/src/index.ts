@@ -21,6 +21,7 @@ import type { EmbeddingFunction } from './embedding/embedding_function'
 import { RemoteConnection } from './remote'
 import { Query } from './query'
 import { isEmbeddingFunction } from './embedding/embedding_function'
+import { type Literal, toSQL } from './util'
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { databaseNew, databaseTableNames, databaseOpenTable, databaseDropTable, tableCreate, tableAdd, tableCreateVectorIndex, tableCountRows, tableDelete, tableUpdate, tableCleanupOldVersions, tableCompactFiles, tableListIndices, tableIndexStats } = require('../native.js')
@@ -267,10 +268,7 @@ export interface Table<T = number[]> {
    * This can be used to update a single row, many rows, all rows, or
    * sometimes no rows (if your predicate matches nothing).
    *
-   * @param filter  A filter in the same format used by a SQL WHERE clause. The
-   *                filter may be null, in which case all rows will be updated.
-   * @param updates A key-value map of updates. The keys are the column names, and the
-   *                values are the new values to set as SQL expressions.
+   * @param args see {@link UpdateArgs} and {@link UpdateSqlArgs} for more details
    *
    * @examples
    *
@@ -282,9 +280,12 @@ export interface Table<T = number[]> {
    * ];
    * const tbl = await con.createTable("my_table", data)
    *
-   * await tbl.update("id = 2", { vector: '[2, 2]', name: "'Michael'" })
+   * await tbl.update({
+   *   filter: "id = 2",
+   *   updates: { vector: [2, 2], name: "Michael" },
+   * })
    *
-   * let results = yield tbl.search([1, 1]).execute();
+   * let results = await tbl.search([1, 1]).execute();
    * // Returns [
    * //   {id: 2, vector: [2, 2], name: 'Michael'}
    * //   {id: 1, vector: [3, 3], name: 'Ye'}
@@ -292,7 +293,7 @@ export interface Table<T = number[]> {
    * ```
    *
    */
-  update: (filter: string | null, updates: Record<string, string>) => Promise<void>
+  update: (args: UpdateArgs | UpdateSqlArgs) => Promise<void>
 
   /**
    * List the indicies on this table.
@@ -303,6 +304,34 @@ export interface Table<T = number[]> {
    * Get statistics about an index.
    */
   indexStats: (indexUuid: string) => Promise<IndexStats>
+}
+
+export interface UpdateArgs {
+  /**
+   * A filter in the same format used by a sql WHERE clause. The filter may be empty,
+   * in which case all rows will be updated.
+   */
+  filter?: string
+
+  /**
+   * A key-value map of updates. The keys are the column names, and the values are the
+   * new values to set
+   */
+  updates: Record<string, Literal>
+}
+
+export interface UpdateSqlArgs {
+  /**
+   * A filter in the same format used by a sql WHERE clause. The filter may be empty,
+   * in which case all rows will be updated.
+   */
+  filter?: string
+
+  /**
+   * A key-value map of updates. The keys are the column names, and the values are the
+   * new values to set as SQL expressions.
+   */
+  updatesSql: Record<string, string>
 }
 
 export interface VectorIndex {
@@ -517,13 +546,27 @@ export class LocalTable<T = number[]> implements Table<T> {
   /**
    * Update rows in this table.
    *
-   * @param filter A filter for the rows to update, in the same format used by a SQL
+   * @param filter A filter for the rows to update, in the same format used by a sql
    *              WHERE clause.
    * @param updates A key-value map of updates. The keys are the column names, and the
    *             values are the new values to set as SQL expressions.
    * @returns
    */
-  async update (filter: string | null, updates: Record<string, string>): Promise<void> {
+  async update (args: UpdateArgs | UpdateSqlArgs): Promise<void> {
+    let filter: string | null
+    let updates: Record<string, string>
+
+    if ('updatesSql' in args) {
+      filter = args.filter ?? null
+      updates = args.updatesSql
+    } else {
+      filter = args.filter ?? null
+      updates = {}
+      for (const [key, value] of Object.entries(args.updates)) {
+        updates[key] = toSQL(value)
+      }
+    }
+
     return tableUpdate.call(this._tbl, filter, updates).then((newTable: any) => { this._tbl = newTable })
   }
 
