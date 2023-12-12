@@ -267,7 +267,7 @@ describe('LanceDB client', function () {
       const table = await con.openTable('vectors')
       assert.equal(await table.countRows(), 2)
 
-      await table.update({ filter: 'price = 10', updatesSql: { price: '100' } })
+      await table.update({ where: 'price = 10', valuesSql: { price: '100' } })
       const results = await table.search([0.1, 0.2]).execute()
       assert.equal(results[0].price, 100)
       assert.equal(results[1].price, 11)
@@ -280,7 +280,7 @@ describe('LanceDB client', function () {
       const table = await con.openTable('vectors')
       assert.equal(await table.countRows(), 2)
 
-      await table.update({ filter: 'price = 10', updates: { price: 100 } })
+      await table.update({ where: 'price = 10', values: { price: 100 } })
       const results = await table.search([0.1, 0.2]).execute()
       assert.equal(results[0].price, 100)
       assert.equal(results[1].price, 11)
@@ -293,7 +293,7 @@ describe('LanceDB client', function () {
       const table = await con.openTable('vectors')
       assert.equal(await table.countRows(), 2)
 
-      await table.update({ updatesSql: { price: '100' } })
+      await table.update({ valuesSql: { price: '100' } })
       const results = await table.search([0.1, 0.2]).execute()
 
       assert.equal(results[0].price, 100)

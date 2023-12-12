@@ -311,13 +311,13 @@ export interface UpdateArgs {
    * A filter in the same format used by a sql WHERE clause. The filter may be empty,
    * in which case all rows will be updated.
    */
-  filter?: string
+  where?: string
 
   /**
    * A key-value map of updates. The keys are the column names, and the values are the
    * new values to set
    */
-  updates: Record<string, Literal>
+  values: Record<string, Literal>
 }
 
 export interface UpdateSqlArgs {
@@ -325,13 +325,13 @@ export interface UpdateSqlArgs {
    * A filter in the same format used by a sql WHERE clause. The filter may be empty,
    * in which case all rows will be updated.
    */
-  filter?: string
+  where?: string
 
   /**
    * A key-value map of updates. The keys are the column names, and the values are the
    * new values to set as SQL expressions.
    */
-  updatesSql: Record<string, string>
+  valuesSql: Record<string, string>
 }
 
 export interface VectorIndex {
@@ -554,13 +554,13 @@ export class LocalTable<T = number[]> implements Table<T> {
     let filter: string | null
     let updates: Record<string, string>
 
-    if ('updatesSql' in args) {
-      filter = args.filter ?? null
-      updates = args.updatesSql
+    if ('valuesSql' in args) {
+      filter = args.where ?? null
+      updates = args.valuesSql
     } else {
-      filter = args.filter ?? null
+      filter = args.where ?? null
       updates = {}
-      for (const [key, value] of Object.entries(args.updates)) {
+      for (const [key, value] of Object.entries(args.values)) {
         updates[key] = toSQL(value)
       }
     }
