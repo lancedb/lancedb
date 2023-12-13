@@ -260,6 +260,46 @@ describe('LanceDB client', function () {
       assert.equal(await table.countRows(), 2)
     })
 
+    it('can update records in the table', async function () {
+      const uri = await createTestDB()
+      const con = await lancedb.connect(uri)
+
+      const table = await con.openTable('vectors')
+      assert.equal(await table.countRows(), 2)
+
+      await table.update({ where: 'price = 10', valuesSql: { price: '100' } })
+      const results = await table.search([0.1, 0.2]).execute()
+      assert.equal(results[0].price, 100)
+      assert.equal(results[1].price, 11)
+    })
+
+    it('can update the records using a literal value', async function () {
+      const uri = await createTestDB()
+      const con = await lancedb.connect(uri)
+
+      const table = await con.openTable('vectors')
+      assert.equal(await table.countRows(), 2)
+
+      await table.update({ where: 'price = 10', values: { price: 100 } })
+      const results = await table.search([0.1, 0.2]).execute()
+      assert.equal(results[0].price, 100)
+      assert.equal(results[1].price, 11)
+    })
+
+    it('can update every record in the table', async function () {
+      const uri = await createTestDB()
+      const con = await lancedb.connect(uri)
+
+      const table = await con.openTable('vectors')
+      assert.equal(await table.countRows(), 2)
+
+      await table.update({ valuesSql: { price: '100' } })
+      const results = await table.search([0.1, 0.2]).execute()
+
+      assert.equal(results[0].price, 100)
+      assert.equal(results[1].price, 100)
+    })
+
     it('can delete records from a table', async function () {
       const uri = await createTestDB()
       const con = await lancedb.connect(uri)
@@ -542,7 +582,7 @@ describe('Compact and cleanup', function () {
 
     // should have no effect, but this validates the arguments are parsed.
     await table.compactFiles({
-      targetRowsPerFragment: 1024 * 10,
+      targetRowsPerFragment: 102410,
       maxRowsPerGroup: 1024,
       materializeDeletions: true,
       materializeDeletionsThreshold: 0.5,

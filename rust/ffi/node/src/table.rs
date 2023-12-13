@@ -165,6 +165,69 @@ impl JsTable {
         Ok(promise)
     }
 
+    pub(crate) fn js_update(mut cx: FunctionContext) -> JsResult<JsPromise> {
+        let js_table = cx.this().downcast_or_throw::<JsBox<JsTable>, _>(&mut cx)?;
+        let mut table = js_table.table.clone();
+
+        let rt = runtime(&mut cx)?;
+        let (deferred, promise) = cx.promise();
+        let channel = cx.channel();
+
+        // create a vector of updates from the passed map
+        let updates_arg = cx.argument::<JsObject>(1)?;
+        let properties = updates_arg.get_own_property_names(&mut cx)?;
+        let mut updates: Vec<(String, String)> =
+            Vec::with_capacity(properties.len(&mut cx) as usize);
+
+        let len_properties = properties.len(&mut cx);
+        for i in 0..len_properties {
+            let property = properties
+                .get_value(&mut cx, i)?
+                .downcast_or_throw::<JsString, _>(&mut cx)?;
+
+            let value = updates_arg
+                .get_value(&mut cx, property.clone())?
+                .downcast_or_throw::<JsString, _>(&mut cx)?;
+
+            let property = property.value(&mut cx);
+            let value = value.value(&mut cx);
+            updates.push((property, value));
+        }
+
+        // get the filter/predicate if the user passed one
+        let predicate = cx.argument_opt(0);
+        let predicate = predicate.unwrap().downcast::<JsString, _>(&mut cx);
+        let predicate = match predicate {
+            Ok(_) => {
+                let val = predicate.map(|s| s.value(&mut cx)).unwrap();
+                Some(val)
+            }
+            Err(_) => {
+                // if the predicate is not string, check it's null otherwise an invalid
+                // type was passed
+                cx.argument::<JsNull>(0)?;
+                None
+            }
+        };
+
+        rt.spawn(async move {
+            let updates_arg = updates
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str()))
+                .collect::<Vec<_>>();
+
+            let predicate = predicate.as_ref().map(|s| s.as_str());
+
+            let update_result = table.update(predicate, updates_arg).await;
+            deferred.settle_with(&channel, move |mut cx| {
+                update_result.or_throw(&mut cx)?;
+                Ok(cx.boxed(JsTable::from(table)))
+            })
+        });
+
+        Ok(promise)
+    }
+
     pub(crate) fn js_cleanup(mut cx: FunctionContext) -> JsResult<JsPromise> {
         let js_table = cx.this().downcast_or_throw::<JsBox<JsTable>, _>(&mut cx)?;
         let rt = runtime(&mut cx)?;
