@@ -12,9 +12,12 @@
 #  limitations under the License.
 
 import os
+from datetime import date, datetime
+from functools import singledispatch
 from typing import Tuple
 from urllib.parse import urlparse
 
+import numpy as np
 import pyarrow.fs as pa_fs
 
 
@@ -88,3 +91,53 @@ def safe_import_pandas():
         return pd
     except ImportError:
         return None
+
+
+@singledispatch
+def value_to_sql(value):
+    raise NotImplementedError("SQL conversion is not implemented for this type")
+
+
+@value_to_sql.register(str)
+def _(value: str):
+    return f"'{value}'"
+
+
+@value_to_sql.register(int)
+def _(value: int):
+    return str(value)
+
+
+@value_to_sql.register(float)
+def _(value: float):
+    return str(value)
+
+
+@value_to_sql.register(bool)
+def _(value: bool):
+    return str(value).upper()
+
+
+@value_to_sql.register(type(None))
+def _(value: type(None)):
+    return "NULL"
+
+
+@value_to_sql.register(datetime)
+def _(value: datetime):
+    return f"'{value.isoformat()}'"
+
+
+@value_to_sql.register(date)
+def _(value: date):
+    return f"'{value.isoformat()}'"
+
+
+@value_to_sql.register(list)
+def _(value: list):
+    return "[" + ", ".join(map(value_to_sql, value)) + "]"
+
+
+@value_to_sql.register(np.ndarray)
+def _(value: np.ndarray):
+    return value_to_sql(value.tolist())
