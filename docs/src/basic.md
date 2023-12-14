@@ -1,10 +1,8 @@
-# Basic LanceDB Functionality
-
-We'll cover the basics of using LanceDB on your local machine in this section.
+# Getting started
 
 ??? info "LanceDB runs embedded on your backend application, so there is no need to run a separate server."
 
-      <img src="../assets/lancedb_embedded_explanation.png" width="650px" />
+<img src="../assets/lancedb_embedded_explanation.png" width="650px" />
 
 ## Installation
 
