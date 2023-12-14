@@ -13,7 +13,7 @@
 
 import uuid
 from functools import cached_property
-from typing import Optional, Union
+from typing import Dict, Optional, Union
 
 import pyarrow as pa
 from lance import json_to_schema
@@ -22,6 +22,7 @@ from lancedb.common import DATA, VEC, VECTOR_COLUMN_NAME
 
 from ..query import LanceVectorQueryBuilder
 from ..table import Query, Table, _sanitize_data
+from ..util import value_to_sql
 from .arrow import to_ipc_binary
 from .client import ARROW_STREAM_CONTENT_TYPE
 from .db import RemoteDBConnection
@@ -272,4 +273,26 @@ class RemoteTable(Table):
         payload = {"predicate": predicate}
         self._conn._loop.run_until_complete(
             self._conn._client.post(f"/v1/table/{self._name}/delete/", data=payload)
+        )
+
+    def update(
+        self,
+        where: Optional[str] = None,
+        values: Optional[dict] = None,
+        *,
+        values_sql: Optional[Dict[str, str]] = None,
+    ):
+        if values is not None and values_sql is not None:
+            raise ValueError("Only one of values or values_sql can be provided")
+        if values is None and values_sql is None:
+            raise ValueError("Either values or values_sql must be provided")
+    
+        if values is not None:
+            updates = [[k, value_to_sql(v)] for k, v in values.items()]
+        else:
+            updates = [[k, v] for k, v in values_sql.items()]
+
+        payload = {"predicate": where, "updates": updates}
+        self._conn._loop.run_until_complete(
+            self._conn._client.post(f"/v1/table/{self._name}/update/", data=payload)
         )
