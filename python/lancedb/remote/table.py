@@ -282,6 +282,46 @@ class RemoteTable(Table):
         *,
         values_sql: Optional[Dict[str, str]] = None,
     ):
+        """
+        This can be used to update zero to all rows depending on how many
+        rows match the where clause.
+
+        Parameters
+        ----------
+        where: str, optional
+            The SQL where clause to use when updating rows. For example, 'x = 2'
+            or 'x IN (1, 2, 3)'. The filter must not be empty, or it will error.
+        values: dict, optional
+            The values to update. The keys are the column names and the values
+            are the values to set.
+        values_sql: dict, optional
+            The values to update, expressed as SQL expression strings. These can
+            reference existing columns. For example, {"x": "x + 1"} will increment
+            the x column by 1.
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> data = [
+        ...    {"x": 1, "vector": [1, 2]},
+        ...    {"x": 2, "vector": [3, 4]},
+        ...    {"x": 3, "vector": [5, 6]}
+        ... ]
+        >>> db = lancedb.connect("db://...", api_key="...", region="...") # doctest: +SKIP
+        >>> table = db.create_table("my_table", data) # doctest: +SKIP
+        >>> table.to_pandas() # doctest: +SKIP
+           x      vector # doctest: +SKIP
+        0  1  [1.0, 2.0] # doctest: +SKIP
+        1  2  [3.0, 4.0] # doctest: +SKIP
+        2  3  [5.0, 6.0] # doctest: +SKIP
+        >>> table.update(where="x = 2", values={"vector": [10, 10]}) # doctest: +SKIP
+        >>> table.to_pandas() # doctest: +SKIP
+           x        vector # doctest: +SKIP
+        0  1    [1.0, 2.0] # doctest: +SKIP
+        1  3    [5.0, 6.0] # doctest: +SKIP
+        2  2  [10.0, 10.0] # doctest: +SKIP
+
+        """
         if values is not None and values_sql is not None:
             raise ValueError("Only one of values or values_sql can be provided")
         if values is None and values_sql is None:
