@@ -11,14 +11,14 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
+import os
 from datetime import date, datetime
 from functools import singledispatch
-import os
 from typing import Tuple
 from urllib.parse import urlparse
 
-import pyarrow.fs as pa_fs
 import numpy as np
+import pyarrow.fs as pa_fs
 
 
 def get_uri_scheme(uri: str) -> str:
