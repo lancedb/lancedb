@@ -1,4 +1,4 @@
-# [EXPERIMENTAL] Full text search
+# Full-text search
 
 LanceDB now provides experimental support for full text search.
 This is currently Python only. We plan to push the integration down to Rust in the future
