@@ -1,4 +1,4 @@
-site_name: LanceDB Docs
+site_name: LanceDB
 site_url: https://lancedb.github.io/lancedb/
 repo_url: https://github.com/lancedb/lancedb
 edit_uri: https://github.com/lancedb/lancedb/tree/main/docs/src
@@ -85,15 +85,15 @@ nav:
     - Indexing: ann_indexes.md
     - Versioning & Reproducibility: notebooks/reproducibility.ipynb
   - 🧬 Embeddings:
-    - embeddings/index.md
+    - What are embeddings?: embeddings/index.md
     - Ingest Embedding Functions: embeddings/embedding_functions.md
     - Available Functions: embeddings/default_embedding_functions.md
     - Create Custom Embedding Functions: embeddings/api.md
     - Example - Multi-lingual semantic search: notebooks/multi_lingual_example.ipynb
     - Example - MultiModal CLIP Embeddings: notebooks/DisappearingEmbeddingFunction.ipynb
-  - 🔍 Python full-text search: fts.md
+  - 🔍 Full-text search: fts.md
   - 🔌 Integrations:
-    - integrations/index.md
+    - Tools and data formats: integrations/index.md
     - Pandas and PyArrow: python/arrow.md
     - DuckDB: python/duckdb.md
     - LangChain 🔗: https://python.langchain.com/en/latest/modules/indexes/vectorstores/examples/lancedb.html
@@ -103,7 +103,7 @@ nav:
     - Voxel51: integrations/voxel51.md
     - PromptTools: integrations/prompttools.md
   - 🐍 Python examples:
-    - examples/index.md
+    - Examples: examples/index.md
     - YouTube Transcript Search: notebooks/youtube_transcript_search.ipynb
     - Documentation QA Bot using LangChain: notebooks/code_qa_bot.ipynb
     - Multimodal search using CLIP: notebooks/multimodal_search.ipynb
@@ -125,7 +125,7 @@ nav:
   - Indexing: ann_indexes.md
   - Versioning & Reproducibility: notebooks/reproducibility.ipynb
 - Embeddings:
-  - embeddings/index.md
+  - What are embeddings?: embeddings/index.md
   - Ingest Embedding Functions: embeddings/embedding_functions.md
   - Available Functions: embeddings/default_embedding_functions.md
   - Create Custom Embedding Functions: embeddings/api.md
@@ -133,7 +133,7 @@ nav:
   - Example - MultiModal CLIP Embeddings: notebooks/DisappearingEmbeddingFunction.ipynb
 - Python full-text search: fts.md
 - Integrations:
-  - integrations/index.md
+  - Tools and data formats: integrations/index.md
   - Pandas and PyArrow: python/arrow.md
   - DuckDB: python/duckdb.md
   - LangChain 🦜️🔗: https://python.langchain.com/en/latest/modules/indexes/vectorstores/examples/lancedb.html
@@ -143,14 +143,14 @@ nav:
   - Voxel51: integrations/voxel51.md
   - PromptTools: integrations/prompttools.md
 - Python examples:
-  - examples/index.md
+  - Examples: examples/index.md
   - YouTube Transcript Search: notebooks/youtube_transcript_search.ipynb
   - Documentation QA Bot using LangChain: notebooks/code_qa_bot.ipynb
   - Multimodal search using CLIP: notebooks/multimodal_search.ipynb
   - Serverless QA Bot with S3 and Lambda: examples/serverless_lancedb_with_s3_and_lambda.md
   - Serverless QA Bot with Modal: examples/serverless_qa_bot_with_modal_and_langchain.md
 - Javascript examples:
-  - examples/index_js.md
+  - Examples: examples/index_js.md
   - YouTube Transcript Search: examples/youtube_transcript_bot_with_nodejs.md
   - Serverless Chatbot from any website: examples/serverless_website_chatbot.md
   - TransformersJS Embedding Search: examples/transformerjs_embedding_search_nodejs.md

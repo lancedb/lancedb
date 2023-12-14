@@ -1,25 +1,28 @@
 # LanceDB
 
-LanceDB is an open-source database for vector-search built with persistent storage, which greatly simplifies retrieval, filtering and management of embeddings.
+LanceDB is an open-source database for AI that's designed to manage and query embeddings for multi-modal data. The core of LanceDB is written in Rust 🦀 and is built on top of [Lance](https://github.com/lancedb/lance), an open-source columnar data format designed for performant ML workloads at huge scale.
 
-![Illustration](/lancedb/assets/ecosystem-illustration.png)
+## Why use LanceDB?
 
-The key features of LanceDB include:
+* Embedded (OSS) and serverless (Cloud), so no need to manage servers
 
 * Store, query and filter vectors, metadata and multi-modal data (text, images, videos, point clouds, and more).
 
-* Support for production-scale vector similarity search, full-text search and SQL, with no servers to manage.
+* Support for production-scale vector similarity search, full-text search and SQL querying (via [DataFusion](https://github.com/apache/arrow-datafusion)).
 
 * Native Python and Javascript/Typescript support.
 
-* Zero-copy, automatic versioning, manage versions of your data without needing extra infrastructure.
+* Tightly integrated with the [Arrow](https://arrow.apache.org/docs/format/Columnar.html) ecosystem, allowing true zero-copy access in shared memory plus SIMD and GPU acceleration.
 
-* Persisted on HDD, allowing scalability without breaking the bank.
+* Automatic data versioning, manage versions of your data without needing extra infrastructure.
+
+* Fully disk-based data & vector index, persisted on HDD, allowing scalability without breaking the bank.
 
 * Ingest your favorite data formats directly, like pandas DataFrames, Pydantic objects and more.
 
+![Illustration](/lancedb/assets/ecosystem-illustration.png)
 
-LanceDB's core is written in Rust 🦀 and is built using [Lance](https://github.com/lancedb/lance), an open-source columnar format designed for performant ML workloads.
+---
 
 ## Quick Start
 
@@ -56,6 +59,7 @@ LanceDB's core is written in Rust 🦀 and is built using [Lance](https://github
       ```
 
 ## Complete Demos (Python)
+
 - [YouTube Transcript Search](notebooks/youtube_transcript_search.ipynb)
 - [Documentation QA Bot using LangChain](notebooks/code_qa_bot.ipynb)
 - [Multimodal search using CLIP](notebooks/multimodal_search.ipynb)
@@ -63,13 +67,15 @@ LanceDB's core is written in Rust 🦀 and is built using [Lance](https://github
 - [Serverless QA Bot with Modal](examples/serverless_qa_bot_with_modal_and_langchain.md)
 
 ## Complete Demos (JavaScript)
+
 - [YouTube Transcript Search](examples/youtube_transcript_bot_with_nodejs.md)
 
 ## Documentation Quick Links
-* [`Basic Operations`](basic.md) - basic functionality of LanceDB.
-* [`Embedding Functions`](embeddings/index.md) - functions for working with embeddings.
-* [`Indexing`](ann_indexes.md) - create vector indexes to speed up queries.
-* [`Full text search`](fts.md) - [EXPERIMENTAL] full-text search API
-* [`Ecosystem Integrations`](python/integration.md) - integrating LanceDB with python data tooling ecosystem.
-* [`Python API Reference`](python/python.md) - detailed documentation for the LanceDB Python SDK.
-* [`Node API Reference`](javascript/modules.md) - detailed documentation for the LanceDB Node SDK.
+
+* [`Basics`](basic.md): Basic functionality of LanceDB.
+* [`Embeddings`](embeddings/index.md): Functions for working with embeddings.
+* [`Indexing`](ann_indexes.md): Create vector indexes to speed up queries.
+* [`Full text search`](fts.md): Full-text search API (Python-only for now)
+* [`Ecosystem Integrations`](python/integration.md): Integrating LanceDB with python data tooling ecosystem.
+* [`Python API`](python/python.md): Detailed documentation for the LanceDB Python SDK.
+* [`Node API`](javascript/modules.md): Detailed documentation for the LanceDB Node TypeScript SDK.
