@@ -489,6 +489,16 @@ export class LocalTable<T = number[]> implements Table<T> {
   }
 
   /**
+   * Creates a filter query to find all rows matching the specified criteria
+   * @param value The filter criteria (like SQL where clause syntax)
+   */
+  filter (value: string): Query<T> {
+    return new Query(undefined, this._tbl, this._embeddings).filter(value)
+  }
+
+  where = this.filter
+
+  /**
    * Insert records into this Table.
    *
    * @param data Records to be inserted into the Table

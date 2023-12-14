@@ -78,12 +78,31 @@ describe('LanceDB client', function () {
     })
 
     it('limits # of results', async function () {
-      const uri = await createTestDB()
+      const uri = await createTestDB(2, 100)
       const con = await lancedb.connect(uri)
       const table = await con.openTable('vectors')
-      const results = await table.search([0.1, 0.3]).limit(1).execute()
+      let results = await table.search([0.1, 0.3]).limit(1).execute()
       assert.equal(results.length, 1)
       assert.equal(results[0].id, 1)
+
+      // there is a default limit if unspecified
+      results = await table.search([0.1, 0.3]).execute()
+      assert.equal(results.length, 10)
+    })
+
+    it('uses a filter / where clause without vector search', async function () {
+      // eslint-disable-next-line @typescript-eslint/explicit-function-return-type
+      const assertResults = (results: Array<Record<string, unknown>>) => {
+        assert.equal(results.length, 50)
+      }
+
+      const uri = await createTestDB(2, 100)
+      const con = await lancedb.connect(uri)
+      const table = (await con.openTable('vectors')) as LocalTable
+      let results = await table.filter('id % 2 = 0').execute()
+      assertResults(results)
+      results = await table.where('id % 2 = 0').execute()
+      assertResults(results)
     })
 
     it('uses a filter / where clause', async function () {

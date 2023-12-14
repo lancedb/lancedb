@@ -359,7 +359,7 @@ mod test {
         assert_eq!(t.count_rows().await.unwrap(), 100);
 
         let q = t
-            .search(PrimitiveArray::from_iter_values(vec![0.1, 0.1, 0.1, 0.1]))
+            .search(Some(PrimitiveArray::from_iter_values(vec![0.1, 0.1, 0.1, 0.1])))
             .limit(10)
             .execute()
             .await
