@@ -286,7 +286,7 @@ class RemoteTable(Table):
             raise ValueError("Only one of values or values_sql can be provided")
         if values is None and values_sql is None:
             raise ValueError("Either values or values_sql must be provided")
-    
+
         if values is not None:
             updates = [[k, value_to_sql(v)] for k, v in values.items()]
         else:
