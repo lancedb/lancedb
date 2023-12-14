@@ -23,8 +23,14 @@ impl JsQuery {
         let query_obj = cx.argument::<JsObject>(0)?;
 
         let limit = query_obj
-            .get::<JsNumber, _, _>(&mut cx, "_limit")?
-            .value(&mut cx);
+            .get_opt::<JsNumber, _, _>(&mut cx, "_limit")?
+            .map(|value| {
+                let limit = value.value(&mut cx) as u64;
+                if limit <= 0 {
+                    panic!("Limit must be a positive integer");
+                }
+                limit
+            });
         let select = query_obj
             .get_opt::<JsArray, _, _>(&mut cx, "_select")?
             .map(|arr| {
@@ -66,15 +72,18 @@ impl JsQuery {
         let query = query_vector.map(|q| convert::js_array_to_vec(q.deref(), &mut cx));
 
         rt.spawn(async move {
-            let builder = table
+            let mut builder = table
                 .search(query.map(|q| Float32Array::from(q)))
-                .limit(limit as usize)
                 .refine_factor(refine_factor)
                 .nprobes(nprobes)
                 .filter(filter)
                 .metric_type(metric_type)
                 .select(select)
                 .prefilter(prefilter);
+            if let Some(limit) = limit {
+                builder = builder.limit(limit as usize);
+            };
+
             let record_batch_stream = builder.execute();
             let results = record_batch_stream
                 .and_then(|stream| {

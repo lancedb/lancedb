@@ -25,7 +25,7 @@ use crate::error::Result;
 pub struct Query {
     pub dataset: Arc<Dataset>,
     pub query_vector: Option<Float32Array>,
-    pub limit: usize,
+    pub limit: Option<usize>,
     pub filter: Option<String>,
     pub select: Option<Vec<String>>,
     pub nprobes: usize,
@@ -50,7 +50,7 @@ impl Query {
         Query {
             dataset,
             query_vector: vector,
-            limit: 10,
+            limit: None,
             nprobes: 20,
             refine_factor: None,
             metric_type: None,
@@ -70,9 +70,11 @@ impl Query {
         let mut scanner: Scanner = self.dataset.scan();
 
         if let Some(query) = self.query_vector.as_ref() {
-            scanner.nearest(crate::table::VECTOR_COLUMN_NAME, query, self.limit)?;
+            // If there is a vector query, default to limit=10 if unspecified
+            scanner.nearest(crate::table::VECTOR_COLUMN_NAME, query, self.limit.unwrap_or(10))?;
         } else {
-            scanner.limit(Some(self.limit as i64), None)?;
+            // If there is no vector query, it's ok to not have a limit
+            scanner.limit(self.limit.map(|limit| limit as i64), None)?;
         }
         scanner.nprobs(self.nprobes);
         scanner.use_index(self.use_index);
@@ -91,7 +93,7 @@ impl Query {
     ///
     /// * `limit` - The maximum number of results to return.
     pub fn limit(mut self, limit: usize) -> Query {
-        self.limit = limit;
+        self.limit = Some(limit);
         self
     }
 
@@ -174,7 +176,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use arrow_array::{Float32Array, RecordBatch, RecordBatchIterator, RecordBatchReader};
+    use arrow_array::{Float32Array, RecordBatch, RecordBatchIterator, RecordBatchReader, cast::AsArray, Int32Array};
     use arrow_schema::{DataType, Field as ArrowField, Schema as ArrowSchema};
     use futures::StreamExt;
     use lance::dataset::Dataset;
@@ -202,7 +204,7 @@ mod tests {
             .refine_factor(Some(999));
 
         assert_eq!(query.query_vector.unwrap(), new_vector);
-        assert_eq!(query.limit, 100);
+        assert_eq!(query.limit.unwrap(), 100);
         assert_eq!(query.nprobes, 1000);
         assert_eq!(query.use_index, true);
         assert_eq!(query.metric_type, Some(MetricType::Cosine));
@@ -252,14 +254,16 @@ mod tests {
 
         let query = Query::new(ds.clone(), None);
         let result = query
-            .limit(10)
             .filter(Some("id % 2 == 0".to_string()))
             .execute()
             .await;
         let mut stream = result.expect("should have result");
         // should only have one batch
         while let Some(batch) = stream.next().await {
-            assert!(batch.expect("should be Ok").num_rows() == 10);
+            let b = batch.expect("should be Ok");            
+            // cast arr into Int32Array
+            let arr: &Int32Array = b["id"].as_primitive();
+            assert!(arr.iter().all(|x| x.unwrap() % 2 == 0));
         }
     }
 

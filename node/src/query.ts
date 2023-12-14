@@ -26,7 +26,7 @@ export class Query<T = number[]> {
   private readonly _query?: T
   private readonly _tbl?: any
   private _queryVector?: number[]
-  private _limit: number
+  private _limit?: number
   private _refineFactor?: number
   private _nprobes: number
   private _select?: string[]
@@ -38,7 +38,7 @@ export class Query<T = number[]> {
   constructor (query?: T, tbl?: any, embeddings?: EmbeddingFunction<T>) {
     this._tbl = tbl
     this._query = query
-    this._limit = 10
+    this._limit = undefined
     this._nprobes = 20
     this._refineFactor = undefined
     this._select = undefined
