@@ -1,6 +1,6 @@
 # LanceDB
 
-LanceDB is an open-source database for AI that's designed to manage and query embeddings for multi-modal data. The core of LanceDB is written in Rust 🦀 and is built on top of [Lance](https://github.com/lancedb/lance), an open-source columnar data format designed for performant ML workloads at huge scale.
+LanceDB is an open-source database for AI that's designed to manage and query embeddings on truly multi-modal data. The core of LanceDB is written in Rust 🦀 and is built on top of [Lance](https://github.com/lancedb/lance), an open-source columnar data format designed for performant ML workloads at huge scale.
 
 ## Why use LanceDB?
 
@@ -25,6 +25,8 @@ LanceDB is an open-source database for AI that's designed to manage and query em
 ---
 
 ## Quick Start
+
+It's incredibly simple to get started with LanceDB. No servers, no hassle.
 
 === "Python"
       ```shell
@@ -58,7 +60,7 @@ LanceDB is an open-source database for AI that's designed to manage and query em
       const results = await table.search([100, 100]).limit(2).execute();
       ```
 
-## Complete Demos (Python)
+## Examples: Python
 
 - [YouTube Transcript Search](notebooks/youtube_transcript_search.ipynb)
 - [Documentation QA Bot using LangChain](notebooks/code_qa_bot.ipynb)
@@ -66,16 +68,18 @@ LanceDB is an open-source database for AI that's designed to manage and query em
 - [Serverless QA Bot with S3 and Lambda](examples/serverless_lancedb_with_s3_and_lambda.md)
 - [Serverless QA Bot with Modal](examples/serverless_qa_bot_with_modal_and_langchain.md)
 
-## Complete Demos (JavaScript)
+## Examples: JavaScript
 
+- [Serverless Website Chatbot](examples/serverless_website_chatbot.md)
 - [YouTube Transcript Search](examples/youtube_transcript_bot_with_nodejs.md)
+- [TransformersJS Embedding Search](examples/transformerjs_embedding_search_nodejs.md)
 
-## Documentation Quick Links
+## Documentation Guide
 
-* [`Basics`](basic.md): Basic functionality of LanceDB.
-* [`Embeddings`](embeddings/index.md): Functions for working with embeddings.
-* [`Indexing`](ann_indexes.md): Create vector indexes to speed up queries.
-* [`Full text search`](fts.md): Full-text search API (Python-only for now)
-* [`Ecosystem Integrations`](python/integration.md): Integrating LanceDB with python data tooling ecosystem.
-* [`Python API`](python/python.md): Detailed documentation for the LanceDB Python SDK.
-* [`Node API`](javascript/modules.md): Detailed documentation for the LanceDB Node TypeScript SDK.
+* [Basics](basic.md): Basic functionality of LanceDB.
+* [Embeddings](embeddings/index.md): Functions for working with embeddings.
+* [Indexing](ann_indexes.md): Create vector indexes to speed up queries.
+* [Full text search](fts.md): Full-text search API (Python-only for now)
+* [Ecosystem Integrations](python/integration.md): Integrating LanceDB with python data tooling ecosystem.
+* [Python API](python/python.md): Detailed documentation for the LanceDB Python SDK.
+* [Node API](javascript/modules.md): Detailed documentation for the LanceDB Node.js SDK.
