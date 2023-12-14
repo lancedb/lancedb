@@ -13,12 +13,15 @@
 // limitations under the License.
 
 import {
-  type EmbeddingFunction, type Table, type VectorIndexParams, type Connection,
-  type ConnectionOptions, type CreateTableOptions, type VectorIndex,
-  type WriteOptions,
+  type Table, type VectorIndexParams,
+  type VectorIndex,
   type IndexStats,
-  type UpdateArgs, type UpdateSqlArgs
-} from '../index'
+  type UpdateArgs, type UpdateSqlArgs,
+  type Connection,
+  type ConnectionOptions, type CreateTableOptions,
+  type WriteOptions
+} from '../types'
+import { type EmbeddingFunction } from '../embedding/embedding_function'
 import { Query } from '../query'
 
 import { Vector, Table as ArrowTable } from 'apache-arrow'

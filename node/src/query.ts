@@ -14,10 +14,16 @@
 
 import { Vector, tableFromIPC } from 'apache-arrow'
 import { type EmbeddingFunction } from './embedding/embedding_function'
-import { type MetricType } from '.'
+import { type MetricType } from './types'
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { tableSearch } = require('../native.js')
+// const { tableSearch } = require('../native.js')
+
+const tableSearch = async function (args: any, arg2: any): Promise<any> {
+  return await new Promise((resolve, reject) => {
+    resolve('')
+  })
+}
 
 /**
  * A builder for nearest neighbor queries for LanceDB.
