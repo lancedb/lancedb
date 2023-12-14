@@ -17,7 +17,7 @@ import inspect
 import os
 from abc import ABC, abstractmethod
 from functools import cached_property
-from typing import TYPE_CHECKING, Any, Iterable, List, Optional, Union
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Union
 
 import lance
 import numpy as np
@@ -30,7 +30,7 @@ from .common import DATA, VEC, VECTOR_COLUMN_NAME
 from .embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
 from .pydantic import LanceModel
 from .query import LanceQueryBuilder, Query
-from .util import fs_from_uri, safe_import_pandas
+from .util import fs_from_uri, safe_import_pandas, value_to_sql
 
 if TYPE_CHECKING:
     from datetime import timedelta
@@ -906,30 +906,35 @@ class LanceTable(Table):
     def delete(self, where: str):
         self._dataset.delete(where)
 
-    def update(self, where: str, values: dict):
+    def update(
+        self,
+        where: Optional[str] = None,
+        values: Optional[dict] = None,
+        *,
+        values_sql: Optional[Dict[str, str]] = None,
+    ):
         """
-        EXPERIMENTAL: Update rows in the table (not threadsafe).
-
         This can be used to update zero to all rows depending on how many
         rows match the where clause.
 
         Parameters
         ----------
-        where: str
+        where: str, optional
             The SQL where clause to use when updating rows. For example, 'x = 2'
             or 'x IN (1, 2, 3)'. The filter must not be empty, or it will error.
-        values: dict
+        values: dict, optional
             The values to update. The keys are the column names and the values
             are the values to set.
+        values_sql: dict, optional
+            The values to update, expressed as SQL expression strings. These can
+            reference existing columns. For example, {"x": "x + 1"} will increment
+            the x column by 1.
 
         Examples
         --------
         >>> import lancedb
-        >>> data = [
-        ...    {"x": 1, "vector": [1, 2]},
-        ...    {"x": 2, "vector": [3, 4]},
-        ...    {"x": 3, "vector": [5, 6]}
-        ... ]
+        >>> import pandas as pd
+        >>> data = pd.DataFrame({"x": [1, 2, 3], "vector": [[1, 2], [3, 4], [5, 6]]})
         >>> db = lancedb.connect("./.lancedb")
         >>> table = db.create_table("my_table", data)
         >>> table.to_pandas()
@@ -945,18 +950,15 @@ class LanceTable(Table):
         2  2  [10.0, 10.0]
 
         """
-        orig_data = self._dataset.to_table(filter=where).combine_chunks()
-        if len(orig_data) == 0:
-            return
-        for col, val in values.items():
-            i = orig_data.column_names.index(col)
-            if i < 0:
-                raise ValueError(f"Column {col} does not exist")
-            orig_data = orig_data.set_column(
-                i, col, pa.array([val] * len(orig_data), type=orig_data[col].type)
-            )
-        self.delete(where)
-        self.add(orig_data, mode="append")
+        if values is not None and values_sql is not None:
+            raise ValueError("Only one of values or values_sql can be provided")
+        if values is None and values_sql is None:
+            raise ValueError("Either values or values_sql must be provided")
+
+        if values is not None:
+            values_sql = {k: value_to_sql(v) for k, v in values.items()}
+
+        self.to_lance().update(values_sql, where)
         self._reset_dataset()
 
     def _execute_query(self, query: Query) -> pa.Table:
