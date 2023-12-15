@@ -18,6 +18,8 @@ import attrs
 import pyarrow as pa
 from pydantic import BaseModel
 
+from lancedb.common import VECTOR_COLUMN_NAME
+
 __all__ = ["LanceDBClient", "VectorQuery", "VectorQueryResult"]
 
 
@@ -42,6 +44,8 @@ class VectorQuery(BaseModel):
     nprobes: int = 10
 
     refine_factor: Optional[int] = None
+
+    vector_column: str = VECTOR_COLUMN_NAME
 
 
 @attrs.define
