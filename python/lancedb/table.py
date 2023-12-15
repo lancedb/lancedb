@@ -28,7 +28,7 @@ from lance.vector import vec_to_table
 
 from .common import DATA, VEC, VECTOR_COLUMN_NAME
 from .embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
-from .pydantic import LanceModel
+from .pydantic import LanceModel, model_to_dict
 from .query import LanceQueryBuilder, Query
 from .util import fs_from_uri, safe_import_pandas, value_to_sql
 
@@ -52,8 +52,10 @@ def _sanitize_data(
         # convert to list of dict if data is a bunch of LanceModels
         if isinstance(data[0], LanceModel):
             schema = data[0].__class__.to_arrow_schema()
-            data = [dict(d) for d in data]
-        data = pa.Table.from_pylist(data)
+            data = [model_to_dict(d) for d in data]
+            data = pa.Table.from_pylist(data, schema=schema)
+        else:
+            data = pa.Table.from_pylist(data)
     elif isinstance(data, dict):
         data = vec_to_table(data)
     elif pd is not None and isinstance(data, pd.DataFrame):
