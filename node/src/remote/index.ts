@@ -25,6 +25,7 @@ import { Vector, Table as ArrowTable } from 'apache-arrow'
 import { HttpLancedbClient } from './client'
 import { isEmbeddingFunction } from '../embedding/embedding_function'
 import { createEmptyTable, fromRecordsToStreamBuffer, fromTableToStreamBuffer } from '../arrow'
+import { toSQL } from '../util'
 
 /**
  * Remote connection.
@@ -248,7 +249,23 @@ export class RemoteTable<T = number[]> implements Table<T> {
   }
 
   async update (args: UpdateArgs | UpdateSqlArgs): Promise<void> {
-    throw new Error('Not implemented')
+    let filter: string | null
+    let updates: Record<string, string>
+
+    if ('valuesSql' in args) {
+      filter = args.where ?? null
+      updates = args.valuesSql
+    } else {
+      filter = args.where ?? null
+      updates = {}
+      for (const [key, value] of Object.entries(args.values)) {
+        updates[key] = toSQL(value)
+      }
+    }
+    await this._client.post(`/v1/table/${this._name}/update/`, {
+      predicate: filter,
+      updates: Object.entries(updates).map(([key, value]) => [key, value])
+    })
   }
 
   async listIndices (): Promise<VectorIndex[]> {
