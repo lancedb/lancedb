@@ -348,3 +348,20 @@ def get_extras(field_info: pydantic.fields.FieldInfo, key: str) -> Any:
     if PYDANTIC_VERSION.major >= 2:
         return (field_info.json_schema_extra or {}).get(key)
     return (field_info.field_info.extra or {}).get("json_schema_extra", {}).get(key)
+
+
+if PYDANTIC_VERSION.major < 2:
+
+    def model_to_dict(model: pydantic.BaseModel) -> Dict[str, Any]:
+        """
+        Convert a Pydantic model to a dictionary.
+        """
+        return model.dict()
+
+else:
+
+    def model_to_dict(model: pydantic.BaseModel) -> Dict[str, Any]:
+        """
+        Convert a Pydantic model to a dictionary.
+        """
+        return model.model_dump()
