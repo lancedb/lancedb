@@ -1,4 +1,6 @@
 
+# CLI & Config
+
 ## LanceDB CLI
 Once lanceDB is installed, you can access the CLI using `lancedb` command on the console
 ```

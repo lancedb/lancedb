@@ -1,4 +1,6 @@
-# LanceDB Python API Reference
+# Python API Reference (OSS)
+
+This section contains the API reference for the OSS Python API.
 
 ## Installation
 
