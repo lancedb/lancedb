@@ -1,3 +1,10 @@
+/* admonitions */
+.md-typeset .admonition,
+.md-typeset details {
+  font-size: 1em
+}
+
+/* sidebar */
 .md-grid {
     max-width: 80%;
   }
@@ -12,8 +19,11 @@
     .md-sidebar--primary {
       border-right: 1px solid var(--md-default-fg-color--lightest);
     }
-    .md-nav {
-      font-size: 16px;
+    .md-nav .md-nav__link {
+        font-size: 1.1em;
+    }
+    .md-nav .md-nav__link h3 {
+        font-size: 0.9em;
     }
     .md-nav .md-nav__title {
       display: none;
