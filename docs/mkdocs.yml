@@ -119,7 +119,7 @@ nav:
   - ⚙️ API reference:
     - OSS Python API: python/python.md
     - SaaS Python API: python/saas-python.md
-    - OSS Python API: javascript/modules.md
+    - OSS JavaScript API: javascript/modules.md
 
 - Guides:
   - Basics: basic.md 
@@ -161,7 +161,7 @@ nav:
 - API reference:
   - OSS Python API: python/python.md
   - SaaS Python API: python/saas-python.md
-  - Javascript API: javascript/modules.md
+  - OSS JavaScript API: javascript/modules.md
 - LanceDB Cloud↗: https://noteforms.com/forms/lancedb-mailing-list-cloud-kty1o5?notionforms=1&utm_source=notionforms
 
 extra_css:
