@@ -27,7 +27,7 @@ theme:
     - content.tabs.link
     - content.action.edit
     - toc.follow
-    - toc.integrate
+    # - toc.integrate
     - navigation.top
     - navigation.tabs
     - navigation.tabs.sticky
@@ -77,8 +77,8 @@ markdown_extensions:
 nav:
 - Home:
   - LanceDB: index.md
-  - 💡 Basics: basic.md
   - 📚 Guides:
+    - Basics: basic.md
     - CRUD: guides/tables.md
     - Vector Search: search.md
     - SQL filters: sql.md
@@ -119,12 +119,12 @@ nav:
   - ⚙️ API reference:
     - OSS Python API: python/python.md
     - SaaS Python API: python/saas-python.md
-    - Javascript API: javascript/modules.md
+    - OSS Python API: javascript/modules.md
 
-- Basics: basic.md
 - Guides:
-  - Create Ingest Update Delete: guides/tables.md
-  - Vector Search: search.md
+  - Basics: basic.md 
+  - Working with tables: guides/tables.md
+  - Vector search: search.md
   - SQL filters: sql.md
   - Indexing: ann_indexes.md
   - Versioning & Reproducibility: notebooks/reproducibility.ipynb
