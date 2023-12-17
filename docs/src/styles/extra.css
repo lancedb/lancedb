@@ -1,7 +1,12 @@
-/* admonitions */
+/* markdown typesets */
 .md-typeset .admonition,
 .md-typeset details {
   font-size: 1em
+}
+
+.md-typeset h1 {
+    font-weight: bolder;
+    letter-spacing: -.01em;
 }
 
 /* sidebar */

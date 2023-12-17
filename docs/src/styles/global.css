@@ -19,7 +19,7 @@
 }
 @font-face {
     font-family: "IBMPlexSans";
-    src: local("IBMPlexSans-Bold"), url("fonts/IBMPlexSans-Bold.woff2");
+    src: local("IBMPlexSans-Bold"), url("fonts/IBMPlexSans-SemiBold.woff2");
     font-weight: bold;
 }
 

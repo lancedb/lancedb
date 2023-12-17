@@ -51,7 +51,6 @@ plugins:
           show_source: true
           show_symbol_type_in_heading: true
           show_signature_annotations: true
-          show_root_heading: true
           members_order: source
         import:
           # for cross references
@@ -73,6 +72,7 @@ markdown_extensions:
 - pymdownx.tabbed:
     alternate_style: true
 - md_in_html
+- attr_list
 
 nav:
 - Home:
@@ -84,7 +84,7 @@ nav:
     - SQL filters: sql.md
     - Indexing: ann_indexes.md
     - Versioning & Reproducibility: notebooks/reproducibility.ipynb
-  - 🧬 Embeddings:
+  - 🧬 Vector search:
     - What are embeddings?: embeddings/index.md
     - Ingest Embedding Functions: embeddings/embedding_functions.md
     - Available Functions: embeddings/default_embedding_functions.md
@@ -115,7 +115,11 @@ nav:
     - Serverless Website Chatbot: examples/serverless_website_chatbot.md
     - YouTube Transcript Search: examples/youtube_transcript_bot_with_nodejs.md
     - TransformersJS Embedding Search: examples/transformerjs_embedding_search_nodejs.md
-  - ⚙️ CLI & Config: cli_config.md
+  - 🔧 CLI & Config: cli_config.md
+  - ⚙️ API reference:
+    - OSS Python API: python/python.md
+    - SaaS Python API: python/saas-python.md
+    - Javascript API: javascript/modules.md
 
 - Basics: basic.md
 - Guides:
@@ -124,16 +128,16 @@ nav:
   - SQL filters: sql.md
   - Indexing: ann_indexes.md
   - Versioning & Reproducibility: notebooks/reproducibility.ipynb
-- Embeddings:
+- Vector search:
   - What are embeddings?: embeddings/index.md
   - Ingest Embedding Functions: embeddings/embedding_functions.md
   - Available Functions: embeddings/default_embedding_functions.md
   - Create Custom Embedding Functions: embeddings/api.md
   - Example - Multi-lingual semantic search: notebooks/multi_lingual_example.ipynb
   - Example - MultiModal CLIP Embeddings: notebooks/DisappearingEmbeddingFunction.ipynb
-- Python full-text search: fts.md
+- Full-text search: fts.md
 - Integrations:
-  - Tools and data formats: integrations/index.md
+  - Overview: integrations/index.md
   - Pandas and PyArrow: python/arrow.md
   - DuckDB: python/duckdb.md
   - LangChain 🦜️🔗: https://python.langchain.com/en/latest/modules/indexes/vectorstores/examples/lancedb.html
@@ -154,7 +158,7 @@ nav:
   - YouTube Transcript Search: examples/youtube_transcript_bot_with_nodejs.md
   - Serverless Chatbot from any website: examples/serverless_website_chatbot.md
   - TransformersJS Embedding Search: examples/transformerjs_embedding_search_nodejs.md
-- API references:
+- API reference:
   - OSS Python API: python/python.md
   - SaaS Python API: python/saas-python.md
   - Javascript API: javascript/modules.md
