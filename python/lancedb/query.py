@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, List, Literal, Optional, Type, Union
 
 import deprecation
@@ -623,8 +624,11 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             )
 
     def to_arrow(self) -> pa.Table:
-        # TODO call to_arrow() on both queries concurrently
-        vector_results = self._vector_query.with_row_id(True).to_arrow()
+        with ThreadPoolExecutor() as executor:
+            fts_future = executor.submit(self._fts_query.with_row_id(True).to_arrow)
+            vector_future = executor.submit(self._vector_query.with_row_id(True).to_arrow)
+            fts_results = fts_future.result()
+            vector_results = vector_future.result()
         # rename the _distance column to _score for consistency
         vector_results = vector_results.rename_columns(
             [
@@ -632,7 +636,6 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
                 for name in vector_results.column_names
             ]
         )
-        fts_results = self._fts_query.with_row_id(True).to_arrow()
         fts_results = fts_results.rename_columns(
             ["_score" if name == "score" else name for name in fts_results.column_names]
         )
