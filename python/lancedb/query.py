@@ -527,7 +527,9 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
     def to_arrow(self) -> pa.Table:
         with ThreadPoolExecutor() as executor:
             fts_future = executor.submit(self._fts_query.with_row_id(True).to_arrow)
-            vector_future = executor.submit(self._vector_query.with_row_id(True).to_arrow)
+            vector_future = executor.submit(
+                self._vector_query.with_row_id(True).to_arrow
+            )
             fts_results = fts_future.result()
             vector_results = vector_future.result()
         # rename the _distance column to _score for consistency
