@@ -514,7 +514,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         self._fts_query = LanceFtsQueryBuilder(table, query)
         query = self._query_to_vector(table, query, vector_column)
         self._vector_query = LanceVectorQueryBuilder(table, query, vector_column)
-        self._weight = 0.75
+        self._weight = 0.7
         self._norm = "rank"
 
     def validate(self):
@@ -533,37 +533,33 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
                 for name in vector_results.column_names
             ]
         )
-        # TODO is fts scores in the right order?
         fts_results = self._fts_query.with_row_id(True).to_arrow()
         fts_results = fts_results.rename_columns(
-            [
-                "_score" if name == "score" else name
-                for name in fts_results.column_names
-            ]
-        )        
+            ["_score" if name == "score" else name for name in fts_results.column_names]
+        )
 
-        # convert to ranks if needed
+        # convert to ranks first if needed
         if self._norm == "rank":
             vector_results = self._rank(vector_results)
             fts_results = self._rank(fts_results)
-            fill = max(len(vector_results), len(fts_results)) + 1
-        else:
-            vector_results = self._normalize_scores(vector_results)
-            fts_results = self._normalize_scores(fts_results)
-            # TODO fill with what?
-            fill = 0.0
-
-        results = self._merge_results(vector_results, fts_results, fill=fill)
+        # normalize the scores to be between 0 and 1, 0 being most relevant
+        vector_results = self._normalize_scores(vector_results)
+        # fts higher scores are more relevant, so invert them ie (1 - score)
+        fts_results = self._normalize_scores(fts_results, invert=True)
+        # combine the scores. For missing scores, fill with 1.0 (least relevant)
+        results = self._merge_results(vector_results, fts_results, fill=1.0)
         if not self._with_row_id:
             results = results.drop(["_rowid"])
         return results
 
-    def _rank(self, results: pa.Table):
+    def _rank(self, results: pa.Table, ascending: bool = True):
         if len(results) == 0:
             return results
         # Get the _score column from results
         scores = results.column("_score").to_numpy()
         sort_indices = np.argsort(scores)
+        if not ascending:
+            sort_indices = sort_indices[::-1]
         ranks = np.empty_like(sort_indices)
         ranks[sort_indices] = np.arange(len(scores)) + 1
         # replace the _score column with the ranks
@@ -573,7 +569,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         )
         return results
 
-    def _normalize_scores(self, results: pa.Table):
+    def _normalize_scores(self, results: pa.Table, invert=False):
         if len(results) == 0:
             return results
         # Get the _score column from results
@@ -585,6 +581,8 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         else:
             rng = max - min
         scores = (scores - min) / rng
+        if invert:
+            scores = 1 - scores
         # replace the _score column with the ranks
         _score_idx = results.column_names.index("_score")
         results = results.set_column(
@@ -640,7 +638,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
     def _combine_score(self, score1, score2):
         return self._weight * score1 + (1 - self._weight) * score2
 
-    def rerank(self, weight=0.75, normalize="score") -> LanceHybridQueryBuilder:
+    def rerank(self, weight=0.7, normalize="score") -> LanceHybridQueryBuilder:
         if weight < 0 or weight > 1:
             raise ValueError("weight must be between 0 and 1.")
         if normalize not in ["auto", "rank", "score"]:

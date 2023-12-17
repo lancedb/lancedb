@@ -597,11 +597,10 @@ def test_hybrid_search(db):
 
     result1 = (
         table.search("Our father who art in heaven", query_type="hybrid")
-        .rerank(weight=0.5, normalize="auto")
+        .rerank(weight=0.7, normalize="auto")
         .to_pydantic(MyTable)
     )
-    result2 = (
-        table.search("Our father who art in heaven", query_type="hybrid")
-        .to_pydantic(MyTable)
-    )
+    result2 = table.search(
+        "Our father who art in heaven", query_type="hybrid"
+    ).to_pydantic(MyTable)
     assert result1 == result2
