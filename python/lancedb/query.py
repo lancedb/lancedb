@@ -113,15 +113,15 @@ class LanceQueryBuilder(ABC):
         if query is None:
             return LanceEmptyQueryBuilder(table)
 
+        if query_type == "hybrid":
+            # hybrid fts and vector query
+            return LanceHybridQueryBuilder(table, query, vector_column_name)
+
         # convert "auto" query_type to "vector" or "fts"
         # and convert the query to vector if needed
         query, query_type = cls._resolve_query(
             table, query, query_type, vector_column_name
         )
-
-        if query_type == "hybrid":
-            # hybrid fts and vector query
-            return LanceHybridQueryBuilder(table, query, vector_column_name)
 
         if isinstance(query, str):
             # fts
@@ -514,6 +514,8 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         self._fts_query = LanceFtsQueryBuilder(table, query)
         query = self._query_to_vector(table, query, vector_column)
         self._vector_query = LanceVectorQueryBuilder(table, query, vector_column)
+        self._weight = 0.75
+        self._norm = "rank"
 
     def validate(self):
         if self._table._get_fts_index_path() is None:
@@ -523,7 +525,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
 
     def to_arrow(self) -> pa.Table:
         # TODO call to_arrow() on both queries concurrently
-        vector_results = self._vector_query.with_row_ids(True).to_arrow()
+        vector_results = self._vector_query.with_row_id(True).to_arrow()
         # rename the _distance column to _score for consistency
         vector_results = vector_results.rename_columns(
             [
@@ -532,7 +534,13 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             ]
         )
         # TODO is fts scores in the right order?
-        fts_results = self._fts_query.with_row_ids(True).to_arrow()
+        fts_results = self._fts_query.with_row_id(True).to_arrow()
+        fts_results = fts_results.rename_columns(
+            [
+                "_score" if name == "score" else name
+                for name in fts_results.column_names
+            ]
+        )        
 
         # convert to ranks if needed
         if self._norm == "rank":
@@ -545,7 +553,10 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             # TODO fill with what?
             fill = 0.0
 
-        return self._merge_results(vector_results, fts_results, fill=fill)
+        results = self._merge_results(vector_results, fts_results, fill=fill)
+        if not self._with_row_id:
+            results = results.drop(["_rowid"])
+        return results
 
     def _rank(self, results: pa.Table):
         if len(results) == 0:
@@ -562,7 +573,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         )
         return results
 
-    def _normalize_scores(self, results: pa.Table, column: str):
+    def _normalize_scores(self, results: pa.Table):
         if len(results) == 0:
             return results
         # Get the _score column from results
@@ -624,18 +635,18 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             for fj in fts_list[j:]:
                 fj["_score"] = self._combine_score(fj["_rowid"], fill)
                 combined_list.append(fj)
-        return pa.Table.from_pydict(combined_list, schema=vector_results.schema)
+        return pa.Table.from_pylist(combined_list, schema=vector_results.schema)
 
     def _combine_score(self, score1, score2):
         return self._weight * score1 + (1 - self._weight) * score2
 
-    def rerank(self, weight=0.5, normalize="auto") -> LanceHybridQueryBuilder:
+    def rerank(self, weight=0.75, normalize="score") -> LanceHybridQueryBuilder:
         if weight < 0 or weight > 1:
             raise ValueError("weight must be between 0 and 1.")
         if normalize not in ["auto", "rank", "score"]:
             raise ValueError("normalize must be 'auto', 'rank' or 'score'.")
         self._weight = weight
-        self._norm = "auto"
+        self._norm = normalize
         return self
 
     def limit(self, limit: int) -> LanceHybridQueryBuilder:

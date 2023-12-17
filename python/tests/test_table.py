@@ -562,9 +562,11 @@ def test_compact_cleanup(db):
 
 def test_hybrid_search(db):
     # Create a LanceDB table schema with a vector and a text column
+    emb = EmbeddingFunctionRegistry.get_instance().get("test")()
+
     class MyTable(LanceModel):
-        text: str
-        vector: Vector(2)
+        text: str = emb.SourceField()
+        vector: Vector(emb.ndims()) = emb.VectorField()
 
     # Initialize the table using the schema
     table = LanceTable.create(
@@ -587,37 +589,19 @@ def test_hybrid_search(db):
         "Arrrrggghhhhhhh",
     ]
 
-    # Create 10 2-dimensional vectors evenly spaced around the unit circle
-    vectors = [
-        [np.cos(2 * np.pi * i / 10), np.sin(2 * np.pi * i / 10)] for i in range(10)
-    ]
-
     # Add the phrases and vectors to the table
-    table.add(
-        [{"text": phrase, "vector": vector} for phrase, vector in zip(phrases, vectors)]
-    )
+    table.add([{"text": p} for p in phrases])
 
     # Create a fts index
     table.create_fts_index("text")
 
     result1 = (
-        table.search("Our father who art in heaven", type="hybrid")
+        table.search("Our father who art in heaven", query_type="hybrid")
         .rerank(weight=0.5, normalize="auto")
-        .limit(10)
         .to_pydantic(MyTable)
     )
     result2 = (
-        table.search("Our father who art in heaven", type="hybrid")
-        .rerank(weight=0.5)
-        .limit(10)
+        table.search("Our father who art in heaven", query_type="hybrid")
         .to_pydantic(MyTable)
     )
     assert result1 == result2
-
-    result = (
-        table.search("Our father who art in heaven", type="hybrid")
-        .rerank(weight=0.5, normalize="score")
-        .limit(10)
-        .to_pydantic(MyTable)
-    )
-    assert 0 == 1
