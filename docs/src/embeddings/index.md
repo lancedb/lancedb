@@ -1,4 +1,4 @@
-# Embedding
+# Embeddings
 
 Embeddings are high dimensional floating-point vector representations of your data or query. Anything can be embedded using some embedding model or function. Position of embedding in a high dimensional vector space has semantic significance to a degree that depends on the type of modal and training. These embeddings when projected in a 2-D space generally group similar entities close-by forming groups.
 

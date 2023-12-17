@@ -1,5 +1,5 @@
  <a href="https://colab.research.google.com/github/lancedb/lancedb/blob/main/docs/src/notebooks/tables_guide.ipynb"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"></a><br/>
-A Table is a collection of Records in a LanceDB Database. You can follow along on colab!
+A `Table` is a collection of Records in a LanceDB Database. The link to the notebook above shows how to perform CRUD operations on a LanceDB `Table`.
 
 ## Creating a LanceDB Table
 
@@ -36,7 +36,7 @@ A Table is a collection of Records in a LanceDB Database. You can follow along o
         ```
 
 
-    ### From pandas DataFrame
+    ### From a Pandas DataFrame
 
     ```python
     import pandas as pd
@@ -118,7 +118,7 @@ A Table is a collection of Records in a LanceDB Database. You can follow along o
 
     ### Using Iterators / Writing Large Datasets
 
-    It is recommended to use itertators to add large datasets in batches when creating your table in one go. This does not create multiple versions of your dataset unlike manually adding batches using `table.add()`
+    It is recommended to use iterators to add large datasets in batches when creating your table in one go. This does not create multiple versions of your dataset unlike manually adding batches using `table.add()`
 
     LanceDB additionally supports pyarrow's `RecordBatch` Iterators or other generators producing supported data types.
 
@@ -183,7 +183,7 @@ A Table is a collection of Records in a LanceDB Database. You can follow along o
     tbl = db.create_table("table5", schema=Model.to_arrow_schema())
     ```
 
-=== "Javascript/Typescript"
+=== "Javascript"
 
     ### VectorDB Connection
 
@@ -223,7 +223,7 @@ If you forget the name of your table, you can always get a listing of all table 
     ```python
     print(db.table_names())
     ```
-=== "Javascript/Typescript"
+=== "Javascript"
 
     ```javascript
     console.log(await db.tableNames());
@@ -236,7 +236,7 @@ Then, you can open any existing tables
     ```python
     tbl = db.open_table("my_table")
     ```
-=== "Javascript/Typescript"
+=== "Javascript"
 
     ```javascript
     const tbl = await db.openTable("my_table");
@@ -248,7 +248,7 @@ After a table has been created, you can always add more data to it using
 === "Python"
     You can add any of the valid data structures accepted by LanceDB table, i.e, `dict`, `list[dict]`, `pd.DataFrame`, or a `Iterator[pa.RecordBatch]`. Here are some examples.
 
-    ### Adding Pandas DataFrame
+    ### Add a Pandas DataFrame
 
     ```python
     df = pd.DataFrame({
@@ -257,9 +257,9 @@ After a table has been created, you can always add more data to it using
     tbl.add(df)
     ```
 
-    You can also add a large dataset batch in one go using Iterator of any supported data types.
+    ### Add an Iterator
 
-    ### Adding to table using Iterator
+    You can also add a large dataset batch in one go using Iterator of any supported data types.
 
     ```python
     def make_batches():
@@ -281,7 +281,7 @@ After a table has been created, you can always add more data to it using
     | fill value | float | The value to use when filling vectors: Only used if on_bad_vectors="fill". | 0.0 |
 
 
-=== "Javascript/Typescript"
+=== "Javascript"
 
     ```javascript
     await tbl.add([{vector: [1.3, 1.4], item: "fizz", price: 100.0},
@@ -333,7 +333,7 @@ Use the `delete()` method on tables to delete rows from a table. To choose which
     # 0  3  [5.0, 6.0]
     ```
 
-=== "Javascript/Typescript"
+=== "Javascript"
 
     ```javascript
     await tbl.delete('item = "fizz"')
