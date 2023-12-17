@@ -94,6 +94,8 @@ class Query(pydantic.BaseModel):
     # Refine factor.
     refine_factor: Optional[int] = None
 
+    with_row_id: bool = False
+
 
 class LanceQueryBuilder(ABC):
     """Build LanceDB query based on specific query type:
@@ -117,6 +119,10 @@ class LanceQueryBuilder(ABC):
             table, query, query_type, vector_column_name
         )
 
+        if query_type == "hybrid":
+            # hybrid fts and vector query
+            return LanceHybridQueryBuilder(table, query, vector_column_name)
+
         if isinstance(query, str):
             # fts
             return LanceFtsQueryBuilder(table, query)
@@ -139,13 +145,7 @@ class LanceQueryBuilder(ABC):
                 raise TypeError(f"'fts' queries must be a string: {type(query)}")
             return query, query_type
         elif query_type == "vector":
-            if not isinstance(query, (list, np.ndarray)):
-                conf = table.embedding_functions.get(vector_column_name)
-                if conf is not None:
-                    query = conf.function.compute_query_embeddings_with_retry(query)[0]
-                else:
-                    msg = f"No embedding function for {vector_column_name}"
-                    raise ValueError(msg)
+            query = cls._query_to_vector(table, query, vector_column_name)
             return query, query_type
         elif query_type == "auto":
             if isinstance(query, (list, np.ndarray)):
@@ -162,11 +162,23 @@ class LanceQueryBuilder(ABC):
                 f"Invalid query_type, must be 'vector', 'fts', or 'auto': {query_type}"
             )
 
+    @classmethod
+    def _query_to_vector(cls, table, query, vector_column_name):
+        if isinstance(query, (list, np.ndarray)):
+            return query
+        conf = table.embedding_functions.get(vector_column_name)
+        if conf is not None:
+            return conf.function.compute_query_embeddings_with_retry(query)[0]
+        else:
+            msg = f"No embedding function for {vector_column_name}"
+            raise ValueError(msg)
+
     def __init__(self, table: "lancedb.table.Table"):
         self._table = table
         self._limit = 10
         self._columns = None
         self._where = None
+        self._with_row_id = False
 
     @deprecation.deprecated(
         deprecated_in="0.3.1",
@@ -289,6 +301,22 @@ class LanceQueryBuilder(ABC):
         self._prefilter = prefilter
         return self
 
+    def with_row_id(self, with_row_id: bool) -> LanceQueryBuilder:
+        """Set whether to return row ids.
+
+        Parameters
+        ----------
+        with_row_id: bool
+            If True, return _rowid column in the results.
+
+        Returns
+        -------
+        LanceQueryBuilder
+            The LanceQueryBuilder object.
+        """
+        self._with_row_id = with_row_id
+        return self
+
 
 class LanceVectorQueryBuilder(LanceQueryBuilder):
     """
@@ -405,6 +433,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             nprobes=self._nprobes,
             refine_factor=self._refine_factor,
             vector_column=self._vector_column,
+            with_row_id=self._with_row_id,
         )
         return self._table._execute_query(query)
 
@@ -462,6 +491,9 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         scores = pa.array(scores)
         output_tbl = self._table.to_lance().take(row_ids, columns=self._columns)
         output_tbl = output_tbl.append_column("score", scores)
+        if self._with_row_id:
+            row_ids = pa.array(row_ids)
+            output_tbl = output_tbl.append_column("_rowid", row_ids)
         return output_tbl
 
 
@@ -473,3 +505,162 @@ class LanceEmptyQueryBuilder(LanceQueryBuilder):
             filter=self._where,
             limit=self._limit,
         )
+
+
+class LanceHybridQueryBuilder(LanceQueryBuilder):
+    def __init__(self, table: "lancedb.table.Table", query: str, vector_column: str):
+        super().__init__(table)
+        self.validate()
+        self._fts_query = LanceFtsQueryBuilder(table, query)
+        query = self._query_to_vector(table, query, vector_column)
+        self._vector_query = LanceVectorQueryBuilder(table, query, vector_column)
+
+    def validate(self):
+        if self._table._get_fts_index_path() is None:
+            raise ValueError(
+                "Please create a full-text search index " "to perform hybrid search."
+            )
+
+    def to_arrow(self) -> pa.Table:
+        # TODO call to_arrow() on both queries concurrently
+        vector_results = self._vector_query.with_row_ids(True).to_arrow()
+        # rename the _distance column to _score for consistency
+        vector_results = vector_results.rename_columns(
+            [
+                "_score" if name == "_distance" else name
+                for name in vector_results.column_names
+            ]
+        )
+        # TODO is fts scores in the right order?
+        fts_results = self._fts_query.with_row_ids(True).to_arrow()
+
+        # convert to ranks if needed
+        if self._norm == "rank":
+            vector_results = self._rank(vector_results)
+            fts_results = self._rank(fts_results)
+            fill = max(len(vector_results), len(fts_results)) + 1
+        else:
+            vector_results = self._normalize_scores(vector_results)
+            fts_results = self._normalize_scores(fts_results)
+            # TODO fill with what?
+            fill = 0.0
+
+        return self._merge_results(vector_results, fts_results, fill=fill)
+
+    def _rank(self, results: pa.Table):
+        if len(results) == 0:
+            return results
+        # Get the _score column from results
+        scores = results.column("_score").to_numpy()
+        sort_indices = np.argsort(scores)
+        ranks = np.empty_like(sort_indices)
+        ranks[sort_indices] = np.arange(len(scores)) + 1
+        # replace the _score column with the ranks
+        _score_idx = results.column_names.index("_score")
+        results = results.set_column(
+            _score_idx, "_score", pa.array(ranks, type=pa.float32())
+        )
+        return results
+
+    def _normalize_scores(self, results: pa.Table, column: str):
+        if len(results) == 0:
+            return results
+        # Get the _score column from results
+        scores = results.column("_score").to_numpy()
+        # normalize the scores by subtracting the min and dividing by the max
+        max, min = np.max(scores), np.min(scores)
+        if np.isclose(max, min):
+            rng = max
+        else:
+            rng = max - min
+        scores = (scores - min) / rng
+        # replace the _score column with the ranks
+        _score_idx = results.column_names.index("_score")
+        results = results.set_column(
+            _score_idx, "_score", pa.array(scores, type=pa.float32())
+        )
+        return results
+
+    def _merge_results(
+        self, vector_results: pa.Table, fts_results: pa.Table, fill: float
+    ):
+        # If both are empty then just return an empty table
+        if len(vector_results) == 0 and len(fts_results) == 0:
+            return vector_results
+        # If one is empty then return the other
+        if len(vector_results) == 0:
+            return fts_results
+        if len(fts_results) == 0:
+            return vector_results
+
+        # sort both input tables on _rowid
+        combined_list = []
+        vector_list = vector_results.sort_by("_rowid").to_pylist()
+        fts_list = fts_results.sort_by("_rowid").to_pylist()
+        i, j = 0, 0
+        while i < len(vector_list):
+            if j >= len(fts_list):
+                for vi in vector_list[i:]:
+                    vi["_score"] = self._combine_score(vi["_rowid"], fill)
+                    combined_list.append(vi)
+                break
+
+            vi = vector_list[i]
+            fj = fts_list[j]
+            if vi["_rowid"] == fj["_rowid"]:
+                vi["_score"] = self._combine_score(vi["_rowid"], fj["_rowid"])
+                combined_list.append(vi)
+                i += 1
+                j += 1
+            elif vector_list[i]["_rowid"] < fts_list[j]["_rowid"]:
+                vi["_score"] = self._combine_score(vi["_rowid"], fill)
+                combined_list.append(vi)
+                i += 1
+            else:
+                fj["_score"] = self._combine_score(fj["_rowid"], fill)
+                combined_list.append(fj)
+                j += 1
+        if j < len(fts_list) - 1:
+            for fj in fts_list[j:]:
+                fj["_score"] = self._combine_score(fj["_rowid"], fill)
+                combined_list.append(fj)
+        return pa.Table.from_pydict(combined_list, schema=vector_results.schema)
+
+    def _combine_score(self, score1, score2):
+        return self._weight * score1 + (1 - self._weight) * score2
+
+    def rerank(self, weight=0.5, normalize="auto") -> LanceHybridQueryBuilder:
+        if weight < 0 or weight > 1:
+            raise ValueError("weight must be between 0 and 1.")
+        if normalize not in ["auto", "rank", "score"]:
+            raise ValueError("normalize must be 'auto', 'rank' or 'score'.")
+        self._weight = weight
+        self._norm = "auto"
+        return self
+
+    def limit(self, limit: int) -> LanceHybridQueryBuilder:
+        self._vector_query.limit(limit)
+        self._fts_query.limit(limit)
+        return self
+
+    def select(self, columns: list) -> LanceHybridQueryBuilder:
+        self._vector_query.select(columns)
+        self._fts_query.select(columns)
+        return self
+
+    def where(self, where: str, prefilter: bool = False) -> LanceHybridQueryBuilder:
+        self._vector_query.where(where, prefilter=prefilter)
+        self._fts_query.where(where)
+        return self
+
+    def metric(self, metric: Literal["L2", "cosine"]) -> LanceHybridQueryBuilder:
+        self._vector_query.metric(metric)
+        return self
+
+    def nprobes(self, nprobes: int) -> LanceHybridQueryBuilder:
+        self._vector_query.nprobes(nprobes)
+        return self
+
+    def refine_factor(self, refine_factor: int) -> LanceHybridQueryBuilder:
+        self._vector_query.refine_factor(refine_factor)
+        return self

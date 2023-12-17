@@ -558,3 +558,66 @@ def test_compact_cleanup(db):
 
     with pytest.raises(Exception, match="Version 3 no longer exists"):
         table.checkout(3)
+
+
+def test_hybrid_search(db):
+    # Create a LanceDB table schema with a vector and a text column
+    class MyTable(LanceModel):
+        text: str
+        vector: Vector(2)
+
+    # Initialize the table using the schema
+    table = LanceTable.create(
+        db,
+        "my_table",
+        schema=MyTable,
+    )
+
+    # Create a list of 10 unique english phrases
+    phrases = [
+        "great kid don't get cocky",
+        "now that's a name I haven't heard in a long time",
+        "if you strike me down I shall become more powerful than you can possibly imagine",
+        "I find your lack of faith disturbing",
+        "I've got a bad feeling about this",
+        "never tell me the odds",
+        "I am your father",
+        "somebody has to save our skins",
+        "New strategy R2 let the wookiee win",
+        "Arrrrggghhhhhhh",
+    ]
+
+    # Create 10 2-dimensional vectors evenly spaced around the unit circle
+    vectors = [
+        [np.cos(2 * np.pi * i / 10), np.sin(2 * np.pi * i / 10)] for i in range(10)
+    ]
+
+    # Add the phrases and vectors to the table
+    table.add(
+        [{"text": phrase, "vector": vector} for phrase, vector in zip(phrases, vectors)]
+    )
+
+    # Create a fts index
+    table.create_fts_index("text")
+
+    result1 = (
+        table.search("Our father who art in heaven", type="hybrid")
+        .rerank(weight=0.5, normalize="auto")
+        .limit(10)
+        .to_pydantic(MyTable)
+    )
+    result2 = (
+        table.search("Our father who art in heaven", type="hybrid")
+        .rerank(weight=0.5)
+        .limit(10)
+        .to_pydantic(MyTable)
+    )
+    assert result1 == result2
+
+    result = (
+        table.search("Our father who art in heaven", type="hybrid")
+        .rerank(weight=0.5, normalize="score")
+        .limit(10)
+        .to_pydantic(MyTable)
+    )
+    assert 0 == 1

@@ -985,6 +985,7 @@ class LanceTable(Table):
                 "nprobes": query.nprobes,
                 "refine_factor": query.refine_factor,
             },
+            with_row_id=query.with_row_id,
         )
 
     def cleanup_old_versions(
