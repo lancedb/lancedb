@@ -4,14 +4,14 @@
   font-size: 1em
 }
 
-.md-typeset h1 {
+.md-typeset h1, .md-typeset h2 {
     font-weight: bolder;
     letter-spacing: -.01em;
 }
 
-/* sidebar */
+/* grid */
 .md-grid {
-    max-width: 80%;
+    max-width: 90%;
   }
   
   @media (min-width: 1220px) {
