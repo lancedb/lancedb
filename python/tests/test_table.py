@@ -533,16 +533,32 @@ def test_multiple_vector_columns(db):
 
 
 def test_create_scalar_index(db):
+    vec_array = pa.array([[1, 1], [2, 2], [3, 3], [4, 4], [5, 5]], pa.list_(pa.float32(), 2))
+    test_data = pa.Table.from_pydict(
+            {
+                "x": ["c", "b", "a", "e", "b"],
+                "y": [1, 2, 3, 4, 5],
+                "vector": vec_array
+            }
+    )
     table = LanceTable.create(
         db,
         "my_table",
-        data=pa.Table.from_pydict(
-            {"x": ["c", "b", "a", "e", "b"], "y": [1, 2, 3, 4, 5]}
-        ),
+        data=test_data,
     )
     table.create_scalar_index("x")
+    indices = table.to_lance().list_indices()
+    assert len(indices) == 1
+    scalar_index = indices[0]
+    assert scalar_index["type"] == "Scalar"
+
+    # Confirm that prefiltering still works with the scalar index column
     results = table.search().where("x = 'c'").to_arrow()
-    assert results == pa.Table.from_pydict({"x": ["c"], "y": [1]})
+    assert results == test_data.slice(0, 1)
+    results = table.search([5, 5]).to_arrow()
+    assert results["_distance"][0].as_py() == 0
+    results = table.search([5, 5]).where("x != 'b'").to_arrow()
+    assert results["_distance"][0].as_py() > 0
 
 
 def test_empty_query(db):

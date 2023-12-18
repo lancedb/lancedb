@@ -289,13 +289,6 @@ class Table(ABC):
 
             dataset = lance.dataset("/tmp/images.lance")
             dataset.create_scalar_index("category")
-
-        Experimental Status:
-
-        Scalar indices are experimental and only utilized if there is no new or deleted
-        data that has been uploaded since the index was created.  This limitation should
-        be addressed soon.  In the meantime, ``compact_files`` can be used to remove
-        deletion files.
         """
         raise NotImplementedError
 

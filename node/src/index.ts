@@ -24,7 +24,7 @@ import { isEmbeddingFunction } from './embedding/embedding_function'
 import { type Literal, toSQL } from './util'
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { databaseNew, databaseTableNames, databaseOpenTable, databaseDropTable, tableCreate, tableAdd, tableCreateVectorIndex, tableCountRows, tableDelete, tableUpdate, tableCleanupOldVersions, tableCompactFiles, tableListIndices, tableIndexStats } = require('../native.js')
+const { databaseNew, databaseTableNames, databaseOpenTable, databaseDropTable, tableCreate, tableAdd, tableCreateScalarIndex, tableCreateVectorIndex, tableCountRows, tableDelete, tableUpdate, tableCleanupOldVersions, tableCompactFiles, tableListIndices, tableIndexStats } = require('../native.js')
 
 export { Query }
 export type { EmbeddingFunction }
@@ -54,7 +54,7 @@ export interface ConnectionOptions {
   hostOverride?: string
 }
 
-function getAwsArgs (opts: ConnectionOptions): any[] {
+function getAwsArgs(opts: ConnectionOptions): any[] {
   const callArgs = []
   const awsCredentials = opts.awsCredentials
   if (awsCredentials !== undefined) {
@@ -92,9 +92,9 @@ export interface CreateTableOptions<T> {
  * Connect to a LanceDB instance at the given URI
  * @param uri The uri of the database.
  */
-export async function connect (uri: string): Promise<Connection>
-export async function connect (opts: Partial<ConnectionOptions>): Promise<Connection>
-export async function connect (arg: string | Partial<ConnectionOptions>): Promise<Connection> {
+export async function connect(uri: string): Promise<Connection>
+export async function connect(opts: Partial<ConnectionOptions>): Promise<Connection>
+export async function connect(arg: string | Partial<ConnectionOptions>): Promise<Connection> {
   let opts: ConnectionOptions
   if (typeof arg === 'string') {
     opts = { uri: arg }
@@ -143,7 +143,7 @@ export interface Connection {
    * @param {EmbeddingFunction} embeddings - An embedding function to use on this table
    * @param {WriteOptions} writeOptions - The write options to use when creating the table.
    */
-  createTable<T> ({ name, data, schema, embeddingFunction, writeOptions }: CreateTableOptions<T>): Promise<Table<T>>
+  createTable<T>({ name, data, schema, embeddingFunction, writeOptions }: CreateTableOptions<T>): Promise<Table<T>>
 
   /**
    * Creates a new Table and initialize it with new data.
@@ -151,7 +151,7 @@ export interface Connection {
    * @param {string} name - The name of the table.
    * @param data - Non-empty Array of Records to be inserted into the table
    */
-  createTable (name: string, data: Array<Record<string, unknown>>): Promise<Table>
+  createTable(name: string, data: Array<Record<string, unknown>>): Promise<Table>
 
   /**
    * Creates a new Table and initialize it with new data.
@@ -160,7 +160,7 @@ export interface Connection {
    * @param data - Non-empty Array of Records to be inserted into the table
    * @param {WriteOptions} options - The write options to use when creating the table.
    */
-  createTable (name: string, data: Array<Record<string, unknown>>, options: WriteOptions): Promise<Table>
+  createTable(name: string, data: Array<Record<string, unknown>>, options: WriteOptions): Promise<Table>
 
   /**
    * Creates a new Table and initialize it with new data.
@@ -169,7 +169,7 @@ export interface Connection {
    * @param data - Non-empty Array of Records to be inserted into the table
    * @param {EmbeddingFunction} embeddings - An embedding function to use on this table
    */
-  createTable<T> (name: string, data: Array<Record<string, unknown>>, embeddings: EmbeddingFunction<T>): Promise<Table<T>>
+  createTable<T>(name: string, data: Array<Record<string, unknown>>, embeddings: EmbeddingFunction<T>): Promise<Table<T>>
   /**
    * Creates a new Table and initialize it with new data.
    *
@@ -178,7 +178,7 @@ export interface Connection {
    * @param {EmbeddingFunction} embeddings - An embedding function to use on this table
    * @param {WriteOptions} options - The write options to use when creating the table.
    */
-  createTable<T> (name: string, data: Array<Record<string, unknown>>, embeddings: EmbeddingFunction<T>, options: WriteOptions): Promise<Table<T>>
+  createTable<T>(name: string, data: Array<Record<string, unknown>>, embeddings: EmbeddingFunction<T>, options: WriteOptions): Promise<Table<T>>
 
   /**
    * Drop an existing table.
@@ -222,6 +222,56 @@ export interface Table<T = number[]> {
    * @param indexParams The parameters of this Index, @see VectorIndexParams.
    */
   createIndex: (indexParams: VectorIndexParams) => Promise<any>
+
+  /**
+   * Create a scalar index on this Table for the given column
+   *
+   * @param column The column to index
+   * @param replace If false, fail if an index already exists on the column
+   * 
+   * Scalar indices, like vector indices, can be used to speed up scans.  A scalar
+   * index can speed up scans that contain filter expressions on the indexed column.
+   * For example, the following scan will be faster if the column `my_col` has
+   * a scalar index:
+   * 
+   * ```ts
+   * const con = await lancedb.connect('./.lancedb');
+   * const table = await con.openTable('images');
+   * const results = await table.where('my_col = 7').execute();
+   * ```
+   *
+   * Scalar indices can also speed up scans containing a vector search and a
+   * prefilter:
+   *
+   * ```ts
+   * const con = await lancedb.connect('././lancedb');
+   * const table = await con.openTable('images');
+   * const results = await table.search([1.0, 2.0]).where('my_col != 7').prefilter(true);
+   * ```
+   *
+   * Scalar indices can only speed up scans for basic filters using
+   * equality, comparison, range (e.g. `my_col BETWEEN 0 AND 100`), and set
+   * membership (e.g. `my_col IN (0, 1, 2)`)
+   *
+   * Scalar indices can be used if the filter contains multiple indexed columns and
+   * the filter criteria are AND'd or OR'd together
+   * (e.g. `my_col < 0 AND other_col> 100`)
+   *
+   * Scalar indices may be used if the filter contains non-indexed columns but,
+   * depending on the structure of the filter, they may not be usable.  For example,
+   * if the column `not_indexed` does not have a scalar index then the filter
+   * `my_col = 0 OR not_indexed = 1` will not be able to use any scalar index on
+   * `my_col`.
+   * 
+   * @examples
+   * 
+   * ```ts
+   * const con = await lancedb.connect('././lancedb')
+   * const table = await con.openTable('images')
+   * await table.createScalarIndex('my_col')
+   * ```
+   */
+  createScalarIndex: (column: string, replace: boolean) => Promise<void>
 
   /**
    * Returns the number of rows in this table.
@@ -352,19 +402,19 @@ export class LocalConnection implements Connection {
   private readonly _options: () => ConnectionOptions
   private readonly _db: any
 
-  constructor (db: any, options: ConnectionOptions) {
+  constructor(db: any, options: ConnectionOptions) {
     this._options = () => options
     this._db = db
   }
 
-  get uri (): string {
+  get uri(): string {
     return this._options().uri
   }
 
   /**
    * Get the names of all tables in the database.
    */
-  async tableNames (): Promise<string[]> {
+  async tableNames(): Promise<string[]> {
     return databaseTableNames.call(this._db)
   }
 
@@ -373,7 +423,7 @@ export class LocalConnection implements Connection {
    *
    * @param name The name of the table.
    */
-  async openTable (name: string): Promise<Table>
+  async openTable(name: string): Promise<Table>
 
   /**
    * Open a table in the database.
@@ -381,9 +431,9 @@ export class LocalConnection implements Connection {
    * @param name The name of the table.
    * @param embeddings An embedding function to use on this Table
    */
-  async openTable<T> (name: string, embeddings: EmbeddingFunction<T>): Promise<Table<T>>
-  async openTable<T> (name: string, embeddings?: EmbeddingFunction<T>): Promise<Table<T>>
-  async openTable<T> (name: string, embeddings?: EmbeddingFunction<T>): Promise<Table<T>> {
+  async openTable<T>(name: string, embeddings: EmbeddingFunction<T>): Promise<Table<T>>
+  async openTable<T>(name: string, embeddings?: EmbeddingFunction<T>): Promise<Table<T>>
+  async openTable<T>(name: string, embeddings?: EmbeddingFunction<T>): Promise<Table<T>> {
     const tbl = await databaseOpenTable.call(this._db, name, ...getAwsArgs(this._options()))
     if (embeddings !== undefined) {
       return new LocalTable(tbl, name, this._options(), embeddings)
@@ -392,7 +442,7 @@ export class LocalConnection implements Connection {
     }
   }
 
-  async createTable<T> (name: string | CreateTableOptions<T>, data?: Array<Record<string, unknown>>, optsOrEmbedding?: WriteOptions | EmbeddingFunction<T>, opt?: WriteOptions): Promise<Table<T>> {
+  async createTable<T>(name: string | CreateTableOptions<T>, data?: Array<Record<string, unknown>>, optsOrEmbedding?: WriteOptions | EmbeddingFunction<T>, opt?: WriteOptions): Promise<Table<T>> {
     if (typeof name === 'string') {
       let writeOptions: WriteOptions = new DefaultWriteOptions()
       if (opt !== undefined && isWriteOptions(opt)) {
@@ -410,7 +460,7 @@ export class LocalConnection implements Connection {
     return await this.createTableImpl(name)
   }
 
-  private async createTableImpl<T> ({ name, data, schema, embeddingFunction, writeOptions = new DefaultWriteOptions() }: {
+  private async createTableImpl<T>({ name, data, schema, embeddingFunction, writeOptions = new DefaultWriteOptions() }: {
     name: string
     data?: Array<Record<string, unknown>> | ArrowTable | undefined
     schema?: Schema | undefined
@@ -419,7 +469,7 @@ export class LocalConnection implements Connection {
   }): Promise<Table<T>> {
     let buffer: Buffer
 
-    function isEmpty (data: Array<Record<string, unknown>> | ArrowTable<any>): boolean {
+    function isEmpty(data: Array<Record<string, unknown>> | ArrowTable<any>): boolean {
       if (data instanceof ArrowTable) {
         return data.data.length === 0
       }
@@ -450,7 +500,7 @@ export class LocalConnection implements Connection {
    * Drop an existing table.
    * @param name The name of the table to drop.
    */
-  async dropTable (name: string): Promise<void> {
+  async dropTable(name: string): Promise<void> {
     await databaseDropTable.call(this._db, name)
   }
 }
@@ -461,22 +511,22 @@ export class LocalTable<T = number[]> implements Table<T> {
   private readonly _embeddings?: EmbeddingFunction<T>
   private readonly _options: () => ConnectionOptions
 
-  constructor (tbl: any, name: string, options: ConnectionOptions)
+  constructor(tbl: any, name: string, options: ConnectionOptions)
   /**
    * @param tbl
    * @param name
    * @param options
    * @param embeddings An embedding function to use when interacting with this table
    */
-  constructor (tbl: any, name: string, options: ConnectionOptions, embeddings: EmbeddingFunction<T>)
-  constructor (tbl: any, name: string, options: ConnectionOptions, embeddings?: EmbeddingFunction<T>) {
+  constructor(tbl: any, name: string, options: ConnectionOptions, embeddings: EmbeddingFunction<T>)
+  constructor(tbl: any, name: string, options: ConnectionOptions, embeddings?: EmbeddingFunction<T>) {
     this._tbl = tbl
     this._name = name
     this._embeddings = embeddings
     this._options = () => options
   }
 
-  get name (): string {
+  get name(): string {
     return this._name
   }
 
@@ -484,7 +534,7 @@ export class LocalTable<T = number[]> implements Table<T> {
    * Creates a search query to find the nearest neighbors of the given search term
    * @param query The query search term
    */
-  search (query: T): Query<T> {
+  search(query: T): Query<T> {
     return new Query(query, this._tbl, this._embeddings)
   }
 
@@ -492,7 +542,7 @@ export class LocalTable<T = number[]> implements Table<T> {
    * Creates a filter query to find all rows matching the specified criteria
    * @param value The filter criteria (like SQL where clause syntax)
    */
-  filter (value: string): Query<T> {
+  filter(value: string): Query<T> {
     return new Query(undefined, this._tbl, this._embeddings).filter(value)
   }
 
@@ -504,7 +554,7 @@ export class LocalTable<T = number[]> implements Table<T> {
    * @param data Records to be inserted into the Table
    * @return The number of rows added to the table
    */
-  async add (data: Array<Record<string, unknown>>): Promise<number> {
+  async add(data: Array<Record<string, unknown>>): Promise<number> {
     return tableAdd.call(
       this._tbl,
       await fromRecordsToBuffer(data, this._embeddings),
@@ -519,7 +569,7 @@ export class LocalTable<T = number[]> implements Table<T> {
    * @param data Records to be inserted into the Table
    * @return The number of rows added to the table
    */
-  async overwrite (data: Array<Record<string, unknown>>): Promise<number> {
+  async overwrite(data: Array<Record<string, unknown>>): Promise<number> {
     return tableAdd.call(
       this._tbl,
       await fromRecordsToBuffer(data, this._embeddings),
@@ -533,14 +583,18 @@ export class LocalTable<T = number[]> implements Table<T> {
    *
    * @param indexParams The parameters of this Index, @see VectorIndexParams.
    */
-  async createIndex (indexParams: VectorIndexParams): Promise<any> {
+  async createIndex(indexParams: VectorIndexParams): Promise<any> {
     return tableCreateVectorIndex.call(this._tbl, indexParams).then((newTable: any) => { this._tbl = newTable })
+  }
+
+  async createScalarIndex(column: string, replace: boolean): Promise<void> {
+    return tableCreateScalarIndex.call(this._tbl, column, replace)
   }
 
   /**
    * Returns the number of rows in this table.
    */
-  async countRows (): Promise<number> {
+  async countRows(): Promise<number> {
     return tableCountRows.call(this._tbl)
   }
 
@@ -549,7 +603,7 @@ export class LocalTable<T = number[]> implements Table<T> {
    *
    * @param filter A filter in the same format used by a sql WHERE clause.
    */
-  async delete (filter: string): Promise<void> {
+  async delete(filter: string): Promise<void> {
     return tableDelete.call(this._tbl, filter).then((newTable: any) => { this._tbl = newTable })
   }
 
@@ -560,7 +614,7 @@ export class LocalTable<T = number[]> implements Table<T> {
    *
    * @returns
    */
-  async update (args: UpdateArgs | UpdateSqlArgs): Promise<void> {
+  async update(args: UpdateArgs | UpdateSqlArgs): Promise<void> {
     let filter: string | null
     let updates: Record<string, string>
 
@@ -593,7 +647,7 @@ export class LocalTable<T = number[]> implements Table<T> {
    *                 uphold this promise can lead to corrupted tables.
    * @returns
    */
-  async cleanupOldVersions (olderThan?: number, deleteUnverified?: boolean): Promise<CleanupStats> {
+  async cleanupOldVersions(olderThan?: number, deleteUnverified?: boolean): Promise<CleanupStats> {
     return tableCleanupOldVersions.call(this._tbl, olderThan, deleteUnverified)
       .then((res: { newTable: any, metrics: CleanupStats }) => {
         this._tbl = res.newTable
@@ -612,7 +666,7 @@ export class LocalTable<T = number[]> implements Table<T> {
    *               for most tables.
    * @returns Metrics about the compaction operation.
    */
-  async compactFiles (options?: CompactionOptions): Promise<CompactionMetrics> {
+  async compactFiles(options?: CompactionOptions): Promise<CompactionMetrics> {
     const optionsArg = options ?? {}
     return tableCompactFiles.call(this._tbl, optionsArg)
       .then((res: { newTable: any, metrics: CompactionMetrics }) => {
@@ -621,11 +675,11 @@ export class LocalTable<T = number[]> implements Table<T> {
       })
   }
 
-  async listIndices (): Promise<VectorIndex[]> {
+  async listIndices(): Promise<VectorIndex[]> {
     return tableListIndices.call(this._tbl)
   }
 
-  async indexStats (indexUuid: string): Promise<IndexStats> {
+  async indexStats(indexUuid: string): Promise<IndexStats> {
     return tableIndexStats.call(this._tbl, indexUuid)
   }
 }
@@ -778,9 +832,9 @@ export class DefaultWriteOptions implements WriteOptions {
   writeMode = WriteMode.Create
 }
 
-export function isWriteOptions (value: any): value is WriteOptions {
+export function isWriteOptions(value: any): value is WriteOptions {
   return Object.keys(value).length === 1 &&
-      (value.writeMode === undefined || typeof value.writeMode === 'string')
+    (value.writeMode === undefined || typeof value.writeMode === 'string')
 }
 
 /**
