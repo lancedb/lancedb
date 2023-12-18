@@ -1,6 +1,6 @@
 [package]
 name = "vectordb-node"
-version = "0.3.11"
+version = "0.4.0"
 description = "Serverless, low-latency vector database for AI applications"
 license = "Apache-2.0"
 edition = "2018"
