@@ -533,13 +533,11 @@ def test_multiple_vector_columns(db):
 
 
 def test_create_scalar_index(db):
-    vec_array = pa.array([[1, 1], [2, 2], [3, 3], [4, 4], [5, 5]], pa.list_(pa.float32(), 2))
+    vec_array = pa.array(
+        [[1, 1], [2, 2], [3, 3], [4, 4], [5, 5]], pa.list_(pa.float32(), 2)
+    )
     test_data = pa.Table.from_pydict(
-            {
-                "x": ["c", "b", "a", "e", "b"],
-                "y": [1, 2, 3, 4, 5],
-                "vector": vec_array
-            }
+        {"x": ["c", "b", "a", "e", "b"], "y": [1, 2, 3, 4, 5], "vector": vec_array}
     )
     table = LanceTable.create(
         db,
