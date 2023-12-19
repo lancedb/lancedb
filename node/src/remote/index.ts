@@ -245,23 +245,24 @@ export class RemoteTable<T = number[]> implements Table<T> {
       'num_bits',
       'max_opq_iters',
       'replace'
-    ];
+    ]
     for (const param of unsupportedParams) {
+      // eslint-disable-next-line @typescript-eslint/strict-boolean-expressions
       if (indexParams[param as keyof VectorIndexParams]) {
-        throw new Error(`${param} is not supported for remote connections, supported parameters are column, metric_type, and index_cache_size`);
+        throw new Error(`${param} is not supported for remote connections`)
       }
     }
 
     const column = indexParams.column ?? 'vector'
-    const index_type = 'vector' // only vector index is supported for remote connections
-    const metric_type = indexParams.metric_type ?? 'L2'
-    const index_cache_size = indexParams ?? null
+    const indexType = 'vector' // only vector index is supported for remote connections
+    const metricType = indexParams.metric_type ?? 'L2'
+    const indexCacheSize = indexParams ?? null
 
     const data = {
-      column: column,
-      index_type: index_type,
-      metric_type: metric_type,
-      index_cache_size: index_cache_size
+      column,
+      index_type: indexType,
+      metric_type: metricType,
+      index_cache_size: indexCacheSize
     }
     const res = await this._client.post(`/v1/table/${this._name}/create_index/`, data)
     if (res.status !== 200) {
