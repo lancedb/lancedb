@@ -236,7 +236,18 @@ export class RemoteTable<T = number[]> implements Table<T> {
   }
 
   async createIndex (indexParams: VectorIndexParams): Promise<any> {
-    throw new Error('Not implemented')
+    const data = {
+      column: indexParams.column,
+      index_type: 'vector',
+      metric_type: indexParams.metric_type,
+    }
+    const res = await this._client.post(`/v1/table/${this._name}/create_index/`, data)
+    if (res.status !== 200) {
+      throw new Error(`Server Error, status: ${res.status}, ` +
+      // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
+        `message: ${res.statusText}: ${res.data}`)
+    }
+    return res.data
   }
 
   async countRows (): Promise<number> {
