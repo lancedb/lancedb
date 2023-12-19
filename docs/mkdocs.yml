@@ -78,20 +78,20 @@ nav:
 - Home:
   - LanceDB: index.md
   - 📚 Guides:
-    - Basics: basic.md
-    - CRUD: guides/tables.md
-    - Vector Search: search.md
-    - SQL filters: sql.md
+    - Getting started: basic.md
+    - Working with tables: guides/tables.md
     - Indexing: ann_indexes.md
+    - Vector Search: search.md
+    - Full-text search: fts.md
+    - Filtering: sql.md
     - Versioning & Reproducibility: notebooks/reproducibility.ipynb
-  - 🧬 Vector search:
+  - 🧬 Embedding functions:
     - What are embeddings?: embeddings/index.md
-    - Ingest Embedding Functions: embeddings/embedding_functions.md
+    - Embedding API Functions: embeddings/embedding_functions.md
     - Available Functions: embeddings/default_embedding_functions.md
     - Create Custom Embedding Functions: embeddings/api.md
     - Example - Multi-lingual semantic search: notebooks/multi_lingual_example.ipynb
     - Example - MultiModal CLIP Embeddings: notebooks/DisappearingEmbeddingFunction.ipynb
-  - 🔍 Full-text search: fts.md
   - 🔌 Integrations:
     - Tools and data formats: integrations/index.md
     - Pandas and PyArrow: python/arrow.md
@@ -118,24 +118,26 @@ nav:
   - 🔧 CLI & Config: cli_config.md
   - ⚙️ API reference:
     - OSS Python API: python/python.md
-    - SaaS Python API: python/saas-python.md
+    - Cloud Python API: python/saas-python.md
     - OSS JavaScript API: javascript/modules.md
 
 - Guides:
-  - Basics: basic.md 
+  - Getting started: basic.md 
   - Working with tables: guides/tables.md
+  - Indexing:
+    - IVF-PQ: guides/ivfpq.md
+    - Create and query an ANN index: ann_indexes.md
   - Vector search: search.md
-  - SQL filters: sql.md
-  - Indexing: ann_indexes.md
+  - Full-text search: fts.md
+  - Filtering: sql.md
   - Versioning & Reproducibility: notebooks/reproducibility.ipynb
-- Vector search:
+- Embedding functions:
   - What are embeddings?: embeddings/index.md
-  - Ingest Embedding Functions: embeddings/embedding_functions.md
+  - Embedding API Functions: embeddings/embedding_functions.md
   - Available Functions: embeddings/default_embedding_functions.md
-  - Create Custom Embedding Functions: embeddings/api.md
+  - Custom Embedding Functions: embeddings/api.md
   - Example - Multi-lingual semantic search: notebooks/multi_lingual_example.ipynb
   - Example - MultiModal CLIP Embeddings: notebooks/DisappearingEmbeddingFunction.ipynb
-- Full-text search: fts.md
 - Integrations:
   - Overview: integrations/index.md
   - Pandas and PyArrow: python/arrow.md
@@ -160,7 +162,7 @@ nav:
   - TransformersJS Embedding Search: examples/transformerjs_embedding_search_nodejs.md
 - API reference:
   - OSS Python API: python/python.md
-  - SaaS Python API: python/saas-python.md
+  - Cloud Python API: python/saas-python.md
   - OSS JavaScript API: javascript/modules.md
 - LanceDB Cloud↗: https://noteforms.com/forms/lancedb-mailing-list-cloud-kty1o5?notionforms=1&utm_source=notionforms
 

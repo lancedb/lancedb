@@ -2,7 +2,7 @@
 
 !!! info "LanceDB runs embedded on your backend application, so there is no need to run a separate server."
 
-<img src="../assets/lancedb_embedded_explanation.png" width="650px" />
+<img src="../assets/lancedb_embedded_explanation.png" />
 
 ## Installation
 

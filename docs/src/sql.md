@@ -1,4 +1,8 @@
-# SQL filters
+# Filtering
+
+Add prefiltering docs here before SQL filters.
+
+## SQL filters
 
 LanceDB embraces the utilization of standard SQL expressions as predicates for hybrid
 filters. It can be used during hybrid vector search and deletion operations.

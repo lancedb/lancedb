@@ -1,13 +1,13 @@
 # Full-text search
 
-LanceDB provides support for full-text search via [Tantivy](https://github.com/quickwit-oss/tantivy), allowing you to incorporate keyword-based search (based on BM25) in your retrieval solutions.
+LanceDB provides support for full-text search via [Tantivy](https://github.com/quickwit-oss/tantivy), allowing you to incorporate keyword-based search (based on BM25) in your retrieval solutions. A hybrid search solution combining vector and full-text search is also on the way.
 
-This is currently Python only. We plan to push the FTS integration down to the Rust level in the future,
-so that it is available for JavaScript users as well.
+Full-text search support is currently Python only. Our aim is to push the FTS integration down to the Rust level in the future,
+so that it's available for JavaScript users as well.
 
 ## Installation
 
-To use full-text search, you must install the dependency [`tantivy-py`](https://github.com/quickwit-oss/tantivy-py):
+To use full-text search, install the dependency [`tantivy-py`](https://github.com/quickwit-oss/tantivy-py):
 
 ```sh
 # Say you want to use tantivy==0.20.1
@@ -35,13 +35,13 @@ table = db.create_table(
 
 ## Create FTS index on single column
 
-The FTS index must be created before you can search.
+The FTS index must be created before you can search via keywords.
 
 ```python
 table.create_fts_index("text")
 ```
 
-To search an FTS index via keyword matches, LanceDB's `table.search` accepts a string as input:
+To search an FTS index via keywords, LanceDB's `table.search` accepts a string as input:
 
 ```python
 table.search("puppy").limit(10).select(["text"]).to_list()

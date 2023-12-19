@@ -1,87 +1,53 @@
 # LanceDB
 
-LanceDB is an open-source database for AI that's designed to manage and query embeddings on multi-modal data. The core of LanceDB is written in Rust 🦀 and is built on top of [Lance](https://github.com/lancedb/lance), an open-source columnar data format designed for performant ML workloads at huge scale.
+LanceDB is an open-source vector database for AI that's designed to store, manage, query and retrieve embeddings on large-scale multi-modal data. The core of LanceDB is written in Rust 🦀 and is built on top of [Lance](https://github.com/lancedb/lance), an open-source columnar data format designed for performant ML workloads and fast random access.
 
-LanceDB is designed from the ground up to be **scalable**, **easy-to-use**, **low cost** and **multi-modal** by nature.
+Both the database and the underlying data format are designed from the ground up to be **easy-to-use**, **scalable** and **cost-effective**.
 
-## Why use LanceDB?
+![](/lancedb/assets/lancedb_and_lance.png)
 
-* Embedded (OSS) and serverless (Cloud), so no need to manage servers
+## Truly multi-modal
 
-* *Fast*, production-scale vector similarity search, full-text search and SQL queries (via [DataFusion](https://github.com/apache/arrow-datafusion)).
+Most existing vector databases that store and query just the embeddings and their metadata. The actual data is stored elsewhere, requiring you to manage their storage and versioning separately.
 
-* Native Python and Javascript/Typescript support.
+LanceDB supports storage of the *actual data itself*, alongside the embeddings and metadata. You can persist your images, videos, text documents, audio files and more in the Lance format, which provides automatic data versioning and blazing fast retrievals and filtering via LanceDB.
 
-* Store, query & manage multi-modal data (text, images, videos, point clouds, etc.), not just the embeddings and metadata
+## Embedded (OSS) and serverless (Cloud)
 
-* Tight integration with the [Arrow](https://arrow.apache.org/docs/format/Columnar.html) ecosystem, allowing true zero-copy access in shared memory with SIMD and GPU acceleration.
+LanceDB **OSS** is a fully [open-source](https://github.com/lancedb/lancedb?tab=Apache-2.0-1-ov-file#readme), batteries-included embedded vector database that you can run on your own infrastructure. "Embedded" means that it runs *in-process*, making it incredibly simple to get started via LanceDB's Python or JavaScript API. No servers, no hassle.
 
-* Automatic data versioning, manage versions of your data without needing extra infrastructure.
-
-* **Fully disk-based** index & storage, allowing scalability without breaking the bank.
-
-* Ingest your favorite data formats directly, like pandas DataFrames, Pydantic objects and Polars (coming soon).
-
-![Illustration](/lancedb/assets/ecosystem-illustration.png)
-
----
-
-## Solutions
-
-### LanceDB OSS
-
-LanceDB OSS is a fully open-source, batteries-included embedded vector database that you can run on your own infrastructure. LanceDB OSS runs in-process, and it's incredibly simple to get started via its Python or JavaScript API. No servers, no hassle.
-
-=== "Python"
-      ```shell
-      pip install lancedb
-      ```
-
-      ```python
-      import lancedb
-
-      uri = "data/sample-lancedb"
-      db = lancedb.connect(uri)
-      table = db.create_table("my_table",
-                              data=[{"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
-                                    {"vector": [5.9, 26.5], "item": "bar", "price": 20.0}])
-      result = table.search([100, 100]).limit(2).to_list()
-      ```
-
-=== "Javascript"
-      ```shell
-      npm install vectordb
-      ```
-
-      ```javascript
-      const lancedb = require("vectordb");
-
-      const uri = "data/sample-lancedb";
-      const db = await lancedb.connect(uri);
-      const table = await db.createTable("my_table",
-            [{ id: 1, vector: [3.1, 4.1], item: "foo", price: 10.0 },
-            { id: 2, vector: [5.9, 26.5], item: "bar", price: 20.0 }])
-      const results = await table.search([100, 100]).limit(2).execute();
-      ```
-
-### LanceDB Cloud
-
-LanceDB Cloud is a SaaS offering that runs serverless LanceDB in the cloud, so you don't have to manage any infrastructure. Storage is clearly separated from compute, and it's designed to be low-cost and highly scalable without breaking the bank.
-
-It's currently in private beta with general availability coming soon, but you can get started with the private beta release by signing up:
+LanceDB **Cloud** is a SaaS solution that runs serverless in the cloud, making the storage clearly separated from compute. It's designed to be low-cost and highly scalable without breaking the bank. The cloud solution is currently in private beta with general availability coming soon, but you can apply for early access with the private beta release by signing up below.
 
 [Try out LanceDB Cloud](https://noteforms.com/forms/lancedb-mailing-list-cloud-kty1o5?notionforms=1&utm_source=notionforms){ .md-button .md-button--primary }
 
+## Why use LanceDB?
 
-## Explore the docs
+* Embedded (OSS) and serverless (Cloud) - no need to manage servers
+
+* Fast production-scale vector similarity, full-text & hybrid search and a SQL query interface (via [DataFusion](https://github.com/apache/arrow-datafusion))
+
+* Native Python and Javascript/Typescript support
+
+* Store, query & manage multi-modal data (text, images, videos, point clouds, etc.), not just the embeddings and metadata
+
+* Tight integration with the [Arrow](https://arrow.apache.org/docs/format/Columnar.html) ecosystem, allowing true zero-copy access in shared memory with SIMD and GPU acceleration
+
+* Automatic data versioning to manage versions of your data without needing extra infrastructure
+
+* Disk-base index & storage, allowing for massive scalability without breaking the bank
+
+* Ingest your favorite data formats directly, like pandas DataFrames, Pydantic objects, Polars (coming soon), and more
+
+## Documentation guide
 
 The following pages go deeper into the internal of LanceDB and how to use it.
 
-* [Basics](basic.md): Basics of LanceDB
+* [Getting started](basic.md): Getting started with LanceDB
 * [Working with tables](guides/tables.md): Working with tables
-* [Embeddings](embeddings/index.md): Understanding and working with embeddings
-* [Indexing](ann_indexes.md): Build vector indexes to perform approximate nearest neighbour search
-* [Full text search](fts.md): Build full-text search index, currently Python only
+* [Indexing](ann_indexes.md): Understanding indexing and how to create indexes
+* [Vector search](search.md): Perform vector similarity search
+* [Full-text search](fts.md): Perform full-text search
+* [Embedding functions](embeddings/index.md): Working with embedding functions in LanceDB
 * [Ecosystem Integrations](integrations/index.md): Integrate LanceDB with the PyData ecosystem
-* [Python API Reference](python/python.md): Documentation for the LanceDB Python API
-* [JavaScript API Reference](javascript/modules.md): Documentation for the LanceDB JavaScript/Node.js API
+* [Python API Reference](python/python.md): LanceDB Python OSS and Cloud API references
+* [JavaScript API Reference](javascript/modules.md): LanceDB JavaScript OSS and Cloud API references

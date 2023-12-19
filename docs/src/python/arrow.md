@@ -1,9 +1,9 @@
 # Pandas and PyArrow
 
 
-Built on top of [Apache Arrow](https://arrow.apache.org/),
-`LanceDB` is easy to integrate with the Python ecosystem, including [Pandas](https://pandas.pydata.org/)
-and PyArrow.
+Because Lance is built on top of [Apache Arrow](https://arrow.apache.org/),
+`LanceDB` is tightly integrated with the Python data ecosystem, including [Pandas](https://pandas.pydata.org/)
+and PyArrow. The sequence of steps in a typical workflow is shown below.
 
 ## Create dataset
 
@@ -16,7 +16,7 @@ import lancedb
 db = lancedb.connect("data/sample-lancedb")
 ```
 
-Afterwards, we write a `Pandas DataFrame` to LanceDB directly.
+We can load a Pandas `DataFrame` to LanceDB directly.
 
 ```py
 import pandas as pd
@@ -29,11 +29,11 @@ data = pd.DataFrame({
 table = db.create_table("pd_table", data=data)
 ```
 
-Similar to [`pyarrow.write_dataset()`](https://arrow.apache.org/docs/python/generated/pyarrow.dataset.write_dataset.html),
-[db.create_table()](../python/#lancedb.db.DBConnection.create_table) accepts a wide-range of forms of data.
+Similar to the [`pyarrow.write_dataset()`](https://arrow.apache.org/docs/python/generated/pyarrow.dataset.write_dataset.html) method, LanceDB's
+[`db.create_table()`](../python/#lancedb.db.DBConnection.create_table) accepts a variety of data forms.
 
-For example, if you have a dataset that is larger than memory size, you can create table with `Iterator[pyarrow.RecordBatch]`,
-to lazily generate data:
+If you have a dataset that is larger than memory, you can create table with `Iterator[pyarrow.RecordBatch]`,
+to lazily load the data:
 
 ```py
 
@@ -65,7 +65,7 @@ sections.
 
 ## Vector Search
 
-We can now perform similarity search via `LanceDB` Python API.
+We can now perform similarity search via the `LanceDB` Python API.
 
 ```py
 # Open the table previously created.
@@ -82,8 +82,8 @@ print(df)
 0  [5.9, 26.5]  bar   20.0  14257.05957
 ```
 
-If you have a simple filter, it's faster to provide a `where clause` to `LanceDB`'s search query.
-If you have more complex criteria, you can always apply the filter to the resulting Pandas `DataFrame`.
+If you have a simple filter, it's faster to provide a `where` clause to LanceDB's `search` method.
+For more complex filters or aggregations, you can always resort to using the underlying `DataFrame` methods after performing a search.
 
 ```python
 
