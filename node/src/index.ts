@@ -744,6 +744,11 @@ export interface IvfPQIndexConfig {
    */
   replace?: boolean
 
+  /**
+   * Cache size of the index
+   */
+  index_cache_size?: number
+
   type: 'ivf_pq'
 }
 

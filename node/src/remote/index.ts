@@ -235,11 +235,33 @@ export class RemoteTable<T = number[]> implements Table<T> {
     return data.length
   }
 
-  async createIndex (indexParams: VectorIndexParams): Promise<any> {
+  async createIndex (indexParams: VectorIndexParams): Promise<void> {
+    const unsupportedParams = [
+      'index_name',
+      'num_partitions',
+      'max_iters',
+      'use_opq',
+      'num_sub_vectors',
+      'num_bits',
+      'max_opq_iters',
+      'replace'
+    ];
+    for (const param of unsupportedParams) {
+      if (indexParams[param as keyof VectorIndexParams]) {
+        throw new Error(`${param} is not supported for remote connections, supported parameters are column, metric_type, and index_cache_size`);
+      }
+    }
+
+    const column = indexParams.column ?? 'vector'
+    const index_type = 'vector' // only vector index is supported for remote connections
+    const metric_type = indexParams.metric_type ?? 'L2'
+    const index_cache_size = indexParams ?? null
+
     const data = {
-      column: indexParams.column,
-      index_type: 'vector',
-      metric_type: indexParams.metric_type
+      column: column,
+      index_type: index_type,
+      metric_type: metric_type,
+      index_cache_size: index_cache_size
     }
     const res = await this._client.post(`/v1/table/${this._name}/create_index/`, data)
     if (res.status !== 200) {
@@ -247,7 +269,6 @@ export class RemoteTable<T = number[]> implements Table<T> {
       // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
         `message: ${res.statusText}: ${res.data}`)
     }
-    return res.data
   }
 
   async countRows (): Promise<number> {
