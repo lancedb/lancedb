@@ -12,11 +12,15 @@ Most existing vector databases that store and query just the embeddings and thei
 
 LanceDB supports storage of the *actual data itself*, alongside the embeddings and metadata. You can persist your images, videos, text documents, audio files and more in the Lance format, which provides automatic data versioning and blazing fast retrievals and filtering via LanceDB.
 
-## Embedded (OSS) and serverless (Cloud)
+## Open-source and cloud solutions
 
-LanceDB **OSS** is a fully [open-source](https://github.com/lancedb/lancedb?tab=Apache-2.0-1-ov-file#readme), batteries-included embedded vector database that you can run on your own infrastructure. "Embedded" means that it runs *in-process*, making it incredibly simple to get started via LanceDB's Python or JavaScript API. No servers, no hassle.
+LanceDB is available in two flavors: **OSS** and **Cloud**. The differences are highlighted below.
 
-LanceDB **Cloud** is a SaaS solution that runs serverless in the cloud, making the storage clearly separated from compute. It's designed to be low-cost and highly scalable without breaking the bank. The cloud solution is currently in private beta with general availability coming soon, but you can apply for early access with the private beta release by signing up below.
+![](/lancedb/assets/lancedb_oss_and_cloud.png)
+
+LanceDB **OSS** is a fully [open-source](https://github.com/lancedb/lancedb?tab=Apache-2.0-1-ov-file#readme), batteries-included embedded vector database that you can run on your own infrastructure. "Embedded" means that it runs *in-process*, making it incredibly simple to self-host your own AI retrieval workflows for RAG and more. No servers, no hassle.
+
+LanceDB **Cloud** is a SaaS solution that runs serverless in the cloud, making the storage clearly separated from compute. It's designed to be cost-effective and highly scalable without breaking the bank. LanceDB Cloud is currently in private beta with general availability coming soon, but you can apply for early access with the private beta release by signing up below.
 
 [Try out LanceDB Cloud](https://noteforms.com/forms/lancedb-mailing-list-cloud-kty1o5?notionforms=1&utm_source=notionforms){ .md-button .md-button--primary }
 
