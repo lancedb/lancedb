@@ -383,6 +383,61 @@ class Table(ABC):
         """
         raise NotImplementedError
 
+    @abstractmethod
+    def update(
+        self,
+        where: Optional[str] = None,
+        values: Optional[dict] = None,
+        *,
+        values_sql: Optional[Dict[str, str]] = None,
+    ):
+        """
+        This can be used to update zero to all rows depending on how many
+        rows match the where clause. If no where clause is provided, then
+        all rows will be updated.
+
+        Either `values` or `values_sql` must be provided. You cannot provide
+        both.
+
+        Parameters
+        ----------
+        where: str, optional
+            The SQL where clause to use when updating rows. For example, 'x = 2'
+            or 'x IN (1, 2, 3)'. The filter must not be empty, or it will error.
+        values: dict, optional
+            The values to update. The keys are the column names and the values
+            are the values to set.
+        values_sql: dict, optional
+            The values to update, expressed as SQL expression strings. These can
+            reference existing columns. For example, {"x": "x + 1"} will increment
+            the x column by 1.
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> import pandas as pd
+        >>> data = pd.DataFrame({"x": [1, 2, 3], "vector": [[1, 2], [3, 4], [5, 6]]})
+        >>> db = lancedb.connect("./.lancedb")
+        >>> table = db.create_table("my_table", data)
+        >>> table.to_pandas()
+           x      vector
+        0  1  [1.0, 2.0]
+        1  2  [3.0, 4.0]
+        2  3  [5.0, 6.0]
+        >>> table.update(where="x = 2", values={"vector": [10, 10]})
+        >>> table.to_pandas()
+           x        vector
+        0  1    [1.0, 2.0]
+        1  3    [5.0, 6.0]
+        2  2  [10.0, 10.0]
+        >>> table.update(values_sql={"x": "x + 1"})
+        >>> table.to_pandas()
+           x        vector
+        0  2    [1.0, 2.0]
+        1  4    [5.0, 6.0]
+        2  3  [10.0, 10.0]
+        """
+        raise NotImplementedError
 
 class LanceTable(Table):
     """
