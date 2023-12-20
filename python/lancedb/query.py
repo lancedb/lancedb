@@ -185,14 +185,25 @@ class LanceQueryBuilder(ABC):
         """
         return self.to_pandas()
 
-    def to_pandas(self) -> "pd.DataFrame":
+    def to_pandas(self, flatten: Optional[Union[int, bool]] = None) -> "pd.DataFrame":
         """
         Execute the query and return the results as a pandas DataFrame.
         In addition to the selected columns, LanceDB also returns a vector
         and also the "_distance" column which is the distance between the query
         vector and the returned vector.
         """
-        return self.to_arrow().to_pandas()
+        tbl = self.to_arrow()
+        if (flatten == -1) or (flatten is True):
+            while True:
+                prev = tbl
+                tbl = prev.flatten()
+                if tbl.num_columns == prev.num_columns:
+                    break
+        elif isinstance(flatten, int):
+            while flatten > 0:
+                tbl = tbl.flatten()
+                flatten -= 1
+        return tbl.to_pandas()
 
     @abstractmethod
     def to_arrow(self) -> pa.Table:
