@@ -1,5 +1,7 @@
  <a href="https://colab.research.google.com/github/lancedb/lancedb/blob/main/docs/src/notebooks/tables_guide.ipynb"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"></a><br/>
-A Table is a collection of Records in a LanceDB Database. You can follow along on colab!
+A Table is a collection of Records in a LanceDB Database. Tables in Lance have a schema that defines the columns and their types. These schemas can include nested columns and can evolve over time.
+
+This guide will show how to create tables, insert data into them, and update the data. You can follow along on colab!
 
 ## Creating a LanceDB Table
 
@@ -361,18 +363,27 @@ Use the `delete()` method on tables to delete rows from a table. To choose which
     await tbl.countRows() // Returns 1
     ```
 
-### Updating a Table [Experimental]
-EXPERIMENTAL: Update rows in the table (not threadsafe).
+## Updating a Table
 
-This can be used to update zero to all rows depending on how many rows match the where clause.
+This can be used to update zero to all rows depending on how many rows match the where clause. The update queries follow the form of a SQL UPDATE statement. The `where` parameter is a SQL filter that matches on the metadata columns. The `values` or `values_sql` parameters are used to provide the new values for the columns.
 
-| Parameter | Type | Description |
+| Parameter   | Type | Description |
 |---|---|---|
 | `where` | `str` | The SQL where clause to use when updating rows. For example, `'x = 2'` or `'x IN (1, 2, 3)'`. The filter must not be empty, or it will error. |
 | `values` | `dict` | The values to update. The keys are the column names and the values are the values to set. |
+| `values_sql` | `dict` | The values to update. The keys are the column names and the values are the SQL expressions to set. For example, `{'x': 'x + 1'}` will increment the value of the `x` column by 1. |
 
+!!! info "SQL syntax"
+
+    See [SQL filters](sql.md) for more information on the supported SQL syntax.
+
+!!! warning "Warning"
+
+    Updating nested columns is not yet supported.
 
 === "Python"
+
+    API Reference: [lancedb.table.Table.update][]
 
     ```python
     import lancedb
@@ -402,6 +413,55 @@ This can be used to update zero to all rows depending on how many rows match the
     1  3  [5.0, 6.0]
     2  2  [10.0, 10.0]
     ```
+
+=== "Javascript/Typescript"
+
+    API Reference: [vectordb.Table.update](../../javascript/interfaces/Table/#update)
+
+    ```javascript
+    const lancedb = require("vectordb");
+
+    const db = await lancedb.connect("./.lancedb");
+
+    const data = [
+      {x: 1, vector: [1, 2]},
+      {x: 2, vector: [3, 4]},
+      {x: 3, vector: [5, 6]},
+    ];
+    const tbl = await db.createTable("my_table", data)
+
+    await tbl.update({ where: "x = 2", values: {vector: [10, 10]} })
+    ```
+
+The `values` parameter is used to provide the new values for the columns as literal values. You can also use the `values_sql` / `valuesSql` parameter to provide SQL expressions for the new values. For example, you can use `values_sql="x + 1"` to increment the value of the `x` column by 1.
+
+=== "Python"
+
+    ```python
+    # Update the table where x = 2
+    table.update(valuesSql={"x": "x + 1"})
+
+    print(table.to_pandas())
+    ```
+
+    Output
+    ```shell
+        x  vector
+    0  2  [1.0, 2.0]
+    1  4  [5.0, 6.0]
+    2  3  [10.0, 10.0]
+    ```
+
+=== "Javascript/Typescript"
+
+    ```javascript
+    await tbl.update({ valuesSql: { x: "x + 1" } })
+    ```
+
+!!! info "Note"
+
+    When rows are updated, they are moved out of the index. The row will still show up in ANN queries, but the query will not be as fast as it would be if the row was in the index. If you update a large proportion of rows, consider rebuilding the index afterwards.
+
 
 ## What's Next?
 
