@@ -191,6 +191,14 @@ class LanceQueryBuilder(ABC):
         In addition to the selected columns, LanceDB also returns a vector
         and also the "_distance" column which is the distance between the query
         vector and the returned vector.
+
+        Parameters
+        ----------
+        flatten: Optional[Union[int, bool]]
+            If flatten is True, flatten all nested columns.
+            If flatten is an integer, flatten the nested columns up to the
+            specified depth.
+            If unspecified, do not flatten the nested columns.
         """
         tbl = self.to_arrow()
         if (flatten == -1) or (flatten is True):
