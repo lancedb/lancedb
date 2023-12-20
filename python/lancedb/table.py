@@ -602,9 +602,11 @@ class LanceTable(Table):
 
         fs, path = fs_from_uri(self._get_fts_index_path())
         index_exists = fs.get_file_info(path).type != pa_fs.FileType.NotFound
-        if index_exists: 
+        if index_exists:
             if not replace:
-                raise ValueError(f"Index already exists. Use replace=True to overwrite.")
+                raise ValueError(
+                    f"Index already exists. Use replace=True to overwrite."
+                )
             fs.delete_dir(path)
 
         index = create_index(self._get_fts_index_path(), field_names)
