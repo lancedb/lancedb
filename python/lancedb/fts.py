@@ -82,7 +82,7 @@ def populate_index(index: tantivy.Index, table: LanceTable, fields: List[str]) -
         except KeyError:
             f = resolve_path(table.schema, name)
             nested.append(name)
-            
+
         if not pa.types.is_string(f.type) and not pa.types.is_large_string(f.type):
             raise TypeError(f"Field {name} is not a string type")
 
@@ -96,7 +96,7 @@ def populate_index(index: tantivy.Index, table: LanceTable, fields: List[str]) -
     if len(nested) > 0:
         max_nested_level = max([len(name.split(".")) for name in nested])
 
-    for b in dataset.to_batches(columns=fields):        
+    for b in dataset.to_batches(columns=fields):
         if max_nested_level > 0:
             b = pa.Table.from_batches([b])
             for _ in range(max_nested_level - 1):
@@ -131,7 +131,7 @@ def resolve_path(schema, field_name: str) -> pa.Field:
     if len(path) == 1:
         return False
     tbl = schema.empty_table()
-    for _ in range(len(path)-1):
+    for _ in range(len(path) - 1):
         prev = tbl
         tbl = prev.flatten()
         if prev == tbl:

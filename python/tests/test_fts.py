@@ -43,7 +43,15 @@ def table(tmp_path) -> ldb.table.LanceTable:
         for _ in range(100)
     ]
     table = db.create_table(
-        "test", data=pd.DataFrame({"vector": vectors, "text": text, "text2": text, "nested": [{"text": t} for t in text]})
+        "test",
+        data=pd.DataFrame(
+            {
+                "vector": vectors,
+                "text": text,
+                "text2": text,
+                "nested": [{"text": t} for t in text],
+            }
+        ),
     )
     return table
 
