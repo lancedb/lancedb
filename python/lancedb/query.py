@@ -185,14 +185,40 @@ class LanceQueryBuilder(ABC):
         """
         return self.to_pandas()
 
-    def to_pandas(self) -> "pd.DataFrame":
+    def to_pandas(self, flatten: Optional[Union[int, bool]] = None) -> "pd.DataFrame":
         """
         Execute the query and return the results as a pandas DataFrame.
         In addition to the selected columns, LanceDB also returns a vector
         and also the "_distance" column which is the distance between the query
         vector and the returned vector.
+
+        Parameters
+        ----------
+        flatten: Optional[Union[int, bool]]
+            If flatten is True, flatten all nested columns.
+            If flatten is an integer, flatten the nested columns up to the
+            specified depth.
+            If unspecified, do not flatten the nested columns.
         """
-        return self.to_arrow().to_pandas()
+        tbl = self.to_arrow()
+        if flatten is True:
+            while True:
+                tbl = tbl.flatten()
+                has_struct = False
+                # loop through all columns to check if there is any struct column
+                if any(pa.types.is_struct(col.type) for col in tbl.schema):
+                    continue
+                else:
+                    break
+        elif isinstance(flatten, int):
+            if flatten <= 0:
+                raise ValueError(
+                    "Please specify a positive integer for flatten or the boolean value `True`"
+                )
+            while flatten > 0:
+                tbl = tbl.flatten()
+                flatten -= 1
+        return tbl.to_pandas()
 
     @abstractmethod
     def to_arrow(self) -> pa.Table:
