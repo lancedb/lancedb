@@ -12,7 +12,7 @@ npm install vectordb
 
 This will download the appropriate native library for your platform. We currently
 support x86_64 Linux, aarch64 Linux, Intel MacOS, and ARM (M1/M2) MacOS. We do not
-yet support Windows or musl-based Linux (such as Alpine Linux).
+yet support musl-based Linux (such as Alpine Linux).
 
 ## Usage
 
