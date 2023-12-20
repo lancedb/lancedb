@@ -64,6 +64,8 @@ def test_join_uri_posix():
     ]:
         joined = join_uri(base, "table.lance")
         assert joined == str(pathlib.Path(base) / "table.lance")
+        joined = join_uri(pathlib.Path(base), "table.lance")
+        assert joined == pathlib.Path(base) / "table.lance"
 
 
 # skip this test if not on windows
@@ -81,3 +83,5 @@ def test_local_join_uri_windows():
     ]:
         joined = join_uri(base, "table.lance")
         assert joined == str(pathlib.Path(base) / "table.lance")
+        joined = join_uri(pathlib.Path(base), "table.lance")
+        assert joined == pathlib.Path(base) / "table.lance"
