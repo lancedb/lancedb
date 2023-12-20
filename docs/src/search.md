@@ -147,7 +147,7 @@ class LanceSchema(LanceModel):
     vector: Vector(1536)
     payload: Document
 
-# add works
+# Let's add 100 sample rows to our dataset
 data = [LanceSchema(
     id=f"id{i}",
     vector=np.random.randn(1536),
