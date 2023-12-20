@@ -83,6 +83,24 @@ def test_create_index_from_table(tmp_path, table):
     assert len(df) == 10
     assert "text" in df.columns
 
+    # Check whether it can be updated
+    table.add(
+        [
+            {
+                "vector": np.random.randn(128),
+                "text": "gorilla",
+                "text2": "gorilla",
+                "nested": {"text": "gorilla"},
+            }
+        ]
+    )
+
+    with pytest.raises(ValueError, match="already exists"):
+        table.create_fts_index("text")
+
+    table.create_fts_index("text", replace=True)
+    assert len(table.search("gorilla").limit(1).to_pandas()) == 1
+
 
 def test_create_index_multiple_columns(tmp_path, table):
     table.create_fts_index(["text", "text2"])
