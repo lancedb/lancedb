@@ -23,6 +23,7 @@ import lance
 import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
+import pyarrow.fs as pa_fs
 from lance import LanceDataset
 from lance.vector import vec_to_table
 
@@ -577,7 +578,9 @@ class LanceTable(Table):
         self._reset_dataset()
         register_event("create_index")
 
-    def create_fts_index(self, field_names: Union[str, List[str]]):
+    def create_fts_index(
+        self, field_names: Union[str, List[str]], *, replace: bool = False
+    ):
         """Create a full-text search index on the table.
 
         Warning - this API is highly experimental and is highly likely to change
@@ -587,11 +590,23 @@ class LanceTable(Table):
         ----------
         field_names: str or list of str
             The name(s) of the field to index.
+        replace: bool, default False
+            If True, replace the existing index if it exists. Note that this is
+            not yet an atomic operation; the index will be temporarily
+            unavailable while the new index is being created.
         """
         from .fts import create_index, populate_index
 
         if isinstance(field_names, str):
             field_names = [field_names]
+
+        fs, path = fs_from_uri(self._get_fts_index_path())
+        index_exists = fs.get_file_info(path).type != pa_fs.FileType.NotFound
+        if index_exists and not replace:
+            raise ValueError(f"Index already exists. Use replace=True to overwrite.")
+        elif index_exists:
+            fs.delete_dir(path)
+
         index = create_index(self._get_fts_index_path(), field_names)
         populate_index(index, self, field_names)
         register_event("create_fts_index")
