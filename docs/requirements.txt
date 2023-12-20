@@ -2,3 +2,4 @@ mkdocs==1.4.2
 mkdocs-jupyter==0.24.1
 mkdocs-material==9.1.3
 mkdocstrings[python]==0.20.0
+pydantic

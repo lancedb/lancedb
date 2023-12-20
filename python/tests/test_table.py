@@ -144,9 +144,13 @@ def test_add(db):
 def test_add_pydantic_model(db):
     # https://github.com/lancedb/lancedb/issues/562
 
+    class Metadata(BaseModel):
+        source: str
+        timestamp: datetime
+
     class Document(BaseModel):
         content: str
-        source: str
+        meta: Metadata
 
     class LanceSchema(LanceModel):
         id: str
@@ -162,12 +166,20 @@ def test_add_pydantic_model(db):
         id="id",
         vector=[0.0, 0.0],
         li=[1, 2, 3],
-        payload=Document(content="foo", source="bar"),
+        payload=Document(
+            content="foo", meta=Metadata(source="bar", timestamp=datetime.now())
+        ),
     )
     tbl.add([expected])
 
     result = tbl.search([0.0, 0.0]).limit(1).to_pydantic(LanceSchema)[0]
     assert result == expected
+
+    flattened = tbl.search([0.0, 0.0]).limit(1).to_pandas(flatten=1)
+    assert len(flattened.columns) == 6  # _distance is automatically added
+
+    really_flattened = tbl.search([0.0, 0.0]).limit(1).to_pandas(flatten=True)
+    assert len(really_flattened.columns) == 7
 
 
 def _add(table, schema):
