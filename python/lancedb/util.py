@@ -87,13 +87,24 @@ def fs_from_uri(uri: str) -> Tuple[pa_fs.FileSystem, str]:
 
 def join_uri(base: Union[str, pathlib.Path], *parts: str) -> str:
     """
-    Join a URI with multiple parts, handling extra environment variables.
+    Join a URI with multiple parts, handles both local and remote paths
+
+    Parameters
+    ----------
+    base : str
+        The base URI
+    parts : str
+        The parts to join to the base URI, each separated by the
+        appropriate path separator for the URI scheme and OS
     """
     if isinstance(base, pathlib.Path):
         return base.joinpath(*parts)
     base = str(base)
     if get_uri_scheme(base) == "file":
+        # using pathlib for local paths make this windows compatible
+        # `get_uri_scheme` returns `file` for windows drive names (e.g. `c:\path`)
         return str(pathlib.Path(base, *parts))
+    # for remote paths, just use os.path.join
     return os.path.join(base, *parts)
 
 
