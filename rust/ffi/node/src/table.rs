@@ -45,7 +45,7 @@ impl JsTable {
         let table_name = cx.argument::<JsString>(0)?.value(&mut cx);
         let buffer = cx.argument::<JsBuffer>(1)?;
         let (batches, schema) =
-            arrow_buffer_to_record_batch(buffer.as_slice(&mut cx)).or_throw(&mut cx)?;
+            arrow_buffer_to_record_batch(buffer.as_slice(&cx)).or_throw(&mut cx)?;
 
         // Write mode
         let mode = match cx.argument::<JsString>(2)?.value(&mut cx).as_str() {
@@ -93,7 +93,7 @@ impl JsTable {
         let buffer = cx.argument::<JsBuffer>(0)?;
         let write_mode = cx.argument::<JsString>(1)?.value(&mut cx);
         let (batches, schema) =
-            arrow_buffer_to_record_batch(buffer.as_slice(&mut cx)).or_throw(&mut cx)?;
+            arrow_buffer_to_record_batch(buffer.as_slice(&cx)).or_throw(&mut cx)?;
         let rt = runtime(&mut cx)?;
         let channel = cx.channel();
         let mut table = js_table.table.clone();
@@ -186,7 +186,7 @@ impl JsTable {
                 .downcast_or_throw::<JsString, _>(&mut cx)?;
 
             let value = updates_arg
-                .get_value(&mut cx, property.clone())?
+                .get_value(&mut cx, property)?
                 .downcast_or_throw::<JsString, _>(&mut cx)?;
 
             let property = property.value(&mut cx);
@@ -216,7 +216,7 @@ impl JsTable {
                 .map(|(k, v)| (k.as_str(), v.as_str()))
                 .collect::<Vec<_>>();
 
-            let predicate = predicate.as_ref().map(|s| s.as_str());
+            let predicate = predicate.as_deref();
 
             let update_result = table.update(predicate, updates_arg).await;
             deferred.settle_with(&channel, move |mut cx| {
