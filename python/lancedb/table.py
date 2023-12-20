@@ -439,6 +439,7 @@ class Table(ABC):
         """
         raise NotImplementedError
 
+
 class LanceTable(Table):
     """
     A table in a LanceDB database.
