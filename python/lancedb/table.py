@@ -31,7 +31,7 @@ from .common import DATA, VEC, VECTOR_COLUMN_NAME
 from .embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
 from .pydantic import LanceModel, model_to_dict
 from .query import LanceQueryBuilder, Query
-from .util import fs_from_uri, safe_import_pandas, value_to_sql
+from .util import fs_from_uri, safe_import_pandas, value_to_sql, join_uri
 from .utils.events import register_event
 
 if TYPE_CHECKING:
@@ -552,7 +552,7 @@ class LanceTable(Table):
 
     @property
     def _dataset_uri(self) -> str:
-        return os.path.join(self._conn.uri, f"{self.name}.lance")
+        return join_uri(self._conn.uri, f"{self.name}.lance")
 
     def create_index(
         self,
@@ -614,7 +614,7 @@ class LanceTable(Table):
         register_event("create_fts_index")
 
     def _get_fts_index_path(self):
-        return os.path.join(self._dataset_uri, "_indices", "tantivy")
+        return join_uri(self._dataset_uri, "_indices", "tantivy")
 
     @cached_property
     def _dataset(self) -> LanceDataset:
