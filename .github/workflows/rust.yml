@@ -24,6 +24,29 @@ env:
   RUST_BACKTRACE: "1"
 
 jobs:
+  lint:
+    timeout-minutes: 30
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        shell: bash
+        working-directory: rust
+    steps:
+    - uses: actions/checkout@v3
+      with:
+          fetch-depth: 0
+          lfs: true
+    - uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: rust
+    - name: Install dependencies
+      run: |
+          sudo apt update
+          sudo apt install -y protobuf-compiler libssl-dev
+    - name: Run format
+      run: cargo fmt --all -- --check
+    - name: Run clippy
+      run: cargo clippy --all --all-features -- -D warnings
   linux:
     timeout-minutes: 30
     runs-on: ubuntu-22.04
