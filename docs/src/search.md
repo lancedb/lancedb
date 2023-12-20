@@ -127,6 +127,7 @@ LanceDB returns results in many different formats commonly used in python.
 Let's create a LanceDB table with a nested schema:
 
 ```python
+from datetime import datetime
 import lancedb
 from lancedb.pydantic import LanceModel, Vector
 import numpy as np
