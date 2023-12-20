@@ -105,7 +105,7 @@ def join_uri(base: Union[str, pathlib.Path], *parts: str) -> str:
         # `get_uri_scheme` returns `file` for windows drive names (e.g. `c:\path`)
         return str(pathlib.Path(base, *parts))
     # for remote paths, just use os.path.join
-    return os.path.join(base, *parts)
+    return "/".join([p.rstrip("/") for p in [base, *parts]])
 
 
 def safe_import_pandas():
