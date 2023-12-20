@@ -23,7 +23,7 @@ from overrides import EnforceOverrides, override
 from pyarrow import fs
 
 from .table import LanceTable, Table
-from .util import fs_from_uri, get_uri_location, get_uri_scheme
+from .util import fs_from_uri, get_uri_location, get_uri_scheme, join_uri
 
 if TYPE_CHECKING:
     from .common import DATA, URI
@@ -288,14 +288,13 @@ class LanceDBConnection(DBConnection):
             A list of table names.
         """
         try:
-            filesystem, path = fs_from_uri(self.uri)
+            filesystem = fs_from_uri(self.uri)[0]
         except pa.ArrowInvalid:
             raise NotImplementedError("Unsupported scheme: " + self.uri)
 
         try:
-            paths = filesystem.get_file_info(
-                fs.FileSelector(get_uri_location(self.uri))
-            )
+            loc = get_uri_location(self.uri)
+            paths = filesystem.get_file_info(fs.FileSelector(loc))
         except FileNotFoundError:
             # It is ok if the file does not exist since it will be created
             paths = []
@@ -373,7 +372,7 @@ class LanceDBConnection(DBConnection):
         """
         try:
             filesystem, path = fs_from_uri(self.uri)
-            table_path = os.path.join(path, name + ".lance")
+            table_path = join_uri(path, name + ".lance")
             filesystem.delete_dir(table_path)
         except FileNotFoundError:
             if not ignore_missing:

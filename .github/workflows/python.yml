@@ -44,12 +44,19 @@ jobs:
       run: pytest -m "not slow" -x -v --durations=30 tests
     - name: doctest
       run: pytest --doctest-modules lancedb
-  mac:
+  platform:
+    name: "Platform: ${{ matrix.config.name }}"
     timeout-minutes: 30
     strategy:
       matrix:
-        mac-runner: [ "macos-13", "macos-13-xlarge" ]
-    runs-on: "${{ matrix.mac-runner }}"
+        config: 
+          - name: x86 Mac
+            runner: macos-13
+          - name: Arm Mac
+            runner: macos-13-xlarge
+          - name: x86 Windows
+            runner: windows-latest
+    runs-on: "${{ matrix.config.runner }}"
     defaults:
       run:
         shell: bash

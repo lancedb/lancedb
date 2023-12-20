@@ -31,7 +31,7 @@ from .common import DATA, VEC, VECTOR_COLUMN_NAME
 from .embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
 from .pydantic import LanceModel, model_to_dict
 from .query import LanceQueryBuilder, Query
-from .util import fs_from_uri, safe_import_pandas, value_to_sql
+from .util import fs_from_uri, safe_import_pandas, value_to_sql, join_uri
 
 if TYPE_CHECKING:
     from datetime import timedelta
@@ -551,7 +551,7 @@ class LanceTable(Table):
 
     @property
     def _dataset_uri(self) -> str:
-        return os.path.join(self._conn.uri, f"{self.name}.lance")
+        return join_uri(self._conn.uri, f"{self.name}.lance")
 
     def create_index(
         self,
@@ -611,7 +611,7 @@ class LanceTable(Table):
         populate_index(index, self, field_names)
 
     def _get_fts_index_path(self):
-        return os.path.join(self._dataset_uri, "_indices", "tantivy")
+        return join_uri(self._dataset_uri, "_indices", "tantivy")
 
     @cached_property
     def _dataset(self) -> LanceDataset:
