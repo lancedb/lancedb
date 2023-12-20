@@ -288,14 +288,13 @@ class LanceDBConnection(DBConnection):
             A list of table names.
         """
         try:
-            filesystem, path = fs_from_uri(self.uri)
+            filesystem = fs_from_uri(self.uri)[0]
         except pa.ArrowInvalid:
             raise NotImplementedError("Unsupported scheme: " + self.uri)
 
         try:
-            paths = filesystem.get_file_info(
-                fs.FileSelector(get_uri_location(self.uri))
-            )
+            loc = get_uri_location(self.uri)
+            paths = filesystem.get_file_info(fs.FileSelector(loc))
         except FileNotFoundError:
             # It is ok if the file does not exist since it will be created
             paths = []
