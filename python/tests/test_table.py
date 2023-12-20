@@ -21,8 +21,8 @@ import lance
 import numpy as np
 import pandas as pd
 import pyarrow as pa
-from pydantic import BaseModel
 import pytest
+from pydantic import BaseModel
 
 from lancedb.conftest import MockTextEmbeddingFunction
 from lancedb.db import LanceDBConnection
