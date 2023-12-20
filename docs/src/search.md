@@ -178,8 +178,11 @@ You can also get the results as a pandas dataframe.
 tbl.search(np.random.randn(1536)).to_pandas()
 ```
 
-For a table with a nested schema, you can also tell LanceDB to flatten
-the schema when creating the pandas dataframe.
+While other formats like Arrow/Pydantic/Python dicts have a natural 
+way to handle nested schemas, pandas can only store nested data as a 
+python dict column, which makes it difficult to support nested references.
+So for convenience, you can also tell LanceDB to flatten a nested schema 
+when creating the pandas dataframe. 
 
 ```python
 tbl.search(np.random.randn(1536)).to_pandas(flatten=True)

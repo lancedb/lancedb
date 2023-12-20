@@ -201,13 +201,20 @@ class LanceQueryBuilder(ABC):
             If unspecified, do not flatten the nested columns.
         """
         tbl = self.to_arrow()
-        if (flatten == -1) or (flatten is True):
+        if flatten is True:
             while True:
-                prev = tbl
-                tbl = prev.flatten()
-                if tbl.num_columns == prev.num_columns:
+                tbl = tbl.flatten()
+                has_struct = False
+                # loop through all columns to check if there is any struct column
+                if any(pa.types.is_struct(col.type) for col in tbl.schema):
+                    continue
+                else:
                     break
         elif isinstance(flatten, int):
+            if flatten <= 0:
+                raise ValueError(
+                    "Please specify a positive integer for flatten or the boolean value `True`"
+                )
             while flatten > 0:
                 tbl = tbl.flatten()
                 flatten -= 1
