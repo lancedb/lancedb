@@ -195,6 +195,17 @@ export class RemoteTable<T = number[]> implements Table<T> {
     return this._name
   }
 
+  get schema (): Promise<any> {
+    return this._client.post(`/v1/table/${this._name}/describe/`).then(res => {
+      if (res.status !== 200) {
+        throw new Error(`Server Error, status: ${res.status}, ` +
+        // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
+          `message: ${res.statusText}: ${res.data}`)
+      }
+      return res.data?.schema
+    })
+  }
+
   search (query: T): Query<T> {
     return new RemoteQuery(query, this._client, this._name)//, this._embeddings_new)
   }
