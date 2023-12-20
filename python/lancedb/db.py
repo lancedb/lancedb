@@ -23,7 +23,7 @@ from overrides import EnforceOverrides, override
 from pyarrow import fs
 
 from .table import LanceTable, Table
-from .util import fs_from_uri, get_uri_location, get_uri_scheme
+from .util import fs_from_uri, get_uri_location, get_uri_scheme, join_uri
 
 if TYPE_CHECKING:
     from .common import DATA, URI
@@ -373,7 +373,7 @@ class LanceDBConnection(DBConnection):
         """
         try:
             filesystem, path = fs_from_uri(self.uri)
-            table_path = os.path.join(path, name + ".lance")
+            table_path = join_uri(path, name + ".lance")
             filesystem.delete_dir(table_path)
         except FileNotFoundError:
             if not ignore_missing:

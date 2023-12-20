@@ -14,7 +14,8 @@
 import os
 from datetime import date, datetime
 from functools import singledispatch
-from typing import Tuple
+import pathlib
+from typing import Tuple, Union
 from urllib.parse import urlparse
 
 import numpy as np
@@ -82,6 +83,18 @@ def fs_from_uri(uri: str) -> Tuple[pa_fs.FileSystem, str]:
         return fs, path
 
     return pa_fs.FileSystem.from_uri(uri)
+
+
+def join_uri(base: Union[str, pathlib.Path], *parts: str) -> str:
+    """
+    Join a URI with multiple parts, handling extra environment variables.
+    """
+    if isinstance(base, pathlib.Path):
+        return base.joinpath(*parts)
+    base = str(base)
+    if get_uri_scheme(base) == "file":
+        return str(pathlib.Path(base, *parts))
+    return os.path.join(base, *parts)
 
 
 def safe_import_pandas():
