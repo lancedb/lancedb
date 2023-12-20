@@ -130,8 +130,8 @@ def resolve_path(schema, field_name: str) -> pa.Field:
     path = field_name.split(".")
     field = schema.field(path.pop(0))
     for segment in path:
-        if isinstance(field.data_type, pa.StructType):
-            field = field.data_type.field(segment)
+        if pa.types.is_struct(field.type):
+            field = field.type.field(segment)
         else:
             raise KeyError(f"field {field_name} not found in schema {schema}")
     return field
