@@ -25,11 +25,11 @@ impl JsQuery {
         let limit = query_obj
             .get_opt::<JsNumber, _, _>(&mut cx, "_limit")?
             .map(|value| {
-                let limit = value.value(&mut cx) as u64;
-                if limit <= 0 {
+                let limit = value.value(&mut cx);
+                if limit <= 0.0 {
                     panic!("Limit must be a positive integer");
                 }
-                limit
+                limit as u64
             });
         let select = query_obj
             .get_opt::<JsArray, _, _>(&mut cx, "_select")?
@@ -73,7 +73,7 @@ impl JsQuery {
 
         rt.spawn(async move {
             let mut builder = table
-                .search(query.map(|q| Float32Array::from(q)))
+                .search(query.map(Float32Array::from))
                 .refine_factor(refine_factor)
                 .nprobes(nprobes)
                 .filter(filter)
