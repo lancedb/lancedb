@@ -73,7 +73,7 @@ We'll cover the basics of using LanceDB on your local machine in this section.
 === "Javascript"
       ```javascript
       const tb = await db.createTable(
-        "my_table",
+        "myTable",
         [{"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
          {"vector": [5.9, 26.5], "item": "bar", "price": 20.0}])
       ```
@@ -116,7 +116,7 @@ Once created, you can open a table using the following code:
 
 === "Javascript"
       ```javascript
-      const tbl = await db.openTable("my_table");
+      const tbl = await db.openTable("myTable");
       ```
 
       If you forget the name of your table, you can always get a listing of all table names:
@@ -208,7 +208,7 @@ Use the `drop_table()` method on the database to remove a table.
 
 === "JavaScript"
       ```javascript
-      await con.dropTable('myTable')
+      await db.dropTable('myTable')
       ```
 
       This permanently removes the table and is not recoverable, unlike deleting rows.

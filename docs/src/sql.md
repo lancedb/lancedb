@@ -35,9 +35,9 @@ const db = await vectordb.connect('data/sample-lancedb')
 
 let data = []
 for (let i = 0; i < 10_000; i++) {
-     data.push({vector: Array(1536).fill(i), id: `${i}`, content: "", longId: `${i}`},)
+     data.push({vector: Array(1536).fill(i), id: i, item: `item ${i}`, strId: `${i}`})
 }
-const tbl = await db.createTable('my_vectors', data)
+const tbl = await db.createTable('myVectors', data)
 ```
 -->
 === "Python"
@@ -51,7 +51,7 @@ const tbl = await db.createTable('my_vectors', data)
 === "Javascript"
 
     ```javascript
-    await tbl.search([100, 102])
+    await tbl.search(Array(1536).fill(0))
        .where("(item IN ('item 0', 'item 2')) AND (id > 10)")
        .execute()
     ```
