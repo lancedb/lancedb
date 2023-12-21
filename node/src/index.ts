@@ -834,7 +834,7 @@ export class DefaultWriteOptions implements WriteOptions {
 
 export function isWriteOptions (value: any): value is WriteOptions {
   return Object.keys(value).length === 1 &&
-  (value.writeMode === undefined || typeof value.writeMode === 'string')
+      (value.writeMode === undefined || typeof value.writeMode === 'string')
 }
 
 /**

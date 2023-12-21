@@ -206,7 +206,7 @@ export class RemoteTable<T = number[]> implements Table<T> {
     })
   }
 
-  search(query: T): Query<T> {
+  search (query: T): Query<T> {
     return new RemoteQuery(query, this._client, this._name)//, this._embeddings_new)
   }
 
