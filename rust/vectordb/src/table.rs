@@ -14,6 +14,7 @@
 
 use chrono::Duration;
 use lance::dataset::builder::DatasetBuilder;
+use lance::index::scalar::ScalarIndexParams;
 use lance_index::IndexType;
 use std::sync::Arc;
 
@@ -259,6 +260,16 @@ impl Table {
             )
             .await?;
         self.dataset = Arc::new(dataset);
+        Ok(())
+    }
+
+    /// Create a scalar index on the table
+    pub async fn create_scalar_index(&mut self, column: &str, replace: bool) -> Result<()> {
+        let mut dataset = self.dataset.as_ref().clone();
+        let params = ScalarIndexParams::default();
+        dataset
+            .create_index(&[column], IndexType::Scalar, None, &params, replace)
+            .await?;
         Ok(())
     }
 
