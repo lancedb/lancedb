@@ -50,18 +50,18 @@ const tbl = await db.createTable('my_vectors', data)
         (note.email IS NOT NULL)
         ) OR NOT note.created
         """)
-
     ```
 === "Javascript"
 
     ```javascript
-    tbl.search([100, 102])
+    await tbl.search([100, 102])
        .where(`(
             (label IN [10, 20])
             AND
             (note.email IS NOT NULL)
         ) OR NOT note.created
        `)
+       .execute()
     ```
 
 
@@ -118,3 +118,22 @@ The mapping from SQL types to Arrow types is:
 
 [^1]: See precision mapping in previous table.
 
+
+## Filtering without Vector Search
+
+You can also filter your data without search.
+
+=== "Python"
+      ```python
+      pets.search().where("specie='cat'").limit(10).to_arrow()
+      ```
+
+=== "JavaScript"
+      ```javascript
+      await pets.where("specie='cat'").limit(10).execute()
+      ```
+
+!!! warning
+    If your table is large, this could potentially return a very large
+    amount of data. Please be sure to use a `limit` clause unless
+    you're sure you want to return the whole result set.
