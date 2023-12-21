@@ -135,6 +135,17 @@ describe('LanceDB client', function () {
       assert.isTrue(results.length === 10)
     })
 
+    it('should allow creation and use of scalar indices', async function () {
+      const uri = await createTestDB(16, 300)
+      const con = await lancedb.connect(uri)
+      const table = await con.openTable('vectors')
+      await table.createScalarIndex('id', true)
+
+      // Prefiltering should still work the same
+      const results = await table.search(new Array(16).fill(0.1)).limit(10).filter('id >= 10').prefilter(true).execute()
+      assert.isTrue(results.length === 10)
+    })
+
     it('select only a subset of columns', async function () {
       const uri = await createTestDB()
       const con = await lancedb.connect(uri)

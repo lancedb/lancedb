@@ -24,7 +24,7 @@ import { isEmbeddingFunction } from './embedding/embedding_function'
 import { type Literal, toSQL } from './util'
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { databaseNew, databaseTableNames, databaseOpenTable, databaseDropTable, tableCreate, tableAdd, tableCreateVectorIndex, tableCountRows, tableDelete, tableUpdate, tableCleanupOldVersions, tableCompactFiles, tableListIndices, tableIndexStats } = require('../native.js')
+const { databaseNew, databaseTableNames, databaseOpenTable, databaseDropTable, tableCreate, tableAdd, tableCreateScalarIndex, tableCreateVectorIndex, tableCountRows, tableDelete, tableUpdate, tableCleanupOldVersions, tableCompactFiles, tableListIndices, tableIndexStats } = require('../native.js')
 
 export { Query }
 export type { EmbeddingFunction }
@@ -222,6 +222,56 @@ export interface Table<T = number[]> {
    * @param indexParams The parameters of this Index, @see VectorIndexParams.
    */
   createIndex: (indexParams: VectorIndexParams) => Promise<any>
+
+  /**
+   * Create a scalar index on this Table for the given column
+   *
+   * @param column The column to index
+   * @param replace If false, fail if an index already exists on the column
+   *
+   * Scalar indices, like vector indices, can be used to speed up scans.  A scalar
+   * index can speed up scans that contain filter expressions on the indexed column.
+   * For example, the following scan will be faster if the column `my_col` has
+   * a scalar index:
+   *
+   * ```ts
+   * const con = await lancedb.connect('./.lancedb');
+   * const table = await con.openTable('images');
+   * const results = await table.where('my_col = 7').execute();
+   * ```
+   *
+   * Scalar indices can also speed up scans containing a vector search and a
+   * prefilter:
+   *
+   * ```ts
+   * const con = await lancedb.connect('././lancedb');
+   * const table = await con.openTable('images');
+   * const results = await table.search([1.0, 2.0]).where('my_col != 7').prefilter(true);
+   * ```
+   *
+   * Scalar indices can only speed up scans for basic filters using
+   * equality, comparison, range (e.g. `my_col BETWEEN 0 AND 100`), and set
+   * membership (e.g. `my_col IN (0, 1, 2)`)
+   *
+   * Scalar indices can be used if the filter contains multiple indexed columns and
+   * the filter criteria are AND'd or OR'd together
+   * (e.g. `my_col < 0 AND other_col> 100`)
+   *
+   * Scalar indices may be used if the filter contains non-indexed columns but,
+   * depending on the structure of the filter, they may not be usable.  For example,
+   * if the column `not_indexed` does not have a scalar index then the filter
+   * `my_col = 0 OR not_indexed = 1` will not be able to use any scalar index on
+   * `my_col`.
+   *
+   * @examples
+   *
+   * ```ts
+   * const con = await lancedb.connect('././lancedb')
+   * const table = await con.openTable('images')
+   * await table.createScalarIndex('my_col')
+   * ```
+   */
+  createScalarIndex: (column: string, replace: boolean) => Promise<void>
 
   /**
    * Returns the number of rows in this table.
@@ -535,6 +585,10 @@ export class LocalTable<T = number[]> implements Table<T> {
    */
   async createIndex (indexParams: VectorIndexParams): Promise<any> {
     return tableCreateVectorIndex.call(this._tbl, indexParams).then((newTable: any) => { this._tbl = newTable })
+  }
+
+  async createScalarIndex (column: string, replace: boolean): Promise<void> {
+    return tableCreateScalarIndex.call(this._tbl, column, replace)
   }
 
   /**

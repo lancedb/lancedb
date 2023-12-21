@@ -243,6 +243,10 @@ fn main(mut cx: ModuleContext) -> NeonResult<()> {
     cx.export_function("tableListIndices", JsTable::js_list_indices)?;
     cx.export_function("tableIndexStats", JsTable::js_index_stats)?;
     cx.export_function(
+        "tableCreateScalarIndex",
+        index::scalar::table_create_scalar_index,
+    )?;
+    cx.export_function(
         "tableCreateVectorIndex",
         index::vector::table_create_vector_index,
     )?;
