@@ -201,8 +201,8 @@ A Table is a collection of Records in a LanceDB Database. You can follow along o
     ```javascript
     data
     const tb = await db.createTable("my_table",
-                  data=[{"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
-                        {"vector": [5.9, 26.5], "item": "bar", "price": 20.0}])
+      [{"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+       {"vector": [5.9, 26.5], "item": "bar", "price": 20.0}])
     ```
 
     !!! info "Note"
