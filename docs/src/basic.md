@@ -64,18 +64,26 @@ We'll cover the basics of using LanceDB on your local machine in this section.
       tbl = db.create_table("table_from_df", data=df)
       ```
 
+      !!! warning
+
+            If the table already exists, LanceDB will raise an error by default.
+            If you want to overwrite the table, you can pass in `mode="overwrite"`
+            to the `createTable` function.
+
 === "Javascript"
       ```javascript
-      const tb = await db.createTable("my_table",
-                        data=[{"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
-                              {"vector": [5.9, 26.5], "item": "bar", "price": 20.0}])
+      const tb = await db.createTable(
+        "myTable",
+        [{"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+         {"vector": [5.9, 26.5], "item": "bar", "price": 20.0}])
       ```
-      
-!!! warning
 
-      If the table already exists, LanceDB will raise an error by default.
-      If you want to overwrite the table, you can pass in `mode="overwrite"`
-      to the `createTable` function.
+      !!! warning
+
+            If the table already exists, LanceDB will raise an error by default.
+            If you want to overwrite the table, you can pass in `"overwrite"`
+            to the `createTable` function like this: `await con.createTable(tableName, data, { writeMode: WriteMode.Overwrite })`
+      
 
 ??? info "Under the hood, LanceDB is converting the input data into an Apache Arrow table and persisting it to disk in [Lance format](https://www.github.com/lancedb/lance)."
 
@@ -108,7 +116,7 @@ Once created, you can open a table using the following code:
 
 === "Javascript"
       ```javascript
-      const tbl = await db.openTable("my_table");
+      const tbl = await db.openTable("myTable");
       ```
 
       If you forget the name of your table, you can always get a listing of all table names:
@@ -194,10 +202,17 @@ Use the `drop_table()` method on the database to remove a table.
       db.drop_table("my_table")
       ```
 
-This permanently removes the table and is not recoverable, unlike deleting rows.
-By default, if the table does not exist an exception is raised. To suppress this,
-you can pass in `ignore_missing=True`.
+      This permanently removes the table and is not recoverable, unlike deleting rows.
+      By default, if the table does not exist an exception is raised. To suppress this,
+      you can pass in `ignore_missing=True`.
 
+=== "JavaScript"
+      ```javascript
+      await db.dropTable('myTable')
+      ```
+
+      This permanently removes the table and is not recoverable, unlike deleting rows.
+      If the table does not exist an exception is raised. 
 
 ## What's next
 
