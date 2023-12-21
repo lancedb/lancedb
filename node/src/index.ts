@@ -331,8 +331,8 @@ export interface Table<T = number[]> {
    * const tbl = await con.createTable("my_table", data)
    *
    * await tbl.update({
-   *   filter: "id = 2",
-   *   updates: { vector: [2, 2], name: "Michael" },
+   *   where: "id = 2",
+   *   values: { vector: [2, 2], name: "Michael" },
    * })
    *
    * let results = await tbl.search([1, 1]).execute();
