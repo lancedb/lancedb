@@ -57,8 +57,8 @@ export class RemoteConnection implements Connection {
     return 'db://' + this._client.uri
   }
 
-  async tableNames (): Promise<string[]> {
-    const response = await this._client.get('/v1/table/')
+  async tableNames (pageToken: string = '', limit: number = 10): Promise<string[]> {
+    const response = await this._client.get('/v1/table/', { limit, page_token: pageToken })
     return response.data.tables
   }
 
