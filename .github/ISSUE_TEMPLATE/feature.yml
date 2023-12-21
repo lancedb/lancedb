@@ -1,0 +1,31 @@
+name: Feature suggestion
+description: Suggestion a new feature for LanceDB
+title: "Feature: "
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Share a new idea for a feature or improvement. Be sure to search existing
+        issues first to avoid duplicates.
+  - type: dropdown
+    id: sdk
+    attributes:
+      label: SDK
+      description: Which SDK are you using? This helps us prioritize.
+      options:
+        - Python
+        - Node
+        - Rust
+      default: 0
+    validations:
+      required: false
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: |
+        Describe the feature and why it would be useful. If applicable, consider
+        providing a code example of what it might be like to use the feature.
+    validations:
+      required: true

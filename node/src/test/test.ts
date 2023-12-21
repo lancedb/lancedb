@@ -78,12 +78,31 @@ describe('LanceDB client', function () {
     })
 
     it('limits # of results', async function () {
-      const uri = await createTestDB()
+      const uri = await createTestDB(2, 100)
       const con = await lancedb.connect(uri)
       const table = await con.openTable('vectors')
-      const results = await table.search([0.1, 0.3]).limit(1).execute()
+      let results = await table.search([0.1, 0.3]).limit(1).execute()
       assert.equal(results.length, 1)
       assert.equal(results[0].id, 1)
+
+      // there is a default limit if unspecified
+      results = await table.search([0.1, 0.3]).execute()
+      assert.equal(results.length, 10)
+    })
+
+    it('uses a filter / where clause without vector search', async function () {
+      // eslint-disable-next-line @typescript-eslint/explicit-function-return-type
+      const assertResults = (results: Array<Record<string, unknown>>) => {
+        assert.equal(results.length, 50)
+      }
+
+      const uri = await createTestDB(2, 100)
+      const con = await lancedb.connect(uri)
+      const table = (await con.openTable('vectors')) as LocalTable
+      let results = await table.filter('id % 2 = 0').execute()
+      assertResults(results)
+      results = await table.where('id % 2 = 0').execute()
+      assertResults(results)
     })
 
     it('uses a filter / where clause', async function () {
@@ -113,6 +132,17 @@ describe('LanceDB client', function () {
 
       // pre filter should return exactly the limit
       results = await table.search(new Array(16).fill(0.1)).limit(10).filter('id >= 10').prefilter(true).execute()
+      assert.isTrue(results.length === 10)
+    })
+
+    it('should allow creation and use of scalar indices', async function () {
+      const uri = await createTestDB(16, 300)
+      const con = await lancedb.connect(uri)
+      const table = await con.openTable('vectors')
+      await table.createScalarIndex('id', true)
+
+      // Prefiltering should still work the same
+      const results = await table.search(new Array(16).fill(0.1)).limit(10).filter('id >= 10').prefilter(true).execute()
       assert.isTrue(results.length === 10)
     })
 
@@ -258,6 +288,46 @@ describe('LanceDB client', function () {
       ]
       await table.overwrite(dataOver)
       assert.equal(await table.countRows(), 2)
+    })
+
+    it('can update records in the table', async function () {
+      const uri = await createTestDB()
+      const con = await lancedb.connect(uri)
+
+      const table = await con.openTable('vectors')
+      assert.equal(await table.countRows(), 2)
+
+      await table.update({ where: 'price = 10', valuesSql: { price: '100' } })
+      const results = await table.search([0.1, 0.2]).execute()
+      assert.equal(results[0].price, 100)
+      assert.equal(results[1].price, 11)
+    })
+
+    it('can update the records using a literal value', async function () {
+      const uri = await createTestDB()
+      const con = await lancedb.connect(uri)
+
+      const table = await con.openTable('vectors')
+      assert.equal(await table.countRows(), 2)
+
+      await table.update({ where: 'price = 10', values: { price: 100 } })
+      const results = await table.search([0.1, 0.2]).execute()
+      assert.equal(results[0].price, 100)
+      assert.equal(results[1].price, 11)
+    })
+
+    it('can update every record in the table', async function () {
+      const uri = await createTestDB()
+      const con = await lancedb.connect(uri)
+
+      const table = await con.openTable('vectors')
+      assert.equal(await table.countRows(), 2)
+
+      await table.update({ valuesSql: { price: '100' } })
+      const results = await table.search([0.1, 0.2]).execute()
+
+      assert.equal(results[0].price, 100)
+      assert.equal(results[1].price, 100)
     })
 
     it('can delete records from a table', async function () {
@@ -542,7 +612,7 @@ describe('Compact and cleanup', function () {
 
     // should have no effect, but this validates the arguments are parsed.
     await table.compactFiles({
-      targetRowsPerFragment: 1024 * 10,
+      targetRowsPerFragment: 102410,
       maxRowsPerGroup: 1024,
       materializeDeletions: true,
       materializeDeletionsThreshold: 0.5,

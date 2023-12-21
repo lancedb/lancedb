@@ -237,10 +237,15 @@ fn main(mut cx: ModuleContext) -> NeonResult<()> {
     cx.export_function("tableAdd", JsTable::js_add)?;
     cx.export_function("tableCountRows", JsTable::js_count_rows)?;
     cx.export_function("tableDelete", JsTable::js_delete)?;
+    cx.export_function("tableUpdate", JsTable::js_update)?;
     cx.export_function("tableCleanupOldVersions", JsTable::js_cleanup)?;
     cx.export_function("tableCompactFiles", JsTable::js_compact)?;
     cx.export_function("tableListIndices", JsTable::js_list_indices)?;
     cx.export_function("tableIndexStats", JsTable::js_index_stats)?;
+    cx.export_function(
+        "tableCreateScalarIndex",
+        index::scalar::table_create_scalar_index,
+    )?;
     cx.export_function(
         "tableCreateVectorIndex",
         index::vector::table_create_vector_index,

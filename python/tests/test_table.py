@@ -12,7 +12,7 @@
 #  limitations under the License.
 
 import functools
-from datetime import timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import List
 from unittest.mock import PropertyMock, patch
@@ -22,6 +22,7 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pytest
+from pydantic import BaseModel
 
 from lancedb.conftest import MockTextEmbeddingFunction
 from lancedb.db import LanceDBConnection
@@ -141,14 +142,44 @@ def test_add(db):
 
 
 def test_add_pydantic_model(db):
-    class TestModel(LanceModel):
-        vector: Vector(16)
-        li: List[int]
+    # https://github.com/lancedb/lancedb/issues/562
 
-    data = TestModel(vector=list(range(16)), li=[1, 2, 3])
-    table = LanceTable.create(db, "test", data=[data])
-    assert len(table) == 1
-    assert table.schema == TestModel.to_arrow_schema()
+    class Metadata(BaseModel):
+        source: str
+        timestamp: datetime
+
+    class Document(BaseModel):
+        content: str
+        meta: Metadata
+
+    class LanceSchema(LanceModel):
+        id: str
+        vector: Vector(2)
+        li: List[int]
+        payload: Document
+
+    tbl = LanceTable.create(db, "mytable", schema=LanceSchema, mode="overwrite")
+    assert tbl.schema == LanceSchema.to_arrow_schema()
+
+    # add works
+    expected = LanceSchema(
+        id="id",
+        vector=[0.0, 0.0],
+        li=[1, 2, 3],
+        payload=Document(
+            content="foo", meta=Metadata(source="bar", timestamp=datetime.now())
+        ),
+    )
+    tbl.add([expected])
+
+    result = tbl.search([0.0, 0.0]).limit(1).to_pydantic(LanceSchema)[0]
+    assert result == expected
+
+    flattened = tbl.search([0.0, 0.0]).limit(1).to_pandas(flatten=1)
+    assert len(flattened.columns) == 6  # _distance is automatically added
+
+    really_flattened = tbl.search([0.0, 0.0]).limit(1).to_pandas(flatten=True)
+    assert len(really_flattened.columns) == 7
 
 
 def _add(table, schema):
@@ -348,12 +379,77 @@ def test_update(db):
     assert len(table) == 2
     assert len(table.list_versions()) == 2
     table.update(where="id=0", values={"vector": [1.1, 1.1]})
-    assert len(table.list_versions()) == 4
-    assert table.version == 4
+    assert len(table.list_versions()) == 3
+    assert table.version == 3
     assert len(table) == 2
     v = table.to_arrow()["vector"].combine_chunks()
     v = v.values.to_numpy().reshape(2, 2)
     assert np.allclose(v, np.array([[1.2, 1.9], [1.1, 1.1]]))
+
+
+def test_update_types(db):
+    table = LanceTable.create(
+        db,
+        "my_table",
+        data=[
+            {
+                "id": 0,
+                "str": "foo",
+                "float": 1.1,
+                "timestamp": datetime(2021, 1, 1),
+                "date": date(2021, 1, 1),
+                "vector1": [1.0, 0.0],
+                "vector2": [1.0, 1.0],
+            }
+        ],
+    )
+    # Update with SQL
+    table.update(
+        values_sql=dict(
+            id="1",
+            str="'bar'",
+            float="2.2",
+            timestamp="TIMESTAMP '2021-01-02 00:00:00'",
+            date="DATE '2021-01-02'",
+            vector1="[2.0, 2.0]",
+            vector2="[3.0, 3.0]",
+        )
+    )
+    actual = table.to_arrow().to_pylist()[0]
+    expected = dict(
+        id=1,
+        str="bar",
+        float=2.2,
+        timestamp=datetime(2021, 1, 2),
+        date=date(2021, 1, 2),
+        vector1=[2.0, 2.0],
+        vector2=[3.0, 3.0],
+    )
+    assert actual == expected
+
+    # Update with values
+    table.update(
+        values=dict(
+            id=2,
+            str="baz",
+            float=3.3,
+            timestamp=datetime(2021, 1, 3),
+            date=date(2021, 1, 3),
+            vector1=[3.0, 3.0],
+            vector2=np.array([4.0, 4.0]),
+        )
+    )
+    actual = table.to_arrow().to_pylist()[0]
+    expected = dict(
+        id=2,
+        str="baz",
+        float=3.3,
+        timestamp=datetime(2021, 1, 3),
+        date=date(2021, 1, 3),
+        vector1=[3.0, 3.0],
+        vector2=[4.0, 4.0],
+    )
+    assert actual == expected
 
 
 def test_create_with_embedding_function(db):
@@ -434,6 +530,33 @@ def test_multiple_vector_columns(db):
     result2 = table.search(q, vector_column_name="vector2").limit(1).to_pandas()
 
     assert result1["text"].iloc[0] != result2["text"].iloc[0]
+
+
+def test_create_scalar_index(db):
+    vec_array = pa.array(
+        [[1, 1], [2, 2], [3, 3], [4, 4], [5, 5]], pa.list_(pa.float32(), 2)
+    )
+    test_data = pa.Table.from_pydict(
+        {"x": ["c", "b", "a", "e", "b"], "y": [1, 2, 3, 4, 5], "vector": vec_array}
+    )
+    table = LanceTable.create(
+        db,
+        "my_table",
+        data=test_data,
+    )
+    table.create_scalar_index("x")
+    indices = table.to_lance().list_indices()
+    assert len(indices) == 1
+    scalar_index = indices[0]
+    assert scalar_index["type"] == "Scalar"
+
+    # Confirm that prefiltering still works with the scalar index column
+    results = table.search().where("x = 'c'").to_arrow()
+    assert results == test_data.slice(0, 1)
+    results = table.search([5, 5]).to_arrow()
+    assert results["_distance"][0].as_py() == 0
+    results = table.search([5, 5]).where("x != 'b'").to_arrow()
+    assert results["_distance"][0].as_py() > 0
 
 
 def test_empty_query(db):

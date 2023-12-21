@@ -21,9 +21,10 @@ import type { EmbeddingFunction } from './embedding/embedding_function'
 import { RemoteConnection } from './remote'
 import { Query } from './query'
 import { isEmbeddingFunction } from './embedding/embedding_function'
+import { type Literal, toSQL } from './util'
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { databaseNew, databaseTableNames, databaseOpenTable, databaseDropTable, tableCreate, tableAdd, tableCreateVectorIndex, tableCountRows, tableDelete, tableCleanupOldVersions, tableCompactFiles, tableListIndices, tableIndexStats } = require('../native.js')
+const { databaseNew, databaseTableNames, databaseOpenTable, databaseDropTable, tableCreate, tableAdd, tableCreateScalarIndex, tableCreateVectorIndex, tableCountRows, tableDelete, tableUpdate, tableCleanupOldVersions, tableCompactFiles, tableListIndices, tableIndexStats } = require('../native.js')
 
 export { Query }
 export type { EmbeddingFunction }
@@ -223,6 +224,56 @@ export interface Table<T = number[]> {
   createIndex: (indexParams: VectorIndexParams) => Promise<any>
 
   /**
+   * Create a scalar index on this Table for the given column
+   *
+   * @param column The column to index
+   * @param replace If false, fail if an index already exists on the column
+   *
+   * Scalar indices, like vector indices, can be used to speed up scans.  A scalar
+   * index can speed up scans that contain filter expressions on the indexed column.
+   * For example, the following scan will be faster if the column `my_col` has
+   * a scalar index:
+   *
+   * ```ts
+   * const con = await lancedb.connect('./.lancedb');
+   * const table = await con.openTable('images');
+   * const results = await table.where('my_col = 7').execute();
+   * ```
+   *
+   * Scalar indices can also speed up scans containing a vector search and a
+   * prefilter:
+   *
+   * ```ts
+   * const con = await lancedb.connect('././lancedb');
+   * const table = await con.openTable('images');
+   * const results = await table.search([1.0, 2.0]).where('my_col != 7').prefilter(true);
+   * ```
+   *
+   * Scalar indices can only speed up scans for basic filters using
+   * equality, comparison, range (e.g. `my_col BETWEEN 0 AND 100`), and set
+   * membership (e.g. `my_col IN (0, 1, 2)`)
+   *
+   * Scalar indices can be used if the filter contains multiple indexed columns and
+   * the filter criteria are AND'd or OR'd together
+   * (e.g. `my_col < 0 AND other_col> 100`)
+   *
+   * Scalar indices may be used if the filter contains non-indexed columns but,
+   * depending on the structure of the filter, they may not be usable.  For example,
+   * if the column `not_indexed` does not have a scalar index then the filter
+   * `my_col = 0 OR not_indexed = 1` will not be able to use any scalar index on
+   * `my_col`.
+   *
+   * @examples
+   *
+   * ```ts
+   * const con = await lancedb.connect('././lancedb')
+   * const table = await con.openTable('images')
+   * await table.createScalarIndex('my_col')
+   * ```
+   */
+  createScalarIndex: (column: string, replace: boolean) => Promise<void>
+
+  /**
    * Returns the number of rows in this table.
    */
   countRows: () => Promise<number>
@@ -262,6 +313,39 @@ export interface Table<T = number[]> {
   delete: (filter: string) => Promise<void>
 
   /**
+   * Update rows in this table.
+   *
+   * This can be used to update a single row, many rows, all rows, or
+   * sometimes no rows (if your predicate matches nothing).
+   *
+   * @param args see {@link UpdateArgs} and {@link UpdateSqlArgs} for more details
+   *
+   * @examples
+   *
+   * ```ts
+   * const con = await lancedb.connect("./.lancedb")
+   * const data = [
+   *    {id: 1, vector: [3, 3], name: 'Ye'},
+   *    {id: 2, vector: [4, 4], name: 'Mike'},
+   * ];
+   * const tbl = await con.createTable("my_table", data)
+   *
+   * await tbl.update({
+   *   where: "id = 2",
+   *   values: { vector: [2, 2], name: "Michael" },
+   * })
+   *
+   * let results = await tbl.search([1, 1]).execute();
+   * // Returns [
+   * //   {id: 2, vector: [2, 2], name: 'Michael'}
+   * //   {id: 1, vector: [3, 3], name: 'Ye'}
+   * // ]
+   * ```
+   *
+   */
+  update: (args: UpdateArgs | UpdateSqlArgs) => Promise<void>
+
+  /**
    * List the indicies on this table.
    */
   listIndices: () => Promise<VectorIndex[]>
@@ -270,6 +354,34 @@ export interface Table<T = number[]> {
    * Get statistics about an index.
    */
   indexStats: (indexUuid: string) => Promise<IndexStats>
+}
+
+export interface UpdateArgs {
+  /**
+   * A filter in the same format used by a sql WHERE clause. The filter may be empty,
+   * in which case all rows will be updated.
+   */
+  where?: string
+
+  /**
+   * A key-value map of updates. The keys are the column names, and the values are the
+   * new values to set
+   */
+  values: Record<string, Literal>
+}
+
+export interface UpdateSqlArgs {
+  /**
+   * A filter in the same format used by a sql WHERE clause. The filter may be empty,
+   * in which case all rows will be updated.
+   */
+  where?: string
+
+  /**
+   * A key-value map of updates. The keys are the column names, and the values are the
+   * new values to set as SQL expressions.
+   */
+  valuesSql: Record<string, string>
 }
 
 export interface VectorIndex {
@@ -427,6 +539,16 @@ export class LocalTable<T = number[]> implements Table<T> {
   }
 
   /**
+   * Creates a filter query to find all rows matching the specified criteria
+   * @param value The filter criteria (like SQL where clause syntax)
+   */
+  filter (value: string): Query<T> {
+    return new Query(undefined, this._tbl, this._embeddings).filter(value)
+  }
+
+  where = this.filter
+
+  /**
    * Insert records into this Table.
    *
    * @param data Records to be inserted into the Table
@@ -465,6 +587,10 @@ export class LocalTable<T = number[]> implements Table<T> {
     return tableCreateVectorIndex.call(this._tbl, indexParams).then((newTable: any) => { this._tbl = newTable })
   }
 
+  async createScalarIndex (column: string, replace: boolean): Promise<void> {
+    return tableCreateScalarIndex.call(this._tbl, column, replace)
+  }
+
   /**
    * Returns the number of rows in this table.
    */
@@ -479,6 +605,31 @@ export class LocalTable<T = number[]> implements Table<T> {
    */
   async delete (filter: string): Promise<void> {
     return tableDelete.call(this._tbl, filter).then((newTable: any) => { this._tbl = newTable })
+  }
+
+  /**
+   * Update rows in this table.
+   *
+   * @param args see {@link UpdateArgs} and {@link UpdateSqlArgs} for more details
+   *
+   * @returns
+   */
+  async update (args: UpdateArgs | UpdateSqlArgs): Promise<void> {
+    let filter: string | null
+    let updates: Record<string, string>
+
+    if ('valuesSql' in args) {
+      filter = args.where ?? null
+      updates = args.valuesSql
+    } else {
+      filter = args.where ?? null
+      updates = {}
+      for (const [key, value] of Object.entries(args.values)) {
+        updates[key] = toSQL(value)
+      }
+    }
+
+    return tableUpdate.call(this._tbl, filter, updates).then((newTable: any) => { this._tbl = newTable })
   }
 
   /**
@@ -646,6 +797,11 @@ export interface IvfPQIndexConfig {
    * Replace an existing index with the same name if it exists.
    */
   replace?: boolean
+
+  /**
+   * Cache size of the index
+   */
+  index_cache_size?: number
 
   type: 'ivf_pq'
 }

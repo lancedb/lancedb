@@ -12,9 +12,13 @@
 #  limitations under the License.
 
 import os
-from typing import Tuple
+from datetime import date, datetime
+from functools import singledispatch
+import pathlib
+from typing import Tuple, Union
 from urllib.parse import urlparse
 
+import numpy as np
 import pyarrow.fs as pa_fs
 
 
@@ -59,6 +63,12 @@ def get_uri_location(uri: str) -> str:
     str: Location part of the URL, without scheme
     """
     parsed = urlparse(uri)
+    if len(parsed.scheme) == 1:
+        # Windows drive names are parsed as the scheme
+        # e.g. "c:\path" -> ParseResult(scheme="c", netloc="", path="/path", ...)
+        # So we add special handling here for schemes that are a single character
+        return uri
+
     if not parsed.netloc:
         return parsed.path
     else:
@@ -81,6 +91,29 @@ def fs_from_uri(uri: str) -> Tuple[pa_fs.FileSystem, str]:
     return pa_fs.FileSystem.from_uri(uri)
 
 
+def join_uri(base: Union[str, pathlib.Path], *parts: str) -> str:
+    """
+    Join a URI with multiple parts, handles both local and remote paths
+
+    Parameters
+    ----------
+    base : str
+        The base URI
+    parts : str
+        The parts to join to the base URI, each separated by the
+        appropriate path separator for the URI scheme and OS
+    """
+    if isinstance(base, pathlib.Path):
+        return base.joinpath(*parts)
+    base = str(base)
+    if get_uri_scheme(base) == "file":
+        # using pathlib for local paths make this windows compatible
+        # `get_uri_scheme` returns `file` for windows drive names (e.g. `c:\path`)
+        return str(pathlib.Path(base, *parts))
+    # for remote paths, just use os.path.join
+    return "/".join([p.rstrip("/") for p in [base, *parts]])
+
+
 def safe_import_pandas():
     try:
         import pandas as pd
@@ -88,3 +121,53 @@ def safe_import_pandas():
         return pd
     except ImportError:
         return None
+
+
+@singledispatch
+def value_to_sql(value):
+    raise NotImplementedError("SQL conversion is not implemented for this type")
+
+
+@value_to_sql.register(str)
+def _(value: str):
+    return f"'{value}'"
+
+
+@value_to_sql.register(int)
+def _(value: int):
+    return str(value)
+
+
+@value_to_sql.register(float)
+def _(value: float):
+    return str(value)
+
+
+@value_to_sql.register(bool)
+def _(value: bool):
+    return str(value).upper()
+
+
+@value_to_sql.register(type(None))
+def _(value: type(None)):
+    return "NULL"
+
+
+@value_to_sql.register(datetime)
+def _(value: datetime):
+    return f"'{value.isoformat()}'"
+
+
+@value_to_sql.register(date)
+def _(value: date):
+    return f"'{value.isoformat()}'"
+
+
+@value_to_sql.register(list)
+def _(value: list):
+    return "[" + ", ".join(map(value_to_sql, value)) + "]"
+
+
+@value_to_sql.register(np.ndarray)
+def _(value: np.ndarray):
+    return value_to_sql(value.tolist())

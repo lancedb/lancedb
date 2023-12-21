@@ -147,7 +147,11 @@ class LanceSchema(LanceModel):
     vector: Vector(1536)
     payload: Document
 
+<<<<<<< HEAD
 # add works
+=======
+# Let's add 100 sample rows to our dataset
+>>>>>>> main
 data = [LanceSchema(
     id=f"id{i}",
     vector=np.random.randn(1536),
@@ -178,8 +182,16 @@ You can also get the results as a pandas dataframe.
 tbl.search(np.random.randn(1536)).to_pandas()
 ```
 
+<<<<<<< HEAD
 For a table with a nested schema, you can also tell LanceDB to flatten
 the schema when creating the pandas dataframe.
+=======
+While other formats like Arrow/Pydantic/Python dicts have a natural 
+way to handle nested schemas, pandas can only store nested data as a 
+python dict column, which makes it difficult to support nested references.
+So for convenience, you can also tell LanceDB to flatten a nested schema 
+when creating the pandas dataframe. 
+>>>>>>> main
 
 ```python
 tbl.search(np.random.randn(1536)).to_pandas(flatten=True)
@@ -211,4 +223,9 @@ tbl.search(np.random.randn(1536)).to_pydantic(LanceSchema)
 ```
 
 Note that in this case the extra `_distance` field is discarded since
+<<<<<<< HEAD
 it's not part of the LanceSchema.
+=======
+it's not part of the LanceSchema.
+
+>>>>>>> main

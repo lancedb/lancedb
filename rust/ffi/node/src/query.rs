@@ -23,8 +23,14 @@ impl JsQuery {
         let query_obj = cx.argument::<JsObject>(0)?;
 
         let limit = query_obj
-            .get::<JsNumber, _, _>(&mut cx, "_limit")?
-            .value(&mut cx);
+            .get_opt::<JsNumber, _, _>(&mut cx, "_limit")?
+            .map(|value| {
+                let limit = value.value(&mut cx);
+                if limit <= 0.0 {
+                    panic!("Limit must be a positive integer");
+                }
+                limit as u64
+            });
         let select = query_obj
             .get_opt::<JsArray, _, _>(&mut cx, "_select")?
             .map(|arr| {
@@ -48,7 +54,9 @@ impl JsQuery {
             .map(|s| s.value(&mut cx))
             .map(|s| MetricType::try_from(s.as_str()).unwrap());
 
-        let prefilter = query_obj.get::<JsBoolean, _, _>(&mut cx, "_prefilter")?.value(&mut cx);
+        let prefilter = query_obj
+            .get::<JsBoolean, _, _>(&mut cx, "_prefilter")?
+            .value(&mut cx);
 
         let is_electron = cx
             .argument::<JsBoolean>(1)
@@ -59,20 +67,23 @@ impl JsQuery {
 
         let (deferred, promise) = cx.promise();
         let channel = cx.channel();
-        let query_vector = query_obj.get::<JsArray, _, _>(&mut cx, "_queryVector")?;
-        let query = convert::js_array_to_vec(query_vector.deref(), &mut cx);
+        let query_vector = query_obj.get_opt::<JsArray, _, _>(&mut cx, "_queryVector")?;
         let table = js_table.table.clone();
+        let query = query_vector.map(|q| convert::js_array_to_vec(q.deref(), &mut cx));
 
         rt.spawn(async move {
-            let builder = table
-                .search(Float32Array::from(query))
-                .limit(limit as usize)
+            let mut builder = table
+                .search(query.map(Float32Array::from))
                 .refine_factor(refine_factor)
                 .nprobes(nprobes)
                 .filter(filter)
                 .metric_type(metric_type)
                 .select(select)
                 .prefilter(prefilter);
+            if let Some(limit) = limit {
+                builder = builder.limit(limit as usize);
+            };
+
             let record_batch_stream = builder.execute();
             let results = record_batch_stream
                 .and_then(|stream| {

@@ -26,7 +26,7 @@ use futures::{stream::BoxStream, FutureExt, StreamExt};
 use lance::io::object_store::WrappingObjectStore;
 use object_store::{
     path::Path, Error, GetOptions, GetResult, ListResult, MultipartId, ObjectMeta, ObjectStore,
-    Result,
+    PutOptions, PutResult, Result,
 };
 
 use async_trait::async_trait;
@@ -72,13 +72,28 @@ impl PrimaryOnly for Path {
 /// Note: this object store does not mirror writes to *.manifest files
 #[async_trait]
 impl ObjectStore for MirroringObjectStore {
-    async fn put(&self, location: &Path, bytes: Bytes) -> Result<()> {
+    async fn put(&self, location: &Path, bytes: Bytes) -> Result<PutResult> {
         if location.primary_only() {
             self.primary.put(location, bytes).await
         } else {
             self.secondary.put(location, bytes.clone()).await?;
-            self.primary.put(location, bytes).await?;
-            Ok(())
+            self.primary.put(location, bytes).await
+        }
+    }
+
+    async fn put_opts(
+        &self,
+        location: &Path,
+        bytes: Bytes,
+        options: PutOptions,
+    ) -> Result<PutResult> {
+        if location.primary_only() {
+            self.primary.put_opts(location, bytes, options).await
+        } else {
+            self.secondary
+                .put_opts(location, bytes.clone(), options.clone())
+                .await?;
+            self.primary.put_opts(location, bytes, options).await
         }
     }
 
@@ -129,8 +144,8 @@ impl ObjectStore for MirroringObjectStore {
         self.primary.delete(location).await
     }
 
-    async fn list(&self, prefix: Option<&Path>) -> Result<BoxStream<'_, Result<ObjectMeta>>> {
-        self.primary.list(prefix).await
+    fn list(&self, prefix: Option<&Path>) -> BoxStream<'_, Result<ObjectMeta>> {
+        self.primary.list(prefix)
     }
 
     async fn list_with_delimiter(&self, prefix: Option<&Path>) -> Result<ListResult> {
@@ -359,7 +374,9 @@ mod test {
         assert_eq!(t.count_rows().await.unwrap(), 100);
 
         let q = t
-            .search(PrimitiveArray::from_iter_values(vec![0.1, 0.1, 0.1, 0.1]))
+            .search(Some(PrimitiveArray::from_iter_values(vec![
+                0.1, 0.1, 0.1, 0.1,
+            ])))
             .limit(10)
             .execute()
             .await

@@ -44,12 +44,19 @@ jobs:
       run: pytest -m "not slow" -x -v --durations=30 tests
     - name: doctest
       run: pytest --doctest-modules lancedb
-  mac:
+  platform:
+    name: "Platform: ${{ matrix.config.name }}"
     timeout-minutes: 30
     strategy:
       matrix:
-        mac-runner: [ "macos-13", "macos-13-xlarge" ]
-    runs-on: "${{ matrix.mac-runner }}"
+        config: 
+          - name: x86 Mac
+            runner: macos-13
+          - name: Arm Mac
+            runner: macos-13-xlarge
+          - name: x86 Windows
+            runner: windows-latest
+    runs-on: "${{ matrix.config.runner }}"
     defaults:
       run:
         shell: bash
@@ -91,11 +98,7 @@ jobs:
         pip install "pydantic<2"
         pip install -e .[tests]
         pip install tantivy@git+https://github.com/quickwit-oss/tantivy-py#164adc87e1a033117001cf70e38c82a53014d985
-        pip install pytest pytest-mock black isort
-    - name: Black
-      run: black --check --diff --no-color --quiet .
-    - name: isort
-      run: isort --check --diff --quiet .
+        pip install pytest pytest-mock
     - name: Run tests
       run: pytest -m "not slow" -x -v --durations=30 tests
     - name: doctest

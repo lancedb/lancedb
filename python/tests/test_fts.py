@@ -43,7 +43,15 @@ def table(tmp_path) -> ldb.table.LanceTable:
         for _ in range(100)
     ]
     table = db.create_table(
-        "test", data=pd.DataFrame({"vector": vectors, "text": text, "text2": text})
+        "test",
+        data=pd.DataFrame(
+            {
+                "vector": vectors,
+                "text": text,
+                "text2": text,
+                "nested": [{"text": t} for t in text],
+            }
+        ),
     )
     return table
 
@@ -75,6 +83,24 @@ def test_create_index_from_table(tmp_path, table):
     assert len(df) == 10
     assert "text" in df.columns
 
+    # Check whether it can be updated
+    table.add(
+        [
+            {
+                "vector": np.random.randn(128),
+                "text": "gorilla",
+                "text2": "gorilla",
+                "nested": {"text": "gorilla"},
+            }
+        ]
+    )
+
+    with pytest.raises(ValueError, match="already exists"):
+        table.create_fts_index("text")
+
+    table.create_fts_index("text", replace=True)
+    assert len(table.search("gorilla").limit(1).to_pandas()) == 1
+
 
 def test_create_index_multiple_columns(tmp_path, table):
     table.create_fts_index(["text", "text2"])
@@ -89,3 +115,9 @@ def test_empty_rs(tmp_path, table, mocker):
     mocker.patch("lancedb.fts.search_index", return_value=([], []))
     df = table.search("puppy").limit(10).to_pandas()
     assert len(df) == 0
+
+
+def test_nested_schema(tmp_path, table):
+    table.create_fts_index("nested.text")
+    rs = table.search("puppy").limit(10).to_list()
+    assert len(rs) == 10

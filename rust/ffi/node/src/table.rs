@@ -45,7 +45,7 @@ impl JsTable {
         let table_name = cx.argument::<JsString>(0)?.value(&mut cx);
         let buffer = cx.argument::<JsBuffer>(1)?;
         let (batches, schema) =
-            arrow_buffer_to_record_batch(buffer.as_slice(&mut cx)).or_throw(&mut cx)?;
+            arrow_buffer_to_record_batch(buffer.as_slice(&cx)).or_throw(&mut cx)?;
 
         // Write mode
         let mode = match cx.argument::<JsString>(2)?.value(&mut cx).as_str() {
@@ -93,7 +93,7 @@ impl JsTable {
         let buffer = cx.argument::<JsBuffer>(0)?;
         let write_mode = cx.argument::<JsString>(1)?.value(&mut cx);
         let (batches, schema) =
-            arrow_buffer_to_record_batch(buffer.as_slice(&mut cx)).or_throw(&mut cx)?;
+            arrow_buffer_to_record_batch(buffer.as_slice(&cx)).or_throw(&mut cx)?;
         let rt = runtime(&mut cx)?;
         let channel = cx.channel();
         let mut table = js_table.table.clone();
@@ -162,6 +162,69 @@ impl JsTable {
                 Ok(cx.boxed(JsTable::from(table)))
             })
         });
+        Ok(promise)
+    }
+
+    pub(crate) fn js_update(mut cx: FunctionContext) -> JsResult<JsPromise> {
+        let js_table = cx.this().downcast_or_throw::<JsBox<JsTable>, _>(&mut cx)?;
+        let mut table = js_table.table.clone();
+
+        let rt = runtime(&mut cx)?;
+        let (deferred, promise) = cx.promise();
+        let channel = cx.channel();
+
+        // create a vector of updates from the passed map
+        let updates_arg = cx.argument::<JsObject>(1)?;
+        let properties = updates_arg.get_own_property_names(&mut cx)?;
+        let mut updates: Vec<(String, String)> =
+            Vec::with_capacity(properties.len(&mut cx) as usize);
+
+        let len_properties = properties.len(&mut cx);
+        for i in 0..len_properties {
+            let property = properties
+                .get_value(&mut cx, i)?
+                .downcast_or_throw::<JsString, _>(&mut cx)?;
+
+            let value = updates_arg
+                .get_value(&mut cx, property)?
+                .downcast_or_throw::<JsString, _>(&mut cx)?;
+
+            let property = property.value(&mut cx);
+            let value = value.value(&mut cx);
+            updates.push((property, value));
+        }
+
+        // get the filter/predicate if the user passed one
+        let predicate = cx.argument_opt(0);
+        let predicate = predicate.unwrap().downcast::<JsString, _>(&mut cx);
+        let predicate = match predicate {
+            Ok(_) => {
+                let val = predicate.map(|s| s.value(&mut cx)).unwrap();
+                Some(val)
+            }
+            Err(_) => {
+                // if the predicate is not string, check it's null otherwise an invalid
+                // type was passed
+                cx.argument::<JsNull>(0)?;
+                None
+            }
+        };
+
+        rt.spawn(async move {
+            let updates_arg = updates
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str()))
+                .collect::<Vec<_>>();
+
+            let predicate = predicate.as_deref();
+
+            let update_result = table.update(predicate, updates_arg).await;
+            deferred.settle_with(&channel, move |mut cx| {
+                update_result.or_throw(&mut cx)?;
+                Ok(cx.boxed(JsTable::from(table)))
+            })
+        });
+
         Ok(promise)
     }
 

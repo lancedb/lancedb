@@ -65,12 +65,10 @@ fn get_index_params_builder(
             obj.get_opt::<JsString, _, _>(cx, "index_name")?
                 .map(|s| index_builder.index_name(s.value(cx)));
 
-            obj.get_opt::<JsString, _, _>(cx, "metric_type")?
-                .map(|s| MetricType::try_from(s.value(cx).as_str()))
-                .map(|mt| {
-                    let metric_type = mt.unwrap();
-                    index_builder.metric_type(metric_type);
-                });
+            if let Some(metric_type) = obj.get_opt::<JsString, _, _>(cx, "metric_type")? {
+                let metric_type = MetricType::try_from(metric_type.value(cx).as_str()).unwrap();
+                index_builder.metric_type(metric_type);
+            }
 
             let num_partitions = obj.get_opt_usize(cx, "num_partitions")?;
             let max_iters = obj.get_opt_usize(cx, "max_iters")?;
@@ -85,23 +83,29 @@ fn get_index_params_builder(
                 index_builder.ivf_params(ivf_params)
             });
 
-            obj.get_opt::<JsBoolean, _, _>(cx, "use_opq")?
-                .map(|s| pq_params.use_opq = s.value(cx));
+            if let Some(use_opq) = obj.get_opt::<JsBoolean, _, _>(cx, "use_opq")? {
+                pq_params.use_opq = use_opq.value(cx);
+            }
 
-            obj.get_opt_usize(cx, "num_sub_vectors")?
-                .map(|s| pq_params.num_sub_vectors = s);
+            if let Some(num_sub_vectors) = obj.get_opt_usize(cx, "num_sub_vectors")? {
+                pq_params.num_sub_vectors = num_sub_vectors;
+            }
 
-            obj.get_opt_usize(cx, "num_bits")?
-                .map(|s| pq_params.num_bits = s);
+            if let Some(num_bits) = obj.get_opt_usize(cx, "num_bits")? {
+                pq_params.num_bits = num_bits;
+            }
 
-            obj.get_opt_usize(cx, "max_iters")?
-                .map(|s| pq_params.max_iters = s);
+            if let Some(max_iters) = obj.get_opt_usize(cx, "max_iters")? {
+                pq_params.max_iters = max_iters;
+            }
 
-            obj.get_opt_usize(cx, "max_opq_iters")?
-                .map(|s| pq_params.max_opq_iters = s);
+            if let Some(max_opq_iters) = obj.get_opt_usize(cx, "max_opq_iters")? {
+                pq_params.max_opq_iters = max_opq_iters;
+            }
 
-            obj.get_opt::<JsBoolean, _, _>(cx, "replace")?
-                .map(|s| index_builder.replace(s.value(cx)));
+            if let Some(replace) = obj.get_opt::<JsBoolean, _, _>(cx, "replace")? {
+                index_builder.replace(replace.value(cx));
+            }
 
             Ok(index_builder)
         }
