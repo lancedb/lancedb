@@ -202,10 +202,17 @@ Use the `drop_table()` method on the database to remove a table.
       db.drop_table("my_table")
       ```
 
-This permanently removes the table and is not recoverable, unlike deleting rows.
-By default, if the table does not exist an exception is raised. To suppress this,
-you can pass in `ignore_missing=True`.
+      This permanently removes the table and is not recoverable, unlike deleting rows.
+      By default, if the table does not exist an exception is raised. To suppress this,
+      you can pass in `ignore_missing=True`.
 
+=== "JavaScript"
+      ```javascript
+      await con.dropTable('myTable')
+      ```
+
+      This permanently removes the table and is not recoverable, unlike deleting rows.
+      If the table does not exist an exception is raised. 
 
 ## What's next
 
