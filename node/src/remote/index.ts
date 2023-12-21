@@ -283,6 +283,10 @@ export class RemoteTable<T = number[]> implements Table<T> {
     }
   }
 
+  async createScalarIndex (column: string, replace: boolean): Promise<void> {
+    throw new Error('Not implemented')
+  }
+
   async countRows (): Promise<number> {
     const result = await this._client.post(`/v1/table/${this._name}/describe/`)
     return result.data?.stats?.num_rows
