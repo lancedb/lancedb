@@ -47,6 +47,7 @@ def table(tmp_path) -> ldb.table.LanceTable:
         data=pd.DataFrame(
             {
                 "vector": vectors,
+                "id": [i % 2 for i in range(100)],
                 "text": text,
                 "text2": text,
                 "nested": [{"text": t} for t in text],
@@ -88,6 +89,7 @@ def test_create_index_from_table(tmp_path, table):
         [
             {
                 "vector": np.random.randn(128),
+                "id": 101,
                 "text": "gorilla",
                 "text2": "gorilla",
                 "nested": {"text": "gorilla"},
@@ -121,3 +123,10 @@ def test_nested_schema(tmp_path, table):
     table.create_fts_index("nested.text")
     rs = table.search("puppy").limit(10).to_list()
     assert len(rs) == 10
+
+
+def test_search_index_with_filter(table):
+    table.create_fts_index("text")
+    rs = table.search("puppy").where("id=1").limit(10).to_list()
+    for r in rs:
+        assert r["id"] == 1
