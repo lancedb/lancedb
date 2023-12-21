@@ -22,7 +22,7 @@ import numpy as np
 uri = "data/sample-lancedb"
 db = lancedb.connect(uri)
 
-data = [{"vector": row, "item": f"item {i}"}
+data = [{"vector": row, "item": f"item {i}", "id": i}
      for i, row in enumerate(np.random.random((10_000, 2)).astype('int'))]
 
 tbl = db.create_table("my_vectors", data=data)
@@ -44,23 +44,15 @@ const tbl = await db.createTable('my_vectors', data)
 
     ```python
     tbl.search([100, 102]) \
-       .where("""(
-        (label IN [10, 20])
-        AND
-        (note.email IS NOT NULL)
-        ) OR NOT note.created
-        """)
+       .where("(item IN ('item 0', 'item 2')) AND (id > 10)") \
+       .to_arrow()
     ```
+
 === "Javascript"
 
     ```javascript
     await tbl.search([100, 102])
-       .where(`(
-            (label IN [10, 20])
-            AND
-            (note.email IS NOT NULL)
-        ) OR NOT note.created
-       `)
+       .where("(item IN ('item 0', 'item 2')) AND (id > 10)")
        .execute()
     ```
 
@@ -125,12 +117,12 @@ You can also filter your data without search.
 
 === "Python"
       ```python
-      pets.search().where("specie='cat'").limit(10).to_arrow()
+      tbl.search().where("id=10").limit(10).to_arrow()
       ```
 
 === "JavaScript"
       ```javascript
-      await pets.where("specie='cat'").limit(10).execute()
+      await tbl.where('id=10').limit(10).execute()
       ```
 
 !!! warning
