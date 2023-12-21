@@ -64,18 +64,26 @@ We'll cover the basics of using LanceDB on your local machine in this section.
       tbl = db.create_table("table_from_df", data=df)
       ```
 
+      !!! warning
+
+            If the table already exists, LanceDB will raise an error by default.
+            If you want to overwrite the table, you can pass in `mode="overwrite"`
+            to the `createTable` function.
+
 === "Javascript"
       ```javascript
-      const tb = await db.createTable("my_table",
-                        data=[{"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
-                              {"vector": [5.9, 26.5], "item": "bar", "price": 20.0}])
+      const tb = await db.createTable(
+        "my_table",
+        [{"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+         {"vector": [5.9, 26.5], "item": "bar", "price": 20.0}])
       ```
-      
-!!! warning
 
-      If the table already exists, LanceDB will raise an error by default.
-      If you want to overwrite the table, you can pass in `mode="overwrite"`
-      to the `createTable` function.
+      !!! warning
+
+            If the table already exists, LanceDB will raise an error by default.
+            If you want to overwrite the table, you can pass in `"overwrite"`
+            to the `createTable` function like this: `await con.createTable(tableName, data, { writeMode: WriteMode.Overwrite })`
+      
 
 ??? info "Under the hood, LanceDB is converting the input data into an Apache Arrow table and persisting it to disk in [Lance format](https://www.github.com/lancedb/lance)."
 
