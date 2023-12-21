@@ -49,7 +49,9 @@ def _sanitize_data(
     on_bad_vectors: str,
     fill_value: Any,
 ):
-    if any(data):
+    if not any(data):
+        raise ValueError(f"Any empty value was passed as data: {data}")
+    else:
         if isinstance(data, list):
             # convert to list of dict if data is a bunch of LanceModels
             if isinstance(data[0], LanceModel):
@@ -64,14 +66,17 @@ def _sanitize_data(
             meta = data.schema.metadata if data.schema.metadata is not None else {}
             meta = {k: v for k, v in meta.items() if k != b"pandas"}
             data = data.replace_schema_metadata(meta)
-    
+
         if isinstance(data, pa.Table):
             if metadata:
                 data = _append_vector_col(data, metadata, schema)
                 metadata.update(data.schema.metadata or {})
                 data = data.replace_schema_metadata(metadata)
             data = _sanitize_schema(
-                data, schema=schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value
+                data,
+                schema=schema,
+                on_bad_vectors=on_bad_vectors,
+                fill_value=fill_value,
             )
         elif isinstance(data, Iterable):
             data = _to_record_batch_generator(
@@ -79,8 +84,7 @@ def _sanitize_data(
             )
         else:
             raise TypeError(f"Unsupported data type: {type(data)}")
-    else: 
-        raise ValueError(f"Any empty value was passed as data: {data}")
+
     return data
 
 
