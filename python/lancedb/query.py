@@ -489,9 +489,6 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         output_tbl = self._table.to_lance().take(row_ids, columns=self._columns)
         output_tbl = output_tbl.append_column("score", scores)
 
-        if self._prefilter:
-            raise NotImplementedError("prefilter is not supported for fts queries yet")
-
         if self._where is not None:
             try:
                 # TODO would be great to have Substrait generate pyarrow compute expressions
