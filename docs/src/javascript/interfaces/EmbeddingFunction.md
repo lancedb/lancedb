@@ -1,6 +1,6 @@
 [vectordb](../README.md) / [Exports](../modules.md) / EmbeddingFunction
 
-# Interface: EmbeddingFunction<T\>
+# Interface: EmbeddingFunction\<T\>
 
 An embedding function that automatically creates vector representation for a given column.
 
@@ -25,11 +25,11 @@ An embedding function that automatically creates vector representation for a giv
 
 ### embed
 
-• **embed**: (`data`: `T`[]) => `Promise`<`number`[][]\>
+• **embed**: (`data`: `T`[]) => `Promise`\<`number`[][]\>
 
 #### Type declaration
 
-▸ (`data`): `Promise`<`number`[][]\>
+▸ (`data`): `Promise`\<`number`[][]\>
 
 Creates a vector representation for the given values.
 
@@ -41,11 +41,11 @@ Creates a vector representation for the given values.
 
 ##### Returns
 
-`Promise`<`number`[][]\>
+`Promise`\<`number`[][]\>
 
 #### Defined in
 
-[embedding/embedding_function.ts:27](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/embedding/embedding_function.ts#L27)
+[embedding/embedding_function.ts:27](https://github.com/lancedb/lancedb/blob/7856a94/node/src/embedding/embedding_function.ts#L27)
 
 ___
 
@@ -57,4 +57,4 @@ The name of the column that will be used as input for the Embedding Function.
 
 #### Defined in
 
-[embedding/embedding_function.ts:22](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/embedding/embedding_function.ts#L22)
+[embedding/embedding_function.ts:22](https://github.com/lancedb/lancedb/blob/7856a94/node/src/embedding/embedding_function.ts#L22)
