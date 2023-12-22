@@ -595,7 +595,11 @@ class LanceTable(Table):
                 raise ValueError(
                     f"Index already exists. Use replace=True to overwrite."
                 )
-            fs.delete_dir(path)
+            try:
+                fs.delete_dir(path)
+            except FileNotFoundError as e:
+                if "Cannot get information for path" in str(e):
+                    pass
 
         index = create_index(self._get_fts_index_path(), field_names)
         populate_index(index, self, field_names)

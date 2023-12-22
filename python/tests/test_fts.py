@@ -95,11 +95,11 @@ def test_create_index_from_table(tmp_path, table):
         ]
     )
 
-    with pytest.raises(ValueError, match="already exists"):
-        table.create_fts_index("text")
-
     table.create_fts_index("text", replace=True)
     assert len(table.search("gorilla").limit(1).to_pandas()) == 1
+
+    with pytest.raises(ValueError, match="already exists"):
+        table.create_fts_index("text")
 
 
 def test_create_index_multiple_columns(tmp_path, table):
