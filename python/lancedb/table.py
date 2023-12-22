@@ -405,16 +405,16 @@ class LanceTable(Table):
         -------
         pa.Schema
             A PyArrow schema object."""
-        return self._dataset.schema
+        return self.to_lance().schema
 
     def list_versions(self):
         """List all versions of the table"""
-        return self._dataset.versions()
+        return self.to_lance().versions()
 
     @property
     def version(self) -> int:
         """Get the current version of the table"""
-        return self._dataset.version
+        return self.to_lance().version
 
     def checkout(self, version: int):
         """Checkout a version of the table. This is an in-place operation.
@@ -447,13 +447,12 @@ class LanceTable(Table):
                vector    type
         0  [1.1, 0.9]  vector
         """
-        max_ver = max([v["version"] for v in self._dataset.versions()])
+        max_ver = max([v["version"] for v in self.to_lance().versions()])
         if version < 1 or version > max_ver:
             raise ValueError(f"Invalid version {version}")
 
         try:
-            # Accessing the property updates the cached value
-            _ = self._dataset
+            self.to_lance().checkout(version)
         except Exception as e:
             if "not found" in str(e):
                 raise ValueError(
@@ -496,7 +495,7 @@ class LanceTable(Table):
         >>> len(table.list_versions())
         4
         """
-        max_ver = max([v["version"] for v in self._dataset.versions()])
+        max_ver = max([v["version"] for v in self.to_lance().versions()])
         if version is None:
             version = self.version
         elif version < 1 or version > max_ver:
@@ -508,10 +507,10 @@ class LanceTable(Table):
             # no-op if restoring the latest version
             return
 
-        self._dataset.restore()
+        self.to_lance().restore()
 
     def __len__(self):
-        return self._dataset.count_rows()
+        return self.to_lance().count_rows()
 
     def __repr__(self) -> str:
         return f"LanceTable({self.name})"
@@ -521,7 +520,7 @@ class LanceTable(Table):
 
     def head(self, n=5) -> pa.Table:
         """Return the first n rows of the table."""
-        return self._dataset.head(n)
+        return self.to_lance().head(n)
 
     def to_pandas(self) -> "pd.DataFrame":
         """Return the table as a pandas DataFrame.
@@ -538,7 +537,7 @@ class LanceTable(Table):
         Returns
         -------
         pa.Table"""
-        return self._dataset.to_table()
+        return self.to_lance().to_table()
 
     @property
     def _dataset_uri(self) -> str:
@@ -650,8 +649,8 @@ class LanceTable(Table):
             metadata=self.schema.metadata,
             on_bad_vectors=on_bad_vectors,
             fill_value=fill_value,
-        )        
-        self._dataset.write(data, mode=mode)        
+        )
+        self.to_lance().write(data, mode=mode)
         register_event("add")
 
     def merge(
@@ -712,7 +711,7 @@ class LanceTable(Table):
             other_table = other_table.to_lance()
         if isinstance(other_table, LanceDataset):
             other_table = other_table.to_table()
-        self._dataset.merge(
+        self.to_lance().merge(
             other_table, left_on=left_on, right_on=right_on, schema=schema
         )
         register_event("merge")
@@ -917,7 +916,7 @@ class LanceTable(Table):
         return tbl
 
     def delete(self, where: str):
-        self._dataset.delete(where)
+        self.to_lance().delete(where)
 
     def update(
         self,
