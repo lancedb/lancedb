@@ -19,7 +19,6 @@ Connection could be local against filesystem or remote against a server.
 ### Methods
 
 - [createTable](Connection.md#createtable)
-- [createTableArrow](Connection.md#createtablearrow)
 - [dropTable](Connection.md#droptable)
 - [openTable](Connection.md#opentable)
 - [tableNames](Connection.md#tablenames)
@@ -32,13 +31,76 @@ Connection could be local against filesystem or remote against a server.
 
 #### Defined in
 
-[index.ts:70](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L70)
+[index.ts:125](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L125)
 
 ## Methods
 
 ### createTable
 
-▸ **createTable**<`T`\>(`name`, `data`, `mode?`, `embeddings?`): `Promise`<[`Table`](Table.md)<`T`\>\>
+▸ **createTable**\<`T`\>(`«destructured»`): `Promise`\<[`Table`](Table.md)\<`T`\>\>
+
+Creates a new Table, optionally initializing it with new data.
+
+#### Type parameters
+
+| Name |
+| :------ |
+| `T` |
+
+#### Parameters
+
+| Name | Type |
+| :------ | :------ |
+| `«destructured»` | [`CreateTableOptions`](CreateTableOptions.md)\<`T`\> |
+
+#### Returns
+
+`Promise`\<[`Table`](Table.md)\<`T`\>\>
+
+#### Defined in
+
+[index.ts:146](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L146)
+
+▸ **createTable**(`name`, `data`): `Promise`\<[`Table`](Table.md)\<`number`[]\>\>
+
+Creates a new Table and initialize it with new data.
+
+#### Parameters
+
+| Name | Type | Description |
+| :------ | :------ | :------ |
+| `name` | `string` | The name of the table. |
+| `data` | `Record`\<`string`, `unknown`\>[] | Non-empty Array of Records to be inserted into the table |
+
+#### Returns
+
+`Promise`\<[`Table`](Table.md)\<`number`[]\>\>
+
+#### Defined in
+
+[index.ts:154](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L154)
+
+▸ **createTable**(`name`, `data`, `options`): `Promise`\<[`Table`](Table.md)\<`number`[]\>\>
+
+Creates a new Table and initialize it with new data.
+
+#### Parameters
+
+| Name | Type | Description |
+| :------ | :------ | :------ |
+| `name` | `string` | The name of the table. |
+| `data` | `Record`\<`string`, `unknown`\>[] | Non-empty Array of Records to be inserted into the table |
+| `options` | [`WriteOptions`](WriteOptions.md) | The write options to use when creating the table. |
+
+#### Returns
+
+`Promise`\<[`Table`](Table.md)\<`number`[]\>\>
+
+#### Defined in
+
+[index.ts:163](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L163)
+
+▸ **createTable**\<`T`\>(`name`, `data`, `embeddings`): `Promise`\<[`Table`](Table.md)\<`T`\>\>
 
 Creates a new Table and initialize it with new data.
 
@@ -53,44 +115,49 @@ Creates a new Table and initialize it with new data.
 | Name | Type | Description |
 | :------ | :------ | :------ |
 | `name` | `string` | The name of the table. |
-| `data` | `Record`<`string`, `unknown`\>[] | Non-empty Array of Records to be inserted into the table |
-| `mode?` | [`WriteMode`](../enums/WriteMode.md) | The write mode to use when creating the table. |
-| `embeddings?` | [`EmbeddingFunction`](EmbeddingFunction.md)<`T`\> | An embedding function to use on this table |
+| `data` | `Record`\<`string`, `unknown`\>[] | Non-empty Array of Records to be inserted into the table |
+| `embeddings` | [`EmbeddingFunction`](EmbeddingFunction.md)\<`T`\> | An embedding function to use on this table |
 
 #### Returns
 
-`Promise`<[`Table`](Table.md)<`T`\>\>
+`Promise`\<[`Table`](Table.md)\<`T`\>\>
 
 #### Defined in
 
-[index.ts:90](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L90)
+[index.ts:172](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L172)
 
-___
+▸ **createTable**\<`T`\>(`name`, `data`, `embeddings`, `options`): `Promise`\<[`Table`](Table.md)\<`T`\>\>
 
-### createTableArrow
+Creates a new Table and initialize it with new data.
 
-▸ **createTableArrow**(`name`, `table`): `Promise`<[`Table`](Table.md)<`number`[]\>\>
+#### Type parameters
+
+| Name |
+| :------ |
+| `T` |
 
 #### Parameters
 
-| Name | Type |
-| :------ | :------ |
-| `name` | `string` |
-| `table` | `Table`<`any`\> |
+| Name | Type | Description |
+| :------ | :------ | :------ |
+| `name` | `string` | The name of the table. |
+| `data` | `Record`\<`string`, `unknown`\>[] | Non-empty Array of Records to be inserted into the table |
+| `embeddings` | [`EmbeddingFunction`](EmbeddingFunction.md)\<`T`\> | An embedding function to use on this table |
+| `options` | [`WriteOptions`](WriteOptions.md) | The write options to use when creating the table. |
 
 #### Returns
 
-`Promise`<[`Table`](Table.md)<`number`[]\>\>
+`Promise`\<[`Table`](Table.md)\<`T`\>\>
 
 #### Defined in
 
-[index.ts:92](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L92)
+[index.ts:181](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L181)
 
 ___
 
 ### dropTable
 
-▸ **dropTable**(`name`): `Promise`<`void`\>
+▸ **dropTable**(`name`): `Promise`\<`void`\>
 
 Drop an existing table.
 
@@ -102,17 +169,17 @@ Drop an existing table.
 
 #### Returns
 
-`Promise`<`void`\>
+`Promise`\<`void`\>
 
 #### Defined in
 
-[index.ts:98](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L98)
+[index.ts:187](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L187)
 
 ___
 
 ### openTable
 
-▸ **openTable**<`T`\>(`name`, `embeddings?`): `Promise`<[`Table`](Table.md)<`T`\>\>
+▸ **openTable**\<`T`\>(`name`, `embeddings?`): `Promise`\<[`Table`](Table.md)\<`T`\>\>
 
 Open a table in the database.
 
@@ -127,26 +194,26 @@ Open a table in the database.
 | Name | Type | Description |
 | :------ | :------ | :------ |
 | `name` | `string` | The name of the table. |
-| `embeddings?` | [`EmbeddingFunction`](EmbeddingFunction.md)<`T`\> | An embedding function to use on this table |
+| `embeddings?` | [`EmbeddingFunction`](EmbeddingFunction.md)\<`T`\> | An embedding function to use on this table |
 
 #### Returns
 
-`Promise`<[`Table`](Table.md)<`T`\>\>
+`Promise`\<[`Table`](Table.md)\<`T`\>\>
 
 #### Defined in
 
-[index.ts:80](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L80)
+[index.ts:135](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L135)
 
 ___
 
 ### tableNames
 
-▸ **tableNames**(): `Promise`<`string`[]\>
+▸ **tableNames**(): `Promise`\<`string`[]\>
 
 #### Returns
 
-`Promise`<`string`[]\>
+`Promise`\<`string`[]\>
 
 #### Defined in
 
-[index.ts:72](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L72)
+[index.ts:127](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L127)
