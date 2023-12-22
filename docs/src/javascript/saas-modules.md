@@ -45,7 +45,7 @@ const db = await lancedb.connect({
   region: "us-east-1"
 });
 // create a new table
-tableName = "my_table"
+const tableName = "my_table"
 const table = await db.createTable(tableName,
       [{ id: 1, vector: [0.1, 1.0], item: "foo", price: 10.0 },
       { id: 2, vector: [3.9, 0.5], item: "bar", price: 20.0 }])
