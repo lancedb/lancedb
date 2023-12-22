@@ -12,6 +12,7 @@
 #  limitations under the License.
 import os
 import random
+from unittest import mock
 
 import numpy as np
 import pandas as pd
@@ -127,6 +128,22 @@ def test_nested_schema(tmp_path, table):
 
 def test_search_index_with_filter(table):
     table.create_fts_index("text")
-    rs = table.search("puppy").where("id=1").limit(10).to_list()
-    for r in rs:
+    orig_import = __import__
+
+    def import_mock(name, *args):
+        if name == "duckdb":
+            raise ImportError
+        return orig_import(name, *args)
+
+    # no duckdb
+    with mock.patch("builtins.__import__", side_effect=import_mock):
+        rs = table.search("puppy").where("id=1").limit(10).to_list()
+        for r in rs:
+            assert r["id"] == 1
+
+    # yes duckdb
+    rs2 = table.search("puppy").where("id=1").limit(10).to_list()
+    for r in rs2:
         assert r["id"] == 1
+
+    assert rs == rs2

@@ -488,6 +488,28 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         scores = pa.array(scores)
         output_tbl = self._table.to_lance().take(row_ids, columns=self._columns)
         output_tbl = output_tbl.append_column("score", scores)
+
+        if self._prefilter:
+            raise NotImplementedError("prefilter is not supported for fts queries yet")
+
+        if self._where is not None:
+            try:
+                # TODO would be great to have Substrait generate pyarrow compute expressions
+                # or conversely have pyarrow support SQL expressions using Substrait
+                import duckdb
+
+                output_tbl = duckdb.sql(
+                    f"SELECT * FROM output_tbl WHERE {self._where}"
+                ).to_arrow_table()
+            except ImportError:
+                import lance
+                import tempfile
+
+                # TODO Use "memory://" instead once that's supported
+                with tempfile.TemporaryDirectory() as tmp:
+                    ds = lance.write_dataset(output_tbl, tmp)
+                    output_tbl = ds.to_table(filter=self._where)
+
         return output_tbl
 
 
