@@ -74,6 +74,7 @@ npx typedoc --plugin typedoc-plugin-markdown --out ../docs/src/javascript src/in
 
 ## Classes
 
+- [DefaultWriteOptions](classes/DefaultWriteOptions.md)
 - [LocalConnection](classes/LocalConnection.md)
 - [LocalTable](classes/LocalTable.md)
 - [OpenAIEmbeddingFunction](classes/OpenAIEmbeddingFunction.md)
@@ -87,15 +88,25 @@ npx typedoc --plugin typedoc-plugin-markdown --out ../docs/src/javascript src/in
 ## Interfaces
 
 - [AwsCredentials](interfaces/AwsCredentials.md)
+- [CleanupStats](interfaces/CleanupStats.md)
+- [CompactionMetrics](interfaces/CompactionMetrics.md)
+- [CompactionOptions](interfaces/CompactionOptions.md)
 - [Connection](interfaces/Connection.md)
 - [ConnectionOptions](interfaces/ConnectionOptions.md)
+- [CreateTableOptions](interfaces/CreateTableOptions.md)
 - [EmbeddingFunction](interfaces/EmbeddingFunction.md)
+- [IndexStats](interfaces/IndexStats.md)
 - [IvfPQIndexConfig](interfaces/IvfPQIndexConfig.md)
 - [Table](interfaces/Table.md)
+- [UpdateArgs](interfaces/UpdateArgs.md)
+- [UpdateSqlArgs](interfaces/UpdateSqlArgs.md)
+- [VectorIndex](interfaces/VectorIndex.md)
+- [WriteOptions](interfaces/WriteOptions.md)
 
 ### Functions
 
 - [connect](modules.md#connect)
+- [isWriteOptions](modules.md#iswriteoptions)
 
 ## Type Aliases
 
@@ -105,13 +116,13 @@ npx typedoc --plugin typedoc-plugin-markdown --out ../docs/src/javascript src/in
 
 #### Defined in
 
-[index.ts:431](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L431)
+[index.ts:755](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L755)
 
 ## Functions
 
 ### connect
 
-▸ **connect**(`uri`): `Promise`<[`Connection`](interfaces/Connection.md)\>
+▸ **connect**(`uri`): `Promise`\<[`Connection`](interfaces/Connection.md)\>
 
 Connect to a LanceDB instance at the given URI
 
@@ -123,24 +134,44 @@ Connect to a LanceDB instance at the given URI
 
 #### Returns
 
-`Promise`<[`Connection`](interfaces/Connection.md)\>
+`Promise`\<[`Connection`](interfaces/Connection.md)\>
 
 #### Defined in
 
-[index.ts:47](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L47)
+[index.ts:95](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L95)
 
-▸ **connect**(`opts`): `Promise`<[`Connection`](interfaces/Connection.md)\>
+▸ **connect**(`opts`): `Promise`\<[`Connection`](interfaces/Connection.md)\>
 
 #### Parameters
 
 | Name | Type |
 | :------ | :------ |
-| `opts` | `Partial`<[`ConnectionOptions`](interfaces/ConnectionOptions.md)\> |
+| `opts` | `Partial`\<[`ConnectionOptions`](interfaces/ConnectionOptions.md)\> |
 
 #### Returns
 
-`Promise`<[`Connection`](interfaces/Connection.md)\>
+`Promise`\<[`Connection`](interfaces/Connection.md)\>
 
 #### Defined in
 
-[index.ts:48](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L48)
+[index.ts:96](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L96)
+
+___
+
+### isWriteOptions
+
+▸ **isWriteOptions**(`value`): value is WriteOptions
+
+#### Parameters
+
+| Name | Type |
+| :------ | :------ |
+| `value` | `any` |
+
+#### Returns
+
+value is WriteOptions
+
+#### Defined in
+
+[index.ts:781](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L781)
