@@ -120,6 +120,7 @@ nav:
     - OSS Python API: python/python.md
     - Cloud Python API: python/saas-python.md
     - OSS JavaScript API: javascript/modules.md
+  - ☁️ LanceDB Cloud: cloud/index.md
 
 - Guides:
   - Getting started: basic.md 
