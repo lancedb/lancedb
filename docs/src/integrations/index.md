@@ -2,7 +2,7 @@
 
 LanceDB supports ingesting from and exporting to your favorite data formats across the Python and JavaScript ecosystems.
 
-![Illustration](/lancedb/assets/ecosystem-illustration.png)
+![Illustration](../assets/ecosystem-illustration.png)
 
 
 ## Tools

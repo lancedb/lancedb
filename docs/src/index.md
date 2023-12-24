@@ -4,7 +4,7 @@ LanceDB is an open-source vector database for AI that's designed to store, manag
 
 Both the database and the underlying data format are designed from the ground up to be **easy-to-use**, **scalable** and **cost-effective**.
 
-![](/lancedb/assets/lancedb_and_lance.png)
+![](assets/lancedb_and_lance.png)
 
 ## Truly multi-modal
 
@@ -14,11 +14,9 @@ LanceDB supports storage of the *actual data itself*, alongside the embeddings a
 
 ## Open-source and cloud solutions
 
-LanceDB is available in two flavors: **OSS** and **Cloud**. The differences are highlighted below.
+LanceDB is available in two flavors: **OSS** and **Cloud**.
 
-![](/lancedb/assets/lancedb_oss_and_cloud.png)
-
-LanceDB **OSS** is a fully [open-source](https://github.com/lancedb/lancedb?tab=Apache-2.0-1-ov-file#readme), batteries-included embedded vector database that you can run on your own infrastructure. "Embedded" means that it runs *in-process*, making it incredibly simple to self-host your own AI retrieval workflows for RAG and more. No servers, no hassle.
+LanceDB **OSS** is an **open-source**, batteries-included embedded vector database that you can run on your own infrastructure. "Embedded" means that it runs *in-process*, making it incredibly simple to self-host your own AI retrieval workflows for RAG and more. No servers, no hassle.
 
 LanceDB **Cloud** is a SaaS solution that runs serverless in the cloud, making the storage clearly separated from compute. It's designed to be cost-effective and highly scalable without breaking the bank. LanceDB Cloud is currently in private beta with general availability coming soon, but you can apply for early access with the private beta release by signing up below.
 
@@ -46,12 +44,12 @@ LanceDB **Cloud** is a SaaS solution that runs serverless in the cloud, making t
 
 The following pages go deeper into the internal of LanceDB and how to use it.
 
-* [Getting started](basic.md): Getting started with LanceDB
-* [Working with tables](guides/tables.md): Working with tables
-* [Indexing](ann_indexes.md): Understanding indexing and how to create indexes
+* [Getting started](basic.md): Get started with LanceDB and vector DB concepts
+* [Working with tables](guides/tables.md): Work with tables
+* [Indexing](ann_indexes.md): Understand indexing and how to create indexes
 * [Vector search](search.md): Perform vector similarity search
 * [Full-text search](fts.md): Perform full-text search
-* [Embedding functions](embeddings/index.md): Working with embedding functions in LanceDB
+* [Embedding functions](embeddings/index.md): Work with embedding functions in LanceDB
 * [Ecosystem Integrations](integrations/index.md): Integrate LanceDB with the PyData ecosystem
 * [Python API Reference](python/python.md): LanceDB Python OSS and Cloud API references
 * [JavaScript API Reference](javascript/modules.md): LanceDB JavaScript OSS and Cloud API references
