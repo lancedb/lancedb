@@ -28,7 +28,7 @@ const results = await table.search([0.1, 0.3]).limit(20).execute();
 console.log(results);
 ```
 
-The [examples](./examples) folder contains complete examples.
+The [examples](../examples/index.md) folder contains complete examples.
 
 ## Development
 

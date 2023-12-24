@@ -2,7 +2,7 @@
 
 FiftyOne is an open source toolkit for building high-quality datasets and computer vision models. It provides an API to create LanceDB tables and run similarity queries, both programmatically in Python and via point-and-click in the App.
 
-![example](/lancedb/assets/voxel.gif)
+![example](../assets/voxel.gif)
 
 ## Basic recipe
 

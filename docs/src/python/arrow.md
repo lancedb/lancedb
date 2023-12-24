@@ -30,7 +30,7 @@ table = db.create_table("pd_table", data=data)
 ```
 
 Similar to the [`pyarrow.write_dataset()`](https://arrow.apache.org/docs/python/generated/pyarrow.dataset.write_dataset.html) method, LanceDB's
-[`db.create_table()`](../python/#lancedb.db.DBConnection.create_table) accepts a variety of data forms.
+[`db.create_table()`](python.md/#lancedb.db.DBConnection.create_table) accepts a variety of data forms.
 
 If you have a dataset that is larger than memory, you can create table with `Iterator[pyarrow.RecordBatch]`,
 to lazily load the data:
@@ -59,8 +59,8 @@ schema=pa.schema([
 table = db.create_table("iterable_table", data=make_batches(), schema=schema)
 ```
 
-You will find detailed instructions of creating dataset in
-[Basic Operations](../basic.md) and [API](../python/#lancedb.db.DBConnection.create_table)
+You will find detailed instructions of creating a LanceDB dataset in
+[Getting Started](../basic.md) and [API](python.md/#lancedb.db.DBConnection.create_table)
 sections.
 
 ## Vector Search

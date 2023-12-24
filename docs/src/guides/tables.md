@@ -375,7 +375,7 @@ This can be used to update zero to all rows depending on how many rows match the
 
 !!! info "SQL syntax"
 
-    See [SQL filters](sql.md) for more information on the supported SQL syntax.
+    See [SQL filters](../sql.md) for more information on the supported SQL syntax.
 
 !!! warning "Warning"
 
@@ -416,7 +416,7 @@ This can be used to update zero to all rows depending on how many rows match the
 
 === "Javascript/Typescript"
 
-    API Reference: [vectordb.Table.update](../../javascript/interfaces/Table/#update)
+    API Reference: [vectordb.Table.update](../javascript/interfaces/Table.md/#update)
 
     ```javascript
     const lancedb = require("vectordb");
