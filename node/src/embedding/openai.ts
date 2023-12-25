@@ -40,7 +40,6 @@ export class OpenAIEmbeddingFunction implements EmbeddingFunction<string> {
     this._modelName = modelName
 
 
-    console.log({ op: this._openai.embeddings.create, md: this._modelName })
   }
 
   async embed (data: string[]): Promise<number[][]> {
@@ -48,8 +47,6 @@ export class OpenAIEmbeddingFunction implements EmbeddingFunction<string> {
       model: this._modelName,
       input: data
     })
-
-    console.log({ response })
 
     const embeddings: number[][] = []
     for (let i = 0; i < response.data.length; i++) {
