@@ -1,8 +1,12 @@
-# Getting started
+# Quick start
 
-!!! info "LanceDB runs embedded on your backend application, so there is no need to run a separate server."
+!!! info "LanceDB can be run in a number of ways:"
 
-<img src="../assets/lancedb_embedded_explanation.png" />
+    * Embedded within an existing backend (like your Django, Flask, Node.js or FastAPI application)
+    * Connected to directly from a client application like a Jupyter notebook for analytical workloads
+    * Deployed as a remote serverless database
+
+![](assets/lancedb_embedded_explanation.png)
 
 ## Installation
 

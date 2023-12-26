@@ -1,23 +1,15 @@
-# Examples
+# Example projects and recipes
 
-Here are some of the examples, projects and applications using LanceDB python library. Some examples are covered in detail in the next sections. You can find more on [VectorDB Recipes](https://github.com/lancedb/vectordb-recipes)
-
-| Example | Interactive Envs | Scripts  |
-|-------- | ---------------- | ------   |
-| | | |
-| [Youtube transcript search bot](https://github.com/lancedb/vectordb-recipes/tree/main/examples/youtube_bot/) | <a href="https://colab.research.google.com/github/lancedb/vectordb-recipes/blob/main/examples/youtube_bot/main.ipynb"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"></a>| [![Python](https://img.shields.io/badge/python-3670A0?style=for-the-badge&logo=python&logoColor=ffdd54)](https://github.com/lancedb/vectordb-recipes/tree/main/examples/youtube_bot/main.py)|
-| [Langchain: Code Docs QA bot](https://github.com/lancedb/vectordb-recipes/tree/main/examples/Code-Documentation-QA-Bot/) | <a href="https://colab.research.google.com/github/lancedb/vectordb-recipes/blob/main/examples/Code-Documentation-QA-Bot/main.ipynb"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"></a>| [![Python](https://img.shields.io/badge/python-3670A0?style=for-the-badge&logo=python&logoColor=ffdd54)](https://github.com/lancedb/vectordb-recipes/tree/main/examples/Code-Documentation-QA-Bot/main.py) |
-| [AI Agents: Reducing Hallucination](https://github.com/lancedb/vectordb-recipes/tree/main/examples/reducing_hallucinations_ai_agents/) | <a href="https://colab.research.google.com/github/lancedb/vectordb-recipes/blob/main/examples/reducing_hallucinations_ai_agents/main.ipynb"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"></a>| [![Python](https://img.shields.io/badge/python-3670A0?style=for-the-badge&logo=python&logoColor=ffdd54)](https://github.com/lancedb/vectordb-recipes/tree/main/examples/reducing_hallucinations_ai_agents/main.py)|
-| [Multimodal CLIP: DiffusionDB](https://github.com/lancedb/vectordb-recipes/tree/main/examples/multimodal_clip/) | <a href="https://colab.research.google.com/github/lancedb/vectordb-recipes/blob/main/examples/multimodal_clip/main.ipynb"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"></a>| [![Python](https://img.shields.io/badge/python-3670A0?style=for-the-badge&logo=python&logoColor=ffdd54)](https://github.com/lancedb/vectordb-recipes/tree/main/examples/multimodal_clip/main.py)  |
-| [Multimodal CLIP: Youtube videos](https://github.com/lancedb/vectordb-recipes/tree/main/examples/multimodal_video_search/) | <a href="https://colab.research.google.com/github/lancedb/vectordb-recipes/blob/main/examples/multimodal_video_search/main.ipynb"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"></a>| [![Python](https://img.shields.io/badge/python-3670A0?style=for-the-badge&logo=python&logoColor=ffdd54)](https://github.com/lancedb/vectordb-recipes/tree/main/examples/multimodal_video_search/main.py)  |
-| [Movie Recommender](https://github.com/lancedb/vectordb-recipes/tree/main/examples/movie-recommender/) | <a href="https://colab.research.google.com/github/lancedb/vectordb-recipes/blob/main/examples/movie-recommender/main.ipynb"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"></a> | [![Python](https://img.shields.io/badge/python-3670A0?style=for-the-badge&logo=python&logoColor=ffdd54)](https://github.com/lancedb/vectordb-recipes/tree/main/examples/movie-recommender/main.py)  |
-| [Audio Search](https://github.com/lancedb/vectordb-recipes/tree/main/examples/audio_search/) | <a href="https://colab.research.google.com/github/lancedb/vectordb-recipes/blob/main/examples/audio_search/main.ipynb"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"></a> | [![Python](https://img.shields.io/badge/python-3670A0?style=for-the-badge&logo=python&logoColor=ffdd54)](https://github.com/lancedb/vectordb-recipes/tree/main/examples/audio_search/main.py)  |
-| [Multimodal Image + Text Search](https://github.com/lancedb/vectordb-recipes/tree/main/examples/multimodal_search/) | <a href="https://colab.research.google.com/github/lancedb/vectordb-recipes/blob/main/examples/multimodal_search/main.ipynb"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"></a> | [![Python](https://img.shields.io/badge/python-3670A0?style=for-the-badge&logo=python&logoColor=ffdd54)](https://github.com/lancedb/vectordb-recipes/tree/main/examples/multimodal_search/main.py)  |
-| [Evaluating Prompts with Prompttools](https://github.com/lancedb/vectordb-recipes/tree/main/examples/prompttools-eval-prompts/) | <a href="https://colab.research.google.com/github/lancedb/vectordb-recipes/blob/main/examples/prompttools-eval-prompts/main.ipynb"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"></a> |  |
-
-## Projects & Applications powered by LanceDB
+## Applications powered by LanceDB
 
 | Project Name                                        | Description                                                                                                          | Screenshot                                |
 |-----------------------------------------------------|----------------------------------------------------------------------------------------------------------------------|-------------------------------------------|
 | [YOLOExplorer](https://github.com/lancedb/yoloexplorer) | Iterate on your YOLO / CV datasets using SQL, Vector semantic search, and more within seconds                  | ![YOLOExplorer](https://github.com/lancedb/vectordb-recipes/assets/15766192/ae513a29-8f15-4e0b-99a1-ccd8272b6131) |
 | [Website Chatbot (Deployable Vercel Template)](https://github.com/lancedb/lancedb-vercel-chatbot) | Create a chatbot from the sitemap of any website/docs of your choice. Built using vectorDB serverless native javascript package. | ![Chatbot](../assets/vercel-template.gif)    |
+
+## Recipes and example code
+
+LanceDB provides language APIs, allowing you to embed a database in your language of choice. We currently provide Python and Javascript APIs, with the Rust API and examples actively being worked on and will be available soon.
+
+* 🐍 [Python](examples_python.md) examples
+* 👾 [JavaScript](exampled_js.md) examples

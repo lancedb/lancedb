@@ -1,4 +1,4 @@
-# ANN (Approximate Nearest Neighbor) Indexes
+# Approximate Nearest Neighbor (ANN) Indexes
 
 You can create an index over your vector data to make search faster.
 Vector indexes are faster but less accurate than exhaustive search (KNN or Flat Search).

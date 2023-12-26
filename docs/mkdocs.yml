@@ -77,16 +77,21 @@ markdown_extensions:
 nav:
 - Home:
   - LanceDB: index.md
-  - 📚 Guides:
-    - Getting started: basic.md
+  - 🏃🏼‍♂️ Getting started:
+    - Quick start: basic.md
+    - Concepts:
+      - Vector search: concepts/vector_search.md
+      - Lance data format: concepts/lance.md
+      - Indexing: concepts/index_ivfpq.md
+  - 🔨 Guides:
     - Working with tables: guides/tables.md
-    - Indexing: ann_indexes.md
+    - Building an ANN index: ann_indexes.md
     - Vector Search: search.md
     - Full-text search: fts.md
     - Filtering: sql.md
     - Versioning & Reproducibility: notebooks/reproducibility.ipynb
-  - 🧬 Embedding functions:
-    - What are embeddings?: embeddings/index.md
+  - 🧬 Managing embeddings:
+    - Modes of embedding management: embeddings/index.md
     - Embedding API Functions: embeddings/embedding_functions.md
     - Available Functions: embeddings/default_embedding_functions.md
     - Create Custom Embedding Functions: embeddings/api.md
@@ -102,38 +107,44 @@ nav:
     - Pydantic: python/pydantic.md
     - Voxel51: integrations/voxel51.md
     - PromptTools: integrations/prompttools.md
-  - 🐍 Python examples:
+  - 🎯 Examples:
     - Overview: examples/index.md
-    - YouTube Transcript Search: notebooks/youtube_transcript_search.ipynb
-    - Documentation QA Bot using LangChain: notebooks/code_qa_bot.ipynb
-    - Multimodal search using CLIP: notebooks/multimodal_search.ipynb
-    - Example - Calculate CLIP Embeddings with Roboflow Inference: examples/image_embeddings_roboflow.md
-    - Serverless QA Bot with S3 and Lambda: examples/serverless_lancedb_with_s3_and_lambda.md
-    - Serverless QA Bot with Modal: examples/serverless_qa_bot_with_modal_and_langchain.md
-  - 👾 JavaScript examples:
-    - Overview: examples/index_js.md
-    - Serverless Website Chatbot: examples/serverless_website_chatbot.md
-    - YouTube Transcript Search: examples/youtube_transcript_bot_with_nodejs.md
-    - TransformersJS Embedding Search: examples/transformerjs_embedding_search_nodejs.md
+    - 🐍 Python:
+      - Overview: examples/examples_python.md
+      - YouTube Transcript Search: notebooks/youtube_transcript_search.ipynb
+      - Documentation QA Bot using LangChain: notebooks/code_qa_bot.ipynb
+      - Multimodal search using CLIP: notebooks/multimodal_search.ipynb
+      - Example - Calculate CLIP Embeddings with Roboflow Inference: examples/image_embeddings_roboflow.md
+      - Serverless QA Bot with S3 and Lambda: examples/serverless_lancedb_with_s3_and_lambda.md
+      - Serverless QA Bot with Modal: examples/serverless_qa_bot_with_modal_and_langchain.md
+    - 👾 JavaScript:
+      - Overview: examples/examples_js.md
+      - Serverless Website Chatbot: examples/serverless_website_chatbot.md
+      - YouTube Transcript Search: examples/youtube_transcript_bot_with_nodejs.md
+      - TransformersJS Embedding Search: examples/transformerjs_embedding_search_nodejs.md
   - 🔧 CLI & Config: cli_config.md
   - ⚙️ API reference:
-    - OSS Python API: python/python.md
-    - Cloud Python API: python/saas-python.md
-    - OSS JavaScript API: javascript/modules.md
+    - "Python API: Open source": python/python.md
+    - "JavaScript API: Open source": javascript/modules.md
+    - "Python API: Cloud": python/saas-python.md
   - ☁️ LanceDB Cloud: cloud/index.md
 
+
+- Getting started:
+  - Quick start: basic.md
+  - Concepts:
+      - Vector search: concepts/vector_search.md
+      - Lance data format: concepts/lance.md
+      - Indexing: concepts/index_ivfpq.md
 - Guides:
-  - Getting started: basic.md 
-  - Working with tables: guides/tables.md
-  - Indexing:
-    - IVF-PQ: guides/ivfpq.md
-    - Create and query an ANN index: ann_indexes.md
-  - Vector search: search.md
-  - Full-text search: fts.md
-  - Filtering: sql.md
-  - Versioning & Reproducibility: notebooks/reproducibility.ipynb
-- Embedding functions:
-  - What are embeddings?: embeddings/index.md
+    - Working with tables: guides/tables.md
+    - Building an ANN index: ann_indexes.md
+    - Vector Search: search.md
+    - Full-text search: fts.md
+    - Filtering: sql.md
+    - Versioning & Reproducibility: notebooks/reproducibility.ipynb
+- Managing Embeddings:
+  - Modes of embedding management: embeddings/index.md
   - Embedding API Functions: embeddings/embedding_functions.md
   - Available Functions: embeddings/default_embedding_functions.md
   - Custom Embedding Functions: embeddings/api.md
@@ -142,29 +153,31 @@ nav:
 - Integrations:
   - Overview: integrations/index.md
   - Pandas and PyArrow: python/arrow.md
-  - DuckDB: python/duckdb.md
+  - DuckDB : python/duckdb.md
   - LangChain 🦜️🔗↗: https://python.langchain.com/en/latest/modules/indexes/vectorstores/examples/lancedb.html
   - LangChain.js 🦜️🔗↗: https://js.langchain.com/docs/modules/data_connection/vectorstores/integrations/lancedb
   - LlamaIndex 🦙↗: https://gpt-index.readthedocs.io/en/latest/examples/vector_stores/LanceDBIndexDemo.html
   - Pydantic: python/pydantic.md
   - Voxel51: integrations/voxel51.md
   - PromptTools: integrations/prompttools.md
-- Python examples:
+- Examples:
   - Overview: examples/index.md
-  - YouTube Transcript Search: notebooks/youtube_transcript_search.ipynb
-  - Documentation QA Bot using LangChain: notebooks/code_qa_bot.ipynb
-  - Multimodal search using CLIP: notebooks/multimodal_search.ipynb
-  - Serverless QA Bot with S3 and Lambda: examples/serverless_lancedb_with_s3_and_lambda.md
-  - Serverless QA Bot with Modal: examples/serverless_qa_bot_with_modal_and_langchain.md
-- JavaScript examples:
-  - Overview: examples/index_js.md
-  - YouTube Transcript Search: examples/youtube_transcript_bot_with_nodejs.md
-  - Serverless Chatbot from any website: examples/serverless_website_chatbot.md
-  - TransformersJS Embedding Search: examples/transformerjs_embedding_search_nodejs.md
+  - 🐍 Python:
+    - Recipes & example projects: examples/examples_python.md
+    - YouTube Transcript Search: notebooks/youtube_transcript_search.ipynb
+    - Documentation QA Bot using LangChain: notebooks/code_qa_bot.ipynb
+    - Multimodal search using CLIP: notebooks/multimodal_search.ipynb
+    - Serverless QA Bot with S3 and Lambda: examples/serverless_lancedb_with_s3_and_lambda.md
+    - Serverless QA Bot with Modal: examples/serverless_qa_bot_with_modal_and_langchain.md
+  - 👾 JavaScript:
+    - Recipes & example projects: examples/examples_js.md
+    - YouTube Transcript Search: examples/youtube_transcript_bot_with_nodejs.md
+    - Serverless Chatbot from any website: examples/serverless_website_chatbot.md
+    - TransformersJS Embedding Search: examples/transformerjs_embedding_search_nodejs.md
 - API reference:
-  - OSS Python API: python/python.md
-  - Cloud Python API: python/saas-python.md
-  - OSS JavaScript API: javascript/modules.md
+  - "Python API: Open source": python/python.md
+  - "JavaScript API: Open source": javascript/modules.md
+  - "Python API: Cloud": python/saas-python.md
 - LanceDB Cloud↗: https://noteforms.com/forms/lancedb-mailing-list-cloud-kty1o5?notionforms=1&utm_source=notionforms
 
 extra_css:
