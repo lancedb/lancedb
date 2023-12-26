@@ -81,7 +81,6 @@ nav:
     - Quick start: basic.md
     - Concepts:
       - Vector search: concepts/vector_search.md
-      - Lance data format: concepts/lance.md
       - Indexing: concepts/index_ivfpq.md
   - 🔨 Guides:
     - Working with tables: guides/tables.md
@@ -127,6 +126,7 @@ nav:
     - "Python API: Open source": python/python.md
     - "JavaScript API: Open source": javascript/modules.md
     - "Python API: Cloud": python/saas-python.md
+  - 💭 FAQs: faq.md
   - ☁️ LanceDB Cloud: cloud/index.md
 
 
@@ -134,7 +134,6 @@ nav:
   - Quick start: basic.md
   - Concepts:
       - Vector search: concepts/vector_search.md
-      - Lance data format: concepts/lance.md
       - Indexing: concepts/index_ivfpq.md
 - Guides:
     - Working with tables: guides/tables.md
