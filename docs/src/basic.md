@@ -216,20 +216,22 @@ Use the `drop_table()` method on the database to remove a table.
       This permanently removes the table and is not recoverable, unlike deleting rows.
       If the table does not exist an exception is raised. 
 
+!!! note "Bundling `vectordb` apps with Webpack"
+
+    If you're using the `vectordb` module in JavaScript, since LanceDB contains a prebuilt Node binary, you must configure `next.config.js` to exclude it from webpack. This is required for both using Next.js and deploying a LanceDB app on Vercel.
+
+    ```javascript
+    /** @type {import('next').NextConfig} */
+    module.exports = ({
+    webpack(config) {
+        config.externals.push({ vectordb: 'vectordb' })
+        return config;
+    }
+    })
+    ```
+
 ## What's next
 
-This section covered the very basics of the LanceDB API.
-LanceDB supports many additional features when creating indices to speed up search and options for search.
-These are contained in the next section of the documentation.
+This section covered the very basics of using LanceDB. If you're learning about vector databases for the first time, you may want to read the page on [indexing](concepts/index_ivfpq.md) to get familiar with the concepts.
 
-## Note: Bundling vectorDB apps with webpack
-Since LanceDB contains a prebuilt Node binary, you must configure `next.config.js` to exclude it from webpack. This is required for both using Next.js and deploying on Vercel.
-```javascript
-/** @type {import('next').NextConfig} */
-module.exports = ({
-  webpack(config) {
-    config.externals.push({ vectordb: 'vectordb' })
-    return config;
-  }
-})
-```
+If you've already worked with other vector databases, you may want to read the [guides](guides/tables.md) to learn how to work with LanceDB in more detail.
