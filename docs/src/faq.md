@@ -14,6 +14,10 @@ As we mention in our talk titled “[Lance, a modern columnar data format](https
 
 Yes, LanceDB is an open source vector database available under an Apache 2.0 license. We have another serverless offering, LanceDB Cloud, available under a commercial license.
 
+### Why build in Rust 🦀?
+
+We believe that the Rust ecosystem has attained mainstream maturity and that Rust will form the underpinnings of large parts of the data and ML landscape in a few years. As a result, both Lance (the data format) and LanceDB (the database) are written entirely in Rust. We provide Python and JavaScript client libraries to interact with the database. Our Rust API is a little rough around the edges right now, but is fast coming to be on par with the Python and JS APIs.
+
 ### What is the difference between LanceDB OSS and LanceDB Cloud?
 
 LanceDB OSS is an **embedded** (in-process) solution that can be used as the vector store of choice your LLM and RAG applications, and can be interacted with in multiple ways: it can be embedded inside an existing application backend, or used alongside existing ML and data engineering pipelines.
@@ -21,10 +25,6 @@ LanceDB OSS is an **embedded** (in-process) solution that can be used as the vec
 LanceDB Cloud is a **serverless** solution — the database and data sit on the cloud and we manage the scalability of the application side via a remote client, without the need to manage any infrastructure.
 
 Both flavors of LanceDB benefit from the blazing fast Lance data format and are built on the same open source tools.
-
-### Why build in Rust?
-
-We believe that the Rust ecosystem has attained mainstream maturity and that Rust will form the underpinnings of large parts of the data and ML landscape in a few years. As a result, both Lance (the data format) and LanceDB (the database) are written entirely in Rust. We provide Python and JavaScript client libraries to interact with the database. Our Rust API is a little rough around the edges right now, but is fast coming to be on par with the Python and JS APIs.
 
 ### What’s different about LanceDB compared to other vendors?
 
