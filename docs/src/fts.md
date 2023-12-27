@@ -29,8 +29,9 @@ uri = "data/sample-lancedb"
 db = lancedb.connect(uri)
 
 table = db.create_table("my_table",
-            data=[{"vector": [3.1, 4.1], "text": "Frodo was a happy puppy"},
-                  {"vector": [5.9, 26.5], "text": "There are several kittens playing"}])
+            data=[{"vector": [3.1, 4.1], "text": "Frodo was a happy puppy", "meta": "foo"},
+                  {"vector": [5.9, 26.5], "text": "Sam was a loyal puppy", "meta": "bar"},
+                  {"vector": [15.9, 6.5], "text": "There are several kittens playing"}])
 
 ```
 
@@ -64,10 +65,23 @@ table.create_fts_index(["text1", "text2"])
 
 Note that the search API call does not change - you can search over all indexed columns at once.
 
+## Filtering
+
+Currently the LanceDB full text search feature supports *post-filtering*, meaning filters are
+applied on top of the full text search results. This can be invoked via the familiar
+`where` syntax:
+
+```python
+table.search("puppy").limit(10).where("meta='foo'").to_list()
+```
+
 ## Current limitations
 
 1. Currently we do not yet support incremental writes.
-If you add data after fts index creation, it won't be reflected
-in search results until you do a full reindex.
+   If you add data after fts index creation, it won't be reflected
+   in search results until you do a full reindex.
 
-2. We currently only support local filesystem paths for the fts index.
+2. We currently only support local filesystem paths for the fts index. 
+   This is a tantivy limitation. We've implemented an object store plugin
+   but there's no way in tantivy-py to specify to use it.
+
