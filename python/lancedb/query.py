@@ -496,8 +496,8 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
                 import duckdb
 
                 output_tbl = duckdb.sql(
-                    f"SELECT * FROM output_tbl WHERE {self._where}"
-                ).to_arrow_table()
+                    f"SELECT * FROM output_tbl"
+                ).filter(self._where).to_arrow_table()
             except ImportError:
                 import lance
                 import tempfile
