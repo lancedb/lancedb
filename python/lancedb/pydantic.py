@@ -164,6 +164,9 @@ def _py_type_to_arrow_type(py_type: Type[Any]) -> pa.DataType:
         return pa.date32()
     elif py_type == datetime:
         return pa.timestamp("us")
+    elif py_type.__origin__ in (list, tuple):
+        child = py_type.__args__[0]
+        return pa.list_(_py_type_to_arrow_type(child))
     raise TypeError(
         f"Converting Pydantic type to Arrow Type: unsupported type {py_type}"
     )

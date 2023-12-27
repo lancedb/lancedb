@@ -67,8 +67,8 @@ def test_pydantic_to_arrow():
             pa.field("s", pa.utf8(), False),
             pa.field("vec", pa.list_(pa.float64()), False),
             pa.field("li", pa.list_(pa.int64()), False),
-            pa.field("lili", pa.list_(pa.list_(pa.float()), False), False),
-            pa.field("litu", pa.list_(pa.list_(pa.float()), False), False),
+            pa.field("lili", pa.list_(pa.list_(pa.float64())), False),
+            pa.field("litu", pa.list_(pa.list_(pa.float64())), False),
             pa.field("opt", pa.utf8(), True),
             pa.field(
                 "st",
@@ -122,8 +122,8 @@ def test_pydantic_to_arrow_py38():
             pa.field("s", pa.utf8(), False),
             pa.field("vec", pa.list_(pa.float64()), False),
             pa.field("li", pa.list_(pa.int64()), False),
-            pa.field("lili", pa.list_(pa.list_(pa.float()), False), False),
-            pa.field("litu", pa.list_(pa.list_(pa.float()), False), False),
+            pa.field("lili", pa.list_(pa.list_(pa.float64())), False),
+            pa.field("litu", pa.list_(pa.list_(pa.float64())), False),
             pa.field("opt", pa.utf8(), True),
             pa.field(
                 "st",
