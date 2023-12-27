@@ -495,9 +495,11 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
                 # or conversely have pyarrow support SQL expressions using Substrait
                 import duckdb
 
-                output_tbl = duckdb.sql(
-                    f"SELECT * FROM output_tbl"
-                ).filter(self._where).to_arrow_table()
+                output_tbl = (
+                    duckdb.sql(f"SELECT * FROM output_tbl")
+                    .filter(self._where)
+                    .to_arrow_table()
+                )
             except ImportError:
                 import lance
                 import tempfile
