@@ -267,7 +267,7 @@ export class RemoteTable<T = number[]> implements Table<T> {
     const column = indexParams.column ?? 'vector'
     const indexType = 'vector' // only vector index is supported for remote connections
     const metricType = indexParams.metric_type ?? 'L2'
-    const indexCacheSize = indexParams ?? null
+    const indexCacheSize = indexParams.index_cache_size ?? null
 
     const data = {
       column,
