@@ -72,7 +72,7 @@ applied on top of the full text search results. This can be invoked via the fami
 `where` syntax:
 
 ```python
-table.search("puppy").where("meta='foo'").limit(10).to_list()
+table.search("puppy").limit(10).where("meta='foo'").to_list()
 ```
 
 ## Current limitations
