@@ -13,6 +13,7 @@
 
 
 import json
+import pytz
 import sys
 from datetime import date, datetime
 from typing import List, Optional, Tuple
@@ -45,6 +46,7 @@ def test_pydantic_to_arrow():
         st: StructModel
         dt: date
         dtt: datetime
+        dt_with_tz: datetime = Field(tz="Asia/Shanghai")
         # d: dict
 
     m = TestModel(
@@ -57,7 +59,9 @@ def test_pydantic_to_arrow():
         st=StructModel(a="a", b=1.0),
         dt=date.today(),
         dtt=datetime.now(),
+        dtttz=datetime.now(pytz.timezone("Asia/Shanghai"))),
     )
+        
 
     schema = pydantic_to_schema(TestModel)
 
@@ -79,6 +83,7 @@ def test_pydantic_to_arrow():
             ),
             pa.field("dt", pa.date32(), False),
             pa.field("dtt", pa.timestamp("us"), False),
+            pa.field("dt_with_tz", pa.timestamp("us", tz="Asia/Shanghai"), False),
         ]
     )
     assert schema == expect_schema
@@ -100,6 +105,7 @@ def test_pydantic_to_arrow_py38():
         st: StructModel
         dt: date
         dtt: datetime
+<<<<<<< HEAD
         # d: dict
 
     m = TestModel(
@@ -113,6 +119,8 @@ def test_pydantic_to_arrow_py38():
         dt=date.today(),
         dtt=datetime.now(),
     )
+=======
+>>>>>>> e1589c8 (feat: add timezone handling for datetime in pydantic)
 
     schema = pydantic_to_schema(TestModel)
 

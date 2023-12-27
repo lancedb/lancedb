@@ -142,6 +142,7 @@ def test_add(db):
 
 
 def test_add_pydantic_model(db):
+<<<<<<< HEAD
     # https://github.com/lancedb/lancedb/issues/562
 
     class Metadata(BaseModel):
@@ -180,6 +181,23 @@ def test_add_pydantic_model(db):
 
     really_flattened = tbl.search([0.0, 0.0]).limit(1).to_pandas(flatten=True)
     assert len(really_flattened.columns) == 7
+=======
+    class TestModel(LanceModel):
+        vector: Vector(16)
+        li: List[int]
+        dt: datetime
+        dt_with_tz: datetime = Field(tz="Asia/Kolkata")
+
+    data = TestModel(
+        vector=list(range(16)),
+        li=[1, 2, 3],
+        dt=datetime.now(),
+        dt_with_tz=datetime.now(tz=pytz.timezone("Asia/Kolkata")),
+    )
+    table = LanceTable.create(db, "test", data=[data])
+    assert len(table) == 1
+    assert table.schema == TestModel.to_arrow_schema()
+>>>>>>> e1589c8 (feat: add timezone handling for datetime in pydantic)
 
 
 def _add(table, schema):

@@ -26,6 +26,7 @@ import numpy as np
 import pyarrow as pa
 import pydantic
 import semver
+from pydantic.fields import FieldInfo
 
 from .embeddings import EmbeddingFunctionRegistry
 
@@ -142,8 +143,8 @@ def Vector(
     return FixedSizeList
 
 
-def _py_type_to_arrow_type(py_type: Type[Any]) -> pa.DataType:
-    """Convert Python Type to Arrow DataType.
+def _py_type_to_arrow_type(py_type: Type[Any], field: FieldInfo) -> pa.DataType:
+    """Convert a field with native Python type to Arrow data type.
 
     Raises
     ------
@@ -163,7 +164,8 @@ def _py_type_to_arrow_type(py_type: Type[Any]) -> pa.DataType:
     elif py_type == date:
         return pa.date32()
     elif py_type == datetime:
-        return pa.timestamp("us")
+        tz = get_extras(field, "tz")
+        return pa.timestamp("us", tz=tz)    
     elif py_type.__origin__ in (list, tuple):
         child = py_type.__args__[0]
         return pa.list_(_py_type_to_arrow_type(child))
@@ -197,10 +199,10 @@ def _pydantic_to_arrow_type(field: pydantic.fields.FieldInfo) -> pa.DataType:
         args = field.annotation.__args__
         if origin == list:
             child = args[0]
-            return pa.list_(_py_type_to_arrow_type(child))
+            return pa.list_(_py_type_to_arrow_type(child, field))
         elif origin == Union:
             if len(args) == 2 and args[1] == type(None):
-                return _py_type_to_arrow_type(args[0])
+                return _py_type_to_arrow_type(args[0], field)
     elif inspect.isclass(field.annotation):
         if issubclass(field.annotation, pydantic.BaseModel):
             # Struct
@@ -208,7 +210,7 @@ def _pydantic_to_arrow_type(field: pydantic.fields.FieldInfo) -> pa.DataType:
             return pa.struct(fields)
         elif issubclass(field.annotation, FixedSizeListMixin):
             return pa.list_(field.annotation.value_arrow_type(), field.annotation.dim())
-    return _py_type_to_arrow_type(field.annotation)
+    return _py_type_to_arrow_type(field.annotation, field)
 
 
 def is_nullable(field: pydantic.fields.FieldInfo) -> bool:
