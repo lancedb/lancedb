@@ -45,7 +45,7 @@ class OpenAIEmbeddings(TextEmbeddingFunction):
             The texts to embed
         """
         # TODO retry, rate limit, token limit
-        rs = self._openai_client.embeddings.create(input=texts, model=self.name)        
+        rs = self._openai_client.embeddings.create(input=texts, model=self.name)
         return [v.embedding for v in rs.data]
 
     @cached_property
