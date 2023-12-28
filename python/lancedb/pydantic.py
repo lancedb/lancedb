@@ -166,11 +166,11 @@ def _py_type_to_arrow_type(py_type: Type[Any], field: FieldInfo) -> pa.DataType:
     elif py_type == datetime:
         tz = get_extras(field, "tz")
         return pa.timestamp("us", tz=tz)
-    elif py_type.__origin__ in (list, tuple):
+    elif getattr(py_type, "__origin__", None) in (list, tuple):
         child = py_type.__args__[0]
-        return pa.list_(_py_type_to_arrow_type(child))
+        return pa.list_(_py_type_to_arrow_type(child, field))
     raise TypeError(
-        f"Converting Pydantic type to Arrow Type: unsupported type {py_type}"
+        f"Converting Pydantic type to Arrow Type: unsupported type {py_type}."
     )
 
 
