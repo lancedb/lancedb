@@ -13,6 +13,7 @@
 
 
 import json
+import pytz
 import sys
 from datetime import date, datetime
 from typing import List, Optional, Tuple
@@ -38,13 +39,14 @@ def test_pydantic_to_arrow():
         id: int
         s: str
         vec: list[float]
-        li: List[int]
-        lili: List[List[float]]
-        litu: List[Tuple[float, float]]
+        li: list[int]
+        lili: list[list[float]]
+        litu: list[tuple[float, float]]
         opt: Optional[str] = None
         st: StructModel
         dt: date
         dtt: datetime
+        dt_with_tz: datetime = Field(json_schema_extra={"tz": "Asia/Shanghai"})
         # d: dict
 
     m = TestModel(
@@ -57,6 +59,7 @@ def test_pydantic_to_arrow():
         st=StructModel(a="a", b=1.0),
         dt=date.today(),
         dtt=datetime.now(),
+        dt_with_tz=datetime.now(pytz.timezone("Asia/Shanghai")),
     )
 
     schema = pydantic_to_schema(TestModel)
@@ -79,11 +82,16 @@ def test_pydantic_to_arrow():
             ),
             pa.field("dt", pa.date32(), False),
             pa.field("dtt", pa.timestamp("us"), False),
+            pa.field("dt_with_tz", pa.timestamp("us", tz="Asia/Shanghai"), False),
         ]
     )
     assert schema == expect_schema
 
 
+@pytest.mark.skipif(
+    sys.version_info > (3, 8),
+    reason="using native type alias requires python3.9 or higher",
+)
 def test_pydantic_to_arrow_py38():
     class StructModel(pydantic.BaseModel):
         a: str
@@ -100,6 +108,7 @@ def test_pydantic_to_arrow_py38():
         st: StructModel
         dt: date
         dtt: datetime
+        dt_with_tz: datetime = Field(json_schema_extra={"tz": "Asia/Shanghai"})
         # d: dict
 
     m = TestModel(
@@ -112,6 +121,7 @@ def test_pydantic_to_arrow_py38():
         st=StructModel(a="a", b=1.0),
         dt=date.today(),
         dtt=datetime.now(),
+        dt_with_tz=datetime.now(pytz.timezone("Asia/Shanghai")),
     )
 
     schema = pydantic_to_schema(TestModel)
@@ -134,6 +144,7 @@ def test_pydantic_to_arrow_py38():
             ),
             pa.field("dt", pa.date32(), False),
             pa.field("dtt", pa.timestamp("us"), False),
+            pa.field("dt_with_tz", pa.timestamp("us", tz="Asia/Shanghai"), False),
         ]
     )
     assert schema == expect_schema
