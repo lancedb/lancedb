@@ -29,7 +29,7 @@ from lancedb.pydantic import LanceModel, Vector
 
 @pytest.mark.slow
 @pytest.mark.parametrize("alias", ["sentence-transformers", "openai"])
-def test_sentence_transformer(alias, tmp_path):
+def test_basic_text_embeddings(alias, tmp_path):
     db = lancedb.connect(tmp_path)
     registry = get_registry()
     func = registry.get(alias).create(max_retries=0)
