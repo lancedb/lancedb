@@ -10,6 +10,7 @@
 #  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
+from functools import cached_property
 from typing import List, Union
 
 import numpy as np
@@ -44,6 +45,10 @@ class OpenAIEmbeddings(TextEmbeddingFunction):
             The texts to embed
         """
         # TODO retry, rate limit, token limit
+        rs = self._openai_client.embeddings.create(input=texts, model=self.name)        
+        return [v.embedding for v in rs.data]
+
+    @cached_property
+    def _openai_client(self):
         openai = self.safe_import("openai")
-        rs = openai.Embedding.create(input=texts, model=self.name)["data"]
-        return [v["embedding"] for v in rs]
+        return openai.OpenAI()
