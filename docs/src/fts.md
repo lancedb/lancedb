@@ -63,16 +63,25 @@ If you have multiple string columns to index, there's no need to combine them ma
 table.create_fts_index(["text1", "text2"])
 ```
 
-The search API call does not change: you can search over all indexed columns at once via a single line of code.
+Note that the search API call does not change - you can search over all indexed columns at once.
+
+## Filtering
+
+Currently the LanceDB full text search feature supports *post-filtering*, meaning filters are
+applied on top of the full text search results. This can be invoked via the familiar
+`where` syntax:
 
 ```python
-table.search("I want a puppy and a kitten").limit(10).select(["text1", "text2"]).to_list()
+table.search("puppy").limit(10).where("meta='foo'").to_list()
 ```
 
 ## Current limitations
 
 1. Currently we do not yet support incremental writes.
-If you add data after FTS index creation, it won't be reflected
-in search results until you do a full reindex.
+   If you add data after fts index creation, it won't be reflected
+   in search results until you do a full reindex.
 
-2. We currently only support local filesystem paths for the FTS index.
+2. We currently only support local filesystem paths for the fts index. 
+   This is a tantivy limitation. We've implemented an object store plugin
+   but there's no way in tantivy-py to specify to use it.
+

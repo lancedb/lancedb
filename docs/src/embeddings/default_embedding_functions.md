@@ -1,9 +1,9 @@
-There are various Embedding functions available out of the box with lancedb. We're working on supporting other popular embedding APIs.
+There are various Embedding functions available out of the box with LanceDB. We're working on supporting other popular embedding APIs.
 
 ## Text Embedding Functions
 Here are the text embedding functions registered by default.
-Embedding functions have inbuilt rate limit handler wrapper for source and query embedding function calls that retry with exponential standoff. 
-Each `EmbeddingFunction` implementation automatically takes `max_retries` as an argument which has the deafult value of 7.
+Embedding functions have an inbuilt rate limit handler wrapper for source and query embedding function calls that retry with exponential standoff. 
+Each `EmbeddingFunction` implementation automatically takes `max_retries` as an argument which has the default value of 7.
 
 ### Sentence Transformers
 Here are the parameters that you can set when registering a `sentence-transformers` object, and their default values:
@@ -69,15 +69,15 @@ print(actual.text)
 ```
 
 ### Instructor Embeddings
-Instructor is an instruction-finetuned text embedding model that can generate text embeddings tailored to any task (e.g., classification, retrieval, clustering, text evaluation, etc.) and domains (e.g., science, finance, etc.) by simply providing the task instruction, without any finetuning
+Instructor is an instruction-finetuned text embedding model that can generate text embeddings tailored to any task (e.g. classification, retrieval, clustering, text evaluation, etc.) and domains (e.g. science, finance, etc.) by simply providing the task instruction, without any finetuning.
 
 If you want to calculate customized embeddings for specific sentences, you may follow the unified template to write instructions:
 
                           Represent the `domain` `text_type` for `task_objective`:
 
-* `domain` is optional, and it specifies the domain of the text, e.g., science, finance, medicine, etc.
-* `text_type` is required, and it specifies the encoding unit, e.g., sentence, document, paragraph, etc.
-* `task_objective` is optional, and it specifies the objective of embedding, e.g., retrieve a document, classify the sentence, etc.
+* `domain` is optional, and it specifies the domain of the text, e.g. science, finance, medicine, etc.
+* `text_type` is required, and it specifies the encoding unit, e.g. sentence, document, paragraph, etc.
+* `task_objective` is optional, and it specifies the objective of embedding, e.g. retrieve a document, classify the sentence, etc.
 
 More information about the model can be found here - https://github.com/xlang-ai/instructor-embedding
 
@@ -119,10 +119,10 @@ tbl.add(texts)
 ```
 
 ## Multi-modal embedding functions
-Multi-modal embedding functions allow you query your table using both images and text.
+Multi-modal embedding functions allow you to query your table using both images and text.
 
 ### OpenClipEmbeddings
-We support CLIP model embeddings using the open souce alternbative, open-clip which support various customizations. It is registered as `open-clip` and supports following customizations.
+We support CLIP model embeddings using the open source alternative, open-clip which supports various customizations. It is registered as `open-clip` and supports the following customizations:
 
 
 | Parameter | Type | Default Value | Description |

@@ -118,6 +118,84 @@ This guide will show how to create tables, insert data into them, and update the
     table = db.create_table(table_name, schema=Content)
     ```
 
+    #### Nested schemas
+
+    Sometimes your data model may contain nested objects.
+    For example, you may want to store the document string
+    and the document soure name as a nested Document object:
+
+    ```python
+    class Document(BaseModel):
+        content: str
+        source: str
+    ```
+
+    This can be used as the type of a LanceDB table column:
+
+    ```python
+    class NestedSchema(LanceModel):
+        id: str
+        vector: Vector(1536)
+        document: Document
+
+    tbl = db.create_table("nested_table", schema=NestedSchema, mode="overwrite")
+    ```
+
+    This creates a struct column called "document" that has two subfields 
+    called "content" and "source":
+
+    ```
+    In [28]: tbl.schema
+    Out[28]:
+    id: string not null
+    vector: fixed_size_list<item: float>[1536] not null
+        child 0, item: float
+    document: struct<content: string not null, source: string not null> not null
+        child 0, content: string not null
+        child 1, source: string not null    
+    ```
+
+    #### Validators
+
+    Note that neither pydantic nor pyarrow automatically validates that input data
+    is of the *correct* timezone, but this is easy to add as a custom field validator:
+
+    ```python
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from lancedb.pydantic import LanceModel
+    from pydantic import Field, field_validator, ValidationError, ValidationInfo
+
+    tzname = "America/New_York"
+    tz = ZoneInfo(tzname)
+
+    class TestModel(LanceModel):
+        dt_with_tz: datetime = Field(json_schema_extra={"tz": tzname})
+
+        @field_validator('dt_with_tz')
+        @classmethod
+        def tz_must_match(cls, dt: datetime) -> datetime:
+            assert dt.tzinfo == tz
+            return dt        
+
+    ok = TestModel(dt_with_tz=datetime.now(tz))
+
+    try:
+        TestModel(dt_with_tz=datetime.now(ZoneInfo("Asia/Shanghai")))
+        assert 0 == 1, "this should raise ValidationError"
+    except ValidationError:
+        print("A ValidationError was raised.")
+        pass
+    ```
+
+    When you run this code it should print "A ValidationError was raised."
+
+    #### Pydantic custom types
+
+    LanceDB does NOT yet support converting pydantic custom types. If this is something you need,
+    please file a feature request on the [LanceDB Github repo](https://github.com/lancedb/lancedb/issues/new).
+
     ### Using Iterators / Writing Large Datasets
 
     It is recommended to use iterators to add large datasets in batches when creating your table in one go. This does not create multiple versions of your dataset unlike manually adding batches using `table.add()`
@@ -153,7 +231,7 @@ This guide will show how to create tables, insert data into them, and update the
     You can also use iterators of other types like Pandas dataframe or Pylists directly in the above example.
 
     ## Creating Empty Table
-    You can also create empty tables in python. Initialize it with schema and later ingest data into it.
+    You can create empty tables in python. Initialize it with schema and later ingest data into it.
 
     ```python
     import lancedb
