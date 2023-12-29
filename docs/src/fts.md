@@ -78,10 +78,10 @@ table.search("puppy").limit(10).where("meta='foo'").to_list()
 ## Current limitations
 
 1. Currently we do not yet support incremental writes.
-   If you add data after fts index creation, it won't be reflected
+   If you add data after FTS index creation, it won't be reflected
    in search results until you do a full reindex.
 
-2. We currently only support local filesystem paths for the fts index. 
+2. We currently only support local filesystem paths for the FTS index. 
    This is a tantivy limitation. We've implemented an object store plugin
    but there's no way in tantivy-py to specify to use it.
 
