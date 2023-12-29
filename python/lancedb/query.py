@@ -70,7 +70,7 @@ class Query(pydantic.BaseModel):
     vector_column: str = VECTOR_COLUMN_NAME
 
     # vector to search for
-    vector: List[float]
+    vector: Union[List[float], List[List[float]]]
 
     # sql filter to refine the query with
     filter: Optional[str] = None
@@ -421,6 +421,8 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         vector and the returned vectors.
         """
         vector = self._query if isinstance(self._query, list) else self._query.tolist()
+        if isinstance(vector[0], np.ndarray):
+            vector = [v.tolist() for v in vector]
         query = Query(
             vector=vector,
             filter=self._where,
