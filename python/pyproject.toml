@@ -15,7 +15,8 @@ dependencies = [
     "pyyaml>=6.0",
     "click>=8.1.7",
     "requests>=2.31.0",
-    "overrides>=0.7"
+    "overrides>=0.7",
+    "typing_extensions>=4.7",
 ]
 description = "lancedb"
 authors = [{ name = "LanceDB Devs", email = "dev@lancedb.com" }]
@@ -49,11 +50,27 @@ classifiers = [
 repository = "https://github.com/lancedb/lancedb"
 
 [project.optional-dependencies]
-tests = ["pandas>=1.4", "pytest", "pytest-mock", "pytest-asyncio", "requests", "duckdb", "pytz"]
+tests = [
+    "pandas>=1.4",
+    "pytest",
+    "pytest-mock",
+    "pytest-asyncio",
+    "requests",
+    "duckdb",
+    "pytz"
+]
 dev = ["ruff", "pre-commit", "black"]
 docs = ["mkdocs", "mkdocs-jupyter", "mkdocs-material", "mkdocstrings[python]"]
 clip = ["torch", "pillow", "open-clip"]
-embeddings = ["openai>=1.6.1", "sentence-transformers", "torch", "pillow", "open-clip-torch", "cohere", "InstructorEmbedding"]
+embeddings = [
+    "openai>=1.6.1",
+    "sentence-transformers",
+    "torch",
+    "pillow",
+    "open-clip-torch",
+    "cohere",
+    "InstructorEmbedding"
+]
 
 [project.scripts]
 lancedb = "lancedb.cli.cli:cli"
