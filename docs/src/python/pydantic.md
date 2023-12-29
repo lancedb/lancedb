@@ -7,7 +7,7 @@ LanceDB integrates with Pydantic for schema inference, data ingestion, and query
 
 LanceDB supports to create Apache Arrow Schema from a
 [Pydantic BaseModel](https://docs.pydantic.dev/latest/api/main/#pydantic.main.BaseModel)
-via [pydantic_to_schema()](python.md##lancedb.pydantic.pydantic_to_schema) method.
+via [pydantic_to_schema()](python.md#lancedb.pydantic.pydantic_to_schema) method.
 
 ::: lancedb.pydantic.pydantic_to_schema
 
