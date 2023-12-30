@@ -218,6 +218,21 @@ describe('LanceDB client', function () {
       assert.equal(await table.countRows(), 2)
     })
 
+    it('creates a new table from javascript objects with list of strings', async function () {
+      const dir = await track().mkdir('lancejs')
+      const con = await lancedb.connect(dir)
+
+      const data = [
+        { id: 1, vector: [0.1, 0.2], list_of_str: ['a', 'b', 'c'] },
+        { id: 2, vector: [1.1, 1.2], list_of_str: ['x', 'y'] }
+      ]
+
+      const tableName = 'with_list_of_string'
+      const table = await con.createTable(tableName, data)
+      assert.equal(table.name, tableName)
+      assert.equal(await table.countRows(), 2)
+    })
+
     it('fails to create a new table when the vector column is missing', async function () {
       const dir = await track().mkdir('lancejs')
       const con = await lancedb.connect(dir)

@@ -20,7 +20,7 @@ import {
   Utf8,
   type Vector,
   FixedSizeList,
-  vectorFromArray, type Schema, Table as ArrowTable, RecordBatchStreamWriter
+  vectorFromArray, type Schema, Table as ArrowTable, RecordBatchStreamWriter, List
 } from 'apache-arrow'
 import { type EmbeddingFunction } from './index'
 
@@ -59,6 +59,14 @@ export async function convertToTable<T> (data: Array<Record<string, unknown>>, e
       if (typeof values[0] === 'string') {
         // `vectorFromArray` converts strings into dictionary vectors, forcing it back to a string column
         records[columnsKey] = vectorFromArray(values, new Utf8())
+      } else if (Array.isArray(values[0]) && typeof values[0][0] === 'string') {
+        const listBuilder = makeBuilder({
+          type: new List(new Field('item', new Utf8()))
+        })
+        for (const value of values) {
+          listBuilder.append(value)
+        }
+        records[columnsKey] = listBuilder.finish().toVector()
       } else {
         records[columnsKey] = vectorFromArray(values)
       }
