@@ -94,8 +94,8 @@ nav:
     - Embedding API Functions: embeddings/embedding_functions.md
     - Available Functions: embeddings/default_embedding_functions.md
     - Create Custom Embedding Functions: embeddings/api.md
-    - Example - Multi-lingual semantic search: notebooks/multi_lingual_example.ipynb
-    - Example - MultiModal CLIP Embeddings: notebooks/DisappearingEmbeddingFunction.ipynb
+    - "Example: Multi-lingual semantic search": notebooks/multi_lingual_example.ipynb
+    - "Example: MultiModal CLIP Embeddings": notebooks/DisappearingEmbeddingFunction.ipynb
   - 🔌 Integrations:
     - Tools and data formats: integrations/index.md
     - Pandas and PyArrow: python/arrow.md
@@ -147,8 +147,8 @@ nav:
   - Embedding API Functions: embeddings/embedding_functions.md
   - Available Functions: embeddings/default_embedding_functions.md
   - Custom Embedding Functions: embeddings/api.md
-  - Example - Multi-lingual semantic search: notebooks/multi_lingual_example.ipynb
-  - Example - MultiModal CLIP Embeddings: notebooks/DisappearingEmbeddingFunction.ipynb
+  - "Example: Multi-lingual semantic search": notebooks/multi_lingual_example.ipynb
+  - "Example: MultiModal CLIP Embeddings": notebooks/DisappearingEmbeddingFunction.ipynb
 - Integrations:
   - Overview: integrations/index.md
   - Pandas and PyArrow: python/arrow.md

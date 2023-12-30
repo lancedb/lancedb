@@ -72,7 +72,7 @@ The above query will perform a search on the table `tbl` using the given query v
 
 * `limit`: The number of results to return
 * `nprobes`: The number of probes determines the distribution of vector space. While a higher number enhances search accuracy, it also results in slower performance. Typically, setting `nprobes` to cover 5–10% of the dataset proves effective in achieving high recall with minimal latency.
-* `refine_factor`: Refine the results by reading extra elements and re-ranking them in memory. A higher number makes the search more accurate but also slower.
+* `refine_factor`: Refine the results by reading extra elements and re-ranking them in memory. A higher number makes the search more accurate but also slower (see the [FAQ](../faq.md#what-is-refine-factor-and-why-is-it-important-in-ivf-pq) page for more details on this).
 * `to_pandas()`: Convert the results to a pandas DataFrame
 
-And there you have it! You now understand what an IVF-PQ index is and how to create and query in LanceDB.
+And there you have it! You now understand what an IVF-PQ index is, and how to create and query it in LanceDB.
