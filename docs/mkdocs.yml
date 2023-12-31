@@ -99,7 +99,7 @@ nav:
     - "Example: MultiModal CLIP Embeddings": notebooks/DisappearingEmbeddingFunction.ipynb
   - 🔌 Integrations:
     - Tools and data formats: integrations/index.md
-    - Pandas and PyArrow: python/arrow.md
+    - Pandas and PyArrow: python/pandas_and_pyarrow.md
     - DuckDB: python/duckdb.md
     - LangChain 🔗: https://python.langchain.com/en/latest/modules/indexes/vectorstores/examples/lancedb.html
     - LangChain JS/TS 🔗: https://js.langchain.com/docs/modules/data_connection/vectorstores/integrations/lancedb
@@ -153,7 +153,7 @@ nav:
   - "Example: MultiModal CLIP Embeddings": notebooks/DisappearingEmbeddingFunction.ipynb
 - Integrations:
   - Overview: integrations/index.md
-  - Pandas and PyArrow: python/arrow.md
+  - Pandas and PyArrow: python/pandas_and_pyarrow.md
   - DuckDB : python/duckdb.md
   - LangChain 🦜️🔗↗: https://python.langchain.com/en/latest/modules/indexes/vectorstores/examples/lancedb.html
   - LangChain.js 🦜️🔗↗: https://js.langchain.com/docs/modules/data_connection/vectorstores/integrations/lancedb

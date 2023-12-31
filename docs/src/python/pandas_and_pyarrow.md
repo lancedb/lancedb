@@ -1,13 +1,12 @@
 # Pandas and PyArrow
 
-
 Because Lance is built on top of [Apache Arrow](https://arrow.apache.org/),
-`LanceDB` is tightly integrated with the Python data ecosystem, including [Pandas](https://pandas.pydata.org/)
+LanceDB is tightly integrated with the Python data ecosystem, including [Pandas](https://pandas.pydata.org/)
 and PyArrow. The sequence of steps in a typical workflow is shown below.
 
 ## Create dataset
 
-First, we need to connect to a `LanceDB` database.
+First, we need to connect to a LanceDB database.
 
 ```py
 
@@ -30,10 +29,9 @@ table = db.create_table("pd_table", data=data)
 ```
 
 Similar to the [`pyarrow.write_dataset()`](https://arrow.apache.org/docs/python/generated/pyarrow.dataset.write_dataset.html) method, LanceDB's
-[`db.create_table()`](python.md/#lancedb.db.DBConnection.create_table) accepts a variety of data forms.
+[`db.create_table()`](python.md/#lancedb.db.DBConnection.create_table) accepts data in a variety of forms.
 
-If you have a dataset that is larger than memory, you can create table with `Iterator[pyarrow.RecordBatch]`,
-to lazily load the data:
+If you have a dataset that is larger than memory, you can create a table with `Iterator[pyarrow.RecordBatch]` to lazily load the data:
 
 ```py
 
@@ -60,12 +58,12 @@ table = db.create_table("iterable_table", data=make_batches(), schema=schema)
 ```
 
 You will find detailed instructions of creating a LanceDB dataset in
-[Getting Started](../basic.md) and [API](python.md/#lancedb.db.DBConnection.create_table)
+[Getting Started](../basic.md#quick-start) and [API](python.md/#lancedb.db.DBConnection.create_table)
 sections.
 
-## Vector Search
+## Vector search
 
-We can now perform similarity search via the `LanceDB` Python API.
+We can now perform similarity search via the LanceDB Python API.
 
 ```py
 # Open the table previously created.
