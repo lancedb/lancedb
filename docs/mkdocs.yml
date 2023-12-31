@@ -90,10 +90,11 @@ nav:
     - Filtering: sql.md
     - Versioning & Reproducibility: notebooks/reproducibility.ipynb
   - 🧬 Managing embeddings:
-    - Modes of embedding management: embeddings/index.md
-    - Embedding API Functions: embeddings/embedding_functions.md
+    - Overview: embeddings/index.md
+    - Explicit management: embeddings/embedding_explicit.md
+    - Implicit management: embeddings/embedding_implicit.md
     - Available Functions: embeddings/default_embedding_functions.md
-    - Create Custom Embedding Functions: embeddings/api.md
+    - Custom Embedding Functions: embeddings/api.md
     - "Example: Multi-lingual semantic search": notebooks/multi_lingual_example.ipynb
     - "Example: MultiModal CLIP Embeddings": notebooks/DisappearingEmbeddingFunction.ipynb
   - 🔌 Integrations:
@@ -143,8 +144,9 @@ nav:
     - Filtering: sql.md
     - Versioning & Reproducibility: notebooks/reproducibility.ipynb
 - Managing Embeddings:
-  - Modes of embedding management: embeddings/index.md
-  - Embedding API Functions: embeddings/embedding_functions.md
+  - Overview: embeddings/index.md
+  - Explicit management: embeddings/embedding_explicit.md
+  - Implicit management: embeddings/embedding_implicit.md
   - Available Functions: embeddings/default_embedding_functions.md
   - Custom Embedding Functions: embeddings/api.md
   - "Example: Multi-lingual semantic search": notebooks/multi_lingual_example.ipynb

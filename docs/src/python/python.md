@@ -38,7 +38,7 @@ pip install lancedb
 
 ::: lancedb.embeddings.open_clip.OpenClipEmbeddings
 
-::: lancedb.embeddings.with_embeddings
+::: lancedb.embeddings.utils.with_embeddings
 
 ## Context
 
