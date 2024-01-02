@@ -483,12 +483,14 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         # open the index
         index = tantivy.Index.open(index_path)
         # get the scores and doc ids
-        row_ids, scores = search_index(index, self._query, self._limit)
+        row_ids, scores = search_index(
+            index, self._query, self._limit, self._table.version
+        )
         if len(row_ids) == 0:
             empty_schema = pa.schema([pa.field("score", pa.float32())])
             return pa.Table.from_pylist([], schema=empty_schema)
         scores = pa.array(scores)
-        output_tbl = self._table.to_lance().take(row_ids, columns=self._columns)
+        output_tbl = self._table.to_lance()._take_rows(row_ids, columns=self._columns)
         output_tbl = output_tbl.append_column("score", scores)
 
         if self._where is not None:

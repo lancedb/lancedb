@@ -147,3 +147,25 @@ def test_search_index_with_filter(table):
         assert r["id"] == 1
 
     assert rs == rs2
+
+
+def test_incremental_update(table):
+    table.create_fts_index("text")
+    rs = table.search("puppy").limit(1).to_list()
+    new_data = "puppy puppy puppy puppy puppy"
+    assert rs[0]["text"] != new_data
+    table.add(
+        [
+            {
+                "vector": np.random.randn(128),
+                "id": 101,
+                "text": new_data,
+                "text2": new_data,
+                "nested": {"text": new_data},
+            }
+        ],
+        update_index="fts",
+    )
+    rs = table.to_lance().to_table(with_row_id=True)
+    rs = table.search("puppy").limit(1).to_list()
+    assert rs[0]["text"] == new_data

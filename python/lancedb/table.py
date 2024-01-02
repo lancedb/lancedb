@@ -17,7 +17,7 @@ import inspect
 import os
 from abc import ABC, abstractmethod
 from functools import cached_property
-from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Union
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Literal, Optional, Union
 
 import lance
 import numpy as np
@@ -760,6 +760,7 @@ class LanceTable(Table):
         mode: str = "append",
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
+        update_index: Optional[Literal["fts", "all"]] = None,
     ):
         """Add data to the table.
         If vector columns are missing and the table
@@ -778,6 +779,9 @@ class LanceTable(Table):
             One of "error", "drop", "fill".
         fill_value: float, default 0.
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
+        update_index: str, default None
+            If "fts" then update the full-text search index after adding data.
+            If "all" then update all indices (fts, vector, scalar) after adding data.
 
         Returns
         -------
@@ -792,9 +796,40 @@ class LanceTable(Table):
             on_bad_vectors=on_bad_vectors,
             fill_value=fill_value,
         )
+        old_version = self.version
         lance.write_dataset(data, self._dataset_uri, schema=self.schema, mode=mode)
         self._reset_dataset()
+        if update_index == "all":
+            self._maybe_update_fts_index(old_version)
+            self.to_lance().optimize.optimize_indices()
+        elif update_index == "fts":
+            self._maybe_update_fts_index(old_version)
+        self._reset_dataset()
         register_event("add")
+
+    def _maybe_update_fts_index(self, old_version: int):
+        # does this table have an fts index?
+        index_path = self._get_fts_index_path()
+        fs, path = fs_from_uri(index_path)
+        index_exists = fs.get_file_info(path).type != pa_fs.FileType.NotFound
+        # do nothing if there's no fts index
+        if not index_exists:
+            return
+        self._update_fts_index(path, old_version)
+
+    def _update_fts_index(self, index_path: str, old_version: int):
+        from .fts import update_index
+
+        old_ver = lance.dataset(self._dataset_uri, version=old_version)
+        old_fragments = old_ver.get_fragments()
+        old_fragment_ids = {f.fragment_id for f in old_fragments}
+        new_fragments = self.to_lance().get_fragments()
+        # find fragments that were added
+        fragments_to_index = []
+        for new_frag in new_fragments:
+            if new_frag.fragment_id not in old_fragment_ids:
+                fragments_to_index.append(new_frag)
+        update_index(index_path, fragments_to_index, self.version)
 
     def merge(
         self,
