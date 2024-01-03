@@ -20,7 +20,7 @@ import {
   Utf8,
   type Vector,
   FixedSizeList,
-  vectorFromArray, type Schema, Table as ArrowTable, RecordBatchStreamWriter, List
+  vectorFromArray, type Schema, Table as ArrowTable, RecordBatchStreamWriter, List, Float64
 } from 'apache-arrow'
 import { type EmbeddingFunction } from './index'
 
@@ -59,9 +59,19 @@ export async function convertToTable<T> (data: Array<Record<string, unknown>>, e
       if (typeof values[0] === 'string') {
         // `vectorFromArray` converts strings into dictionary vectors, forcing it back to a string column
         records[columnsKey] = vectorFromArray(values, new Utf8())
-      } else if (Array.isArray(values[0]) && typeof values[0][0] === 'string') {
+      } else if (Array.isArray(values[0])) {
+        const elementType = getElementType(values[0])
+        let innerType
+        if (elementType === 'string') {
+          innerType = new Utf8()
+        } else if (elementType === 'number') {
+          innerType = new Float64()
+        } else {
+          // TODO: pass in schema if it exists, else keep going to the next element
+          throw new Error(`Unsupported array element type ${elementType}`)
+        }
         const listBuilder = makeBuilder({
-          type: new List(new Field('item', new Utf8()))
+          type: new List(new Field('item', innerType, true))
         })
         for (const value of values) {
           listBuilder.append(value)
@@ -74,6 +84,14 @@ export async function convertToTable<T> (data: Array<Record<string, unknown>>, e
   }
 
   return new ArrowTable(records)
+}
+
+function getElementType (arr: any[]): string {
+  if (arr.length === 0) {
+    return 'undefined'
+  }
+
+  return typeof arr[0]
 }
 
 // Creates a new Arrow ListBuilder that stores a Vector column
