@@ -218,6 +218,25 @@ describe('LanceDB client', function () {
       assert.equal(await table.countRows(), 2)
     })
 
+    it('creates a new table from javascript objects with variable sized list', async function () {
+      const dir = await track().mkdir('lancejs')
+      const con = await lancedb.connect(dir)
+
+      const data = [
+        { id: 1, vector: [0.1, 0.2], list_of_str: ['a', 'b', 'c'], list_of_num: [1, 2, 3] },
+        { id: 2, vector: [1.1, 1.2], list_of_str: ['x', 'y'], list_of_num: [4, 5, 6] }
+      ]
+
+      const tableName = 'with_variable_sized_list'
+      const table = await con.createTable(tableName, data) as LocalTable
+      assert.equal(table.name, tableName)
+      assert.equal(await table.countRows(), 2)
+      const rs = await table.filter('id>1').execute()
+      assert.equal(rs.length, 1)
+      assert.deepEqual(rs[0].list_of_str, ['x', 'y'])
+      assert.isTrue(rs[0].list_of_num instanceof Float64Array)
+    })
+
     it('fails to create a new table when the vector column is missing', async function () {
       const dir = await track().mkdir('lancejs')
       const con = await lancedb.connect(dir)
