@@ -713,7 +713,7 @@ class LanceTable(Table):
         field_names: Union[str, List[str]],
         *,
         replace: bool = False,
-        writer_heap_size: Optional[int] = None,
+        writer_heap_size: Optional[int] = 1024 * 1024 * 1024,
     ):
         """Create a full-text search index on the table.
 
@@ -728,6 +728,7 @@ class LanceTable(Table):
             If True, replace the existing index if it exists. Note that this is
             not yet an atomic operation; the index will be temporarily
             unavailable while the new index is being created.
+        writer_heap_size: int, default 1GB
         """
         from .fts import create_index, populate_index
 
