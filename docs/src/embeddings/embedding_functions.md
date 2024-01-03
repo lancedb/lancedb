@@ -20,6 +20,8 @@ You can also define your own embedding function by implementing the `EmbeddingFu
 Our embedding function from the previous section abstracts away all the details about the models and dimensions required to define the schema. You can simply set a feild as **source** or **vector** column. Here's how
 
 ```python
+from lancedb.pydantic import LanceModel, Vector
+
 class Pets(LanceModel):
     vector: Vector(clip.ndims) = clip.VectorField()
     image_uri: str = clip.SourceField()
@@ -56,6 +58,8 @@ result = table.search("dog")
 Let's query an image
 
 ```python
+from pathlib import Path
+
 p = Path("path/to/images/samoyed_100.jpg")
 query_image = Image.open(p)
 table.search(query_image)
@@ -79,7 +83,7 @@ Embedding functions can also fail due to other errors that have nothing to do wi
 LanceDB is integrated with PyDantic. Infact we've used the integration in the above example to define the schema. It is also being used behing the scene by the embdding function API to ingest useful information as table metadata.
 You can also use it for adding utility operations in the schema. For example, in our multi-modal example, you can search images using text or another image. Let us define a utility function to plot the image.
 ```python
-from lancedb.pydantic import LanceModel
+from lancedb.pydantic import LanceModel, Vector
 
 class Pets(LanceModel):
     vector: Vector(clip.ndims) = clip.VectorField()
