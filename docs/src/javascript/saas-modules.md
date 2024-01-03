@@ -37,15 +37,20 @@ yet support Windows or musl-based Linux (such as Alpine Linux).
 
 ## Example code 
 ```javascript
-// connect to a remote DB
+
 const lancedb = require('vectordb');
+const { Schema, Field, Int32, Float32, Utf8, FixedSizeList } = require ("apache-arrow/Arrow.node")
+
+// connect to a remote DB
+const devApiKey = process.env.LANCEDB_DEV_API_KEY
+const dbURI = process.env.LANCEDB_URI
 const db = await lancedb.connect({
-  uri: "db://your-project-name",
-  apiKey: "sk_...",
-  region: "us-east-1"
+  uri: dbURI, // replace dbURI with your project, e.g. "db://your-project-name"
+  apiKey: devApiKey,  // replace dbURI with your api key
+  region: "us-east-1-dev"
 });
 // create a new table
-const tableName = "my_table"
+const tableName = "my_table_000"
 const data = [
     { id: 1, vector: [0.1, 1.0], item: "foo", price: 10.0 },
     { id: 2, vector: [3.9, 0.5], item: "bar", price: 20.0 }
@@ -54,15 +59,15 @@ const schema = new Schema(
     [
         new Field('id', new Int32()), 
         new Field('vector', new FixedSizeList(2, new Field('float32', new Float32()))),
-        new Field('item', new String()),
+        new Field('item', new Utf8()),
         new Field('price', new Float32())
     ]
 )
-const table = await db.createTable(
-    tableName,
+const table = await db.createTable({
+    name: tableName,
     schema,
-    data
-)
+}, data)
+
 // list the table
 const tableNames_1 = await db.tableNames('')
 // add some data and search should be okay
@@ -73,8 +78,8 @@ const newData = [
 table.add(newData)
 // create the index for the table
 await table.createIndex({
-      metric_type: 'L2', 
-      column: 'vector'
+      metric_type: "L2", 
+      column: "vector"
 })
 let result = await table.search([2.8, 4.3]).select(["vector", "price"]).limit(1).execute()
 // update the data
