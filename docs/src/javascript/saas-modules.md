@@ -37,8 +37,10 @@ yet support Windows or musl-based Linux (such as Alpine Linux).
 
 ## Example code 
 ```javascript
-// connect to a remote DB
 const lancedb = require('vectordb');
+const { Schema, Field, Int32, FixedSizeList, Float32 } = require('apache-arrow/Arrow.node')
+
+// connect to a remote DB
 const db = await lancedb.connect({
   uri: "db://your-project-name",
   apiKey: "sk_...",
@@ -58,11 +60,11 @@ const schema = new Schema(
         new Field('price', new Float32())
     ]
 )
-const table = await db.createTable(
-    tableName,
+const table = await db.createTable({
+    name: tableName,
     schema,
-    data
-)
+}, data)
+
 // list the table
 const tableNames_1 = await db.tableNames('')
 // add some data and search should be okay
