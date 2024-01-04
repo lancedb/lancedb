@@ -15,6 +15,7 @@
 import os
 from typing import List, Tuple
 
+from lance import LanceFragment
 import pyarrow as pa
 
 try:
@@ -46,7 +47,8 @@ def create_index(index_path: str, text_fields: List[str]) -> tantivy.Index:
     # Declaring our schema.
     schema_builder = tantivy.SchemaBuilder()
     # special field that we'll populate with row_id
-    schema_builder.add_integer_field("doc_id", stored=True)
+    schema_builder.add_integer_field("_rowid", stored=True)
+    schema_builder.add_integer_field("_version", stored=True)
     # data fields
     for name in text_fields:
         schema_builder.add_text_field(name, stored=True)
@@ -74,43 +76,107 @@ def populate_index(index: tantivy.Index, table: LanceTable, fields: List[str]) -
     int
         The number of rows indexed
     """
+    # version
+    version = table.version
     # first check the fields exist and are string or large string type
+    max_nested_level = _get_max_nested_level(table.schema, fields)
+
+    # create a tantivy writer
+    writer = open_writer(index)
+    # write data into index
+    dataset = table.to_lance()
+
+    for b in dataset.to_batches(columns=fields, with_row_id=True):
+        _add_batch(b, writer, fields, version, max_nested_level)
+    # commit changes
+    writer.commit()
+    return len(table)
+
+
+def open_writer(index: tantivy.Index) -> "IndexWriter":
+    writer_heap_size = os.environ.get("LANCEDB_FTS_HEAP_SIZE")
+    if writer_heap_size is not None:
+        writer_heap_size = int(writer_heap_size)
+        writer = index.writer(heap_size=writer_heap_size)
+    else:
+        writer = index.writer(heap_size=1024 * 1024 * 1024)
+    return writer
+
+
+def _get_max_nested_level(schema: pa.Schema, fields: List[str]) -> int:
+    """
+    pyarrow table can't resolve nested references automatically
+    so we need to check whether there are nested references and
+    then flatten the table
+    """
     nested = []
     for name in fields:
         try:
-            f = table.schema.field(name)  # raises KeyError if not found
+            f = schema.field(name)  # raises KeyError if not found
         except KeyError:
-            f = resolve_path(table.schema, name)
+            f = resolve_path(schema, name)
             nested.append(name)
 
         if not pa.types.is_string(f.type) and not pa.types.is_large_string(f.type):
             raise TypeError(f"Field {name} is not a string type")
 
-    # create a tantivy writer
-    writer = index.writer()
-    # write data into index
-    dataset = table.to_lance()
-    row_id = 0
-
     max_nested_level = 0
     if len(nested) > 0:
         max_nested_level = max([len(name.split(".")) for name in nested])
+    return max_nested_level
 
-    for b in dataset.to_batches(columns=fields):
-        if max_nested_level > 0:
-            b = pa.Table.from_batches([b])
-            for _ in range(max_nested_level - 1):
-                b = b.flatten()
-        for i in range(b.num_rows):
-            doc = tantivy.Document()
-            doc.add_integer("doc_id", row_id)
-            for name in fields:
-                doc.add_text(name, b[name][i].as_py())
-            writer.add_document(doc)
-            row_id += 1
+
+def _add_batch(
+    b: pa.RecordBatch,
+    writer: "IndexWriter",
+    fields: List[str],
+    version: int,
+    max_nested_level: int,
+):
+    if max_nested_level > 0:
+        b = pa.Table.from_batches([b])
+        for _ in range(max_nested_level - 1):
+            b = b.flatten()
+    for i in range(b.num_rows):
+        doc = tantivy.Document()
+        rowid = b["_rowid"][i].as_py()
+        doc.add_integer("_rowid", rowid)
+        doc.add_integer("_version", version)
+        for name in fields:
+            doc.add_text(name, b[name][i].as_py())
+        writer.add_document(doc)
+
+
+def update_index(index_path: str, fragments: List[LanceFragment], version: int) -> int:
+    """
+    Update an existing index with new data
+    """
+    if len(fragments) == 0:
+        return 0
+    # Open the index
+    index = tantivy.Index.open(index_path)
+    # Filter the schema and exclude _rowid and _version fields
+    # tantivy doesn't expose the schema field names
+    # fields = [f for f in schema.field_names() if f not in ["_rowid", "_version"]]
+    searcher = index.searcher()
+    query = index.parse_query("*")
+    batch = searcher.search(query, limit=1)
+    fields = []
+    for _, doc_address in batch.hits:
+        doc = searcher.doc(doc_address)
+        fields = [f for f in doc.to_dict().keys() if f not in ["_rowid", "_version"]]
+    max_nested_level = _get_max_nested_level(fragments[0].schema, fields)
+
+    # Read each batch from each fragment and add to the index
+    writer = open_writer(index)
+    count = 0
+    for fragment in fragments:
+        for b in fragment.to_batches(columns=fields, with_row_id=True):
+            _add_batch(b, writer, fields, version, max_nested_level)
+            count += b.num_rows
     # commit changes
     writer.commit()
-    return row_id
+    return count
 
 
 def resolve_path(schema, field_name: str) -> pa.Field:
@@ -138,7 +204,7 @@ def resolve_path(schema, field_name: str) -> pa.Field:
 
 
 def search_index(
-    index: tantivy.Index, query: str, limit: int = 10
+    index: tantivy.Index, query: str, limit: int = 10, version: int = None
 ) -> Tuple[Tuple[int], Tuple[float]]:
     """
     Search an index for a query
@@ -161,14 +227,11 @@ def search_index(
     searcher = index.searcher()
     query = index.parse_query(query)
     # get top results
-    results = searcher.search(query, limit)
-    if results.count == 0:
-        return tuple(), tuple()
-    return tuple(
-        zip(
-            *[
-                (searcher.doc(doc_address)["doc_id"][0], score)
-                for score, doc_address in results.hits
-            ]
-        )
-    )
+    batch = searcher.search(query, limit=limit)
+    if batch.count == 0:
+        return ((), ())
+    rowids, scores = [], []
+    for score, doc_address in batch.hits:
+        rowids.append(searcher.doc(doc_address)["_rowid"][0])
+        scores.append(score)
+    return (tuple(rowids), tuple(scores))
