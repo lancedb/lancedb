@@ -75,7 +75,7 @@ const newData = [
       { id: 3, vector: [10.3, 1.9], item: "test1", price: 30.0 }, 
       { id: 4, vector: [6.2, 9.2], item: "test2", price: 40.0 }
 ]
-table.add(newData)
+await table.add(newData)
 // create the index for the table
 await table.createIndex({
       metric_type: "L2", 
