@@ -8,6 +8,8 @@ You can simply follow these steps and forget about the details of your embedding
 ### Step 1 - Define the embedding function
 We have some pre-defined embedding functions in the global registry with more coming soon. Here's let's an implementation of CLIP as example.
 ```
+from lancedb.embeddings import EmbeddingFunctionRegistry
+
 registry = EmbeddingFunctionRegistry.get_instance()
 clip = registry.get("open-clip").create()
 
@@ -18,6 +20,8 @@ You can also define your own embedding function by implementing the `EmbeddingFu
 Our embedding function from the previous section abstracts away all the details about the models and dimensions required to define the schema. You can simply set a feild as **source** or **vector** column. Here's how
 
 ```python
+from lancedb.pydantic import LanceModel, Vector
+
 class Pets(LanceModel):
     vector: Vector(clip.ndims) = clip.VectorField()
     image_uri: str = clip.SourceField()
@@ -30,6 +34,8 @@ class Pets(LanceModel):
 Now that we have chosen/defined our embedding function and the schema, we can create the table
 
 ```python
+import lancedb
+
 db = lancedb.connect("~/lancedb")
 table = db.create_table("pets", schema=Pets)
 
@@ -52,6 +58,8 @@ result = table.search("dog")
 Let's query an image
 
 ```python
+from pathlib import Path
+
 p = Path("path/to/images/samoyed_100.jpg")
 query_image = Image.open(p)
 table.search(query_image)
@@ -75,6 +83,8 @@ Embedding functions can also fail due to other errors that have nothing to do wi
 LanceDB is integrated with PyDantic. Infact we've used the integration in the above example to define the schema. It is also being used behing the scene by the embdding function API to ingest useful information as table metadata.
 You can also use it for adding utility operations in the schema. For example, in our multi-modal example, you can search images using text or another image. Let us define a utility function to plot the image.
 ```python
+from lancedb.pydantic import LanceModel, Vector
+
 class Pets(LanceModel):
     vector: Vector(clip.ndims) = clip.VectorField()
     image_uri: str = clip.SourceField()
