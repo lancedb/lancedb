@@ -147,3 +147,18 @@ def test_search_index_with_filter(table):
         assert r["id"] == 1
 
     assert rs == rs2
+
+
+def test_null_input(table):
+    table.add(
+        [
+            {
+                "vector": np.random.randn(128),
+                "id": 101,
+                "text": None,
+                "text2": None,
+                "nested": {"text": None},
+            }
+        ]
+    )
+    table.create_fts_index("text")
