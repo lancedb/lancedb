@@ -103,10 +103,13 @@ def populate_index(index: tantivy.Index, table: LanceTable, fields: List[str]) -
                 b = b.flatten()
         for i in range(b.num_rows):
             doc = tantivy.Document()
-            doc.add_integer("doc_id", row_id)
             for name in fields:
-                doc.add_text(name, b[name][i].as_py())
-            writer.add_document(doc)
+                value = b[name][i].as_py()
+                if value is not None:
+                    doc.add_text(name, value)
+            if not doc.is_empty:
+                doc.add_integer("doc_id", row_id)
+                writer.add_document(doc)
             row_id += 1
     # commit changes
     writer.commit()
