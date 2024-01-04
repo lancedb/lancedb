@@ -156,7 +156,7 @@ ___
 
 ### createIndex
 
-▸ **createIndex**(`metric_type`, `column`): `Promise`<`any`\>
+▸ **createIndex**(`metric_type`, `column`, `index_cache_size`): `Promise`<`any`\>
 
 Create an ANN index on this Table vector index.
 
