@@ -88,6 +88,9 @@ jobs:
         cd docs/test
         node md_testing.js
     - name: Test
+      env:
+        LANCEDB_URI: ${{ secrets.LANCEDB_URI }}
+        LANCEDB_DEV_API_KEY: ${{ secrets.LANCEDB_DEV_API_KEY }}
       run: |
         cd docs/test/node
         for d in *; do cd "$d"; echo "$d".js; node "$d".js; cd ..; done
