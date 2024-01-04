@@ -44,6 +44,7 @@ const { Schema, Field, Int32, Float32, Utf8, FixedSizeList } = require ("apache-
 // connect to a remote DB
 const devApiKey = process.env.LANCEDB_DEV_API_KEY
 const dbURI = process.env.LANCEDB_URI
+console.log(devApiKey)
 const db = await lancedb.connect({
   uri: dbURI, // replace dbURI with your project, e.g. "db://your-project-name"
   apiKey: devApiKey,  // replace dbURI with your api key
@@ -75,7 +76,7 @@ const newData = [
       { id: 3, vector: [10.3, 1.9], item: "test1", price: 30.0 }, 
       { id: 4, vector: [6.2, 9.2], item: "test2", price: 40.0 }
 ]
-table.add(newData)
+await table.add(newData)
 // create the index for the table
 await table.createIndex({
       metric_type: "L2", 
