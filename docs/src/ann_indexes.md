@@ -164,6 +164,7 @@ You can further filter the elements returned by a search using a where clause.
      const results_2 = await table
          .search(Array(1536).fill(1.2))
          .where("id != '1141'")
+         .limit(2)
          .execute()
      ```
 
@@ -187,6 +188,7 @@ You can select the columns returned by the query using a select clause.
      const results_3 = await table
          .search(Array(1536).fill(1.2))
          .select(["id"])
+         .limit(2)
          .execute()
      ```
 
