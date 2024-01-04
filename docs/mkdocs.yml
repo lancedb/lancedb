@@ -124,9 +124,9 @@ nav:
       - TransformersJS Embedding Search: examples/transformerjs_embedding_search_nodejs.md
   - 🔧 CLI & Config: cli_config.md
   - ⚙️ API reference:
-    - "Python API: Open source": python/python.md
-    - "JavaScript API: Open source": javascript/modules.md
-    - "Python API: Cloud": python/saas-python.md
+    - "OSS Python": python/python.md
+    - "SaaS Python": python/saas-python.md
+    - "OSS JavaScript": javascript/modules.md
   - 💭 FAQs: faq.md
   - ☁️ LanceDB Cloud: cloud/index.md
 
@@ -176,9 +176,9 @@ nav:
     - Serverless Chatbot from any website: examples/serverless_website_chatbot.md
     - TransformersJS Embedding Search: examples/transformerjs_embedding_search_nodejs.md
 - API reference:
-  - "Python API: Open source": python/python.md
-  - "JavaScript API: Open source": javascript/modules.md
-  - "Python API: Cloud": python/saas-python.md
+    - "OSS Python": python/python.md
+    - "SaaS Python": python/saas-python.md
+    - "OSS JavaScript": javascript/modules.md
 - LanceDB Cloud↗: https://noteforms.com/forms/lancedb-mailing-list-cloud-kty1o5?notionforms=1&utm_source=notionforms
 
 extra_css:
