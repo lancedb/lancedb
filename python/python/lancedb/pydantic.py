@@ -227,7 +227,7 @@ def EncodedImage() -> Type[ImageMixin]:
         ) -> CoreSchema:
             return core_schema.no_info_after_validator_function(
                 cls,
-                core_schema.binary_schema(),
+                core_schema.str_schema(),
             )
 
         @classmethod
@@ -292,7 +292,7 @@ def ImageURI() -> Type[ImageMixin]:
         ) -> CoreSchema:
             return core_schema.no_info_after_validator_function(
                 cls,
-                core_schema.string_schema(),
+                core_schema.str_schema(),
             )
 
         @classmethod
@@ -302,9 +302,13 @@ def ImageURI() -> Type[ImageMixin]:
         # For pydantic v1
         @classmethod
         def validate(cls, v):
-            # if not isinstance(v, str):
-            #     raise TypeError("A str is needed")
-            # return cls(v)
+            from lance.arrow import ImageURIArray, ImageURIType
+
+            if isinstance(v, (str, pa.StringArray)):
+                v = pa.ExtensionArray.from_storage(ImageURIType(), v)
+            if not isinstance(v, ImageURIArray):
+                raise TypeError("Invalid input array type", type(v))
+
             return v
 
         if PYDANTIC_VERSION < (2, 0):
