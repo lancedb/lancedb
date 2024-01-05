@@ -237,9 +237,15 @@ def EncodedImage() -> Type[ImageMixin]:
         # For pydantic v1
         @classmethod
         def validate(cls, v):
-            # if not isinstance(v, bytes):
-            #     raise TypeError("A bytes is needed")
-            return cls(v)
+            from lance.arrow import ImageURIArray, EncodedImageType, EncodedImageArray
+            if isinstance(v, ImageURIArray):
+                v = v.read_uris()
+            if isinstance(v, pa.BinaryArray):
+                v = pa.ExtensionArray.from_storage(EncodedImageType(), v)
+            if not isinstance(v, EncodedImageArray):
+                raise TypeError("Invalid input array type", type(v))
+
+            return v
 
         if PYDANTIC_VERSION < (2, 0):
 
@@ -297,7 +303,8 @@ def ImageURI() -> Type[ImageMixin]:
         def validate(cls, v):
             # if not isinstance(v, str):
             #     raise TypeError("A str is needed")
-            return cls(v)
+            # return cls(v)
+            return v
 
         if PYDANTIC_VERSION < (2, 0):
 
