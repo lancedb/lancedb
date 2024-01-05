@@ -498,6 +498,26 @@ describe('LanceDB client', function () {
       assert.equal(results.length, 2)
     })
   })
+
+  describe.only('when inspecting the schema', function () {
+    it('should return the schema', async function () {
+      const uri = await createTestDB()
+      const db = await lancedb.connect(uri)
+      assert.equal(db.uri, uri)
+      const table = await db.createTable({
+        name: 'some_table',
+        schema: new Schema(
+          [
+            new Field('id', new Int32()),
+            new Field('vector', new FixedSizeList(128, new Field('float32', new Float32()))),
+            new Field('s', new Utf8())
+          ]
+        )
+      })
+      const schema = await table.schema
+      console.log({ schema })
+    })
+  })
 })
 
 describe('Remote LanceDB client', function () {

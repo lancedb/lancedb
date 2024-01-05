@@ -12,10 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::convert::TryFrom;
+
 use arrow_array::RecordBatchIterator;
 use lance::dataset::optimize::CompactionOptions;
 use lance::dataset::{WriteMode, WriteParams};
+use lance::format::pb::field;
 use lance::io::object_store::ObjectStoreParams;
+use lance::arrow::json::JsonSchema;
 
 use crate::arrow::arrow_buffer_to_record_batch;
 use neon::prelude::*;
@@ -424,6 +428,35 @@ impl JsTable {
             })
         });
 
+        Ok(promise)
+    }
+
+    pub(crate) fn js_schema(mut cx: FunctionContext) -> JsResult<JsPromise> {
+        let js_table = cx.this().downcast_or_throw::<JsBox<JsTable>, _>(&mut cx)?;
+        let rt = runtime(&mut cx)?;
+        let (deferred, promise) = cx.promise();
+        let channel = cx.channel();
+        let table = js_table.table.clone();
+
+        rt.spawn(async move {
+            let schema = table.schema().clone();
+
+            deferred.settle_with(&channel, move |mut cx| {
+                let output = JsArray::new(&mut cx, schema.as_ref().all_fields().len() as u32);
+                schema.as_ref().all_fields().iter().enumerate().for_each(|(i, f)| {
+                    println!("field: {:?}", f);
+                    let js_field = JsObject::new(&mut cx);
+                    let field_name = cx.string(f.name());
+                    js_field.set(&mut cx, "name", field_name).unwrap();
+
+                    let field_type = cx.string(format!("{:?}", f.data_type()));
+                    js_field.set(&mut cx, "type", field_type).unwrap();
+
+                    output.set(&mut cx, i as u32, js_field).unwrap();
+                });
+                Ok(output)
+            })
+        });
         Ok(promise)
     }
 }

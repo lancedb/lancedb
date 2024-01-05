@@ -24,7 +24,7 @@ import { isEmbeddingFunction } from './embedding/embedding_function'
 import { type Literal, toSQL } from './util'
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { databaseNew, databaseTableNames, databaseOpenTable, databaseDropTable, tableCreate, tableAdd, tableCreateScalarIndex, tableCreateVectorIndex, tableCountRows, tableDelete, tableUpdate, tableCleanupOldVersions, tableCompactFiles, tableListIndices, tableIndexStats } = require('../native.js')
+const { databaseNew, databaseTableNames, databaseOpenTable, databaseDropTable, tableCreate, tableAdd, tableCreateScalarIndex, tableCreateVectorIndex, tableCountRows, tableDelete, tableUpdate, tableCleanupOldVersions, tableCompactFiles, tableListIndices, tableIndexStats, tableSchema } = require('../native.js')
 
 export { Query }
 export type { EmbeddingFunction }
@@ -354,6 +354,8 @@ export interface Table<T = number[]> {
    * Get statistics about an index.
    */
   indexStats: (indexUuid: string) => Promise<IndexStats>
+
+  schema: Promise<Schema>
 }
 
 export interface UpdateArgs {
@@ -681,6 +683,10 @@ export class LocalTable<T = number[]> implements Table<T> {
 
   async indexStats (indexUuid: string): Promise<IndexStats> {
     return tableIndexStats.call(this._tbl, indexUuid)
+  }
+
+  get schema (): Promise<Schema> {
+    return tableSchema.call(this._tbl)
   }
 }
 
