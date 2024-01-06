@@ -23,6 +23,7 @@ import pyarrow as pa
 import pydantic
 import pytest
 import pytz
+from lance.arrow import ImageURIArray
 from pydantic import Field
 
 from lancedb.pydantic import (
