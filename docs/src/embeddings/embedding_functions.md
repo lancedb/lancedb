@@ -1,6 +1,6 @@
 Representing multi-modal data as vector embeddings is becoming a standard practice. Embedding functions themselves can be thought of as a part of the processing pipeline that each request(input) has to be passed through. After initial setup these components are not expected to change for a particular project. 
 
-Our new embedding functions API allow you simply set it up once and the table remembers it, effectively making the **embedding functions disappear in the background** so you don't have to worry about modelling and simply focus on the DB aspects of VectorDB.
+Our new embedding functions API allow you simply set it up once and the table remembers it, effectively making the **embedding functions disappear in the background** so you don't have to worry about modelling and can simply focus on the DB aspects of VectorDB.
 
 You can simply follow these steps and forget about the details of your embedding functions as long as you don't intend to change it.
 
