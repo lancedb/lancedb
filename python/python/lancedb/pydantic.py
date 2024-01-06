@@ -36,10 +36,22 @@ import numpy as np
 import pyarrow as pa
 import pydantic
 import semver
+from pydantic.fields import FieldInfo
+from lance.arrow import (
+    EncodedImageScalar,
+    ImageURIScalar,
+    ImageURIArray,
+    EncodedImageType,
+    EncodedImageArray,
+)
+
+from .embeddings import EmbeddingFunctionRegistry
 
 PYDANTIC_VERSION = semver.Version.parse(pydantic.__version__)
 try:
     from pydantic_core import CoreSchema, core_schema
+    from pydantic import GetJsonSchemaHandler
+    from pydantic.json_schema import JsonSchemaValue
 except ImportError:
     if PYDANTIC_VERSION >= (2,):
         raise
@@ -225,20 +237,42 @@ def EncodedImage() -> Type[ImageMixin]:
         def __get_pydantic_core_schema__(
             cls, _source_type: Any, _handler: pydantic.GetCoreSchemaHandler
         ) -> CoreSchema:
-            return core_schema.no_info_after_validator_function(
-                cls,
-                core_schema.str_schema(),
+            def validate_from_bytes(value: bytes) -> EncodedImageScalar:
+                return EncodedImageScalar(value)
+
+            from_bytes_schema = core_schema.chain_schema(
+                [
+                    core_schema.bytes_schema(),
+                    core_schema.no_info_plain_validator_function(validate_from_bytes),
+                ]
             )
+
+            return core_schema.json_or_python_schema(
+                json_schema=from_bytes_schema,
+                python_schema=core_schema.union_schema(
+                    [
+                        core_schema.is_instance_schema(EncodedImageArray),
+                        from_bytes_schema,
+                    ]
+                ),
+                serialization=core_schema.plain_serializer_function_ser_schema(
+                    lambda instance: instance.values
+                ),
+            )
+
+        @classmethod
+        def __get_pydantic_json_schema__(
+            cls, _core_schema: core_schema.CoreSchema, handler: GetJsonSchemaHandler
+        ) -> JsonSchemaValue:
+            return handler(core_schema.bytes_schema())
 
         @classmethod
         def __get_validators__(cls) -> Generator[Callable, None, None]:
             yield cls.validate
 
-        # For pydantic v1
+        # For pydantic v2
         @classmethod
         def validate(cls, v):
-            from lance.arrow import ImageURIArray, EncodedImageType, EncodedImageArray
-
             if isinstance(v, ImageURIArray):
                 v = v.read_uris()
             if isinstance(v, pa.BinaryArray):
@@ -290,16 +324,34 @@ def ImageURI() -> Type[ImageMixin]:
         def __get_pydantic_core_schema__(
             cls, _source_type: Any, _handler: pydantic.GetCoreSchemaHandler
         ) -> CoreSchema:
-            return core_schema.no_info_after_validator_function(
-                cls,
-                core_schema.str_schema(),
+            def validate_from_str(value: str) -> ImageURIScalar:
+                return ImageURIScalar(value)
+
+            from_str_schema = core_schema.chain_schema(
+                [
+                    core_schema.str_schema(),
+                    core_schema.no_info_plain_validator_function(validate_from_str),
+                ]
+            )
+
+            return core_schema.json_or_python_schema(
+                json_schema=from_str_schema,
+                python_schema=core_schema.union_schema(
+                    [
+                        core_schema.is_instance_schema(ImageURIArray),
+                        from_str_schema,
+                    ]
+                ),
+                serialization=core_schema.plain_serializer_function_ser_schema(
+                    lambda instance: instance.values
+                ),
             )
 
         @classmethod
         def __get_validators__(cls) -> Generator[Callable, None, None]:
             yield cls.validate
 
-        # For pydantic v1
+        # For pydantic v2
         @classmethod
         def validate(cls, v):
             from lance.arrow import ImageURIArray, ImageURIType

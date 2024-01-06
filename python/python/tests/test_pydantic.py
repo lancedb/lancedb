@@ -18,7 +18,7 @@ import os
 from datetime import date, datetime
 from typing import List, Optional, Tuple
 
-import numpy as np
+from pathlib import Path
 import pyarrow as pa
 import pydantic
 import pytest
@@ -260,6 +260,9 @@ def test_lance_model_with_lance_types():
     png_uris = [
         "file://" + os.path.join(os.path.dirname(__file__), "images/1.png"),
     ]
+    if os.name == "nt":
+        png_uris = [str(Path(x)) for x in png_uris]
+
     default_image_uris = ImageURIArray.from_uris(png_uris)
     default_encoded_images = default_image_uris.read_uris()
 
@@ -279,6 +282,6 @@ def test_lance_model_with_lance_types():
     assert expected_model == actual_model
 
     actual_model = TestModel(
-        encoded_images=default_image_uris, image_uris=default_image_uris
+        encoded_images=default_encoded_images, image_uris=default_image_uris
     )
     assert expected_model == actual_model
