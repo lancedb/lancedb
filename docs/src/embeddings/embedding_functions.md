@@ -38,9 +38,9 @@ import lancedb
 
 db = lancedb.connect("~/lancedb")
 table = db.create_table("pets", schema=Pets)
-
 ```
-That's it! We have ingested all the information needed to embed source and query inputs. We can now forget about the model and dimension details and start to build or VectorDB
+
+That's it! We have ingested all the information needed to embed source and query inputs. We can now forget about the model and dimension details and start to build our VectorDB.
 
 ### Step 4 - Ingest lots of data and run vector search!
 Now you can just add the data and it'll be vectorized automatically
@@ -63,25 +63,24 @@ from pathlib import Path
 p = Path("path/to/images/samoyed_100.jpg")
 query_image = Image.open(p)
 table.search(query_image)
-
 ```
+
 ### Rate limit Handling
-`EmbeddingFunction` class wraps the calls for source and query embedding generation inside a rate limit handler that retries the requests with exponential backoff after successive failures. By default the maximum retires is set to 7. You can tune it by setting it to a different number or disable it by setting it to 0.
-Example
-----
+`EmbeddingFunction` class wraps the calls for source and query embedding generation inside a rate limit handler that retries the requests with exponential backoff after successive failures. By default the maximum retires is set to 7. You can tune it by setting it to a different number or disable it by setting it to 0. Example:
 
 ```python
 clip = registry.get("open-clip").create() # Defaults to 7 max retries
 clip = registry.get("open-clip").create(max_retries=10) # Increase max retries to 10
 clip = registry.get("open-clip").create(max_retries=0) # Retries disabled
-````
+```
 
 NOTE:
-Embedding functions can also fail due to other errors that have nothing to do with rate limits. This is why the error is also logged.
+Embedding functions can also fail due to other errors that have nothing to do with rate limits. This is why the errors are also logged.
 
 ### A little fun with PyDantic
-LanceDB is integrated with PyDantic. Infact we've used the integration in the above example to define the schema. It is also being used behing the scene by the embdding function API to ingest useful information as table metadata.
-You can also use it for adding utility operations in the schema. For example, in our multi-modal example, you can search images using text or another image. Let us define a utility function to plot the image.
+LanceDB is integrated with PyDantic. In fact, we've used the integration in the above example to define the schema. It is also being used behind the scene by the embedding function API to ingest useful information as table metadata.
+You can also use it for adding utility operations in the schema. For example, in our multi-modal example, you can search images using text or another image. Let's define a utility function to plot the image.
+
 ```python
 from lancedb.pydantic import LanceModel, Vector
 
@@ -93,7 +92,8 @@ class Pets(LanceModel):
     def image(self):
         return Image.open(self.image_uri)
 ```
-Now, you can covert your search results to pydantic model and use this property.
+
+Now, you can covert your search results to PyDantic model and use its property.
 
 ```python
 rs = table.search(query_image).limit(3).to_pydantic(Pets)
@@ -102,4 +102,4 @@ rs[2].image
 
 ![](../assets/dog_clip_output.png)
 
-Now that you've the basic idea about LanceDB embedding function, let us now dive deeper into the API that you can use to implement your own embedding functions!
+Now that you have the basic idea about LanceDB embedding function, let us dive deeper into the API that you can use to implement your own embedding functions!
