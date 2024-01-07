@@ -60,7 +60,7 @@ def populate_index(
     index: tantivy.Index,
     table: LanceTable,
     fields: List[str],
-    writer_heap_size: Optional[int] = 1024 * 1024 * 1024,
+    writer_heap_size: int = 1024 * 1024 * 1024,
 ) -> int:
     """
     Populate an index with data from a LanceTable
@@ -73,7 +73,7 @@ def populate_index(
         The table to index
     fields : List[str]
         List of fields to index
-    writer_heap_size : Optional[int]
+    writer_heap_size : int
         The writer heap size in bytes, defaults to 1GB
 
     Returns
