@@ -75,6 +75,18 @@ applied on top of the full text search results. This can be invoked via the fami
 table.search("puppy").limit(10).where("meta='foo'").to_list()
 ```
 
+## Configurations
+
+By default, LanceDB configures a 1GB heap size limit for creating the index. You can 
+reduce this if running on a smaller node, or increase this for faster performance while
+indexing a larger corpus.
+
+```python
+# configure a 512MB heap size
+heap = 1024 * 1024 * 512
+table.create_fts_index(["text1", "text2"], writer_heap_size=heap, replace=True)
+```
+
 ## Current limitations
 
 1. Currently we do not yet support incremental writes.
