@@ -24,6 +24,31 @@ Currently, LanceDB supports the following metrics:
 If you do not create a vector index, LanceDB exhaustively scans the *entire* vector space
 and compute the distance to every vector in order to find the exact nearest neighbors. This is effectively a kNN search.
 
+<!-- Setup Code
+```python
+import lancedb
+import numpy as np
+uri = "data/sample-lancedb"
+db = lancedb.connect(uri)
+
+data = [{"vector": row, "item": f"item {i}"}
+     for i, row in enumerate(np.random.random((10_000, 1536)).astype('float32'))]
+
+db.create_table("my_vectors", data=data)
+```
+-->
+<!-- Setup Code
+```javascript
+const vectordb_setup = require('vectordb')
+const db_setup = await vectordb_setup.connect('data/sample-lancedb')
+
+let data = []
+for (let i = 0; i < 10_000; i++) {
+     data.push({vector: Array(1536).fill(i), id: `${i}`, content: "", longId: `${i}`},)
+}
+await db_setup.createTable('my_vectors', data)
+```
+-->
 
 === "Python"
 
