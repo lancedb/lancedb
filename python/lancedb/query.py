@@ -485,7 +485,7 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         if not Path(index_path).exists():
             raise FileNotFoundError(
                 "Fts index does not exist."
-                f"Please first call table.create_fts_index('<field_names>') to create the fts index."
+                f"Please first call table.create_fts_index(['<field_names>']) to create the fts index."
             )
         # open the index
         index = tantivy.Index.open(index_path)
