@@ -707,7 +707,11 @@ class LanceTable(Table):
         self._dataset.create_scalar_index(column, index_type="BTREE", replace=replace)
 
     def create_fts_index(
-        self, field_names: Union[str, List[str]], *, replace: bool = False
+        self,
+        field_names: Union[str, List[str]],
+        *,
+        replace: bool = False,
+        writer_heap_size: Optional[int] = 1024 * 1024 * 1024,
     ):
         """Create a full-text search index on the table.
 
@@ -722,6 +726,7 @@ class LanceTable(Table):
             If True, replace the existing index if it exists. Note that this is
             not yet an atomic operation; the index will be temporarily
             unavailable while the new index is being created.
+        writer_heap_size: int, default 1GB
         """
         from .fts import create_index, populate_index
 
@@ -738,7 +743,7 @@ class LanceTable(Table):
             fs.delete_dir(path)
 
         index = create_index(self._get_fts_index_path(), field_names)
-        populate_index(index, self, field_names)
+        populate_index(index, self, field_names, writer_heap_size=writer_heap_size)
 
     def _get_fts_index_path(self):
         return join_uri(self._dataset_uri, "_indices", "tantivy")
