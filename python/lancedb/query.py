@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import TYPE_CHECKING, List, Literal, Optional, Type, Union
 
 import deprecation
@@ -480,6 +481,12 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
 
         # get the index path
         index_path = self._table._get_fts_index_path()
+        # check if the index exist
+        if not Path(index_path).exists():
+            raise FileNotFoundError(
+                "Fts index does not exist."
+                f"Please first call table.create_fts_index(['<field_names>']) to create the fts index."
+            )
         # open the index
         index = tantivy.Index.open(index_path)
         # get the scores and doc ids
