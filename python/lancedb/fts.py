@@ -13,7 +13,7 @@
 
 """Full text search index using tantivy-py"""
 import os
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import pyarrow as pa
 
@@ -56,7 +56,12 @@ def create_index(index_path: str, text_fields: List[str]) -> tantivy.Index:
     return index
 
 
-def populate_index(index: tantivy.Index, table: LanceTable, fields: List[str]) -> int:
+def populate_index(
+    index: tantivy.Index,
+    table: LanceTable,
+    fields: List[str],
+    writer_heap_size: int = 1024 * 1024 * 1024,
+) -> int:
     """
     Populate an index with data from a LanceTable
 
@@ -68,6 +73,8 @@ def populate_index(index: tantivy.Index, table: LanceTable, fields: List[str]) -
         The table to index
     fields : List[str]
         List of fields to index
+    writer_heap_size : int
+        The writer heap size in bytes, defaults to 1GB
 
     Returns
     -------
@@ -87,7 +94,7 @@ def populate_index(index: tantivy.Index, table: LanceTable, fields: List[str]) -
             raise TypeError(f"Field {name} is not a string type")
 
     # create a tantivy writer
-    writer = index.writer()
+    writer = index.writer(heap_size=writer_heap_size)
     # write data into index
     dataset = table.to_lance()
     row_id = 0
