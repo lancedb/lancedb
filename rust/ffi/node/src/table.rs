@@ -441,7 +441,7 @@ impl JsTable {
 
         rt.spawn(async move {            
             deferred.settle_with(&channel, move |mut cx| {
-                let schema = table.schema().clone();
+                let schema = table.schema();
                 let batches = vec![RecordBatch::new_empty(schema)];
                 let buffer = record_batch_to_buffer(batches).or_throw(&mut cx)?;
                 convert::new_js_buffer(buffer, &mut cx, is_electron)
