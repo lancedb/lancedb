@@ -13,6 +13,10 @@
 // limitations under the License.
 
 use neon::prelude::*;
+use neon::types::buffer::TypedArray;
+
+use crate::error::ResultExt;
+
 
 pub(crate) fn vec_str_to_array<'a, C: Context<'a>>(
     vec: &Vec<String>,
@@ -33,4 +37,21 @@ pub(crate) fn js_array_to_vec(array: &JsArray, cx: &mut FunctionContext) -> Vec<
         query_vec.push(entry.value(cx) as f32);
     }
     query_vec
+}
+
+// Creates a new JsBuffer from a rust buffer with a special logic for electron
+pub(crate) fn new_js_buffer<'a>(
+    buffer: Vec<u8>,
+    cx: &mut TaskContext<'a>,
+    is_electron: bool,
+) -> NeonResult<Handle<'a, JsBuffer>> {
+    if is_electron {
+        // Electron does not support `external`: https://github.com/neon-bindings/neon/pull/937
+        let mut js_buffer = JsBuffer::new(cx, buffer.len()).or_throw(cx)?;
+        let buffer_data = js_buffer.as_mut_slice(cx);
+        buffer_data.copy_from_slice(buffer.as_slice());
+        Ok(js_buffer)
+    } else {
+        Ok(JsBuffer::external(cx, buffer))
+    }
 }

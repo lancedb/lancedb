@@ -12,22 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::convert::TryFrom;
-
-use arrow_array::RecordBatchIterator;
+use arrow_array::{RecordBatchIterator, RecordBatch};
 use lance::dataset::optimize::CompactionOptions;
 use lance::dataset::{WriteMode, WriteParams};
-use lance::format::pb::field;
 use lance::io::object_store::ObjectStoreParams;
-use lance::arrow::json::JsonSchema;
 
-use crate::arrow::arrow_buffer_to_record_batch;
+use crate::arrow::{arrow_buffer_to_record_batch, record_batch_to_buffer};
 use neon::prelude::*;
 use neon::types::buffer::TypedArray;
 use vectordb::Table;
 
 use crate::error::ResultExt;
-use crate::{get_aws_creds, get_aws_region, runtime, JsDatabase};
+use crate::{get_aws_creds, get_aws_region, runtime, JsDatabase, convert};
 
 pub(crate) struct JsTable {
     pub table: Table,
@@ -438,23 +434,17 @@ impl JsTable {
         let channel = cx.channel();
         let table = js_table.table.clone();
 
-        rt.spawn(async move {
-            let schema = table.schema().clone();
+        let is_electron = cx
+            .argument::<JsBoolean>(0)
+            .or_throw(&mut cx)?
+            .value(&mut cx);
 
+        rt.spawn(async move {            
             deferred.settle_with(&channel, move |mut cx| {
-                let output = JsArray::new(&mut cx, schema.as_ref().all_fields().len() as u32);
-                schema.as_ref().all_fields().iter().enumerate().for_each(|(i, f)| {
-                    println!("field: {:?}", f);
-                    let js_field = JsObject::new(&mut cx);
-                    let field_name = cx.string(f.name());
-                    js_field.set(&mut cx, "name", field_name).unwrap();
-
-                    let field_type = cx.string(format!("{:?}", f.data_type()));
-                    js_field.set(&mut cx, "type", field_type).unwrap();
-
-                    output.set(&mut cx, i as u32, js_field).unwrap();
-                });
-                Ok(output)
+                let schema = table.schema().clone();
+                let batches = vec![RecordBatch::new_empty(schema)];
+                let buffer = record_batch_to_buffer(batches).or_throw(&mut cx)?;
+                convert::new_js_buffer(buffer, &mut cx, is_electron)
             })
         });
         Ok(promise)
