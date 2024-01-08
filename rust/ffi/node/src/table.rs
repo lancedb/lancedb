@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use arrow_array::{RecordBatchIterator, RecordBatch};
+use arrow_array::{RecordBatch, RecordBatchIterator};
 use lance::dataset::optimize::CompactionOptions;
 use lance::dataset::{WriteMode, WriteParams};
 use lance::io::object_store::ObjectStoreParams;
@@ -23,7 +23,7 @@ use neon::types::buffer::TypedArray;
 use vectordb::Table;
 
 use crate::error::ResultExt;
-use crate::{get_aws_creds, get_aws_region, runtime, JsDatabase, convert};
+use crate::{convert, get_aws_creds, get_aws_region, runtime, JsDatabase};
 
 pub(crate) struct JsTable {
     pub table: Table,
@@ -439,7 +439,7 @@ impl JsTable {
             .or_throw(&mut cx)?
             .value(&mut cx);
 
-        rt.spawn(async move {            
+        rt.spawn(async move {
             deferred.settle_with(&channel, move |mut cx| {
                 let schema = table.schema();
                 let batches = vec![RecordBatch::new_empty(schema)];

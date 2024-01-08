@@ -17,7 +17,6 @@ use neon::types::buffer::TypedArray;
 
 use crate::error::ResultExt;
 
-
 pub(crate) fn vec_str_to_array<'a, C: Context<'a>>(
     vec: &Vec<String>,
     cx: &mut C,
