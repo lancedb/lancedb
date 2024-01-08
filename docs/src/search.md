@@ -1,6 +1,7 @@
 # Vector Search
 
 A vector search finds the approximate or exact nearest neighbors to a given query vector.
+
 * In a recommendation system or search engine, you can find similar records to
 the one you searched.
 * In LLM and other AI applications,
