@@ -260,20 +260,30 @@ class LanceQueryBuilder(ABC):
             for row in self.to_arrow().to_pylist()
         ]
 
-    def limit(self, limit: int) -> LanceQueryBuilder:
+    def limit(self, limit: Union[int, None]) -> LanceQueryBuilder:
         """Set the maximum number of results to return.
 
         Parameters
         ----------
         limit: int
             The maximum number of results to return.
+            By default the query is limited to the first 10.
+            Call this method and pass in any negative value
+            or None to remove the limit.
+            *WARNING* if you have a large dataset, removing
+            the limit can potentially result in reading a
+            large amount of data into memory and cause 
+            out of memory issues.
 
         Returns
         -------
         LanceQueryBuilder
             The LanceQueryBuilder object.
         """
-        self._limit = limit
+        if limit is None or limit < 0:
+            self._limit = None
+        else:
+            self._limit = limit
         return self
 
     def select(self, columns: list) -> LanceQueryBuilder:
