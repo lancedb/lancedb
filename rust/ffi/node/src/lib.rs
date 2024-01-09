@@ -250,5 +250,6 @@ fn main(mut cx: ModuleContext) -> NeonResult<()> {
         "tableCreateVectorIndex",
         index::vector::table_create_vector_index,
     )?;
+    cx.export_function("tableSchema", JsTable::js_schema)?;
     Ok(())
 }

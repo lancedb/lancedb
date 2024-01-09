@@ -12,18 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use arrow_array::RecordBatchIterator;
+use arrow_array::{RecordBatch, RecordBatchIterator};
 use lance::dataset::optimize::CompactionOptions;
 use lance::dataset::{WriteMode, WriteParams};
 use lance::io::object_store::ObjectStoreParams;
 
-use crate::arrow::arrow_buffer_to_record_batch;
+use crate::arrow::{arrow_buffer_to_record_batch, record_batch_to_buffer};
 use neon::prelude::*;
 use neon::types::buffer::TypedArray;
 use vectordb::Table;
 
 use crate::error::ResultExt;
-use crate::{get_aws_creds, get_aws_region, runtime, JsDatabase};
+use crate::{convert, get_aws_creds, get_aws_region, runtime, JsDatabase};
 
 pub(crate) struct JsTable {
     pub table: Table,
@@ -424,6 +424,29 @@ impl JsTable {
             })
         });
 
+        Ok(promise)
+    }
+
+    pub(crate) fn js_schema(mut cx: FunctionContext) -> JsResult<JsPromise> {
+        let js_table = cx.this().downcast_or_throw::<JsBox<JsTable>, _>(&mut cx)?;
+        let rt = runtime(&mut cx)?;
+        let (deferred, promise) = cx.promise();
+        let channel = cx.channel();
+        let table = js_table.table.clone();
+
+        let is_electron = cx
+            .argument::<JsBoolean>(0)
+            .or_throw(&mut cx)?
+            .value(&mut cx);
+
+        rt.spawn(async move {
+            deferred.settle_with(&channel, move |mut cx| {
+                let schema = table.schema();
+                let batches = vec![RecordBatch::new_empty(schema)];
+                let buffer = record_batch_to_buffer(batches).or_throw(&mut cx)?;
+                convert::new_js_buffer(buffer, &mut cx, is_electron)
+            })
+        });
         Ok(promise)
     }
 }
