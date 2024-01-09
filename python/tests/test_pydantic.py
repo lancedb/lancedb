@@ -89,6 +89,28 @@ def test_pydantic_to_arrow():
 
 
 @pytest.mark.skipif(
+    sys.version_info < (3, 10),
+    reason="using | type syntax requires python3.10 or higher",
+)
+def test_optional_types_py310():
+    class TestModel(pydantic.BaseModel):
+        a: str | None
+        b: None | str
+        c: Optional[str]
+
+    schema = pydantic_to_schema(TestModel)
+
+    expect_schema = pa.schema(
+        [
+            pa.field("a", pa.utf8(), True),
+            pa.field("b", pa.utf8(), True),
+            pa.field("c", pa.utf8(), True),
+        ]
+    )
+    assert schema == expect_schema
+
+
+@pytest.mark.skipif(
     sys.version_info > (3, 8),
     reason="using native type alias requires python3.9 or higher",
 )

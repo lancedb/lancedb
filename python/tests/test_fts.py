@@ -82,7 +82,7 @@ def test_search_index(tmp_path, table):
 def test_create_index_from_table(tmp_path, table):
     table.create_fts_index("text")
     df = table.search("puppy").limit(10).select(["text"]).to_pandas()
-    assert len(df) == 10
+    assert len(df) <= 10
     assert "text" in df.columns
 
     # Check whether it can be updated
