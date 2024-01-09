@@ -516,7 +516,6 @@ describe('LanceDB client', function () {
         schema: expectedSchema
       })
       const schema = await table.schema
-      console.log({ schema })
       assert.deepEqual(expectedSchema, schema)
     })
   })
