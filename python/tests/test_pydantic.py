@@ -95,7 +95,8 @@ def test_pydantic_to_arrow():
 def test_optional_types_py310():
     class TestModel(pydantic.BaseModel):
         a: str | None
-        b: Optional[str]
+        b: None | str
+        c: Optional[str]
 
     schema = pydantic_to_schema(TestModel)
 
@@ -103,6 +104,7 @@ def test_optional_types_py310():
         [
             pa.field("a", pa.utf8(), True),
             pa.field("b", pa.utf8(), True),
+            pa.field("c", pa.utf8(), True),
         ]
     )
     assert schema == expect_schema
