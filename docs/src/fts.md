@@ -75,6 +75,22 @@ applied on top of the full text search results. This can be invoked via the fami
 table.search("puppy").limit(10).where("meta='foo'").to_list()
 ```
 
+## Syntax
+
+For full-text search you can perform either a phrase query like "the old man and the sea", 
+or a structured search query like "(Old AND Man) AND Sea".
+Double quotes are used to disambiguate.
+
+For example: 
+
+If you intended "they could have been dogs OR cats" as a phrase query, this actually
+raises a syntax error since `OR` is a recognized operator. If you make `or` lower case,
+this avoids the syntax error. However, it is cumbersome to have to remember what will
+conflict with the query syntax. Instead, if you search using 
+`table.search('"they could have been dogs OR cats"')`, then the syntax checker avoids
+checking inside the quotes.
+
+
 ## Configurations
 
 By default, LanceDB configures a 1GB heap size limit for creating the index. You can 
