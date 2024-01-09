@@ -14,7 +14,8 @@
 
 import {
   type Schema,
-  Table as ArrowTable
+  Table as ArrowTable,
+  tableFromIPC
 } from 'apache-arrow'
 import { createEmptyTable, fromRecordsToBuffer, fromTableToBuffer } from './arrow'
 import type { EmbeddingFunction } from './embedding/embedding_function'
@@ -24,7 +25,7 @@ import { isEmbeddingFunction } from './embedding/embedding_function'
 import { type Literal, toSQL } from './util'
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { databaseNew, databaseTableNames, databaseOpenTable, databaseDropTable, tableCreate, tableAdd, tableCreateScalarIndex, tableCreateVectorIndex, tableCountRows, tableDelete, tableUpdate, tableCleanupOldVersions, tableCompactFiles, tableListIndices, tableIndexStats } = require('../native.js')
+const { databaseNew, databaseTableNames, databaseOpenTable, databaseDropTable, tableCreate, tableAdd, tableCreateScalarIndex, tableCreateVectorIndex, tableCountRows, tableDelete, tableUpdate, tableCleanupOldVersions, tableCompactFiles, tableListIndices, tableIndexStats, tableSchema } = require('../native.js')
 
 export { Query }
 export type { EmbeddingFunction }
@@ -354,6 +355,8 @@ export interface Table<T = number[]> {
    * Get statistics about an index.
    */
   indexStats: (indexUuid: string) => Promise<IndexStats>
+
+  schema: Promise<Schema>
 }
 
 export interface UpdateArgs {
@@ -508,6 +511,7 @@ export class LocalConnection implements Connection {
 export class LocalTable<T = number[]> implements Table<T> {
   private _tbl: any
   private readonly _name: string
+  private readonly _isElectron: boolean
   private readonly _embeddings?: EmbeddingFunction<T>
   private readonly _options: () => ConnectionOptions
 
@@ -524,6 +528,7 @@ export class LocalTable<T = number[]> implements Table<T> {
     this._name = name
     this._embeddings = embeddings
     this._options = () => options
+    this._isElectron = this.checkElectron()
   }
 
   get name (): string {
@@ -681,6 +686,27 @@ export class LocalTable<T = number[]> implements Table<T> {
 
   async indexStats (indexUuid: string): Promise<IndexStats> {
     return tableIndexStats.call(this._tbl, indexUuid)
+  }
+
+  get schema (): Promise<Schema> {
+    // empty table
+    return this.getSchema()
+  }
+
+  private async getSchema (): Promise<Schema> {
+    const buffer = await tableSchema.call(this._tbl, this._isElectron)
+    const table = tableFromIPC(buffer)
+    return table.schema
+  }
+
+  // See https://github.com/electron/electron/issues/2288
+  private checkElectron (): boolean {
+    try {
+      // eslint-disable-next-line no-prototype-builtins
+      return (process?.versions?.hasOwnProperty('electron') || navigator?.userAgent?.toLowerCase()?.includes(' electron'))
+    } catch (e) {
+      return false
+    }
   }
 }
 
