@@ -162,3 +162,20 @@ def test_null_input(table):
         ]
     )
     table.create_fts_index("text")
+
+
+def test_syntax(table):
+    # https://github.com/lancedb/lancedb/issues/769
+    table.create_fts_index("text")
+    with pytest.raises(ValueError, match="Syntax Error"):
+        table.search("they could have been dogs OR cats").limit(10).to_list()
+    # this should work
+    table.search('"they could have been dogs OR cats"').limit(10).to_list()
+    # this should work too
+    table.search('''"the cats OR dogs were not really 'pets' at all"''').limit(
+        10
+    ).to_list()
+    with pytest.raises(ValueError, match="Syntax Error"):
+        table.search('''"the cats OR dogs were not really "pets" at all"''').limit(
+            10
+        ).to_list()
