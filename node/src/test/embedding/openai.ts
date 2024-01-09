@@ -24,16 +24,15 @@ const OpenAIApi = require('openai')
 const { stub } = require('sinon')
 
 describe('OpenAPIEmbeddings', function () {
-
   const stubValue = {
-      data: [
-        {
-          embedding: Array(1536).fill(1.0)
-        },
-        {
-          embedding: Array(1536).fill(2.0)
-        }
-      ]
+    data: [
+      {
+        embedding: Array(1536).fill(1.0)
+      },
+      {
+        embedding: Array(1536).fill(2.0)
+      }
+    ]
   }
 
   describe('#embed', function () {

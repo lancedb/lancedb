@@ -20,13 +20,13 @@ export class OpenAIEmbeddingFunction implements EmbeddingFunction<string> {
   private readonly _modelName: string
 
   constructor (sourceColumn: string, openAIKey: string, modelName: string = 'text-embedding-ada-002') {
-    /** 
-     * @type {import("openai").default} 
+    /**
+     * @type {import("openai").default}
      */
-    let openai
+    let Openai
     try {
       // eslint-disable-next-line @typescript-eslint/no-var-requires
-      openai = require('openai')
+      Openai = require('openai')
     } catch {
       throw new Error('please install openai@^4.24.1 using npm install openai')
     }
@@ -34,12 +34,10 @@ export class OpenAIEmbeddingFunction implements EmbeddingFunction<string> {
     this.sourceColumn = sourceColumn
     const configuration = {
       apiKey: openAIKey
-    };
+    }
 
-    this._openai = new openai(configuration);
+    this._openai = new Openai(configuration)
     this._modelName = modelName
-
-
   }
 
   async embed (data: string[]): Promise<number[][]> {
@@ -50,7 +48,7 @@ export class OpenAIEmbeddingFunction implements EmbeddingFunction<string> {
 
     const embeddings: number[][] = []
     for (let i = 0; i < response.data.length; i++) {
-      embeddings.push(response.data[i].embedding as number[])
+      embeddings.push(response.data[i].embedding)
     }
     return embeddings
   }
