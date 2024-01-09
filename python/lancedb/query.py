@@ -468,6 +468,24 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
     def __init__(self, table: "lancedb.table.Table", query: str):
         super().__init__(table)
         self._query = query
+        self._phrase_query = False
+
+    def phrase_query(self, phrase_query: bool = True) -> LanceFtsQueryBuilder:
+        """Set whether to use phrase query.
+
+        Parameters
+        ----------
+        phrase_query: bool, default True
+            If True, then the query will be wrapped in quotes and
+            double quotes replaced by single quotes.
+
+        Returns
+        -------
+        LanceFtsQueryBuilder
+            The LanceFtsQueryBuilder object.
+        """
+        self._phrase_query = phrase_query
+        return self
 
     def to_arrow(self) -> pa.Table:
         try:
@@ -490,7 +508,11 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         # open the index
         index = tantivy.Index.open(index_path)
         # get the scores and doc ids
-        row_ids, scores = search_index(index, self._query, self._limit)
+        query = self._query
+        if self._phrase_query:
+            query = query.replace('"', "'")
+            query = f'"{query}"'
+        row_ids, scores = search_index(index, query, self._limit)
         if len(row_ids) == 0:
             empty_schema = pa.schema([pa.field("score", pa.float32())])
             return pa.Table.from_pylist([], schema=empty_schema)
