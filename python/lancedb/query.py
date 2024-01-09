@@ -272,7 +272,7 @@ class LanceQueryBuilder(ABC):
             or None to remove the limit.
             *WARNING* if you have a large dataset, removing
             the limit can potentially result in reading a
-            large amount of data into memory and cause 
+            large amount of data into memory and cause
             out of memory issues.
 
         Returns
