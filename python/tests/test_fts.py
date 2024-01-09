@@ -173,3 +173,5 @@ def test_syntax(table):
     table.search('"they could have been dogs OR cats"').limit(10).to_list()
     # this should work too
     table.search('''"the cats OR dogs were not really 'pets' at all"''').limit(10).to_list()
+    table.search('''"the cats OR dogs were not really "pets" at all"''').limit(10).to_list()
+    
