@@ -36,7 +36,7 @@ fn validate_vector_column(record_batch: &RecordBatch) -> Result<()> {
 pub(crate) fn arrow_buffer_to_record_batch(slice: &[u8]) -> Result<(Vec<RecordBatch>, SchemaRef)> {
     let mut batches: Vec<RecordBatch> = Vec::new();
     let file_reader = FileReader::try_new(Cursor::new(slice), None)?;
-    let schema = file_reader.schema().clone();
+    let schema = file_reader.schema();
     for b in file_reader {
         let record_batch = b?;
         validate_vector_column(&record_batch)?;
