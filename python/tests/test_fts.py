@@ -175,6 +175,7 @@ def test_syntax(table):
     table.search('''"the cats OR dogs were not really 'pets' at all"''').limit(
         10
     ).to_list()
-    table.search('''"the cats OR dogs were not really "pets" at all"''').limit(
-        10
-    ).to_list()
+    with pytest.raises(ValueError, match="Syntax Error"):
+        table.search('''"the cats OR dogs were not really "pets" at all"''').limit(
+            10
+        ).to_list()
