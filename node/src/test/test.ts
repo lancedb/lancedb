@@ -176,6 +176,26 @@ describe('LanceDB client', function () {
       assert.deepEqual(await con.tableNames(), ['vectors'])
     })
 
+    it('create a table with a schema and records', async function () {
+      const dir = await track().mkdir('lancejs')
+      const con = await lancedb.connect(dir)
+
+      const schema = new Schema(
+        [new Field('id', new Int32()), 
+         new Field('name', new Utf8()),
+         new Field('vector', new FixedSizeList(2, new Field('float32', new Float32())))
+        ]
+      )
+      const data = [
+        { vector: [0.5, 0.2], name: 'foo', id: 0 },
+        { vector: [0.3, 0.1],  name: 'bar', id: 1 }
+      ]
+      // even thought the keys in data is out of order it should still work
+      const table = await con.createTable({ name: 'vectors', data, schema })
+      assert.equal(table.name, 'vectors')
+      assert.deepEqual(await con.tableNames(), ['vectors'])
+    })
+
     it('create a table with a empty data array', async function () {
       const dir = await track().mkdir('lancejs')
       const con = await lancedb.connect(dir)
