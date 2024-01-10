@@ -294,6 +294,25 @@ describe('LanceDB client', function () {
       assert.equal(await table.countRows(), 4)
     })
 
+    it('appends records with fields in a different order', async function () {
+      const dir = await track().mkdir('lancejs')
+      const con = await lancedb.connect(dir)
+
+      const data = [
+        { id: 1, vector: [0.1, 0.2], price: 10, name: 'a' },
+        { id: 2, vector: [1.1, 1.2], price: 50, name: 'b' }
+      ]
+
+      const table = await con.createTable('vectors', data)
+
+      const dataAdd = [
+        { id: 3, vector: [2.1, 2.2], name: 'c', price: 10 },
+        { id: 4, vector: [3.1, 3.2], name: 'd', price: 50 }
+      ]
+      await table.add(dataAdd)
+      assert.equal(await table.countRows(), 4)
+    })
+
     it('overwrite all records in a table', async function () {
       const uri = await createTestDB()
       const con = await lancedb.connect(uri)
