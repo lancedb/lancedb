@@ -646,8 +646,19 @@ class LanceTable(Table):
         self._dataset.restore()
         self._reset_dataset()
 
+    def count_rows(self, filter: Optional[str] = None) -> int:
+        """
+        Count the number of rows in the table.
+
+        Parameters
+        ----------
+        filter: str, optional
+            A SQL where clause to filter the rows to count.
+        """
+        return self._dataset.count_rows(filter)
+
     def __len__(self):
-        return self._dataset.count_rows()
+        return self.count_rows()
 
     def __repr__(self) -> str:
         return f"LanceTable({self.name})"
