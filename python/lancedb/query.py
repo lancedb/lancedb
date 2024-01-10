@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import TYPE_CHECKING, List, Literal, Optional, Type, Union
 
 import deprecation
@@ -259,20 +260,30 @@ class LanceQueryBuilder(ABC):
             for row in self.to_arrow().to_pylist()
         ]
 
-    def limit(self, limit: int) -> LanceQueryBuilder:
+    def limit(self, limit: Union[int, None]) -> LanceQueryBuilder:
         """Set the maximum number of results to return.
 
         Parameters
         ----------
         limit: int
             The maximum number of results to return.
+            By default the query is limited to the first 10.
+            Call this method and pass 0, a negative value,
+            or None to remove the limit.
+            *WARNING* if you have a large dataset, removing
+            the limit can potentially result in reading a
+            large amount of data into memory and cause
+            out of memory issues.
 
         Returns
         -------
         LanceQueryBuilder
             The LanceQueryBuilder object.
         """
-        self._limit = limit
+        if limit is None or limit <= 0:
+            self._limit = None
+        else:
+            self._limit = limit
         return self
 
     def select(self, columns: list) -> LanceQueryBuilder:
@@ -467,6 +478,24 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
     def __init__(self, table: "lancedb.table.Table", query: str):
         super().__init__(table)
         self._query = query
+        self._phrase_query = False
+
+    def phrase_query(self, phrase_query: bool = True) -> LanceFtsQueryBuilder:
+        """Set whether to use phrase query.
+
+        Parameters
+        ----------
+        phrase_query: bool, default True
+            If True, then the query will be wrapped in quotes and
+            double quotes replaced by single quotes.
+
+        Returns
+        -------
+        LanceFtsQueryBuilder
+            The LanceFtsQueryBuilder object.
+        """
+        self._phrase_query = phrase_query
+        return self
 
     def to_arrow(self) -> pa.Table:
         try:
@@ -480,10 +509,20 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
 
         # get the index path
         index_path = self._table._get_fts_index_path()
+        # check if the index exist
+        if not Path(index_path).exists():
+            raise FileNotFoundError(
+                "Fts index does not exist."
+                f"Please first call table.create_fts_index(['<field_names>']) to create the fts index."
+            )
         # open the index
         index = tantivy.Index.open(index_path)
         # get the scores and doc ids
-        row_ids, scores = search_index(index, self._query, self._limit)
+        query = self._query
+        if self._phrase_query:
+            query = query.replace('"', "'")
+            query = f'"{query}"'
+        row_ids, scores = search_index(index, query, self._limit)
         if len(row_ids) == 0:
             empty_schema = pa.schema([pa.field("score", pa.float32())])
             return pa.Table.from_pylist([], schema=empty_schema)

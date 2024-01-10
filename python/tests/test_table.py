@@ -569,6 +569,14 @@ def test_empty_query(db):
     val = df.id.iloc[0]
     assert val == 1
 
+    table = LanceTable.create(db, "my_table2", data=[{"id": i} for i in range(100)])
+    df = table.search().select(["id"]).to_pandas()
+    assert len(df) == 10
+    df = table.search().select(["id"]).limit(None).to_pandas()
+    assert len(df) == 100
+    df = table.search().select(["id"]).limit(-1).to_pandas()
+    assert len(df) == 100
+
 
 def test_compact_cleanup(db):
     table = LanceTable.create(
@@ -597,3 +605,14 @@ def test_compact_cleanup(db):
 
     with pytest.raises(Exception, match="Version 3 no longer exists"):
         table.checkout(3)
+
+
+def test_count_rows(db):
+    table = LanceTable.create(
+        db,
+        "my_table",
+        data=[{"text": "foo", "id": 0}, {"text": "bar", "id": 1}],
+    )
+    assert len(table) == 2
+    assert table.count_rows() == 2
+    assert table.count_rows(filter="text='bar'") == 1

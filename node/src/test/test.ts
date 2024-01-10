@@ -498,6 +498,27 @@ describe('LanceDB client', function () {
       assert.equal(results.length, 2)
     })
   })
+
+  describe('when inspecting the schema', function () {
+    it('should return the schema', async function () {
+      const uri = await createTestDB()
+      const db = await lancedb.connect(uri)
+      // the fsl inner field must be named 'item' and be nullable
+      const expectedSchema = new Schema(
+        [
+          new Field('id', new Int32()),
+          new Field('vector', new FixedSizeList(128, new Field('item', new Float32(), true))),
+          new Field('s', new Utf8())
+        ]
+      )
+      const table = await db.createTable({
+        name: 'some_table',
+        schema: expectedSchema
+      })
+      const schema = await table.schema
+      assert.deepEqual(expectedSchema, schema)
+    })
+  })
 })
 
 describe('Remote LanceDB client', function () {

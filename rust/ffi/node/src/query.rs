@@ -7,7 +7,6 @@ use lance_linalg::distance::MetricType;
 use neon::context::FunctionContext;
 use neon::handle::Handle;
 use neon::prelude::*;
-use neon::types::buffer::TypedArray;
 
 use crate::arrow::record_batch_to_buffer;
 use crate::error::ResultExt;
@@ -96,26 +95,9 @@ impl JsQuery {
             deferred.settle_with(&channel, move |mut cx| {
                 let results = results.or_throw(&mut cx)?;
                 let buffer = record_batch_to_buffer(results).or_throw(&mut cx)?;
-                Self::new_js_buffer(buffer, &mut cx, is_electron)
+                convert::new_js_buffer(buffer, &mut cx, is_electron)
             });
         });
         Ok(promise)
-    }
-
-    // Creates a new JsBuffer from a rust buffer with a special logic for electron
-    fn new_js_buffer<'a>(
-        buffer: Vec<u8>,
-        cx: &mut TaskContext<'a>,
-        is_electron: bool,
-    ) -> NeonResult<Handle<'a, JsBuffer>> {
-        if is_electron {
-            // Electron does not support `external`: https://github.com/neon-bindings/neon/pull/937
-            let mut js_buffer = JsBuffer::new(cx, buffer.len()).or_throw(cx)?;
-            let buffer_data = js_buffer.as_mut_slice(cx);
-            buffer_data.copy_from_slice(buffer.as_slice());
-            Ok(js_buffer)
-        } else {
-            Ok(JsBuffer::external(cx, buffer))
-        }
     }
 }

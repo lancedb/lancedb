@@ -18,15 +18,15 @@ from lancedb.remote.client import VectorQuery, VectorQueryResult
 
 
 class FakeLanceDBClient:
-    async def close(self):
+    def close(self):
         pass
 
-    async def query(self, table_name: str, query: VectorQuery) -> VectorQueryResult:
+    def query(self, table_name: str, query: VectorQuery) -> VectorQueryResult:
         assert table_name == "test"
         t = pa.schema([]).empty_table()
         return VectorQueryResult(t)
 
-    async def post(self, path: str):
+    def post(self, path: str):
         pass
 
 

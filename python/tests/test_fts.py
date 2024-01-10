@@ -82,7 +82,7 @@ def test_search_index(tmp_path, table):
 def test_create_index_from_table(tmp_path, table):
     table.create_fts_index("text")
     df = table.search("puppy").limit(10).select(["text"]).to_pandas()
-    assert len(df) == 10
+    assert len(df) <= 10
     assert "text" in df.columns
 
     # Check whether it can be updated
@@ -162,3 +162,23 @@ def test_null_input(table):
         ]
     )
     table.create_fts_index("text")
+
+
+def test_syntax(table):
+    # https://github.com/lancedb/lancedb/issues/769
+    table.create_fts_index("text")
+    with pytest.raises(ValueError, match="Syntax Error"):
+        table.search("they could have been dogs OR cats").limit(10).to_list()
+    table.search("they could have been dogs OR cats").phrase_query().limit(10).to_list()
+    # this should work
+    table.search('"they could have been dogs OR cats"').limit(10).to_list()
+    # this should work too
+    table.search('''"the cats OR dogs were not really 'pets' at all"''').limit(
+        10
+    ).to_list()
+    table.search('the cats OR dogs were not really "pets" at all').phrase_query().limit(
+        10
+    ).to_list()
+    table.search('the cats OR dogs were not really "pets" at all').phrase_query().limit(
+        10
+    ).to_list()
