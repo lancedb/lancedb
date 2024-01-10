@@ -91,7 +91,7 @@ nav:
   - 🧬 Managing embeddings:
     - Overview: embeddings/index.md
     - Explicit management: embeddings/embedding_explicit.md
-    - Implicit management: embeddings/embedding_implicit.md
+    - Implicit management: embeddings/embedding_functions.md
     - Available Functions: embeddings/default_embedding_functions.md
     - Custom Embedding Functions: embeddings/api.md
     - "Example: Multi-lingual semantic search": notebooks/multi_lingual_example.ipynb
@@ -147,7 +147,7 @@ nav:
 - Managing Embeddings:
   - Overview: embeddings/index.md
   - Explicit management: embeddings/embedding_explicit.md
-  - Implicit management: embeddings/embedding_implicit.md
+  - Implicit management: embeddings/embedding_functions.md
   - Available Functions: embeddings/default_embedding_functions.md
   - Custom Embedding Functions: embeddings/api.md
   - "Example: Multi-lingual semantic search": notebooks/multi_lingual_example.ipynb
