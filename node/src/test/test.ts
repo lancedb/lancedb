@@ -183,7 +183,7 @@ describe('LanceDB client', function () {
       const schema = new Schema(
         [new Field('id', new Int32()),
           new Field('name', new Utf8()),
-          new Field('vector', new FixedSizeList(2, new Field('float32', new Float32())))
+          new Field('vector', new FixedSizeList(2, new Field('item', new Float32(), true)), false)
         ]
       )
       const data = [

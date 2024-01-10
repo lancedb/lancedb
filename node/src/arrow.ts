@@ -19,7 +19,7 @@ import {
   RecordBatchFileWriter,
   Utf8, type Vector,
   FixedSizeList,
-  vectorFromArray, type Schema, Table as ArrowTable, RecordBatchStreamWriter, List, Float64
+  vectorFromArray, type Schema, Table as ArrowTable, RecordBatchStreamWriter, List, Float64, RecordBatch, makeData, Struct
 } from 'apache-arrow'
 import { type EmbeddingFunction } from './index'
 
@@ -169,17 +169,27 @@ export async function fromTableToStreamBuffer<T> (table: ArrowTable, embeddings?
   return Buffer.from(await writer.toUint8Array())
 }
 
-function alignTable (table: ArrowTable, schema: Schema): ArrowTable {
-  const alignedColumns: Record<string, Vector> = {}
+function alignBatch (batch: RecordBatch, schema: Schema): RecordBatch {
+  const alignedChildren = []
   for (const field of schema.fields) {
-    const column = table.getChild(field.name)
-    if (column === null) {
+    const indexInBatch = batch.schema.fields?.findIndex((f) => f.name === field.name)
+    if (indexInBatch < 0) {
       throw new Error(`The column ${field.name} was not found in the Arrow Table`)
     }
-    // TODO if this is a struct field then recursively align the subfields
-    alignedColumns[field.name] = column
+    alignedChildren.push(batch.data.children[indexInBatch])
   }
-  return new ArrowTable(alignedColumns)
+  const newData = makeData({
+    type: new Struct(schema.fields),
+    length: batch.numRows,
+    nullCount: batch.nullCount,
+    children: alignedChildren
+  })
+  return new RecordBatch(schema, newData)
+}
+
+function alignTable (table: ArrowTable, schema: Schema): ArrowTable {
+  const alignedBatches = table.batches.map(batch => alignBatch(batch, schema))
+  return new ArrowTable(schema, alignedBatches)
 }
 
 // Creates an empty Arrow Table
