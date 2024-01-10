@@ -50,10 +50,6 @@ class RemoteDBConnection(DBConnection):
         self._client = RestfulLanceDBClient(
             self.db_name, region, api_key, host_override
         )
-        try:
-            self._loop = asyncio.get_running_loop()
-        except RuntimeError:
-            self._loop = asyncio.get_event_loop()
 
     def __repr__(self) -> str:
         return f"RemoteConnect(name={self.db_name})"
@@ -76,15 +72,13 @@ class RemoteDBConnection(DBConnection):
         An iterator of table names.
         """
         while True:
-            result = self._loop.run_until_complete(
-                self._client.list_tables(limit, page_token)
-            )
-            if len(result) > 0:
-                page_token = result[len(result) - 1]
-            else:
-                break
+            result = self._client.list_tables(limit, page_token)
             for item in result:
                 yield item
+            if len(result) < limit:
+                break
+            else:
+                page_token = result[len(result) - 1]
 
     @override
     def open_table(self, name: str) -> Table:
@@ -103,9 +97,7 @@ class RemoteDBConnection(DBConnection):
 
         # check if table exists
         try:
-            self._loop.run_until_complete(
-                self._client.post(f"/v1/table/{name}/describe/")
-            )
+            self._client.post(f"/v1/table/{name}/describe/")
         except LanceDBClientError as err:
             if str(err).startswith("Not found"):
                 logging.error(
@@ -248,13 +240,11 @@ class RemoteDBConnection(DBConnection):
         data = to_ipc_binary(data)
         request_id = uuid.uuid4().hex
 
-        self._loop.run_until_complete(
-            self._client.post(
-                f"/v1/table/{name}/create/",
-                data=data,
-                request_id=request_id,
-                content_type=ARROW_STREAM_CONTENT_TYPE,
-            )
+        self._client.post(
+            f"/v1/table/{name}/create/",
+            data=data,
+            request_id=request_id,
+            content_type=ARROW_STREAM_CONTENT_TYPE,
         )
         return RemoteTable(self, name)
 
@@ -267,13 +257,10 @@ class RemoteDBConnection(DBConnection):
         name: str
             The name of the table.
         """
-        self._loop.run_until_complete(
-            self._client.post(
-                f"/v1/table/{name}/drop/",
-            )
+        self._client.post(
+            f"/v1/table/{name}/drop/",
         )
 
     async def close(self):
         """Close the connection to the database."""
-        self._loop.close()
-        await self._client.close()
+        self._client.close()

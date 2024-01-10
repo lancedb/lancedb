@@ -15,7 +15,8 @@
 import functools
 from typing import Any, Callable, Dict, Iterable, Optional, Union
 
-import aiohttp
+import requests
+import urllib.parse
 import attrs
 import pyarrow as pa
 from pydantic import BaseModel
@@ -37,8 +38,8 @@ def _check_not_closed(f):
     return wrapped
 
 
-async def _read_ipc(resp: aiohttp.ClientResponse) -> pa.Table:
-    resp_body = await resp.read()
+def _read_ipc(resp: requests.Response) -> pa.Table:
+    resp_body = resp.raw.read()
     with pa.ipc.open_file(pa.BufferReader(resp_body)) as reader:
         return reader.read_all()
 
@@ -53,15 +54,24 @@ class RestfulLanceDBClient:
     closed: bool = attrs.field(default=False, init=False)
 
     @functools.cached_property
-    def session(self) -> aiohttp.ClientSession:
-        url = (
+    def session(self) -> requests.Session:
+        session = requests.session()
+        session.stream = True
+
+        return session
+
+    @functools.cached_property
+    def url(self) -> str:
+        return (
             self.host_override
             or f"https://{self.db_name}.{self.region}.api.lancedb.com"
         )
-        return aiohttp.ClientSession(url)
 
-    async def close(self):
-        await self.session.close()
+    def _get_request_url(self, uri: str) -> str:
+        return urllib.parse.urljoin(self.url, uri)
+
+    def close(self):
+        self.session.close()
         self.closed = True
 
     @functools.cached_property
@@ -75,39 +85,25 @@ class RestfulLanceDBClient:
             headers["x-lancedb-database"] = self.db_name
         return headers
 
-    @staticmethod
-    async def _check_status(resp: aiohttp.ClientResponse):
-        if resp.status == 404:
-            raise LanceDBClientError(f"Not found: {await resp.text()}")
-        elif 400 <= resp.status < 500:
-            raise LanceDBClientError(
-                f"Bad Request: {resp.status}, error: {await resp.text()}"
-            )
-        elif 500 <= resp.status < 600:
-            raise LanceDBClientError(
-                f"Internal Server Error: {resp.status}, error: {await resp.text()}"
-            )
-        elif resp.status != 200:
-            raise LanceDBClientError(
-                f"Unknown Error: {resp.status}, error: {await resp.text()}"
-            )
-
     @_check_not_closed
-    async def get(self, uri: str, params: Union[Dict[str, Any], BaseModel] = None):
+    def get(self, uri: str, params: Union[Dict[str, Any], BaseModel] = None):
         """Send a GET request and returns the deserialized response payload."""
         if isinstance(params, BaseModel):
             params: Dict[str, Any] = params.dict(exclude_none=True)
-        async with self.session.get(
-            uri,
+
+        resp = self.session.get(
+            self._get_request_url(uri),
             params=params,
             headers=self.headers,
-            timeout=aiohttp.ClientTimeout(total=30),
-        ) as resp:
-            await self._check_status(resp)
-            return await resp.json()
+            # 5s connect timeout, 30s read timeout
+            timeout=(5.0, 30.0),
+        )
+
+        resp.raise_for_status()
+        return resp.json()
 
     @_check_not_closed
-    async def post(
+    def post(
         self,
         uri: str,
         data: Optional[Union[Dict[str, Any], BaseModel, bytes]] = None,
@@ -139,31 +135,31 @@ class RestfulLanceDBClient:
             headers["content-type"] = content_type
         if request_id is not None:
             headers["x-request-id"] = request_id
-        async with self.session.post(
-            uri,
-            headers=headers,
+
+        resp = self.session.post(
+            self._get_request_url(uri),
             params=params,
-            timeout=aiohttp.ClientTimeout(total=30),
+            headers=self.headers,
+            # 5s connect timeout, 30s read timeout
+            timeout=(5.0, 30.0),
             **req_kwargs,
-        ) as resp:
-            resp: aiohttp.ClientResponse = resp
-            await self._check_status(resp)
-            return await deserialize(resp)
+        )
+        resp.raise_for_status()
+
+        return deserialize(resp)
 
     @_check_not_closed
-    async def list_tables(
+    def list_tables(
         self, limit: int, page_token: Optional[str] = None
     ) -> Iterable[str]:
         """List all tables in the database."""
         if page_token is None:
             page_token = ""
-        json = await self.get("/v1/table/", {"limit": limit, "page_token": page_token})
+        json = self.get("/v1/table/", {"limit": limit, "page_token": page_token})
         return json["tables"]
 
     @_check_not_closed
-    async def query(self, table_name: str, query: VectorQuery) -> VectorQueryResult:
+    def query(self, table_name: str, query: VectorQuery) -> VectorQueryResult:
         """Query a table."""
-        tbl = await self.post(
-            f"/v1/table/{table_name}/query/", query, deserialize=_read_ipc
-        )
+        tbl = self.post(f"/v1/table/{table_name}/query/", query, deserialize=_read_ipc)
         return VectorQueryResult(tbl)

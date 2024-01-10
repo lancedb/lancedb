@@ -7,7 +7,7 @@ dependencies = [
     "ratelimiter~=1.0",
     "retry>=0.9.2",
     "tqdm>=4.27.0",
-    "aiohttp",
+    "requests>=2.31,<3",
     "pydantic>=1.10",
     "attrs>=21.3.0",
     "semver>=3.0",
