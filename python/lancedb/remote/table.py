@@ -43,18 +43,14 @@ class RemoteTable(Table):
         of this Table
 
         """
-        resp = self._conn._loop.run_until_complete(
-            self._conn._client.post(f"/v1/table/{self._name}/describe/")
-        )
+        resp = self._conn._client.post(f"/v1/table/{self._name}/describe/")
         schema = json_to_schema(resp["schema"])
         return schema
 
     @property
     def version(self) -> int:
         """Get the current version of the table"""
-        resp = self._conn._loop.run_until_complete(
-            self._conn._client.post(f"/v1/table/{self._name}/describe/")
-        )
+        resp = self._conn._client.post(f"/v1/table/{self._name}/describe/")
         return resp["version"]
 
     def to_arrow(self) -> pa.Table:
@@ -116,9 +112,10 @@ class RemoteTable(Table):
             "metric_type": metric,
             "index_cache_size": index_cache_size,
         }
-        resp = self._conn._loop.run_until_complete(
-            self._conn._client.post(f"/v1/table/{self._name}/create_index/", data=data)
+        resp = self._conn._client.post(
+            f"/v1/table/{self._name}/create_index/", data=data
         )
+
         return resp
 
     def add(
@@ -161,13 +158,11 @@ class RemoteTable(Table):
 
         request_id = uuid.uuid4().hex
 
-        self._conn._loop.run_until_complete(
-            self._conn._client.post(
-                f"/v1/table/{self._name}/insert/",
-                data=payload,
-                params={"request_id": request_id, "mode": mode},
-                content_type=ARROW_STREAM_CONTENT_TYPE,
-            )
+        self._conn._client.post(
+            f"/v1/table/{self._name}/insert/",
+            data=payload,
+            params={"request_id": request_id, "mode": mode},
+            content_type=ARROW_STREAM_CONTENT_TYPE,
         )
 
     def search(
@@ -233,19 +228,19 @@ class RemoteTable(Table):
             and len(query.vector) > 0
             and not isinstance(query.vector[0], float)
         ):
-            futures = []
+            results = []
             for v in query.vector:
                 v = list(v)
                 q = query.copy()
                 q.vector = v
-                futures.append(self._conn._client.query(self._name, q))
-            result = self._conn._loop.run_until_complete(asyncio.gather(*futures))
+                results.append(self._conn._client.query(self._name, q))
+
             return pa.concat_tables(
-                [add_index(r.to_arrow(), i) for i, r in enumerate(result)]
+                [add_index(r.to_arrow(), i) for i, r in enumerate(results)]
             )
         else:
             result = self._conn._client.query(self._name, query)
-            return self._conn._loop.run_until_complete(result).to_arrow()
+            return result.to_arrow()
 
     def delete(self, predicate: str):
         """Delete rows from the table.
@@ -294,9 +289,7 @@ class RemoteTable(Table):
         0  2  [3.0, 4.0]       85.0 # doctest: +SKIP
         """
         payload = {"predicate": predicate}
-        self._conn._loop.run_until_complete(
-            self._conn._client.post(f"/v1/table/{self._name}/delete/", data=payload)
-        )
+        self._conn._client.post(f"/v1/table/{self._name}/delete/", data=payload)
 
     def update(
         self,
@@ -356,9 +349,7 @@ class RemoteTable(Table):
             updates = [[k, v] for k, v in values_sql.items()]
 
         payload = {"predicate": where, "updates": updates}
-        self._conn._loop.run_until_complete(
-            self._conn._client.post(f"/v1/table/{self._name}/update/", data=payload)
-        )
+        self._conn._client.post(f"/v1/table/{self._name}/update/", data=payload)
 
 
 def add_index(tbl: pa.Table, i: int) -> pa.Table:
