@@ -14,6 +14,7 @@
 
 import functools
 from typing import Any, Callable, Dict, Iterable, List, Optional, Union
+from urllib.parse import urljoin
 
 import requests
 import attrs
@@ -54,11 +55,14 @@ class RestfulLanceDBClient:
 
     @functools.cached_property
     def session(self) -> requests.Session:
-        self.url: str = (
+        return requests.Session()
+
+    @property
+    def url(self) -> str:
+        return (
             self.host_override
             or f"https://{self.db_name}.{self.region}.api.lancedb.com"
         )
-        return requests.Session()
 
     def close(self):
         self.session.close()
@@ -98,10 +102,10 @@ class RestfulLanceDBClient:
         if isinstance(params, BaseModel):
             params: Dict[str, Any] = params.dict(exclude_none=True)
         with self.session.get(
-            self.url + uri,
+            urljoin(self.url, uri),
             params=params,
             headers=self.headers,
-            timeout=30,
+            timeout=(5.0, 30.0),
         ) as resp:
             self._check_status(resp)
             return resp.json()
@@ -140,10 +144,10 @@ class RestfulLanceDBClient:
         if request_id is not None:
             headers["x-request-id"] = request_id
         with self.session.post(
-            self.url + uri,
+            urljoin(self.url, uri),
             headers=headers,
             params=params,
-            timeout=30,
+            timeout=(5.0, 30.0),
             **req_kwargs,
         ) as resp:
             self._check_status(resp)
