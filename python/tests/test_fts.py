@@ -179,3 +179,6 @@ def test_syntax(table):
     table.search('the cats OR dogs were not really "pets" at all').phrase_query().limit(
         10
     ).to_list()
+    table.search('the cats OR dogs were not really "pets" at all').phrase_query().limit(
+        10
+    ).to_list()
