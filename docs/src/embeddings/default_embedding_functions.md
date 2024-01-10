@@ -120,6 +120,7 @@ tbl.add(texts)
 
 ## Gemini Embedding Function
 With Google's Gemini, you can represent text (words, sentences, and blocks of text) in a vectorized form, making it easier to compare and contrast embeddings. For example, two texts that share a similar subject matter or sentiment should have similar embeddings, which can be identified through mathematical comparison techniques such as cosine similarity. For more on how and why you should use embeddings, refer to the Embeddings guide.
+The Gemini Embedding Model API supports various task types:
 
 | Task Type               | Description                                                                                                                                                |
 |-------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------|

@@ -40,12 +40,12 @@ class GeminiText(TextEmbeddingFunction):
 
     Note: The supported task types might change in the Gemini API, but as long as a supported task type and its argument set is provided,
           those will be delegated to the API calls.
-    
+
     Parameters
     ----------
     name: str, default "models/embedding-001"
         The name of the model to use. See the Gemini documentation for a list of available models.
-    
+
     query_task_type: str, default "retrieval_query"
         Sets the task type for the queries.
     source_task_type: str, default "retrieval_document"
@@ -80,7 +80,7 @@ class GeminiText(TextEmbeddingFunction):
     name: str = "models/embedding-001"
     query_task_type: str = "retrieval_query"
     source_task_type: str = "retrieval_document"
-    
+
     def ndims(self):
         # TODO: fix hardcoding
         return 768
@@ -90,10 +90,14 @@ class GeminiText(TextEmbeddingFunction):
 
     def compute_source_embeddings(self, texts: TEXT, *args, **kwargs) -> List[np.array]:
         texts = self.sanitize_input(texts)
-        task_type = kwargs.get("task_type") or self.source_task_type # assume source task type if not passed by `compute_query_embeddings`
+        task_type = (
+            kwargs.get("task_type") or self.source_task_type
+        )  # assume source task type if not passed by `compute_query_embeddings`
         return self.generate_embeddings(texts, task_type=task_type)
 
-    def generate_embeddings( self, texts: Union[List[str], np.ndarray], *args, **kwargs) -> List[np.array]:
+    def generate_embeddings(
+        self, texts: Union[List[str], np.ndarray], *args, **kwargs
+    ) -> List[np.array]:
         """
         Get the embeddings for the given texts
 
@@ -103,17 +107,22 @@ class GeminiText(TextEmbeddingFunction):
             The texts to embed
         """
         genai = self.get_client()
-        if kwargs.get("task_type") == "retrieval_document": # Provide a title to use existing API design
+        if (
+            kwargs.get("task_type") == "retrieval_document"
+        ):  # Provide a title to use existing API design
             title = "Embedding of a document"
             kwargs["title"] = title
-        
-        return [genai.embed_content(model=self.name, content=text, **kwargs)["embedding"] for text in texts]
-    
+
+        return [
+            genai.embed_content(model=self.name, content=text, **kwargs)["embedding"]
+            for text in texts
+        ]
+
     def get_client(self):
         if self.client_configured:
             return self.client
-        
-        genai = self.safe_import("google.generativeai","google.generativeai")
+
+        genai = self.safe_import("google.generativeai", "google.generativeai")
 
         if not os.environ.get("GOOGLE_API_KEY"):
             raise ValueError(api_key_not_found_help("google"))
