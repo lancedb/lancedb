@@ -268,7 +268,7 @@ class LanceQueryBuilder(ABC):
         limit: int
             The maximum number of results to return.
             By default the query is limited to the first 10.
-            Call this method and pass in any negative value
+            Call this method and pass 0, a negative value,
             or None to remove the limit.
             *WARNING* if you have a large dataset, removing
             the limit can potentially result in reading a
@@ -280,7 +280,7 @@ class LanceQueryBuilder(ABC):
         LanceQueryBuilder
             The LanceQueryBuilder object.
         """
-        if limit is None or limit < 0:
+        if limit is None or limit <= 0:
             self._limit = None
         else:
             self._limit = limit
