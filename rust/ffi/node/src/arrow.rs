@@ -50,7 +50,7 @@ pub(crate) fn record_batch_to_buffer(batches: Vec<RecordBatch>) -> Result<Vec<u8
         return Ok(Vec::new());
     }
 
-    let schema = batches.get(0).unwrap().schema();
+    let schema = batches.first().unwrap().schema();
     let mut fr = FileWriter::try_new(Vec::new(), schema.deref())?;
     for batch in batches.iter() {
         fr.write(batch)?
