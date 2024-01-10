@@ -597,3 +597,14 @@ def test_compact_cleanup(db):
 
     with pytest.raises(Exception, match="Version 3 no longer exists"):
         table.checkout(3)
+
+
+def test_count_rows(db):
+    table = LanceTable.create(
+        db,
+        "my_table",
+        data=[{"text": "foo", "id": 0}, {"text": "bar", "id": 1}],
+    )
+    assert len(table) == 2
+    assert table.count_rows() == 2
+    assert table.count_rows(filter="text='bar'") == 1
