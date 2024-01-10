@@ -89,7 +89,7 @@ def test_openclip(tmp_path):
 
     db = lancedb.connect(tmp_path)
     registry = get_registry()
-    func = registry.get("open-clip").create()
+    func = registry.get("open-clip").create(max_retries=0)
 
     class Images(LanceModel):
         label: str
@@ -170,7 +170,7 @@ def test_cohere_embedding_function():
 
 @pytest.mark.slow
 def test_instructor_embedding(tmp_path):
-    model = get_registry().get("instructor").create()
+    model = get_registry().get("instructor").create(max_retries=0)
 
     class TextModel(LanceModel):
         text: str = model.SourceField()
@@ -182,3 +182,23 @@ def test_instructor_embedding(tmp_path):
 
     tbl.add(df)
     assert len(tbl.to_pandas()["vector"][0]) == model.ndims()
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(
+    os.environ.get("GOOGLE_API_KEY") is None, reason="GOOGLE_API_KEY not set"
+)
+def test_gemini_embedding(tmp_path):
+    model = get_registry().get("gemini-text").create(max_retries=0)
+
+    class TextModel(LanceModel):
+        text: str = model.SourceField()
+        vector: Vector(model.ndims()) = model.VectorField()
+
+    df = pd.DataFrame({"text": ["hello world", "goodbye world"]})
+    db = lancedb.connect(tmp_path)
+    tbl = db.create_table("test", schema=TextModel, mode="overwrite")
+
+    tbl.add(df)
+    assert len(tbl.to_pandas()["vector"][0]) == model.ndims()
+    assert tbl.search("hello").limit(1).to_pandas()["text"][0] == "hello world"
