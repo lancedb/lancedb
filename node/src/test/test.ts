@@ -181,14 +181,14 @@ describe('LanceDB client', function () {
       const con = await lancedb.connect(dir)
 
       const schema = new Schema(
-        [new Field('id', new Int32()), 
-         new Field('name', new Utf8()),
-         new Field('vector', new FixedSizeList(2, new Field('float32', new Float32())))
+        [new Field('id', new Int32()),
+          new Field('name', new Utf8()),
+          new Field('vector', new FixedSizeList(2, new Field('float32', new Float32())))
         ]
       )
       const data = [
         { vector: [0.5, 0.2], name: 'foo', id: 0 },
-        { vector: [0.3, 0.1],  name: 'bar', id: 1 }
+        { vector: [0.3, 0.1], name: 'bar', id: 1 }
       ]
       // even thought the keys in data is out of order it should still work
       const table = await con.createTable({ name: 'vectors', data, schema })
