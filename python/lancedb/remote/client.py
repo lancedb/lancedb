@@ -13,9 +13,10 @@
 
 
 import functools
-from typing import Any, Callable, Dict, Iterable, Optional, Union
+from typing import Any, Callable, Dict, Iterable, List, Optional, Union
+from urllib.parse import urljoin
 
-import aiohttp
+import requests
 import attrs
 import pyarrow as pa
 from pydantic import BaseModel
@@ -37,8 +38,8 @@ def _check_not_closed(f):
     return wrapped
 
 
-async def _read_ipc(resp: aiohttp.ClientResponse) -> pa.Table:
-    resp_body = await resp.read()
+def _read_ipc(resp: requests.Response) -> pa.Table:
+    resp_body = resp.content
     with pa.ipc.open_file(pa.BufferReader(resp_body)) as reader:
         return reader.read_all()
 
@@ -53,15 +54,18 @@ class RestfulLanceDBClient:
     closed: bool = attrs.field(default=False, init=False)
 
     @functools.cached_property
-    def session(self) -> aiohttp.ClientSession:
-        url = (
+    def session(self) -> requests.Session:
+        return requests.Session()
+
+    @property
+    def url(self) -> str:
+        return (
             self.host_override
             or f"https://{self.db_name}.{self.region}.api.lancedb.com"
         )
-        return aiohttp.ClientSession(url)
 
-    async def close(self):
-        await self.session.close()
+    def close(self):
+        self.session.close()
         self.closed = True
 
     @functools.cached_property
@@ -76,38 +80,38 @@ class RestfulLanceDBClient:
         return headers
 
     @staticmethod
-    async def _check_status(resp: aiohttp.ClientResponse):
-        if resp.status == 404:
-            raise LanceDBClientError(f"Not found: {await resp.text()}")
-        elif 400 <= resp.status < 500:
+    def _check_status(resp: requests.Response):
+        if resp.status_code == 404:
+            raise LanceDBClientError(f"Not found: {resp.text}")
+        elif 400 <= resp.status_code < 500:
             raise LanceDBClientError(
-                f"Bad Request: {resp.status}, error: {await resp.text()}"
+                f"Bad Request: {resp.status_code}, error: {resp.text}"
             )
-        elif 500 <= resp.status < 600:
+        elif 500 <= resp.status_code < 600:
             raise LanceDBClientError(
-                f"Internal Server Error: {resp.status}, error: {await resp.text()}"
+                f"Internal Server Error: {resp.status_code}, error: {resp.text}"
             )
-        elif resp.status != 200:
+        elif resp.status_code != 200:
             raise LanceDBClientError(
-                f"Unknown Error: {resp.status}, error: {await resp.text()}"
+                f"Unknown Error: {resp.status_code}, error: {resp.text}"
             )
 
     @_check_not_closed
-    async def get(self, uri: str, params: Union[Dict[str, Any], BaseModel] = None):
+    def get(self, uri: str, params: Union[Dict[str, Any], BaseModel] = None):
         """Send a GET request and returns the deserialized response payload."""
         if isinstance(params, BaseModel):
             params: Dict[str, Any] = params.dict(exclude_none=True)
-        async with self.session.get(
-            uri,
+        with self.session.get(
+            urljoin(self.url, uri),
             params=params,
             headers=self.headers,
-            timeout=aiohttp.ClientTimeout(total=30),
+            timeout=(5.0, 30.0),
         ) as resp:
-            await self._check_status(resp)
-            return await resp.json()
+            self._check_status(resp)
+            return resp.json()
 
     @_check_not_closed
-    async def post(
+    def post(
         self,
         uri: str,
         data: Optional[Union[Dict[str, Any], BaseModel, bytes]] = None,
@@ -139,31 +143,26 @@ class RestfulLanceDBClient:
             headers["content-type"] = content_type
         if request_id is not None:
             headers["x-request-id"] = request_id
-        async with self.session.post(
-            uri,
+        with self.session.post(
+            urljoin(self.url, uri),
             headers=headers,
             params=params,
-            timeout=aiohttp.ClientTimeout(total=30),
+            timeout=(5.0, 30.0),
             **req_kwargs,
         ) as resp:
-            resp: aiohttp.ClientResponse = resp
-            await self._check_status(resp)
-            return await deserialize(resp)
+            self._check_status(resp)
+            return deserialize(resp)
 
     @_check_not_closed
-    async def list_tables(
-        self, limit: int, page_token: Optional[str] = None
-    ) -> Iterable[str]:
+    def list_tables(self, limit: int, page_token: Optional[str] = None) -> List[str]:
         """List all tables in the database."""
         if page_token is None:
             page_token = ""
-        json = await self.get("/v1/table/", {"limit": limit, "page_token": page_token})
+        json = self.get("/v1/table/", {"limit": limit, "page_token": page_token})
         return json["tables"]
 
     @_check_not_closed
-    async def query(self, table_name: str, query: VectorQuery) -> VectorQueryResult:
+    def query(self, table_name: str, query: VectorQuery) -> VectorQueryResult:
         """Query a table."""
-        tbl = await self.post(
-            f"/v1/table/{table_name}/query/", query, deserialize=_read_ipc
-        )
+        tbl = self.post(f"/v1/table/{table_name}/query/", query, deserialize=_read_ipc)
         return VectorQueryResult(tbl)
