@@ -1,6 +1,6 @@
 [vectordb](README.md) / Exports
 
-# JavaScript API Reference (OSS)
+# JavaScript API Reference
 
 This section contains the API reference for the OSS JavaScript / Node.js API.
 

@@ -1,4 +1,4 @@
-# Python API Reference (OSS)
+# Python API Reference
 
 This section contains the API reference for the OSS Python API.
 
