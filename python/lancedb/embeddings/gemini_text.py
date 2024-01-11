@@ -12,13 +12,14 @@
 #  limitations under the License.
 
 import os
+from functools import cached_property
 from typing import List, Union, Any
 
 import numpy as np
 
 from .base import TextEmbeddingFunction
 from .registry import register
-from .utils import api_key_not_found_help, TEXT, weak_lru
+from .utils import api_key_not_found_help, TEXT
 
 
 @register("gemini-text")
@@ -72,10 +73,6 @@ class GeminiText(TextEmbeddingFunction):
     rs = tbl.search("hello").limit(1).to_pandas()
 
     """
-
-    client_configured: bool = False
-    client: Any = None
-
     name: str = "models/embedding-001"
     query_task_type: str = "retrieval_query"
     source_task_type: str = "retrieval_document"
@@ -105,7 +102,6 @@ class GeminiText(TextEmbeddingFunction):
         texts: list[str] or np.ndarray (of str)
             The texts to embed
         """
-        genai = self.get_client()
         if (
             kwargs.get("task_type") == "retrieval_document"
         ):  # Provide a title to use existing API design
@@ -113,20 +109,14 @@ class GeminiText(TextEmbeddingFunction):
             kwargs["title"] = title
 
         return [
-            genai.embed_content(model=self.name, content=text, **kwargs)["embedding"]
+            self.client.embed_content(model=self.name, content=text, **kwargs)["embedding"]
             for text in texts
         ]
 
-    @weak_lru(maxsize=1)
-    def get_client(self):
-        if self.client_configured:
-            return self.client
-
+    @cached_property
+    def client(self):
         genai = self.safe_import("google.generativeai", "google.generativeai")
 
         if not os.environ.get("GOOGLE_API_KEY"):
             raise ValueError(api_key_not_found_help("google"))
-
-        self.client = genai
-        self.client_configured = True
-        return self.client
+        return genai
