@@ -485,10 +485,10 @@ export class LocalConnection implements Connection {
       }
       buffer = await fromTableToBuffer(createEmptyTable(schema))
     } else if (data instanceof ArrowTable) {
-      buffer = await fromTableToBuffer(data, embeddingFunction)
+      buffer = await fromTableToBuffer(data, embeddingFunction, schema)
     } else {
       // data is Array<Record<...>>
-      buffer = await fromRecordsToBuffer(data, embeddingFunction)
+      buffer = await fromRecordsToBuffer(data, embeddingFunction, schema)
     }
 
     const tbl = await tableCreate.call(this._db, name, buffer, writeOptions?.writeMode?.toString(), ...getAwsArgs(this._options()))
@@ -560,9 +560,10 @@ export class LocalTable<T = number[]> implements Table<T> {
    * @return The number of rows added to the table
    */
   async add (data: Array<Record<string, unknown>>): Promise<number> {
+    const schema = await this.schema
     return tableAdd.call(
       this._tbl,
-      await fromRecordsToBuffer(data, this._embeddings),
+      await fromRecordsToBuffer(data, this._embeddings, schema),
       WriteMode.Append.toString(),
       ...getAwsArgs(this._options())
     ).then((newTable: any) => { this._tbl = newTable })

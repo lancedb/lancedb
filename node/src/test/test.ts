@@ -176,6 +176,26 @@ describe('LanceDB client', function () {
       assert.deepEqual(await con.tableNames(), ['vectors'])
     })
 
+    it('create a table with a schema and records', async function () {
+      const dir = await track().mkdir('lancejs')
+      const con = await lancedb.connect(dir)
+
+      const schema = new Schema(
+        [new Field('id', new Int32()),
+          new Field('name', new Utf8()),
+          new Field('vector', new FixedSizeList(2, new Field('item', new Float32(), true)), false)
+        ]
+      )
+      const data = [
+        { vector: [0.5, 0.2], name: 'foo', id: 0 },
+        { vector: [0.3, 0.1], name: 'bar', id: 1 }
+      ]
+      // even thought the keys in data is out of order it should still work
+      const table = await con.createTable({ name: 'vectors', data, schema })
+      assert.equal(table.name, 'vectors')
+      assert.deepEqual(await con.tableNames(), ['vectors'])
+    })
+
     it('create a table with a empty data array', async function () {
       const dir = await track().mkdir('lancejs')
       const con = await lancedb.connect(dir)
@@ -289,6 +309,25 @@ describe('LanceDB client', function () {
       const dataAdd = [
         { id: 3, vector: [2.1, 2.2], price: 10, name: 'c' },
         { id: 4, vector: [3.1, 3.2], price: 50, name: 'd' }
+      ]
+      await table.add(dataAdd)
+      assert.equal(await table.countRows(), 4)
+    })
+
+    it('appends records with fields in a different order', async function () {
+      const dir = await track().mkdir('lancejs')
+      const con = await lancedb.connect(dir)
+
+      const data = [
+        { id: 1, vector: [0.1, 0.2], price: 10, name: 'a' },
+        { id: 2, vector: [1.1, 1.2], price: 50, name: 'b' }
+      ]
+
+      const table = await con.createTable('vectors', data)
+
+      const dataAdd = [
+        { id: 3, vector: [2.1, 2.2], name: 'c', price: 10 },
+        { id: 4, vector: [3.1, 3.2], name: 'd', price: 50 }
       ]
       await table.add(dataAdd)
       assert.equal(await table.countRows(), 4)
