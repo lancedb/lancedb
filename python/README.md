@@ -45,8 +45,8 @@ pytest
 To run linter and automatically fix all errors:
 
 ```bash
-black .
-isort .
+ruff format python
+ruff --fix python
 ```
 
 If any packages are missing, install them with:
