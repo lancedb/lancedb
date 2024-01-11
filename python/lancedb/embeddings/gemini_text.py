@@ -18,7 +18,7 @@ import numpy as np
 
 from .base import TextEmbeddingFunction
 from .registry import register
-from .utils import api_key_not_found_help, TEXT
+from .utils import api_key_not_found_help, TEXT, weak_lru
 
 
 @register("gemini-text")
@@ -58,7 +58,7 @@ class GeminiText(TextEmbeddingFunction):
     from lancedb.pydantic import LanceModel, Vector
     from lancedb.embeddings import get_registry
 
-    def test_instructor_embedding(tmp_path):
+    def test_gemini_embedding(tmp_path):
         model = get_registry().get("gemini-text").create()
 
         class TextModel(LanceModel):
@@ -118,6 +118,7 @@ class GeminiText(TextEmbeddingFunction):
             for text in texts
         ]
 
+    @weak_lru(maxsize=1)
     def get_client(self):
         if self.client_configured:
             return self.client

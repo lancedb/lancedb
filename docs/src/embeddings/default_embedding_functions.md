@@ -139,7 +139,7 @@ import pandas as pd
 from lancedb.pydantic import LanceModel, Vector
 from lancedb.embeddings import get_registry
 
-def test_instructor_embedding(tmp_path):
+def test_gemini_embedding(tmp_path):
     model = get_registry().get("gemini-text").create()
 
     class TextModel(LanceModel):
