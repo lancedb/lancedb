@@ -66,7 +66,7 @@ class GeminiText(TextEmbeddingFunction):
         vector: Vector(model.ndims()) = model.VectorField()
 
     df = pd.DataFrame({"text": ["hello world", "goodbye world"]})
-    db = lancedb.connect(tmp_path)
+    db = lancedb.connect("~/.lancedb")
     tbl = db.create_table("test", schema=TextModel, mode="overwrite")
 
     tbl.add(df)
