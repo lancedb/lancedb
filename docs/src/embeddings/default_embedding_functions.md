@@ -139,19 +139,19 @@ import pandas as pd
 from lancedb.pydantic import LanceModel, Vector
 from lancedb.embeddings import get_registry
 
-def test_gemini_embedding(tmp_path):
-    model = get_registry().get("gemini-text").create()
 
-    class TextModel(LanceModel):
-        text: str = model.SourceField()
-        vector: Vector(model.ndims()) = model.VectorField()
+model = get_registry().get("gemini-text").create()
 
-    df = pd.DataFrame({"text": ["hello world", "goodbye world"]})
-    db = lancedb.connect(tmp_path)
-    tbl = db.create_table("test", schema=TextModel, mode="overwrite")
+class TextModel(LanceModel):
+    text: str = model.SourceField()
+    vector: Vector(model.ndims()) = model.VectorField()
 
-    tbl.add(df)
-    rs = tbl.search("hello").limit(1).to_pandas()
+df = pd.DataFrame({"text": ["hello world", "goodbye world"]})
+db = lancedb.connect(tmp_path)
+tbl = db.create_table("test", schema=TextModel, mode="overwrite")
+
+tbl.add(df)
+rs = tbl.search("hello").limit(1).to_pandas()
 ```
 
 ## Multi-modal embedding functions
