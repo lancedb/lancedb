@@ -78,6 +78,9 @@ class GeminiText(TextEmbeddingFunction):
     query_task_type: str = "retrieval_query"
     source_task_type: str = "retrieval_document"
 
+    class Config: # Pydantic 1.x compat
+        keep_untouched = (cached_property,)
+
     def ndims(self):
         # TODO: fix hardcoding
         return 768
