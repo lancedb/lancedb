@@ -73,6 +73,7 @@ class GeminiText(TextEmbeddingFunction):
     rs = tbl.search("hello").limit(1).to_pandas()
 
     """
+
     name: str = "models/embedding-001"
     query_task_type: str = "retrieval_query"
     source_task_type: str = "retrieval_document"
@@ -109,7 +110,9 @@ class GeminiText(TextEmbeddingFunction):
             kwargs["title"] = title
 
         return [
-            self.client.embed_content(model=self.name, content=text, **kwargs)["embedding"]
+            self.client.embed_content(model=self.name, content=text, **kwargs)[
+                "embedding"
+            ]
             for text in texts
         ]
 
