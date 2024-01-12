@@ -38,6 +38,9 @@ export class OpenAIEmbeddingFunction implements EmbeddingFunction<string> {
 
     this._openai = new Openai(configuration)
     this._modelName = modelName
+
+
+    console.log({ op: this._openai.embeddings.create, md: this._modelName })
   }
 
   async embed (data: string[]): Promise<number[][]> {
