@@ -81,6 +81,7 @@ nav:
   - 📚 Concepts:
     - Vector search: concepts/vector_search.md
     - Indexing: concepts/index_ivfpq.md
+    - Data management: concepts/data_management.md
   - 🔨 Guides:
     - Working with tables: guides/tables.md
     - Building an ANN index: ann_indexes.md
@@ -137,6 +138,7 @@ nav:
 - Concepts:
     - Vector search: concepts/vector_search.md
     - Indexing: concepts/index_ivfpq.md
+    - Data management: concepts/data_management.md
 - Guides:
     - Working with tables: guides/tables.md
     - Building an ANN index: ann_indexes.md
