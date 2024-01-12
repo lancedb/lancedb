@@ -24,6 +24,7 @@ const OpenAIApi = require('openai')
 const { stub } = require('sinon')
 
 describe('OpenAPIEmbeddings', function () {
+
   const stubValue = {
     data: [
       {
