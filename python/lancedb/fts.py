@@ -13,7 +13,7 @@
 
 """Full text search index using tantivy-py"""
 import os
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import pyarrow as pa
 
@@ -56,7 +56,12 @@ def create_index(index_path: str, text_fields: List[str]) -> tantivy.Index:
     return index
 
 
-def populate_index(index: tantivy.Index, table: LanceTable, fields: List[str]) -> int:
+def populate_index(
+    index: tantivy.Index,
+    table: LanceTable,
+    fields: List[str],
+    writer_heap_size: int = 1024 * 1024 * 1024,
+) -> int:
     """
     Populate an index with data from a LanceTable
 
@@ -68,6 +73,8 @@ def populate_index(index: tantivy.Index, table: LanceTable, fields: List[str]) -
         The table to index
     fields : List[str]
         List of fields to index
+    writer_heap_size : int
+        The writer heap size in bytes, defaults to 1GB
 
     Returns
     -------
@@ -75,27 +82,69 @@ def populate_index(index: tantivy.Index, table: LanceTable, fields: List[str]) -
         The number of rows indexed
     """
     # first check the fields exist and are string or large string type
+    nested = []
     for name in fields:
-        f = table.schema.field(name)  # raises KeyError if not found
+        try:
+            f = table.schema.field(name)  # raises KeyError if not found
+        except KeyError:
+            f = resolve_path(table.schema, name)
+            nested.append(name)
+
         if not pa.types.is_string(f.type) and not pa.types.is_large_string(f.type):
             raise TypeError(f"Field {name} is not a string type")
 
     # create a tantivy writer
-    writer = index.writer()
+    writer = index.writer(heap_size=writer_heap_size)
     # write data into index
     dataset = table.to_lance()
     row_id = 0
+
+    max_nested_level = 0
+    if len(nested) > 0:
+        max_nested_level = max([len(name.split(".")) for name in nested])
+
     for b in dataset.to_batches(columns=fields):
+        if max_nested_level > 0:
+            b = pa.Table.from_batches([b])
+            for _ in range(max_nested_level - 1):
+                b = b.flatten()
         for i in range(b.num_rows):
             doc = tantivy.Document()
-            doc.add_integer("doc_id", row_id)
             for name in fields:
-                doc.add_text(name, b[name][i].as_py())
-            writer.add_document(doc)
+                value = b[name][i].as_py()
+                if value is not None:
+                    doc.add_text(name, value)
+            if not doc.is_empty:
+                doc.add_integer("doc_id", row_id)
+                writer.add_document(doc)
             row_id += 1
     # commit changes
     writer.commit()
     return row_id
+
+
+def resolve_path(schema, field_name: str) -> pa.Field:
+    """
+    Resolve a nested field path to a list of field names
+
+    Parameters
+    ----------
+    field_name : str
+        The field name to resolve
+
+    Returns
+    -------
+    List[str]
+        The resolved path
+    """
+    path = field_name.split(".")
+    field = schema.field(path.pop(0))
+    for segment in path:
+        if pa.types.is_struct(field.type):
+            field = field.type.field(segment)
+        else:
+            raise KeyError(f"field {field_name} not found in schema {schema}")
+    return field
 
 
 def search_index(

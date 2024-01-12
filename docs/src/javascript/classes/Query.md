@@ -1,6 +1,6 @@
 [vectordb](../README.md) / [Exports](../modules.md) / Query
 
-# Class: Query<T\>
+# Class: Query\<T\>
 
 A builder for nearest neighbor queries for LanceDB.
 
@@ -23,6 +23,7 @@ A builder for nearest neighbor queries for LanceDB.
 - [\_limit](Query.md#_limit)
 - [\_metricType](Query.md#_metrictype)
 - [\_nprobes](Query.md#_nprobes)
+- [\_prefilter](Query.md#_prefilter)
 - [\_query](Query.md#_query)
 - [\_queryVector](Query.md#_queryvector)
 - [\_refineFactor](Query.md#_refinefactor)
@@ -34,9 +35,11 @@ A builder for nearest neighbor queries for LanceDB.
 
 - [execute](Query.md#execute)
 - [filter](Query.md#filter)
+- [isElectron](Query.md#iselectron)
 - [limit](Query.md#limit)
 - [metricType](Query.md#metrictype)
 - [nprobes](Query.md#nprobes)
+- [prefilter](Query.md#prefilter)
 - [refineFactor](Query.md#refinefactor)
 - [select](Query.md#select)
 
@@ -44,7 +47,7 @@ A builder for nearest neighbor queries for LanceDB.
 
 ### constructor
 
-• **new Query**<`T`\>(`tbl`, `query`, `embeddings?`)
+• **new Query**\<`T`\>(`query?`, `tbl?`, `embeddings?`)
 
 #### Type parameters
 
@@ -56,23 +59,23 @@ A builder for nearest neighbor queries for LanceDB.
 
 | Name | Type |
 | :------ | :------ |
-| `tbl` | `any` |
-| `query` | `T` |
-| `embeddings?` | [`EmbeddingFunction`](../interfaces/EmbeddingFunction.md)<`T`\> |
+| `query?` | `T` |
+| `tbl?` | `any` |
+| `embeddings?` | [`EmbeddingFunction`](../interfaces/EmbeddingFunction.md)\<`T`\> |
 
 #### Defined in
 
-[index.ts:448](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L448)
+[query.ts:38](https://github.com/lancedb/lancedb/blob/7856a94/node/src/query.ts#L38)
 
 ## Properties
 
 ### \_embeddings
 
-• `Private` `Optional` `Readonly` **\_embeddings**: [`EmbeddingFunction`](../interfaces/EmbeddingFunction.md)<`T`\>
+• `Protected` `Optional` `Readonly` **\_embeddings**: [`EmbeddingFunction`](../interfaces/EmbeddingFunction.md)\<`T`\>
 
 #### Defined in
 
-[index.ts:446](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L446)
+[query.ts:36](https://github.com/lancedb/lancedb/blob/7856a94/node/src/query.ts#L36)
 
 ___
 
@@ -82,17 +85,17 @@ ___
 
 #### Defined in
 
-[index.ts:444](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L444)
+[query.ts:33](https://github.com/lancedb/lancedb/blob/7856a94/node/src/query.ts#L33)
 
 ___
 
 ### \_limit
 
-• `Private` **\_limit**: `number`
+• `Private` `Optional` **\_limit**: `number`
 
 #### Defined in
 
-[index.ts:440](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L440)
+[query.ts:29](https://github.com/lancedb/lancedb/blob/7856a94/node/src/query.ts#L29)
 
 ___
 
@@ -102,7 +105,7 @@ ___
 
 #### Defined in
 
-[index.ts:445](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L445)
+[query.ts:34](https://github.com/lancedb/lancedb/blob/7856a94/node/src/query.ts#L34)
 
 ___
 
@@ -112,17 +115,27 @@ ___
 
 #### Defined in
 
-[index.ts:442](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L442)
+[query.ts:31](https://github.com/lancedb/lancedb/blob/7856a94/node/src/query.ts#L31)
+
+___
+
+### \_prefilter
+
+• `Private` **\_prefilter**: `boolean`
+
+#### Defined in
+
+[query.ts:35](https://github.com/lancedb/lancedb/blob/7856a94/node/src/query.ts#L35)
 
 ___
 
 ### \_query
 
-• `Private` `Readonly` **\_query**: `T`
+• `Private` `Optional` `Readonly` **\_query**: `T`
 
 #### Defined in
 
-[index.ts:438](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L438)
+[query.ts:26](https://github.com/lancedb/lancedb/blob/7856a94/node/src/query.ts#L26)
 
 ___
 
@@ -132,7 +145,7 @@ ___
 
 #### Defined in
 
-[index.ts:439](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L439)
+[query.ts:28](https://github.com/lancedb/lancedb/blob/7856a94/node/src/query.ts#L28)
 
 ___
 
@@ -142,7 +155,7 @@ ___
 
 #### Defined in
 
-[index.ts:441](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L441)
+[query.ts:30](https://github.com/lancedb/lancedb/blob/7856a94/node/src/query.ts#L30)
 
 ___
 
@@ -152,27 +165,27 @@ ___
 
 #### Defined in
 
-[index.ts:443](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L443)
+[query.ts:32](https://github.com/lancedb/lancedb/blob/7856a94/node/src/query.ts#L32)
 
 ___
 
 ### \_tbl
 
-• `Private` `Readonly` **\_tbl**: `any`
+• `Private` `Optional` `Readonly` **\_tbl**: `any`
 
 #### Defined in
 
-[index.ts:437](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L437)
+[query.ts:27](https://github.com/lancedb/lancedb/blob/7856a94/node/src/query.ts#L27)
 
 ___
 
 ### where
 
-• **where**: (`value`: `string`) => [`Query`](Query.md)<`T`\>
+• **where**: (`value`: `string`) => [`Query`](Query.md)\<`T`\>
 
 #### Type declaration
 
-▸ (`value`): [`Query`](Query.md)<`T`\>
+▸ (`value`): [`Query`](Query.md)\<`T`\>
 
 A filter statement to be applied to this query.
 
@@ -184,17 +197,17 @@ A filter statement to be applied to this query.
 
 ##### Returns
 
-[`Query`](Query.md)<`T`\>
+[`Query`](Query.md)\<`T`\>
 
 #### Defined in
 
-[index.ts:496](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L496)
+[query.ts:87](https://github.com/lancedb/lancedb/blob/7856a94/node/src/query.ts#L87)
 
 ## Methods
 
 ### execute
 
-▸ **execute**<`T`\>(): `Promise`<`T`[]\>
+▸ **execute**\<`T`\>(): `Promise`\<`T`[]\>
 
 Execute the query and return the results as an Array of Objects
 
@@ -202,21 +215,21 @@ Execute the query and return the results as an Array of Objects
 
 | Name | Type |
 | :------ | :------ |
-| `T` | `Record`<`string`, `unknown`\> |
+| `T` | `Record`\<`string`, `unknown`\> |
 
 #### Returns
 
-`Promise`<`T`[]\>
+`Promise`\<`T`[]\>
 
 #### Defined in
 
-[index.ts:519](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L519)
+[query.ts:115](https://github.com/lancedb/lancedb/blob/7856a94/node/src/query.ts#L115)
 
 ___
 
 ### filter
 
-▸ **filter**(`value`): [`Query`](Query.md)<`T`\>
+▸ **filter**(`value`): [`Query`](Query.md)\<`T`\>
 
 A filter statement to be applied to this query.
 
@@ -228,17 +241,31 @@ A filter statement to be applied to this query.
 
 #### Returns
 
-[`Query`](Query.md)<`T`\>
+[`Query`](Query.md)\<`T`\>
 
 #### Defined in
 
-[index.ts:491](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L491)
+[query.ts:82](https://github.com/lancedb/lancedb/blob/7856a94/node/src/query.ts#L82)
+
+___
+
+### isElectron
+
+▸ `Private` **isElectron**(): `boolean`
+
+#### Returns
+
+`boolean`
+
+#### Defined in
+
+[query.ts:142](https://github.com/lancedb/lancedb/blob/7856a94/node/src/query.ts#L142)
 
 ___
 
 ### limit
 
-▸ **limit**(`value`): [`Query`](Query.md)<`T`\>
+▸ **limit**(`value`): [`Query`](Query.md)\<`T`\>
 
 Sets the number of results that will be returned
 
@@ -250,23 +277,19 @@ Sets the number of results that will be returned
 
 #### Returns
 
-[`Query`](Query.md)<`T`\>
+[`Query`](Query.md)\<`T`\>
 
 #### Defined in
 
-[index.ts:464](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L464)
+[query.ts:55](https://github.com/lancedb/lancedb/blob/7856a94/node/src/query.ts#L55)
 
 ___
 
 ### metricType
 
-▸ **metricType**(`value`): [`Query`](Query.md)<`T`\>
+▸ **metricType**(`value`): [`Query`](Query.md)\<`T`\>
 
 The MetricType used for this Query.
-
-**`See`**
-
-MetricType for the different options
 
 #### Parameters
 
@@ -276,17 +299,21 @@ MetricType for the different options
 
 #### Returns
 
-[`Query`](Query.md)<`T`\>
+[`Query`](Query.md)\<`T`\>
+
+**`See`**
+
+MetricType for the different options
 
 #### Defined in
 
-[index.ts:511](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L511)
+[query.ts:102](https://github.com/lancedb/lancedb/blob/7856a94/node/src/query.ts#L102)
 
 ___
 
 ### nprobes
 
-▸ **nprobes**(`value`): [`Query`](Query.md)<`T`\>
+▸ **nprobes**(`value`): [`Query`](Query.md)\<`T`\>
 
 The number of probes used. A higher number makes search more accurate but also slower.
 
@@ -298,17 +325,37 @@ The number of probes used. A higher number makes search more accurate but also s
 
 #### Returns
 
-[`Query`](Query.md)<`T`\>
+[`Query`](Query.md)\<`T`\>
 
 #### Defined in
 
-[index.ts:482](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L482)
+[query.ts:73](https://github.com/lancedb/lancedb/blob/7856a94/node/src/query.ts#L73)
+
+___
+
+### prefilter
+
+▸ **prefilter**(`value`): [`Query`](Query.md)\<`T`\>
+
+#### Parameters
+
+| Name | Type |
+| :------ | :------ |
+| `value` | `boolean` |
+
+#### Returns
+
+[`Query`](Query.md)\<`T`\>
+
+#### Defined in
+
+[query.ts:107](https://github.com/lancedb/lancedb/blob/7856a94/node/src/query.ts#L107)
 
 ___
 
 ### refineFactor
 
-▸ **refineFactor**(`value`): [`Query`](Query.md)<`T`\>
+▸ **refineFactor**(`value`): [`Query`](Query.md)\<`T`\>
 
 Refine the results by reading extra elements and re-ranking them in memory.
 
@@ -320,17 +367,17 @@ Refine the results by reading extra elements and re-ranking them in memory.
 
 #### Returns
 
-[`Query`](Query.md)<`T`\>
+[`Query`](Query.md)\<`T`\>
 
 #### Defined in
 
-[index.ts:473](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L473)
+[query.ts:64](https://github.com/lancedb/lancedb/blob/7856a94/node/src/query.ts#L64)
 
 ___
 
 ### select
 
-▸ **select**(`value`): [`Query`](Query.md)<`T`\>
+▸ **select**(`value`): [`Query`](Query.md)\<`T`\>
 
 Return only the specified columns.
 
@@ -342,8 +389,8 @@ Return only the specified columns.
 
 #### Returns
 
-[`Query`](Query.md)<`T`\>
+[`Query`](Query.md)\<`T`\>
 
 #### Defined in
 
-[index.ts:502](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/index.ts#L502)
+[query.ts:93](https://github.com/lancedb/lancedb/blob/7856a94/node/src/query.ts#L93)

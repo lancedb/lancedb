@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import TYPE_CHECKING, List, Literal, Optional, Type, Union
 
 import deprecation
@@ -70,7 +71,7 @@ class Query(pydantic.BaseModel):
     vector_column: str = VECTOR_COLUMN_NAME
 
     # vector to search for
-    vector: List[float]
+    vector: Union[List[float], List[List[float]]]
 
     # sql filter to refine the query with
     filter: Optional[str] = None
@@ -185,14 +186,40 @@ class LanceQueryBuilder(ABC):
         """
         return self.to_pandas()
 
-    def to_pandas(self) -> "pd.DataFrame":
+    def to_pandas(self, flatten: Optional[Union[int, bool]] = None) -> "pd.DataFrame":
         """
         Execute the query and return the results as a pandas DataFrame.
         In addition to the selected columns, LanceDB also returns a vector
         and also the "_distance" column which is the distance between the query
         vector and the returned vector.
+
+        Parameters
+        ----------
+        flatten: Optional[Union[int, bool]]
+            If flatten is True, flatten all nested columns.
+            If flatten is an integer, flatten the nested columns up to the
+            specified depth.
+            If unspecified, do not flatten the nested columns.
         """
-        return self.to_arrow().to_pandas()
+        tbl = self.to_arrow()
+        if flatten is True:
+            while True:
+                tbl = tbl.flatten()
+                has_struct = False
+                # loop through all columns to check if there is any struct column
+                if any(pa.types.is_struct(col.type) for col in tbl.schema):
+                    continue
+                else:
+                    break
+        elif isinstance(flatten, int):
+            if flatten <= 0:
+                raise ValueError(
+                    "Please specify a positive integer for flatten or the boolean value `True`"
+                )
+            while flatten > 0:
+                tbl = tbl.flatten()
+                flatten -= 1
+        return tbl.to_pandas()
 
     @abstractmethod
     def to_arrow(self) -> pa.Table:
@@ -233,20 +260,30 @@ class LanceQueryBuilder(ABC):
             for row in self.to_arrow().to_pylist()
         ]
 
-    def limit(self, limit: int) -> LanceQueryBuilder:
+    def limit(self, limit: Union[int, None]) -> LanceQueryBuilder:
         """Set the maximum number of results to return.
 
         Parameters
         ----------
         limit: int
             The maximum number of results to return.
+            By default the query is limited to the first 10.
+            Call this method and pass 0, a negative value,
+            or None to remove the limit.
+            *WARNING* if you have a large dataset, removing
+            the limit can potentially result in reading a
+            large amount of data into memory and cause
+            out of memory issues.
 
         Returns
         -------
         LanceQueryBuilder
             The LanceQueryBuilder object.
         """
-        self._limit = limit
+        if limit is None or limit <= 0:
+            self._limit = None
+        else:
+            self._limit = limit
         return self
 
     def select(self, columns: list) -> LanceQueryBuilder:
@@ -395,6 +432,8 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         vector and the returned vectors.
         """
         vector = self._query if isinstance(self._query, list) else self._query.tolist()
+        if isinstance(vector[0], np.ndarray):
+            vector = [v.tolist() for v in vector]
         query = Query(
             vector=vector,
             filter=self._where,
@@ -439,6 +478,24 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
     def __init__(self, table: "lancedb.table.Table", query: str):
         super().__init__(table)
         self._query = query
+        self._phrase_query = False
+
+    def phrase_query(self, phrase_query: bool = True) -> LanceFtsQueryBuilder:
+        """Set whether to use phrase query.
+
+        Parameters
+        ----------
+        phrase_query: bool, default True
+            If True, then the query will be wrapped in quotes and
+            double quotes replaced by single quotes.
+
+        Returns
+        -------
+        LanceFtsQueryBuilder
+            The LanceFtsQueryBuilder object.
+        """
+        self._phrase_query = phrase_query
+        return self
 
     def to_arrow(self) -> pa.Table:
         try:
@@ -452,16 +509,47 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
 
         # get the index path
         index_path = self._table._get_fts_index_path()
+        # check if the index exist
+        if not Path(index_path).exists():
+            raise FileNotFoundError(
+                "Fts index does not exist."
+                f"Please first call table.create_fts_index(['<field_names>']) to create the fts index."
+            )
         # open the index
         index = tantivy.Index.open(index_path)
         # get the scores and doc ids
-        row_ids, scores = search_index(index, self._query, self._limit)
+        query = self._query
+        if self._phrase_query:
+            query = query.replace('"', "'")
+            query = f'"{query}"'
+        row_ids, scores = search_index(index, query, self._limit)
         if len(row_ids) == 0:
             empty_schema = pa.schema([pa.field("score", pa.float32())])
             return pa.Table.from_pylist([], schema=empty_schema)
         scores = pa.array(scores)
         output_tbl = self._table.to_lance().take(row_ids, columns=self._columns)
         output_tbl = output_tbl.append_column("score", scores)
+
+        if self._where is not None:
+            try:
+                # TODO would be great to have Substrait generate pyarrow compute expressions
+                # or conversely have pyarrow support SQL expressions using Substrait
+                import duckdb
+
+                output_tbl = (
+                    duckdb.sql(f"SELECT * FROM output_tbl")
+                    .filter(self._where)
+                    .to_arrow_table()
+                )
+            except ImportError:
+                import lance
+                import tempfile
+
+                # TODO Use "memory://" instead once that's supported
+                with tempfile.TemporaryDirectory() as tmp:
+                    ds = lance.write_dataset(output_tbl, tmp)
+                    output_tbl = ds.to_table(filter=self._where)
+
         return output_tbl
 
 

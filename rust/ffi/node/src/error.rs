@@ -23,7 +23,7 @@ pub enum Error {
     #[snafu(display("column '{name}' is missing"))]
     MissingColumn { name: String },
     #[snafu(display("{name}: {message}"))]
-    RangeError { name: String, message: String },
+    OutOfRange { name: String, message: String },
     #[snafu(display("{index_type} is not a valid index type"))]
     InvalidIndexType { index_type: String },
 

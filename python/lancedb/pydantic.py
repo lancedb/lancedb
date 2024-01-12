@@ -26,6 +26,7 @@ import numpy as np
 import pyarrow as pa
 import pydantic
 import semver
+from pydantic.fields import FieldInfo
 
 from .embeddings import EmbeddingFunctionRegistry
 
@@ -142,8 +143,8 @@ def Vector(
     return FixedSizeList
 
 
-def _py_type_to_arrow_type(py_type: Type[Any]) -> pa.DataType:
-    """Convert Python Type to Arrow DataType.
+def _py_type_to_arrow_type(py_type: Type[Any], field: FieldInfo) -> pa.DataType:
+    """Convert a field with native Python type to Arrow data type.
 
     Raises
     ------
@@ -163,9 +164,13 @@ def _py_type_to_arrow_type(py_type: Type[Any]) -> pa.DataType:
     elif py_type == date:
         return pa.date32()
     elif py_type == datetime:
-        return pa.timestamp("us")
+        tz = get_extras(field, "tz")
+        return pa.timestamp("us", tz=tz)
+    elif getattr(py_type, "__origin__", None) in (list, tuple):
+        child = py_type.__args__[0]
+        return pa.list_(_py_type_to_arrow_type(child, field))
     raise TypeError(
-        f"Converting Pydantic type to Arrow Type: unsupported type {py_type}"
+        f"Converting Pydantic type to Arrow Type: unsupported type {py_type}."
     )
 
 
@@ -187,6 +192,7 @@ else:
 
 def _pydantic_to_arrow_type(field: pydantic.fields.FieldInfo) -> pa.DataType:
     """Convert a Pydantic FieldInfo to Arrow DataType"""
+
     if isinstance(field.annotation, _GenericAlias) or (
         sys.version_info > (3, 9) and isinstance(field.annotation, types.GenericAlias)
     ):
@@ -194,10 +200,17 @@ def _pydantic_to_arrow_type(field: pydantic.fields.FieldInfo) -> pa.DataType:
         args = field.annotation.__args__
         if origin == list:
             child = args[0]
-            return pa.list_(_py_type_to_arrow_type(child))
+            return pa.list_(_py_type_to_arrow_type(child, field))
         elif origin == Union:
             if len(args) == 2 and args[1] == type(None):
-                return _py_type_to_arrow_type(args[0])
+                return _py_type_to_arrow_type(args[0], field)
+    elif sys.version_info >= (3, 10) and isinstance(field.annotation, types.UnionType):
+        args = field.annotation.__args__
+        if len(args) == 2:
+            for typ in args:
+                if typ == type(None):
+                    continue
+                return _py_type_to_arrow_type(typ, field)
     elif inspect.isclass(field.annotation):
         if issubclass(field.annotation, pydantic.BaseModel):
             # Struct
@@ -205,7 +218,7 @@ def _pydantic_to_arrow_type(field: pydantic.fields.FieldInfo) -> pa.DataType:
             return pa.struct(fields)
         elif issubclass(field.annotation, FixedSizeListMixin):
             return pa.list_(field.annotation.value_arrow_type(), field.annotation.dim())
-    return _py_type_to_arrow_type(field.annotation)
+    return _py_type_to_arrow_type(field.annotation, field)
 
 
 def is_nullable(field: pydantic.fields.FieldInfo) -> bool:
@@ -215,6 +228,11 @@ def is_nullable(field: pydantic.fields.FieldInfo) -> bool:
         args = field.annotation.__args__
         if origin == Union:
             if len(args) == 2 and args[1] == type(None):
+                return True
+    elif sys.version_info >= (3, 10) and isinstance(field.annotation, types.UnionType):
+        args = field.annotation.__args__
+        for typ in args:
+            if typ == type(None):
                 return True
     return False
 
@@ -348,3 +366,20 @@ def get_extras(field_info: pydantic.fields.FieldInfo, key: str) -> Any:
     if PYDANTIC_VERSION.major >= 2:
         return (field_info.json_schema_extra or {}).get(key)
     return (field_info.field_info.extra or {}).get("json_schema_extra", {}).get(key)
+
+
+if PYDANTIC_VERSION.major < 2:
+
+    def model_to_dict(model: pydantic.BaseModel) -> Dict[str, Any]:
+        """
+        Convert a Pydantic model to a dictionary.
+        """
+        return model.dict()
+
+else:
+
+    def model_to_dict(model: pydantic.BaseModel) -> Dict[str, Any]:
+        """
+        Convert a Pydantic model to a dictionary.
+        """
+        return model.model_dump()

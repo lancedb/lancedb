@@ -17,20 +17,21 @@ import inspect
 import os
 from abc import ABC, abstractmethod
 from functools import cached_property
-from typing import TYPE_CHECKING, Any, Iterable, List, Optional, Union
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Union
 
 import lance
 import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
+import pyarrow.fs as pa_fs
 from lance import LanceDataset
 from lance.vector import vec_to_table
 
 from .common import DATA, VEC, VECTOR_COLUMN_NAME
 from .embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
-from .pydantic import LanceModel
+from .pydantic import LanceModel, model_to_dict
 from .query import LanceQueryBuilder, Query
-from .util import fs_from_uri, safe_import_pandas
+from .util import fs_from_uri, safe_import_pandas, value_to_sql, join_uri
 from .utils.events import register_event
 
 if TYPE_CHECKING:
@@ -51,39 +52,38 @@ def _sanitize_data(
 ):
     if not any(data):
         raise ValueError(f"Any empty value was passed as data: {data}")
-    else:
-        if isinstance(data, list):
-            # convert to list of dict if data is a bunch of LanceModels
-            if isinstance(data[0], LanceModel):
-                schema = data[0].__class__.to_arrow_schema()
-                data = [dict(d) for d in data]
-            data = pa.Table.from_pylist(data)
-        elif isinstance(data, dict):
-            data = vec_to_table(data)
-        elif pd is not None and isinstance(data, pd.DataFrame):
-            data = pa.Table.from_pandas(data, preserve_index=False)
-            # Do not serialize Pandas metadata
-            meta = data.schema.metadata if data.schema.metadata is not None else {}
-            meta = {k: v for k, v in meta.items() if k != b"pandas"}
-            data = data.replace_schema_metadata(meta)
 
-        if isinstance(data, pa.Table):
-            if metadata:
-                data = _append_vector_col(data, metadata, schema)
-                metadata.update(data.schema.metadata or {})
-                data = data.replace_schema_metadata(metadata)
-            data = _sanitize_schema(
-                data,
-                schema=schema,
-                on_bad_vectors=on_bad_vectors,
-                fill_value=fill_value,
-            )
-        elif isinstance(data, Iterable):
-            data = _to_record_batch_generator(
-                data, schema, metadata, on_bad_vectors, fill_value
-            )
+    if isinstance(data, list):
+        # convert to list of dict if data is a bunch of LanceModels
+        if isinstance(data[0], LanceModel):
+            schema = data[0].__class__.to_arrow_schema()
+            data = [model_to_dict(d) for d in data]
+            data = pa.Table.from_pylist(data, schema=schema)
         else:
-            raise TypeError(f"Unsupported data type: {type(data)}")
+            data = pa.Table.from_pylist(data)
+    elif isinstance(data, dict):
+        data = vec_to_table(data)
+    elif pd is not None and isinstance(data, pd.DataFrame):
+        data = pa.Table.from_pandas(data, preserve_index=False)
+        # Do not serialize Pandas metadata
+        meta = data.schema.metadata if data.schema.metadata is not None else {}
+        meta = {k: v for k, v in meta.items() if k != b"pandas"}
+        data = data.replace_schema_metadata(meta)
+
+    if isinstance(data, pa.Table):
+        if metadata:
+            data = _append_vector_col(data, metadata, schema)
+            metadata.update(data.schema.metadata or {})
+            data = data.replace_schema_metadata(metadata)
+        data = _sanitize_schema(
+            data, schema=schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value
+        )
+    elif isinstance(data, Iterable):
+        data = _to_record_batch_generator(
+            data, schema, metadata, on_bad_vectors, fill_value
+        )
+    else:
+        raise TypeError(f"Unsupported data type: {type(data)}")
 
     return data
 
@@ -222,6 +222,77 @@ class Table(ABC):
             Only support "cuda" for now.
         index_cache_size : int, optional
             The size of the index cache in number of entries. Default value is 256.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def create_scalar_index(
+        self,
+        column: str,
+        *,
+        replace: bool = True,
+    ):
+        """Create a scalar index on a column.
+
+        Scalar indices, like vector indices, can be used to speed up scans.  A scalar
+        index can speed up scans that contain filter expressions on the indexed column.
+        For example, the following scan will be faster if the column ``my_col`` has
+        a scalar index:
+
+        .. code-block:: python
+
+            import lancedb
+
+            db = lancedb.connect("/data/lance")
+            img_table = db.open_table("images")
+            my_df = img_table.search().where("my_col = 7", prefilter=True).to_pandas()
+
+        Scalar indices can also speed up scans containing a vector search and a
+        prefilter:
+
+        .. code-block::python
+
+            import lancedb
+
+            db = lancedb.connect("/data/lance")
+            img_table = db.open_table("images")
+            img_table.search([1, 2, 3, 4], vector_column_name="vector")
+                .where("my_col != 7", prefilter=True)
+                .to_pandas()
+
+        Scalar indices can only speed up scans for basic filters using
+        equality, comparison, range (e.g. ``my_col BETWEEN 0 AND 100``), and set
+        membership (e.g. `my_col IN (0, 1, 2)`)
+
+        Scalar indices can be used if the filter contains multiple indexed columns and
+        the filter criteria are AND'd or OR'd together
+        (e.g. ``my_col < 0 AND other_col> 100``)
+
+        Scalar indices may be used if the filter contains non-indexed columns but,
+        depending on the structure of the filter, they may not be usable.  For example,
+        if the column ``not_indexed`` does not have a scalar index then the filter
+        ``my_col = 0 OR not_indexed = 1`` will not be able to use any scalar index on
+        ``my_col``.
+
+        **Experimental API**
+
+        Parameters
+        ----------
+        column : str
+            The column to be indexed.  Must be a boolean, integer, float,
+            or string column.
+        replace : bool, default True
+            Replace the existing index if it exists.
+
+        Examples
+        --------
+
+        .. code-block:: python
+
+            import lance
+
+            dataset = lance.dataset("/tmp/images.lance")
+            dataset.create_scalar_index("category")
         """
         raise NotImplementedError
 
@@ -388,6 +459,62 @@ class Table(ABC):
         """
         raise NotImplementedError
 
+    @abstractmethod
+    def update(
+        self,
+        where: Optional[str] = None,
+        values: Optional[dict] = None,
+        *,
+        values_sql: Optional[Dict[str, str]] = None,
+    ):
+        """
+        This can be used to update zero to all rows depending on how many
+        rows match the where clause. If no where clause is provided, then
+        all rows will be updated.
+
+        Either `values` or `values_sql` must be provided. You cannot provide
+        both.
+
+        Parameters
+        ----------
+        where: str, optional
+            The SQL where clause to use when updating rows. For example, 'x = 2'
+            or 'x IN (1, 2, 3)'. The filter must not be empty, or it will error.
+        values: dict, optional
+            The values to update. The keys are the column names and the values
+            are the values to set.
+        values_sql: dict, optional
+            The values to update, expressed as SQL expression strings. These can
+            reference existing columns. For example, {"x": "x + 1"} will increment
+            the x column by 1.
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> import pandas as pd
+        >>> data = pd.DataFrame({"x": [1, 2, 3], "vector": [[1, 2], [3, 4], [5, 6]]})
+        >>> db = lancedb.connect("./.lancedb")
+        >>> table = db.create_table("my_table", data)
+        >>> table.to_pandas()
+           x      vector
+        0  1  [1.0, 2.0]
+        1  2  [3.0, 4.0]
+        2  3  [5.0, 6.0]
+        >>> table.update(where="x = 2", values={"vector": [10, 10]})
+        >>> table.to_pandas()
+           x        vector
+        0  1    [1.0, 2.0]
+        1  3    [5.0, 6.0]
+        2  2  [10.0, 10.0]
+        >>> table.update(values_sql={"x": "x + 1"})
+        >>> table.to_pandas()
+           x        vector
+        0  2    [1.0, 2.0]
+        1  4    [5.0, 6.0]
+        2  3  [10.0, 10.0]
+        """
+        raise NotImplementedError
+
 
 class LanceTable(Table):
     """
@@ -524,8 +651,19 @@ class LanceTable(Table):
         self._dataset.restore()
         self._reset_dataset()
 
+    def count_rows(self, filter: Optional[str] = None) -> int:
+        """
+        Count the number of rows in the table.
+
+        Parameters
+        ----------
+        filter: str, optional
+            A SQL where clause to filter the rows to count.
+        """
+        return self._dataset.count_rows(filter)
+
     def __len__(self):
-        return self._dataset.count_rows()
+        return self.count_rows()
 
     def __repr__(self) -> str:
         return f"LanceTable({self.name})"
@@ -556,7 +694,7 @@ class LanceTable(Table):
 
     @property
     def _dataset_uri(self) -> str:
-        return os.path.join(self._conn.uri, f"{self.name}.lance")
+        return join_uri(self._conn.uri, f"{self.name}.lance")
 
     def create_index(
         self,
@@ -582,7 +720,16 @@ class LanceTable(Table):
         self._reset_dataset()
         register_event("create_index")
 
-    def create_fts_index(self, field_names: Union[str, List[str]]):
+    def create_scalar_index(self, column: str, *, replace: bool = True):
+        self._dataset.create_scalar_index(column, index_type="BTREE", replace=replace)
+
+    def create_fts_index(
+        self,
+        field_names: Union[str, List[str]],
+        *,
+        replace: bool = False,
+        writer_heap_size: Optional[int] = 1024 * 1024 * 1024,
+    ):
         """Create a full-text search index on the table.
 
         Warning - this API is highly experimental and is highly likely to change
@@ -592,17 +739,32 @@ class LanceTable(Table):
         ----------
         field_names: str or list of str
             The name(s) of the field to index.
+        replace: bool, default False
+            If True, replace the existing index if it exists. Note that this is
+            not yet an atomic operation; the index will be temporarily
+            unavailable while the new index is being created.
+        writer_heap_size: int, default 1GB
         """
         from .fts import create_index, populate_index
 
         if isinstance(field_names, str):
             field_names = [field_names]
+
+        fs, path = fs_from_uri(self._get_fts_index_path())
+        index_exists = fs.get_file_info(path).type != pa_fs.FileType.NotFound
+        if index_exists:
+            if not replace:
+                raise ValueError(
+                    f"Index already exists. Use replace=True to overwrite."
+                )
+            fs.delete_dir(path)
+
         index = create_index(self._get_fts_index_path(), field_names)
-        populate_index(index, self, field_names)
+        populate_index(index, self, field_names, writer_heap_size=writer_heap_size)
         register_event("create_fts_index")
 
     def _get_fts_index_path(self):
-        return os.path.join(self._dataset_uri, "_indices", "tantivy")
+        return join_uri(self._dataset_uri, "_indices", "tantivy")
 
     @cached_property
     def _dataset(self) -> LanceDataset:
@@ -920,30 +1082,35 @@ class LanceTable(Table):
     def delete(self, where: str):
         self._dataset.delete(where)
 
-    def update(self, where: str, values: dict):
+    def update(
+        self,
+        where: Optional[str] = None,
+        values: Optional[dict] = None,
+        *,
+        values_sql: Optional[Dict[str, str]] = None,
+    ):
         """
-        EXPERIMENTAL: Update rows in the table (not threadsafe).
-
         This can be used to update zero to all rows depending on how many
         rows match the where clause.
 
         Parameters
         ----------
-        where: str
+        where: str, optional
             The SQL where clause to use when updating rows. For example, 'x = 2'
             or 'x IN (1, 2, 3)'. The filter must not be empty, or it will error.
-        values: dict
+        values: dict, optional
             The values to update. The keys are the column names and the values
             are the values to set.
+        values_sql: dict, optional
+            The values to update, expressed as SQL expression strings. These can
+            reference existing columns. For example, {"x": "x + 1"} will increment
+            the x column by 1.
 
         Examples
         --------
         >>> import lancedb
-        >>> data = [
-        ...    {"x": 1, "vector": [1, 2]},
-        ...    {"x": 2, "vector": [3, 4]},
-        ...    {"x": 3, "vector": [5, 6]}
-        ... ]
+        >>> import pandas as pd
+        >>> data = pd.DataFrame({"x": [1, 2, 3], "vector": [[1, 2], [3, 4], [5, 6]]})
         >>> db = lancedb.connect("./.lancedb")
         >>> table = db.create_table("my_table", data)
         >>> table.to_pandas()
@@ -959,18 +1126,15 @@ class LanceTable(Table):
         2  2  [10.0, 10.0]
 
         """
-        orig_data = self._dataset.to_table(filter=where).combine_chunks()
-        if len(orig_data) == 0:
-            return
-        for col, val in values.items():
-            i = orig_data.column_names.index(col)
-            if i < 0:
-                raise ValueError(f"Column {col} does not exist")
-            orig_data = orig_data.set_column(
-                i, col, pa.array([val] * len(orig_data), type=orig_data[col].type)
-            )
-        self.delete(where)
-        self.add(orig_data, mode="append")
+        if values is not None and values_sql is not None:
+            raise ValueError("Only one of values or values_sql can be provided")
+        if values is None and values_sql is None:
+            raise ValueError("Either values or values_sql must be provided")
+
+        if values is not None:
+            values_sql = {k: value_to_sql(v) for k, v in values.items()}
+
+        self.to_lance().update(values_sql, where)
         self._reset_dataset()
         register_event("update")
 

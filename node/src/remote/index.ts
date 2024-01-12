@@ -25,6 +25,7 @@ import { Vector, Table as ArrowTable } from 'apache-arrow'
 import { HttpLancedbClient } from './client'
 import { isEmbeddingFunction } from '../embedding/embedding_function'
 import { createEmptyTable, fromRecordsToStreamBuffer, fromTableToStreamBuffer } from '../arrow'
+import { toSQL } from '../util'
 
 /**
  * Remote connection.
@@ -56,8 +57,8 @@ export class RemoteConnection implements Connection {
     return 'db://' + this._client.uri
   }
 
-  async tableNames (): Promise<string[]> {
-    const response = await this._client.get('/v1/table/')
+  async tableNames (pageToken: string = '', limit: number = 10): Promise<string[]> {
+    const response = await this._client.get('/v1/table/', { limit, page_token: pageToken })
     return response.data.tables
   }
 
@@ -194,6 +195,17 @@ export class RemoteTable<T = number[]> implements Table<T> {
     return this._name
   }
 
+  get schema (): Promise<any> {
+    return this._client.post(`/v1/table/${this._name}/describe/`).then(res => {
+      if (res.status !== 200) {
+        throw new Error(`Server Error, status: ${res.status}, ` +
+        // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
+          `message: ${res.statusText}: ${res.data}`)
+      }
+      return res.data?.schema
+    })
+  }
+
   search (query: T): Query<T> {
     return new RemoteQuery(query, this._client, this._name)//, this._embeddings_new)
   }
@@ -234,7 +246,44 @@ export class RemoteTable<T = number[]> implements Table<T> {
     return data.length
   }
 
-  async createIndex (indexParams: VectorIndexParams): Promise<any> {
+  async createIndex (indexParams: VectorIndexParams): Promise<void> {
+    const unsupportedParams = [
+      'index_name',
+      'num_partitions',
+      'max_iters',
+      'use_opq',
+      'num_sub_vectors',
+      'num_bits',
+      'max_opq_iters',
+      'replace'
+    ]
+    for (const param of unsupportedParams) {
+      // eslint-disable-next-line @typescript-eslint/strict-boolean-expressions
+      if (indexParams[param as keyof VectorIndexParams]) {
+        throw new Error(`${param} is not supported for remote connections`)
+      }
+    }
+
+    const column = indexParams.column ?? 'vector'
+    const indexType = 'vector' // only vector index is supported for remote connections
+    const metricType = indexParams.metric_type ?? 'L2'
+    const indexCacheSize = indexParams.index_cache_size ?? null
+
+    const data = {
+      column,
+      index_type: indexType,
+      metric_type: metricType,
+      index_cache_size: indexCacheSize
+    }
+    const res = await this._client.post(`/v1/table/${this._name}/create_index/`, data)
+    if (res.status !== 200) {
+      throw new Error(`Server Error, status: ${res.status}, ` +
+      // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
+        `message: ${res.statusText}: ${res.data}`)
+    }
+  }
+
+  async createScalarIndex (column: string, replace: boolean): Promise<void> {
     throw new Error('Not implemented')
   }
 
@@ -248,7 +297,23 @@ export class RemoteTable<T = number[]> implements Table<T> {
   }
 
   async update (args: UpdateArgs | UpdateSqlArgs): Promise<void> {
-    throw new Error('Not implemented')
+    let filter: string | null
+    let updates: Record<string, string>
+
+    if ('valuesSql' in args) {
+      filter = args.where ?? null
+      updates = args.valuesSql
+    } else {
+      filter = args.where ?? null
+      updates = {}
+      for (const [key, value] of Object.entries(args.values)) {
+        updates[key] = toSQL(value)
+      }
+    }
+    await this._client.post(`/v1/table/${this._name}/update/`, {
+      predicate: filter,
+      updates: Object.entries(updates).map(([key, value]) => [key, value])
+    })
   }
 
   async listIndices (): Promise<VectorIndex[]> {

@@ -119,3 +119,100 @@ This is why it is often called **Approximate Nearest Neighbors (ANN)** search, w
 always returns 100% recall.
 
 See [ANN Index](ann_indexes.md) for more details.
+
+
+### Output formats
+
+LanceDB returns results in many different formats commonly used in python.
+Let's create a LanceDB table with a nested schema:
+
+```python
+from datetime import datetime
+import lancedb
+from lancedb.pydantic import LanceModel, Vector
+import numpy as np
+from pydantic import BaseModel
+uri = "data/sample-lancedb-nested"
+
+class Metadata(BaseModel):
+    source: str
+    timestamp: datetime
+
+class Document(BaseModel):
+    content: str
+    meta: Metadata
+
+class LanceSchema(LanceModel):
+    id: str
+    vector: Vector(1536)
+    payload: Document
+
+# Let's add 100 sample rows to our dataset
+data = [LanceSchema(
+    id=f"id{i}",
+    vector=np.random.randn(1536),
+    payload=Document(
+        content=f"document{i}", meta=Metadata(source=f"source{i%10}", timestamp=datetime.now())
+    ),
+) for i in range(100)]
+
+tbl = db.create_table("documents", data=data)
+```
+
+#### As a pyarrow table
+
+Using `to_arrow()` we can get the results back as a pyarrow Table.
+This result table has the same columns as the LanceDB table, with 
+the addition of an `_distance` column for vector search or a `score`
+column for full text search.
+
+```python
+tbl.search(np.random.randn(1536)).to_arrow()
+```
+
+#### As a pandas dataframe
+
+You can also get the results as a pandas dataframe.
+
+```python
+tbl.search(np.random.randn(1536)).to_pandas()
+```
+
+While other formats like Arrow/Pydantic/Python dicts have a natural 
+way to handle nested schemas, pandas can only store nested data as a 
+python dict column, which makes it difficult to support nested references.
+So for convenience, you can also tell LanceDB to flatten a nested schema 
+when creating the pandas dataframe. 
+
+```python
+tbl.search(np.random.randn(1536)).to_pandas(flatten=True)
+```
+
+If your table has a deeply nested struct, you can control how many levels
+of nesting to flatten by passing in a positive integer.
+
+```python
+tbl.search(np.random.randn(1536)).to_pandas(flatten=1)
+```
+
+
+#### As a list of python dicts
+
+You can of course return results as a list of python dicts.
+
+```python
+tbl.search(np.random.randn(1536)).to_list()
+```
+
+#### As a list of pydantic models
+
+We can add data using pydantic models, and we can certainly
+retrieve results as pydantic models
+
+```python
+tbl.search(np.random.randn(1536)).to_pydantic(LanceSchema)
+```
+
+Note that in this case the extra `_distance` field is discarded since
+it's not part of the LanceSchema.
+

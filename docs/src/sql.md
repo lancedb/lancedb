@@ -1,7 +1,7 @@
 # SQL filters
 
 LanceDB embraces the utilization of standard SQL expressions as predicates for hybrid
-filters. It can be used during hybrid vector search and deletion operations.
+filters. It can be used during hybrid vector search, update, and deletion operations.
 
 Currently, Lance supports a growing list of expressions.
 
@@ -22,7 +22,7 @@ import numpy as np
 uri = "data/sample-lancedb"
 db = lancedb.connect(uri)
 
-data = [{"vector": row, "item": f"item {i}"}
+data = [{"vector": row, "item": f"item {i}", "id": i}
      for i, row in enumerate(np.random.random((10_000, 2)).astype('int'))]
 
 tbl = db.create_table("my_vectors", data=data)
@@ -35,33 +35,25 @@ const db = await vectordb.connect('data/sample-lancedb')
 
 let data = []
 for (let i = 0; i < 10_000; i++) {
-     data.push({vector: Array(1536).fill(i), id: `${i}`, content: "", longId: `${i}`},)
+     data.push({vector: Array(1536).fill(i), id: i, item: `item ${i}`, strId: `${i}`})
 }
-const tbl = await db.createTable('my_vectors', data)
+const tbl = await db.createTable('myVectors', data)
 ```
 -->
 === "Python"
 
     ```python
     tbl.search([100, 102]) \
-       .where("""(
-        (label IN [10, 20])
-        AND
-        (note.email IS NOT NULL)
-        ) OR NOT note.created
-        """)
-
+       .where("(item IN ('item 0', 'item 2')) AND (id > 10)") \
+       .to_arrow()
     ```
+
 === "Javascript"
 
     ```javascript
-    tbl.search([100, 102])
-       .where(`(
-            (label IN [10, 20])
-            AND
-            (note.email IS NOT NULL)
-        ) OR NOT note.created
-       `)
+    await tbl.search(Array(1536).fill(0))
+       .where("(item IN ('item 0', 'item 2')) AND (id > 10)")
+       .execute()
     ```
 
 
@@ -118,3 +110,22 @@ The mapping from SQL types to Arrow types is:
 
 [^1]: See precision mapping in previous table.
 
+
+## Filtering without Vector Search
+
+You can also filter your data without search.
+
+=== "Python"
+      ```python
+      tbl.search().where("id=10").limit(10).to_arrow()
+      ```
+
+=== "JavaScript"
+      ```javascript
+      await tbl.where('id=10').limit(10).execute()
+      ```
+
+!!! warning
+    If your table is large, this could potentially return a very large
+    amount of data. Please be sure to use a `limit` clause unless
+    you're sure you want to return the whole result set.

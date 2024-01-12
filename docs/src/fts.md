@@ -29,8 +29,9 @@ uri = "data/sample-lancedb"
 db = lancedb.connect(uri)
 
 table = db.create_table("my_table",
-            data=[{"vector": [3.1, 4.1], "text": "Frodo was a happy puppy"},
-                  {"vector": [5.9, 26.5], "text": "There are several kittens playing"}])
+            data=[{"vector": [3.1, 4.1], "text": "Frodo was a happy puppy", "meta": "foo"},
+                  {"vector": [5.9, 26.5], "text": "Sam was a loyal puppy", "meta": "bar"},
+                  {"vector": [15.9, 6.5], "text": "There are several kittens playing"}])
 
 ```
 
@@ -64,10 +65,51 @@ table.create_fts_index(["text1", "text2"])
 
 Note that the search API call does not change - you can search over all indexed columns at once.
 
+## Filtering
+
+Currently the LanceDB full text search feature supports *post-filtering*, meaning filters are
+applied on top of the full text search results. This can be invoked via the familiar
+`where` syntax:
+
+```python
+table.search("puppy").limit(10).where("meta='foo'").to_list()
+```
+
+## Syntax
+
+For full-text search you can perform either a phrase query like "the old man and the sea", 
+or a structured search query like "(Old AND Man) AND Sea".
+Double quotes are used to disambiguate.
+
+For example: 
+
+If you intended "they could have been dogs OR cats" as a phrase query, this actually
+raises a syntax error since `OR` is a recognized operator. If you make `or` lower case,
+this avoids the syntax error. However, it is cumbersome to have to remember what will
+conflict with the query syntax. Instead, if you search using 
+`table.search('"they could have been dogs OR cats"')`, then the syntax checker avoids
+checking inside the quotes.
+
+
+## Configurations
+
+By default, LanceDB configures a 1GB heap size limit for creating the index. You can 
+reduce this if running on a smaller node, or increase this for faster performance while
+indexing a larger corpus.
+
+```python
+# configure a 512MB heap size
+heap = 1024 * 1024 * 512
+table.create_fts_index(["text1", "text2"], writer_heap_size=heap, replace=True)
+```
+
 ## Current limitations
 
 1. Currently we do not yet support incremental writes.
-If you add data after fts index creation, it won't be reflected
-in search results until you do a full reindex.
+   If you add data after fts index creation, it won't be reflected
+   in search results until you do a full reindex.
 
-2. We currently only support local filesystem paths for the fts index.
+2. We currently only support local filesystem paths for the fts index. 
+   This is a tantivy limitation. We've implemented an object store plugin
+   but there's no way in tantivy-py to specify to use it.
+

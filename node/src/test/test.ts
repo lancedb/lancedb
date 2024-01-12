@@ -135,6 +135,17 @@ describe('LanceDB client', function () {
       assert.isTrue(results.length === 10)
     })
 
+    it('should allow creation and use of scalar indices', async function () {
+      const uri = await createTestDB(16, 300)
+      const con = await lancedb.connect(uri)
+      const table = await con.openTable('vectors')
+      await table.createScalarIndex('id', true)
+
+      // Prefiltering should still work the same
+      const results = await table.search(new Array(16).fill(0.1)).limit(10).filter('id >= 10').prefilter(true).execute()
+      assert.isTrue(results.length === 10)
+    })
+
     it('select only a subset of columns', async function () {
       const uri = await createTestDB()
       const con = await lancedb.connect(uri)
@@ -161,6 +172,26 @@ describe('LanceDB client', function () {
         [new Field('id', new Int32()), new Field('name', new Utf8())]
       )
       const table = await con.createTable({ name: 'vectors', schema })
+      assert.equal(table.name, 'vectors')
+      assert.deepEqual(await con.tableNames(), ['vectors'])
+    })
+
+    it('create a table with a schema and records', async function () {
+      const dir = await track().mkdir('lancejs')
+      const con = await lancedb.connect(dir)
+
+      const schema = new Schema(
+        [new Field('id', new Int32()),
+          new Field('name', new Utf8()),
+          new Field('vector', new FixedSizeList(2, new Field('item', new Float32(), true)), false)
+        ]
+      )
+      const data = [
+        { vector: [0.5, 0.2], name: 'foo', id: 0 },
+        { vector: [0.3, 0.1], name: 'bar', id: 1 }
+      ]
+      // even thought the keys in data is out of order it should still work
+      const table = await con.createTable({ name: 'vectors', data, schema })
       assert.equal(table.name, 'vectors')
       assert.deepEqual(await con.tableNames(), ['vectors'])
     })
@@ -205,6 +236,25 @@ describe('LanceDB client', function () {
       const table = await con.createTable(tableName, data)
       assert.equal(table.name, tableName)
       assert.equal(await table.countRows(), 2)
+    })
+
+    it('creates a new table from javascript objects with variable sized list', async function () {
+      const dir = await track().mkdir('lancejs')
+      const con = await lancedb.connect(dir)
+
+      const data = [
+        { id: 1, vector: [0.1, 0.2], list_of_str: ['a', 'b', 'c'], list_of_num: [1, 2, 3] },
+        { id: 2, vector: [1.1, 1.2], list_of_str: ['x', 'y'], list_of_num: [4, 5, 6] }
+      ]
+
+      const tableName = 'with_variable_sized_list'
+      const table = await con.createTable(tableName, data) as LocalTable
+      assert.equal(table.name, tableName)
+      assert.equal(await table.countRows(), 2)
+      const rs = await table.filter('id>1').execute()
+      assert.equal(rs.length, 1)
+      assert.deepEqual(rs[0].list_of_str, ['x', 'y'])
+      assert.isTrue(rs[0].list_of_num instanceof Float64Array)
     })
 
     it('fails to create a new table when the vector column is missing', async function () {
@@ -259,6 +309,25 @@ describe('LanceDB client', function () {
       const dataAdd = [
         { id: 3, vector: [2.1, 2.2], price: 10, name: 'c' },
         { id: 4, vector: [3.1, 3.2], price: 50, name: 'd' }
+      ]
+      await table.add(dataAdd)
+      assert.equal(await table.countRows(), 4)
+    })
+
+    it('appends records with fields in a different order', async function () {
+      const dir = await track().mkdir('lancejs')
+      const con = await lancedb.connect(dir)
+
+      const data = [
+        { id: 1, vector: [0.1, 0.2], price: 10, name: 'a' },
+        { id: 2, vector: [1.1, 1.2], price: 50, name: 'b' }
+      ]
+
+      const table = await con.createTable('vectors', data)
+
+      const dataAdd = [
+        { id: 3, vector: [2.1, 2.2], name: 'c', price: 10 },
+        { id: 4, vector: [3.1, 3.2], name: 'd', price: 50 }
       ]
       await table.add(dataAdd)
       assert.equal(await table.countRows(), 4)
@@ -466,6 +535,27 @@ describe('LanceDB client', function () {
       assert.equal(table.name, 'vectors')
       const results = await table.search('foo').execute()
       assert.equal(results.length, 2)
+    })
+  })
+
+  describe('when inspecting the schema', function () {
+    it('should return the schema', async function () {
+      const uri = await createTestDB()
+      const db = await lancedb.connect(uri)
+      // the fsl inner field must be named 'item' and be nullable
+      const expectedSchema = new Schema(
+        [
+          new Field('id', new Int32()),
+          new Field('vector', new FixedSizeList(128, new Field('item', new Float32(), true))),
+          new Field('s', new Utf8())
+        ]
+      )
+      const table = await db.createTable({
+        name: 'some_table',
+        schema: expectedSchema
+      })
+      const schema = await table.schema
+      assert.deepEqual(expectedSchema, schema)
     })
   })
 })

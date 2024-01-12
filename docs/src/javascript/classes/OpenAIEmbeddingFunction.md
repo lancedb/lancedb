@@ -6,7 +6,7 @@ An embedding function that automatically creates vector representation for a giv
 
 ## Implements
 
-- [`EmbeddingFunction`](../interfaces/EmbeddingFunction.md)<`string`\>
+- [`EmbeddingFunction`](../interfaces/EmbeddingFunction.md)\<`string`\>
 
 ## Table of contents
 
@@ -40,7 +40,7 @@ An embedding function that automatically creates vector representation for a giv
 
 #### Defined in
 
-[embedding/openai.ts:21](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/embedding/openai.ts#L21)
+[embedding/openai.ts:21](https://github.com/lancedb/lancedb/blob/7856a94/node/src/embedding/openai.ts#L21)
 
 ## Properties
 
@@ -50,7 +50,7 @@ An embedding function that automatically creates vector representation for a giv
 
 #### Defined in
 
-[embedding/openai.ts:19](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/embedding/openai.ts#L19)
+[embedding/openai.ts:19](https://github.com/lancedb/lancedb/blob/7856a94/node/src/embedding/openai.ts#L19)
 
 ___
 
@@ -60,7 +60,7 @@ ___
 
 #### Defined in
 
-[embedding/openai.ts:18](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/embedding/openai.ts#L18)
+[embedding/openai.ts:18](https://github.com/lancedb/lancedb/blob/7856a94/node/src/embedding/openai.ts#L18)
 
 ___
 
@@ -76,13 +76,13 @@ The name of the column that will be used as input for the Embedding Function.
 
 #### Defined in
 
-[embedding/openai.ts:50](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/embedding/openai.ts#L50)
+[embedding/openai.ts:50](https://github.com/lancedb/lancedb/blob/7856a94/node/src/embedding/openai.ts#L50)
 
 ## Methods
 
 ### embed
 
-▸ **embed**(`data`): `Promise`<`number`[][]\>
+▸ **embed**(`data`): `Promise`\<`number`[][]\>
 
 Creates a vector representation for the given values.
 
@@ -94,7 +94,7 @@ Creates a vector representation for the given values.
 
 #### Returns
 
-`Promise`<`number`[][]\>
+`Promise`\<`number`[][]\>
 
 #### Implementation of
 
@@ -102,4 +102,4 @@ Creates a vector representation for the given values.
 
 #### Defined in
 
-[embedding/openai.ts:38](https://github.com/lancedb/lancedb/blob/b1eeb90/node/src/embedding/openai.ts#L38)
+[embedding/openai.ts:38](https://github.com/lancedb/lancedb/blob/7856a94/node/src/embedding/openai.ts#L38)
