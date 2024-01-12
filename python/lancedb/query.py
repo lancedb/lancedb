@@ -260,6 +260,17 @@ class LanceQueryBuilder(ABC):
             for row in self.to_arrow().to_pylist()
         ]
 
+    def to_polars(self) -> "pl.DataFrame":
+        """
+        Execute the query and return the results as a Polars DataFrame.
+        In addition to the selected columns, LanceDB also returns a vector
+        and also the "_distance" column which is the distance between the query
+        vector and the returned vector.
+        """
+        import polars as pl
+
+        return pl.from_arrow(self.to_arrow())
+
     def limit(self, limit: Union[int, None]) -> LanceQueryBuilder:
         """Set the maximum number of results to return.
 
