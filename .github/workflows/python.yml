@@ -49,7 +49,7 @@ jobs:
     timeout-minutes: 30
     strategy:
       matrix:
-        config: 
+        config:
           - name: x86 Mac
             runner: macos-13
           - name: Arm Mac
@@ -74,7 +74,7 @@ jobs:
       run: |
         pip install -e .[tests]
         pip install tantivy@git+https://github.com/quickwit-oss/tantivy-py#164adc87e1a033117001cf70e38c82a53014d985
-        pip install pytest pytest-mock black
+        pip install pytest pytest-mock
     - name: Run tests
       run: pytest -m "not slow" -x -v --durations=30 tests
   pydantic1x:
