@@ -20,6 +20,7 @@ from unittest.mock import PropertyMock, patch
 import lance
 import numpy as np
 import pandas as pd
+import polars as pl
 import pyarrow as pa
 import pytest
 from pydantic import BaseModel
@@ -180,6 +181,36 @@ def test_add_pydantic_model(db):
 
     really_flattened = tbl.search([0.0, 0.0]).limit(1).to_pandas(flatten=True)
     assert len(really_flattened.columns) == 7
+
+
+def test_polars(db):
+    data = {
+        "vector": [[3.1, 4.1], [5.9, 26.5]],
+        "item": ["foo", "bar"],
+        "price": [10.0, 20.0],
+    }
+    table = LanceTable.create(db, "test", data=pl.DataFrame(data))
+    assert len(table) == 2
+
+    result = table.to_pandas()
+    assert np.allclose(result["vector"].tolist(), data["vector"])
+    assert result["item"].tolist() == data["item"]
+    assert np.allclose(result["price"].tolist(), data["price"])
+
+    schema = pa.schema(
+        [
+            pa.field("vector", pa.list_(pa.float32(), 2)),
+            pa.field("item", pa.large_string()),
+            pa.field("price", pa.float64()),
+        ]
+    )
+    assert table.schema == schema
+
+    q = [3.1, 4.1]
+    result = table.search(q).limit(1).to_polars()
+    assert np.allclose(result["vector"][0], q)
+    assert result["item"][0] == "foo"
+    assert np.allclose(result["price"][0], 10.0)
 
 
 def _add(table, schema):
