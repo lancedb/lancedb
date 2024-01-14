@@ -81,6 +81,7 @@ nav:
   - 📚 Concepts:
     - Vector search: concepts/vector_search.md
     - Indexing: concepts/index_ivfpq.md
+    - Storage: concepts/storage.md
     - Data management: concepts/data_management.md
   - 🔨 Guides:
     - Working with tables: guides/tables.md
@@ -138,6 +139,7 @@ nav:
 - Concepts:
     - Vector search: concepts/vector_search.md
     - Indexing: concepts/index_ivfpq.md
+    - Storage: concepts/storage.md
     - Data management: concepts/data_management.md
 - Guides:
     - Working with tables: guides/tables.md
