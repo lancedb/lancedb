@@ -216,7 +216,6 @@ def retry_with_exponential_backoff(
     exponential_base: float = 2,
     jitter: bool = True,
     max_retries: int = 7,
-    # errors: tuple = (),
 ):
     """Retry a function with exponential backoff.
 
@@ -226,7 +225,6 @@ def retry_with_exponential_backoff(
         exponential_base (float): The base for exponential backoff (default is 2).
         jitter (bool): Whether to add jitter to the delay (default is True).
         max_retries (int): Maximum number of retries (default is 10).
-        errors (tuple): Tuple of specific exceptions to retry on (default is (openai.error.RateLimitError,)).
 
     Returns:
         function: The decorated function.
