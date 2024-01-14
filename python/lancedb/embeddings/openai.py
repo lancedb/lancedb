@@ -10,6 +10,7 @@
 #  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
+import os
 from functools import cached_property
 from typing import List, Union
 
@@ -17,6 +18,7 @@ import numpy as np
 
 from .base import TextEmbeddingFunction
 from .registry import register
+from .utils import api_key_not_found_help
 
 
 @register("openai")
@@ -51,4 +53,7 @@ class OpenAIEmbeddings(TextEmbeddingFunction):
     @cached_property
     def _openai_client(self):
         openai = self.safe_import("openai")
+
+        if not os.environ.get("OPENAI_API_KEY"):
+            raise ValueError(api_key_not_found_help("openai"))
         return openai.OpenAI()
