@@ -5,4 +5,4 @@ LanceDB supports 2 methods of vectorizing your raw data into embeddings.
 1. **Explicit**: By manually calling LanceDB's `with_embedding` function to vectorize your data via an `embed_func` of your choice
 2. **Implicit**: Allow LanceDB to embed the data and queries in the background as they come in, by using the table's `EmbeddingRegistry` information
 
-See the [explicit](embedding_explicit.md) and [implicit](embedding_implicit.md) embedding sections for more details.
+See the [explicit](embedding_explicit.md) and [implicit](embedding_functions.md) embedding sections for more details.
