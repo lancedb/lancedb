@@ -124,5 +124,5 @@ class GeminiText(TextEmbeddingFunction):
         genai = self.safe_import("google.generativeai", "google.generativeai")
 
         if not os.environ.get("GOOGLE_API_KEY"):
-            raise ValueError(api_key_not_found_help("google"))
+            api_key_not_found_help("google")
         return genai

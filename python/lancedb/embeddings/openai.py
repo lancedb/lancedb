@@ -55,5 +55,5 @@ class OpenAIEmbeddings(TextEmbeddingFunction):
         openai = self.safe_import("openai")
 
         if not os.environ.get("OPENAI_API_KEY"):
-            raise ValueError(api_key_not_found_help("openai"))
+            api_key_not_found_help("openai")
         return openai.OpenAI()
