@@ -972,6 +972,7 @@ class LanceTable(Table):
         data=None,
         schema=None,
         mode="create",
+        exist_ok=False,
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
         embedding_functions: List[EmbeddingFunctionConfig] = None,
@@ -1011,6 +1012,10 @@ class LanceTable(Table):
         mode: str, default "create"
             The mode to use when writing the data. Valid values are
             "create", "overwrite", and "append".
+        exist_ok: bool, default False
+            If the table already exists then raise an error if False,
+            otherwise just open the table, it will not add the provided
+            data but will validate against any schema that's specified.
         on_bad_vectors: str, default "error"
             What to do if any of the vectors are not the same size or contains NaNs.
             One of "error", "drop", "fill".
@@ -1061,14 +1066,24 @@ class LanceTable(Table):
             schema = schema.with_metadata(metadata)
 
         empty = pa.Table.from_pylist([], schema=schema)
-        lance.write_dataset(empty, tbl._dataset_uri, schema=schema, mode=mode)
-        table = LanceTable(db, name)
+        try:
+            lance.write_dataset(empty, tbl._dataset_uri, schema=schema, mode=mode)
+        except OSError as err:
+            if "Dataset already exists" in str(err) and exist_ok:
+                if tbl.schema != schema:
+                    raise ValueError(
+                        f"Table {name} already exists with a different schema"
+                    )
+                return tbl
+            raise
+
+        new_table = LanceTable(db, name)
 
         if data is not None:
-            table.add(data)
+            new_table.add(data)
 
         register_event("create_table")
-        return table
+        return new_table
 
     @classmethod
     def open(cls, db, name):
