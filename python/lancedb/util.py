@@ -123,6 +123,15 @@ def safe_import_pandas():
         return None
 
 
+def safe_import_polars():
+    try:
+        import polars as pl
+
+        return pl
+    except ImportError:
+        return None
+
+
 @singledispatch
 def value_to_sql(value):
     raise NotImplementedError("SQL conversion is not implemented for this type")
