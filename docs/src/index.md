@@ -44,12 +44,13 @@ LanceDB **Cloud** is a SaaS (software-as-a-service) solution that runs serverles
 
 The following pages go deeper into the internal of LanceDB and how to use it.
 
-* [Getting started](basic.md): Get started with LanceDB and vector DB concepts
-* [Working with tables](guides/tables.md): Work with tables
-* [Indexing](ann_indexes.md): Understand indexing and how to create indexes
-* [Vector search](search.md): Perform vector similarity search
-* [Full-text search](fts.md): Perform full-text search
-* [Embedding functions](embeddings/index.md): Work with embedding functions in LanceDB
-* [Ecosystem Integrations](integrations/index.md): Integrate LanceDB with the PyData ecosystem
-* [Python API Reference](python/python.md): LanceDB Python OSS and Cloud API references
-* [JavaScript API Reference](javascript/modules.md): LanceDB JavaScript OSS and Cloud API references
+* [Quick start](basic.md): Get started with LanceDB and vector DB concepts
+* [Vector search concepts](concepts/vector_search.md): Understand the basics of vector search
+* [Working with tables](guides/tables.md): Learn how to work with tables and their associated functions
+* [Indexing](ann_indexes.md): Understand how to create indexes
+* [Vector search](search.md): Learn how to perform vector similarity search
+* [Full-text search](fts.md): Learn how to perform full-text search
+* [Managing embeddings](embeddings/index.md): Managing embeddings and the embedding functions API in LanceDB
+* [Ecosystem Integrations](integrations/index.md): Integrate LanceDB with other tools in the data ecosystem
+* [Python API Reference](python/python.md): Python OSS and Cloud API references
+* [JavaScript API Reference](javascript/modules.md): JavaScript OSS and Cloud API references

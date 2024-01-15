@@ -105,15 +105,11 @@ By default, `l2` will be used as metric type. You can specify the metric type as
 ## Approximate nearest neighbor (ANN) search
 
 To perform scalable vector retrieval with acceptable latencies, it's common to build a vector index.
-A vector index is a data structure specifically designed to efficiently organize and
-search vector data based on their similarity via the chosen distance metric.
-By constructing a vector index, the search space is effectively narrowed down, avoiding the need
-for brute-force scanning of the entire vector space.
-
 While the exhaustive search is guaranteed to always return 100% recall, the approximate nature of 
-an ANN search means that using an index often involves a trade-off between recall and latency
+an ANN search means that using an index often involves a trade-off between recall and latency.
 
-See [ANN Index](ann_indexes.md) for a deeper description of how indexes in LanceDB work.
+See the [IVF_PQ index](./concepts/index_ivfpq.md.md) for a deeper description of how `IVF_PQ`
+indexes work in LanceDB.
 
 ## Output search results
 

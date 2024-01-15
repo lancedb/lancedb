@@ -1,5 +1,7 @@
 # Filtering
 
+## Pre and post-filtering
+
 LanceDB supports filtering of query results based on metadata fields. By default, post-filtering is
 performed on the top-k results returned by the vector search. However, pre-filtering is also an
 option that performs the filter prior to vector search. This can be useful to narrow down on
