@@ -13,7 +13,8 @@ excluded_globs = [
     "../src/embeddings/*.md",
     "../src/concepts/*.md",
     "../src/ann_indexes.md",
-    "../src/basic.md"
+    "../src/basic.md",
+    "..src/python/polars.md",
 ]
 
 python_prefix = "py"
