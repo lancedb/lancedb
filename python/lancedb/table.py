@@ -72,7 +72,7 @@ def _sanitize_data(
         meta = data.schema.metadata if data.schema.metadata is not None else {}
         meta = {k: v for k, v in meta.items() if k != b"pandas"}
         data = data.replace_schema_metadata(meta)
-    elif pl is not None and isinstance(data, pl.DataFrame):
+    elif pl is not None and isinstance(data, (pl.DataFrame, pl.LazyFrame)):
         data = data.to_arrow()
 
     if isinstance(data, pa.Table):
@@ -695,6 +695,30 @@ class LanceTable(Table):
         -------
         pa.Table"""
         return self._dataset.to_table()
+
+    def to_polars(self, batch_size=None) -> "pl.LazyFrame":
+        """Return the table as a polars LazyFrame.
+
+        Parameters
+        ----------
+        batch_size: int, optional
+            Passed to polars. This is the maximum row count for
+            scanned pyarrow record batches
+
+        Note
+        ----
+        1. This requires polars to be installed separately
+        2. Currently we've disabled push-down of the filters from polars
+           because polars pushdown into pyarrow uses pyarrow compute
+           expressions rather than SQl strings (which LanceDB supports)
+
+        Returns
+        -------
+        pl.LazyFrame
+        """
+        return pl.scan_pyarrow_dataset(
+            self.to_lance(), allow_pyarrow_filter=False, batch_size=batch_size
+        )
 
     @property
     def _dataset_uri(self) -> str:
