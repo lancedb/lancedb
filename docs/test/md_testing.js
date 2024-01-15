@@ -3,6 +3,7 @@ const fs = require("fs");
 const path = require("path");
 
 const globString = "../src/**/*.md";
+/*
 const excludedGlobs = [
   "../src/fts.md",
   "../src/embedding.md",
@@ -10,7 +11,12 @@ const excludedGlobs = [
   "../src/guides/tables.md",
   "../src/embeddings/*.md",
 ];
+*/
 
+// temporarily excluding everything
+const excludedGlobs = [
+  "../src/**/*.md",
+];
 const nodePrefix = "javascript";
 const nodeFile = ".js";
 const nodeFolder = "node";

@@ -12,6 +12,7 @@ excluded_globs = [
     "../src/python/duckdb.md",
     "../src/embeddings/*.md",
     "../src/concepts/*.md",
+    "../src/ann_indexes.md"
 ]
 
 python_prefix = "py"
