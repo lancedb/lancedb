@@ -20,6 +20,7 @@ import numpy as np
 from .base import TextEmbeddingFunction
 from .registry import register
 from .utils import api_key_not_found_help, TEXT
+from lancedb.pydantic import PYDANTIC_VERSION
 
 
 @register("gemini-text")
@@ -78,8 +79,10 @@ class GeminiText(TextEmbeddingFunction):
     query_task_type: str = "retrieval_query"
     source_task_type: str = "retrieval_document"
 
-    class Config:  # Pydantic 1.x compat
-        keep_untouched = (cached_property,)
+    if PYDANTIC_VERSION < (2, 0):  # Pydantic 1.x compat
+
+        class Config:
+            keep_untouched = (cached_property,)
 
     def ndims(self):
         # TODO: fix hardcoding
