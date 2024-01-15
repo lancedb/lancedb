@@ -67,7 +67,7 @@ We'll cover the basics of using LanceDB on your local machine in this section.
       !!! warning
 
             If the table already exists, LanceDB will raise an error by default.
-            If you want to overwrite the table, you can pass in `mode="overwrite"`
+            If you want to make sure you overwrite the table, pass in `mode="overwrite"`
             to the `createTable` function.
 
 === "Javascript"
