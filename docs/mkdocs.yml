@@ -101,6 +101,7 @@ nav:
   - 🔌 Integrations:
     - Tools and data formats: integrations/index.md
     - Pandas and PyArrow: python/pandas_and_pyarrow.md
+    - Polars: python/polars.md
     - DuckDB: python/duckdb.md
     - LangChain 🔗: https://python.langchain.com/en/latest/modules/indexes/vectorstores/examples/lancedb.html
     - LangChain JS/TS 🔗: https://js.langchain.com/docs/modules/data_connection/vectorstores/integrations/lancedb
@@ -159,6 +160,7 @@ nav:
 - Integrations:
   - Overview: integrations/index.md
   - Pandas and PyArrow: python/pandas_and_pyarrow.md
+  - Polars: python/polars.md
   - DuckDB : python/duckdb.md
   - LangChain 🦜️🔗↗: https://python.langchain.com/en/latest/modules/indexes/vectorstores/examples/lancedb.html
   - LangChain.js 🦜️🔗↗: https://js.langchain.com/docs/modules/data_connection/vectorstores/integrations/lancedb
