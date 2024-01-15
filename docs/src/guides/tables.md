@@ -31,12 +31,22 @@ This guide will show how to create tables, insert data into them, and update the
     ```
 
     !!! info "Note"
-        If the table already exists, LanceDB will raise an error by default. If you want to overwrite the table, you can pass in mode="overwrite" to the createTable function.
+        If the table already exists, LanceDB will raise an error by default. 
+
+        `create_table` supports an optional `exist_ok` parameter. When set to True
+        and the table exists, then it simply opens the existing table. The data you
+        passed in will NOT be appended to the table in that case.
+
+        ```python
+        db.create_table("name", data, exist_ok=True)
+        ```
+        
+        Sometimes you want to make sure that you start fresh. If you want to 
+        overwrite the table, you can pass in mode="overwrite" to the createTable function.
 
         ```python
         db.create_table("name", data, mode="overwrite")
         ```
-
 
     ### From pandas DataFrame
 

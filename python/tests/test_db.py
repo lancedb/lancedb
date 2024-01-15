@@ -190,6 +190,48 @@ def test_create_mode(tmp_path):
     assert tbl.to_pandas().item.tolist() == ["fizz", "buzz"]
 
 
+def test_create_exist_ok(tmp_path):
+    db = lancedb.connect(tmp_path)
+    data = pd.DataFrame(
+        {
+            "vector": [[3.1, 4.1], [5.9, 26.5]],
+            "item": ["foo", "bar"],
+            "price": [10.0, 20.0],
+        }
+    )
+    tbl = db.create_table("test", data=data)
+
+    with pytest.raises(OSError):
+        db.create_table("test", data=data)
+
+    # open the table but don't add more rows
+    tbl2 = db.create_table("test", data=data, exist_ok=True)
+    assert tbl.name == tbl2.name
+    assert tbl.schema == tbl2.schema
+    assert len(tbl) == len(tbl2)
+
+    schema = pa.schema(
+        [
+            pa.field("vector", pa.list_(pa.float32(), list_size=2)),
+            pa.field("item", pa.utf8()),
+            pa.field("price", pa.float64()),
+        ]
+    )
+    tbl3 = db.create_table("test", schema=schema, exist_ok=True)
+    assert tbl3.schema == schema
+
+    bad_schema = pa.schema(
+        [
+            pa.field("vector", pa.list_(pa.float32(), list_size=2)),
+            pa.field("item", pa.utf8()),
+            pa.field("price", pa.float64()),
+            pa.field("extra", pa.float32()),
+        ]
+    )
+    with pytest.raises(ValueError):
+        db.create_table("test", schema=bad_schema, exist_ok=True)
+
+
 def test_delete_table(tmp_path):
     db = lancedb.connect(tmp_path)
     data = pd.DataFrame(

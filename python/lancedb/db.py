@@ -56,6 +56,7 @@ class DBConnection(EnforceOverrides):
         data: Optional[DATA] = None,
         schema: Optional[Union[pa.Schema, LanceModel]] = None,
         mode: str = "create",
+        exist_ok: bool = False,
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
         embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
@@ -86,6 +87,11 @@ class DBConnection(EnforceOverrides):
             Can be either "create" or "overwrite".
             By default, if the table already exists, an exception is raised.
             If you want to overwrite the table, use mode="overwrite".
+        exist_ok: bool, default False
+            If a table by the same name already exists, then raise an exception
+            if exist_ok=False. If exist_ok=True, then open the existing table;
+            it will not add the provided data but will validate against any
+            schema that's specified.
         on_bad_vectors: str, default "error"
             What to do if any of the vectors are not the same size or contains NaNs.
             One of "error", "drop", "fill".
@@ -319,6 +325,7 @@ class LanceDBConnection(DBConnection):
         data: Optional[DATA] = None,
         schema: Optional[Union[pa.Schema, LanceModel]] = None,
         mode: str = "create",
+        exist_ok: bool = False,
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
         embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
@@ -338,6 +345,7 @@ class LanceDBConnection(DBConnection):
             data,
             schema,
             mode=mode,
+            exist_ok=exist_ok,
             on_bad_vectors=on_bad_vectors,
             fill_value=fill_value,
             embedding_functions=embedding_functions,
