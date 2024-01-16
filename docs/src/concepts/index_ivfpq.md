@@ -20,7 +20,7 @@ Product quantization (PQ) works by dividing a large, high-dimensional vector of 
 
 It's important to remember that quantization is a *lossy process*, i.e., the reconstructed vector is not identical to the original vector. This results in a trade-off between the size of the index and the accuracy of the search results.
 
-As an example, consider a starting 128-dimensional vector consisting of 32-bit floats. Quantizing it to an 8-bit integer vector with **only 8 dimensions**, we can cause a significant reduction in memory requirements.
+As an example, consider a starting 128-dimensional vector consisting of 32-bit floats. Quantizing it to an 8-bit integer vector with **only 8 dimensions**, we can significantly reduce memory requirements.
 
 !!! example "Effect of quantization"
 
