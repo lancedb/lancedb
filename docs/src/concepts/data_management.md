@@ -21,7 +21,7 @@ Fragments are chunks of data in a Lance dataset. Each fragment includes multiple
 
 ## Compaction
 
-Over time, your dataset will grow and you'll need to perform *compaction* to maintain query throughput (i.e., keep latencies down to a minimum). Compaction is the process of merging fragments together to reduce the amount of metadata that needs to be managed, and to reduce the number of files that need to be opened while scanning the dataset.
+As you insert more data, your dataset will grow and you'll need to perform *compaction* to maintain query throughput (i.e., keep latencies down to a minimum). Compaction is the process of merging fragments together to reduce the amount of metadata that needs to be managed, and to reduce the number of files that need to be opened while scanning the dataset.
 
 ### How does compaction improve performance?
 
@@ -33,7 +33,7 @@ Compaction performs the following tasks in the background:
 
 Depending on the use case and dataset, optimal compaction will have different requirements. As a rule of thumb:
 
-- It’s always better to use *batch* inserts rather than adding 1 row at a time (to avoid too small fragments)
+- It’s always better to use *batch* inserts rather than adding 1 row at a time (to avoid too small fragments). If single-row inserts are unavoidable, run compaction on a regular basis to merge them into larger fragments.
 - Keep the number of fragments under 100, which is suitable for most use cases (for *really* large datasets of >500M rows, more fragments might be needed)
 
 ## Deletion
@@ -42,10 +42,10 @@ Although Lance allows you to delete rows from a dataset, it does not actually de
 
 ## Reindexing
 
-Reindexing is the process of updating the index to account for new data. This applies to either a full-text search (FTS) index or a vector index. This is another important operation to run periodically as your data grows, as it's also has an impact on performance. This is especially important if you're appending large amounts of data to an existing dataset.
+Reindexing is the process of updating the index to account for new data, keeping good performance for queries. This applies to either a full-text search (FTS) index or a vector index. For ANN search, new data will always be included in query results, but queries on tables with unindexed data will fallback to slower search methods for the new parts of the table. This is another important operation to run periodically as your data grows, as it also improves performance. This is especially important if you're appending large amounts of data to an existing dataset.
 
-!!! important
-    When adding new data to a dataset that has an existing index (either FTS or vector) doesn't immediately update the index until a reindex operation is complete.
+!!! tip
+    When adding new data to a dataset that has an existing index (either FTS or vector), LanceDB doesn't immediately update the index until a reindex operation is complete.
 
 Both LanceDB OSS and Cloud support reindexing, but the process (at least for now) is different for each, depending on the type of index.
 
