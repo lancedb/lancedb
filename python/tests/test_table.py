@@ -189,6 +189,7 @@ def test_polars(db):
         "item": ["foo", "bar"],
         "price": [10.0, 20.0],
     }
+    # Ingest polars dataframe
     table = LanceTable.create(db, "test", data=pl.DataFrame(data))
     assert len(table) == 2
 
@@ -206,11 +207,20 @@ def test_polars(db):
     )
     assert table.schema == schema
 
+    # search results to polars dataframe
     q = [3.1, 4.1]
     result = table.search(q).limit(1).to_polars()
     assert np.allclose(result["vector"][0], q)
     assert result["item"][0] == "foo"
     assert np.allclose(result["price"][0], 10.0)
+
+    # enter table to polars dataframe
+    result = table.to_polars()
+    assert np.allclose(result.collect()["vector"].to_list(), data["vector"])
+
+    # make sure filtering isn't broken
+    filtered_result = result.filter(pl.col("item").is_in(["foo", "bar"])).collect()
+    assert len(filtered_result) == 2
 
 
 def _add(table, schema):
