@@ -48,46 +48,39 @@
 ## How to create a table
 
 === "Python"
-      ```python
-      tbl = db.create_table("my_table",
-                        data=[{"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
-                              {"vector": [5.9, 26.5], "item": "bar", "price": 20.0}])
-      ```
+    ```python
+    tbl = db.create_table("my_table",
+                    data=[{"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+                          {"vector": [5.9, 26.5], "item": "bar", "price": 20.0}])
+    ```
 
-      If the table already exists, LanceDB will raise an error by default.
-      If you want to overwrite the table, you can pass in `mode="overwrite"`
-      to the `create_table` method.
+    If the table already exists, LanceDB will raise an error by default.
+    If you want to overwrite the table, you can pass in `mode="overwrite"`
+    to the `create_table` method.
 
-      You can also pass in a pandas DataFrame directly:
-      ```python
-      import pandas as pd
-      df = pd.DataFrame([{"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
-                        {"vector": [5.9, 26.5], "item": "bar", "price": 20.0}])
-      tbl = db.create_table("table_from_df", data=df)
-      ```
-
-      !!! warning
-
-            If the table already exists, LanceDB will raise an error by default.
-            If you want to overwrite the table, you can pass in `mode="overwrite"`
-            to the `createTable` function.
+    You can also pass in a pandas DataFrame directly:
+    ```python
+    import pandas as pd
+    df = pd.DataFrame([{"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+                       {"vector": [5.9, 26.5], "item": "bar", "price": 20.0}])
+    tbl = db.create_table("table_from_df", data=df)
+    ```
 
 === "Javascript"
-      ```javascript
-      const tb = await db.createTable(
+    ```javascript
+    const tb = await db.createTable(
         "myTable",
         [{"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
-         {"vector": [5.9, 26.5], "item": "bar", "price": 20.0}])
-      ```
+         {"vector": [5.9, 26.5], "item": "bar", "price": 20.0}]
+    )
+    ```
 
-      !!! warning
+    If the table already exists, LanceDB will raise an error by default.
+    If you want to overwrite the table, you can pass in `mode="overwrite"`
+    to the `createTable` function.
 
-            If the table already exists, LanceDB will raise an error by default.
-            If you want to overwrite the table, you can pass in `"overwrite"`
-            to the `createTable` function like this: `await con.createTable(tableName, data, { writeMode: WriteMode.Overwrite })`
-      
 
-??? info "Under the hood, LanceDB is converting the input data into an Apache Arrow table and persisting it to disk in [Lance format](https://www.github.com/lancedb/lance)."
+!!! info "Under the hood, LanceDB is converting the input data into an Apache Arrow table and persisting it to disk in [Lance format](https://www.github.com/lancedb/lance)."
 
 ### Creating an empty table
 
@@ -136,7 +129,7 @@ After a table has been created, you can always add more data to it using
 
       # Option 1: Add a list of dicts to a table
       data = [{"vector": [1.3, 1.4], "item": "fizz", "price": 100.0},
-            {"vector": [9.5, 56.2], "item": "buzz", "price": 200.0}]
+              {"vector": [9.5, 56.2], "item": "buzz", "price": 200.0}]
       tbl.add(data)
 
       # Option 2: Add a pandas DataFrame to a table
@@ -147,7 +140,7 @@ After a table has been created, you can always add more data to it using
 === "Javascript"
       ```javascript
       await tbl.add([{vector: [1.3, 1.4], item: "fizz", price: 100.0},
-              {vector: [9.5, 56.2], item: "buzz", price: 200.0}])
+                     {vector: [9.5, 56.2], item: "buzz", price: 200.0}])
       ```
 
 ## How to search for (approximate) nearest neighbors
