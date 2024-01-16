@@ -1,6 +1,6 @@
 # About LanceDB Cloud
 
-LanceDB Cloud is a SaaS (software-as-a-service) solution that runs serverless in the cloud, clearly separating storage from compute. It's designed to be cost-effective and highly scalable without breaking the bank. LanceDB Cloud is currently in private beta with general availability coming soon, but you can apply for early access with the private beta release by signing up below.
+LanceDB Cloud is a SaaS (software-as-a-service) solution that runs serverless in the cloud, clearly separating storage from compute. It's designed to be highly scalable without breaking the bank. LanceDB Cloud is currently in private beta with general availability coming soon, but you can apply for early access with the private beta release by signing up below.
 
 [Try out LanceDB Cloud](https://noteforms.com/forms/lancedb-mailing-list-cloud-kty1o5?notionforms=1&utm_source=notionforms){ .md-button .md-button--primary }
 

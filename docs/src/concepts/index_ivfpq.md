@@ -1,6 +1,6 @@
 # Understanding LanceDB's IVF-PQ index
 
-An index is a data structure that represents data in a way that makes it more efficient to search and retrieve. Using an index is faster, but less accurate than kNN or brute force search because, in essence, the index is a lossy representation of the data.
+An ANN (Approximate Nearest Neighbors) index is a data structure that represents data in a way that makes it more efficient to search and retrieve. Using an ANN index is faster, but less accurate than kNN or brute force search because, in essence, the index is a lossy representation of the data.
 
 LanceDB is fundamentally different from other vector databases in that it is built on top of [Lance](https://github.com/lancedb/lance), an open-source columnar data format designed for performant ML workloads and fast random access. Due to the design of Lance, LanceDB's indexing philosophy adopts a primarily *disk-based* indexing philosophy.
 
