@@ -32,7 +32,7 @@ We can now perform similarity search via the LanceDB Python API.
 
 ```py
 query = [3.1, 4.1]
-result = tbl.search(query).limit(1).to_polars()
+result = table.search(query).limit(1).to_polars()
 assert len(result) == 1
 assert result["item"][0] == "foo"
 ```
