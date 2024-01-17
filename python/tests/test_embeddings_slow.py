@@ -203,24 +203,29 @@ def test_gemini_embedding(tmp_path):
     assert len(tbl.to_pandas()["vector"][0]) == model.ndims()
     assert tbl.search("hello").limit(1).to_pandas()["text"][0] == "hello world"
 
+
 def aws_setup():
     try:
         import boto3
-        sts = boto3.client('sts')
+
+        sts = boto3.client("sts")
         sts.get_caller_identity()
         return True
     except Exception:
-         return False
+        return False
+
 
 @pytest.mark.slow
 @pytest.mark.skipif(
     not aws_setup(), reason="AWS credentials not set or libraries not installed"
 )
 def test_bedrock_embedding(tmp_path):
-    for name in ["amazon.titan-embed-text-v1", "cohere.embed-english-v3", "cohere.embed-multilingual-v3"]:
-        model = get_registry().get("bedrock-text").create(
-            max_retries=0, name=name
-        )
+    for name in [
+        "amazon.titan-embed-text-v1",
+        "cohere.embed-english-v3",
+        "cohere.embed-multilingual-v3",
+    ]:
+        model = get_registry().get("bedrock-text").create(max_retries=0, name=name)
 
         class TextModel(LanceModel):
             text: str = model.SourceField()

@@ -80,7 +80,7 @@ class BedRockText(TextEmbeddingFunction):
             keep_untouched = (cached_property,)
 
     def ndims(self):
-        #return len(self._generate_embedding("test"))
+        # return len(self._generate_embedding("test"))
         # TODO: fix hardcoding
         if self.name == "amazon.titan-embed-text-v1":
             return 1536
@@ -88,7 +88,7 @@ class BedRockText(TextEmbeddingFunction):
             return 1024
         else:
             raise ValueError(f"Unknown model name: {self.name}")
-        
+
     def compute_query_embeddings(self, query: str, *args, **kwargs) -> List[np.array]:
         return self.compute_source_embeddings(query)
 
@@ -180,30 +180,32 @@ class BedRockText(TextEmbeddingFunction):
         retry_config = botocore.config.Config(
             region_name=self.region,
             retries={
-                "max_attempts": 0, # setting this to 0 as retries retries are handled by Embedding API
+                "max_attempts": 0,  # setting this to 0 as retries retries are handled by Embedding API
                 "mode": "standard",
             },
         )
-        session = boto3.Session(**session_kwargs) if self.profile_name else boto3.Session()
-        if self.assumed_role: # if not using default credentials
+        session = (
+            boto3.Session(**session_kwargs) if self.profile_name else boto3.Session()
+        )
+        if self.assumed_role:  # if not using default credentials
             sts = session.client("sts")
             response = sts.assume_role(
                 RoleArn=str(self.assumed_role),
                 RoleSessionName=self.role_session_name,
             )
             client_kwargs["aws_access_key_id"] = response["Credentials"]["AccessKeyId"]
-            client_kwargs["aws_secret_access_key"] = response["Credentials"]["SecretAccessKey"]
+            client_kwargs["aws_secret_access_key"] = response["Credentials"][
+                "SecretAccessKey"
+            ]
             client_kwargs["aws_session_token"] = response["Credentials"]["SessionToken"]
 
         if self.runtime:
-            service_name='bedrock-runtime'
+            service_name = "bedrock-runtime"
         else:
-            service_name='bedrock'
+            service_name = "bedrock"
 
         bedrock_client = session.client(
-            service_name=service_name,
-            config=retry_config,
-            **client_kwargs
+            service_name=service_name, config=retry_config, **client_kwargs
         )
 
         return bedrock_client
