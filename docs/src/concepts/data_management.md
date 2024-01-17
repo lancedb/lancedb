@@ -13,7 +13,8 @@ The following concepts are important to keep in mind:
 - Data is versioned, with each insert operation creating a new version of the dataset and an update to the manifest that tracks versions via metadata
 
 !!! note
-    Understanding how versioning works in Lance is important to keep your manifests clean and file sizes reasonable. When inserting data into LanceDB, each insert operation creates a new version of the dataset. If you batch-insert 100 rows via a single command, a single version is created. If you insert 100 rows one at a time, it will create **100 versions**. This is important to keep in mind when designing your data ingestion pipeline.
+    1. First, each version contains metadata and just the new/updated data in your transaction. So if you have 100 versions, they aren't 100 duplicates of the same data. However, they do have 100x the metadata overhead of a single version, which can result in slower queries.  
+    2. Second, these versions exist to keep LanceDB scalable and consistent. We do not immediately blow away old versions when creating new ones because other clients might be in the middle of querying the old version. It's important to retain older versions for as long as they might be queried.
 
 ## What are fragments?
 
