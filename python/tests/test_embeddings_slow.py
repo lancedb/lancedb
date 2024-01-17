@@ -209,12 +209,12 @@ def aws_setup():
         sts = boto3.client('sts')
         sts.get_caller_identity()
         return True
-    except boto3.exceptions.ClientError:
+    except Exception:
          return False
 
 @pytest.mark.slow
 @pytest.mark.skipif(
-    not aws_setup(), reason="AWS credentials not set"
+    not aws_setup(), reason="AWS credentials not set or libraries not installed"
 )
 def test_bedrock_embedding(tmp_path):
     for name in ["amazon.titan-embed-text-v1", "cohere.embed-english-v3", "cohere.embed-multilingual-v3"]:

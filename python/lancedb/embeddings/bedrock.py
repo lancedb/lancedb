@@ -11,7 +11,6 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
-import os
 import json
 from functools import cached_property
 from typing import List, Union, Any
@@ -20,7 +19,7 @@ import numpy as np
 
 from .base import TextEmbeddingFunction
 from .registry import register
-from .utils import api_key_not_found_help, TEXT
+from .utils import TEXT
 from lancedb.pydantic import PYDANTIC_VERSION
 
 
@@ -153,7 +152,13 @@ class BedRockText(TextEmbeddingFunction):
                 # includes common provider == "amazon"
                 return response_body.get("embedding")
         except Exception as e:
-            raise ValueError(f"Error raised by boto3 client: {e}")
+            help_txt = """
+                Note:
+                    Please check your AWS credentials and ensure that you have access to the Bedrock service. 
+                    You can set up aws credentials using `aws configure` command and verify by running 
+                    `aws sts get-caller-identity` in your terminal.
+                """
+            raise ValueError(f"Error raised by boto3 client: {e}. /n {help_txt}")
 
     @cached_property
     def client(self):
