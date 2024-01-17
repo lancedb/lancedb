@@ -10,24 +10,22 @@ IVF-PQ is a composite index that combines inverted file index (IVF) and product 
 
 ### Product quantization
 
-Quantization is a compression technique used to reduce the dimensionality of an embedding to speed up search. 
-
-![](../assets/ivfpq_quantization.webp)
+Quantization is a compression technique used to reduce the dimensionality of an embedding to speed up search.
 
 Product quantization (PQ) works by dividing a large, high-dimensional vector of size into equally sized subvectors. Each subvector is assigned a "reproduction value" that maps to the nearest centroid of points for that subvector. The reproduction values are then assigned to a codebook using unique IDs, which can be used to reconstruct the original vector.
 
-![](../assets/ivfpq_pq_desc.webp)
+![](../assets/ivfpq_pq_desc.png)
 
 It's important to remember that quantization is a *lossy process*, i.e., the reconstructed vector is not identical to the original vector. This results in a trade-off between the size of the index and the accuracy of the search results.
 
-As an example, consider a starting 128-dimensional vector consisting of 32-bit floats. Quantizing it to an 8-bit integer vector with **only 8 dimensions**, we can significantly reduce memory requirements.
+As an example, consider starting with 128-dimensional vector consisting of 32-bit floats. Quantizing it to an 8-bit integer vector with 4 dimensions as in the image above, we can significantly reduce memory requirements.
 
 !!! example "Effect of quantization"
 
-    Original: `128 × 32 = 4096` bits  
-    Quantized: `8 × 8 = 64` bits  
+    Original: `128 × 32 = 4096` bits
+    Quantized: `4 × 8 = 32` bits
 
-    Quantization results in a **64x** reduction in memory requirements for each vector in the index, which is substantial.
+    Quantization results in a **128x** reduction in memory requirements for each vector in the index, which is substantial.
 
 ### Inverted file index
 
@@ -47,15 +45,22 @@ We can combine the above concepts to understand how to build and query an IVF-PQ
 
 ### Construct index
 
+There are three key parameters to set when constructing an IVF-PQ index:
+
+* `metric`: Use an `L2` euclidean distance metric. We also support `dot` and `cosine` distance.
+* `num_partitions`: The number of partitions in the IVF portion of the index.
+* `num_sub_vectors`: The number of sub-vectors that will be created during Product Quantization (PQ).
+
+In Python, the index can be created as follows:
+
 ```python
 # Create and train the index for a 1536-dimensional vector
 # Make sure you have enough data in the table for an effective training step
 tbl.create_index(metric="L2", num_partitions=256, num_sub_vectors=96)
 ```
 
-* `metric`: Use a euclidean distance metric. We also support "dot" and "cosine" distance.
-* `num_partitions`: The number of partitions in the IVF portion of the index.
-* `num_sub_vectors`: The number of sub-vectors (M) that will be created during Product Quantization (PQ). For D dimensional vector, it will be divided into M of D/M sub-vectors, each of which is presented by a single PQ code.
+The `num_partitions` is usually chosen to target a particular number of vectors per partition. `num_sub_vectors` is typically chosen based on the desired recall and the dimensionality of the vector. See the [FAQs](#faq) below for best practices on choosing these parameters.
+
 
 ### Query the index
 
@@ -76,3 +81,24 @@ The above query will perform a search on the table `tbl` using the given query v
 * `to_pandas()`: Convert the results to a pandas DataFrame
 
 And there you have it! You now understand what an IVF-PQ index is, and how to create and query it in LanceDB.
+
+
+## FAQ
+
+### When is it necessary to create a vector index?
+
+LanceDB has manually-tuned SIMD code for computing vector distances. In our benchmarks, computing 100K pairs of 1K dimension vectors takes **<20ms**. For small datasets (<100K rows) or applications that can accept up to 100ms latency, vector indices are usually not necessary.
+
+For large-scale or higher dimension vectors, it is beneficial to create vector index.
+
+### How big is my index, and how much memory will it take?
+
+In LanceDB, all vector indices are disk-based, meaning that when responding to a vector query, only the relevant pages from the index file are loaded from disk and cached in memory. Additionally, each sub-vector is usually encoded into 1 byte PQ code.
+
+For example, with 1024-dimension vectors, if we choose `num_sub_vectors = 64`, each sub-vector has `1024 / 64 = 16` float32 numbers. Product quantization can lead to approximately `16 * sizeof(float32) / 1 = 64` times of space reduction.
+
+### How to choose `num_partitions` and `num_sub_vectors` for IVF_PQ index?
+
+`num_partitions` is used to decide how many partitions the first level IVF index uses. Higher number of partitions could lead to more efficient I/O during queries and better accuracy, but it takes much more time to train. On SIFT-1M dataset, our benchmark shows that keeping each partition 1K-4K rows lead to a good latency/recall.
+
+`num_sub_vectors` specifies how many Product Quantization (PQ) short codes to generate on each vector. Because PQ is a lossy compression of the original vector, a higher `num_sub_vectors` usually results in less space distortion, and thus yields better accuracy. However, a higher `num_sub_vectors` also causes heavier I/O and more PQ computation, and thus, higher latency. dimension / num_sub_vectors should be a multiple of 8 for optimum SIMD efficiency.
