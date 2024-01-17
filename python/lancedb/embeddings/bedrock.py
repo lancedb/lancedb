@@ -89,10 +89,10 @@ class BedRockText(TextEmbeddingFunction):
         else:
             raise ValueError(f"Unknown model name: {self.name}")
 
-    def compute_query_embeddings(self, query: str, *args, **kwargs) -> List[np.array]:
+    def compute_query_embeddings(self, query: str, *args, **kwargs) -> List[List[float]]:
         return self.compute_source_embeddings(query)
 
-    def compute_source_embeddings(self, texts: TEXT, *args, **kwargs) -> List[np.array]:
+    def compute_source_embeddings(self, texts: TEXT, *args, **kwargs) -> List[List[float]]:
         texts = self.sanitize_input(texts)
         return self.generate_embeddings(texts)
 
@@ -113,7 +113,7 @@ class BedRockText(TextEmbeddingFunction):
             results.append(response)
         return results
 
-    def _generate_embedding(self, text: str) -> List[np.array]:
+    def _generate_embedding(self, text: str) -> List[float]:
         """
         Get the embeddings for the given texts
 
