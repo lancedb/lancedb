@@ -73,7 +73,7 @@ def _sanitize_data(
         meta = data.schema.metadata if data.schema.metadata is not None else {}
         meta = {k: v for k, v in meta.items() if k != b"pandas"}
         data = data.replace_schema_metadata(meta)
-    elif pl is not None and isinstance(data, (pl.DataFrame, pl.LazyFrame)):
+    elif pl is not None and isinstance(data, pl.DataFrame):
         data = data.to_arrow()
 
     if isinstance(data, pa.Table):
