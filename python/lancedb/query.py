@@ -25,6 +25,7 @@ import pydantic
 from . import __version__
 from .common import VECTOR_COLUMN_NAME
 from .util import safe_import_pandas
+from .rerankers.base import Reranker
 
 if TYPE_CHECKING:
     from .pydantic import LanceModel
@@ -512,11 +513,13 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
     def __init__(self, table: "lancedb.table.Table", query: str, vector_column: str):
         super().__init__(table)
         self.validate()
+        self._query = query
         self._fts_query = LanceFtsQueryBuilder(table, query)
         query = self._query_to_vector(table, query, vector_column)
         self._vector_query = LanceVectorQueryBuilder(table, query, vector_column)
         self._weight = 0.7
         self._norm = "rank"
+        self._reranker = None
 
     def validate(self):
         if self._table._get_fts_index_path() is None:
@@ -553,10 +556,16 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         fts_results = self._normalize_scores(fts_results, invert=True)
         # combine the scores. For missing scores, fill with 1.0 (least relevant)
         results = self._merge_results(vector_results, fts_results, fill=1.0)
+
+        # Temporary solution
+        ## TODO: turn this into a Reranker class-based API for easier management of args for external code like cohere reranking api
+        if self._reranker: 
+            results = self._reranker.rerank_hybrid(self, vector_results, fts_results, results)
+
         if not self._with_row_id:
             results = results.drop(["_rowid"])
         return results
-
+    
     def _rank(self, results: pa.Table, ascending: bool = True):
         if len(results) == 0:
             return results
@@ -643,13 +652,18 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
     def _combine_score(self, score1, score2):
         return self._weight * score1 + (1 - self._weight) * score2
 
-    def rerank(self, weight=0.7, normalize="score") -> LanceHybridQueryBuilder:
+    def rerank(self, weight=0.7, normalize="score", reranker:Union[str, callable] = None) -> LanceHybridQueryBuilder:
         if weight < 0 or weight > 1:
             raise ValueError("weight must be between 0 and 1.")
         if normalize not in ["auto", "rank", "score"]:
             raise ValueError("normalize must be 'auto', 'rank' or 'score'.")
+        if reranker and not isinstance(reranker, Reranker):
+            raise ValueError("reranker must be an instance of Reranker class.")
+        
         self._weight = weight
         self._norm = normalize
+        self._reranker = reranker
+
         return self
 
     def limit(self, limit: int) -> LanceHybridQueryBuilder:
