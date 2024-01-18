@@ -44,8 +44,7 @@ class BedRockText(TextEmbeddingFunction):
     role_session_name: str, default "lancedb-embeddings"
         Optional name of the AWS IAM role session to use for calling the Bedrock service. If not specified,
         a "lancedb-embeddings" name will be used.
-    runtime: bool, default True
-            Optional choice of getting different client to perform operations with the Amazon Bedrock service.
+
     Examples
     --------
     import lancedb
@@ -72,7 +71,6 @@ class BedRockText(TextEmbeddingFunction):
     assumed_role: Union[str, None] = None
     profile_name: Union[str, None] = None
     role_session_name: str = "lancedb-embeddings"
-    runtime: bool = True
 
     if PYDANTIC_VERSION < (2, 0):  # Pydantic 1.x compat
 
@@ -110,6 +108,11 @@ class BedRockText(TextEmbeddingFunction):
         ----------
         texts: list[str] or np.ndarray (of str)
             The texts to embed
+
+        Returns
+        -------
+        list[list[float]]
+            The embeddings for the given texts
         """
         results = []
         for text in texts:
@@ -123,8 +126,13 @@ class BedRockText(TextEmbeddingFunction):
 
         Parameters
         ----------
-        texts: list[str] or np.ndarray (of str)
+        texts: str
             The texts to embed
+
+        Returns
+        -------
+        list[float]
+            The embeddings for the given texts
         """
         # format input body for provider
         provider = self.name.split(".")[0]
@@ -162,15 +170,16 @@ class BedRockText(TextEmbeddingFunction):
                     You can set up aws credentials using `aws configure` command and verify by running 
                     `aws sts get-caller-identity` in your terminal.
                 """
-            raise ValueError(f"Error raised by boto3 client: {e}. /n {help_txt}")
+            raise ValueError(f"Error raised by boto3 client: {e}. \n {help_txt}")
 
     @cached_property
     def client(self):
-        """Create a boto3 client for Amazon Bedrock
+        """Create a boto3 client for Amazon Bedrock service
 
-        Parameters
-        ----------
-
+        Returns
+        -------
+        boto3.client
+            The boto3 client for Amazon Bedrock service
         """
         botocore = self.safe_import("botocore")
         boto3 = self.safe_import("boto3")
@@ -203,10 +212,7 @@ class BedRockText(TextEmbeddingFunction):
             ]
             client_kwargs["aws_session_token"] = response["Credentials"]["SessionToken"]
 
-        if self.runtime:
-            service_name = "bedrock-runtime"
-        else:
-            service_name = "bedrock"
+        service_name = "bedrock-runtime"
 
         bedrock_client = session.client(
             service_name=service_name, config=retry_config, **client_kwargs
