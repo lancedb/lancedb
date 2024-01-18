@@ -74,13 +74,6 @@ class SentenceTransformerEmbeddings(TextEmbeddingFunction):
         name and device. This is cached so that the model is only loaded
         once per process.
 
-        Parameters
-        ----------
-        name : str
-            The name of the model to load
-        device : str
-            The device to load the model on
-
         TODO: use lru_cache instead with a reasonable/configurable maxsize
         """
         sentence_transformers = self.safe_import(

@@ -1,4 +1,5 @@
-To use your own custom embedding function, you need to follow these 2 simple steps.
+To use your own custom embedding function, you can follow these 2 simple steps:
+
 1. Create your embedding function by implementing the `EmbeddingFunction` interface
 2. Register your embedding function in the global `EmbeddingFunctionRegistry`.
 
@@ -6,13 +7,11 @@ Let us see how this looks like in action.
 
 ![](../assets/embeddings_api.png)
 
+`EmbeddingFunction` and `EmbeddingFunctionRegistry` handle low-level details for serializing schema and model information as metadata. To build a custom embedding function, you don't have to worry about the finer details - simply focus on setting up the model and leave the rest to LanceDB.
 
-`EmbeddingFunction` & `EmbeddingFunctionRegistry` handle low-level details for serializing schema and model information as metadata. To build a custom embdding function, you don't need to worry about those details and simply focus on setting up the model.
+## `TextEmbeddingFunction` interface
 
-## `TextEmbeddingFunction` Interface
-
-There is another optional layer of abstraction provided in form of `TextEmbeddingFunction`. You can use this if your model isn't multi-modal in nature and only operates on text. In such case both source and vector fields will have the same pathway for vectorization, so you simply just need to setup the model and rest is handled by `TextEmbeddingFunction`. You can read more about the class and its attributes in the class reference.
-
+There is another optional layer of abstraction available: `TextEmbeddingFunction`. You can use this abstraction if your model isn't multi-modal in nature and only needs to operate on text. In such cases, both the source and vector fields will have the same work for vectorization, so you simply just need to setup the model and rest is handled by `TextEmbeddingFunction`. You can read more about the class and its attributes in the class reference.
 
 Let's implement `SentenceTransformerEmbeddings` class. All you need to do is implement the `generate_embeddings()` and `ndims` function to handle the input types you expect and register the class in the global `EmbeddingFunctionRegistry`
 
@@ -39,7 +38,6 @@ class SentenceTransformerEmbeddings(TextEmbeddingFunction):
     @cached(cache={}) 
     def _embedding_model(self):
         return sentence_transformers.SentenceTransformer(name)
-
 ```
 
 This is a stripped down version of our implementation of `SentenceTransformerEmbeddings` that removes certain optimizations and defaul settings.
