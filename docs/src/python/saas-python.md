@@ -1,4 +1,6 @@
-# LanceDB Python API Reference
+# Python API Reference (SaaS)
+
+This section contains the API reference for the SaaS Python API.
 
 ## Installation
 

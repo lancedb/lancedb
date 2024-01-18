@@ -1,0 +1,41 @@
+/* markdown typesets */
+.md-typeset .admonition,
+.md-typeset details {
+  font-size: 1em
+}
+
+.md-typeset h1, .md-typeset h2 {
+    font-weight: bolder;
+    letter-spacing: -.01em;
+}
+
+/* grid */
+.md-grid {
+    max-width: 80%;
+  }
+  
+  @media (min-width: 1220px) {
+    .md-main__inner {
+      margin-top: 0;
+    }
+    .md-sidebar {
+      height: auto;
+    }
+    .md-sidebar--primary {
+      border-right: 1px solid var(--md-default-fg-color--lightest);
+    }
+    .md-nav .md-nav__link {
+        font-size: 1.1em;
+    }
+    .md-nav .md-nav__link h3 {
+        font-size: 0.9em;
+    }
+    .md-nav .md-nav__title {
+      display: none;
+    }
+    .md-nav__icon {
+      width: 1.2rem;
+      height: 1.2rem;
+      margin-top: -.1rem;
+    }
+  }

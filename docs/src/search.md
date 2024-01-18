@@ -1,33 +1,29 @@
 # Vector Search
 
-`Vector Search` finds the nearest vectors from the database.
-In a recommendation system or search engine, you can find similar products from
+A vector search finds the approximate or exact nearest neighbors to a given query vector.
+
+* In a recommendation system or search engine, you can find similar records to
 the one you searched.
-In LLM and other AI applications,
-each data point can be [presented by the embeddings generated from some models](embeddings/index.md),
-it returns the most relevant features.
+* In LLM and other AI applications,
+each data point can be represented by [embeddings generated from existing models](embeddings/index.md),
+following which the search returns the most relevant features.
 
-A search in high-dimensional vector space, is to find `K-Nearest-Neighbors (KNN)` of the query vector.
+## Distance metrics
 
-## Metric
-
-In LanceDB, a `Metric` is the way to describe the distance between a pair of vectors.
-Currently, we support the following metrics:
+Distance metrics are a measure of the similarity between a pair of vectors.
+Currently, LanceDB supports the following metrics:
 
 | Metric      | Description                          |
 | ----------- | ------------------------------------ |
-| `L2`        | [Euclidean / L2 distance](https://en.wikipedia.org/wiki/Euclidean_distance) |
-| `Cosine`    | [Cosine Similarity](https://en.wikipedia.org/wiki/Cosine_similarity)|
-| `Dot`       | [Dot Production](https://en.wikipedia.org/wiki/Dot_product) |
+| `l2`        | [Euclidean / L2 distance](https://en.wikipedia.org/wiki/Euclidean_distance) |
+| `cosine`    | [Cosine Similarity](https://en.wikipedia.org/wiki/Cosine_similarity)|
+| `dot`       | [Dot Production](https://en.wikipedia.org/wiki/Dot_product) |
 
 
-## Search
+## Exhaustive search (kNN)
 
-### Flat Search
-
-If you do not create a vector index, LanceDB would need to exhaustively scan the entire vector column (via `Flat Search`)
-and compute the distance for *every* vector in order to find the closest matches. This is effectively a KNN search.
-
+If you do not create a vector index, LanceDB exhaustively scans the *entire* vector space
+and compute the distance to every vector in order to find the exact nearest neighbors. This is effectively a kNN search.
 
 <!-- Setup Code
 ```python
@@ -54,6 +50,7 @@ for (let i = 0; i < 10_000; i++) {
 await db_setup.createTable('my_vectors', data)
 ```
 -->
+
 === "Python"
 
 
@@ -83,8 +80,8 @@ await db_setup.createTable('my_vectors', data)
         .execute()
     ```
 
-By default, `l2` will be used as `Metric` type. You can customize the metric type
-as well.
+By default, `l2` will be used as metric type. You can specify the metric type as 
+`cosine` or `dot` if required.
 
 === "Python"
 
@@ -105,114 +102,107 @@ as well.
         .execute()
     ```
 
+## Approximate nearest neighbor (ANN) search
 
-### Approximate Nearest Neighbor (ANN) Search with Vector Index.
+To perform scalable vector retrieval with acceptable latencies, it's common to build a vector index.
+While the exhaustive search is guaranteed to always return 100% recall, the approximate nature of 
+an ANN search means that using an index often involves a trade-off between recall and latency.
 
-To accelerate vector retrievals, it is common to build vector indices.
-A vector index is a data structure specifically designed to efficiently organize and
-search vector data based on their similarity via the chosen distance metric.
-By constructing a vector index, you can reduce the search space and avoid the need
-for brute-force scanning of the entire vector column.
+See the [IVF_PQ index](./concepts/index_ivfpq.md.md) for a deeper description of how `IVF_PQ`
+indexes work in LanceDB.
 
-However, fast vector search using indices often entails making a trade-off with accuracy to some extent.
-This is why it is often called **Approximate Nearest Neighbors (ANN)** search, while the Flat Search (KNN)
-always returns 100% recall.
+## Output search results
 
-See [ANN Index](ann_indexes.md) for more details.
-
-
-### Output formats
-
-LanceDB returns results in many different formats commonly used in python.
+LanceDB returns vector search results via different formats commonly used in python.
 Let's create a LanceDB table with a nested schema:
 
-```python
-from datetime import datetime
-import lancedb
-from lancedb.pydantic import LanceModel, Vector
-import numpy as np
-from pydantic import BaseModel
-uri = "data/sample-lancedb-nested"
+=== "Python"
+    ```python
+    from datetime import datetime
+    import lancedb
+    from lancedb.pydantic import LanceModel, Vector
+    import numpy as np
+    from pydantic import BaseModel
+    uri = "data/sample-lancedb-nested"
 
-class Metadata(BaseModel):
-    source: str
-    timestamp: datetime
+    class Metadata(BaseModel):
+        source: str
+        timestamp: datetime
 
-class Document(BaseModel):
-    content: str
-    meta: Metadata
+    class Document(BaseModel):
+        content: str
+        meta: Metadata
 
-class LanceSchema(LanceModel):
-    id: str
-    vector: Vector(1536)
-    payload: Document
+    class LanceSchema(LanceModel):
+        id: str
+        vector: Vector(1536)
+        payload: Document
 
-# Let's add 100 sample rows to our dataset
-data = [LanceSchema(
-    id=f"id{i}",
-    vector=np.random.randn(1536),
-    payload=Document(
-        content=f"document{i}", meta=Metadata(source=f"source{i%10}", timestamp=datetime.now())
-    ),
-) for i in range(100)]
+    # Let's add 100 sample rows to our dataset
+    data = [LanceSchema(
+        id=f"id{i}",
+        vector=np.random.randn(1536),
+        payload=Document(
+            content=f"document{i}", meta=Metadata(source=f"source{i % 10}", timestamp=datetime.now())
+        ),
+    ) for i in range(100)]
 
-tbl = db.create_table("documents", data=data)
-```
+    tbl = db.create_table("documents", data=data)
+    ```
 
-#### As a pyarrow table
+    ### As a PyArrow table
 
-Using `to_arrow()` we can get the results back as a pyarrow Table.
-This result table has the same columns as the LanceDB table, with 
-the addition of an `_distance` column for vector search or a `score`
-column for full text search.
+    Using `to_arrow()` we can get the results back as a pyarrow Table.
+    This result table has the same columns as the LanceDB table, with 
+    the addition of an `_distance` column for vector search or a `score`
+    column for full text search.
 
-```python
-tbl.search(np.random.randn(1536)).to_arrow()
-```
+    ```python
+    tbl.search(np.random.randn(1536)).to_arrow()
+    ```
 
-#### As a pandas dataframe
+    ### As a Pandas DataFrame
 
-You can also get the results as a pandas dataframe.
+    You can also get the results as a pandas dataframe.
 
-```python
-tbl.search(np.random.randn(1536)).to_pandas()
-```
+    ```python
+    tbl.search(np.random.randn(1536)).to_pandas()
+    ```
 
-While other formats like Arrow/Pydantic/Python dicts have a natural 
-way to handle nested schemas, pandas can only store nested data as a 
-python dict column, which makes it difficult to support nested references.
-So for convenience, you can also tell LanceDB to flatten a nested schema 
-when creating the pandas dataframe. 
+    While other formats like Arrow/Pydantic/Python dicts have a natural 
+    way to handle nested schemas, pandas can only store nested data as a 
+    python dict column, which makes it difficult to support nested references.
+    So for convenience, you can also tell LanceDB to flatten a nested schema 
+    when creating the pandas dataframe. 
 
-```python
-tbl.search(np.random.randn(1536)).to_pandas(flatten=True)
-```
+    ```python
+    tbl.search(np.random.randn(1536)).to_pandas(flatten=True)
+    ```
 
-If your table has a deeply nested struct, you can control how many levels
-of nesting to flatten by passing in a positive integer.
+    If your table has a deeply nested struct, you can control how many levels
+    of nesting to flatten by passing in a positive integer.
 
-```python
-tbl.search(np.random.randn(1536)).to_pandas(flatten=1)
-```
+    ```python
+    tbl.search(np.random.randn(1536)).to_pandas(flatten=1)
+    ```
 
+    ### As a list of Python dicts
 
-#### As a list of python dicts
+    You can of course return results as a list of python dicts.
 
-You can of course return results as a list of python dicts.
+    ```python
+    tbl.search(np.random.randn(1536)).to_list()
+    ```
 
-```python
-tbl.search(np.random.randn(1536)).to_list()
-```
+    ### As a list of Pydantic models
 
-#### As a list of pydantic models
+    We can add data using Pydantic models, and we can certainly
+    retrieve results as Pydantic models
 
-We can add data using pydantic models, and we can certainly
-retrieve results as pydantic models
+    ```python
+    tbl.search(np.random.randn(1536)).to_pydantic(LanceSchema)
+    ```
 
-```python
-tbl.search(np.random.randn(1536)).to_pydantic(LanceSchema)
-```
-
-Note that in this case the extra `_distance` field is discarded since
-it's not part of the LanceSchema.
+    Note that in this case the extra `_distance` field is discarded since
+    it's not part of the LanceSchema.
 

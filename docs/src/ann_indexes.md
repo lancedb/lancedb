@@ -1,14 +1,17 @@
-# ANN (Approximate Nearest Neighbor) Indexes
+# Approximate Nearest Neighbor (ANN) Indexes
 
-You can create an index over your vector data to make search faster.
-Vector indexes are faster but less accurate than exhaustive search (KNN or Flat Search).
+An ANN or a vector index is a data structure specifically designed to efficiently organize and
+search vector data based on their similarity via the chosen distance metric.
+By constructing a vector index, the search space is effectively narrowed down, avoiding the need
+for brute-force scanning of the entire vector space.
+A vector index is faster but less accurate than exhaustive search (kNN or flat search).
 LanceDB provides many parameters to fine-tune the index's size, the speed of queries, and the accuracy of results.
 
 Currently, LanceDB does *not* automatically create the ANN index.
-LanceDB has optimized code for KNN as well. For many use-cases, datasets under 100K vectors won't require index creation at all.
-If you can live with < 100ms latency, skipping index creation is a simpler workflow while guaranteeing 100% recall.
+LanceDB has optimized code for kNN as well. For many use-cases, datasets under 100K vectors won't require index creation at all.
+If you can live with <100ms latency, skipping index creation is a simpler workflow while guaranteeing 100% recall.
 
-In the future we will look to automatically create and configure the ANN index.
+In the future we will look to automatically create and configure the ANN index as data comes in.
 
 ## Types of Index
 
@@ -16,7 +19,7 @@ Lance can support multiple index types, the most widely used one is `IVF_PQ`.
 
 * `IVF_PQ`: use **Inverted File Index (IVF)** to first divide the dataset into `N` partitions,
    and then use **Product Quantization** to compress vectors in each partition.
-* `DISKANN` (**Experimental**): organize the vector as a on-disk graph, where the vertices approximately
+* `DiskANN` (**Experimental**): organize the vector as a on-disk graph, where the vertices approximately
    represent the nearest neighbors of each vector.
 
 ## Creating an IVF_PQ Index
