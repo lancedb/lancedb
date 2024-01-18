@@ -48,6 +48,4 @@ class CohereReranker(Reranker):
             combined_results.column_names.index("_score"), "_score", pa.array([result[1] for result in results], type=pa.float32())
         )
 
-        import pdb; pdb.set_trace()
-
         return combined_results
