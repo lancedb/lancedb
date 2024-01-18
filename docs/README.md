@@ -16,7 +16,7 @@ unreleased features.
 
 ### Building node module and create markdown files
 
-See [Javascript docs README](docs/src/javascript/README.md)
+See [Javascript docs README](./src/javascript/README.md)
 
 ### Build docs
 From LanceDB repo root:
@@ -24,3 +24,12 @@ From LanceDB repo root:
 Run: `PYTHONPATH=. mkdocs build -f docs/mkdocs.yml`
 
 If successful, you should see a `docs/site` directory that you can verify locally.
+
+### Run local server
+
+You can run a local server to test the docs prior to deployment by navigating to the `docs` directory and running the following command:
+
+```bash
+cd docs
+mkdocs serve
+```

@@ -1,4 +1,4 @@
-site_name: LanceDB Docs
+site_name: LanceDB
 site_url: https://lancedb.github.io/lancedb/
 repo_url: https://github.com/lancedb/lancedb
 edit_uri: https://github.com/lancedb/lancedb/tree/main/docs/src
@@ -9,20 +9,31 @@ theme:
   name: "material"
   logo: assets/logo.png
   favicon: assets/logo.png
+  palette:
+    # Palette toggle for light mode
+    - scheme: lancedb
+      primary: custom
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    # Palette toggle for dark mode
+    - scheme: slate
+      primary: custom
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
   features:
     - content.code.copy
     - content.tabs.link
     - content.action.edit
     - toc.follow
-    - toc.integrate
+    # - toc.integrate
     - navigation.top
     - navigation.tabs
     - navigation.tabs.sticky
     - navigation.footer
     - navigation.tracking
     - navigation.instant
-    - navigation.indexes
-    - navigation.expand
   icon:
     repo: fontawesome/brands/github
   custom_dir: overrides
@@ -34,14 +45,12 @@ plugins:
     handlers:
       python:
         paths: [../python]
-        selection:
+        options:
           docstring_style: numpy
-        rendering:
           heading_level: 4
           show_source: true
           show_symbol_type_in_heading: true
           show_signature_annotations: true
-          show_root_heading: true
           members_order: source
         import:
           # for cross references
@@ -52,7 +61,6 @@ plugins:
 markdown_extensions:
 - admonition
 - footnotes
-- pymdownx.superfences
 - pymdownx.details
 - pymdownx.highlight:
     anchor_linenums: true
@@ -64,28 +72,36 @@ markdown_extensions:
 - pymdownx.tabbed:
     alternate_style: true
 - md_in_html
+- attr_list
 
 nav:
 - Home:
-  - 🏢 Home: index.md
-  - 💡 Basics: basic.md
-  - 📚 Guides:
-    - Create Ingest Update Delete: guides/tables.md
+  - LanceDB: index.md
+  - 🏃🏼‍♂️ Quick start: basic.md
+  - 📚 Concepts:
+    - Vector search: concepts/vector_search.md
+    - Indexing: concepts/index_ivfpq.md
+    - Storage: concepts/storage.md
+    - Data management: concepts/data_management.md
+  - 🔨 Guides:
+    - Working with tables: guides/tables.md
+    - Building an ANN index: ann_indexes.md
     - Vector Search: search.md
-    - SQL filters: sql.md
-    - Indexing: ann_indexes.md
+    - Full-text search: fts.md
+    - Filtering: sql.md
     - Versioning & Reproducibility: notebooks/reproducibility.ipynb
-  - 🧬 Embeddings:
-    - embeddings/index.md
-    - Ingest Embedding Functions: embeddings/embedding_functions.md
+  - 🧬 Managing embeddings:
+    - Overview: embeddings/index.md
+    - Explicit management: embeddings/embedding_explicit.md
+    - Implicit management: embeddings/embedding_functions.md
     - Available Functions: embeddings/default_embedding_functions.md
-    - Create Custom Embedding Functions: embeddings/api.md
-    - Example - Multi-lingual semantic search: notebooks/multi_lingual_example.ipynb
-    - Example - MultiModal CLIP Embeddings: notebooks/DisappearingEmbeddingFunction.ipynb
-  - 🔍 Python full-text search: fts.md
+    - Custom Embedding Functions: embeddings/api.md
+    - "Example: Multi-lingual semantic search": notebooks/multi_lingual_example.ipynb
+    - "Example: MultiModal CLIP Embeddings": notebooks/DisappearingEmbeddingFunction.ipynb
   - 🔌 Integrations:
-    - integrations/index.md
-    - Pandas and PyArrow: python/arrow.md
+    - Tools and data formats: integrations/index.md
+    - Pandas and PyArrow: python/pandas_and_pyarrow.md
+    - Polars: python/polars_arrow.md
     - DuckDB: python/duckdb.md
     - LangChain 🔗: https://python.langchain.com/en/latest/modules/indexes/vectorstores/examples/lancedb.html
     - LangChain JS/TS 🔗: https://js.langchain.com/docs/modules/data_connection/vectorstores/integrations/lancedb
@@ -93,41 +109,61 @@ nav:
     - Pydantic: python/pydantic.md
     - Voxel51: integrations/voxel51.md
     - PromptTools: integrations/prompttools.md
-  - 🐍 Python examples:
-    - examples/index.md
-    - YouTube Transcript Search: notebooks/youtube_transcript_search.ipynb
-    - Documentation QA Bot using LangChain: notebooks/code_qa_bot.ipynb
-    - Multimodal search using CLIP: notebooks/multimodal_search.ipynb
-    - Example - Calculate CLIP Embeddings with Roboflow Inference: examples/image_embeddings_roboflow.md
-    - Serverless QA Bot with S3 and Lambda: examples/serverless_lancedb_with_s3_and_lambda.md
-    - Serverless QA Bot with Modal: examples/serverless_qa_bot_with_modal_and_langchain.md
-  - 🌐 Javascript examples:
-    - Examples: examples/index_js.md
-    - Serverless Website Chatbot: examples/serverless_website_chatbot.md
-    - YouTube Transcript Search: examples/youtube_transcript_bot_with_nodejs.md
-    - TransformersJS Embedding Search: examples/transformerjs_embedding_search_nodejs.md
-- Basics: basic.md
+  - 🎯 Examples:
+    - Overview: examples/index.md
+    - 🐍 Python:
+      - Overview: examples/examples_python.md
+      - YouTube Transcript Search: notebooks/youtube_transcript_search.ipynb
+      - Documentation QA Bot using LangChain: notebooks/code_qa_bot.ipynb
+      - Multimodal search using CLIP: notebooks/multimodal_search.ipynb
+      - Example - Calculate CLIP Embeddings with Roboflow Inference: examples/image_embeddings_roboflow.md
+      - Serverless QA Bot with S3 and Lambda: examples/serverless_lancedb_with_s3_and_lambda.md
+      - Serverless QA Bot with Modal: examples/serverless_qa_bot_with_modal_and_langchain.md
+    - 👾 JavaScript:
+      - Overview: examples/examples_js.md
+      - Serverless Website Chatbot: examples/serverless_website_chatbot.md
+      - YouTube Transcript Search: examples/youtube_transcript_bot_with_nodejs.md
+      - TransformersJS Embedding Search: examples/transformerjs_embedding_search_nodejs.md
+  - 💭 FAQs: faq.md
+  - ⚙️ API reference:
+    - 🐍 Python: python/python.md
+    - 👾 JavaScript: javascript/modules.md
+  - ☁️ LanceDB Cloud:
+    - Overview: cloud/index.md
+    - API reference:
+      - 🐍 Python: python/saas-python.md
+      - 👾 JavaScript: javascript/saas-modules.md
+
+
+- Quick start: basic.md
+- Concepts:
+    - Vector search: concepts/vector_search.md
+    - Indexing: concepts/index_ivfpq.md
+    - Storage: concepts/storage.md
+    - Data management: concepts/data_management.md
 - Guides:
-  - Create Ingest Update Delete: guides/tables.md
-  - Vector Search: search.md
-  - SQL filters: sql.md
-  - Indexing: ann_indexes.md
-  - Versioning & Reproducibility: notebooks/reproducibility.ipynb
-- Embeddings:
-  - embeddings/index.md
-  - Ingest Embedding Functions: embeddings/embedding_functions.md
+    - Working with tables: guides/tables.md
+    - Building an ANN index: ann_indexes.md
+    - Vector Search: search.md
+    - Full-text search: fts.md
+    - Filtering: sql.md
+    - Versioning & Reproducibility: notebooks/reproducibility.ipynb
+- Managing Embeddings:
+  - Overview: embeddings/index.md
+  - Explicit management: embeddings/embedding_explicit.md
+  - Implicit management: embeddings/embedding_functions.md
   - Available Functions: embeddings/default_embedding_functions.md
-  - Create Custom Embedding Functions: embeddings/api.md
-  - Example - Multi-lingual semantic search: notebooks/multi_lingual_example.ipynb
-  - Example - MultiModal CLIP Embeddings: notebooks/DisappearingEmbeddingFunction.ipynb
-- Python full-text search: fts.md
+  - Custom Embedding Functions: embeddings/api.md
+  - "Example: Multi-lingual semantic search": notebooks/multi_lingual_example.ipynb
+  - "Example: MultiModal CLIP Embeddings": notebooks/DisappearingEmbeddingFunction.ipynb
 - Integrations:
-  - integrations/index.md
-  - Pandas and PyArrow: python/arrow.md
-  - DuckDB: python/duckdb.md
-  - LangChain 🦜️🔗: https://python.langchain.com/en/latest/modules/indexes/vectorstores/examples/lancedb.html
-  - LangChain JS/TS 🦜️🔗: https://js.langchain.com/docs/modules/data_connection/vectorstores/integrations/lancedb
-  - LlamaIndex 🦙: https://gpt-index.readthedocs.io/en/latest/examples/vector_stores/LanceDBIndexDemo.html
+  - Overview: integrations/index.md
+  - Pandas and PyArrow: python/pandas_and_pyarrow.md
+  - Polars: python/polars_arrow.md
+  - DuckDB : python/duckdb.md
+  - LangChain 🦜️🔗↗: https://python.langchain.com/en/latest/modules/indexes/vectorstores/examples/lancedb.html
+  - LangChain.js 🦜️🔗↗: https://js.langchain.com/docs/modules/data_connection/vectorstores/integrations/lancedb
+  - LlamaIndex 🦙↗: https://gpt-index.readthedocs.io/en/latest/examples/vector_stores/LanceDBIndexDemo.html
   - Pydantic: python/pydantic.md
   - Voxel51: integrations/voxel51.md
   - PromptTools: integrations/prompttools.md
@@ -139,19 +175,22 @@ nav:
   - Serverless QA Bot with S3 and Lambda: examples/serverless_lancedb_with_s3_and_lambda.md
   - Serverless QA Bot with Modal: examples/serverless_qa_bot_with_modal_and_langchain.md
 - Javascript examples:
-  - examples/index_js.md
+  - Overview: examples/examples_js.md
   - YouTube Transcript Search: examples/youtube_transcript_bot_with_nodejs.md
   - Serverless Chatbot from any website: examples/serverless_website_chatbot.md
   - TransformersJS Embedding Search: examples/transformerjs_embedding_search_nodejs.md
-- API references:
-  - OSS Python API: python/python.md
-  - SaaS Python API: python/saas-python.md
-  - Javascript API: javascript/modules.md
-  - SaaS Javascript API: javascript/saas-modules.md
-- LanceDB Cloud↗: https://noteforms.com/forms/lancedb-mailing-list-cloud-kty1o5?notionforms=1&utm_source=notionforms
+- API reference:
+  - Python: python/python.md
+  - Javascript: javascript/modules.md
+- LanceDB Cloud:
+    - Overview: cloud/index.md
+    - API reference:
+      - 🐍 Python: python/saas-python.md
+      - 👾 JavaScript: javascript/saas-modules.md
 
 extra_css:
   - styles/global.css
+  - styles/extra.css
 
 extra:
   analytics:
