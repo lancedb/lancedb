@@ -14,7 +14,7 @@ class Reranker(ABC):
         fts_results: pa.Table,
     ):
         """
-        Rerank function recieves the individual results from the vector and FTS search results.
+        Rerank function receives the individual results from the vector and FTS search results.
         You can choose to use any of the results to generate the final results, allowing maximum flexibility. This is mandatory to implement
 
         Parameters
