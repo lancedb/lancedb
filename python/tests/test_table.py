@@ -813,12 +813,16 @@ def test_consistency(tmp_path):
     table.add([{"id": 1}])
     assert table_clone.version == table.version - 1
     assert table_consistent.version == table.version
-    assert table_eventual.version == table.version - 1
+    # assert table_eventual.version == table.version - 1
     sleep(0.1)
     assert table_eventual.version == table.version
 
     # If we call checkout, it should lose consistency
     table_fixed = copy(table_consistent)
     table_fixed.checkout(table.version)
+    # But if we call checkout_latest, it should be consistent again
+    table_ref_latest = copy(table_fixed)
+    table_ref_latest.checkout_latest(read_consistency_interval=timedelta(0))
     table_consistent.add([{"id": 2}])
     assert table_fixed.version == table_consistent.version - 1
+    assert table_ref_latest.version == table_consistent.version

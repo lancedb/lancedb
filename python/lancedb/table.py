@@ -701,6 +701,8 @@ class LanceTable(Table):
         elif self._version is None and self.read_consistency_interval is not None:
             now = time.monotonic()
             diff = timedelta(seconds=now - self._last_consistency_check)
+            # print(diff, self.read_consistency_interval, self._ds.latest_version)
+            # breakpoint()
             if (
                 self._last_consistency_check is None
                 or diff > self.read_consistency_interval
@@ -719,7 +721,8 @@ class LanceTable(Table):
         # dataset is fixed to a specific version.
         if self._version is not None:
             raise ValueError(
-                f"Cannot mutate table reference fixed at version {self._version}."
+                f"Cannot mutate table reference fixed at version {self._version}. "
+                "Call checkout_latest() to get a mutable table reference."
             )
         return self._dataset
 
@@ -802,6 +805,23 @@ class LanceTable(Table):
                 )
             else:
                 raise e
+
+    def checkout_latest(self, /, read_consistency_interval: Optional[timedelta] = None):
+        """Checkout the latest version of the table. This is an in-place operation.
+
+        This table reference will track the latest version of the table.
+
+        Parameters
+        ----------
+        read_consistency_interval : timedelta, optional
+            If specified, then the table will be updated to the latest version
+            at least every `read_consistency_interval` seconds. This is useful
+            if you want to track the latest version of the table but don't want
+            to pay the cost of checking for new versions on every query.
+        """
+        self.checkout(self._ds.latest_version)
+        self.read_consistency_interval = read_consistency_interval
+        self._version = None
 
     def restore(self, version: int = None):
         """Restore a version of the table. This is an in-place operation.
