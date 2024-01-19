@@ -59,8 +59,8 @@ def contextualize(raw_df: "pd.DataFrame") -> Contextualizer:
     8          dog I love            1
     9   I love sandwiches            2
     10    love sandwiches            2
-    >>> contextualize(data).window(7).stride(1).min_window_size(7)\
-    ...   .text_col('token').to_pandas()
+    >>> (contextualize(data).window(7).stride(1).min_window_size(7)
+    ...   .text_col('token').to_pandas())
                                       token  document_id
     0   The quick brown fox jumped over the            1
     1  quick brown fox jumped over the lazy            1
