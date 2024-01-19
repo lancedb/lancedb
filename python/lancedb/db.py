@@ -245,6 +245,16 @@ class LanceDBConnection(DBConnection):
     ----------
     uri: str or Path
         The root uri of the database.
+    read_consistency_interval: timedelta, default None
+        The interval at which to check for updates to the table from other
+        processes. If None, then consistency is not checked. For performance
+        reasons, this is the default. For strong consistency, set this to
+        zero seconds. Then every read will check for updates from other
+        processes. As a compromise, you can set this to a non-zero timedelta
+        for eventual consistency. If more than that interval has passed since
+        the last check, then the table will be checked for updates. Note: this
+        consistency only applies to read operations. Write operations are
+        always consistent.
 
     Examples
     --------
@@ -267,7 +277,9 @@ class LanceDBConnection(DBConnection):
     >>> db.drop_table("another_table")
     """
 
-    def __init__(self, uri: URI):
+    def __init__(
+        self, uri: URI, *, read_consistency_interval: Optional[timedelta] = None
+    ):
         if not isinstance(uri, Path):
             scheme = get_uri_scheme(uri)
         is_local = isinstance(uri, Path) or scheme == "file"
@@ -279,9 +291,14 @@ class LanceDBConnection(DBConnection):
         self._uri = str(uri)
 
         self._entered = False
+        self.read_consistency_interval = read_consistency_interval
 
     def __repr__(self) -> str:
-        return f"LanceDBConnection({self._uri})"
+        val = f"{self.__class__.__name__}({self._uri}"
+        if self.read_consistency_interval is not None:
+            val += f", read_consistency_interval={repr(self.read_consistency_interval)}"
+        val += ")"
+        return val
 
     @property
     def uri(self) -> str:
@@ -358,9 +375,7 @@ class LanceDBConnection(DBConnection):
         return tbl
 
     @override
-    def open_table(
-        self, name: str, *, read_consistency_interval: Optional[timedelta] = None
-    ) -> LanceTable:
+    def open_table(self, name: str) -> LanceTable:
         """Open a table in the database.
 
         Parameters
@@ -368,24 +383,11 @@ class LanceDBConnection(DBConnection):
         name: str
             The name of the table.
 
-        read_consistency_interval: timedelta, default None
-            The interval at which to check for updates to the table from other
-            processes. If None, then consistency is not checked. For performance
-            reasons, this is the default. For strong consistency, set this to
-            zero seconds. Then every read will check for updates from other
-            processes. As a compromise, you can set this to a non-zero timedelta
-            for eventual consistency. If more than that interval has passed since
-            the last check, then the table will be checked for updates. Note: this
-            consistency only applies to read operations. Write operations are
-            always consistent.
-
         Returns
         -------
         A LanceTable object representing the table.
         """
-        return LanceTable.open(
-            self, name, read_consistency_interval=read_consistency_interval
-        )
+        return LanceTable.open(self, name)
 
     @override
     def drop_table(self, name: str, ignore_missing: bool = False):

@@ -38,6 +38,7 @@ from lancedb.table import LanceTable
 class MockDB:
     def __init__(self, uri: Path):
         self.uri = uri
+        self.read_consistency_interval = None
 
     @functools.cached_property
     def is_managed_remote(self) -> bool:
@@ -796,33 +797,46 @@ def test_hybrid_search(db):
     assert result1 == result3
 
 
-def test_consistency(tmp_path):
+@pytest.mark.parametrize(
+    "consistency_interval", [None, timedelta(seconds=0), timedelta(seconds=0.1)]
+)
+def test_consistency(tmp_path, consistency_interval):
     db = lancedb.connect(tmp_path)
     table = LanceTable.create(db, "my_table", data=[{"id": 0}])
-    # Note: we assert each of these have versions, in part to force them to do
-    # their lazy loading of the dataset
-    table_clone = db.open_table("my_table")
-    assert table_clone.version == table.version
-    table_consistent = db.open_table("my_table", read_consistency_interval=timedelta(0))
-    assert table_consistent.version == table.version
-    table_eventual = db.open_table(
-        "my_table", read_consistency_interval=timedelta(seconds=0.1)
-    )
-    assert table_eventual.version == table.version
+
+    db2 = lancedb.connect(tmp_path, read_consistency_interval=consistency_interval)
+    table2 = db2.open_table("my_table")
+    assert table2.version == table.version
 
     table.add([{"id": 1}])
-    assert table_clone.version == table.version - 1
-    assert table_consistent.version == table.version
-    # assert table_eventual.version == table.version - 1
-    sleep(0.1)
-    assert table_eventual.version == table.version
+
+    if consistency_interval is None:
+        assert table2.version == table.version - 1
+        table2.checkout_latest()
+        assert table2.version == table.version
+    elif consistency_interval == timedelta(seconds=0):
+        assert table2.version == table.version
+    else:
+        # (consistency_interval == timedelta(seconds=0.1)
+        assert table2.version == table.version - 1
+        sleep(0.1)
+        assert table2.version == table.version
+
+
+def test_restore_consistency(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = LanceTable.create(db, "my_table", data=[{"id": 0}])
+
+    db2 = lancedb.connect(tmp_path, read_consistency_interval=timedelta(seconds=0))
+    table2 = db2.open_table("my_table")
+    assert table2.version == table.version
 
     # If we call checkout, it should lose consistency
-    table_fixed = copy(table_consistent)
+    table_fixed = copy(table2)
     table_fixed.checkout(table.version)
     # But if we call checkout_latest, it should be consistent again
     table_ref_latest = copy(table_fixed)
-    table_ref_latest.checkout_latest(read_consistency_interval=timedelta(0))
-    table_consistent.add([{"id": 2}])
-    assert table_fixed.version == table_consistent.version - 1
-    assert table_ref_latest.version == table_consistent.version
+    table_ref_latest.checkout_latest()
+    table.add([{"id": 2}])
+    assert table_fixed.version == table.version - 1
+    assert table_ref_latest.version == table.version

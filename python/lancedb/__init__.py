@@ -30,6 +30,7 @@ def connect(
     api_key: Optional[str] = None,
     region: str = "us-east-1",
     host_override: Optional[str] = None,
+    **kwargs,
 ) -> DBConnection:
     """Connect to a LanceDB database.
 
@@ -45,6 +46,10 @@ def connect(
         The region to use for LanceDB Cloud.
     host_override: str, optional
         The override url for LanceDB Cloud.
+    **kwargs
+        Additional keyword arguments to be passed to the specific connection type.
+        For LanceDB Cloud, see [lancedb.remote.db.RemoteDBConnection][].
+        For LanceDB OSS, see [lancedb.db.LanceDBConnection][].
 
     Examples
     --------
@@ -72,5 +77,5 @@ def connect(
             api_key = os.environ.get("LANCEDB_API_KEY")
         if api_key is None:
             raise ValueError(f"api_key is required to connected LanceDB cloud: {uri}")
-        return RemoteDBConnection(uri, api_key, region, host_override)
-    return LanceDBConnection(uri)
+        return RemoteDBConnection(uri, api_key, region, host_override, **kwargs)
+    return LanceDBConnection(uri, **kwargs)

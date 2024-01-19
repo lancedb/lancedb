@@ -16,6 +16,7 @@ from __future__ import annotations
 import inspect
 import time
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from datetime import timedelta
 from functools import cached_property
 from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Tuple, Union
@@ -642,13 +643,33 @@ class Table(ABC):
         """
 
 
+class LanceTableMode:
+    pass
+
+
+@dataclass
+class LanceStandardMode(LanceTableMode):
+    last_consistency_check: Optional[float] = None
+
+
+@dataclass
+class LanceTimeTravelMode(LanceTableMode):
+    version: int
+
+
 class LanceTable(Table):
     """
     A table in a LanceDB database.
 
-    This can be opened in two modes: if `version` is None then the latest version
-    is opened and can be tracked. If `version` is an integer then that version is
-    opened and this instance is fixed to that version.
+    This can be opened in two modes: standard and time-travel.
+
+    Standard mode is the default. In this mode, the table is mutable and tracks
+    the latest version of the table. The level of read consistency is controlled
+    by the `read_consistency_interval` parameter on the connection.
+
+    Time-travel mode is activated by specifying a version number. In this mode,
+    the table is immutable and fixed to a specific version. This is useful for
+    querying historical versions of the table.
     """
 
     def __init__(
@@ -656,21 +677,17 @@ class LanceTable(Table):
         connection: "LanceDBConnection",
         name: str,
         version: Optional[int] = None,
-        /,
-        read_consistency_interval: Optional[timedelta] = None,
     ):
         self._conn = connection
         self.name = name
-        # To be lazy, we initially store the desired version as a LanceDataset
-        self._version: Optional[int] = version
-        self._ds: Optional[LanceDataset] = version
 
-        if self._version is not None and self.read_consistency_interval is not None:
-            raise ValueError(
-                "Cannot specify both version and read_consistency_interval."
-            )
-        self.read_consistency_interval = read_consistency_interval
-        self._last_consistency_check = None
+        if version is not None:
+            self._mode = LanceTimeTravelMode(version)
+        else:
+            self._mode = LanceStandardMode()
+
+        # Dataset is lazily loaded
+        self._ds: Optional[LanceDataset] = None
 
     @classmethod
     def open(cls, db, name, **kwargs):
@@ -695,23 +712,22 @@ class LanceTable(Table):
         # Returns the LanceDataset this wraps. This handles lazy loading (if
         # self._ds is None) and checking for new versions (if user has specified
         # a read_consistency_interval).
-        if not self._ds:
-            self._last_consistency_check = time.monotonic()
-            self._ds = lance.dataset(self._dataset_uri, version=self._version)
-        elif self._version is None and self.read_consistency_interval is not None:
+        if not self._ds and isinstance(self._mode, LanceTimeTravelMode):
+            self._ds = lance.dataset(self._dataset_uri, version=self._mode.version)
+        elif not self._ds and isinstance(self._mode, LanceStandardMode):
+            self._mode.last_consistency_check = time.monotonic()
+            self._ds = lance.dataset(self._dataset_uri)
+        elif (
+            isinstance(self._mode, LanceStandardMode)
+            and self._conn.read_consistency_interval is not None
+        ):
             now = time.monotonic()
-            diff = timedelta(seconds=now - self._last_consistency_check)
-            # print(diff, self.read_consistency_interval, self._ds.latest_version)
-            # breakpoint()
+            diff = timedelta(seconds=now - self._mode.last_consistency_check)
             if (
-                self._last_consistency_check is None
-                or diff > self.read_consistency_interval
+                self._mode.last_consistency_check is None
+                or diff > self._conn.read_consistency_interval
             ):
-                # TODO: use this method instead one available
-                # self._ds.checkout_version(self._ds.latest_version)
-                self._ds = lance.dataset(
-                    self._dataset_uri, version=self._ds.latest_version
-                )
+                self._ds = self._ds.checkout_version(self._ds.latest_version)
 
         return self._ds
 
@@ -719,10 +735,11 @@ class LanceTable(Table):
     def _dataset_mut(self) -> LanceDataset:
         # Returns the LanceDataset this wraps, but raises an error if the
         # dataset is fixed to a specific version.
-        if self._version is not None:
+        if isinstance(self._mode, LanceTimeTravelMode):
             raise ValueError(
-                f"Cannot mutate table reference fixed at version {self._version}. "
-                "Call checkout_latest() to get a mutable table reference."
+                "Cannot mutate table reference fixed at version "
+                f"{self._mode.version}. Call checkout_latest() to get a mutable "
+                "table reference."
             )
         return self._dataset
 
@@ -756,6 +773,9 @@ class LanceTable(Table):
         keep writing to the dataset starting from an old version, then use
         the `restore` function.
 
+        Calling this method will set the table into time-travel mode. If you
+        wish to return to standard mode, call `checkout_latest`.
+
         Parameters
         ----------
         version : int
@@ -784,44 +804,25 @@ class LanceTable(Table):
         if version < 1 or version > max_ver:
             raise ValueError(f"Invalid version {version}")
 
-        # TODO: use this method instead, once available.
-        # self._dataset.checkout_version(version)
-
-        self._version = version
-        self._ds = None
-
-        # Since we checked out a specific version, the consistency interval
-        # is no longer relevant.
-        self.read_consistency_interval = None
-        self._last_consistency_check = None
-
         try:
-            # Accessing the property updates the cached value
-            _ = self._dataset
-        except Exception as e:
+            self._ds = self._ds.checkout_version(version)
+        except IOError as e:
             if "not found" in str(e):
                 raise ValueError(
                     f"Version {version} no longer exists. Was it cleaned up?"
                 )
             else:
                 raise e
+        self._mode = LanceTimeTravelMode(version)
 
-    def checkout_latest(self, /, read_consistency_interval: Optional[timedelta] = None):
+    def checkout_latest(self):
         """Checkout the latest version of the table. This is an in-place operation.
 
-        This table reference will track the latest version of the table.
-
-        Parameters
-        ----------
-        read_consistency_interval : timedelta, optional
-            If specified, then the table will be updated to the latest version
-            at least every `read_consistency_interval` seconds. This is useful
-            if you want to track the latest version of the table but don't want
-            to pay the cost of checking for new versions on every query.
+        The table will be set back into standard mode, and will track the latest
+        version of the table.
         """
         self.checkout(self._ds.latest_version)
-        self.read_consistency_interval = read_consistency_interval
-        self._version = None
+        self._mode = LanceStandardMode(last_consistency_check=time.monotonic())
 
     def restore(self, version: int = None):
         """Restore a version of the table. This is an in-place operation.
@@ -865,7 +866,7 @@ class LanceTable(Table):
         else:
             self.checkout(version)
 
-        self._version = None
+        self._mode = LanceStandardMode(last_consistency_check=time.monotonic())
 
         if version == max_ver:
             # no-op if restoring the latest version
@@ -889,10 +890,8 @@ class LanceTable(Table):
 
     def __repr__(self) -> str:
         val = f'{self.__class__.__name__}(connection={self._conn!r}, name="{self.name}"'
-        if self._version is not None:
-            val += f", version={self._version}"
-        if self.read_consistency_interval is not None:
-            val += f", read_consistency_interval={self.read_consistency_interval}"
+        if isinstance(self._mode, LanceTimeTravelMode):
+            val += f", version={self._mode.version}"
         val += ")"
         return val
 
