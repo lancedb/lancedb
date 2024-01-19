@@ -617,9 +617,8 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         self._fts_query = LanceFtsQueryBuilder(table, query)
         query = self._query_to_vector(table, query, vector_column)
         self._vector_query = LanceVectorQueryBuilder(table, query, vector_column)
-        self._weight = 0.7
         self._norm = "rank"
-        self._reranker = None
+        self._reranker = LinearCombinationReranker(weight=0.7, fill=1.0)
 
     def validate(self):
         if self._table._get_fts_index_path() is None:
@@ -654,13 +653,11 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         vector_results = self._normalize_scores(vector_results)
         # fts higher scores are more relevant, so invert them ie (1 - score)
         fts_results = self._normalize_scores(fts_results, invert=True)
-
-        # combine the scores. For missing scores, fill with 1.0 (least relevant) -- should handled by reranker api
-        # results = self._merge_results(vector_results, fts_results, fill=1.0)
-
-        # Temporary solution
-        ## TODO: turn this into a Reranker class-based API for easier management of args for external code like cohere reranking api
         results = self._reranker.rerank_hybrid(self, vector_results, fts_results)
+        if not isinstance(results, pa.Table):  # Enforce type
+            raise TypeError(
+                f"rerank_hybrid must return a pyarrow.Table, got {type(results)}"
+            )
 
         if not self._with_row_id:
             results = results.drop(["_rowid"])
@@ -709,6 +706,25 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         normalize="score",
         reranker: Reranker = LinearCombinationReranker(weight=0.7, fill=1.0),
     ) -> LanceHybridQueryBuilder:
+        """
+        Rerank the hybrid search results using the specified reranker. The reranker
+        must be an instance of Reranker class.
+
+        Parameters
+        ----------
+        normalize: str, default "score"
+            The method to normalize the scores. Can be "rank" or "score". If "rank",
+            the scores are converted to ranks and then normalized. If "score", the
+            scores are normalized directly.
+        reranker: Reranker, default LinearCombinationReranker(weight=0.7, fill=1.0)
+            The reranker to use. Must be an instance of Reranker class.
+
+        Returns
+        -------
+        LanceHybridQueryBuilder
+            The LanceHybridQueryBuilder object.
+        """
+        # TODO: Probably auto can be removed and score should be the default.
         if normalize not in ["auto", "rank", "score"]:
             raise ValueError("normalize must be 'auto', 'rank' or 'score'.")
         if reranker and not isinstance(reranker, Reranker):

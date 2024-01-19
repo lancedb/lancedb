@@ -5,13 +5,13 @@ import pyarrow as pa
 class LinearCombinationReranker(Reranker):
     """
     Reranks the results using a linear combination of the scores from the vector and FTS search.
-
+    For missing scores, fill with `fill` value.
     Parameters
     ----------
-    vector_weight : float, default 0.5
-        The weight to use for the vector search score.
-    fts_weight : float, default 0.5
-        The weight to use for the FTS search score.
+    weight : float, default 0.5
+        The weight to give to the vector score. Must be between 0 and 1.
+    fill : float, default 1.0
+        The score to give to results that are only in one of the two result sets.
     """
 
     def __init__(self, weight: float = 0.5, fill: float = 1.0):
@@ -22,7 +22,7 @@ class LinearCombinationReranker(Reranker):
 
     def rerank_hybrid(
         self,
-        query_builder: "lancedb.HybridQueryBuilder",
+        query_builder: "lancedb.HybridQueryBuilder",  # noqa: F821
         vector_results: pa.Table,
         fts_results: pa.Table,
     ):

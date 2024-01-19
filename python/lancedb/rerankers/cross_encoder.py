@@ -1,6 +1,7 @@
 from typing import Union
 from functools import cached_property
 from .base import Reranker
+from ..utils.general import safe_import
 import lancedb
 import pyarrow as pa
 
@@ -26,7 +27,7 @@ class CrossEncoderReranker(Reranker):
         column: str = "text",
         device: Union[str, None] = None,
     ):
-        torch = self.safe_import("torch")
+        torch = safe_import("torch")
         self.model_name = model_name
         self.column = column
         self.device = device
@@ -35,7 +36,7 @@ class CrossEncoderReranker(Reranker):
 
     @cached_property
     def model(self):
-        sbert = self.safe_import("sentence_transformers")
+        sbert = safe_import("sentence_transformers")
         cross_encoder = sbert.CrossEncoder(self.model_name)
 
         return cross_encoder

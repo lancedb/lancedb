@@ -68,7 +68,7 @@ class Reranker(ABC):
         fts_results : pa.Table
             The results from the FTS search
         """
-        ## !!!! TODO: This op is very inefficient. couldn't make pa.concat_tables to work. Also need to look into pa.compute.unique
+        ## !!!! TODO: This op is inefficient. couldn't make pa.concat_tables to work. Also need to look into pa.compute.unique
         vector_list = vector_results.to_pylist()
         fts_list = fts_results.to_pylist()
         combined_df = vector_list + fts_list
