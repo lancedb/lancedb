@@ -12,8 +12,10 @@
 #  limitations under the License.
 
 import functools
+from copy import copy
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from time import sleep
 from typing import List
 from unittest.mock import PropertyMock, patch
 
@@ -25,6 +27,7 @@ import pyarrow as pa
 import pytest
 from pydantic import BaseModel
 
+import lancedb
 from lancedb.conftest import MockTextEmbeddingFunction
 from lancedb.db import LanceDBConnection
 from lancedb.embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
@@ -267,39 +270,38 @@ def test_versioning(db):
 
 
 def test_create_index_method():
-    with patch.object(LanceTable, "_reset_dataset", return_value=None):
-        with patch.object(
-            LanceTable, "_dataset", new_callable=PropertyMock
-        ) as mock_dataset:
-            # Setup mock responses
-            mock_dataset.return_value.create_index.return_value = None
+    with patch.object(
+        LanceTable, "_dataset", new_callable=PropertyMock
+    ) as mock_dataset:
+        # Setup mock responses
+        mock_dataset.return_value.create_index.return_value = None
 
-            # Create a LanceTable object
-            connection = LanceDBConnection(uri="mock.uri")
-            table = LanceTable(connection, "test_table")
+        # Create a LanceTable object
+        connection = LanceDBConnection(uri="mock.uri")
+        table = LanceTable(connection, "test_table")
 
-            # Call the create_index method
-            table.create_index(
-                metric="L2",
-                num_partitions=256,
-                num_sub_vectors=96,
-                vector_column_name="vector",
-                replace=True,
-                index_cache_size=256,
-            )
+        # Call the create_index method
+        table.create_index(
+            metric="L2",
+            num_partitions=256,
+            num_sub_vectors=96,
+            vector_column_name="vector",
+            replace=True,
+            index_cache_size=256,
+        )
 
-            # Check that the _dataset.create_index method was called
-            # with the right parameters
-            mock_dataset.return_value.create_index.assert_called_once_with(
-                column="vector",
-                index_type="IVF_PQ",
-                metric="L2",
-                num_partitions=256,
-                num_sub_vectors=96,
-                replace=True,
-                accelerator=None,
-                index_cache_size=256,
-            )
+        # Check that the _dataset.create_index method was called
+        # with the right parameters
+        mock_dataset.return_value.create_index.assert_called_once_with(
+            column="vector",
+            index_type="IVF_PQ",
+            metric="L2",
+            num_partitions=256,
+            num_sub_vectors=96,
+            replace=True,
+            accelerator=None,
+            index_cache_size=256,
+        )
 
 
 def test_add_with_nans(db):
@@ -792,3 +794,31 @@ def test_hybrid_search(db):
         "Our father who art in heaven", query_type="hybrid"
     ).to_pydantic(MyTable)
     assert result1 == result3
+
+
+def test_consistency(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = LanceTable.create(db, "my_table", data=[{"id": 0}])
+    # Note: we assert each of these have versions, in part to force them to do
+    # their lazy loading of the dataset
+    table_clone = db.open_table("my_table")
+    assert table_clone.version == table.version
+    table_consistent = db.open_table("my_table", consistency_interval=timedelta(0))
+    assert table_consistent.version == table.version
+    table_eventual = db.open_table(
+        "my_table", consistency_interval=timedelta(seconds=0.1)
+    )
+    assert table_eventual.version == table.version
+
+    table.add([{"id": 1}])
+    assert table_clone.version == table.version - 1
+    assert table_consistent.version == table.version
+    assert table_eventual.version == table.version - 1
+    sleep(0.1)
+    assert table_eventual.version == table.version
+
+    # If we call checkout, it should lose consistency
+    table_fixed = copy(table_consistent)
+    table_fixed.checkout(table.version)
+    table_consistent.add([{"id": 2}])
+    assert table_fixed.version == table_consistent.version - 1
