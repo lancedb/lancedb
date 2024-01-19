@@ -3,6 +3,7 @@ from functools import cached_property
 from .base import Reranker
 from ..embeddings.utils import api_key_not_found_help
 from ..utils.general import safe_import
+import numpy as np
 import lancedb
 import pyarrow as pa
 import os
@@ -41,6 +42,8 @@ class CohereReranker(Reranker):
             self.api_key_not_found_help("cohere")
         return cohere.Client(os.environ["COHERE_API_KEY"])
 
+    import numpy as np
+
     def rerank_hybrid(
         self,
         query_builder: "lancedb.HybridQueryBuilder",
@@ -57,16 +60,15 @@ class CohereReranker(Reranker):
         )
         results = [(result.index, result.relevance_score) for result in results]
         # sort by score
-        results = sorted(results, key=lambda x: x[1], reverse=True)
-        # get the sorted indices
-        sorted_indices = [result[0] for result in results]
+        scores = np.array([result[1] for result in results])
+        sorted_indices = np.argsort(scores)[::-1]
         # sort the results by the sorted indices
         combined_results = combined_results.take(sorted_indices)
         # add the scores
         combined_results = combined_results.set_column(
             combined_results.column_names.index("_score"),
             "_score",
-            pa.array([result[1] for result in results], type=pa.float32()),
+            pa.array(scores[sorted_indices], type=pa.float32()),
         )
 
         return combined_results
