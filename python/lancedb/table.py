@@ -299,7 +299,7 @@ class Table(ABC):
 
             import lance
 
-            dataset = lance.dataset("/tmp/images.lance")
+            dataset = lance.dataset("./images.lance")
             dataset.create_scalar_index("category")
         """
         raise NotImplementedError
@@ -868,7 +868,7 @@ class LanceTable(Table):
         return self.count_rows()
 
     def __repr__(self) -> str:
-        val = f"{self.__class__.__name__}(connection={self._conn!r}, name={self.name}"
+        val = f'{self.__class__.__name__}(connection={self._conn!r}, name="{self.name}"'
         if self._version is not None:
             val += f", version={self._version}"
         if self.read_consistency_interval is not None:

@@ -304,7 +304,7 @@ class LanceModel(pydantic.BaseModel):
     ...     name: str
     ...     vector: Vector(2)
     ...
-    >>> db = lancedb.connect("/tmp")
+    >>> db = lancedb.connect("./example")
     >>> table = db.create_table("test", schema=TestModel.to_arrow_schema())
     >>> table.add([
     ...     TestModel(name="test", vector=[1.0, 2.0])
