@@ -13,6 +13,7 @@
 
 import importlib.metadata
 import os
+from datetime import timedelta
 from typing import Optional
 
 __version__ = importlib.metadata.version("lancedb")
@@ -30,7 +31,7 @@ def connect(
     api_key: Optional[str] = None,
     region: str = "us-east-1",
     host_override: Optional[str] = None,
-    **kwargs,
+    read_consistency_interval: Optional[timedelta] = None,
 ) -> DBConnection:
     """Connect to a LanceDB database.
 
@@ -46,10 +47,18 @@ def connect(
         The region to use for LanceDB Cloud.
     host_override: str, optional
         The override url for LanceDB Cloud.
-    **kwargs
-        Additional keyword arguments to be passed to the specific connection type.
-        For LanceDB Cloud, see [lancedb.remote.db.RemoteDBConnection][].
-        For LanceDB OSS, see [lancedb.db.LanceDBConnection][].
+    read_consistency_interval: timedelta, default None
+        (For LanceDB OSS only)
+        The interval at which to check for updates to the table from other
+        processes. If None, then consistency is not checked. For performance
+        reasons, this is the default. For strong consistency, set this to
+        zero seconds. Then every read will check for updates from other
+        processes. As a compromise, you can set this to a non-zero timedelta
+        for eventual consistency. If more than that interval has passed since
+        the last check, then the table will be checked for updates. Note: this
+        consistency only applies to read operations. Write operations are
+        always consistent.
+
 
     Examples
     --------
@@ -77,5 +86,5 @@ def connect(
             api_key = os.environ.get("LANCEDB_API_KEY")
         if api_key is None:
             raise ValueError(f"api_key is required to connected LanceDB cloud: {uri}")
-        return RemoteDBConnection(uri, api_key, region, host_override, **kwargs)
-    return LanceDBConnection(uri, **kwargs)
+        return RemoteDBConnection(uri, api_key, region, host_override)
+    return LanceDBConnection(uri, read_consistency_interval=read_consistency_interval)
