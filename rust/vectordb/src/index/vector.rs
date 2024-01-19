@@ -13,7 +13,6 @@
 // limitations under the License.
 
 use serde::Deserialize;
-use serde_json;
 
 use lance::format::{Index, Manifest};
 use lance::index::vector::pq::PQBuildParams;

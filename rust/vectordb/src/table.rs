@@ -465,8 +465,7 @@ impl Table {
             serde_json::from_str(&index_stats).map_err(|e| Error::Lance {
                 message: format!(
                     "error deserializing index statistics {}: {}",
-                    e.to_string(),
-                    index_stats
+                    e, index_stats
                 ),
             })?;
 
