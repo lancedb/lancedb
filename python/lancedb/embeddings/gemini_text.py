@@ -13,40 +13,50 @@
 
 import os
 from functools import cached_property
-from typing import List, Union, Any
+from typing import List, Union
 
 import numpy as np
 
+from lancedb.pydantic import PYDANTIC_VERSION
+
 from .base import TextEmbeddingFunction
 from .registry import register
-from .utils import api_key_not_found_help, TEXT
-from lancedb.pydantic import PYDANTIC_VERSION
+from .utils import TEXT, api_key_not_found_help
 
 
 @register("gemini-text")
 class GeminiText(TextEmbeddingFunction):
     """
-    An embedding function that uses the Google's Gemini API. Requires GOOGLE_API_KEY to be set.
+    An embedding function that uses the Google's Gemini API. Requires GOOGLE_API_KEY to
+    be set.
 
     https://ai.google.dev/docs/embeddings_guide
 
     Supports various tasks types:
-    | Task Type               | Description                                                                                                                                                |
-    |-------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------|
-    | "`retrieval_query`"     | Specifies the given text is a query in a search/retrieval setting.                                                                                         |
-    | "`retrieval_document`"  | Specifies the given text is a document in a search/retrieval setting. Using this task type requires a title but is automatically proided by Embeddings API |
-    | "`semantic_similarity`" | Specifies the given text will be used for Semantic Textual Similarity (STS).                                                                               |
-    | "`classification`"      | Specifies that the embeddings will be used for classification.                                                                                             |
-    | "`clusering`"           | Specifies that the embeddings will be used for clustering.                                                                                                 |
+    | Task Type               | Description                                            |
+    |-------------------------|--------------------------------------------------------|
+    | "`retrieval_query`"     | Specifies the given text is a query in a               |
+    |                         | search/retrieval setting.                              |
+    | "`retrieval_document`"  | Specifies the given text is a document in a            |
+    |                         | search/retrieval setting. Using this task type         |
+    |                         | requires a title but is automatically provided by      |
+    |                         | Embeddings API                                         |
+    | "`semantic_similarity`" | Specifies the given text will be used for Semantic     |
+    |                         | Textual Similarity (STS).                              |
+    | "`classification`"      | Specifies that the embeddings will be used for         |
+    |                         | classification.                                        |
+    | "`clustering`"          | Specifies that the embeddings will be used for         |
+    |                         | clustering.                                            |
 
-
-    Note: The supported task types might change in the Gemini API, but as long as a supported task type and its argument set is provided,
-          those will be delegated to the API calls.
+    Note: The supported task types might change in the Gemini API, but as long as a
+          supported task type and its argument set is provided, those will be delegated
+          to the API calls.
 
     Parameters
     ----------
     name: str, default "models/embedding-001"
-        The name of the model to use. See the Gemini documentation for a list of available models.
+        The name of the model to use. See the Gemini documentation for a list of
+        available models.
 
     query_task_type: str, default "retrieval_query"
         Sets the task type for the queries.

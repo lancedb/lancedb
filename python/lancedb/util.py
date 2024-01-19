@@ -12,9 +12,9 @@
 #  limitations under the License.
 
 import os
+import pathlib
 from datetime import date, datetime
 from functools import singledispatch
-import pathlib
 from typing import Tuple, Union
 from urllib.parse import urlparse
 
