@@ -20,15 +20,22 @@ import sys
 import types
 from abc import ABC, abstractmethod
 from datetime import date, datetime
-from typing import Any, Callable, Dict, Generator, List, Type, Union, _GenericAlias
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Dict,
+    Generator,
+    List,
+    Type,
+    Union,
+    _GenericAlias,
+)
 
 import numpy as np
 import pyarrow as pa
 import pydantic
 import semver
-from pydantic.fields import FieldInfo
-
-from .embeddings import EmbeddingFunctionRegistry
 
 PYDANTIC_VERSION = semver.Version.parse(pydantic.__version__)
 try:
@@ -36,6 +43,11 @@ try:
 except ImportError:
     if PYDANTIC_VERSION >= (2,):
         raise
+
+if TYPE_CHECKING:
+    from pydantic.fields import FieldInfo
+
+    from .embeddings import EmbeddingFunctionConfig
 
 
 class FixedSizeListMixin(ABC):
@@ -190,7 +202,7 @@ else:
         ]
 
 
-def _pydantic_to_arrow_type(field: pydantic.fields.FieldInfo) -> pa.DataType:
+def _pydantic_to_arrow_type(field: FieldInfo) -> pa.DataType:
     """Convert a Pydantic FieldInfo to Arrow DataType"""
 
     if isinstance(field.annotation, _GenericAlias) or (
@@ -221,7 +233,7 @@ def _pydantic_to_arrow_type(field: pydantic.fields.FieldInfo) -> pa.DataType:
     return _py_type_to_arrow_type(field.annotation, field)
 
 
-def is_nullable(field: pydantic.fields.FieldInfo) -> bool:
+def is_nullable(field: FieldInfo) -> bool:
     """Check if a Pydantic FieldInfo is nullable."""
     if isinstance(field.annotation, _GenericAlias):
         origin = field.annotation.__origin__
@@ -237,7 +249,7 @@ def is_nullable(field: pydantic.fields.FieldInfo) -> bool:
     return False
 
 
-def _pydantic_to_field(name: str, field: pydantic.fields.FieldInfo) -> pa.Field:
+def _pydantic_to_field(name: str, field: FieldInfo) -> pa.Field:
     """Convert a Pydantic field to a PyArrow Field."""
     dt = _pydantic_to_arrow_type(field)
     return pa.field(name, dt, is_nullable(field))
@@ -309,6 +321,9 @@ class LanceModel(pydantic.BaseModel):
         schema = pydantic_to_schema(cls)
         functions = cls.parse_embedding_functions()
         if len(functions) > 0:
+            # Prevent circular import
+            from .embeddings import EmbeddingFunctionRegistry
+
             metadata = EmbeddingFunctionRegistry.get_instance().get_table_metadata(
                 functions
             )
@@ -359,7 +374,7 @@ class LanceModel(pydantic.BaseModel):
         return configs
 
 
-def get_extras(field_info: pydantic.fields.FieldInfo, key: str) -> Any:
+def get_extras(field_info: FieldInfo, key: str) -> Any:
     """
     Get the extra metadata from a Pydantic FieldInfo.
     """

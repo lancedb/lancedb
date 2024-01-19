@@ -23,9 +23,10 @@ def cli():
 
 
 diagnostics_help = """
-Enable or disable LanceDB diagnostics. When enabled, LanceDB will send anonymous events to help us improve LanceDB.
-These diagnostics are used only for error reporting and no data is collected. You can find more about diagnosis on
-our docs: https://lancedb.github.io/lancedb/cli_config/
+Enable or disable LanceDB diagnostics. When enabled, LanceDB will send anonymous events
+to help us improve LanceDB. These diagnostics are used only for error reporting and no
+data is collected. You can find more about diagnosis on our docs:
+https://lancedb.github.io/lancedb/cli_config/
 """
 
 

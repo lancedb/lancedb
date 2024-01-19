@@ -22,22 +22,29 @@ from .utils import TEXT, weak_lru
 @register("instructor")
 class InstructorEmbeddingFunction(TextEmbeddingFunction):
     """
-    An embedding function that uses the InstructorEmbedding library. Instructor models support multi-task learning, and can be used for a
-    variety of tasks, including text classification, sentence similarity, and document retrieval.
-    If you want to calculate customized embeddings for specific sentences, you may follow the unified template to write instructions:
+    An embedding function that uses the InstructorEmbedding library. Instructor models
+    support multi-task learning, and can be used for a variety of tasks, including
+    text classification, sentence similarity, and document retrieval. If you want to
+    calculate customized embeddings for specific sentences, you may follow the unified
+    template to write instructions:
         "Represent the `domain` `text_type` for `task_objective`":
 
-        * domain is optional, and it specifies the domain of the text, e.g., science, finance, medicine, etc.
-        * text_type is required, and it specifies the encoding unit, e.g., sentence, document, paragraph, etc.
-        * task_objective is optional, and it specifies the objective of embedding, e.g., retrieve a document, classify the sentence, etc.
+        * domain is optional, and it specifies the domain of the text, e.g., science,
+          finance, medicine, etc.
+        * text_type is required, and it specifies the encoding unit, e.g., sentence,
+          document, paragraph, etc.
+        * task_objective is optional, and it specifies the objective of embedding,
+          e.g., retrieve a document, classify the sentence, etc.
 
-    For example, if you want to calculate embeddings for a document, you may write the instruction as follows:
-        "Represent the document for retreival"
+    For example, if you want to calculate embeddings for a document, you may write the
+    instruction as follows:
+        "Represent the document for retrieval"
 
     Parameters
     ----------
     name: str
-        The name of the model to use. Available models are listed at https://github.com/xlang-ai/instructor-embedding#model-list;
+        The name of the model to use. Available models are listed at
+        https://github.com/xlang-ai/instructor-embedding#model-list;
         The default model is hkunlp/instructor-base
     batch_size: int, default 32
         The batch size to use when generating embeddings
@@ -49,21 +56,24 @@ class InstructorEmbeddingFunction(TextEmbeddingFunction):
         Whether to normalize the embeddings
     quantize: bool, default False
         Whether to quantize the model
-    source_instruction: str, default "represent the docuement for retreival"
+    source_instruction: str, default "represent the document for retrieval"
         The instruction for the source column
-    query_instruction: str, default "represent the document for retreiving the most similar documents"
+    query_instruction: str, default "represent the document for retrieving the most
+        similar documents"
         The instruction for the query
 
     Examples
     --------
+
     import lancedb
     from lancedb.pydantic import LanceModel, Vector
     from lancedb.embeddings import get_registry, InstuctorEmbeddingFunction
 
     instructor = get_registry().get("instructor").create(
-                                source_instruction="represent the docuement for retreival",
-                                query_instruction="represent the document for retreiving the most similar documents"
-                                )
+        source_instruction="represent the document for retrieval",
+        query_instruction="represent the document for retrieving the most "
+                          "similar documents"
+    )
 
     class Schema(LanceModel):
         vector: Vector(instructor.ndims()) = instructor.VectorField()
@@ -72,9 +82,12 @@ class InstructorEmbeddingFunction(TextEmbeddingFunction):
     db = lancedb.connect("~/.lancedb")
     tbl = db.create_table("test", schema=Schema, mode="overwrite")
 
-    texts = [{"text": "Capitalism has been dominant in the Western world since the end of feudalism, but most feel[who?] that..."},
-            {"text": "The disparate impact theory is especially controversial under the Fair Housing Act because the Act..."},
-            {"text": "Disparate impact in United States labor law refers to practices in employment, housing, and other areas that.."}]
+    texts = [{"text": "Capitalism has been dominant in the Western world since the "
+                      "end of feudalism, but most feel[who?] that..."},
+            {"text": "The disparate impact theory is especially controversial under "
+                     "the Fair Housing Act because the Act..."},
+            {"text": "Disparate impact in United States labor law refers to practices "
+                     "in employment, housing, and other areas that.."}]
 
     tbl.add(texts)
 
@@ -103,9 +116,7 @@ class InstructorEmbeddingFunction(TextEmbeddingFunction):
 
     def compute_source_embeddings(self, texts: TEXT, *args, **kwargs) -> List[np.array]:
         texts = self.sanitize_input(texts)
-        texts_formatted = []
-        for text in texts:
-            texts_formatted.append([self.source_instruction, text])
+        texts_formatted = [[self.source_instruction, text] for text in texts]
         return self.generate_embeddings(texts_formatted)
 
     def generate_embeddings(self, texts: List) -> List:

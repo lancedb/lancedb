@@ -14,7 +14,7 @@ import concurrent.futures
 import io
 import os
 import urllib.parse as urlparse
-from typing import List, Union
+from typing import TYPE_CHECKING, List, Union
 
 import numpy as np
 import pyarrow as pa
@@ -24,6 +24,10 @@ from tqdm import tqdm
 from .base import EmbeddingFunction
 from .registry import register
 from .utils import IMAGES, url_retrieve
+
+if TYPE_CHECKING:
+    import PIL
+    import torch
 
 
 @register("open-clip")
