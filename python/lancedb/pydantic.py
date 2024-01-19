@@ -37,8 +37,6 @@ import pyarrow as pa
 import pydantic
 import semver
 
-from .embeddings import EmbeddingFunctionRegistry
-
 PYDANTIC_VERSION = semver.Version.parse(pydantic.__version__)
 try:
     from pydantic_core import CoreSchema, core_schema
@@ -323,6 +321,9 @@ class LanceModel(pydantic.BaseModel):
         schema = pydantic_to_schema(cls)
         functions = cls.parse_embedding_functions()
         if len(functions) > 0:
+            # Prevent circular import
+            from .embeddings import EmbeddingFunctionRegistry
+
             metadata = EmbeddingFunctionRegistry.get_instance().get_table_metadata(
                 functions
             )
