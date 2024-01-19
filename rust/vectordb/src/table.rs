@@ -15,6 +15,7 @@
 use chrono::Duration;
 use lance::dataset::builder::DatasetBuilder;
 use lance::index::scalar::ScalarIndexParams;
+use lance_index::optimize::OptimizeOptions;
 use lance_index::IndexType;
 use std::sync::Arc;
 
@@ -25,12 +26,12 @@ use lance::dataset::optimize::{
     compact_files, CompactionMetrics, CompactionOptions, IndexRemapperOptions,
 };
 use lance::dataset::{Dataset, UpdateBuilder, WriteParams};
-use lance::index::DatasetIndexExt;
 use lance::io::object_store::WrappingObjectStore;
+use lance_index::DatasetIndexExt;
 use std::path::Path;
 
 use crate::error::{Error, Result};
-use crate::index::vector::{VectorIndex, VectorIndexBuilder};
+use crate::index::vector::{VectorIndex, VectorIndexBuilder, VectorIndexStatistics};
 use crate::query::Query;
 use crate::utils::{PatchReadParam, PatchWriteParam};
 use crate::WriteMode;
@@ -273,10 +274,9 @@ impl Table {
         Ok(())
     }
 
-    pub async fn optimize_indices(&mut self) -> Result<()> {
+    pub async fn optimize_indices(&mut self, options: &OptimizeOptions) -> Result<()> {
         let mut dataset = self.dataset.as_ref().clone();
-
-        dataset.optimize_indices().await?;
+        dataset.optimize_indices(options).await?;
 
         Ok(())
     }
@@ -426,11 +426,17 @@ impl Table {
     }
 
     pub async fn count_indexed_rows(&self, index_uuid: &str) -> Result<Option<usize>> {
-        Ok(self.dataset.count_indexed_rows(index_uuid).await?)
+        match self.load_index_stats(index_uuid).await? {
+            Some(stats) => Ok(Some(stats.num_indexed_rows)),
+            None => Ok(None),
+        }
     }
 
     pub async fn count_unindexed_rows(&self, index_uuid: &str) -> Result<Option<usize>> {
-        Ok(self.dataset.count_unindexed_rows(index_uuid).await?)
+        match self.load_index_stats(index_uuid).await? {
+            Some(stats) => Ok(Some(stats.num_unindexed_rows)),
+            None => Ok(None),
+        }
     }
 
     pub async fn load_indices(&self) -> Result<Vec<VectorIndex>> {
@@ -440,6 +446,31 @@ impl Table {
             .iter()
             .map(|i| VectorIndex::new_from_format(&mf, i))
             .collect())
+    }
+
+    async fn load_index_stats(&self, index_uuid: &str) -> Result<Option<VectorIndexStatistics>> {
+        let index = self
+            .load_indices()
+            .await?
+            .into_iter()
+            .find(|i| i.index_uuid == index_uuid);
+        if index.is_none() {
+            return Ok(None);
+        }
+        let index_stats = self
+            .dataset
+            .index_statistics(&index.unwrap().index_name)
+            .await?;
+        let index_stats: VectorIndexStatistics =
+            serde_json::from_str(&index_stats).map_err(|e| Error::Lance {
+                message: format!(
+                    "error deserializing index statistics {}: {}",
+                    e.to_string(),
+                    index_stats
+                ),
+            })?;
+
+        Ok(Some(index_stats))
     }
 }
 
@@ -963,6 +994,9 @@ mod tests {
             .unwrap();
         let mut i = IvfPQIndexBuilder::new();
 
+        assert_eq!(table.count_indexed_rows("my_index").await.unwrap(), None);
+        assert_eq!(table.count_unindexed_rows("my_index").await.unwrap(), None);
+
         let index_builder = i
             .column("embeddings".to_string())
             .index_name("my_index".to_string())
@@ -974,6 +1008,17 @@ mod tests {
         assert_eq!(table.dataset.load_indices().await.unwrap().len(), 1);
         assert_eq!(table.count_rows().await.unwrap(), 512);
         assert_eq!(table.name, "test");
+
+        let indices = table.load_indices().await.unwrap();
+        let index_uuid = &indices[0].index_uuid;
+        assert_eq!(
+            table.count_indexed_rows(index_uuid).await.unwrap(),
+            Some(512)
+        );
+        assert_eq!(
+            table.count_unindexed_rows(index_uuid).await.unwrap(),
+            Some(0)
+        );
     }
 
     fn create_fixed_size_list<T: Array>(values: T, list_size: i32) -> Result<FixedSizeListArray> {

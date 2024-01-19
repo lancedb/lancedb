@@ -23,6 +23,6 @@ half = { "version" = "=2.3.1", default-features = false, features = [
     "num-traits",
 ] }
 log = "0.4"
-object_store = "0.8.0"
+object_store = "0.9.0"
 snafu = "0.7.4"
 url = "2"
