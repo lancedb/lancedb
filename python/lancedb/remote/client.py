@@ -24,6 +24,7 @@ from pydantic import BaseModel
 from lancedb.common import Credential
 from lancedb.remote import VectorQuery, VectorQueryResult
 from lancedb.remote.errors import LanceDBClientError
+from lancedb.remote.connection_timeout import LanceDBClientHTTPAdapterFactory
 
 ARROW_STREAM_CONTENT_TYPE = "application/vnd.apache.arrow.stream"
 
@@ -55,7 +56,10 @@ class RestfulLanceDBClient:
 
     @functools.cached_property
     def session(self) -> requests.Session:
-        return requests.Session()
+        sess = requests.Session()
+        adapter_class = LanceDBClientHTTPAdapterFactory()
+        sess.mount("https://", adapter_class())
+        return sess
 
     @property
     def url(self) -> str:
