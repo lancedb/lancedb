@@ -82,7 +82,8 @@ def is_pip_package(filepath: str = __name__) -> bool:
     # Get the spec for the module
     spec = importlib.util.find_spec(filepath)
 
-    # Return whether the spec is not None and the origin is not None (indicating it is a package)
+    # Return whether the spec is not None and the origin is not None (indicating
+    # it is a package)
     return spec is not None and spec.origin is not None
 
 
@@ -108,7 +109,8 @@ def is_github_actions_ci() -> bool:
     Returns
     -------
     bool
-        True if the current environment is a GitHub Actions CI Python runner, False otherwise.
+        True if the current environment is a GitHub Actions CI Python runner,
+        False otherwise.
     """
 
     return (
@@ -145,7 +147,7 @@ def is_online() -> bool:
     for host in "1.1.1.1", "8.8.8.8", "223.5.5.5":  # Cloudflare, Google, AliDNS:
         try:
             test_connection = socket.create_connection(address=(host, 53), timeout=2)
-        except (socket.timeout, socket.gaierror, OSError):
+        except (socket.timeout, socket.gaierror, OSError):  # noqa: PERF203
             continue
         else:
             # If the connection was successful, close it to avoid a ResourceWarning
@@ -227,7 +229,8 @@ def is_docker() -> bool:
 
 
 def get_git_dir():
-    """Determine whether the current file is part of a git repository and if so, returns the repository root directory.
+    """Determine whether the current file is part of a git repository and if so,
+    returns the repository root directory.
     If the current file is not part of a git repository, returns None.
 
     Returns
@@ -336,7 +339,7 @@ def yaml_print(yaml_file: Union[str, Path, dict]) -> None:
         yaml_load(yaml_file) if isinstance(yaml_file, (str, Path)) else yaml_file
     )
     dump = yaml.dump(yaml_dict, sort_keys=False, allow_unicode=True)
-    LOGGER.info(f"Printing '{yaml_file}'\n\n{dump}")
+    LOGGER.info("Printing '%s'\n\n%s", yaml_file, dump)
 
 
 PLATFORMS = [platform.system()]
@@ -375,7 +378,7 @@ class TryExcept(contextlib.ContextDecorator):
 
     def __exit__(self, exc_type, value, traceback):
         if self.verbose and value:
-            LOGGER.info(f"{self.msg}{': ' if self.msg else ''}{value}")
+            LOGGER.info("%s%s%s", self.msg, ": " if self.msg else "", value)
         return True
 
 
@@ -383,7 +386,8 @@ def threaded_request(
     method, url, retry=3, timeout=30, thread=True, code=-1, verbose=True, **kwargs
 ):
     """
-    Makes an HTTP request using the 'requests' library, with exponential backoff retries up to a specified timeout.
+    Makes an HTTP request using the 'requests' library, with exponential backoff
+    retries up to a specified timeout.
 
     Parameters
     ----------
@@ -394,7 +398,8 @@ def threaded_request(
     retry : int, optional
         Number of retries to attempt before giving up, by default 3.
     timeout : int, optional
-        Timeout in seconds after which the function will give up retrying, by default 30.
+        Timeout in seconds after which the function will give up retrying,
+        by default 30.
     thread : bool, optional
         Whether to execute the request in a separate daemon thread, by default True.
     code : int, optional
@@ -405,13 +410,17 @@ def threaded_request(
     Returns
     -------
     requests.Response
-        The HTTP response object. If the request is executed in a separate thread, returns the thread itself.
+        The HTTP response object. If the request is executed in a separate thread,
+        returns the thread itself.
     """
-    retry_codes = ()  # retry only these codes TODO: add codes if needed in future (500, 408)
+    # retry only these codes TODO: add codes if needed in future (500, 408)
+    retry_codes = ()
 
     @TryExcept(verbose=verbose)
     def func(method, url, **kwargs):
-        """Make HTTP requests with retries and timeouts, with optional progress tracking."""
+        """Make HTTP requests with retries and timeouts, with optional progress
+        tracking.
+        """
         response = None
         t0 = time.time()
         for i in range(retry + 1):
@@ -428,9 +437,9 @@ def threaded_request(
                 if response.status_code in retry_codes:
                     m += f" Retrying {retry}x for {timeout}s." if retry else ""
                 elif response.status_code == 429:  # rate limit
-                    m = f"Rate limit reached"
+                    m = "Rate limit reached"
                 if verbose:
-                    LOGGER.warning(f"{response.status_code} #{code}")
+                    LOGGER.warning("%s #%s", response.status_code, m)
                 if response.status_code not in retry_codes:
                     return response
             time.sleep(2**i)  # exponential standoff

@@ -11,7 +11,6 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
-import asyncio
 import uuid
 from functools import cached_property
 from typing import Dict, Optional, Union
@@ -89,7 +88,8 @@ class RemoteTable(Table):
         >>> import lancedb
         >>> import uuid
         >>> from lancedb.schema import vector
-        >>> db = lancedb.connect("db://...", api_key="...", region="...") # doctest: +SKIP
+        >>> db = lancedb.connect("db://...", api_key="...", # doctest: +SKIP
+        ...                      region="...") # doctest: +SKIP
         >>> table_name = uuid.uuid4().hex
         >>> schema = pa.schema(
         ...     [
@@ -125,7 +125,8 @@ class RemoteTable(Table):
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
     ) -> int:
-        """Add more data to the [Table](Table). It has the same API signature as the OSS version.
+        """Add more data to the [Table](Table). It has the same API signature as
+        the OSS version.
 
         Parameters
         ----------
@@ -176,7 +177,8 @@ class RemoteTable(Table):
         Examples
         --------
         >>> import lancedb
-        >>> db = lancedb.connect("db://...", api_key="...", region="...") # doctest: +SKIP
+        >>> db = lancedb.connect("db://...", api_key="...", # doctest: +SKIP
+        ...                      region="...") # doctest: +SKIP
         >>> data = [
         ...    {"original_width": 100, "caption": "bar", "vector": [0.1, 2.3, 4.5]},
         ...    {"original_width": 2000, "caption": "foo",  "vector": [0.5, 3.4, 1.3]},
@@ -265,7 +267,8 @@ class RemoteTable(Table):
         ...    {"x": 2, "vector": [3, 4]},
         ...    {"x": 3, "vector": [5, 6]}
         ... ]
-        >>> db = lancedb.connect("db://...", api_key="...", region="...") # doctest: +SKIP
+        >>> db = lancedb.connect("db://...", api_key="...", # doctest: +SKIP
+        ...                      region="...") # doctest: +SKIP
         >>> table = db.create_table("my_table", data) # doctest: +SKIP
         >>> table.search([10,10]).to_pandas() # doctest: +SKIP
            x      vector  _distance # doctest: +SKIP
@@ -323,7 +326,8 @@ class RemoteTable(Table):
         ...    {"x": 2, "vector": [3, 4]},
         ...    {"x": 3, "vector": [5, 6]}
         ... ]
-        >>> db = lancedb.connect("db://...", api_key="...", region="...") # doctest: +SKIP
+        >>> db = lancedb.connect("db://...", api_key="...", # doctest: +SKIP
+        ...                      region="...") # doctest: +SKIP
         >>> table = db.create_table("my_table", data) # doctest: +SKIP
         >>> table.to_pandas() # doctest: +SKIP
            x      vector # doctest: +SKIP

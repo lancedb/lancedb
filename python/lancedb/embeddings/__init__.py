@@ -14,10 +14,10 @@
 # ruff: noqa: F401
 from .base import EmbeddingFunction, EmbeddingFunctionConfig, TextEmbeddingFunction
 from .cohere import CohereEmbeddingFunction
+from .gemini_text import GeminiText
 from .instructor import InstructorEmbeddingFunction
 from .open_clip import OpenClipEmbeddings
 from .openai import OpenAIEmbeddings
 from .registry import EmbeddingFunctionRegistry, get_registry
 from .sentence_transformers import SentenceTransformerEmbeddings
-from .gemini_text import GeminiText
 from .utils import with_embeddings

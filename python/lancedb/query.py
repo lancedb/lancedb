@@ -30,7 +30,11 @@ from .rerankers.base import Reranker
 from .rerankers.linear_combination import LinearCombinationReranker
 
 if TYPE_CHECKING:
+    import PIL
+    import polars as pl
+
     from .pydantic import LanceModel
+    from .table import Table
 
 pd = safe_import_pandas()
 
@@ -63,7 +67,7 @@ class Query(pydantic.BaseModel):
         - See discussion in [Querying an ANN Index][querying-an-ann-index] for
           tuning advice.
     refine_factor : Optional[int]
-        Refine the results by reading extra elements and re-ranking them in memory - optional
+        Refine the results by reading extra elements and re-ranking them in memory.
 
         - A higher number makes search more accurate but also slower.
 
@@ -109,7 +113,7 @@ class LanceQueryBuilder(ABC):
     @classmethod
     def create(
         cls,
-        table: "lancedb.table.Table",
+        table: "Table",
         query: Optional[Union[np.ndarray, str, "PIL.Image.Image"]],
         query_type: str,
         vector_column_name: str,
@@ -177,7 +181,8 @@ class LanceQueryBuilder(ABC):
             msg = f"No embedding function for {vector_column_name}"
             raise ValueError(msg)
 
-    def __init__(self, table: "lancedb.table.Table"):
+
+    def __init__(self, table: "Table"):
         self._table = table
         self._limit = 10
         self._columns = None
@@ -220,7 +225,6 @@ class LanceQueryBuilder(ABC):
         if flatten is True:
             while True:
                 tbl = tbl.flatten()
-                has_struct = False
                 # loop through all columns to check if there is any struct column
                 if any(pa.types.is_struct(col.type) for col in tbl.schema):
                     continue
@@ -229,7 +233,8 @@ class LanceQueryBuilder(ABC):
         elif isinstance(flatten, int):
             if flatten <= 0:
                 raise ValueError(
-                    "Please specify a positive integer for flatten or the boolean value `True`"
+                    "Please specify a positive integer for flatten or the boolean "
+                    "value `True`"
                 )
             while flatten > 0:
                 tbl = tbl.flatten()
@@ -392,7 +397,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
 
     def __init__(
         self,
-        table: "lancedb.table.Table",
+        table: "Table",
         query: Union[np.ndarray, list, "PIL.Image.Image"],
         vector_column: str = VECTOR_COLUMN_NAME,
     ):
@@ -518,7 +523,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
 class LanceFtsQueryBuilder(LanceQueryBuilder):
     """A builder for full text search for LanceDB."""
 
-    def __init__(self, table: "lancedb.table.Table", query: str):
+    def __init__(self, table: "Table", query: str):
         super().__init__(table)
         self._query = query
         self._phrase_query = False
@@ -545,7 +550,7 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
             import tantivy
         except ImportError:
             raise ImportError(
-                "Please install tantivy-py `pip install tantivy@git+https://github.com/quickwit-oss/tantivy-py#164adc87e1a033117001cf70e38c82a53014d985` to use the full text search feature."
+                "Please install tantivy-py `pip install tantivy@git+https://github.com/quickwit-oss/tantivy-py#164adc87e1a033117001cf70e38c82a53014d985` to use the full text search feature."  # noqa: E501
             )
 
         from .fts import search_index
@@ -555,8 +560,9 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         # check if the index exist
         if not Path(index_path).exists():
             raise FileNotFoundError(
-                "Fts index does not exist."
-                f"Please first call table.create_fts_index(['<field_names>']) to create the fts index."
+                "Fts index does not exist. "
+                "Please first call table.create_fts_index(['<field_names>']) to "
+                "create the fts index."
             )
         # open the index
         index = tantivy.Index.open(index_path)
@@ -575,18 +581,20 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
 
         if self._where is not None:
             try:
-                # TODO would be great to have Substrait generate pyarrow compute expressions
-                # or conversely have pyarrow support SQL expressions using Substrait
+                # TODO would be great to have Substrait generate pyarrow compute
+                # expressions or conversely have pyarrow support SQL expressions
+                # using Substrait
                 import duckdb
 
                 output_tbl = (
-                    duckdb.sql(f"SELECT * FROM output_tbl")
+                    duckdb.sql("SELECT * FROM output_tbl")
                     .filter(self._where)
                     .to_arrow_table()
                 )
             except ImportError:
-                import lance
                 import tempfile
+
+                import lance
 
                 # TODO Use "memory://" instead once that's supported
                 with tempfile.TemporaryDirectory() as tmp:

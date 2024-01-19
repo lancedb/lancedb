@@ -14,7 +14,6 @@
 from __future__ import annotations
 
 import inspect
-import os
 from abc import ABC, abstractmethod
 from functools import cached_property
 from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Union
@@ -33,17 +32,20 @@ from .pydantic import LanceModel, model_to_dict
 from .query import LanceQueryBuilder, Query
 from .util import (
     fs_from_uri,
+    join_uri,
     safe_import_pandas,
     safe_import_polars,
     value_to_sql,
-    join_uri,
 )
 from .utils.events import register_event
 
 if TYPE_CHECKING:
     from datetime import timedelta
 
+    import PIL
     from lance.dataset import CleanupStats, ReaderLike
+
+    from .db import LanceDBConnection
 
 
 pd = safe_import_pandas()
@@ -526,9 +528,7 @@ class LanceTable(Table):
     A table in a LanceDB database.
     """
 
-    def __init__(
-        self, connection: "lancedb.db.LanceDBConnection", name: str, version: int = None
-    ):
+    def __init__(self, connection: "LanceDBConnection", name: str, version: int = None):
         self._conn = connection
         self.name = name
         self._version = version
@@ -783,9 +783,7 @@ class LanceTable(Table):
         index_exists = fs.get_file_info(path).type != pa_fs.FileType.NotFound
         if index_exists:
             if not replace:
-                raise ValueError(
-                    f"Index already exists. Use replace=True to overwrite."
-                )
+                raise ValueError("Index already exists. Use replace=True to overwrite.")
             fs.delete_dir(path)
 
         index = create_index(self._get_fts_index_path(), field_names)

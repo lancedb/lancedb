@@ -11,7 +11,6 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
-import asyncio
 import inspect
 import logging
 import uuid
@@ -102,8 +101,10 @@ class RemoteDBConnection(DBConnection):
         except LanceDBClientError as err:
             if str(err).startswith("Not found"):
                 logging.error(
-                    f"Table {name} does not exist. "
-                    f"Please first call db.create_table({name}, data)"
+                    "Table %s does not exist. Please first call "
+                    "db.create_table(%s, data).",
+                    name,
+                    name,
                 )
         return RemoteTable(self, name)
 
@@ -160,7 +161,8 @@ class RemoteDBConnection(DBConnection):
         Can create with list of tuples or dictionaries:
 
         >>> import lancedb
-        >>> db = lancedb.connect("db://...", api_key="...", region="...") # doctest: +SKIP
+        >>> db = lancedb.connect("db://...", api_key="...", # doctest: +SKIP
+        ...                      region="...")              # doctest: +SKIP
         >>> data = [{"vector": [1.1, 1.2], "lat": 45.5, "long": -122.7},
         ...         {"vector": [0.2, 1.8], "lat": 40.1, "long":  -74.1}]
         >>> db.create_table("my_table", data) # doctest: +SKIP
