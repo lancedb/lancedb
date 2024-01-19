@@ -665,9 +665,11 @@ class LanceTable(Table):
         self._version: Optional[int] = version
         self._ds: Optional[LanceDataset] = version
 
-        if self._version is not None and self.consistency_interval is not None:
-            raise ValueError("Cannot specify both version and consistency_interval.")
-        self.consistency_interval = read_consistency_interval
+        if self._version is not None and self.read_consistency_interval is not None:
+            raise ValueError(
+                "Cannot specify both version and read_consistency_interval."
+            )
+        self.read_consistency_interval = read_consistency_interval
         self._last_consistency_check = None
 
     @classmethod
@@ -692,14 +694,17 @@ class LanceTable(Table):
     def _dataset(self) -> LanceDataset:
         # Returns the LanceDataset this wraps. This handles lazy loading (if
         # self._ds is None) and checking for new versions (if user has specified
-        # a consistency_interval).
+        # a read_consistency_interval).
         if not self._ds:
             self._last_consistency_check = time.monotonic()
             self._ds = lance.dataset(self._dataset_uri, version=self._version)
-        elif self._version is None and self.consistency_interval is not None:
+        elif self._version is None and self.read_consistency_interval is not None:
             now = time.monotonic()
             diff = timedelta(seconds=now - self._last_consistency_check)
-            if self._last_consistency_check is None or diff > self.consistency_interval:
+            if (
+                self._last_consistency_check is None
+                or diff > self.read_consistency_interval
+            ):
                 # TODO: use this method instead one available
                 # self._ds.checkout_version(self._ds.latest_version)
                 self._ds = lance.dataset(
@@ -707,6 +712,16 @@ class LanceTable(Table):
                 )
 
         return self._ds
+
+    @property
+    def _dataset_mut(self) -> LanceDataset:
+        # Returns the LanceDataset this wraps, but raises an error if the
+        # dataset is fixed to a specific version.
+        if self._version is not None:
+            raise ValueError(
+                f"Cannot mutate table reference fixed at version {self._version}."
+            )
+        return self._dataset
 
     def to_lance(self) -> LanceDataset:
         """Return the LanceDataset backing this table."""
@@ -774,7 +789,7 @@ class LanceTable(Table):
 
         # Since we checked out a specific version, the consistency interval
         # is no longer relevant.
-        self.consistency_interval = None
+        self.read_consistency_interval = None
         self._last_consistency_check = None
 
         try:
@@ -856,8 +871,8 @@ class LanceTable(Table):
         val = f"{self.__class__.__name__}(connection={self._conn!r}, name={self.name}"
         if self._version is not None:
             val += f", version={self._version}"
-        if self.consistency_interval is not None:
-            val += f", consistency_interval={self.consistency_interval}"
+        if self.read_consistency_interval is not None:
+            val += f", read_consistency_interval={self.read_consistency_interval}"
         val += ")"
         return val
 
@@ -920,7 +935,7 @@ class LanceTable(Table):
         index_cache_size: Optional[int] = None,
     ):
         """Create an index on the table."""
-        self._dataset.create_index(
+        self._dataset_mut.create_index(
             column=vector_column_name,
             index_type="IVF_PQ",
             metric=metric,
@@ -933,7 +948,9 @@ class LanceTable(Table):
         register_event("create_index")
 
     def create_scalar_index(self, column: str, *, replace: bool = True):
-        self._dataset.create_scalar_index(column, index_type="BTREE", replace=replace)
+        self._dataset_mut.create_scalar_index(
+            column, index_type="BTREE", replace=replace
+        )
 
     def create_fts_index(
         self,
@@ -1077,7 +1094,7 @@ class LanceTable(Table):
             other_table = other_table.to_lance()
         if isinstance(other_table, LanceDataset):
             other_table = other_table.to_table()
-        self._ds = self._dataset.merge(
+        self._ds = self._dataset_mut.merge(
             other_table, left_on=left_on, right_on=right_on, schema=schema
         )
         register_event("merge")
@@ -1283,7 +1300,7 @@ class LanceTable(Table):
         return new_table
 
     def delete(self, where: str):
-        self._dataset.delete(where)
+        self._dataset_mut.delete(where)
 
     def update(
         self,
@@ -1337,7 +1354,7 @@ class LanceTable(Table):
         if values is not None:
             values_sql = {k: value_to_sql(v) for k, v in values.items()}
 
-        self._dataset.update(values_sql, where)
+        self._dataset_mut.update(values_sql, where)
         register_event("update")
 
     def _execute_query(self, query: Query) -> pa.Table:

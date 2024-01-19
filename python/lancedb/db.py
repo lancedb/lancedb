@@ -365,9 +365,9 @@ class LanceDBConnection(DBConnection):
         name: str
             The name of the table.
 
-        consistency_interval: timedelta, default None
+        read_consistency_interval: timedelta, default None
             The interval at which to check for updates to the table from other
-            processed. If None, then consistency is not checked. For performance
+            processes. If None, then consistency is not checked. For performance
             reasons, this is the default. For strong consistency, set this to
             zero seconds. Then every read will check for updates from other
             processes. As a compromise, you can set this to a non-zero timedelta
