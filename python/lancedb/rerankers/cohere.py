@@ -11,7 +11,8 @@ import os
 
 class CohereReranker(Reranker):
     """
-    Reranks the results using cohere rerank api.
+    Reranks the results using the Cohere Rerank API.
+    https://docs.cohere.com/docs/rerank-guide
 
     Parameters
     ----------
