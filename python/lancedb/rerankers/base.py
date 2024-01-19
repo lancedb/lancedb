@@ -32,7 +32,7 @@ class Reranker(ABC):
         query_builder: "lancedb.VectorQueryBuilder", vector_results: pa.Table
     ):
         """
-        Rerank function recieves the individual results from the vector search. This isn't mandatory to implement
+        Rerank function receives the individual results from the vector search. This isn't mandatory to implement
 
         Parameters
         ----------
