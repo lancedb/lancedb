@@ -1,78 +1,15 @@
 [vectordb](README.md) / Exports
 
-# JavaScript API Reference
+# vectordb
 
-This section contains the API reference for the OSS JavaScript / Node.js API.
+## Table of contents
 
-## Installation
+### Enumerations
 
-```bash
-npm install vectordb
-```
+- [MetricType](enums/MetricType.md)
+- [WriteMode](enums/WriteMode.md)
 
-This will download the appropriate native library for your platform. We currently
-support x86_64 Linux, aarch64 Linux, Intel MacOS, and ARM (M1/M2) MacOS. We do not
-yet support Windows or musl-based Linux (such as Alpine Linux).
-
-## Usage
-
-### Basic Example
-
-```javascript
-const lancedb = require('vectordb');
-const db = await lancedb.connect('data/sample-lancedb');
-const table = await db.createTable("my_table",
-      [{ id: 1, vector: [0.1, 1.0], item: "foo", price: 10.0 },
-      { id: 2, vector: [3.9, 0.5], item: "bar", price: 20.0 }])
-const results = await table.search([0.1, 0.3]).limit(20).execute();
-console.log(results);
-```
-
-The [examples](../examples/index.md) folder contains complete examples.
-
-## Development
-
-To build everything fresh:
-
-```bash
-npm install
-npm run tsc
-npm run build
-```
-
-Then you should be able to run the tests with:
-
-```bash
-npm test
-```
-
-### Rebuilding Rust library
-
-```bash
-npm run build
-```
-
-### Rebuilding Typescript
-
-```bash
-npm run tsc
-```
-
-### Fix lints
-
-To run the linter and have it automatically fix all errors
-
-```bash
-npm run lint -- --fix
-```
-
-To build documentation
-
-```bash
-npx typedoc --plugin typedoc-plugin-markdown --out ../docs/src/javascript src/index.ts
-```
-
-## Classes
+### Classes
 
 - [DefaultWriteOptions](classes/DefaultWriteOptions.md)
 - [LocalConnection](classes/LocalConnection.md)
@@ -80,12 +17,7 @@ npx typedoc --plugin typedoc-plugin-markdown --out ../docs/src/javascript src/in
 - [OpenAIEmbeddingFunction](classes/OpenAIEmbeddingFunction.md)
 - [Query](classes/Query.md)
 
-## Enumerations
-
-- [MetricType](enums/MetricType.md)
-- [WriteMode](enums/WriteMode.md)
-
-## Interfaces
+### Interfaces
 
 - [AwsCredentials](interfaces/AwsCredentials.md)
 - [CleanupStats](interfaces/CleanupStats.md)
@@ -103,6 +35,10 @@ npx typedoc --plugin typedoc-plugin-markdown --out ../docs/src/javascript src/in
 - [VectorIndex](interfaces/VectorIndex.md)
 - [WriteOptions](interfaces/WriteOptions.md)
 
+### Type Aliases
+
+- [VectorIndexParams](modules.md#vectorindexparams)
+
 ### Functions
 
 - [connect](modules.md#connect)
@@ -116,7 +52,7 @@ npx typedoc --plugin typedoc-plugin-markdown --out ../docs/src/javascript src/in
 
 #### Defined in
 
-[index.ts:755](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L755)
+[index.ts:996](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L996)
 
 ## Functions
 
@@ -124,29 +60,41 @@ npx typedoc --plugin typedoc-plugin-markdown --out ../docs/src/javascript src/in
 
 ▸ **connect**(`uri`): `Promise`\<[`Connection`](interfaces/Connection.md)\>
 
-Connect to a LanceDB instance at the given URI
+Connect to a LanceDB instance at the given URI.
+
+Accpeted formats:
+
+- `/path/to/database` - local database
+- `s3://bucket/path/to/database` or `gs://bucket/path/to/database` - database on cloud storage
+- `db://host:port` - remote database (SaaS)
 
 #### Parameters
 
 | Name | Type | Description |
 | :------ | :------ | :------ |
-| `uri` | `string` | The uri of the database. |
+| `uri` | `string` | The uri of the database. If the database uri starts with `db://` then it connects to a remote database. |
 
 #### Returns
 
 `Promise`\<[`Connection`](interfaces/Connection.md)\>
 
+**`See`**
+
+[ConnectionOptions](interfaces/ConnectionOptions.md) for more details on the URI format.
+
 #### Defined in
 
-[index.ts:95](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L95)
+[index.ts:141](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L141)
 
 ▸ **connect**(`opts`): `Promise`\<[`Connection`](interfaces/Connection.md)\>
 
+Connect to a LanceDB instance with connection options.
+
 #### Parameters
 
-| Name | Type |
-| :------ | :------ |
-| `opts` | `Partial`\<[`ConnectionOptions`](interfaces/ConnectionOptions.md)\> |
+| Name | Type | Description |
+| :------ | :------ | :------ |
+| `opts` | `Partial`\<[`ConnectionOptions`](interfaces/ConnectionOptions.md)\> | The [ConnectionOptions](interfaces/ConnectionOptions.md) to use when connecting to the database. |
 
 #### Returns
 
@@ -154,7 +102,7 @@ Connect to a LanceDB instance at the given URI
 
 #### Defined in
 
-[index.ts:96](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L96)
+[index.ts:147](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L147)
 
 ___
 
@@ -174,4 +122,4 @@ value is WriteOptions
 
 #### Defined in
 
-[index.ts:781](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L781)
+[index.ts:1022](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L1022)

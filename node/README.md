@@ -39,7 +39,6 @@ To build everything fresh:
 
 ```bash
 npm install
-npm run tsc
 npm run build
 ```
 
@@ -47,18 +46,6 @@ Then you should be able to run the tests with:
 
 ```bash
 npm test
-```
-
-### Rebuilding Rust library
-
-```bash
-npm run build
-```
-
-### Rebuilding Typescript
-
-```bash
-npm run tsc
 ```
 
 ### Fix lints
