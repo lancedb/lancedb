@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use serde::Deserialize;
+
 use lance::format::{Index, Manifest};
 use lance::index::vector::pq::PQBuildParams;
 use lance::index::vector::VectorIndexParams;
@@ -130,6 +132,12 @@ impl VectorIndex {
             index_uuid: index.uuid.to_string(),
         }
     }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct VectorIndexStatistics {
+    pub num_indexed_rows: usize,
+    pub num_unindexed_rows: usize,
 }
 
 #[cfg(test)]
