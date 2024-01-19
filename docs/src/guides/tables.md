@@ -79,6 +79,24 @@ This guide will show how to create tables, insert data into them, and update the
     table = db.create_table("my_table", data, schema=custom_schema)
     ```
 
+    ### From a Polars DataFrame
+
+    LanceDB supports [Polars](https://pola.rs/), a modern, fast DataFrame library
+    written in Rust. Just like in Pandas, the Polars integration is enabled by PyArrow
+    under the hood. A deeper integration between LanceDB Tables and Polars DataFrames
+    is on the way.
+
+    ```python
+    import polars as pl
+
+    data = pl.DataFrame({
+        "vector": [[3.1, 4.1], [5.9, 26.5]],
+        "item": ["foo", "bar"],
+        "price": [10.0, 20.0]
+    })
+    table = db.create_table("pl_table", data=data)
+    ```
+
     ### From PyArrow Tables
     You can also create LanceDB tables directly from PyArrow tables
 
@@ -353,6 +371,15 @@ After a table has been created, you can always add more data to it using the var
 
     ```python
     df = pd.DataFrame({
+        "vector": [[1.3, 1.4], [9.5, 56.2]], "item": ["banana", "apple"], "price": [5.0, 7.0]
+    })
+    tbl.add(df)
+    ```
+
+    ### Add a Polars DataFrame
+
+    ```python
+    df = pl.DataFrame({
         "vector": [[1.3, 1.4], [9.5, 56.2]], "item": ["banana", "apple"], "price": [5.0, 7.0]
     })
     tbl.add(df)

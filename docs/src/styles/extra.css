@@ -11,11 +11,12 @@
 
 /* grid */
 .md-grid {
-    max-width: 80%;
+    max-width: 95%;
   }
   
   @media (min-width: 1220px) {
     .md-main__inner {
+      max-width: 80%;
       margin-top: 0;
     }
     .md-sidebar {
