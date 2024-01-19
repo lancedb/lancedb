@@ -13,7 +13,6 @@
 from typing import List, Union
 
 import numpy as np
-from cachetools import cached
 
 from .base import TextEmbeddingFunction
 from .registry import register
