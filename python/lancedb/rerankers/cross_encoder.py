@@ -19,27 +19,41 @@ class CrossEncoderReranker(Reranker):
     device : str, default None
         The device to use for the cross encoder model. If None, will use "cuda" if available, otherwise "cpu".
     """
-    def __init__(self, model_name:str = "cross-encoder/ms-marco-TinyBERT-L-6", column:str = "text", device: Union[str, None]=None):
+
+    def __init__(
+        self,
+        model_name: str = "cross-encoder/ms-marco-TinyBERT-L-6",
+        column: str = "text",
+        device: Union[str, None] = None,
+    ):
         torch = self.safe_import("torch")
         self.model_name = model_name
         self.column = column
         self.device = device
         if self.device is None:
             self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        
+
     @cached_property
     def model(self):
         sbert = self.safe_import("sentence_transformers")
         cross_encoder = sbert.CrossEncoder(self.model_name)
 
         return cross_encoder
-    
-    def rerank_hybrid(self, query_builder: "lancedb.HybridQueryBuilder" , vector_results: pa.Table, fts_results: pa.Table, combined_results: pa.Table):
+
+    def rerank_hybrid(
+        self,
+        query_builder: "lancedb.HybridQueryBuilder",
+        vector_results: pa.Table,
+        fts_results: pa.Table,
+    ):
+        combined_results = self.merge_results(vector_results, fts_results)
         passages = combined_results[self.column].to_pylist()
         cross_inp = [[query_builder._query, passage] for passage in passages]
         cross_scores = self.model.predict(cross_inp)
-        combined_results = combined_results.set_column( 
-            combined_results.column_names.index("_score"), "_score", pa.array(cross_scores, type=pa.float32())
+        combined_results = combined_results.set_column(
+            combined_results.column_names.index("_score"),
+            "_score",
+            pa.array(cross_scores, type=pa.float32()),
         )
         # sort the results by _score
         combined_results = combined_results.sort_by([("_score", "descending")])

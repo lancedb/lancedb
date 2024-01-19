@@ -27,6 +27,7 @@ from . import __version__
 from .common import VECTOR_COLUMN_NAME
 from .util import safe_import_pandas
 from .rerankers.base import Reranker
+from .rerankers.linear_combination import LinearCombinationReranker
 
 if TYPE_CHECKING:
     from .pydantic import LanceModel
@@ -653,18 +654,18 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         vector_results = self._normalize_scores(vector_results)
         # fts higher scores are more relevant, so invert them ie (1 - score)
         fts_results = self._normalize_scores(fts_results, invert=True)
-        # combine the scores. For missing scores, fill with 1.0 (least relevant)
-        results = self._merge_results(vector_results, fts_results, fill=1.0)
+
+        # combine the scores. For missing scores, fill with 1.0 (least relevant) -- should handled by reranker api
+        # results = self._merge_results(vector_results, fts_results, fill=1.0)
 
         # Temporary solution
         ## TODO: turn this into a Reranker class-based API for easier management of args for external code like cohere reranking api
-        if self._reranker: 
-            results = self._reranker.rerank_hybrid(self, vector_results, fts_results, results)
+        results = self._reranker.rerank_hybrid(self, vector_results, fts_results)
 
         if not self._with_row_id:
             results = results.drop(["_rowid"])
         return results
-    
+
     def _rank(self, results: pa.Table, ascending: bool = True):
         if len(results) == 0:
             return results
@@ -703,63 +704,16 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         )
         return results
 
-    def _merge_results(
-        self, vector_results: pa.Table, fts_results: pa.Table, fill: float
-    ):
-        # If both are empty then just return an empty table
-        if len(vector_results) == 0 and len(fts_results) == 0:
-            return vector_results
-        # If one is empty then return the other
-        if len(vector_results) == 0:
-            return fts_results
-        if len(fts_results) == 0:
-            return vector_results
-
-        # sort both input tables on _rowid
-        combined_list = []
-        vector_list = vector_results.sort_by("_rowid").to_pylist()
-        fts_list = fts_results.sort_by("_rowid").to_pylist()
-        i, j = 0, 0
-        while i < len(vector_list):
-            if j >= len(fts_list):
-                for vi in vector_list[i:]:
-                    vi["_score"] = self._combine_score(vi["_rowid"], fill)
-                    combined_list.append(vi)
-                break
-
-            vi = vector_list[i]
-            fj = fts_list[j]
-            if vi["_rowid"] == fj["_rowid"]:
-                vi["_score"] = self._combine_score(vi["_rowid"], fj["_rowid"])
-                combined_list.append(vi)
-                i += 1
-                j += 1
-            elif vector_list[i]["_rowid"] < fts_list[j]["_rowid"]:
-                vi["_score"] = self._combine_score(vi["_rowid"], fill)
-                combined_list.append(vi)
-                i += 1
-            else:
-                fj["_score"] = self._combine_score(fj["_rowid"], fill)
-                combined_list.append(fj)
-                j += 1
-        if j < len(fts_list) - 1:
-            for fj in fts_list[j:]:
-                fj["_score"] = self._combine_score(fj["_rowid"], fill)
-                combined_list.append(fj)
-        return pa.Table.from_pylist(combined_list, schema=vector_results.schema)
-
-    def _combine_score(self, score1, score2):
-        return self._weight * score1 + (1 - self._weight) * score2
-
-    def rerank(self, weight=0.7, normalize="score", reranker:Union[str, callable] = None) -> LanceHybridQueryBuilder:
-        if weight < 0 or weight > 1:
-            raise ValueError("weight must be between 0 and 1.")
+    def rerank(
+        self,
+        normalize="score",
+        reranker: Reranker = LinearCombinationReranker(weight=0.7, fill=1.0),
+    ) -> LanceHybridQueryBuilder:
         if normalize not in ["auto", "rank", "score"]:
             raise ValueError("normalize must be 'auto', 'rank' or 'score'.")
         if reranker and not isinstance(reranker, Reranker):
             raise ValueError("reranker must be an instance of Reranker class.")
-        
-        self._weight = weight
+
         self._norm = normalize
         self._reranker = reranker
 
