@@ -2,7 +2,7 @@
 
 LanceDB supports [Polars](https://github.com/pola-rs/polars), a blazingly fast DataFrame library for Python written in Rust. Just like in Pandas, the Polars integration is enabled by PyArrow under the hood. A deeper integration between Lance Tables and Polars DataFrames is in progress, but at the moment, you can read a Polars DataFrame into LanceDB and output the search results from a query to a Polars DataFrame.
 
-## Query LanceDB Table
+## Create & Query LanceDB Table
 
 ### From Polars DataFrame
 
@@ -118,7 +118,7 @@ Unlike the search result from a query, we can see that the type of the result is
 <class 'polars.lazyframe.frame.LazyFrame'>
 ```
 
-We can now work with the LazyFrame as we would in Polars.
+We can now work with the LazyFrame as we would in Polars, and collect the first result.
 
 ```python
 print(ldf.first().collect())
@@ -137,6 +137,6 @@ shape: (1, 3)
 
 The reason it's beneficial to not convert the LanceDB Table
 to a DataFrame is because the table can potentially be way larger
-than memory, and Polars LazyFrames allows us to work with such
-larger-than-memory datasets via lazy evaluation.
+than memory, and Polars LazyFrames allow us to work with such
+larger-than-memory datasets by not loading it into memory all at once.
 
