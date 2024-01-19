@@ -71,11 +71,11 @@ class Reranker(ABC):
         ## !!!! TODO: This op is inefficient. couldn't make pa.concat_tables to work. Also need to look into pa.compute.unique
         vector_list = vector_results.to_pylist()
         fts_list = fts_results.to_pylist()
-        combined_df = vector_list + fts_list
+        combined_list = vector_list + fts_list
 
         unique_row_ids = set()
         unique_rows = []
-        for row in combined_df:
+        for row in combined_list:
             row_id = row["_rowid"]
             if row_id not in unique_row_ids:
                 unique_row_ids.add(row_id)
