@@ -45,7 +45,7 @@ class Reranker(ABC):
 
     def rerank_fts(query_builder: "lancedb.FTSQueryBuilder", fts_results: pa.Table):
         """
-        Rerank function recieves the individual results from the FTS search. This isn't mandatory to implement
+        Rerank function receives the individual results from the FTS search. This isn't mandatory to implement
 
         Parameters
         ----------
