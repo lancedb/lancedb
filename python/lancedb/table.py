@@ -43,8 +43,6 @@ from .util import (
 from .utils.events import register_event
 
 if TYPE_CHECKING:
-    from datetime import timedelta
-
     import PIL
     from lance.dataset import CleanupStats, ReaderLike
 
@@ -659,7 +657,7 @@ class LanceTable(Table):
         name: str,
         version: Optional[int] = None,
         /,
-        consistency_interval: Optional[timedelta] = None,
+        read_consistency_interval: Optional[timedelta] = None,
     ):
         self._conn = connection
         self.name = name
@@ -669,17 +667,8 @@ class LanceTable(Table):
 
         if self._version is not None and self.consistency_interval is not None:
             raise ValueError("Cannot specify both version and consistency_interval.")
-        self.consistency_interval = consistency_interval
+        self.consistency_interval = read_consistency_interval
         self._last_consistency_check = None
-
-    def __repr__(self) -> str:
-        val = f"{self.__class__.__name__}(connection={self._conn!r}, name={self.name}"
-        if self._version is not None:
-            val += f", version={self._version}"
-        if self.consistency_interval is not None:
-            val += f", consistency_interval={self.consistency_interval}"
-        val += ")"
-        return val
 
     @classmethod
     def open(cls, db, name, **kwargs):
@@ -701,26 +690,21 @@ class LanceTable(Table):
 
     @property
     def _dataset(self) -> LanceDataset:
+        # Returns the LanceDataset this wraps. This handles lazy loading (if
+        # self._ds is None) and checking for new versions (if user has specified
+        # a consistency_interval).
         if not self._ds:
-            print("Loading for first time!")
             self._last_consistency_check = time.monotonic()
             self._ds = lance.dataset(self._dataset_uri, version=self._version)
         elif self._version is None and self.consistency_interval is not None:
             now = time.monotonic()
             diff = timedelta(seconds=now - self._last_consistency_check)
             if self._last_consistency_check is None or diff > self.consistency_interval:
-                print("Checking out latest version")
-
                 # TODO: use this method instead one available
                 # self._ds.checkout_version(self._ds.latest_version)
                 self._ds = lance.dataset(
                     self._dataset_uri, version=self._ds.latest_version
                 )
-            else:
-                print(diff)
-                print("Not checking out latest version")
-        else:
-            print("no consistency check")
 
         return self._ds
 
@@ -846,11 +830,13 @@ class LanceTable(Table):
         else:
             self.checkout(version)
 
+        self._version = None
+
         if version == max_ver:
             # no-op if restoring the latest version
             return
 
-        self._dataset.restore()
+        self._ds.restore()
 
     def count_rows(self, filter: Optional[str] = None) -> int:
         """
@@ -867,7 +853,13 @@ class LanceTable(Table):
         return self.count_rows()
 
     def __repr__(self) -> str:
-        return f"LanceTable({self.name})"
+        val = f"{self.__class__.__name__}(connection={self._conn!r}, name={self.name}"
+        if self._version is not None:
+            val += f", version={self._version}"
+        if self.consistency_interval is not None:
+            val += f", consistency_interval={self.consistency_interval}"
+        val += ")"
+        return val
 
     def __str__(self) -> str:
         return self.__repr__()

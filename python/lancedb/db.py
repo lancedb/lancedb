@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import os
 from abc import abstractmethod
-from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterable, List, Optional, Union
 
@@ -27,6 +26,8 @@ from .table import LanceTable, Table
 from .util import fs_from_uri, get_uri_location, get_uri_scheme, join_uri
 
 if TYPE_CHECKING:
+    from datetime import timedelta
+
     from .common import DATA, URI
     from .embeddings import EmbeddingFunctionConfig
     from .pydantic import LanceModel
@@ -355,7 +356,7 @@ class LanceDBConnection(DBConnection):
 
     @override
     def open_table(
-        self, name: str, *, consistency_interval: Optional[timedelta] = None
+        self, name: str, *, read_consistency_interval: Optional[timedelta] = None
     ) -> LanceTable:
         """Open a table in the database.
 
@@ -379,7 +380,9 @@ class LanceDBConnection(DBConnection):
         -------
         A LanceTable object representing the table.
         """
-        return LanceTable.open(self, name, consistency_interval=consistency_interval)
+        return LanceTable.open(
+            self, name, read_consistency_interval=read_consistency_interval
+        )
 
     @override
     def drop_table(self, name: str, ignore_missing: bool = False):

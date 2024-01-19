@@ -803,10 +803,10 @@ def test_consistency(tmp_path):
     # their lazy loading of the dataset
     table_clone = db.open_table("my_table")
     assert table_clone.version == table.version
-    table_consistent = db.open_table("my_table", consistency_interval=timedelta(0))
+    table_consistent = db.open_table("my_table", read_consistency_interval=timedelta(0))
     assert table_consistent.version == table.version
     table_eventual = db.open_table(
-        "my_table", consistency_interval=timedelta(seconds=0.1)
+        "my_table", read_consistency_interval=timedelta(seconds=0.1)
     )
     assert table_eventual.version == table.version
 
