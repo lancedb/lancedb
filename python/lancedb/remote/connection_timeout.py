@@ -38,7 +38,7 @@ class LanceDBHTTPSConnection(HTTPSConnection):
     HTTPSConnection that tracks the last time it was used.
     """
 
-    idle_timeout: datetime.timedelta | None = None
+    idle_timeout: datetime.timedelta
     last_activity: datetime.datetime
 
     def __init__(self, *args, **kwargs):
