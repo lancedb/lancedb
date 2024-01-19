@@ -13,12 +13,12 @@
 
 
 import functools
-from typing import Any, Callable, Dict, Iterable, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Union
 from urllib.parse import urljoin
 
-import requests
 import attrs
 import pyarrow as pa
+import requests
 from pydantic import BaseModel
 
 from lancedb.common import Credential

@@ -130,7 +130,8 @@ def test_ingest_iterator(tmp_path):
                     PydanticSchema(vector=[3.1, 4.1], item="foo", price=10.0),
                     PydanticSchema(vector=[5.9, 26.5], item="bar", price=20.0),
                 ],
-                # TODO: test pydict separately. it is unique column number and names contraint
+                # TODO: test pydict separately. it is unique column number and
+                # name constraints
             ]
 
     def run_tests(schema):

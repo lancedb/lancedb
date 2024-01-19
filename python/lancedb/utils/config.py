@@ -44,8 +44,9 @@ def get_user_config_dir(sub_dir="lancedb"):
     # GCP and AWS lambda fix, only /tmp is writeable
     if not is_dir_writeable(path.parent):
         LOGGER.warning(
-            f"WARNING ⚠️ user config directory '{path}' is not writeable, defaulting to '/tmp' or CWD."
-            "Alternatively you can define a LANCEDB_CONFIG_DIR environment variable for this path."
+            f"WARNING ⚠️ user config directory '{path}' is not writeable, defaulting "
+            "to '/tmp' or CWD. Alternatively you can define a LANCEDB_CONFIG_DIR "
+            "environment variable for this path."
         )
         path = (
             Path("/tmp") / sub_dir
@@ -68,7 +69,8 @@ class Config(dict):
     Manages lancedb config stored in a YAML file.
 
     Args:
-        file (str | Path): Path to the lancedb config YAML file. Default is USER_CONFIG_DIR / 'config.yaml'.
+        file (str | Path): Path to the lancedb config YAML file. Default is
+        USER_CONFIG_DIR / 'config.yaml'.
     """
 
     def __init__(self, file=CONFIG_FILE):
@@ -90,8 +92,8 @@ class Config(dict):
         )
         if not (correct_keys and correct_types):
             LOGGER.warning(
-                "WARNING ⚠️ LanceDB settings reset to default values. This may be due to a possible problem "
-                "with your settings or a recent package update. "
+                "WARNING ⚠️ LanceDB settings reset to default values. This may be due "
+                "to a possible problem with your settings or a recent package update. "
                 f"\nView settings & usage with 'lancedb settings' or at '{self.file}'"
             )
             self.reset()
