@@ -96,7 +96,7 @@ class LanceDBClientPoolManager(PoolManager):
 
 def LanceDBClientHTTPAdapterFactory():
     """
-    Creates an HTTPAdapter class that can be used to close ide connections 
+    Creates an HTTPAdapter class that can be used to close idle connections
     """
 
     # closure over the timeout
