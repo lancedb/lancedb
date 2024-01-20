@@ -32,6 +32,7 @@ from .pydantic import LanceModel, model_to_dict
 from .query import LanceQueryBuilder, Query
 from .util import (
     fs_from_uri,
+    join_uri,
     safe_import,
     value_to_sql,
 )

@@ -1,11 +1,12 @@
-from .base import Reranker
 import pyarrow as pa
+
+from .base import Reranker
 
 
 class LinearCombinationReranker(Reranker):
     """
-    Reranks the results using a linear combination of the scores from the vector and FTS search.
-    For missing scores, fill with `fill` value.
+    Reranks the results using a linear combination of the scores from the
+    vector and FTS search. For missing scores, fill with `fill` value.
     Parameters
     ----------
     weight : float, default 0.5

@@ -1,9 +1,10 @@
-import importlib
-from typing import Any
-import lancedb
+import typing
 from abc import ABC, abstractmethod
+
 import pyarrow as pa
-from ..utils.general import LOGGER
+
+if typing.TYPE_CHECKING:
+    import lancedb
 
 
 class Reranker(ABC):
@@ -14,8 +15,9 @@ class Reranker(ABC):
         fts_results: pa.Table,
     ):
         """
-        Rerank function receives the individual results from the vector and FTS search results.
-        You can choose to use any of the results to generate the final results, allowing maximum flexibility. This is mandatory to implement
+        Rerank function receives the individual results from the vector and FTS search
+        results. You can choose to use any of the results to generate the final results,
+        allowing maximum flexibility. This is mandatory to implement
 
         Parameters
         ----------
@@ -32,7 +34,8 @@ class Reranker(ABC):
         query_builder: "lancedb.VectorQueryBuilder", vector_results: pa.Table
     ):
         """
-        Rerank function receives the individual results from the vector search. This isn't mandatory to implement
+        Rerank function receives the individual results from the vector search.
+        This isn't mandatory to implement
 
         Parameters
         ----------
@@ -45,7 +48,8 @@ class Reranker(ABC):
 
     def rerank_fts(query_builder: "lancedb.FTSQueryBuilder", fts_results: pa.Table):
         """
-        Rerank function receives the individual results from the FTS search. This isn't mandatory to implement
+        Rerank function receives the individual results from the FTS search.
+        This isn't mandatory to implement
 
         Parameters
         ----------
@@ -58,8 +62,8 @@ class Reranker(ABC):
 
     def merge_results(self, vector_results: pa.Table, fts_results: pa.Table):
         """
-        Merge the results from the vector and FTS search. This is a vanilla merging function that just concatenates the results and removes
-        the duplicates.
+        Merge the results from the vector and FTS search. This is a vanilla merging
+        function that just concatenates the results and removes the duplicates.
 
         Parameters
         ----------
@@ -68,7 +72,8 @@ class Reranker(ABC):
         fts_results : pa.Table
             The results from the FTS search
         """
-        ## !!!! TODO: This op is inefficient. couldn't make pa.concat_tables to work. Also need to look into pa.compute.unique
+        ## !!!! TODO: This op is inefficient. couldn't make pa.concat_tables to work.
+        # Also need to look into pa.compute.unique
         vector_list = vector_results.to_pylist()
         fts_list = fts_results.to_pylist()
         combined_list = vector_list + fts_list

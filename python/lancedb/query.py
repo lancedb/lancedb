@@ -14,8 +14,8 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import TYPE_CHECKING, List, Literal, Optional, Type, Union
 
 import deprecation
@@ -25,9 +25,9 @@ import pydantic
 
 from . import __version__
 from .common import VECTOR_COLUMN_NAME
-from .util import safe_import
 from .rerankers.base import Reranker
 from .rerankers.linear_combination import LinearCombinationReranker
+from .util import safe_import
 
 if TYPE_CHECKING:
     import PIL
@@ -180,7 +180,6 @@ class LanceQueryBuilder(ABC):
         else:
             msg = f"No embedding function for {vector_column_name}"
             raise ValueError(msg)
-
 
     def __init__(self, table: "Table"):
         self._table = table
@@ -618,7 +617,7 @@ class LanceEmptyQueryBuilder(LanceQueryBuilder):
 
 
 class LanceHybridQueryBuilder(LanceQueryBuilder):
-    def __init__(self, table: "lancedb.table.Table", query: str, vector_column: str):
+    def __init__(self, table: "Table", query: str, vector_column: str):
         super().__init__(table)
         self.validate()
         self._query = query

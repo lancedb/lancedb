@@ -1,24 +1,31 @@
-from typing import Union
+import typing
 from functools import cached_property
-from .base import Reranker
-from ..utils.general import safe_import
-import lancedb
+from typing import Union
+
 import pyarrow as pa
+
+from ..utils.general import safe_import
+from .base import Reranker
+
+if typing.TYPE_CHECKING:
+    import lancedb
 
 
 class CrossEncoderReranker(Reranker):
     """
-    Reranks the results using a cross encoder model. The cross encoder model is used to score the query and each result.
-    The results are then sorted by the score.
+    Reranks the results using a cross encoder model. The cross encoder model is
+    used to score the query and each result. The results are then sorted by the score.
 
     Parameters
     ----------
     model : str, default "cross-encoder/ms-marco-TinyBERT-L-6"
-        The name of the cross encoder model to use. See the sentence transformers documentation for a list of available models.
+        The name of the cross encoder model to use. See the sentence transformers
+        documentation for a list of available models.
     column : str, default "text"
         The name of the column to use as input to the cross encoder model.
     device : str, default None
-        The device to use for the cross encoder model. If None, will use "cuda" if available, otherwise "cpu".
+        The device to use for the cross encoder model. If None, will use "cuda"
+        if available, otherwise "cpu".
     """
 
     def __init__(

@@ -1,12 +1,16 @@
-from typing import Union
-from functools import cached_property
-from .base import Reranker
-from ..embeddings.utils import api_key_not_found_help
-from ..utils.general import safe_import
-import numpy as np
-import lancedb
-import pyarrow as pa
 import os
+import typing
+from functools import cached_property
+from typing import Union
+
+import numpy as np
+import pyarrow as pa
+
+from ..utils.general import safe_import
+from .base import Reranker
+
+if typing.TYPE_CHECKING:
+    import lancedb
 
 
 class CohereReranker(Reranker):
