@@ -13,7 +13,6 @@
 
 
 import json
-import pytz
 import sys
 from datetime import date, datetime
 from typing import List, Optional, Tuple
@@ -49,18 +48,19 @@ def test_pydantic_to_arrow():
         dt_with_tz: datetime = Field(json_schema_extra={"tz": "Asia/Shanghai"})
         # d: dict
 
-    m = TestModel(
-        id=1,
-        s="hello",
-        vec=[1.0, 2.0, 3.0],
-        li=[2, 3, 4],
-        lili=[[2.5, 1.5], [3.5, 4.5], [5.5, 6.5]],
-        litu=[(2.5, 1.5), (3.5, 4.5), (5.5, 6.5)],
-        st=StructModel(a="a", b=1.0),
-        dt=date.today(),
-        dtt=datetime.now(),
-        dt_with_tz=datetime.now(pytz.timezone("Asia/Shanghai")),
-    )
+    # TODO: test we can actually convert the model into data.
+    # m = TestModel(
+    #     id=1,
+    #     s="hello",
+    #     vec=[1.0, 2.0, 3.0],
+    #     li=[2, 3, 4],
+    #     lili=[[2.5, 1.5], [3.5, 4.5], [5.5, 6.5]],
+    #     litu=[(2.5, 1.5), (3.5, 4.5), (5.5, 6.5)],
+    #     st=StructModel(a="a", b=1.0),
+    #     dt=date.today(),
+    #     dtt=datetime.now(),
+    #     dt_with_tz=datetime.now(pytz.timezone("Asia/Shanghai")),
+    # )
 
     schema = pydantic_to_schema(TestModel)
 
@@ -133,18 +133,19 @@ def test_pydantic_to_arrow_py38():
         dt_with_tz: datetime = Field(json_schema_extra={"tz": "Asia/Shanghai"})
         # d: dict
 
-    m = TestModel(
-        id=1,
-        s="hello",
-        vec=[1.0, 2.0, 3.0],
-        li=[2, 3, 4],
-        lili=[[2.5, 1.5], [3.5, 4.5], [5.5, 6.5]],
-        litu=[(2.5, 1.5), (3.5, 4.5), (5.5, 6.5)],
-        st=StructModel(a="a", b=1.0),
-        dt=date.today(),
-        dtt=datetime.now(),
-        dt_with_tz=datetime.now(pytz.timezone("Asia/Shanghai")),
-    )
+    # TODO: test we can actually convert the model to Arrow data.
+    # m = TestModel(
+    #     id=1,
+    #     s="hello",
+    #     vec=[1.0, 2.0, 3.0],
+    #     li=[2, 3, 4],
+    #     lili=[[2.5, 1.5], [3.5, 4.5], [5.5, 6.5]],
+    #     litu=[(2.5, 1.5), (3.5, 4.5), (5.5, 6.5)],
+    #     st=StructModel(a="a", b=1.0),
+    #     dt=date.today(),
+    #     dtt=datetime.now(),
+    #     dt_with_tz=datetime.now(pytz.timezone("Asia/Shanghai")),
+    # )
 
     schema = pydantic_to_schema(TestModel)
 

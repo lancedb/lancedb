@@ -15,7 +15,6 @@ import os
 import importlib
 from datetime import date, datetime
 from functools import singledispatch
-import pathlib
 from typing import Tuple, Union
 from urllib.parse import urlparse
 

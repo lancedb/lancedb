@@ -18,7 +18,7 @@ import pyarrow as pa
 import pytest
 
 import lancedb
-from lancedb.conftest import MockRateLimitedEmbeddingFunction, MockTextEmbeddingFunction
+from lancedb.conftest import MockTextEmbeddingFunction
 from lancedb.embeddings import (
     EmbeddingFunctionConfig,
     EmbeddingFunctionRegistry,

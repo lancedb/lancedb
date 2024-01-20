@@ -15,11 +15,11 @@ def test_diagnostics():
     runner = CliRunner()
     result = runner.invoke(cli, ["diagnostics", "--disabled"])
     assert result.exit_code == 0  # Main check
-    assert CONFIG["diagnostics"] == False
+    assert not CONFIG["diagnostics"]
 
     result = runner.invoke(cli, ["diagnostics", "--enabled"])
     assert result.exit_code == 0  # Main check
-    assert CONFIG["diagnostics"] == True
+    assert CONFIG["diagnostics"]
 
 
 def test_config():
@@ -28,8 +28,5 @@ def test_config():
     assert result.exit_code == 0  # Main check
     cfg = CONFIG.copy()
     cfg.pop("uuid")
-    for (
-        item,
-        _,
-    ) in cfg.items():  # check for keys only as formatting is subject to change
+    for item in cfg:  # check for keys only as formatting is subject to change
         assert item in result.output
