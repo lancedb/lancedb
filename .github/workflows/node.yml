@@ -72,7 +72,6 @@ jobs:
     - name: Build
       run: |
         npm ci
-        npm run tsc
         npm run build
         npm run pack-build
         npm install --no-save ./dist/lancedb-vectordb-*.tgz
@@ -103,7 +102,6 @@ jobs:
     - name: Build
       run: |
         npm ci
-        npm run tsc
         npm run build
         npm run pack-build
         npm install --no-save ./dist/lancedb-vectordb-*.tgz
@@ -157,7 +155,6 @@ jobs:
     - name: Build
       run: |
         npm ci
-        npm run tsc
         npm run build
         npm run pack-build
         npm install --no-save ./dist/lancedb-vectordb-*.tgz

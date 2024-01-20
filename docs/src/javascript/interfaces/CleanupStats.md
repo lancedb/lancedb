@@ -19,7 +19,7 @@ The number of bytes removed from disk.
 
 #### Defined in
 
-[index.ts:637](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L637)
+[index.ts:878](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L878)
 
 ___
 
@@ -31,4 +31,4 @@ The number of old table versions removed.
 
 #### Defined in
 
-[index.ts:641](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L641)
+[index.ts:882](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L882)

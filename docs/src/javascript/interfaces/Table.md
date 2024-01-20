@@ -21,11 +21,13 @@ A LanceDB Table is the collection of Records. Each Record has one or more vector
 - [add](Table.md#add)
 - [countRows](Table.md#countrows)
 - [createIndex](Table.md#createindex)
+- [createScalarIndex](Table.md#createscalarindex)
 - [delete](Table.md#delete)
 - [indexStats](Table.md#indexstats)
 - [listIndices](Table.md#listindices)
 - [name](Table.md#name)
 - [overwrite](Table.md#overwrite)
+- [schema](Table.md#schema)
 - [search](Table.md#search)
 - [update](Table.md#update)
 
@@ -55,7 +57,7 @@ The number of rows added to the table
 
 #### Defined in
 
-[index.ts:209](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L209)
+[index.ts:291](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L291)
 
 ___
 
@@ -75,7 +77,7 @@ Returns the number of rows in this table.
 
 #### Defined in
 
-[index.ts:229](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L229)
+[index.ts:361](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L361)
 
 ___
 
@@ -105,7 +107,42 @@ VectorIndexParams.
 
 #### Defined in
 
-[index.ts:224](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L224)
+[index.ts:306](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L306)
+
+___
+
+### createScalarIndex
+
+• **createScalarIndex**: (`column`: `string`, `replace`: `boolean`) => `Promise`\<`void`\>
+
+#### Type declaration
+
+▸ (`column`, `replace`): `Promise`\<`void`\>
+
+Create a scalar index on this Table for the given column
+
+##### Parameters
+
+| Name | Type | Description |
+| :------ | :------ | :------ |
+| `column` | `string` | The column to index |
+| `replace` | `boolean` | If false, fail if an index already exists on the column Scalar indices, like vector indices, can be used to speed up scans. A scalar index can speed up scans that contain filter expressions on the indexed column. For example, the following scan will be faster if the column `my_col` has a scalar index: ```ts const con = await lancedb.connect('./.lancedb'); const table = await con.openTable('images'); const results = await table.where('my_col = 7').execute(); ``` Scalar indices can also speed up scans containing a vector search and a prefilter: ```ts const con = await lancedb.connect('././lancedb'); const table = await con.openTable('images'); const results = await table.search([1.0, 2.0]).where('my_col != 7').prefilter(true); ``` Scalar indices can only speed up scans for basic filters using equality, comparison, range (e.g. `my_col BETWEEN 0 AND 100`), and set membership (e.g. `my_col IN (0, 1, 2)`) Scalar indices can be used if the filter contains multiple indexed columns and the filter criteria are AND'd or OR'd together (e.g. `my_col < 0 AND other_col> 100`) Scalar indices may be used if the filter contains non-indexed columns but, depending on the structure of the filter, they may not be usable. For example, if the column `not_indexed` does not have a scalar index then the filter `my_col = 0 OR not_indexed = 1` will not be able to use any scalar index on `my_col`. |
+
+##### Returns
+
+`Promise`\<`void`\>
+
+**`Examples`**
+
+```ts
+const con = await lancedb.connect('././lancedb')
+const table = await con.openTable('images')
+await table.createScalarIndex('my_col')
+```
+
+#### Defined in
+
+[index.ts:356](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L356)
 
 ___
 
@@ -157,7 +194,7 @@ await tbl.countRows() // Returns 1
 
 #### Defined in
 
-[index.ts:263](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L263)
+[index.ts:395](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L395)
 
 ___
 
@@ -183,7 +220,7 @@ Get statistics about an index.
 
 #### Defined in
 
-[index.ts:306](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L306)
+[index.ts:438](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L438)
 
 ___
 
@@ -203,7 +240,7 @@ List the indicies on this table.
 
 #### Defined in
 
-[index.ts:301](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L301)
+[index.ts:433](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L433)
 
 ___
 
@@ -213,7 +250,7 @@ ___
 
 #### Defined in
 
-[index.ts:195](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L195)
+[index.ts:277](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L277)
 
 ___
 
@@ -241,7 +278,17 @@ The number of rows added to the table
 
 #### Defined in
 
-[index.ts:217](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L217)
+[index.ts:299](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L299)
+
+___
+
+### schema
+
+• **schema**: `Promise`\<`Schema`\<`any`\>\>
+
+#### Defined in
+
+[index.ts:440](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L440)
 
 ___
 
@@ -267,7 +314,7 @@ Creates a search query to find the nearest neighbors of the given search term
 
 #### Defined in
 
-[index.ts:201](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L201)
+[index.ts:283](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L283)
 
 ___
 
@@ -305,8 +352,8 @@ const data = [
 const tbl = await con.createTable("my_table", data)
 
 await tbl.update({
-  filter: "id = 2",
-  updates: { vector: [2, 2], name: "Michael" },
+  where: "id = 2",
+  values: { vector: [2, 2], name: "Michael" },
 })
 
 let results = await tbl.search([1, 1]).execute();
@@ -318,4 +365,4 @@ let results = await tbl.search([1, 1]).execute();
 
 #### Defined in
 
-[index.ts:296](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L296)
+[index.ts:428](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L428)
