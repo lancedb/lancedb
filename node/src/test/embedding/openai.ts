@@ -19,33 +19,31 @@ import { OpenAIEmbeddingFunction } from '../../embedding/openai'
 import { isEmbeddingFunction } from '../../embedding/embedding_function'
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { OpenAIApi } = require('openai')
+const OpenAIApi = require('openai')
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { stub } = require('sinon')
 
 describe('OpenAPIEmbeddings', function () {
   const stubValue = {
-    data: {
-      data: [
-        {
-          embedding: Array(1536).fill(1.0)
-        },
-        {
-          embedding: Array(1536).fill(2.0)
-        }
-      ]
-    }
+    data: [
+      {
+        embedding: Array(1536).fill(1.0)
+      },
+      {
+        embedding: Array(1536).fill(2.0)
+      }
+    ]
   }
 
   describe('#embed', function () {
     it('should create vector embeddings', async function () {
-      const openAIStub = stub(OpenAIApi.prototype, 'createEmbedding').returns(stubValue)
+      const openAIStub = stub(OpenAIApi.Embeddings.prototype, 'create').returns(stubValue)
       const f = new OpenAIEmbeddingFunction('text', 'sk-key')
       const vectors = await f.embed(['abc', 'def'])
       assert.isTrue(openAIStub.calledOnce)
       assert.equal(vectors.length, 2)
-      assert.deepEqual(vectors[0], stubValue.data.data[0].embedding)
-      assert.deepEqual(vectors[1], stubValue.data.data[1].embedding)
+      assert.deepEqual(vectors[0], stubValue.data[0].embedding)
+      assert.deepEqual(vectors[1], stubValue.data[1].embedding)
     })
   })
 
