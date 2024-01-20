@@ -20,13 +20,13 @@
 # https://github.com/urllib3/urllib3/pull/3275
 
 import datetime
-import os
 import logging
+import os
 
 from requests.adapters import HTTPAdapter
-from urllib3.poolmanager import PoolManager
-from urllib3.connectionpool import HTTPSConnectionPool
 from urllib3.connection import HTTPSConnection
+from urllib3.connectionpool import HTTPSConnectionPool
+from urllib3.poolmanager import PoolManager
 
 
 def get_client_connection_timeout() -> int:

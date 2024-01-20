@@ -1339,8 +1339,8 @@ def _sanitize_vector_column(
         data.column_names.index(vector_column_name), vector_column_name, vec_arr
     )
 
-    # Use numpy to check for NaNs, because as pyarrow 14.0.2 does not have `is_nan` kernel
-    # over f16 types.
+    # Use numpy to check for NaNs, because as pyarrow 14.0.2 does not have `is_nan`
+    # kernel over f16 types.
     values_np = vec_arr.values.to_numpy(zero_copy_only=False)
     if np.isnan(values_np).any():
         data = _sanitize_nans(
