@@ -58,12 +58,13 @@ class CrossEncoderReranker(Reranker):
         passages = combined_results[self.column].to_pylist()
         cross_inp = [[query_builder._query, passage] for passage in passages]
         cross_scores = self.model.predict(cross_inp)
+        # inver scores - Relevance <> distance
+        cross_scores = 1 - cross_scores
         combined_results = combined_results.set_column(
             combined_results.column_names.index("_score"),
             "_score",
             pa.array(cross_scores, type=pa.float32()),
         )
         # sort the results by _score
-        combined_results = combined_results.sort_by([("_score", "descending")])
-
+        combined_results = combined_results.sort_by("_score")
         return combined_results

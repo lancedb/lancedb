@@ -3,6 +3,7 @@ import typing
 from functools import cached_property
 from typing import Union
 
+import numpy as np
 import pyarrow as pa
 
 from ..util import safe_import
@@ -46,8 +47,6 @@ class CohereReranker(Reranker):
             self.api_key_not_found_help("cohere")
         return cohere.Client(os.environ["COHERE_API_KEY"])
 
-    import numpy as np
-
     def rerank_hybrid(
         self,
         query_builder: "lancedb.HybridQueryBuilder",
@@ -65,12 +64,13 @@ class CohereReranker(Reranker):
         indices, scores = list(
             zip(*[(result.index, result.relevance_score) for result in results])
         )  # tuples
+        # invert the scores
+        scores = 1 - np.array(scores)
         combined_results = combined_results.take(list(indices))
         # add the scores
         combined_results = combined_results.set_column(
             combined_results.column_names.index("_score"),
             "_score",
-            pa.array(list(scores), type=pa.float32()),
+            pa.array(scores, type=pa.float32()),
         )
-
         return combined_results

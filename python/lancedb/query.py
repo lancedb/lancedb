@@ -626,6 +626,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         self._vector_query = LanceVectorQueryBuilder(table, query, vector_column)
         self._norm = "rank"
         self._reranker = LinearCombinationReranker(weight=0.7, fill=1.0)
+        self._enforce_score = None
 
     def validate(self):
         if self._table._get_fts_index_path() is None:
@@ -665,6 +666,21 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             raise TypeError(
                 f"rerank_hybrid must return a pyarrow.Table, got {type(results)}"
             )
+
+        if self._enforce_score == "relevance":
+            if not np.all(np.diff(results.column("_score").to_numpy()) <= 0):
+                raise ValueError(
+                    "The _score column of the results returned by the reranker "
+                    "represents the relevance of the result to the query & should "
+                    "be descending."
+                )
+        elif self._enforce_score == "distance":
+            if not np.all(np.diff(results.column("_score").to_numpy()) >= 0):
+                raise ValueError(
+                    "The _score column of the results returned by the reranker "
+                    "represents the distance of the result to the query & should "
+                    "be ascending."
+                )
 
         if not self._with_row_id:
             results = results.drop(["_rowid"])
@@ -712,6 +728,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         self,
         normalize="score",
         reranker: Reranker = LinearCombinationReranker(weight=0.7, fill=1.0),
+        enforce_score: Union[str, None] = None,
     ) -> LanceHybridQueryBuilder:
         """
         Rerank the hybrid search results using the specified reranker. The reranker
@@ -725,6 +742,16 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             scores are normalized directly.
         reranker: Reranker, default LinearCombinationReranker(weight=0.7, fill=1.0)
             The reranker to use. Must be an instance of Reranker class.
+        enforce_score: str, default None
+            Can be "relevance", "distance" or None.
+            - If "relevance", then the
+                _score column of the results returned by the reranker represents
+                the relevance of the result to the query & should be descending
+                or an error is raised.
+            - If "distance", then the _score column of the results returned by
+                the reranker represents the distance of the result to the query &
+                should be ascending or an error is raised.
+            - If None, then the _score column of the results is not checked/enforeced
 
         Returns
         -------
@@ -736,9 +763,12 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             raise ValueError("normalize must be 'auto', 'rank' or 'score'.")
         if reranker and not isinstance(reranker, Reranker):
             raise ValueError("reranker must be an instance of Reranker class.")
+        if enforce_score and enforce_score not in ["relevance", "distance", None]:
+            raise ValueError("enforce_score must be 'relevance', 'distance'")
 
         self._norm = normalize
         self._reranker = reranker
+        self._enforce_score = enforce_score
 
         return self
 
