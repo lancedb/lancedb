@@ -31,7 +31,7 @@ Connection could be local against filesystem or remote against a server.
 
 #### Defined in
 
-[index.ts:125](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L125)
+[index.ts:183](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L183)
 
 ## Methods
 
@@ -59,7 +59,7 @@ Creates a new Table, optionally initializing it with new data.
 
 #### Defined in
 
-[index.ts:146](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L146)
+[index.ts:207](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L207)
 
 ▸ **createTable**(`name`, `data`): `Promise`\<[`Table`](Table.md)\<`number`[]\>\>
 
@@ -78,7 +78,7 @@ Creates a new Table and initialize it with new data.
 
 #### Defined in
 
-[index.ts:154](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L154)
+[index.ts:221](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L221)
 
 ▸ **createTable**(`name`, `data`, `options`): `Promise`\<[`Table`](Table.md)\<`number`[]\>\>
 
@@ -98,7 +98,7 @@ Creates a new Table and initialize it with new data.
 
 #### Defined in
 
-[index.ts:163](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L163)
+[index.ts:233](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L233)
 
 ▸ **createTable**\<`T`\>(`name`, `data`, `embeddings`): `Promise`\<[`Table`](Table.md)\<`T`\>\>
 
@@ -124,7 +124,7 @@ Creates a new Table and initialize it with new data.
 
 #### Defined in
 
-[index.ts:172](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L172)
+[index.ts:246](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L246)
 
 ▸ **createTable**\<`T`\>(`name`, `data`, `embeddings`, `options`): `Promise`\<[`Table`](Table.md)\<`T`\>\>
 
@@ -151,7 +151,7 @@ Creates a new Table and initialize it with new data.
 
 #### Defined in
 
-[index.ts:181](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L181)
+[index.ts:259](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L259)
 
 ___
 
@@ -173,7 +173,7 @@ Drop an existing table.
 
 #### Defined in
 
-[index.ts:187](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L187)
+[index.ts:270](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L270)
 
 ___
 
@@ -202,7 +202,7 @@ Open a table in the database.
 
 #### Defined in
 
-[index.ts:135](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L135)
+[index.ts:193](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L193)
 
 ___
 
@@ -216,4 +216,4 @@ ___
 
 #### Defined in
 
-[index.ts:127](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L127)
+[index.ts:185](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L185)
