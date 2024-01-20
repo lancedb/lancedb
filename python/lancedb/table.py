@@ -1335,6 +1335,7 @@ def _sanitize_vector_column(
     elif not pa.types.is_fixed_size_list(vec_arr.type):
         raise TypeError(f"Unsupported vector column type: {vec_arr.type}")
 
+    vec_arr = ensure_fixed_size_list(vec_arr)
     data = data.set_column(
         data.column_names.index(vector_column_name), vector_column_name, vec_arr
     )
@@ -1348,6 +1349,18 @@ def _sanitize_vector_column(
         )
 
     return data
+
+
+def ensure_fixed_size_list(vec_arr) -> pa.FixedSizeListArray:
+    values = vec_arr.values
+    if not (pa.types.is_float16(values.type) or pa.types.is_float32(values.type)):
+        values = values.cast(pa.float32())
+    if pa.types.is_fixed_size_list(vec_arr.type):
+        list_size = vec_arr.type.list_size
+    else:
+        list_size = len(values) / len(vec_arr)
+    vec_arr = pa.FixedSizeListArray.from_arrays(values, list_size)
+    return vec_arr
 
 
 def _sanitize_jagged(data, fill_value, on_bad_vectors, vec_arr, vector_column_name):
