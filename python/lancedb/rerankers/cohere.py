@@ -6,7 +6,7 @@ from typing import Union
 import numpy as np
 import pyarrow as pa
 
-from ..utils.general import safe_import
+from ..util import safe_import
 from .base import Reranker
 
 if typing.TYPE_CHECKING:
