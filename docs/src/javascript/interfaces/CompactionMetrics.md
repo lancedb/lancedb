@@ -22,7 +22,7 @@ fragments added.
 
 #### Defined in
 
-[index.ts:692](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L692)
+[index.ts:933](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L933)
 
 ___
 
@@ -35,7 +35,7 @@ file.
 
 #### Defined in
 
-[index.ts:687](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L687)
+[index.ts:928](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L928)
 
 ___
 
@@ -47,7 +47,7 @@ The number of new fragments that were created.
 
 #### Defined in
 
-[index.ts:682](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L682)
+[index.ts:923](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L923)
 
 ___
 
@@ -59,4 +59,4 @@ The number of fragments that were removed.
 
 #### Defined in
 
-[index.ts:678](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L678)
+[index.ts:919](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L919)

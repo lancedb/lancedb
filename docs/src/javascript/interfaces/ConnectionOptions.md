@@ -21,7 +21,7 @@
 
 #### Defined in
 
-[index.ts:49](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L49)
+[index.ts:81](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L81)
 
 ___
 
@@ -29,9 +29,13 @@ ___
 
 • `Optional` **awsCredentials**: [`AwsCredentials`](AwsCredentials.md)
 
+User provided AWS crednetials.
+
+If not provided, LanceDB will use the default credentials provider chain.
+
 #### Defined in
 
-[index.ts:44](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L44)
+[index.ts:75](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L75)
 
 ___
 
@@ -39,9 +43,11 @@ ___
 
 • `Optional` **awsRegion**: `string`
 
+AWS region to connect to. Default is defaultAwsRegion.
+
 #### Defined in
 
-[index.ts:46](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L46)
+[index.ts:78](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L78)
 
 ___
 
@@ -49,9 +55,13 @@ ___
 
 • `Optional` **hostOverride**: `string`
 
+Override the host URL for the remote connections.
+
+This is useful for local testing.
+
 #### Defined in
 
-[index.ts:54](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L54)
+[index.ts:91](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L91)
 
 ___
 
@@ -59,9 +69,11 @@ ___
 
 • `Optional` **region**: `string`
 
+Region to connect
+
 #### Defined in
 
-[index.ts:51](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L51)
+[index.ts:84](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L84)
 
 ___
 
@@ -69,6 +81,12 @@ ___
 
 • **uri**: `string`
 
+LanceDB database URI.
+
+- `/path/to/database` - local database
+- `s3://bucket/path/to/database` or `gs://bucket/path/to/database` - database on cloud storage
+- `db://host:port` - remote database (SaaS)
+
 #### Defined in
 
-[index.ts:42](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L42)
+[index.ts:69](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L69)

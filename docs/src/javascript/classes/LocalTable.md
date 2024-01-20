@@ -23,6 +23,7 @@ A LanceDB Table is the collection of Records. Each Record has one or more vector
 ### Properties
 
 - [\_embeddings](LocalTable.md#_embeddings)
+- [\_isElectron](LocalTable.md#_iselectron)
 - [\_name](LocalTable.md#_name)
 - [\_options](LocalTable.md#_options)
 - [\_tbl](LocalTable.md#_tbl)
@@ -31,16 +32,20 @@ A LanceDB Table is the collection of Records. Each Record has one or more vector
 ### Accessors
 
 - [name](LocalTable.md#name)
+- [schema](LocalTable.md#schema)
 
 ### Methods
 
 - [add](LocalTable.md#add)
+- [checkElectron](LocalTable.md#checkelectron)
 - [cleanupOldVersions](LocalTable.md#cleanupoldversions)
 - [compactFiles](LocalTable.md#compactfiles)
 - [countRows](LocalTable.md#countrows)
 - [createIndex](LocalTable.md#createindex)
+- [createScalarIndex](LocalTable.md#createscalarindex)
 - [delete](LocalTable.md#delete)
 - [filter](LocalTable.md#filter)
+- [getSchema](LocalTable.md#getschema)
 - [indexStats](LocalTable.md#indexstats)
 - [listIndices](LocalTable.md#listindices)
 - [overwrite](LocalTable.md#overwrite)
@@ -69,7 +74,7 @@ A LanceDB Table is the collection of Records. Each Record has one or more vector
 
 #### Defined in
 
-[index.ts:464](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L464)
+[index.ts:642](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L642)
 
 • **new LocalTable**\<`T`\>(`tbl`, `name`, `options`, `embeddings`)
 
@@ -90,7 +95,7 @@ A LanceDB Table is the collection of Records. Each Record has one or more vector
 
 #### Defined in
 
-[index.ts:471](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L471)
+[index.ts:649](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L649)
 
 ## Properties
 
@@ -100,7 +105,17 @@ A LanceDB Table is the collection of Records. Each Record has one or more vector
 
 #### Defined in
 
-[index.ts:461](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L461)
+[index.ts:639](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L639)
+
+___
+
+### \_isElectron
+
+• `Private` `Readonly` **\_isElectron**: `boolean`
+
+#### Defined in
+
+[index.ts:638](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L638)
 
 ___
 
@@ -110,7 +125,7 @@ ___
 
 #### Defined in
 
-[index.ts:460](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L460)
+[index.ts:637](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L637)
 
 ___
 
@@ -128,7 +143,7 @@ ___
 
 #### Defined in
 
-[index.ts:462](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L462)
+[index.ts:640](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L640)
 
 ___
 
@@ -138,7 +153,7 @@ ___
 
 #### Defined in
 
-[index.ts:459](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L459)
+[index.ts:636](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L636)
 
 ___
 
@@ -164,7 +179,7 @@ Creates a filter query to find all rows matching the specified criteria
 
 #### Defined in
 
-[index.ts:499](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L499)
+[index.ts:688](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L688)
 
 ## Accessors
 
@@ -182,7 +197,25 @@ Creates a filter query to find all rows matching the specified criteria
 
 #### Defined in
 
-[index.ts:479](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L479)
+[index.ts:668](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L668)
+
+___
+
+### schema
+
+• `get` **schema**(): `Promise`\<`Schema`\<`any`\>\>
+
+#### Returns
+
+`Promise`\<`Schema`\<`any`\>\>
+
+#### Implementation of
+
+[Table](../interfaces/Table.md).[schema](../interfaces/Table.md#schema)
+
+#### Defined in
+
+[index.ts:849](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L849)
 
 ## Methods
 
@@ -210,7 +243,21 @@ The number of rows added to the table
 
 #### Defined in
 
-[index.ts:507](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L507)
+[index.ts:696](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L696)
+
+___
+
+### checkElectron
+
+▸ `Private` **checkElectron**(): `boolean`
+
+#### Returns
+
+`boolean`
+
+#### Defined in
+
+[index.ts:861](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L861)
 
 ___
 
@@ -233,7 +280,7 @@ Clean up old versions of the table, freeing disk space.
 
 #### Defined in
 
-[index.ts:596](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L596)
+[index.ts:808](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L808)
 
 ___
 
@@ -260,7 +307,7 @@ Metrics about the compaction operation.
 
 #### Defined in
 
-[index.ts:615](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L615)
+[index.ts:831](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L831)
 
 ___
 
@@ -280,7 +327,7 @@ Returns the number of rows in this table.
 
 #### Defined in
 
-[index.ts:543](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L543)
+[index.ts:749](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L749)
 
 ___
 
@@ -310,7 +357,42 @@ VectorIndexParams.
 
 #### Defined in
 
-[index.ts:536](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L536)
+[index.ts:734](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L734)
+
+___
+
+### createScalarIndex
+
+▸ **createScalarIndex**(`column`, `replace`): `Promise`\<`void`\>
+
+Create a scalar index on this Table for the given column
+
+#### Parameters
+
+| Name | Type | Description |
+| :------ | :------ | :------ |
+| `column` | `string` | The column to index |
+| `replace` | `boolean` | If false, fail if an index already exists on the column Scalar indices, like vector indices, can be used to speed up scans. A scalar index can speed up scans that contain filter expressions on the indexed column. For example, the following scan will be faster if the column `my_col` has a scalar index: ```ts const con = await lancedb.connect('./.lancedb'); const table = await con.openTable('images'); const results = await table.where('my_col = 7').execute(); ``` Scalar indices can also speed up scans containing a vector search and a prefilter: ```ts const con = await lancedb.connect('././lancedb'); const table = await con.openTable('images'); const results = await table.search([1.0, 2.0]).where('my_col != 7').prefilter(true); ``` Scalar indices can only speed up scans for basic filters using equality, comparison, range (e.g. `my_col BETWEEN 0 AND 100`), and set membership (e.g. `my_col IN (0, 1, 2)`) Scalar indices can be used if the filter contains multiple indexed columns and the filter criteria are AND'd or OR'd together (e.g. `my_col < 0 AND other_col> 100`) Scalar indices may be used if the filter contains non-indexed columns but, depending on the structure of the filter, they may not be usable. For example, if the column `not_indexed` does not have a scalar index then the filter `my_col = 0 OR not_indexed = 1` will not be able to use any scalar index on `my_col`. |
+
+#### Returns
+
+`Promise`\<`void`\>
+
+**`Examples`**
+
+```ts
+const con = await lancedb.connect('././lancedb')
+const table = await con.openTable('images')
+await table.createScalarIndex('my_col')
+```
+
+#### Implementation of
+
+[Table](../interfaces/Table.md).[createScalarIndex](../interfaces/Table.md#createscalarindex)
+
+#### Defined in
+
+[index.ts:742](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L742)
 
 ___
 
@@ -336,7 +418,7 @@ Delete rows from this table.
 
 #### Defined in
 
-[index.ts:552](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L552)
+[index.ts:758](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L758)
 
 ___
 
@@ -358,7 +440,21 @@ Creates a filter query to find all rows matching the specified criteria
 
 #### Defined in
 
-[index.ts:495](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L495)
+[index.ts:684](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L684)
+
+___
+
+### getSchema
+
+▸ `Private` **getSchema**(): `Promise`\<`Schema`\<`any`\>\>
+
+#### Returns
+
+`Promise`\<`Schema`\<`any`\>\>
+
+#### Defined in
+
+[index.ts:854](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L854)
 
 ___
 
@@ -384,7 +480,7 @@ Get statistics about an index.
 
 #### Defined in
 
-[index.ts:628](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L628)
+[index.ts:845](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L845)
 
 ___
 
@@ -404,7 +500,7 @@ List the indicies on this table.
 
 #### Defined in
 
-[index.ts:624](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L624)
+[index.ts:841](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L841)
 
 ___
 
@@ -432,7 +528,7 @@ The number of rows added to the table
 
 #### Defined in
 
-[index.ts:522](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L522)
+[index.ts:716](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L716)
 
 ___
 
@@ -458,7 +554,7 @@ Creates a search query to find the nearest neighbors of the given search term
 
 #### Defined in
 
-[index.ts:487](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L487)
+[index.ts:676](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L676)
 
 ___
 
@@ -484,4 +580,4 @@ Update rows in this table.
 
 #### Defined in
 
-[index.ts:563](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L563)
+[index.ts:771](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L771)
