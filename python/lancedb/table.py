@@ -33,8 +33,7 @@ from .pydantic import LanceModel, model_to_dict
 from .query import LanceQueryBuilder, Query
 from .util import (
     fs_from_uri,
-    safe_import_pandas,
-    safe_import_polars,
+    safe_import,
     value_to_sql,
     join_uri,
 )
@@ -46,8 +45,8 @@ if TYPE_CHECKING:
     from lance.dataset import CleanupStats, ReaderLike
 
 
-pd = safe_import_pandas()
-pl = safe_import_polars()
+pd = safe_import("pandas")
+pl = safe_import("polars")
 
 
 def _sanitize_data(

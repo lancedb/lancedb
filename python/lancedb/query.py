@@ -25,14 +25,14 @@ import pydantic
 
 from . import __version__
 from .common import VECTOR_COLUMN_NAME
-from .util import safe_import_pandas
+from .util import safe_import
 from .rerankers.base import Reranker
 from .rerankers.linear_combination import LinearCombinationReranker
 
 if TYPE_CHECKING:
     from .pydantic import LanceModel
 
-pd = safe_import_pandas()
+pd = safe_import("pandas")
 
 
 class Query(pydantic.BaseModel):
