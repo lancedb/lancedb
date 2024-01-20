@@ -3,7 +3,6 @@ import typing
 from functools import cached_property
 from typing import Union
 
-import numpy as np
 import pyarrow as pa
 
 from ..util import safe_import
@@ -62,18 +61,16 @@ class CohereReranker(Reranker):
             documents=docs,
             top_n=self.top_n,
             model=self.model_name,
-        )
-        results = [(result.index, result.relevance_score) for result in results]
-        # sort by score
-        scores = np.array([result[1] for result in results])
-        sorted_indices = np.argsort(scores)[::-1]
-        # sort the results by the sorted indices
-        combined_results = combined_results.take(sorted_indices)
+        )  # returns list (text, idx, score) attributes sorted descending by score
+        indices, scores = list(
+            zip(*[(result.index, result.relevance_score) for result in results])
+        )  # tuples
+        combined_results = combined_results.take(list(indices))
         # add the scores
         combined_results = combined_results.set_column(
             combined_results.column_names.index("_score"),
             "_score",
-            pa.array(scores[sorted_indices], type=pa.float32()),
+            pa.array(list(scores), type=pa.float32()),
         )
 
         return combined_results
