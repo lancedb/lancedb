@@ -12,24 +12,43 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+import { type Schema, Table as ArrowTable, tableFromIPC } from 'apache-arrow'
 import {
-  type Schema,
-  Table as ArrowTable,
-  tableFromIPC
-} from 'apache-arrow'
-import { createEmptyTable, fromRecordsToBuffer, fromTableToBuffer } from './arrow'
+  createEmptyTable,
+  fromRecordsToBuffer,
+  fromTableToBuffer
+} from './arrow'
 import type { EmbeddingFunction } from './embedding/embedding_function'
 import { RemoteConnection } from './remote'
 import { Query } from './query'
 import { isEmbeddingFunction } from './embedding/embedding_function'
 import { type Literal, toSQL } from './util'
 
+const {
+  databaseNew,
+  databaseTableNames,
+  databaseOpenTable,
+  databaseDropTable,
+  tableCreate,
+  tableAdd,
+  tableCreateScalarIndex,
+  tableCreateVectorIndex,
+  tableCountRows,
+  tableDelete,
+  tableUpdate,
+  tableCleanupOldVersions,
+  tableCompactFiles,
+  tableListIndices,
+  tableIndexStats,
+  tableSchema
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { databaseNew, databaseTableNames, databaseOpenTable, databaseDropTable, tableCreate, tableAdd, tableCreateScalarIndex, tableCreateVectorIndex, tableCountRows, tableDelete, tableUpdate, tableCleanupOldVersions, tableCompactFiles, tableListIndices, tableIndexStats, tableSchema } = require('../native.js')
+} = require('../native.js')
 
 export { Query }
 export type { EmbeddingFunction }
 export { OpenAIEmbeddingFunction } from './embedding/openai'
+
+const defaultAwsRegion = 'us-west-2'
 
 export interface AwsCredentials {
   accessKeyId: string
@@ -40,32 +59,47 @@ export interface AwsCredentials {
 }
 
 export interface ConnectionOptions {
+  /**
+   * LanceDB database URI.
+   *
+   * - `/path/to/database` - local database
+   * - `s3://bucket/path/to/database` or `gs://bucket/path/to/database` - database on cloud storage
+   * - `db://host:port` - remote database (LanceDB cloud)
+   */
   uri: string
 
+  /** User provided AWS crednetials.
+   *
+   * If not provided, LanceDB will use the default credentials provider chain.
+   */
   awsCredentials?: AwsCredentials
 
+  /** AWS region to connect to. Default is {@link defaultAwsRegion}. */
   awsRegion?: string
 
   // API key for the remote connections
   apiKey?: string
-  // Region to connect
+
+  /** Region to connect */
   region?: string
 
-  // override the host for the remote connections
+  /**
+   * Override the host URL for the remote connection.
+   *
+   * This is useful for local testing.
+   */
   hostOverride?: string
 }
 
 function getAwsArgs (opts: ConnectionOptions): any[] {
-  const callArgs = []
+  const callArgs: any[] = []
   const awsCredentials = opts.awsCredentials
   if (awsCredentials !== undefined) {
     callArgs.push(awsCredentials.accessKeyId)
     callArgs.push(awsCredentials.secretKey)
     callArgs.push(awsCredentials.sessionToken)
   } else {
-    callArgs.push(undefined)
-    callArgs.push(undefined)
-    callArgs.push(undefined)
+    callArgs.fill(undefined, 0, 3)
   }
 
   callArgs.push(opts.awsRegion)
@@ -90,23 +124,44 @@ export interface CreateTableOptions<T> {
 }
 
 /**
- * Connect to a LanceDB instance at the given URI
- * @param uri The uri of the database.
+ * Connect to a LanceDB instance at the given URI.
+ *
+ * Accpeted formats:
+ *
+ * - `/path/to/database` - local database
+ * - `s3://bucket/path/to/database` or `gs://bucket/path/to/database` - database on cloud storage
+ * - `db://host:port` - remote database (LanceDB cloud)
+ *
+ * @param uri The uri of the database. If the database uri starts with `db://` then it connects to a remote database.
+ *
+ * @see {@link ConnectionOptions} for more details on the URI format.
  */
 export async function connect (uri: string): Promise<Connection>
-export async function connect (opts: Partial<ConnectionOptions>): Promise<Connection>
-export async function connect (arg: string | Partial<ConnectionOptions>): Promise<Connection> {
+/**
+ * Connect to a LanceDB instance with connection options.
+ *
+ * @param opts The {@link ConnectionOptions} to use when connecting to the database.
+ */
+export async function connect (
+  opts: Partial<ConnectionOptions>
+): Promise<Connection>
+export async function connect (
+  arg: string | Partial<ConnectionOptions>
+): Promise<Connection> {
   let opts: ConnectionOptions
   if (typeof arg === 'string') {
     opts = { uri: arg }
   } else {
     // opts = { uri: arg.uri, awsCredentials = arg.awsCredentials }
-    opts = Object.assign({
-      uri: '',
-      awsCredentials: undefined,
-      apiKey: undefined,
-      region: 'us-west-2'
-    }, arg)
+    opts = Object.assign(
+      {
+        uri: '',
+        awsCredentials: undefined,
+        apiKey: undefined,
+        region: defaultAwsRegion
+      },
+      arg
+    )
   }
 
   if (opts.uri.startsWith('db://')) {
@@ -133,7 +188,10 @@ export interface Connection {
    * @param name The name of the table.
    * @param embeddings An embedding function to use on this table
    */
-  openTable<T>(name: string, embeddings?: EmbeddingFunction<T>): Promise<Table<T>>
+  openTable<T>(
+    name: string,
+    embeddings?: EmbeddingFunction<T>
+  ): Promise<Table<T>>
 
   /**
    * Creates a new Table, optionally initializing it with new data.
@@ -144,7 +202,13 @@ export interface Connection {
    * @param {EmbeddingFunction} embeddings - An embedding function to use on this table
    * @param {WriteOptions} writeOptions - The write options to use when creating the table.
    */
-  createTable<T> ({ name, data, schema, embeddingFunction, writeOptions }: CreateTableOptions<T>): Promise<Table<T>>
+  createTable<T>({
+    name,
+    data,
+    schema,
+    embeddingFunction,
+    writeOptions
+  }: CreateTableOptions<T>): Promise<Table<T>>
 
   /**
    * Creates a new Table and initialize it with new data.
@@ -152,7 +216,10 @@ export interface Connection {
    * @param {string} name - The name of the table.
    * @param data - Non-empty Array of Records to be inserted into the table
    */
-  createTable (name: string, data: Array<Record<string, unknown>>): Promise<Table>
+  createTable(
+    name: string,
+    data: Array<Record<string, unknown>>
+  ): Promise<Table>
 
   /**
    * Creates a new Table and initialize it with new data.
@@ -161,7 +228,11 @@ export interface Connection {
    * @param data - Non-empty Array of Records to be inserted into the table
    * @param {WriteOptions} options - The write options to use when creating the table.
    */
-  createTable (name: string, data: Array<Record<string, unknown>>, options: WriteOptions): Promise<Table>
+  createTable(
+    name: string,
+    data: Array<Record<string, unknown>>,
+    options: WriteOptions
+  ): Promise<Table>
 
   /**
    * Creates a new Table and initialize it with new data.
@@ -170,7 +241,11 @@ export interface Connection {
    * @param data - Non-empty Array of Records to be inserted into the table
    * @param {EmbeddingFunction} embeddings - An embedding function to use on this table
    */
-  createTable<T> (name: string, data: Array<Record<string, unknown>>, embeddings: EmbeddingFunction<T>): Promise<Table<T>>
+  createTable<T>(
+    name: string,
+    data: Array<Record<string, unknown>>,
+    embeddings: EmbeddingFunction<T>
+  ): Promise<Table<T>>
   /**
    * Creates a new Table and initialize it with new data.
    *
@@ -179,14 +254,18 @@ export interface Connection {
    * @param {EmbeddingFunction} embeddings - An embedding function to use on this table
    * @param {WriteOptions} options - The write options to use when creating the table.
    */
-  createTable<T> (name: string, data: Array<Record<string, unknown>>, embeddings: EmbeddingFunction<T>, options: WriteOptions): Promise<Table<T>>
+  createTable<T>(
+    name: string,
+    data: Array<Record<string, unknown>>,
+    embeddings: EmbeddingFunction<T>,
+    options: WriteOptions
+  ): Promise<Table<T>>
 
   /**
    * Drop an existing table.
    * @param name The name of the table to drop.
    */
   dropTable(name: string): Promise<void>
-
 }
 
 /**
@@ -434,10 +513,23 @@ export class LocalConnection implements Connection {
    * @param name The name of the table.
    * @param embeddings An embedding function to use on this Table
    */
-  async openTable<T> (name: string, embeddings: EmbeddingFunction<T>): Promise<Table<T>>
-  async openTable<T> (name: string, embeddings?: EmbeddingFunction<T>): Promise<Table<T>>
-  async openTable<T> (name: string, embeddings?: EmbeddingFunction<T>): Promise<Table<T>> {
-    const tbl = await databaseOpenTable.call(this._db, name, ...getAwsArgs(this._options()))
+  async openTable<T>(
+    name: string,
+    embeddings: EmbeddingFunction<T>
+  ): Promise<Table<T>>
+  async openTable<T>(
+    name: string,
+    embeddings?: EmbeddingFunction<T>
+  ): Promise<Table<T>>
+  async openTable<T>(
+    name: string,
+    embeddings?: EmbeddingFunction<T>
+  ): Promise<Table<T>> {
+    const tbl = await databaseOpenTable.call(
+      this._db,
+      name,
+      ...getAwsArgs(this._options())
+    )
     if (embeddings !== undefined) {
       return new LocalTable(tbl, name, this._options(), embeddings)
     } else {
@@ -445,25 +537,47 @@ export class LocalConnection implements Connection {
     }
   }
 
-  async createTable<T> (name: string | CreateTableOptions<T>, data?: Array<Record<string, unknown>>, optsOrEmbedding?: WriteOptions | EmbeddingFunction<T>, opt?: WriteOptions): Promise<Table<T>> {
+  async createTable<T>(
+    name: string | CreateTableOptions<T>,
+    data?: Array<Record<string, unknown>>,
+    optsOrEmbedding?: WriteOptions | EmbeddingFunction<T>,
+    opt?: WriteOptions
+  ): Promise<Table<T>> {
     if (typeof name === 'string') {
       let writeOptions: WriteOptions = new DefaultWriteOptions()
       if (opt !== undefined && isWriteOptions(opt)) {
         writeOptions = opt
-      } else if (optsOrEmbedding !== undefined && isWriteOptions(optsOrEmbedding)) {
+      } else if (
+        optsOrEmbedding !== undefined &&
+        isWriteOptions(optsOrEmbedding)
+      ) {
         writeOptions = optsOrEmbedding
       }
 
       let embeddings: undefined | EmbeddingFunction<T>
-      if (optsOrEmbedding !== undefined && isEmbeddingFunction(optsOrEmbedding)) {
+      if (
+        optsOrEmbedding !== undefined &&
+        isEmbeddingFunction(optsOrEmbedding)
+      ) {
         embeddings = optsOrEmbedding
       }
-      return await this.createTableImpl({ name, data, embeddingFunction: embeddings, writeOptions })
+      return await this.createTableImpl({
+        name,
+        data,
+        embeddingFunction: embeddings,
+        writeOptions
+      })
     }
     return await this.createTableImpl(name)
   }
 
-  private async createTableImpl<T> ({ name, data, schema, embeddingFunction, writeOptions = new DefaultWriteOptions() }: {
+  private async createTableImpl<T>({
+    name,
+    data,
+    schema,
+    embeddingFunction,
+    writeOptions = new DefaultWriteOptions()
+  }: {
     name: string
     data?: Array<Record<string, unknown>> | ArrowTable | undefined
     schema?: Schema | undefined
@@ -472,14 +586,16 @@ export class LocalConnection implements Connection {
   }): Promise<Table<T>> {
     let buffer: Buffer
 
-    function isEmpty (data: Array<Record<string, unknown>> | ArrowTable<any>): boolean {
+    function isEmpty (
+      data: Array<Record<string, unknown>> | ArrowTable<any>
+    ): boolean {
       if (data instanceof ArrowTable) {
         return data.data.length === 0
       }
       return data.length === 0
     }
 
-    if ((data === undefined) || isEmpty(data)) {
+    if (data === undefined || isEmpty(data)) {
       if (schema === undefined) {
         throw new Error('Either data or schema needs to defined')
       }
@@ -491,7 +607,13 @@ export class LocalConnection implements Connection {
       buffer = await fromRecordsToBuffer(data, embeddingFunction, schema)
     }
 
-    const tbl = await tableCreate.call(this._db, name, buffer, writeOptions?.writeMode?.toString(), ...getAwsArgs(this._options()))
+    const tbl = await tableCreate.call(
+      this._db,
+      name,
+      buffer,
+      writeOptions?.writeMode?.toString(),
+      ...getAwsArgs(this._options())
+    )
     if (embeddingFunction !== undefined) {
       return new LocalTable(tbl, name, this._options(), embeddingFunction)
     } else {
@@ -522,8 +644,18 @@ export class LocalTable<T = number[]> implements Table<T> {
    * @param options
    * @param embeddings An embedding function to use when interacting with this table
    */
-  constructor (tbl: any, name: string, options: ConnectionOptions, embeddings: EmbeddingFunction<T>)
-  constructor (tbl: any, name: string, options: ConnectionOptions, embeddings?: EmbeddingFunction<T>) {
+  constructor (
+    tbl: any,
+    name: string,
+    options: ConnectionOptions,
+    embeddings: EmbeddingFunction<T>
+  )
+  constructor (
+    tbl: any,
+    name: string,
+    options: ConnectionOptions,
+    embeddings?: EmbeddingFunction<T>
+  ) {
     this._tbl = tbl
     this._name = name
     this._embeddings = embeddings
@@ -561,12 +693,16 @@ export class LocalTable<T = number[]> implements Table<T> {
    */
   async add (data: Array<Record<string, unknown>>): Promise<number> {
     const schema = await this.schema
-    return tableAdd.call(
-      this._tbl,
-      await fromRecordsToBuffer(data, this._embeddings, schema),
-      WriteMode.Append.toString(),
-      ...getAwsArgs(this._options())
-    ).then((newTable: any) => { this._tbl = newTable })
+    return tableAdd
+      .call(
+        this._tbl,
+        await fromRecordsToBuffer(data, this._embeddings, schema),
+        WriteMode.Append.toString(),
+        ...getAwsArgs(this._options())
+      )
+      .then((newTable: any) => {
+        this._tbl = newTable
+      })
   }
 
   /**
@@ -576,12 +712,16 @@ export class LocalTable<T = number[]> implements Table<T> {
    * @return The number of rows added to the table
    */
   async overwrite (data: Array<Record<string, unknown>>): Promise<number> {
-    return tableAdd.call(
-      this._tbl,
-      await fromRecordsToBuffer(data, this._embeddings),
-      WriteMode.Overwrite.toString(),
-      ...getAwsArgs(this._options())
-    ).then((newTable: any) => { this._tbl = newTable })
+    return tableAdd
+      .call(
+        this._tbl,
+        await fromRecordsToBuffer(data, this._embeddings),
+        WriteMode.Overwrite.toString(),
+        ...getAwsArgs(this._options())
+      )
+      .then((newTable: any) => {
+        this._tbl = newTable
+      })
   }
 
   /**
@@ -590,7 +730,11 @@ export class LocalTable<T = number[]> implements Table<T> {
    * @param indexParams The parameters of this Index, @see VectorIndexParams.
    */
   async createIndex (indexParams: VectorIndexParams): Promise<any> {
-    return tableCreateVectorIndex.call(this._tbl, indexParams).then((newTable: any) => { this._tbl = newTable })
+    return tableCreateVectorIndex
+      .call(this._tbl, indexParams)
+      .then((newTable: any) => {
+        this._tbl = newTable
+      })
   }
 
   async createScalarIndex (column: string, replace: boolean): Promise<void> {
@@ -610,7 +754,9 @@ export class LocalTable<T = number[]> implements Table<T> {
    * @param filter A filter in the same format used by a sql WHERE clause.
    */
   async delete (filter: string): Promise<void> {
-    return tableDelete.call(this._tbl, filter).then((newTable: any) => { this._tbl = newTable })
+    return tableDelete.call(this._tbl, filter).then((newTable: any) => {
+      this._tbl = newTable
+    })
   }
 
   /**
@@ -635,7 +781,11 @@ export class LocalTable<T = number[]> implements Table<T> {
       }
     }
 
-    return tableUpdate.call(this._tbl, filter, updates).then((newTable: any) => { this._tbl = newTable })
+    return tableUpdate
+      .call(this._tbl, filter, updates)
+      .then((newTable: any) => {
+        this._tbl = newTable
+      })
   }
 
   /**
@@ -653,8 +803,12 @@ export class LocalTable<T = number[]> implements Table<T> {
    *                 uphold this promise can lead to corrupted tables.
    * @returns
    */
-  async cleanupOldVersions (olderThan?: number, deleteUnverified?: boolean): Promise<CleanupStats> {
-    return tableCleanupOldVersions.call(this._tbl, olderThan, deleteUnverified)
+  async cleanupOldVersions (
+    olderThan?: number,
+    deleteUnverified?: boolean
+  ): Promise<CleanupStats> {
+    return tableCleanupOldVersions
+      .call(this._tbl, olderThan, deleteUnverified)
       .then((res: { newTable: any, metrics: CleanupStats }) => {
         this._tbl = res.newTable
         return res.metrics
@@ -674,7 +828,8 @@ export class LocalTable<T = number[]> implements Table<T> {
    */
   async compactFiles (options?: CompactionOptions): Promise<CompactionMetrics> {
     const optionsArg = options ?? {}
-    return tableCompactFiles.call(this._tbl, optionsArg)
+    return tableCompactFiles
+      .call(this._tbl, optionsArg)
       .then((res: { newTable: any, metrics: CompactionMetrics }) => {
         this._tbl = res.newTable
         return res.metrics
@@ -844,7 +999,7 @@ export enum WriteMode {
   /** Overwrite the existing {@link Table} if presented. */
   Overwrite = 'overwrite',
   /** Append new data to the table. */
-  Append = 'append'
+  Append = 'append',
 }
 
 /**
@@ -860,8 +1015,10 @@ export class DefaultWriteOptions implements WriteOptions {
 }
 
 export function isWriteOptions (value: any): value is WriteOptions {
-  return Object.keys(value).length === 1 &&
-      (value.writeMode === undefined || typeof value.writeMode === 'string')
+  return (
+    Object.keys(value).length === 1 &&
+    (value.writeMode === undefined || typeof value.writeMode === 'string')
+  )
 }
 
 /**
@@ -881,5 +1038,5 @@ export enum MetricType {
   /**
    * Dot product
    */
-  Dot = 'dot'
+  Dot = 'dot',
 }
