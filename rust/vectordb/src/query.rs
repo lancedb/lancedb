@@ -22,6 +22,7 @@ use lance_linalg::distance::MetricType;
 use crate::error::Result;
 
 /// A builder for nearest neighbor queries for LanceDB.
+#[derive(Clone)]
 pub struct Query {
     pub dataset: Arc<Dataset>,
     pub query_vector: Option<Float32Array>,
@@ -114,8 +115,8 @@ impl Query {
     /// # Arguments
     ///
     /// * `vector` - The vector that will be used for search.
-    pub fn query_vector(mut self, query_vector: Float32Array) -> Query {
-        self.query_vector = Some(query_vector);
+    pub fn query_vector(mut self, vector: &[f32]) -> Query {
+        self.query_vector = Some(Float32Array::from(vector.to_vec()));
         self
     }
 

@@ -1,8 +1,15 @@
 [workspace]
-members = ["rust/ffi/node", "rust/vectordb"]
+members = ["rust/ffi/node", "rust/vectordb", "nodejs"]
 # Python package needs to be built by maturin.
 exclude = ["python"]
 resolver = "2"
+
+[workspace.package]
+version = "0.4.3"
+edition = "2021"
+authors = ["Lance Devs <dev@lancedb.com>"]
+license = "Apache-2.0"
+repository = "https://github.com/lancedb/lance"
 
 [workspace.dependencies]
 lance = { "version" = "=0.9.7", "features" = ["dynamodb"] }
