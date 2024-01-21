@@ -23,8 +23,8 @@ from pydantic import BaseModel
 
 from lancedb.common import Credential
 from lancedb.remote import VectorQuery, VectorQueryResult
-from lancedb.remote.errors import LanceDBClientError
 from lancedb.remote.connection_timeout import LanceDBClientHTTPAdapterFactory
+from lancedb.remote.errors import LanceDBClientError
 
 ARROW_STREAM_CONTENT_TYPE = "application/vnd.apache.arrow.stream"
 
