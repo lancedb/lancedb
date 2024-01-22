@@ -219,7 +219,7 @@ export interface Connection {
    */
   createTable(
     name: string,
-    data: Array<Record<string, unknown>>
+    data: Array<Record<string, unknown>> | ArrowTable
   ): Promise<Table>
 
   /**
@@ -231,7 +231,7 @@ export interface Connection {
    */
   createTable(
     name: string,
-    data: Array<Record<string, unknown>>,
+    data: Array<Record<string, unknown>> | ArrowTable,
     options: WriteOptions
   ): Promise<Table>
 
@@ -244,7 +244,7 @@ export interface Connection {
    */
   createTable<T>(
     name: string,
-    data: Array<Record<string, unknown>>,
+    data: Array<Record<string, unknown>> | ArrowTable,
     embeddings: EmbeddingFunction<T>
   ): Promise<Table<T>>
   /**
@@ -257,7 +257,7 @@ export interface Connection {
    */
   createTable<T>(
     name: string,
-    data: Array<Record<string, unknown>>,
+    data: Array<Record<string, unknown>> | ArrowTable,
     embeddings: EmbeddingFunction<T>,
     options: WriteOptions
   ): Promise<Table<T>>
@@ -540,7 +540,7 @@ export class LocalConnection implements Connection {
 
   async createTable<T>(
     name: string | CreateTableOptions<T>,
-    data?: Array<Record<string, unknown>>,
+    data?: Array<Record<string, unknown>> | ArrowTable,
     optsOrEmbedding?: WriteOptions | EmbeddingFunction<T>,
     opt?: WriteOptions
   ): Promise<Table<T>> {
