@@ -159,7 +159,7 @@ impl Database {
     ///
     /// # Returns
     ///
-    /// * A [Vec<String>] with all table names.
+    /// * A [`Vec<String>`] with all table names.
     pub async fn table_names(&self) -> Result<Vec<String>> {
         let mut f = self
             .object_store

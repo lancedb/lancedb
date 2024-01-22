@@ -32,9 +32,17 @@
 //!
 //! LanceDB runs in process, to use it in your Rust project, put the following in your `Cargo.toml`:
 //!
-//! ```
+//! ```rust,ignore
 //! [dependencies]
 //! vectordb = "0.4"
+//! ```
+//!
+//! ### Quick Start
+//!
+//! ```rust
+//! use vectordb::{Database, Table, WriteMode};
+//!
+//! let db = Database::connect("data/sample-lancedb").unwrap();
 //! ```
 
 pub mod data;
