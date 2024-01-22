@@ -30,13 +30,12 @@ import {
   RecordBatch,
   makeData,
   Struct,
-  DataType,
   type Float
 } from 'apache-arrow'
 import { type EmbeddingFunction } from './index'
 
 /** Options to control the makeArrowTable call. */
-interface MakeArrowTableOptions {
+export interface MakeArrowTableOptions {
   /** Provided schema. */
   schema?: Schema
   /// Default vector column types.
@@ -46,14 +45,31 @@ interface MakeArrowTableOptions {
   vectorColumns: string[]
 }
 
-// function inferSchema(data: Record<string, any>[], samples?: number): Schema {}
-
 /**
  * An enhanced version of the {@link makeTable} function from Apache Arrow
  * that supports nested fields and embeddings columns.
  *
  * @param data input data
  * @param options options to control the makeArrowTable call.
+ *
+ * @example
+ *
+ * ```ts
+ *
+ * import { fromTableToBuffer, makeArrowTable } from "../arrow";
+ * import { Field, FixedSizeList, Float16, Float32, Int32, Schema } from "apache-arrow";
+ *
+ * const schema = new Schema([
+ *   new Field("a", new Int32()),
+ *   new Field("b", new Float32()),
+ *   new Field("c", new FixedSizeList(3, new Field("item", new Float16()))),
+ *  ]);
+ *  const table = makeArrowTable([
+ *    { a: 1, b: 2, c: [1, 2, 3] },
+ *    { a: 4, b: 5, c: [4, 5, 6] },
+ *    { a: 7, b: 8, c: [7, 8, 9] },
+ *  ], { schema });
+ * ```
  */
 export function makeArrowTable (
   data: Array<Record<string, any>>,
@@ -66,14 +82,26 @@ export function makeArrowTable (
   // TODO: sample dataset to find missing columns
   const columnNames = Object.keys(data[0])
   for (const colName of columnNames) {
-    const values = []
-    for (const datum of data) {
-      values.push(datum[colName])
+    const values = data.map((datum) => datum[colName])
+    let vector: Vector
+
+    if (options?.schema !== undefined) {
+      // Explicit schema is provided, highest priority
+      vector = vectorFromArray(
+        values,
+        options?.schema?.fields.filter((f) => f.name === colName)[0]?.type
+      )
+    } else if (options?.vectorColumns?.includes(colName) === true) {
+      const dataType = options?.vectorDataType != null || new Float32()
+      const fslType = new FixedSizeList(
+        data[0][colName].length,
+        new Field('item', dataType, false)
+      )
+      vector = vectorFromArray(values, fslType)
+    } else {
+      // Normal case
+      vector = vectorFromArray(values)
     }
-    const vector = vectorFromArray(
-      values,
-      options?.schema?.fields.filter((f) => f.name === colName)[0]?.type
-    )
     columns[colName] = vector
   }
 

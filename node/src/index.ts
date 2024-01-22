@@ -41,12 +41,13 @@ const {
   tableListIndices,
   tableIndexStats,
   tableSchema
-// eslint-disable-next-line @typescript-eslint/no-var-requires
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
 } = require('../native.js')
 
 export { Query }
 export type { EmbeddingFunction }
 export { OpenAIEmbeddingFunction } from './embedding/openai'
+export { makeArrowTable, type MakeArrowTableOptions } from './arrow'
 
 const defaultAwsRegion = 'us-west-2'
 
@@ -859,7 +860,10 @@ export class LocalTable<T = number[]> implements Table<T> {
   private checkElectron (): boolean {
     try {
       // eslint-disable-next-line no-prototype-builtins
-      return (process?.versions?.hasOwnProperty('electron') || navigator?.userAgent?.toLowerCase()?.includes(' electron'))
+      return (
+        process?.versions?.hasOwnProperty('electron') ||
+        navigator?.userAgent?.toLowerCase()?.includes(' electron')
+      )
     } catch (e) {
       return false
     }

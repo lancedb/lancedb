@@ -12,11 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { describe } from "mocha";
-import { assert } from "chai";
-import { Schema } from "@apache-arrow/ts";
+import { describe } from 'mocha'
+import { assert } from 'chai'
 
-import { fromTableToBuffer, makeArrowTable } from "../arrow";
+import { fromTableToBuffer, makeArrowTable } from '../arrow'
 import {
   Field,
   FixedSizeList,
@@ -24,31 +23,32 @@ import {
   Float32,
   Int32,
   tableFromIPC,
-} from "apache-arrow";
+  Schema
+} from 'apache-arrow'
 
-describe("Apache Arrow tables", function () {
-  it("Table to IPC", async function () {
+describe('Apache Arrow tables', function () {
+  it('Customized schema', async function () {
     const schema = new Schema([
-      new Field("a", new Int32()),
-      new Field("b", new Float32()),
-      new Field("c", new FixedSizeList(3, new Field("item", new Float16()))),
-    ]);
+      new Field('a', new Int32()),
+      new Field('b', new Float32()),
+      new Field('c', new FixedSizeList(3, new Field('item', new Float16())))
+    ])
     const table = makeArrowTable(
       [
         { a: 1, b: 2, c: [1, 2, 3] },
         { a: 4, b: 5, c: [4, 5, 6] },
-        { a: 7, b: 8, c: [7, 8, 9] },
+        { a: 7, b: 8, c: [7, 8, 9] }
       ],
       { schema }
-    );
+    )
 
-    console.log(table.schema.toString());
-    const buf = await fromTableToBuffer(table);
-    assert.isAbove(buf.byteLength, 0);
-    console.log("Test Buffer size:", buf.toString());
+    console.log(table.schema.toString())
+    const buf = await fromTableToBuffer(table)
+    assert.isAbove(buf.byteLength, 0)
 
-    const actual = await tableFromIPC(buf);
-    assert.equal(actual.numRows, 3);
-    console.log(actual.schema.toString());
-  });
-});
+    const actual = tableFromIPC(buf)
+    assert.equal(actual.numRows, 3)
+    const actualSchema = actual.schema
+    assert.deepEqual(actualSchema, schema)
+  })
+})
