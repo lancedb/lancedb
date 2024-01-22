@@ -1,5 +1,5 @@
 {
-  "include": ["src/**/*.ts"],
+  "include": ["src/**/*.ts", "src/*.ts"],
   "compilerOptions": {
     "target": "es2016",
     "module": "commonjs",

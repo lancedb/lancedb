@@ -13,18 +13,78 @@
 // limitations under the License.
 
 import {
-  Field, type FixedSizeListBuilder,
+  Field,
+  type FixedSizeListBuilder,
   Float32,
   makeBuilder,
   RecordBatchFileWriter,
-  Utf8, type Vector,
+  Utf8,
+  type Vector,
   FixedSizeList,
-  vectorFromArray, type Schema, Table as ArrowTable, RecordBatchStreamWriter, List, Float64, RecordBatch, makeData, Struct
+  vectorFromArray,
+  type Schema,
+  Table as ArrowTable,
+  RecordBatchStreamWriter,
+  List,
+  Float64,
+  RecordBatch,
+  makeData,
+  Struct,
+  DataType,
+  type Float
 } from 'apache-arrow'
 import { type EmbeddingFunction } from './index'
 
+/** Options to control the makeArrowTable call. */
+interface MakeArrowTableOptions {
+  /** Provided schema. */
+  schema?: Schema
+  /// Default vector column types.
+  vectorDataType: Float
+
+  /** Vector columns */
+  vectorColumns: string[]
+}
+
+// function inferSchema(data: Record<string, any>[], samples?: number): Schema {}
+
+/**
+ * An enhanced version of the {@link makeTable} function from Apache Arrow
+ * that supports nested fields and embeddings columns.
+ *
+ * @param data input data
+ * @param options options to control the makeArrowTable call.
+ */
+export function makeArrowTable (
+  data: Array<Record<string, any>>,
+  options?: Partial<MakeArrowTableOptions>
+): ArrowTable {
+  if (data.length === 0) {
+    throw new Error('At least one record needs to be provided')
+  }
+  const columns: Record<string, Vector> = {}
+  // TODO: sample dataset to find missing columns
+  const columnNames = Object.keys(data[0])
+  for (const colName of columnNames) {
+    const values = []
+    for (const datum of data) {
+      values.push(datum[colName])
+    }
+    const vector = vectorFromArray(
+      values,
+      options?.schema?.fields.filter((f) => f.name === colName)[0]?.type
+    )
+    columns[colName] = vector
+  }
+
+  return new ArrowTable(columns)
+}
+
 // Converts an Array of records into an Arrow Table, optionally applying an embeddings function to it.
-export async function convertToTable<T> (data: Array<Record<string, unknown>>, embeddings?: EmbeddingFunction<T>): Promise<ArrowTable> {
+export async function convertToTable<T> (
+  data: Array<Record<string, unknown>>,
+  embeddings?: EmbeddingFunction<T>
+): Promise<ArrowTable> {
   if (data.length === 0) {
     throw new Error('At least one record needs to be provided')
   }
@@ -52,7 +112,10 @@ export async function convertToTable<T> (data: Array<Record<string, unknown>>, e
 
       if (columnsKey === embeddings?.sourceColumn) {
         const vectors = await embeddings.embed(values as T[])
-        records.vector = vectorFromArray(vectors, newVectorType(vectors[0].length))
+        records.vector = vectorFromArray(
+          vectors,
+          newVectorType(vectors[0].length)
+        )
       }
 
       if (typeof values[0] === 'string') {
@@ -110,7 +173,11 @@ function newVectorType (dim: number): FixedSizeList<Float32> {
 }
 
 // Converts an Array of records into Arrow IPC format
-export async function fromRecordsToBuffer<T> (data: Array<Record<string, unknown>>, embeddings?: EmbeddingFunction<T>, schema?: Schema): Promise<Buffer> {
+export async function fromRecordsToBuffer<T> (
+  data: Array<Record<string, unknown>>,
+  embeddings?: EmbeddingFunction<T>,
+  schema?: Schema
+): Promise<Buffer> {
   let table = await convertToTable(data, embeddings)
   if (schema !== undefined) {
     table = alignTable(table, schema)
@@ -120,7 +187,11 @@ export async function fromRecordsToBuffer<T> (data: Array<Record<string, unknown
 }
 
 // Converts an Array of records into Arrow IPC stream format
-export async function fromRecordsToStreamBuffer<T> (data: Array<Record<string, unknown>>, embeddings?: EmbeddingFunction<T>, schema?: Schema): Promise<Buffer> {
+export async function fromRecordsToStreamBuffer<T> (
+  data: Array<Record<string, unknown>>,
+  embeddings?: EmbeddingFunction<T>,
+  schema?: Schema
+): Promise<Buffer> {
   let table = await convertToTable(data, embeddings)
   if (schema !== undefined) {
     table = alignTable(table, schema)
@@ -130,12 +201,18 @@ export async function fromRecordsToStreamBuffer<T> (data: Array<Record<string, u
 }
 
 // Converts an Arrow Table into Arrow IPC format
-export async function fromTableToBuffer<T> (table: ArrowTable, embeddings?: EmbeddingFunction<T>, schema?: Schema): Promise<Buffer> {
+export async function fromTableToBuffer<T> (
+  table: ArrowTable,
+  embeddings?: EmbeddingFunction<T>,
+  schema?: Schema
+): Promise<Buffer> {
   if (embeddings !== undefined) {
     const source = table.getChild(embeddings.sourceColumn)
 
     if (source === null) {
-      throw new Error(`The embedding source column ${embeddings.sourceColumn} was not found in the Arrow Table`)
+      throw new Error(
+        `The embedding source column ${embeddings.sourceColumn} was not found in the Arrow Table`
+      )
     }
 
     const vectors = await embeddings.embed(source.toArray() as T[])
@@ -150,12 +227,18 @@ export async function fromTableToBuffer<T> (table: ArrowTable, embeddings?: Embe
 }
 
 // Converts an Arrow Table into Arrow IPC stream format
-export async function fromTableToStreamBuffer<T> (table: ArrowTable, embeddings?: EmbeddingFunction<T>, schema?: Schema): Promise<Buffer> {
+export async function fromTableToStreamBuffer<T> (
+  table: ArrowTable,
+  embeddings?: EmbeddingFunction<T>,
+  schema?: Schema
+): Promise<Buffer> {
   if (embeddings !== undefined) {
     const source = table.getChild(embeddings.sourceColumn)
 
     if (source === null) {
-      throw new Error(`The embedding source column ${embeddings.sourceColumn} was not found in the Arrow Table`)
+      throw new Error(
+        `The embedding source column ${embeddings.sourceColumn} was not found in the Arrow Table`
+      )
     }
 
     const vectors = await embeddings.embed(source.toArray() as T[])
@@ -172,9 +255,13 @@ export async function fromTableToStreamBuffer<T> (table: ArrowTable, embeddings?
 function alignBatch (batch: RecordBatch, schema: Schema): RecordBatch {
   const alignedChildren = []
   for (const field of schema.fields) {
-    const indexInBatch = batch.schema.fields?.findIndex((f) => f.name === field.name)
+    const indexInBatch = batch.schema.fields?.findIndex(
+      (f) => f.name === field.name
+    )
     if (indexInBatch < 0) {
-      throw new Error(`The column ${field.name} was not found in the Arrow Table`)
+      throw new Error(
+        `The column ${field.name} was not found in the Arrow Table`
+      )
     }
     alignedChildren.push(batch.data.children[indexInBatch])
   }
@@ -188,7 +275,9 @@ function alignBatch (batch: RecordBatch, schema: Schema): RecordBatch {
 }
 
 function alignTable (table: ArrowTable, schema: Schema): ArrowTable {
-  const alignedBatches = table.batches.map(batch => alignBatch(batch, schema))
+  const alignedBatches = table.batches.map((batch) =>
+    alignBatch(batch, schema)
+  )
   return new ArrowTable(schema, alignedBatches)
 }
 
