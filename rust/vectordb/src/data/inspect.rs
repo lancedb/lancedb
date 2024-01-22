@@ -51,8 +51,8 @@ where
 /// Parameters
 /// ----------
 /// - reader: RecordBatchReader
-/// - strict: if set true, only fixed_size_list<float> is considered as vector column. If set to false,
-///           a list<float> column with same length is also considered as vector column.
+/// - strict: if set true, only `fixed_size_list<float>` is considered as vector column. If set to false,
+///           a `list<float>` column with same length is also considered as vector column.
 pub fn infer_vector_columns(
     reader: impl RecordBatchReader + Send,
     strict: bool,
