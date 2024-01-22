@@ -861,7 +861,7 @@ export class LocalTable<T = number[]> implements Table<T> {
     try {
       // eslint-disable-next-line no-prototype-builtins
       return (
-        process?.versions?.hasOwnProperty('electron') ||
+        Object.prototype.hasOwnProperty.call(process?.versions, 'electron') ||
         navigator?.userAgent?.toLowerCase()?.includes(' electron')
       )
     } catch (e) {
