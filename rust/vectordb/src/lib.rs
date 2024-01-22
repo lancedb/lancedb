@@ -41,6 +41,8 @@
 //!
 //! ### Quick Start
 //!
+//! <div class="warning">Rust API is not stable yet.</div>
+//!
 //! #### Connect to a database.
 //!
 //! ```rust
