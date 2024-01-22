@@ -60,12 +60,10 @@ class CohereReranker(Reranker):
             documents=docs,
             top_n=self.top_n,
             model=self.model_name,
-        )  # returns list (text, idx, score) attributes sorted descending by score
+        )  # returns list (text, idx, relevance) attributes sorted descending by score
         indices, scores = list(
             zip(*[(result.index, result.relevance_score) for result in results])
         )  # tuples
-        # invert the scores
-        scores = 1 - np.array(scores)
         combined_results = combined_results.take(list(indices))
         # add the scores
         combined_results = combined_results.set_column(

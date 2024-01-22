@@ -74,7 +74,8 @@ class LinearCombinationReranker(Reranker):
             for fj in fts_list[j:]:
                 fj["_score"] = self._combine_score(fj["_rowid"], fill)
                 combined_list.append(fj)
-        return pa.Table.from_pylist(combined_list, schema=vector_results.schema)
+        tbl = pa.Table.from_pylist(combined_list, schema=vector_results.schema).sort_by([("_score", "descending")])
+        return tbl
 
     def _combine_score(self, score1, score2):
         return self.weight * score1 + (1 - self.weight) * score2

@@ -658,9 +658,9 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             vector_results = self._rank(vector_results)
             fts_results = self._rank(fts_results)
         # normalize the scores to be between 0 and 1, 0 being most relevant
-        vector_results = self._normalize_scores(vector_results)
-        # fts higher scores are more relevant, so invert them ie (1 - score)
-        fts_results = self._normalize_scores(fts_results, invert=True)
+        vector_results = self._normalize_scores(vector_results, invert=True)
+        # fts higher scores are more relevant
+        fts_results = self._normalize_scores(fts_results)
         results = self._reranker.rerank_hybrid(self, vector_results, fts_results)
         if not isinstance(results, pa.Table):  # Enforce type
             raise TypeError(
