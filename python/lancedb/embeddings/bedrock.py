@@ -13,14 +13,15 @@
 
 import json
 from functools import cached_property
-from typing import List, Union, Any
+from typing import List, Union
 
 import numpy as np
+
+from lancedb.pydantic import PYDANTIC_VERSION
 
 from .base import TextEmbeddingFunction
 from .registry import register
 from .utils import TEXT
-from lancedb.pydantic import PYDANTIC_VERSION
 
 
 @register("bedrock-text")
@@ -29,21 +30,21 @@ class BedRockText(TextEmbeddingFunction):
     Parameters
     ----------
     name: str, default "amazon.titan-embed-text-v1"
-        The model ID of the bedrock model to use. Supported base models for Text Embeddings are:
+        The model ID of the bedrock model to use. Supported models for are:
         - amazon.titan-embed-text-v1
         - cohere.embed-english-v3
         - cohere.embed-multilingual-v3
     region: str, default "us-east-1"
-        Optional name of the AWS Region in which the service should be called (e.g. "us-east-1").
+        Optional name of the AWS Region in which the service should be called.
     profile_name: str, default None
-        Optional name of the AWS profile to use for calling the Bedrock service. If not specified,
-        the default profile will be used.
+        Optional name of the AWS profile to use for calling the Bedrock service.
+        If not specified, the default profile will be used.
     assumed_role: str, default None
-        Optional ARN of an AWS IAM role to assume for calling the Bedrock service. If not
-        specified, the current active credentials will be used.
+        Optional ARN of an AWS IAM role to assume for calling the Bedrock service.
+        If not specified, the current active credentials will be used.
     role_session_name: str, default "lancedb-embeddings"
-        Optional name of the AWS IAM role session to use for calling the Bedrock service. If not specified,
-        a "lancedb-embeddings" name will be used.
+        Optional name of the AWS IAM role session to use for calling the Bedrock
+        service. If not specified, "lancedb-embeddings" name will be used.
 
     Examples
     --------
@@ -166,9 +167,9 @@ class BedRockText(TextEmbeddingFunction):
         except Exception as e:
             help_txt = """
                 Note:
-                    Please check your AWS credentials and ensure that you have access to the Bedrock service. 
-                    You can set up aws credentials using `aws configure` command and verify by running 
-                    `aws sts get-caller-identity` in your terminal.
+                    Please check your AWS credentials and ensure that you have access.
+                    You can set up aws credentials using `aws configure` command and
+                    verify by running `aws sts get-caller-identity` in your terminal.
                 """
             raise ValueError(f"Error raised by boto3 client: {e}. \n {help_txt}")
 
@@ -193,7 +194,7 @@ class BedRockText(TextEmbeddingFunction):
         retry_config = botocore.config.Config(
             region_name=self.region,
             retries={
-                "max_attempts": 0,  # setting this to 0 as retries retries are handled by Embedding API
+                "max_attempts": 0,  # disable this as retries retries are handled
                 "mode": "standard",
             },
         )
