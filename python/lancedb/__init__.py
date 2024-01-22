@@ -12,6 +12,7 @@
 #  limitations under the License.
 
 import importlib.metadata
+import os
 from typing import Optional
 
 __version__ = importlib.metadata.version("lancedb")
@@ -38,6 +39,7 @@ def connect(
     api_key: str, optional
         If presented, connect to LanceDB cloud.
         Otherwise, connect to a database on file system or cloud storage.
+        Can be set via environment variable `LANCEDB_API_KEY`.
     region: str, default "us-east-1"
         The region to use for LanceDB Cloud.
     host_override: str, optional
@@ -65,6 +67,8 @@ def connect(
         A connection to a LanceDB database.
     """
     if isinstance(uri, str) and uri.startswith("db://"):
+        if api_key is None:
+            api_key = os.environ.get("LANCEDB_API_KEY")
         if api_key is None:
             raise ValueError(f"api_key is required to connected LanceDB cloud: {uri}")
         return RemoteDBConnection(uri, api_key, region, host_override)
