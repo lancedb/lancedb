@@ -1,4 +1,4 @@
-// Copyright 2023 Lance Developers.
+// Copyright 2024 Lance Developers.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -11,6 +11,31 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+
+//! # VectorDB ([LanceDB](https://github.com/lancedb/lancedb)) -- Developer-friendly, serverless vector database for AI applications
+//!
+//! LanceDB is an open-source database for vector-search built with persistent storage,
+//! which greatly simplifies retrevial, filtering and management of embeddings.
+//!
+//! The key features of LanceDB include:
+//! - Production-scale vector search with no servers to manage.
+//! - Store, query and filter vectors, metadata and multi-modal data (text, images, videos, point clouds, and more).
+//! - Support for vector similarity search, full-text search and SQL.
+//! - Native Rust, Python, Javascript/Typescript support.
+//! - Zero-copy, automatic versioning, manage versions of your data without needing extra infrastructure.
+//! - GPU support in building vector indices[^note].
+//! - Ecosystem integrations with LangChain 🦜️🔗, LlamaIndex 🦙, Apache-Arrow, Pandas, Polars, DuckDB and more on the way.
+//!
+//! [^note]: Only in Python SDK.
+//!
+//! ## Getting Started
+//!
+//! LanceDB runs in process, to use it in your Rust project, put the following in your `Cargo.toml`:
+//!
+//! ```
+//! [dependencies]
+//! vectordb = "0.4"
+//! ```
 
 pub mod data;
 pub mod database;
