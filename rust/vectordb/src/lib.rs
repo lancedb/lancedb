@@ -117,7 +117,7 @@
 //! # db.create_table("my_table", batches, None).await.unwrap();
 //! let table = db.open_table("my_table").await.unwrap();
 //! let results = table
-//!     .search(vec![1.0; 128])
+//!     .search(Some(vec![1.0; 128]))
 //!     .execute()
 //!     .await
 //!     .unwrap()
