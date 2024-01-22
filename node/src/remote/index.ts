@@ -23,7 +23,8 @@ import {
   type WriteOptions,
   type IndexStats,
   type UpdateArgs,
-  type UpdateSqlArgs
+  type UpdateSqlArgs,
+  makeArrowTable
 } from '../index'
 import { Query } from '../query'
 
@@ -269,8 +270,15 @@ export class RemoteTable<T = number[]> implements Table<T> {
     return new RemoteQuery(query, this._client, this._name) //, this._embeddings_new)
   }
 
-  async add (data: Array<Record<string, unknown>>): Promise<number> {
-    const buffer = await fromRecordsToStreamBuffer(data, this._embeddings)
+  async add (data: Array<Record<string, unknown>> | ArrowTable): Promise<number> {
+    let tbl: ArrowTable
+    if (data instanceof ArrowTable) {
+      tbl = data
+    } else {
+      tbl = makeArrowTable(data, await this.schema)
+    }
+
+    const buffer = await fromTableToStreamBuffer(tbl, this._embeddings)
     const res = await this._client.post(
       `/v1/table/${this._name}/insert/`,
       buffer,
@@ -286,11 +294,17 @@ export class RemoteTable<T = number[]> implements Table<T> {
           `message: ${res.statusText}: ${res.data}`
       )
     }
-    return data.length
+    return tbl.numRows
   }
 
-  async overwrite (data: Array<Record<string, unknown>>): Promise<number> {
-    const buffer = await fromRecordsToStreamBuffer(data, this._embeddings)
+  async overwrite (data: Array<Record<string, unknown>> | ArrowTable): Promise<number> {
+    let tbl: ArrowTable
+    if (data instanceof ArrowTable) {
+      tbl = data
+    } else {
+      tbl = makeArrowTable(data)
+    }
+    const buffer = await fromTableToStreamBuffer(tbl, this._embeddings)
     const res = await this._client.post(
       `/v1/table/${this._name}/insert/`,
       buffer,
@@ -306,7 +320,7 @@ export class RemoteTable<T = number[]> implements Table<T> {
           `message: ${res.statusText}: ${res.data}`
       )
     }
-    return data.length
+    return tbl.numRows
   }
 
   async createIndex (indexParams: VectorIndexParams): Promise<void> {
