@@ -13,7 +13,6 @@
 from typing import List, Union
 
 import numpy as np
-from cachetools import cached
 
 from .base import TextEmbeddingFunction
 from .registry import register
@@ -73,13 +72,6 @@ class SentenceTransformerEmbeddings(TextEmbeddingFunction):
         Get the sentence-transformers embedding model specified by the
         name and device. This is cached so that the model is only loaded
         once per process.
-
-        Parameters
-        ----------
-        name : str
-            The name of the model to load
-        device : str
-            The device to load the model on
 
         TODO: use lru_cache instead with a reasonable/configurable maxsize
         """

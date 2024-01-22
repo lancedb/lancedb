@@ -1,20 +1,12 @@
-# SQL filters
+# Filtering
 
-LanceDB embraces the utilization of standard SQL expressions as predicates for hybrid
-filters. It can be used during hybrid vector search, update, and deletion operations.
+## Pre and post-filtering
 
-Currently, Lance supports a growing list of expressions.
+LanceDB supports filtering of query results based on metadata fields. By default, post-filtering is
+performed on the top-k results returned by the vector search. However, pre-filtering is also an
+option that performs the filter prior to vector search. This can be useful to narrow down on
+the search space on a very large dataset to reduce query latency.
 
-* ``>``, ``>=``, ``<``, ``<=``, ``=``
-* ``AND``, ``OR``, ``NOT``
-* ``IS NULL``, ``IS NOT NULL``
-* ``IS TRUE``, ``IS NOT TRUE``, ``IS FALSE``, ``IS NOT FALSE``
-* ``IN``
-* ``LIKE``, ``NOT LIKE``
-* ``CAST``
-* ``regexp_match(column, pattern)``
-
-For example, the following filter string is acceptable:
 <!-- Setup Code
 ```python 
 import lancedb
@@ -40,6 +32,45 @@ for (let i = 0; i < 10_000; i++) {
 const tbl = await db.createTable('myVectors', data)
 ```
 -->
+
+=== "Python"
+    ```py
+    result = (
+        tbl.search([0.5, 0.2])
+        .where("id = 10", prefilter=True)
+        .limit(1)
+        .to_arrow()
+    )
+    ```
+
+=== "JavaScript"
+    ```javascript
+    let result = await tbl.search(Array(1536).fill(0.5))
+        .limit(1)
+        .filter("id = 10")
+        .prefilter(true)
+        .execute()
+    ```
+
+## SQL filters
+
+Because it's built on top of [DataFusion](https://github.com/apache/arrow-datafusion), LanceDB
+embraces the utilization of standard SQL expressions as predicates for filtering operations.
+It can be used during vector search, update, and deletion operations.
+
+Currently, Lance supports a growing list of SQL expressions.
+
+* ``>``, ``>=``, ``<``, ``<=``, ``=``
+* ``AND``, ``OR``, ``NOT``
+* ``IS NULL``, ``IS NOT NULL``
+* ``IS TRUE``, ``IS NOT TRUE``, ``IS FALSE``, ``IS NOT FALSE``
+* ``IN``
+* ``LIKE``, ``NOT LIKE``
+* ``CAST``
+* ``regexp_match(column, pattern)``
+
+For example, the following filter string is acceptable:
+
 === "Python"
 
     ```python
@@ -117,12 +148,12 @@ You can also filter your data without search.
 
 === "Python"
       ```python
-      tbl.search().where("id=10").limit(10).to_arrow()
+      tbl.search().where("id = 10").limit(10).to_arrow()
       ```
 
 === "JavaScript"
       ```javascript
-      await tbl.where('id=10').limit(10).execute()
+      await tbl.where('id = 10').limit(10).execute()
       ```
 
 !!! warning

@@ -1,15 +1,13 @@
 # Integrations
 
-## Data Formats
+LanceDB supports ingesting from and exporting to your favorite data formats across the Python and JavaScript ecosystems.
 
-LanceDB supports ingesting from your favorite data tools.
-
-![Illustration](/lancedb/assets/ecosystem-illustration.png)
+![Illustration](../assets/ecosystem-illustration.png)
 
 
 ## Tools
 
-LanceDB is integrated with most of the popular AI tools, with more coming soon.
+LanceDB is integrated with a lot of popular AI tools, with more coming soon.
 Get started using these examples and quick links.
 
 | Integrations | |

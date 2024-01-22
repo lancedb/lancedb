@@ -14,7 +14,6 @@
 from __future__ import annotations
 
 import inspect
-import os
 from abc import ABC, abstractmethod
 from functools import cached_property
 from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Union
@@ -33,17 +32,20 @@ from .pydantic import LanceModel, model_to_dict
 from .query import LanceQueryBuilder, Query
 from .util import (
     fs_from_uri,
+    join_uri,
     safe_import_pandas,
     safe_import_polars,
     value_to_sql,
-    join_uri,
 )
 from .utils.events import register_event
 
 if TYPE_CHECKING:
     from datetime import timedelta
 
+    import PIL
     from lance.dataset import CleanupStats, ReaderLike
+
+    from .db import LanceDBConnection
 
 
 pd = safe_import_pandas()
@@ -73,7 +75,7 @@ def _sanitize_data(
         meta = data.schema.metadata if data.schema.metadata is not None else {}
         meta = {k: v for k, v in meta.items() if k != b"pandas"}
         data = data.replace_schema_metadata(meta)
-    elif pl is not None and isinstance(data, (pl.DataFrame, pl.LazyFrame)):
+    elif pl is not None and isinstance(data, pl.DataFrame):
         data = data.to_arrow()
 
     if isinstance(data, pa.Table):
@@ -526,9 +528,7 @@ class LanceTable(Table):
     A table in a LanceDB database.
     """
 
-    def __init__(
-        self, connection: "lancedb.db.LanceDBConnection", name: str, version: int = None
-    ):
+    def __init__(self, connection: "LanceDBConnection", name: str, version: int = None):
         self._conn = connection
         self.name = name
         self._version = version
@@ -783,9 +783,7 @@ class LanceTable(Table):
         index_exists = fs.get_file_info(path).type != pa_fs.FileType.NotFound
         if index_exists:
             if not replace:
-                raise ValueError(
-                    f"Index already exists. Use replace=True to overwrite."
-                )
+                raise ValueError("Index already exists. Use replace=True to overwrite.")
             fs.delete_dir(path)
 
         index = create_index(self._get_fts_index_path(), field_names)
@@ -1337,13 +1335,15 @@ def _sanitize_vector_column(
     elif not pa.types.is_fixed_size_list(vec_arr.type):
         raise TypeError(f"Unsupported vector column type: {vec_arr.type}")
 
-    vec_arr = ensure_fixed_size_list_of_f32(vec_arr)
+    vec_arr = ensure_fixed_size_list(vec_arr)
     data = data.set_column(
         data.column_names.index(vector_column_name), vector_column_name, vec_arr
     )
 
-    has_nans = pc.any(pc.is_nan(vec_arr.values)).as_py()
-    if has_nans:
+    # Use numpy to check for NaNs, because as pyarrow 14.0.2 does not have `is_nan`
+    # kernel over f16 types.
+    values_np = vec_arr.values.to_numpy(zero_copy_only=False)
+    if np.isnan(values_np).any():
         data = _sanitize_nans(
             data, fill_value, on_bad_vectors, vec_arr, vector_column_name
         )
@@ -1351,9 +1351,9 @@ def _sanitize_vector_column(
     return data
 
 
-def ensure_fixed_size_list_of_f32(vec_arr):
+def ensure_fixed_size_list(vec_arr) -> pa.FixedSizeListArray:
     values = vec_arr.values
-    if not pa.types.is_float32(values.type):
+    if not (pa.types.is_float16(values.type) or pa.types.is_float32(values.type)):
         values = values.cast(pa.float32())
     if pa.types.is_fixed_size_list(vec_arr.type):
         list_size = vec_arr.type.list_size

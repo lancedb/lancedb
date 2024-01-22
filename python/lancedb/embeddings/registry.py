@@ -23,7 +23,9 @@ class EmbeddingFunctionRegistry:
     You can implement your own embedding function by subclassing EmbeddingFunction
     or TextEmbeddingFunction and registering it with the registry.
 
-    NOTE: Here TEXT is a type alias for Union[str, List[str], pa.Array, pa.ChunkedArray, np.ndarray]
+    NOTE: Here TEXT is a type alias for Union[str, List[str], pa.Array,
+          pa.ChunkedArray, np.ndarray]
+
     Examples
     --------
     >>> registry = EmbeddingFunctionRegistry.get_instance()
@@ -164,7 +166,8 @@ __REGISTRY__ = EmbeddingFunctionRegistry()
 
 
 # @EmbeddingFunctionRegistry.get_instance().register(name) doesn't work in 3.8
-register = lambda name: EmbeddingFunctionRegistry.get_instance().register(name)
+def register(name):
+    return __REGISTRY__.get_instance().register(name)
 
 
 def get_registry():

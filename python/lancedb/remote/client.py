@@ -13,16 +13,17 @@
 
 
 import functools
-from typing import Any, Callable, Dict, Iterable, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Union
 from urllib.parse import urljoin
 
-import requests
 import attrs
 import pyarrow as pa
+import requests
 from pydantic import BaseModel
 
 from lancedb.common import Credential
 from lancedb.remote import VectorQuery, VectorQueryResult
+from lancedb.remote.connection_timeout import LanceDBClientHTTPAdapterFactory
 from lancedb.remote.errors import LanceDBClientError
 
 ARROW_STREAM_CONTENT_TYPE = "application/vnd.apache.arrow.stream"
@@ -55,7 +56,10 @@ class RestfulLanceDBClient:
 
     @functools.cached_property
     def session(self) -> requests.Session:
-        return requests.Session()
+        sess = requests.Session()
+        adapter_class = LanceDBClientHTTPAdapterFactory()
+        sess.mount("https://", adapter_class())
+        return sess
 
     @property
     def url(self) -> str:

@@ -24,4 +24,4 @@ A [WriteMode](../enums/WriteMode.md) to use on this operation
 
 #### Defined in
 
-[index.ts:774](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L774)
+[index.ts:1015](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L1015)
