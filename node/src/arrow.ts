@@ -92,7 +92,10 @@ export function makeArrowTable (
         options?.schema?.fields.filter((f) => f.name === colName)[0]?.type
       )
     } else if (options?.vectorColumns?.includes(colName) === true) {
-      const dataType = options?.vectorDataType != null || new Float32()
+      const dataType =
+        options?.vectorDataType != null
+          ? options.vectorDataType
+          : new Float32()
       const fslType = new FixedSizeList(
         data[0][colName].length,
         new Field('item', dataType, false)

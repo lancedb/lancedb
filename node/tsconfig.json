@@ -4,7 +4,7 @@
     "src/*.ts"
   ],
   "compilerOptions": {
-    "target": "ES2016",
+    "target": "ES2020",
     "module": "commonjs",
     "declaration": true,
     "outDir": "./dist",
