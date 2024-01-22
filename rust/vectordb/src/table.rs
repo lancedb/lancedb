@@ -319,8 +319,8 @@ impl Table {
     /// # Returns
     ///
     /// * A [Query] object.
-    pub fn search(&self, query_vector: Option<Float32Array>) -> Query {
-        Query::new(self.dataset.clone(), query_vector)
+    pub fn search(&self, query_vector: impl Into<Float32Array>) -> Query {
+        Query::new(self.dataset.clone(), Some(query_vector.into()))
     }
 
     pub fn filter(&self, expr: String) -> Query {
