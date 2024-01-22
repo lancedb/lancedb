@@ -314,13 +314,12 @@ impl Table {
     ///
     /// # Arguments
     ///
-    /// * `vector` The vector used for this query.
+    /// * `query_vector` The vector used for this query.
     ///
     /// # Returns
-    ///
     /// * A [Query] object.
-    pub fn search(&self, query_vector: Option<Float32Array>) -> Query {
-        Query::new(self.dataset.clone(), query_vector)
+    pub fn search<T: Into<Float32Array>>(&self, query_vector: Option<T>) -> Query {
+        Query::new(self.dataset.clone(), query_vector.map(|q| q.into()))
     }
 
     pub fn filter(&self, expr: String) -> Query {
