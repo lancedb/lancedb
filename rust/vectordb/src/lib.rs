@@ -32,18 +32,25 @@
 //!
 //! LanceDB runs in process, to use it in your Rust project, put the following in your `Cargo.toml`:
 //!
-//! ```rust,ignore
+//! ```rust,no_run
 //! [dependencies]
 //! vectordb = "0.4"
+//! arrow-schema = "50"
+//! arrow-array = "50"
 //! ```
 //!
 //! ### Quick Start
 //!
 //! ```rust
 //! use vectordb::{Database, Table, WriteMode};
+//! use arrow_schema::{Field, Schema};
 //!
-//! let db = Database::connect("data/sample-lancedb").unwrap();
+//! let db = Database::connect("data/sample-lancedb").await.unwrap();
 //! ```
+//!
+//! LanceDB uses [Apache Arrow] to define schema, data types and data itself.
+//! It considers a [`FixedSizeList<float32>`](https://docs.rs/arrow/latest/arrow/array/struct.FixedSizeListArray.html)
+//! columns as vectors.
 
 pub mod data;
 pub mod database;
