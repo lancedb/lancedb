@@ -380,11 +380,14 @@ describe('LanceDB client', function () {
 
       const q = Array.from(Array(dim), Math.random)
       const r = await table.search(q).limit(5).execute()
-      console.log(r, typeof r)
       assert.equal(r.length, 5)
       r.forEach((v) => {
         assert.equal(Object.prototype.hasOwnProperty.call(v, 'vector'), true)
-        assert.equal(v.vector?.constructor.name, 'Array', 'v/exctor column is list of floats')
+        assert.equal(
+          v.vector?.constructor.name,
+          'Array',
+          'vector column is list of floats'
+        )
       })
     })
 
@@ -392,15 +395,17 @@ describe('LanceDB client', function () {
       const dir = await track().mkdir('lancejs')
       const con = await lancedb.connect(dir)
 
-      const data = [{
-        id: 1,
-        price: 10
-      }]
+      const data = [
+        {
+          id: 1,
+          price: 10
+        }
+      ]
 
       const create = con.createTable('missing_vector', data)
       await expect(create).to.be.rejectedWith(
         Error,
-        'column \'vector\' is missing'
+        "column 'vector' is missing"
       )
     })
 
@@ -558,7 +563,6 @@ describe('LanceDB client', function () {
       const results = await table.search([0.1, 0.2]).execute()
       assert.equal(results[0].price, 100)
       assert.equal(results[1].price, 11)
-      console.log('Results: ', results)
     })
 
     it('can update the records using a literal value', async function () {
@@ -987,11 +991,13 @@ describe('Compact and cleanup', function () {
     ]
     const table = (await con.createTable('t1', data)) as LocalTable
 
-    const newData = [{
-      price: 30,
-      name: 'baz',
-      vector: [7, 8, 9]
-    }]
+    const newData = [
+      {
+        price: 30,
+        name: 'baz',
+        vector: [7, 8, 9]
+      }
+    ]
     await table.add(newData)
 
     const compactionMetrics = await table.compactFiles({
