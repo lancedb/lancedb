@@ -77,7 +77,11 @@ export interface ConnectionOptions {
   /** AWS region to connect to. Default is {@link defaultAwsRegion}. */
   awsRegion?: string
 
-  // API key for the remote connections
+  /**
+   * API key for the remote connections
+   *
+   * Can also be passed by setting environment variable `LANCEDB_API_KEY`
+   */
   apiKey?: string
 
   /** Region to connect */

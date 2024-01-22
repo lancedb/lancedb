@@ -38,6 +38,9 @@ export class RemoteConnection implements Connection {
     if (!opts.uri.startsWith('db://')) {
       throw new Error(`Invalid remote DB URI: ${opts.uri}`)
     }
+    if (opts.apiKey == null || opts.apiKey === '') {
+      opts = Object.assign({}, opts, { apiKey: process.env.LANCEDB_API_KEY })
+    }
     if (opts.apiKey === undefined || opts.region === undefined) {
       throw new Error('API key and region are not supported for remote connections')
     }
