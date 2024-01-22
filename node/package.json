@@ -6,7 +6,7 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "tsc": "tsc -b",
-    "build": "cargo-cp-artifact --artifact cdylib vectordb-node index.node -- cargo build --message-format=json",
+    "build": "cargo-cp-artifact --artifact cdylib vectordb-node index.node -- cargo build --message-format=json && tsc -b",
     "build-release": "npm run build -- --release",
     "test": "npm run tsc && mocha -recursive dist/test",
     "integration-test": "npm run tsc && mocha -recursive dist/integration_test",
@@ -46,7 +46,7 @@
     "eslint-plugin-n": "^15.7.0",
     "eslint-plugin-promise": "^6.1.1",
     "mocha": "^10.2.0",
-    "openai": "^3.2.1",
+    "openai": "^4.24.1",
     "sinon": "^15.1.0",
     "temp": "^0.9.4",
     "ts-node": "^10.9.1",

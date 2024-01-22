@@ -112,7 +112,8 @@ class FunctionWrapper:
             v = int(sys.version_info.minor)
             if v >= 11:
                 print(
-                    "WARNING: rate limit only support up to 3.10, proceeding without rate limiter"
+                    "WARNING: rate limit only support up to 3.10, proceeding "
+                    "without rate limiter"
                 )
             else:
                 import ratelimiter
@@ -168,8 +169,8 @@ class FunctionWrapper:
 
 def weak_lru(maxsize=128):
     """
-    LRU cache that keeps weak references to the objects it caches. Only caches the latest instance of the objects to make sure memory usage
-    is bounded.
+    LRU cache that keeps weak references to the objects it caches. Only caches the
+    latest instance of the objects to make sure memory usage is bounded.
 
     Parameters
     ----------
@@ -234,15 +235,17 @@ def retry_with_exponential_backoff(
         num_retries = 0
         delay = initial_delay
 
-        # Loop until a successful response or max_retries is hit or an exception is raised
+        # Loop until a successful response or max_retries is hit or an exception
+        # is raised
         while True:
             try:
                 return func(*args, **kwargs)
 
-            # Currently retrying on all exceptions as there is no way to know the format of the error msgs used by different APIs
-            # We'll log the error and say that it is assumed that if this portion errors out, it's due to rate limit but the user
-            # should check the error message to be sure
-            except Exception as e:
+            # Currently retrying on all exceptions as there is no way to know the
+            # format of the error msgs used by different APIs. We'll log the error
+            # and say that it is assumed that if this portion errors out, it's due
+            # to rate limit but the user should check the error message to be sure.
+            except Exception as e:  # noqa: PERF203
                 num_retries += 1
 
                 if num_retries > max_retries:

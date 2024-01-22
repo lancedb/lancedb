@@ -3,6 +3,7 @@ const fs = require("fs");
 const path = require("path");
 
 const globString = "../src/**/*.md";
+
 const excludedGlobs = [
   "../src/fts.md",
   "../src/embedding.md",

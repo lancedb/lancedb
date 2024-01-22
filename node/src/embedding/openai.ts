@@ -13,36 +13,44 @@
 // limitations under the License.
 
 import { type EmbeddingFunction } from '../index'
+import type OpenAI from 'openai'
 
 export class OpenAIEmbeddingFunction implements EmbeddingFunction<string> {
-  private readonly _openai: any
+  private readonly _openai: OpenAI
   private readonly _modelName: string
 
   constructor (sourceColumn: string, openAIKey: string, modelName: string = 'text-embedding-ada-002') {
-    let openai
+    /**
+     * @type {import("openai").default}
+     */
+    let Openai
     try {
       // eslint-disable-next-line @typescript-eslint/no-var-requires
-      openai = require('openai')
+      Openai = require('openai')
     } catch {
-      throw new Error('please install openai using npm install openai')
+      throw new Error('please install openai@^4.24.1 using npm install openai')
     }
 
     this.sourceColumn = sourceColumn
-    const configuration = new openai.Configuration({
+    const configuration = {
       apiKey: openAIKey
-    })
-    this._openai = new openai.OpenAIApi(configuration)
+    }
+
+    this._openai = new Openai(configuration)
     this._modelName = modelName
+
+    console.log({ op: this._openai.embeddings.create, md: this._modelName })
   }
 
   async embed (data: string[]): Promise<number[][]> {
-    const response = await this._openai.createEmbedding({
+    const response = await this._openai.embeddings.create({
       model: this._modelName,
       input: data
     })
+
     const embeddings: number[][] = []
-    for (let i = 0; i < response.data.data.length; i++) {
-      embeddings.push(response.data.data[i].embedding as number[])
+    for (let i = 0; i < response.data.length; i++) {
+      embeddings.push(response.data[i].embedding)
     }
     return embeddings
   }

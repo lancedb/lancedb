@@ -46,7 +46,8 @@ def test_event_reporting(monkeypatch, request_log_path, tmp_path) -> None:
     with open(request_log_path, "r") as f:
         json_data = json.load(f)
 
-    # TODO: don't hardcode these here. Instead create a module level json scehma in lancedb.utils.events for better evolvability
+    # TODO: don't hardcode these here. Instead create a module level json scehma in
+    # lancedb.utils.events for better evolvability
     batch_keys = ["api_key", "distinct_id", "batch"]
     event_keys = ["event", "properties", "timestamp", "distinct_id"]
     property_keys = ["cli", "install", "platforms", "version", "session_id"]

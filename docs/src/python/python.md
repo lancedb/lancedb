@@ -1,4 +1,6 @@
-# LanceDB Python API Reference
+# Python API Reference
+
+This section contains the API reference for the OSS Python API.
 
 ## Installation
 
@@ -36,7 +38,7 @@ pip install lancedb
 
 ::: lancedb.embeddings.open_clip.OpenClipEmbeddings
 
-::: lancedb.embeddings.with_embeddings
+::: lancedb.embeddings.utils.with_embeddings
 
 ## Context
 

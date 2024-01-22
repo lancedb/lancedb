@@ -52,7 +52,7 @@
 
 #### Defined in
 
-[index.ts:755](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L755)
+[index.ts:996](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L996)
 
 ## Functions
 
@@ -60,29 +60,41 @@
 
 ▸ **connect**(`uri`): `Promise`\<[`Connection`](interfaces/Connection.md)\>
 
-Connect to a LanceDB instance at the given URI
+Connect to a LanceDB instance at the given URI.
+
+Accpeted formats:
+
+- `/path/to/database` - local database
+- `s3://bucket/path/to/database` or `gs://bucket/path/to/database` - database on cloud storage
+- `db://host:port` - remote database (SaaS)
 
 #### Parameters
 
 | Name | Type | Description |
 | :------ | :------ | :------ |
-| `uri` | `string` | The uri of the database. |
+| `uri` | `string` | The uri of the database. If the database uri starts with `db://` then it connects to a remote database. |
 
 #### Returns
 
 `Promise`\<[`Connection`](interfaces/Connection.md)\>
 
+**`See`**
+
+[ConnectionOptions](interfaces/ConnectionOptions.md) for more details on the URI format.
+
 #### Defined in
 
-[index.ts:95](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L95)
+[index.ts:141](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L141)
 
 ▸ **connect**(`opts`): `Promise`\<[`Connection`](interfaces/Connection.md)\>
 
+Connect to a LanceDB instance with connection options.
+
 #### Parameters
 
-| Name | Type |
-| :------ | :------ |
-| `opts` | `Partial`\<[`ConnectionOptions`](interfaces/ConnectionOptions.md)\> |
+| Name | Type | Description |
+| :------ | :------ | :------ |
+| `opts` | `Partial`\<[`ConnectionOptions`](interfaces/ConnectionOptions.md)\> | The [ConnectionOptions](interfaces/ConnectionOptions.md) to use when connecting to the database. |
 
 #### Returns
 
@@ -90,7 +102,7 @@ Connect to a LanceDB instance at the given URI
 
 #### Defined in
 
-[index.ts:96](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L96)
+[index.ts:147](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L147)
 
 ___
 
@@ -110,4 +122,4 @@ value is WriteOptions
 
 #### Defined in
 
-[index.ts:781](https://github.com/lancedb/lancedb/blob/7856a94/node/src/index.ts#L781)
+[index.ts:1022](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L1022)

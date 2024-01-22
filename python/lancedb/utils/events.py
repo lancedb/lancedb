@@ -35,10 +35,11 @@ from .general import (
 
 class _Events:
     """
-    A class for collecting anonymous event analytics. Event analytics are enabled when ``diagnostics=True`` in config and
-    disabled when ``diagnostics=False``.
+    A class for collecting anonymous event analytics. Event analytics are enabled when
+    ``diagnostics=True`` in config and disabled when ``diagnostics=False``.
 
-    You can enable or disable diagnostics by running ``lancedb diagnostics --enabled`` or ``lancedb diagnostics --disabled``.
+    You can enable or disable diagnostics by running ``lancedb diagnostics --enabled``
+    or ``lancedb diagnostics --disabled``.
 
     Attributes
     ----------
@@ -61,7 +62,8 @@ class _Events:
 
     def __init__(self):
         """
-        Initializes the Events object with default values for events, rate_limit, and metadata.
+        Initializes the Events object with default values for events, rate_limit,
+        and metadata.
         """
         self.events = []  # events list
         self.throttled_event_names = ["search_table"]
@@ -83,7 +85,8 @@ class _Events:
             "version": importlib.metadata.version("lancedb"),
             "platforms": PLATFORMS,
             "session_id": round(random.random() * 1e15),
-            # 'engagement_time_msec': 1000 # TODO: In future we might be interested in this metric
+            # TODO: In future we might be interested in this metric
+            # 'engagement_time_msec': 1000
         }
 
         TESTS_RUNNING = is_pytest_running() or is_github_actions_ci()
@@ -100,7 +103,8 @@ class _Events:
 
     def __call__(self, event_name, params={}):
         """
-        Attempts to add a new event to the events list and send events if the rate limit is reached.
+        Attempts to add a new event to the events list and send events if the rate
+        limit is reached.
 
         Args
         ----
@@ -109,7 +113,8 @@ class _Events:
         params : dict, optional
             A dictionary of additional parameters to be logged with the event.
         """
-        ### NOTE: We might need a way to tag a session with a label to check usage from a source. Setting label should be exposed to the user.
+        ### NOTE: We might need a way to tag a session with a label to check usage
+        ### from a source. Setting label should be exposed to the user.
         if not self.enabled:
             return
         if (
@@ -141,8 +146,8 @@ class _Events:
             "batch": self.events,
         }
         # POST equivalent to requests.post(self.url, json=data).
-        # threaded request is used to avoid blocking, retries are disabled, and verbose is disabled
-        # to avoid any possible disruption in the console.
+        # threaded request is used to avoid blocking, retries are disabled, and
+        # verbose is disabled to avoid any possible disruption in the console.
         threaded_request(
             method="post",
             url=self.url,

@@ -1,18 +1,19 @@
-There are various Embedding functions available out of the box with LanceDB. We're working on supporting other popular embedding APIs.
+There are various embedding functions available out of the box with LanceDB to manage your embeddings implicitly. We're actively working on adding other popular embedding APIs and models.
 
-## Text Embedding Functions
-Here are the text embedding functions registered by default.
-Embedding functions have an inbuilt rate limit handler wrapper for source and query embedding function calls that retry with exponential standoff. 
-Each `EmbeddingFunction` implementation automatically takes `max_retries` as an argument which has the default value of 7.
+## Text embedding functions
+Contains the text embedding functions registered by default.
 
-### Sentence Transformers
-Here are the parameters that you can set when registering a `sentence-transformers` object, and their default values:
+* Embedding functions have an inbuilt rate limit handler wrapper for source and query embedding function calls that retry with exponential backoff. 
+* Each `EmbeddingFunction` implementation automatically takes `max_retries` as an argument which has the default value of 7.
+
+### Sentence transformers
+Allows you to set parameters when registering a `sentence-transformers` object.
 
 | Parameter | Type | Default Value | Description |
 |---|---|---|---|
-| `name` | `str` | `"all-MiniLM-L6-v2"` | The name of the model. |
-| `device` | `str` | `"cpu"` | The device to run the model on. Can be `"cpu"` or `"gpu"`. |
-| `normalize` | `bool` | `True` | Whether to normalize the input text before feeding it to the model. |
+| `name` | `str` | `all-MiniLM-L6-v2` | The name of the model |
+| `device` | `str` | `cpu` | The device to run the model on (can be `cpu` or `gpu`) |
+| `normalize` | `bool` | `True` | Whether to normalize the input text before feeding it to the model |
 
 
 ```python
@@ -37,13 +38,12 @@ actual = table.search(query).limit(1).to_pydantic(Words)[0]
 print(actual.text)
 ```
 
-### OpenAIEmbeddings
-LanceDB has OpenAI embeddings function in the registry by default. It is registered as `openai` and here are the parameters that you can customize when creating the instances
+### OpenAI embeddings
+LanceDB registers the OpenAI embeddings function in the registry by default, as `openai`. Below are the parameters that you can customize when creating the instances:
 
 | Parameter | Type | Default Value | Description |
 |---|---|---|---|
 | `name` | `str` | `"text-embedding-ada-002"` | The name of the model. |
-
 
 
 ```python
@@ -69,17 +69,18 @@ print(actual.text)
 ```
 
 ### Instructor Embeddings
-Instructor is an instruction-finetuned text embedding model that can generate text embeddings tailored to any task (e.g. classification, retrieval, clustering, text evaluation, etc.) and domains (e.g. science, finance, etc.) by simply providing the task instruction, without any finetuning.
+[Instructor](https://instructor-embedding.github.io/) is an instruction-finetuned text embedding model that can generate text embeddings tailored to any task (e.g. classification, retrieval, clustering, text evaluation, etc.) and domains (e.g. science, finance, etc.) by simply providing the task instruction, without any finetuning.
 
-If you want to calculate customized embeddings for specific sentences, you may follow the unified template to write instructions:
+If you want to calculate customized embeddings for specific sentences, you can follow the unified template to write instructions.
 
-                          Represent the `domain` `text_type` for `task_objective`:
+!!! info
+    Represent the `domain` `text_type` for `task_objective`:
 
-* `domain` is optional, and it specifies the domain of the text, e.g. science, finance, medicine, etc.
-* `text_type` is required, and it specifies the encoding unit, e.g. sentence, document, paragraph, etc.
-* `task_objective` is optional, and it specifies the objective of embedding, e.g. retrieve a document, classify the sentence, etc.
+    * `domain` is optional, and it specifies the domain of the text, e.g. science, finance, medicine, etc.
+    * `text_type` is required, and it specifies the encoding unit, e.g. sentence, document, paragraph, etc.
+    * `task_objective` is optional, and it specifies the objective of embedding, e.g. retrieve a document, classify the sentence, etc.
 
-More information about the model can be found here - https://github.com/xlang-ai/instructor-embedding
+More information about the model can be found at the [source URL](https://github.com/xlang-ai/instructor-embedding).
 
 | Argument | Type | Default | Description |
 |---|---|---|---|
@@ -202,9 +203,8 @@ rs = tbl.search("hello").limit(1).to_pandas()
 ## Multi-modal embedding functions
 Multi-modal embedding functions allow you to query your table using both images and text.
 
-### OpenClipEmbeddings
-We support CLIP model embeddings using the open source alternative, open-clip which supports various customizations. It is registered as `open-clip` and supports the following customizations:
-
+### OpenClip embeddings
+We support CLIP model embeddings using the open source alternative, [open-clip](https://github.com/mlfoundations/open_clip) which supports various customizations. It is registered as `open-clip` and supports the following customizations:
 
 | Parameter | Type | Default Value | Description |
 |---|---|---|---|
@@ -214,11 +214,10 @@ We support CLIP model embeddings using the open source alternative, open-clip wh
 | `batch_size` | `int` | `64` | The number of images to process in a batch. |
 | `normalize` | `bool` | `True` | Whether to normalize the input images before feeding them to the model. |
 
-
 This embedding function supports ingesting images as both bytes and urls. You can query them using both test and other images.
 
-NOTE:
-LanceDB supports ingesting images directly from accessible links.
+!!! info
+    LanceDB supports ingesting images directly from accessible links.
 
 
 ```python
@@ -286,4 +285,4 @@ print(actual.label)
 
 ```
 
-If you have any questions about the embeddings API, supported models, or see a relevant model missing, please raise an issue.
+If you have any questions about the embeddings API, supported models, or see a relevant model missing, please raise an issue [on GitHub](https://github.com/lancedb/lancedb/issues).

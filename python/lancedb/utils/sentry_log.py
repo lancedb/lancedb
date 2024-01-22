@@ -33,10 +33,12 @@ from .general import (
 @TryExcept(verbose=False)
 def set_sentry():
     """
-    Initialize the Sentry SDK for error tracking and reporting. Only used if sentry_sdk package is installed and
-    sync=True in settings. Run 'lancedb settings' to see and update settings YAML file.
+    Initialize the Sentry SDK for error tracking and reporting. Only used if
+    sentry_sdk package is installed and sync=True in settings. Run 'lancedb settings'
+    to see and update settings YAML file.
 
-    Conditions required to send errors (ALL conditions must be met or no errors will be reported):
+    Conditions required to send errors (ALL conditions must be met or no errors will
+    be reported):
         - sentry_sdk package is installed
         - sync=True in  settings
         - pytest is not running
@@ -44,22 +46,26 @@ def set_sentry():
         - running in a non-git directory
         - online environment
 
-    The function also configures Sentry SDK to ignore KeyboardInterrupt and FileNotFoundError
-    exceptions for now.
+    The function also configures Sentry SDK to ignore KeyboardInterrupt and
+    FileNotFoundError exceptions for now.
 
-    Additionally, the function sets custom tags and user information for Sentry events.
+    Additionally, the function sets custom tags and user information for Sentry
+    events.
     """
 
     def before_send(event, hint):
         """
-        Modify the event before sending it to Sentry based on specific exception types and messages.
+        Modify the event before sending it to Sentry based on specific exception
+        types and messages.
 
         Args:
             event (dict): The event dictionary containing information about the error.
-            hint (dict): A dictionary containing additional information about the error.
+            hint (dict): A dictionary containing additional information about
+                         the error.
 
         Returns:
-            dict: The modified event or None if the event should not be sent to Sentry.
+            dict: The modified event or None if the event should not be sent
+                  to Sentry.
         """
         if "exc_info" in hint:
             exc_type, exc_value, tb = hint["exc_info"]

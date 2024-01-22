@@ -1,31 +1,29 @@
-![example](/assets/voxel.gif)
+# FiftyOne
 
-Basic recipe
-____________
+FiftyOne is an open source toolkit for building high-quality datasets and computer vision models. It provides an API to create LanceDB tables and run similarity queries, both programmatically in Python and via point-and-click in the App.
 
-The basic workflow to use LanceDB to create a similarity index on your FiftyOne
-datasets and use this to query your data is as follows:
+![example](../assets/voxel.gif)
 
-1)  Load a dataset into FiftyOne
+## Basic recipe
 
-2)  Compute embedding vectors for samples or patches in your dataset, or select
-    a model to use to generate embeddings
+The basic workflow shown below uses LanceDB to create a similarity index on your FiftyOne
+datasets:
 
-3)  Use the `compute_similarity()`
-    method to generate a LanceDB table for the samples or object
-    patches embeddings in a dataset by setting the parameter `backend="lancedb"` and
-    specifying a `brain_key` of your choice
+1. Load a dataset into FiftyOne.
 
-4)  Use this LanceDB table to query your data with
-    `sort_by_similarity()`
+2. Compute embedding vectors for samples or patches in your dataset, or select a model to use to generate embeddings.
 
-5) If desired, delete the table
+3. Use the `compute_similarity()` method to generate a LanceDB table for the samples or object patches embeddings in a dataset by setting the parameter `backend="lancedb"` and specifying a `brain_key` of your choice.
+
+4. Use this LanceDB table to query your data with `sort_by_similarity()`.
+
+5. If desired, delete the table.
 
 The example below demonstrates this workflow.
 
 !!! Note
 
-    You must install the LanceDB Python client to run this
+    Install the LanceDB Python client to run the code shown below.
     ```
     pip install lancedb
     ```
@@ -68,4 +66,4 @@ lancedb_index.cleanup()
 dataset.delete_brain_run("lancedb_index")
 ```
 
-More in depth walkthrough of the integration, visit the LanceDB guide on Voxel51 - [LaceDB x Voxel51](https://docs.voxel51.com/integrations/lancedb.html)
+For a much more in depth walkthrough of the integration, visit the LanceDB x Voxel51 [docs page](https://docs.voxel51.com/integrations/lancedb.html).
