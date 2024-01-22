@@ -124,7 +124,7 @@ export function makeArrowTable (
   if (data.length === 0) {
     throw new Error('At least one record needs to be provided')
   }
-  const opt = new MakeArrowTableOptions(options != null ? options : {})
+  const opt = new MakeArrowTableOptions(options !== undefined ? options : {})
   const columns: Record<string, Vector> = {}
   // TODO: sample dataset to find missing columns
   const columnNames = Object.keys(data[0])
@@ -132,18 +132,16 @@ export function makeArrowTable (
     const values = data.map((datum) => datum[colName])
     let vector: Vector
 
-    if (opt?.schema !== undefined) {
+    if (opt.schema !== undefined) {
       // Explicit schema is provided, highest priority
       vector = vectorFromArray(
         values,
-        opt?.schema?.fields.filter((f) => f.name === colName)[0]?.type
+        opt.schema?.fields.filter((f) => f.name === colName)[0]?.type
       )
-    } else if (opt?.vectorColumns?.includes(colName)) {
-      const dataType =
-        opt?.vectorDataType != null ? opt.vectorDataType : new Float32()
+    } else if (opt.vectorColumns.includes(colName)) {
       const fslType = new FixedSizeList(
-        data[0][colName].length,
-        new Field('item', dataType, false)
+        values[0].length,
+        new Field('item', opt.vectorDataType, false)
       )
       vector = vectorFromArray(values, fslType)
     } else {
