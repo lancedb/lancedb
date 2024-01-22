@@ -89,7 +89,12 @@ describe('Apache Arrow tables', function () {
         { a: 4, b: 5, vec1: [4, 5, 6], vec2: [8, 10, 12] },
         { a: 7, b: 8, vec1: [7, 8, 9], vec2: [14, 16, 18] }
       ],
-      { vectorColumns: ['vec1', 'vec2'], vectorDataType: new Float16() }
+      {
+        vectorColumns: {
+          vec1: { type: new Float16() },
+          vec2: { type: new Float16() }
+        }
+      }
     )
 
     const buf = await fromTableToBuffer(table)

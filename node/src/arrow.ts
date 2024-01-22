@@ -30,23 +30,31 @@ import {
   RecordBatch,
   makeData,
   Struct,
-  type Float
-} from 'apache-arrow'
-import { type EmbeddingFunction } from './index'
+  type Float,
+} from "apache-arrow";
+import { type EmbeddingFunction } from "./index";
+
+export class VectorColumnOptions {
+  /** Vector column type. */
+  type: Float = new Float32();
+
+  constructor(values?: Partial<VectorColumnOptions>) {
+    Object.assign(this, values);
+  }
+}
 
 /** Options to control the makeArrowTable call. */
 export class MakeArrowTableOptions {
   /** Provided schema. */
-  schema?: Schema
-
-  /// Default vector column types.
-  vectorDataType: Float = new Float32()
+  schema?: Schema;
 
   /** Vector columns */
-  vectorColumns: string[] = ['vector']
+  vectorColumns: Record<string, VectorColumnOptions> = {
+    vector: new VectorColumnOptions(),
+  };
 
-  constructor (values: Partial<MakeArrowTableOptions>) {
-    Object.assign(this, values)
+  constructor(values?: Partial<MakeArrowTableOptions>) {
+    Object.assign(this, values);
   }
 }
 
@@ -113,249 +121,252 @@ export class MakeArrowTableOptions {
     { a: 1, b: 2, vec1: [1, 2, 3], vec2: [2, 4, 6] },
     { a: 4, b: 5, vec1: [4, 5, 6], vec2: [8, 10, 12] },
     { a: 7, b: 8, vec1: [7, 8, 9], vec2: [14, 16, 18] }
-  ], { vectorColumns: ['vec1', 'vec2'], vectorDataType: new Float16() });
+  ], { vectorColumns: [{'}]);
  * assert.deepEqual(table.schema, schema)
  * ```
  */
-export function makeArrowTable (
+export function makeArrowTable(
   data: Array<Record<string, any>>,
   options?: Partial<MakeArrowTableOptions>
 ): ArrowTable {
   if (data.length === 0) {
-    throw new Error('At least one record needs to be provided')
+    throw new Error("At least one record needs to be provided");
   }
-  const opt = new MakeArrowTableOptions(options !== undefined ? options : {})
-  const columns: Record<string, Vector> = {}
+  const opt = new MakeArrowTableOptions(options !== undefined ? options : {});
+  const columns: Record<string, Vector> = {};
   // TODO: sample dataset to find missing columns
-  const columnNames = Object.keys(data[0])
+  const columnNames = Object.keys(data[0]);
   for (const colName of columnNames) {
-    const values = data.map((datum) => datum[colName])
-    let vector: Vector
+    const values = data.map((datum) => datum[colName]);
+    let vector: Vector;
 
     if (opt.schema !== undefined) {
       // Explicit schema is provided, highest priority
       vector = vectorFromArray(
         values,
         opt.schema?.fields.filter((f) => f.name === colName)[0]?.type
-      )
-    } else if (opt.vectorColumns.includes(colName)) {
-      const fslType = new FixedSizeList(
-        values[0].length,
-        new Field('item', opt.vectorDataType, false)
-      )
-      vector = vectorFromArray(values, fslType)
+      );
     } else {
-      // Normal case
-      vector = vectorFromArray(values)
+      const vectorColumnOptions = opt.vectorColumns[colName];
+      if (vectorColumnOptions !== undefined) {
+        const fslType = new FixedSizeList(
+          values[0].length,
+          new Field("item", vectorColumnOptions.type, false)
+        );
+        vector = vectorFromArray(values, fslType);
+      } else {
+        // Normal case
+        vector = vectorFromArray(values);
+      }
     }
-    columns[colName] = vector
+    columns[colName] = vector;
   }
 
-  return new ArrowTable(columns)
+  return new ArrowTable(columns);
 }
 
 // Converts an Array of records into an Arrow Table, optionally applying an embeddings function to it.
-export async function convertToTable<T> (
+export async function convertToTable<T>(
   data: Array<Record<string, unknown>>,
   embeddings?: EmbeddingFunction<T>
 ): Promise<ArrowTable> {
   if (data.length === 0) {
-    throw new Error('At least one record needs to be provided')
+    throw new Error("At least one record needs to be provided");
   }
 
-  const columns = Object.keys(data[0])
-  const records: Record<string, Vector> = {}
+  const columns = Object.keys(data[0]);
+  const records: Record<string, Vector> = {};
 
   for (const columnsKey of columns) {
-    if (columnsKey === 'vector') {
-      const vectorSize = (data[0].vector as any[]).length
-      const listBuilder = newVectorBuilder(vectorSize)
+    if (columnsKey === "vector") {
+      const vectorSize = (data[0].vector as any[]).length;
+      const listBuilder = newVectorBuilder(vectorSize);
       for (const datum of data) {
         if ((datum[columnsKey] as any[]).length !== vectorSize) {
-          throw new Error(`Invalid vector size, expected ${vectorSize}`)
+          throw new Error(`Invalid vector size, expected ${vectorSize}`);
         }
 
-        listBuilder.append(datum[columnsKey])
+        listBuilder.append(datum[columnsKey]);
       }
-      records[columnsKey] = listBuilder.finish().toVector()
+      records[columnsKey] = listBuilder.finish().toVector();
     } else {
-      const values = []
+      const values = [];
       for (const datum of data) {
-        values.push(datum[columnsKey])
+        values.push(datum[columnsKey]);
       }
 
       if (columnsKey === embeddings?.sourceColumn) {
-        const vectors = await embeddings.embed(values as T[])
+        const vectors = await embeddings.embed(values as T[]);
         records.vector = vectorFromArray(
           vectors,
           newVectorType(vectors[0].length)
-        )
+        );
       }
 
-      if (typeof values[0] === 'string') {
+      if (typeof values[0] === "string") {
         // `vectorFromArray` converts strings into dictionary vectors, forcing it back to a string column
-        records[columnsKey] = vectorFromArray(values, new Utf8())
+        records[columnsKey] = vectorFromArray(values, new Utf8());
       } else if (Array.isArray(values[0])) {
-        const elementType = getElementType(values[0])
-        let innerType
-        if (elementType === 'string') {
-          innerType = new Utf8()
-        } else if (elementType === 'number') {
-          innerType = new Float64()
+        const elementType = getElementType(values[0]);
+        let innerType;
+        if (elementType === "string") {
+          innerType = new Utf8();
+        } else if (elementType === "number") {
+          innerType = new Float64();
         } else {
           // TODO: pass in schema if it exists, else keep going to the next element
-          throw new Error(`Unsupported array element type ${elementType}`)
+          throw new Error(`Unsupported array element type ${elementType}`);
         }
         const listBuilder = makeBuilder({
-          type: new List(new Field('item', innerType, true))
-        })
+          type: new List(new Field("item", innerType, true)),
+        });
         for (const value of values) {
-          listBuilder.append(value)
+          listBuilder.append(value);
         }
-        records[columnsKey] = listBuilder.finish().toVector()
+        records[columnsKey] = listBuilder.finish().toVector();
       } else {
         // TODO if this is a struct field then recursively align the subfields
-        records[columnsKey] = vectorFromArray(values)
+        records[columnsKey] = vectorFromArray(values);
       }
     }
   }
 
-  return new ArrowTable(records)
+  return new ArrowTable(records);
 }
 
-function getElementType (arr: any[]): string {
+function getElementType(arr: any[]): string {
   if (arr.length === 0) {
-    return 'undefined'
+    return "undefined";
   }
 
-  return typeof arr[0]
+  return typeof arr[0];
 }
 
 // Creates a new Arrow ListBuilder that stores a Vector column
-function newVectorBuilder (dim: number): FixedSizeListBuilder<Float32> {
+function newVectorBuilder(dim: number): FixedSizeListBuilder<Float32> {
   return makeBuilder({
-    type: newVectorType(dim)
-  })
+    type: newVectorType(dim),
+  });
 }
 
 // Creates the Arrow Type for a Vector column with dimension `dim`
-function newVectorType (dim: number): FixedSizeList<Float32> {
+function newVectorType(dim: number): FixedSizeList<Float32> {
   // Somewhere we always default to have the elements nullable, so we need to set it to true
   // otherwise we often get schema mismatches because the stored data always has schema with nullable elements
-  const children = new Field<Float32>('item', new Float32(), true)
-  return new FixedSizeList(dim, children)
+  const children = new Field<Float32>("item", new Float32(), true);
+  return new FixedSizeList(dim, children);
 }
 
 // Converts an Array of records into Arrow IPC format
-export async function fromRecordsToBuffer<T> (
+export async function fromRecordsToBuffer<T>(
   data: Array<Record<string, unknown>>,
   embeddings?: EmbeddingFunction<T>,
   schema?: Schema
 ): Promise<Buffer> {
-  let table = await convertToTable(data, embeddings)
+  let table = await convertToTable(data, embeddings);
   if (schema !== undefined) {
-    table = alignTable(table, schema)
+    table = alignTable(table, schema);
   }
-  const writer = RecordBatchFileWriter.writeAll(table)
-  return Buffer.from(await writer.toUint8Array())
+  const writer = RecordBatchFileWriter.writeAll(table);
+  return Buffer.from(await writer.toUint8Array());
 }
 
 // Converts an Array of records into Arrow IPC stream format
-export async function fromRecordsToStreamBuffer<T> (
+export async function fromRecordsToStreamBuffer<T>(
   data: Array<Record<string, unknown>>,
   embeddings?: EmbeddingFunction<T>,
   schema?: Schema
 ): Promise<Buffer> {
-  let table = await convertToTable(data, embeddings)
+  let table = await convertToTable(data, embeddings);
   if (schema !== undefined) {
-    table = alignTable(table, schema)
+    table = alignTable(table, schema);
   }
-  const writer = RecordBatchStreamWriter.writeAll(table)
-  return Buffer.from(await writer.toUint8Array())
+  const writer = RecordBatchStreamWriter.writeAll(table);
+  return Buffer.from(await writer.toUint8Array());
 }
 
 // Converts an Arrow Table into Arrow IPC format
-export async function fromTableToBuffer<T> (
+export async function fromTableToBuffer<T>(
   table: ArrowTable,
   embeddings?: EmbeddingFunction<T>,
   schema?: Schema
 ): Promise<Buffer> {
   if (embeddings !== undefined) {
-    const source = table.getChild(embeddings.sourceColumn)
+    const source = table.getChild(embeddings.sourceColumn);
 
     if (source === null) {
       throw new Error(
         `The embedding source column ${embeddings.sourceColumn} was not found in the Arrow Table`
-      )
+      );
     }
 
-    const vectors = await embeddings.embed(source.toArray() as T[])
-    const column = vectorFromArray(vectors, newVectorType(vectors[0].length))
-    table = table.assign(new ArrowTable({ vector: column }))
+    const vectors = await embeddings.embed(source.toArray() as T[]);
+    const column = vectorFromArray(vectors, newVectorType(vectors[0].length));
+    table = table.assign(new ArrowTable({ vector: column }));
   }
   if (schema !== undefined) {
-    table = alignTable(table, schema)
+    table = alignTable(table, schema);
   }
-  const writer = RecordBatchFileWriter.writeAll(table)
-  return Buffer.from(await writer.toUint8Array())
+  const writer = RecordBatchFileWriter.writeAll(table);
+  return Buffer.from(await writer.toUint8Array());
 }
 
 // Converts an Arrow Table into Arrow IPC stream format
-export async function fromTableToStreamBuffer<T> (
+export async function fromTableToStreamBuffer<T>(
   table: ArrowTable,
   embeddings?: EmbeddingFunction<T>,
   schema?: Schema
 ): Promise<Buffer> {
   if (embeddings !== undefined) {
-    const source = table.getChild(embeddings.sourceColumn)
+    const source = table.getChild(embeddings.sourceColumn);
 
     if (source === null) {
       throw new Error(
         `The embedding source column ${embeddings.sourceColumn} was not found in the Arrow Table`
-      )
+      );
     }
 
-    const vectors = await embeddings.embed(source.toArray() as T[])
-    const column = vectorFromArray(vectors, newVectorType(vectors[0].length))
-    table = table.assign(new ArrowTable({ vector: column }))
+    const vectors = await embeddings.embed(source.toArray() as T[]);
+    const column = vectorFromArray(vectors, newVectorType(vectors[0].length));
+    table = table.assign(new ArrowTable({ vector: column }));
   }
   if (schema !== undefined) {
-    table = alignTable(table, schema)
+    table = alignTable(table, schema);
   }
-  const writer = RecordBatchStreamWriter.writeAll(table)
-  return Buffer.from(await writer.toUint8Array())
+  const writer = RecordBatchStreamWriter.writeAll(table);
+  return Buffer.from(await writer.toUint8Array());
 }
 
-function alignBatch (batch: RecordBatch, schema: Schema): RecordBatch {
-  const alignedChildren = []
+function alignBatch(batch: RecordBatch, schema: Schema): RecordBatch {
+  const alignedChildren = [];
   for (const field of schema.fields) {
     const indexInBatch = batch.schema.fields?.findIndex(
       (f) => f.name === field.name
-    )
+    );
     if (indexInBatch < 0) {
       throw new Error(
         `The column ${field.name} was not found in the Arrow Table`
-      )
+      );
     }
-    alignedChildren.push(batch.data.children[indexInBatch])
+    alignedChildren.push(batch.data.children[indexInBatch]);
   }
   const newData = makeData({
     type: new Struct(schema.fields),
     length: batch.numRows,
     nullCount: batch.nullCount,
-    children: alignedChildren
-  })
-  return new RecordBatch(schema, newData)
+    children: alignedChildren,
+  });
+  return new RecordBatch(schema, newData);
 }
 
-function alignTable (table: ArrowTable, schema: Schema): ArrowTable {
+function alignTable(table: ArrowTable, schema: Schema): ArrowTable {
   const alignedBatches = table.batches.map((batch) =>
     alignBatch(batch, schema)
-  )
-  return new ArrowTable(schema, alignedBatches)
+  );
+  return new ArrowTable(schema, alignedBatches);
 }
 
 // Creates an empty Arrow Table
-export function createEmptyTable (schema: Schema): ArrowTable {
-  return new ArrowTable(schema)
+export function createEmptyTable(schema: Schema): ArrowTable {
+  return new ArrowTable(schema);
 }
