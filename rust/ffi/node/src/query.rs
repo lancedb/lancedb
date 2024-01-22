@@ -1,7 +1,6 @@
 use std::convert::TryFrom;
 use std::ops::Deref;
 
-use arrow_array::Float32Array;
 use futures::{TryFutureExt, TryStreamExt};
 use lance_linalg::distance::MetricType;
 use neon::context::FunctionContext;
@@ -72,7 +71,7 @@ impl JsQuery {
 
         rt.spawn(async move {
             let mut builder = table
-                .search(query.map(Float32Array::from))
+                .search(query)
                 .refine_factor(refine_factor)
                 .nprobes(nprobes)
                 .filter(filter)

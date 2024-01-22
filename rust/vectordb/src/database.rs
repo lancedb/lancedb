@@ -12,6 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! LanceDB Database
+//!
+
 use std::fs::create_dir_all;
 use std::path::Path;
 use std::sync::Arc;
@@ -159,7 +162,7 @@ impl Database {
     ///
     /// # Returns
     ///
-    /// * A [Vec<String>] with all table names.
+    /// * A [`Vec<String>`] with all table names.
     pub async fn table_names(&self) -> Result<Vec<String>> {
         let mut f = self
             .object_store
