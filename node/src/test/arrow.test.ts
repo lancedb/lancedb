@@ -12,6 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+import { describe } from "mocha";
+import { assert } from "chai";
+import { Schema } from "@apache-arrow/ts";
+
+import { fromTableToBuffer, makeArrowTable } from "../arrow";
 import {
   Field,
   FixedSizeList,
@@ -20,10 +25,6 @@ import {
   Int32,
   tableFromIPC,
 } from "apache-arrow";
-
-import { fromTableToBuffer, makeArrowTable } from "../arrow";
-import { assert } from "chai";
-import { Schema } from "@apache-arrow/ts";
 
 describe("Apache Arrow tables", function () {
   it("Table to IPC", async function () {
