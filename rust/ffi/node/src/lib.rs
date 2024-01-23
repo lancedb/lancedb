@@ -22,8 +22,9 @@ use object_store::CredentialProvider;
 use once_cell::sync::OnceCell;
 use tokio::runtime::Runtime;
 
-use vectordb::database::Database;
+use vectordb::connection::Database;
 use vectordb::table::ReadParams;
+use vectordb::Connection;
 
 use crate::error::ResultExt;
 use crate::query::JsQuery;
@@ -38,7 +39,7 @@ mod query;
 mod table;
 
 struct JsDatabase {
-    database: Arc<Database>,
+    database: Arc<dyn Connection + 'static>,
 }
 
 impl Finalize for JsDatabase {}
