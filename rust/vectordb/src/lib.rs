@@ -46,7 +46,7 @@
 //! #### Connect to a database.
 //!
 //! ```rust
-//! use vectordb::{Database, Table, WriteMode};
+//! use vectordb::{connection::{Database, Connection}, Table, WriteMode};
 //! use arrow_schema::{Field, Schema};
 //! # tokio::runtime::Runtime::new().unwrap().block_on(async {
 //! let db = Database::connect("data/sample-lancedb").await.unwrap();
@@ -66,7 +66,7 @@
 //! use arrow_schema::{DataType, Schema, Field};
 //! use arrow_array::{RecordBatch, RecordBatchIterator};
 //! # use arrow_array::{FixedSizeListArray, Float32Array, Int32Array, types::Float32Type};
-//! # use vectordb::Database;
+//! # use vectordb::connection::{Database, Connection};
 //!
 //! # tokio::runtime::Runtime::new().unwrap().block_on(async {
 //! # let tmpdir = tempfile::tempdir().unwrap();
@@ -86,7 +86,7 @@
 //!         ]).unwrap()
 //!    ].into_iter().map(Ok),
 //!     schema.clone());
-//! db.create_table("my_table", batches, None).await.unwrap();
+//! db.create_table("my_table", Box::new(batches), None).await.unwrap();
 //! # });
 //! ```
 //!
@@ -98,7 +98,7 @@
 //! # use arrow_schema::{DataType, Schema, Field};
 //! # use arrow_array::{RecordBatch, RecordBatchIterator};
 //! # use arrow_array::{FixedSizeListArray, Float32Array, Int32Array, types::Float32Type};
-//! # use vectordb::Database;
+//! # use vectordb::connection::{Database, Connection};
 //! # tokio::runtime::Runtime::new().unwrap().block_on(async {
 //! # let tmpdir = tempfile::tempdir().unwrap();
 //! # let db = Database::connect(tmpdir.path().to_str().unwrap()).await.unwrap();
@@ -116,7 +116,7 @@
 //! #       ]).unwrap()
 //! #   ].into_iter().map(Ok),
 //! #    schema.clone());
-//! # db.create_table("my_table", batches, None).await.unwrap();
+//! # db.create_table("my_table", Box::new(batches), None).await.unwrap();
 //! let table = db.open_table("my_table").await.unwrap();
 //! let results = table
 //!     .search(Some(vec![1.0; 128]))
@@ -131,8 +131,8 @@
 //!
 //! ```
 
+pub mod connection;
 pub mod data;
-pub mod database;
 pub mod error;
 pub mod index;
 pub mod io;
@@ -140,7 +140,7 @@ pub mod query;
 pub mod table;
 pub mod utils;
 
-pub use database::Database;
+pub use connection::Connection;
 pub use table::Table;
 
 pub use lance::dataset::WriteMode;
