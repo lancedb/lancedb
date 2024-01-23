@@ -212,7 +212,7 @@ mod tests {
         let new_vector = Float32Array::from_iter_values([9.8, 8.7]);
 
         let query = query
-            .query_vector(&[0.1, 0.2])
+            .query_vector(&[9.8, 8.7])
             .limit(100)
             .nprobes(1000)
             .use_index(true)
