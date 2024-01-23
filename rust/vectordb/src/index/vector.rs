@@ -14,7 +14,7 @@
 
 use serde::Deserialize;
 
-use lance::format::{Index, Manifest};
+use lance::table::format::{Index, Manifest};
 use lance::index::vector::pq::PQBuildParams;
 use lance::index::vector::VectorIndexParams;
 use lance_index::vector::ivf::IvfBuildParams;

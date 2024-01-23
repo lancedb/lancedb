@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use lance::{
     dataset::{ReadParams, WriteParams},
-    io::{ObjectStoreParams, WrappingObjectStore},
 };
+use lance::io::{ObjectStoreParams, WrappingObjectStore};
 
 use crate::error::{Error, Result};
 

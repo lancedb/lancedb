@@ -140,7 +140,7 @@ pub mod query;
 pub mod table;
 pub mod utils;
 
-pub use connection::Connection;
+pub use connection::{Connection, Database};
 pub use table::Table;
 
 pub use lance::dataset::WriteMode;
