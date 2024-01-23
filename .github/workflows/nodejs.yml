@@ -106,6 +106,7 @@ jobs:
         npm install -g @napi-rs/cli
     - name: Build
       run: |
+        npm ci
         npm run build
     - name: Test
       run: |
