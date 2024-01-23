@@ -2,12 +2,32 @@ import typing
 from abc import ABC, abstractmethod
 
 import pyarrow as pa
+import numpy as np
 
 if typing.TYPE_CHECKING:
     import lancedb
 
 
 class Reranker(ABC):
+    def __init__(self, return_score: str = "relevance"):
+        """
+        Interface for a reranker. A reranker is used to rerank the results from a
+        vector and FTS search. This is useful for combining the results from both
+        search methods.
+
+        Parameters
+        ----------
+        return_score : str, default "relevance"
+            opntions are "relevance" or "all"
+            The type of score to return. If "relevance", will return only the relevance
+            score. If "all", will return all scores from the vector and FTS search along
+            with the relevance score.
+
+        """
+        if return_score not in ["relevance", "all"]:
+            raise ValueError("score must be either 'relevance' or 'all'")
+        self.score = return_score
+
     @abstractmethod
     def rerank_hybrid(
         query_builder: "lancedb.HybridQueryBuilder",
@@ -72,21 +92,13 @@ class Reranker(ABC):
         fts_results : pa.Table
             The results from the FTS search
         """
-        ## !!!! TODO: This op is inefficient. couldn't make pa.concat_tables to work.
-        # Also need to look into pa.compute.unique
-        vector_list = vector_results.to_pylist()
-        fts_list = fts_results.to_pylist()
-        combined_list = vector_list + fts_list
+        comnined = pa.concat_tables([vector_results, fts_results], promote=True)
+        row_id = comnined.column("_rowid")
 
-        unique_row_ids = set()
-        unique_rows = []
-        for row in combined_list:
-            row_id = row["_rowid"]
-            if row_id not in unique_row_ids:
-                unique_row_ids.add(row_id)
-                unique_rows.append(row)
+        # deduplicate
+        mask = np.full((comnined.shape[0]), False)
+        _, mask_indices = np.unique(np.array(row_id), return_index=True)
+        mask[mask_indices] = True
+        combined = comnined.filter(mask=mask)
 
-        combined_results = pa.Table.from_pylist(
-            unique_rows, schema=vector_results.schema
-        )
-        return combined_results
+        return combined

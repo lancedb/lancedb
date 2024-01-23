@@ -48,6 +48,7 @@ def get_test_table(tmp_path):
     return table, MyTable
 
 
+## These tests are pretty loose, we should also check for correctness
 def test_linear_combination(tmp_path):
     table, schema = get_test_table(tmp_path)
     # The default reranker

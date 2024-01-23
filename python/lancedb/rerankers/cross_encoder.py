@@ -33,7 +33,9 @@ class CrossEncoderReranker(Reranker):
         model_name: str = "cross-encoder/ms-marco-TinyBERT-L-6",
         column: str = "text",
         device: Union[str, None] = None,
+        return_score="relevance",
     ):
+        super().__init__(return_score)
         torch = safe_import("torch")
         self.model_name = model_name
         self.column = column
@@ -58,11 +60,22 @@ class CrossEncoderReranker(Reranker):
         passages = combined_results[self.column].to_pylist()
         cross_inp = [[query_builder._query, passage] for passage in passages]
         cross_scores = self.model.predict(cross_inp)
-        combined_results = combined_results.set_column(
-            combined_results.column_names.index("_score"),
-            "_score",
-            pa.array(cross_scores, type=pa.float32()),
+        combined_results = combined_results.append_column(
+            "_relevance_score", pa.array(cross_scores, type=pa.float32())
         )
+
         # sort the results by _score
-        combined_results = combined_results.sort_by([("_score", "descending")])
+        if self.score == "relevance":
+            combined_results = combined_results.drop_columns(["score", "_distance"])
+        elif self.score == "all":
+            raise NotImplementedError(
+                """
+                        score='all' not implemented for cohere reranker as it is not dependent on 
+                        vector or fts search scores.
+                                      """
+            )
+        combined_results = combined_results.sort_by(
+            [("_relevance_score", "descending")]
+        )
+
         return combined_results

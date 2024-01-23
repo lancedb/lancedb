@@ -20,7 +20,7 @@ class CohereReranker(Reranker):
 
     Parameters
     ----------
-    model_name : str, default "rerank-multilingual-v2.0"
+    model_name : str, default "rerank-english-v2.0"
         The name of the cross encoder model to use. Available cohere models are:
         - rerank-english-v2.0
         - rerank-multilingual-v2.0
@@ -32,10 +32,12 @@ class CohereReranker(Reranker):
 
     def __init__(
         self,
-        model_name: str = "rerank-multilingual-v2.0",
+        model_name: str = "rerank-english-v2.0",
         column: str = "text",
         top_n: Union[int, None] = None,
+        return_score="relevance",
     ):
+        super().__init__(return_score)
         self.model_name = model_name
         self.column = column
         self.top_n = top_n
@@ -66,9 +68,17 @@ class CohereReranker(Reranker):
         )  # tuples
         combined_results = combined_results.take(list(indices))
         # add the scores
-        combined_results = combined_results.set_column(
-            combined_results.column_names.index("_score"),
-            "_score",
-            pa.array(scores, type=pa.float32()),
+        combined_results = combined_results.append_column(
+            "_relevance_score", pa.array(scores, type=pa.float32())
         )
+
+        if self.score == "relevance":
+            combined_results = combined_results.drop_columns(["score", "_distance"])
+        elif self.score == "all":
+            raise NotImplementedError(
+                """
+                        score='all' not implemented for cohere reranker as it is not dependent on 
+                        vector or fts search scores.
+                                      """
+            )
         return combined_results

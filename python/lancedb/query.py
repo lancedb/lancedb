@@ -601,7 +601,8 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
                     output_tbl = ds.to_table(filter=self._where)
 
         if self._with_row_id:
-            row_ids = pa.array(row_ids)
+            # Need to set this to uint explicitly as vector results are in uint64
+            row_ids = pa.array(row_ids, type=pa.uint64())
             output_tbl = output_tbl.append_column("_rowid", row_ids)
         return output_tbl
 
@@ -642,25 +643,18 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             )
             fts_results = fts_future.result()
             vector_results = vector_future.result()
-        # rename the _distance column to _score for consistency
-        vector_results = vector_results.rename_columns(
-            [
-                "_score" if name == "_distance" else name
-                for name in vector_results.column_names
-            ]
-        )
-        fts_results = fts_results.rename_columns(
-            ["_score" if name == "score" else name for name in fts_results.column_names]
-        )
 
         # convert to ranks first if needed
         if self._norm == "rank":
-            vector_results = self._rank(vector_results)
-            fts_results = self._rank(fts_results)
+            vector_results = self._rank(vector_results, "_distance")
+            fts_results = self._rank(fts_results, "score")
         # normalize the scores to be between 0 and 1, 0 being most relevant
-        vector_results = self._normalize_scores(vector_results, invert=True)
-        # fts higher scores are more relevant
-        fts_results = self._normalize_scores(fts_results)
+        vector_results = self._normalize_scores(vector_results, "_distance")
+
+        # fts higher scores are represent relevance. Not iverting them here
+        # as it should be left on rerankers as we might need to preserve this score.
+        fts_results = self._normalize_scores(fts_results, "score")
+
         results = self._reranker.rerank_hybrid(self, vector_results, fts_results)
         if not isinstance(results, pa.Table):  # Enforce type
             raise TypeError(
@@ -668,14 +662,14 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             )
 
         if self._enforce_score == "relevance":
-            if not np.all(np.diff(results.column("_score").to_numpy()) <= 0):
+            if not np.all(np.diff(results.column("_relevance_score").to_numpy()) <= 0):
                 raise ValueError(
                     "The _score column of the results returned by the reranker "
                     "represents the relevance of the result to the query & should "
                     "be descending."
                 )
         elif self._enforce_score == "distance":
-            if not np.all(np.diff(results.column("_score").to_numpy()) >= 0):
+            if not np.all(np.diff(results.column("_relevance_score").to_numpy()) >= 0):
                 raise ValueError(
                     "The _score column of the results returned by the reranker "
                     "represents the distance of the result to the query & should "
@@ -686,28 +680,28 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             results = results.drop(["_rowid"])
         return results
 
-    def _rank(self, results: pa.Table, ascending: bool = True):
+    def _rank(self, results: pa.Table, column: str, ascending: bool = True):
         if len(results) == 0:
             return results
         # Get the _score column from results
-        scores = results.column("_score").to_numpy()
+        scores = results.column(column).to_numpy()
         sort_indices = np.argsort(scores)
         if not ascending:
             sort_indices = sort_indices[::-1]
         ranks = np.empty_like(sort_indices)
         ranks[sort_indices] = np.arange(len(scores)) + 1
         # replace the _score column with the ranks
-        _score_idx = results.column_names.index("_score")
+        _score_idx = results.column_names.index(column)
         results = results.set_column(
-            _score_idx, "_score", pa.array(ranks, type=pa.float32())
+            _score_idx, column, pa.array(ranks, type=pa.float32())
         )
         return results
 
-    def _normalize_scores(self, results: pa.Table, invert=False):
+    def _normalize_scores(self, results: pa.Table, column: str, invert=False):
         if len(results) == 0:
             return results
         # Get the _score column from results
-        scores = results.column("_score").to_numpy()
+        scores = results.column(column).to_numpy()
         # normalize the scores by subtracting the min and dividing by the max
         max, min = np.max(scores), np.min(scores)
         if np.isclose(max, min):
@@ -718,9 +712,9 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         if invert:
             scores = 1 - scores
         # replace the _score column with the ranks
-        _score_idx = results.column_names.index("_score")
+        _score_idx = results.column_names.index(column)
         results = results.set_column(
-            _score_idx, "_score", pa.array(scores, type=pa.float32())
+            _score_idx, column, pa.array(scores, type=pa.float32())
         )
         return results
 
