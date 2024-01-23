@@ -18,6 +18,9 @@ concurrency:
 env:
   # Disable full debug symbol generation to speed up CI build and keep memory down
   # "1" means line tables only, which is useful for panic tracebacks.
+  #
+  # Use native CPU to accelerate tests if possible, especially for f16
+  RUSTFLAGS: "-C debuginfo=1 -C target-cpu=native -C target-feature=+f16c,+avx2,+fma"
   RUST_BACKTRACE: "1"
 
 jobs:
@@ -49,8 +52,6 @@ jobs:
       matrix:
         node-version: [ "18", "20" ]
     runs-on: "ubuntu-22.04"
-    env:
-      RUSTFLAGS: "-C debuginfo=1 -C target-cpu=haswell -C target-feature=+f16c,+avx2,+fma"
     defaults:
       run:
         shell: bash
@@ -83,9 +84,6 @@ jobs:
   macos:
     timeout-minutes: 30
     runs-on: "macos-13"
-    env:
-      # Github action macos-13 is on Mac Mini i7-8700.
-      RUSTFLAGS: "-C debuginfo=1 -C target-cpu=skylake -C target-feature=+f16c,+avx2,+fma"
     defaults:
       run:
         shell: bash
