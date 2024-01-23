@@ -345,7 +345,7 @@ describe('LanceDB client', function () {
       assert.isTrue(rs[0].list_of_num instanceof Array)
     })
 
-    it('create table from arrow table', async (done) => {
+    it('create table from arrow table', async () => {
       const dim = 128
       const total = 256
       const dir = await track().mkdir('lancejs')
@@ -389,7 +389,6 @@ describe('LanceDB client', function () {
           'vector column is list of floats'
         )
       })
-      done()
     }).timeout(10000)
 
     it('fails to create a new table when the vector column is missing', async function () {
