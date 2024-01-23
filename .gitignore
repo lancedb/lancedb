@@ -29,6 +29,7 @@ python/dist
 node/dist
 node/examples/**/package-lock.json
 node/examples/**/dist
+dist
 
 ## Rust
 target

@@ -1,0 +1,31 @@
+{
+  "include": [
+    "vectordb/*.ts",
+    "vectordb/**/*.ts",
+    "vectordb/*.js",
+  ],
+  "compilerOptions": {
+    "target": "es2022",
+    "module": "commonjs",
+    "declaration": true,
+    "outDir": "./dist",
+    "strict": true,
+    "allowJs": true,
+    "resolveJsonModule": true,
+  },
+  "exclude": [
+    "./dist/*",
+  ],
+  "typedocOptions": {
+    "entryPoints": [
+      "vectordb/index.ts"
+    ],
+    "out": "../docs/src/javascript/",
+    "visibilityFilters": {
+      "protected": false,
+      "private": false,
+      "inherited": true,
+      "external": false,
+    }
+  }
+}

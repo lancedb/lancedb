@@ -204,7 +204,7 @@ impl Table {
     /// # Returns
     ///
     /// * A [Table] object.
-    pub async fn create(
+    pub(crate) async fn create(
         uri: &str,
         name: &str,
         batches: impl RecordBatchReader + Send + 'static,
@@ -308,6 +308,10 @@ impl Table {
 
         self.dataset = Arc::new(Dataset::write(batches, &self.uri, params).await?);
         Ok(())
+    }
+
+    pub fn query(&self) -> Query {
+        Query::new(self.dataset.clone(), None)
     }
 
     /// Creates a new Query object that can be executed.

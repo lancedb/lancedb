@@ -16,6 +16,7 @@ arrow-data = { workspace = true }
 arrow-schema = { workspace = true }
 arrow-ord = { workspace = true }
 arrow-cast = { workspace = true }
+arrow-ipc.workspace = true
 chrono = { workspace = true }
 object_store = { workspace = true }
 snafu = { workspace = true }

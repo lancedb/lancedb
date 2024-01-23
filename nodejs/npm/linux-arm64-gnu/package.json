@@ -1,0 +1,21 @@
+{
+  "name": "vectordb-linux-arm64-gnu",
+  "version": "0.4.3",
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "main": "vectordb.linux-arm64-gnu.node",
+  "files": [
+    "vectordb.linux-arm64-gnu.node"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">= 10"
+  },
+  "libc": [
+    "glibc"
+  ]
+}
