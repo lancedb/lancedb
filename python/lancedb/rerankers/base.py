@@ -1,8 +1,8 @@
 import typing
 from abc import ABC, abstractmethod
 
-import pyarrow as pa
 import numpy as np
+import pyarrow as pa
 
 if typing.TYPE_CHECKING:
     import lancedb

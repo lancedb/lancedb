@@ -16,7 +16,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import TYPE_CHECKING, List, Literal, Optional, Type, Union
+from typing import TYPE_CHECKING, List, Literal, Optional, Tuple, Type, Union
 
 import deprecation
 import numpy as np
@@ -24,7 +24,7 @@ import pyarrow as pa
 import pydantic
 
 from . import __version__
-from .common import VECTOR_COLUMN_NAME
+from .common import VEC, VECTOR_COLUMN_NAME
 from .rerankers.base import Reranker
 from .rerankers.linear_combination import LinearCombinationReranker
 from .util import safe_import
@@ -114,7 +114,7 @@ class LanceQueryBuilder(ABC):
     def create(
         cls,
         table: "Table",
-        query: Optional[Union[np.ndarray, str, "PIL.Image.Image"]],
+        query: Optional[Union[np.ndarray, str, "PIL.Image.Image", Tuple]],
         query_type: str,
         vector_column_name: str,
     ) -> LanceQueryBuilder:
@@ -125,11 +125,14 @@ class LanceQueryBuilder(ABC):
             # hybrid fts and vector query
             return LanceHybridQueryBuilder(table, query, vector_column_name)
 
-        # convert "auto" query_type to "vector" or "fts"
-        # and convert the query to vector if needed
+        # convert "auto" query_type to "vector", "fts"
+        # or "hybrid" and convert the query to vector if needed
         query, query_type = cls._resolve_query(
             table, query, query_type, vector_column_name
         )
+
+        if query_type == "hybrid":
+            return LanceHybridQueryBuilder(table, query, vector_column_name)
 
         if isinstance(query, str):
             # fts
@@ -158,6 +161,8 @@ class LanceQueryBuilder(ABC):
         elif query_type == "auto":
             if isinstance(query, (list, np.ndarray)):
                 return query, "vector"
+            if isinstance(query, tuple):
+                return query, "hybrid"
             else:
                 conf = table.embedding_functions.get(vector_column_name)
                 if conf is not None:
@@ -622,17 +627,35 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         super().__init__(table)
         self.validate()
         self._query = query
-        self._fts_query = LanceFtsQueryBuilder(table, query)
-        query = self._query_to_vector(table, query, vector_column)
-        self._vector_query = LanceVectorQueryBuilder(table, query, vector_column)
+        vector_query, fts_query = self._validate_query(query)
+        self._fts_query = LanceFtsQueryBuilder(table, fts_query)
+        vector_query = self._query_to_vector(table, vector_query, vector_column)
+        self._vector_query = LanceVectorQueryBuilder(table, vector_query, vector_column)
         self._norm = "rank"
         self._reranker = LinearCombinationReranker(weight=0.7, fill=1.0)
-        self._enforce_score = None
 
     def validate(self):
         if self._table._get_fts_index_path() is None:
             raise ValueError(
                 "Please create a full-text search index " "to perform hybrid search."
+            )
+
+    def _validate_query(self, query):
+        if isinstance(query, str):
+            return query, query
+        elif isinstance(query, tuple):
+            if len(query) != 2:
+                raise ValueError(
+                    "The query must be a tuple of (vector_query, fts_query)."
+                )
+            if not isinstance(query[0], (list, np.ndarray, pa.Array, pa.ChunkedArray)):
+                raise ValueError(f"The vector query must be one of {VEC}.")
+            if not isinstance(query[1], str):
+                raise ValueError("The fts query must be a string.")
+            return query[0], query[1]
+        else:
+            raise ValueError(
+                "The query must be either a string or a tuple of (vector, string)."
             )
 
     def to_arrow(self) -> pa.Table:
@@ -651,7 +674,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         # normalize the scores to be between 0 and 1, 0 being most relevant
         vector_results = self._normalize_scores(vector_results, "_distance")
 
-        # fts higher scores are represent relevance. Not iverting them here
+        # fts higher scores are represent relevance. Not inverting them here
         # as it should be left on rerankers as we might need to preserve this score.
         fts_results = self._normalize_scores(fts_results, "score")
 
@@ -660,21 +683,6 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             raise TypeError(
                 f"rerank_hybrid must return a pyarrow.Table, got {type(results)}"
             )
-
-        if self._enforce_score == "relevance":
-            if not np.all(np.diff(results.column("_relevance_score").to_numpy()) <= 0):
-                raise ValueError(
-                    "The _score column of the results returned by the reranker "
-                    "represents the relevance of the result to the query & should "
-                    "be descending."
-                )
-        elif self._enforce_score == "distance":
-            if not np.all(np.diff(results.column("_relevance_score").to_numpy()) >= 0):
-                raise ValueError(
-                    "The _score column of the results returned by the reranker "
-                    "represents the distance of the result to the query & should "
-                    "be ascending."
-                )
 
         if not self._with_row_id:
             results = results.drop(["_rowid"])
@@ -722,7 +730,6 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         self,
         normalize="score",
         reranker: Reranker = LinearCombinationReranker(weight=0.7, fill=1.0),
-        enforce_score: Union[str, None] = None,
     ) -> LanceHybridQueryBuilder:
         """
         Rerank the hybrid search results using the specified reranker. The reranker
@@ -736,17 +743,6 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             scores are normalized directly.
         reranker: Reranker, default LinearCombinationReranker(weight=0.7, fill=1.0)
             The reranker to use. Must be an instance of Reranker class.
-        enforce_score: str, default None
-            Can be "relevance", "distance" or None.
-            - If "relevance", then the
-                _score column of the results returned by the reranker represents
-                the relevance of the result to the query & should be descending
-                or an error is raised.
-            - If "distance", then the _score column of the results returned by
-                the reranker represents the distance of the result to the query &
-                should be ascending or an error is raised.
-            - If None, then the _score column of the results is not checked/enforeced
-
         Returns
         -------
         LanceHybridQueryBuilder
@@ -757,12 +753,9 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             raise ValueError("normalize must be 'auto', 'rank' or 'score'.")
         if reranker and not isinstance(reranker, Reranker):
             raise ValueError("reranker must be an instance of Reranker class.")
-        if enforce_score and enforce_score not in ["relevance", "distance", None]:
-            raise ValueError("enforce_score must be 'relevance', 'distance'")
 
         self._norm = normalize
         self._reranker = reranker
-        self._enforce_score = enforce_score
 
         return self
 

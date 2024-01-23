@@ -16,7 +16,7 @@ from __future__ import annotations
 import inspect
 from abc import ABC, abstractmethod
 from functools import cached_property
-from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Union
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Tuple, Union
 
 import lance
 import numpy as np
@@ -337,7 +337,7 @@ class Table(ABC):
     @abstractmethod
     def search(
         self,
-        query: Optional[Union[VEC, str, "PIL.Image.Image"]] = None,
+        query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
         vector_column_name: str = VECTOR_COLUMN_NAME,
         query_type: str = "auto",
     ) -> LanceQueryBuilder:
@@ -923,7 +923,7 @@ class LanceTable(Table):
 
     def search(
         self,
-        query: Optional[Union[VEC, str, "PIL.Image.Image"]] = None,
+        query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
         vector_column_name: str = VECTOR_COLUMN_NAME,
         query_type: str = "auto",
     ) -> LanceQueryBuilder:

@@ -69,10 +69,7 @@ class CrossEncoderReranker(Reranker):
             combined_results = combined_results.drop_columns(["score", "_distance"])
         elif self.score == "all":
             raise NotImplementedError(
-                """
-                        score='all' not implemented for cohere reranker as it is not dependent on 
-                        vector or fts search scores.
-                                      """
+                "return_score='all' not implemented for CrossEncoderReranker"
             )
         combined_results = combined_results.sort_by(
             [("_relevance_score", "descending")]

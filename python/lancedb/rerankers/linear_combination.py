@@ -13,6 +13,14 @@ class LinearCombinationReranker(Reranker):
         The weight to give to the vector score. Must be between 0 and 1.
     fill : float, default 1.0
         The score to give to results that are only in one of the two result sets.
+        This is treated as penalty, so a higher value means a lower score.
+        TODO: We should just hardcode this--
+        its pretty confusing as we invert scores to calculate final score
+    return_score : str, default "relevance"
+        opntions are "relevance" or "all"
+        The type of score to return. If "relevance", will return only the relevance
+        score. If "all", will return all scores from the vector and FTS search along
+        with the relevance score.
     """
 
     def __init__(

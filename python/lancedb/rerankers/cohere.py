@@ -3,7 +3,6 @@ import typing
 from functools import cached_property
 from typing import Union
 
-import numpy as np
 import pyarrow as pa
 
 from ..util import safe_import
@@ -26,7 +25,7 @@ class CohereReranker(Reranker):
         - rerank-multilingual-v2.0
     column : str, default "text"
         The name of the column to use as input to the cross encoder model.
-    top_k : str, default None
+    top_n : str, default None
         The number of results to return. If None, will return all results.
     """
 
@@ -76,9 +75,6 @@ class CohereReranker(Reranker):
             combined_results = combined_results.drop_columns(["score", "_distance"])
         elif self.score == "all":
             raise NotImplementedError(
-                """
-                        score='all' not implemented for cohere reranker as it is not dependent on 
-                        vector or fts search scores.
-                                      """
+                "return_score='all' not implemented for cohere reranker"
             )
         return combined_results
