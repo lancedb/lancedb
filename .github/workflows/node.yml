@@ -18,7 +18,9 @@ concurrency:
 env:
   # Disable full debug symbol generation to speed up CI build and keep memory down
   # "1" means line tables only, which is useful for panic tracebacks.
-  RUSTFLAGS: "-C debuginfo=1"
+  #
+  # Use native CPU to accelerate tests if possible, especially for f16
+  RUSTFLAGS: "-C debuginfo=1 -C target-cpu=native -C target-feature=+f16c,+avx2,+fma"
   RUST_BACKTRACE: "1"
 
 jobs:
@@ -36,7 +38,7 @@ jobs:
         lfs: true
     - uses: actions/setup-node@v3
       with:
-        node-version: 18
+        node-version: 20
         cache: 'npm'
         cache-dependency-path: node/package-lock.json
     - name: Lint
@@ -48,7 +50,7 @@ jobs:
     timeout-minutes: 30
     strategy:
       matrix:
-        node-version: [ "16", "18" ]
+        node-version: [ "18", "20" ]
     runs-on: "ubuntu-22.04"
     defaults:
       run:
@@ -93,7 +95,7 @@ jobs:
         lfs: true
     - uses: actions/setup-node@v3
       with:
-        node-version: 18
+        node-version: 20
         cache: 'npm'
         cache-dependency-path: node/package-lock.json
     - uses: Swatinem/rust-cache@v2
@@ -132,7 +134,7 @@ jobs:
         lfs: true
     - uses: actions/setup-node@v3
       with:
-        node-version: 18
+        node-version: 20
         cache: 'npm'
         cache-dependency-path: node/package-lock.json
     - name: start local stack
