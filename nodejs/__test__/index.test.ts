@@ -16,6 +16,7 @@ import * as os from "os";
 import * as path from "path";
 import * as fs from "fs";
 
+import { Schema, Field, Float64 } from "apache-arrow";
 import { connect } from "../dist/index.js";
 
 test("open database", async () => {
@@ -27,4 +28,7 @@ test("open database", async () => {
 
   const tbl = await db.createTable("test", [{ id: 1 }, { id: 2 }]);
   expect(await db.tableNames()).toStrictEqual(["test"]);
+
+  const schema = tbl.schema;
+  expect(schema).toEqual(new Schema([new Field("id", new Float64(), true)]));
 });

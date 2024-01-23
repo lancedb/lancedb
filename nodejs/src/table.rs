@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use crate::query::Query;
+use arrow_ipc::writer::FileWriter;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use vectordb::{ipc::ipc_file_to_batches, table::Table as LanceDBTable};
@@ -26,6 +27,19 @@ pub struct Table {
 impl Table {
     pub(crate) fn new(table: LanceDBTable) -> Self {
         Self { table }
+    }
+
+    /// Return Schema as empty Arrow IPC file.
+    #[napi]
+    pub fn schema(&self) -> napi::Result<Buffer> {
+        let mut writer = FileWriter::try_new(vec![], &self.table.schema())
+            .map_err(|e| napi::Error::from_reason(format!("Failed to create IPC file: {}", e)))?;
+        writer
+            .finish()
+            .map_err(|e| napi::Error::from_reason(format!("Failed to finish IPC file: {}", e)))?;
+        Ok(Buffer::from(writer.into_inner().map_err(|e| {
+            napi::Error::from_reason(format!("Failed to get IPC file: {}", e))
+        })?))
     }
 
     #[napi]

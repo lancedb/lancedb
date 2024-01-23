@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+import { Schema, tableFromIPC } from "apache-arrow";
 import { Table as _NativeTable } from "./native";
 import { toBuffer, Data } from "./arrow";
 import { Query } from "./query";
@@ -27,6 +28,13 @@ export class Table {
   /** Construct a Table. Internal use only. */
   constructor(inner: _NativeTable) {
     this.inner = inner;
+  }
+
+  /** Get the schema of the table. */
+  get schema(): Schema {
+    const schemaBuf = this.inner.schema();
+    const tbl = tableFromIPC(schemaBuf);
+    return tbl.schema;
   }
 
   /**

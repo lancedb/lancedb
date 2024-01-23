@@ -38,9 +38,11 @@ export class Connection {
 }
 export class Query {
   vector(vector: Float32Array): void
-  toArrow(): Buffer
+  toArrow(): void
 }
 export class Table {
+  /** Return Schema as empty Arrow IPC file. */
+  schema(): Buffer
   add(buf: Buffer): Promise<void>
   countRows(): Promise<bigint>
   delete(predicate: string): Promise<void>
