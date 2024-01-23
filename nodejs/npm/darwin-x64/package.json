@@ -1,0 +1,18 @@
+{
+  "name": "vectordb-darwin-x64",
+  "version": "0.4.3",
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "main": "vectordb.darwin-x64.node",
+  "files": [
+    "vectordb.darwin-x64.node"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">= 18"
+  }
+}

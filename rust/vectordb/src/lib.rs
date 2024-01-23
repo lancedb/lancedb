@@ -136,11 +136,13 @@ pub mod data;
 pub mod error;
 pub mod index;
 pub mod io;
+pub mod ipc;
 pub mod query;
 pub mod table;
 pub mod utils;
 
 pub use connection::Connection;
+pub use error::{Error, Result};
 pub use table::Table;
 
 pub use lance::dataset::WriteMode;
