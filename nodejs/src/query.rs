@@ -12,9 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::sync::Arc;
-
-use lance::dataset::scanner::DatasetRecordBatchStream;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use vectordb::query::Query as LanceDBQuery;
