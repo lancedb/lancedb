@@ -24,6 +24,7 @@ import { Query } from "./query";
 export class Table {
   private readonly inner: _NativeTable;
 
+  /** Construct a Table. Internal use only. */
   constructor(inner: _NativeTable) {
     this.inner = inner;
   }
@@ -50,9 +51,9 @@ export class Table {
   }
 
   search(vector?: number[]): Query {
-    let q = this.inner.query();
+    let q = new Query(this);
     if (vector !== undefined) {
-      q.vector(new Float32Array(vector));
+      q.vector(vector);
     }
     return q;
   }
