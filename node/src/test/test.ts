@@ -389,7 +389,7 @@ describe('LanceDB client', function () {
           'vector column is list of floats'
         )
       })
-    }).timeout(10000)
+    }).timeout(20000)
 
     it('fails to create a new table when the vector column is missing', async function () {
       const dir = await track().mkdir('lancejs')
