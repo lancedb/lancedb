@@ -192,8 +192,6 @@ impl Database {
         Ok(())
     }
 
-
-
     /// Get the URI of a table in the database.
     fn table_uri(&self, name: &str) -> Result<String> {
         let path = Path::new(&self.uri);

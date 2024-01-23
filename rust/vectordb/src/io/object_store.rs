@@ -335,7 +335,7 @@ impl WrappingObjectStore for MirroringObjectStoreWrapper {
 #[cfg(all(test, not(windows)))]
 mod test {
     use super::*;
-    use crate::connection::{Database, Connection};
+    use crate::connection::{Connection, Database};
     use arrow_array::PrimitiveArray;
     use futures::TryStreamExt;
     use lance::{dataset::WriteParams, io::object_store::ObjectStoreParams};
