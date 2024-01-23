@@ -50,6 +50,8 @@ jobs:
       matrix:
         node-version: [ "18", "20" ]
     runs-on: "ubuntu-22.04"
+    env:
+      RUSTFLAGS: "-C debuginfo=1 -C targetcpu=haswell -C target-feature=+f16c,+avx2,+fma"
     defaults:
       run:
         shell: bash
@@ -82,6 +84,9 @@ jobs:
   macos:
     timeout-minutes: 30
     runs-on: "macos-13"
+    env:
+      # Github action macos-13 is on Mac Mini i7-8700.
+      RUSTFLAGS: "-C debuginfo=1 -C targetcpu=skylake -C target-feature=+f16c,+avx2,+fma"
     defaults:
       run:
         shell: bash
