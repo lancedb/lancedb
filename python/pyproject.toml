@@ -1,6 +1,6 @@
 [project]
 name = "lancedb"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
     "deprecation",
     "pylance==0.9.7",
