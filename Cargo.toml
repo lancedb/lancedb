@@ -12,7 +12,7 @@ license = "Apache-2.0"
 repository = "https://github.com/lancedb/lance"
 
 [workspace.dependencies]
-lance = { "version" = "=0.9.7", "features" = ["dynamodb"] }
+lance = { "path" = "../lance/rust/lance", "features" = ["dynamodb"] }
 lance-index = { "version" = "=0.9.7" }
 lance-linalg = { "version" = "=0.9.7" }
 lance-testing = { "version" = "=0.9.7" }

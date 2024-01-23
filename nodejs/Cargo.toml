@@ -9,9 +9,13 @@ repository.workspace = true
 crate-type = ["cdylib"]
 
 [dependencies]
-napi = { version = "2.14", default-features = false, features = ["napi7", "async"] }
+napi = { version = "2.14", default-features = false, features = [
+    "napi7",
+    "async"
+] }
 napi-derive = "2.14"
 vectordb = { path = "../rust/vectordb" }
+lance.workspace = true
 
 [build-dependencies]
 napi-build = "2.1"

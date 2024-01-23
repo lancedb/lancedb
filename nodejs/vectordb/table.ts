@@ -12,8 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { Table as _NativeTable, Query } from "./native";
+import { Table as _NativeTable } from "./native";
 import { toBuffer, Data } from "./arrow";
+import { Query } from "./query";
 
 /**
  * A LanceDB Table is the collection of Records.
