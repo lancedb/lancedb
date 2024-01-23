@@ -135,7 +135,6 @@ export function makeArrowTable(
   const columns: Record<string, Vector> = {};
   // TODO: sample dataset to find missing columns
   const columnNames = Object.keys(data[0]);
-  const start = Date.now();
   for (const colName of columnNames) {
     // eslint-disable-next-line @typescript-eslint/no-unsafe-return
     const values = data.map((datum) => datum[colName]);

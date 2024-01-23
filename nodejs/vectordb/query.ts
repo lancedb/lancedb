@@ -15,7 +15,9 @@
 import { RecordBatch } from "apache-arrow";
 import { Table } from "./table";
 
-class RecordBatchStream implements AsyncIterator<RecordBatch> {
+// TODO: re-eanble eslint once we have a real implementation
+/* eslint-disable */
+class RecordBatchIterator implements AsyncIterator<RecordBatch> {
   next(
     ...args: [] | [undefined]
   ): Promise<IteratorResult<RecordBatch<any>, any>> {
@@ -28,6 +30,7 @@ class RecordBatchStream implements AsyncIterator<RecordBatch> {
     throw new Error("Method not implemented.");
   }
 }
+/* eslint-enable */
 
 /** Query executor */
 export class Query implements AsyncIterable<RecordBatch> {
@@ -85,6 +88,6 @@ export class Query implements AsyncIterable<RecordBatch> {
   }
 
   [Symbol.asyncIterator](): AsyncIterator<RecordBatch<any>, any, undefined> {
-    throw new RecordBatchStream();
+    throw new RecordBatchIterator();
   }
 }

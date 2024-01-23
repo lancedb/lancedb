@@ -41,7 +41,7 @@ export class Table {
   }
 
   /** Count the total number of rows in the dataset. */
-  async countRows(): Promise<BigInt> {
+  async countRows(): Promise<bigint> {
     return await this.inner.countRows();
   }
 
@@ -51,7 +51,7 @@ export class Table {
   }
 
   search(vector?: number[]): Query {
-    let q = new Query(this);
+    const q = new Query(this);
     if (vector !== undefined) {
       q.vector(vector);
     }
