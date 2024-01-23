@@ -23,7 +23,7 @@ use std::{
 
 use bytes::Bytes;
 use futures::{stream::BoxStream, FutureExt, StreamExt};
-use lance::io::object_store::WrappingObjectStore;
+use lance::io::WrappingObjectStore;
 use object_store::{
     path::Path, Error, GetOptions, GetResult, ListResult, MultipartId, ObjectMeta, ObjectStore,
     PutOptions, PutResult, Result,

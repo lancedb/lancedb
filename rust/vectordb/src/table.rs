@@ -26,7 +26,7 @@ use lance::dataset::optimize::{
     compact_files, CompactionMetrics, CompactionOptions, IndexRemapperOptions,
 };
 use lance::dataset::{Dataset, UpdateBuilder, WriteParams};
-use lance::io::object_store::WrappingObjectStore;
+use lance::io::WrappingObjectStore;
 use lance_index::DatasetIndexExt;
 use std::path::Path;
 
