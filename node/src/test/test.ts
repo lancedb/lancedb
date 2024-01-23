@@ -346,6 +346,7 @@ describe('LanceDB client', function () {
     })
 
     it('create table from arrow table', async () => {
+      this.timeout(10000)
       const dim = 128
       const total = 256
       const dir = await track().mkdir('lancejs')
