@@ -697,7 +697,7 @@ def test_hybrid_search(db):
     # Create a fts index
     table.create_fts_index("text")
 
-    result1 = ( # noqa
+    result1 = (  # noqa
         table.search("Our father who art in heaven", query_type="hybrid")
         .rerank(normalize="score")
         .to_pydantic(MyTable)
