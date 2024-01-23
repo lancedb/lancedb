@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::query::Query;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use vectordb::{ipc::ipc_file_to_batches, table::Table as LanceDBTable};
-use crate::query::Query;
 
 #[napi]
 pub struct Table {
@@ -62,6 +62,6 @@ impl Table {
 
     #[napi]
     pub fn query(&self) -> Query {
-        Query::new(&self)
+        Query::new(self)
     }
 }
