@@ -29,9 +29,10 @@ export class Connection {
     this.inner = inner;
   }
 
-  tableNames = async (): Promise<string[]> => {
+  /** List all the table names in this database. */
+  async tableNames(): Promise<string[]> {
     return this.inner.tableNames();
-  };
+  }
 
   /**
    * Open a table in the database.
