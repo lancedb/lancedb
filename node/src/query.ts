@@ -129,6 +129,7 @@ export class Query<T = number[]> {
       const newObject: Record<string, unknown> = {}
       Object.keys(entry).forEach((key: string) => {
         if (entry[key] instanceof Vector) {
+          // toJSON() returns f16 array correctly
           newObject[key] = (entry[key] as Vector).toJSON()
         } else {
           newObject[key] = entry[key]
