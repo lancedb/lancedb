@@ -300,9 +300,11 @@ fn default_column_for_index(schema: &Schema) -> Result<String> {
         })
     } else if candidates.len() != 1 {
         Err(Error::Store {
-            message:
-                "More than one vector columns found, please specify which column to create index"
-                    .to_string(),
+            message: format!(
+                "More than one vector columns found, \
+                    please specify which column to create index: {:?}",
+                candidates
+            ),
         })
     } else {
         Ok(candidates[0].to_string())
@@ -313,6 +315,48 @@ fn default_column_for_index(schema: &Schema) -> Result<String> {
 mod tests {
     use super::*;
 
+    use arrow_schema::{DataType, Field};
+
     #[test]
-    fn test_guess_default_column() {}
+    fn test_guess_default_column() {
+        let schema_no_vector = Schema::new(vec![
+            Field::new("id", DataType::Int16, true),
+            Field::new("tag", DataType::Utf8, false),
+        ]);
+        assert!(default_column_for_index(&schema_no_vector)
+            .unwrap_err()
+            .to_string()
+            .contains("No vector column"));
+
+        let schema_with_vec_col = Schema::new(vec![
+            Field::new("id", DataType::Int16, true),
+            Field::new(
+                "vec",
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float64, false)), 10),
+                false,
+            ),
+        ]);
+        assert_eq!(
+            default_column_for_index(&schema_with_vec_col).unwrap(),
+            "vec"
+        );
+
+        let multi_vec_col = Schema::new(vec![
+            Field::new("id", DataType::Int16, true),
+            Field::new(
+                "vec",
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float64, false)), 10),
+                false,
+            ),
+            Field::new(
+                "vec2",
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float64, false)), 50),
+                false,
+            ),
+        ]);
+        assert!(default_column_for_index(&multi_vec_col)
+            .unwrap_err()
+            .to_string()
+            .contains("More than one"));
+    }
 }
