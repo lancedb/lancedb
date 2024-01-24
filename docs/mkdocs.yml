@@ -90,6 +90,7 @@ nav:
     - Full-text search: fts.md
     - Filtering: sql.md
     - Versioning & Reproducibility: notebooks/reproducibility.ipynb
+    - Configuring Storage: guides/storage.md
   - 🧬 Managing embeddings:
     - Overview: embeddings/index.md
     - Explicit management: embeddings/embedding_explicit.md
@@ -148,6 +149,7 @@ nav:
     - Full-text search: fts.md
     - Filtering: sql.md
     - Versioning & Reproducibility: notebooks/reproducibility.ipynb
+    - Configuring Storage: guides/storage.md
 - Managing Embeddings:
   - Overview: embeddings/index.md
   - Explicit management: embeddings/embedding_explicit.md
