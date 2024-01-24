@@ -232,8 +232,6 @@ mod tests {
         let batches = make_non_empty_batches();
         let ds = Arc::new(Dataset::write(batches, "memory://foo", None).await.unwrap());
 
-        let vector = Some(Float32Array::from_iter_values([0.1; 4]));
-
         let query = Query::new(ds.clone()).query_vector(&[0.1; 4]);
         let result = query
             .limit(10)

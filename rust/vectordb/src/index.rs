@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use lance_index::IndexType;
+use lance_index::{DatasetIndexExt, IndexType};
 pub use lance_linalg::distance::MetricType;
 
 pub mod vector;
@@ -37,9 +37,9 @@ pub enum IndexParams {
 
 /// Builder for Index Parameters.
 
-pub struct IndexParamsBuilder<'a> {
+pub struct IndexBuilder<'a> {
     table: &'a dyn Table,
-    column: String,
+    columns: Vec<String>,
     // General parameters
     /// Index name.
     name: Option<String>,
@@ -64,11 +64,11 @@ pub struct IndexParamsBuilder<'a> {
     max_iterations: u32,
 }
 
-impl<'a> IndexParamsBuilder<'a> {
-    pub(crate) fn new(table: &'a dyn Table, column: &str) -> Self {
-        IndexParamsBuilder {
+impl<'a> IndexBuilder<'a> {
+    pub(crate) fn new(table: &'a dyn Table, columns: &[&str]) -> Self {
+        IndexBuilder {
             table,
-            column: column.to_string(),
+            columns: columns.iter().map(|c| c.to_string()).collect(),
             name: None,
             replace: false,
             index_type: IndexType::Scalar,
@@ -139,7 +139,17 @@ impl<'a> IndexParamsBuilder<'a> {
     }
 
     /// Build the parameters.
-    pub async fn build(&self) -> Result<IndexParams> {
+    pub async fn build(&self) -> Result<()> {
+        if self.columns.len() != 1 {
+            return Err(Error::Schema {
+                message: "Only one column is supported for index".to_string(),
+            }
+            .into());
+        }
+        let column = &self.columns[0];
+        let schema = self.table.schema();
+        let field = schema.field_with_name(&column)?;
+
         let params = match self.index_type {
             IndexType::Scalar => IndexParams::Scalar {
                 replace: self.replace,
@@ -153,14 +163,15 @@ impl<'a> IndexParamsBuilder<'a> {
                 let num_sub_vectors: u32 = if let Some(n) = self.num_sub_vectors {
                     n
                 } else {
-                    let schema = self.table.schema();
-                    let field = schema.field_with_name(&self.column)?;
                     match field.data_type() {
                         arrow_schema::DataType::FixedSizeList(_, n) => {
                             Ok::<u32, Error>(suggested_num_sub_vectors(*n as u32))
                         }
                         _ => Err(Error::Schema {
-                            message: format!("Column '{}' is not a FixedSizeList", &self.column),
+                            message: format!(
+                                "Column '{}' is not a FixedSizeList",
+                                &self.columns[0]
+                            ),
                         }
                         .into()),
                     }?
@@ -176,7 +187,50 @@ impl<'a> IndexParamsBuilder<'a> {
                 }
             }
         };
-        Ok(params)
+
+        let tbl = self
+            .table
+            .as_native()
+            .expect("Only native table is supported here");
+        let mut dataset = tbl.clone_inner_dataset()?;
+        match params {
+            IndexParams::Scalar { replace } => {
+                self.table
+                    .as_native()
+                    .unwrap()
+                    .create_scalar_index(&column, replace)
+                    .await?
+            }
+            IndexParams::IvfPq {
+                replace,
+                metric_type,
+                num_partitions,
+                num_sub_vectors,
+                num_bits,
+                max_iterations,
+                ..
+            } => {
+                let lance_idx_params = lance::index::vector::VectorIndexParams::ivf_pq(
+                    num_partitions as usize,
+                    num_bits as u8,
+                    num_sub_vectors as usize,
+                    false,
+                    metric_type,
+                    max_iterations as usize,
+                );
+                dataset
+                    .create_index(
+                        &[column],
+                        IndexType::Vector,
+                        None,
+                        &lance_idx_params,
+                        replace,
+                    )
+                    .await?;
+            }
+        }
+        tbl.reset_dataset(dataset);
+        Ok(())
     }
 }
 
