@@ -1,4 +1,4 @@
-// Copyright 2023 Lance Developers.
+// Copyright 2024 Lance Developers.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -48,10 +48,10 @@ impl Query {
     /// # Returns
     ///
     /// * A [Query] object.
-    pub(crate) fn new(dataset: Arc<Dataset>, vector: Option<Float32Array>) -> Self {
+    pub(crate) fn new(dataset: Arc<Dataset>) -> Self {
         Query {
             dataset,
-            query_vector: vector,
+            query_vector: None,
             column: crate::table::VECTOR_COLUMN_NAME.to_string(),
             limit: None,
             nprobes: 20,
@@ -206,7 +206,7 @@ mod tests {
         let ds = Dataset::write(batches, "memory://foo", None).await.unwrap();
 
         let vector = Some(Float32Array::from_iter_values([0.1, 0.2]));
-        let query = Query::new(Arc::new(ds), vector.clone());
+        let query = Query::new(Arc::new(ds)).query_vector(&[0.1, 0.2]);
         assert_eq!(query.query_vector, vector);
 
         let new_vector = Float32Array::from_iter_values([9.8, 8.7]);
@@ -234,7 +234,7 @@ mod tests {
 
         let vector = Some(Float32Array::from_iter_values([0.1; 4]));
 
-        let query = Query::new(ds.clone(), vector.clone());
+        let query = Query::new(ds.clone()).query_vector(&[0.1; 4]);
         let result = query
             .limit(10)
             .filter(Some("id % 2 == 0".to_string()))
@@ -247,7 +247,7 @@ mod tests {
             assert!(batch.expect("should be Ok").num_rows() < 10);
         }
 
-        let query = Query::new(ds, vector.clone());
+        let query = Query::new(ds).query_vector(&[0.1; 4]);
         let result = query
             .limit(10)
             .filter(Some("id % 2 == 0".to_string()))
@@ -268,7 +268,7 @@ mod tests {
         let batches = make_non_empty_batches();
         let ds = Arc::new(Dataset::write(batches, "memory://foo", None).await.unwrap());
 
-        let query = Query::new(ds.clone(), None);
+        let query = Query::new(ds.clone());
         let result = query
             .filter(Some("id % 2 == 0".to_string()))
             .execute()

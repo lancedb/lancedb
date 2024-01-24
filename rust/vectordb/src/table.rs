@@ -100,6 +100,9 @@ pub trait Table: std::fmt::Display + Send + Sync {
         column: &[&str],
         params: Option<IndexParameters>,
     ) -> Result<()>;
+
+    /// Search the table with a given query vector.
+    fn search(&self, query: &[f32]) -> Query;
 }
 
 /// Reference to a Table pointer.
@@ -345,23 +348,11 @@ impl TableImpl {
     }
 
     pub fn query(&self) -> Query {
-        Query::new(self.dataset.clone(), None)
-    }
-
-    /// Creates a new Query object that can be executed.
-    ///
-    /// # Arguments
-    ///
-    /// * `query_vector` The vector used for this query.
-    ///
-    /// # Returns
-    /// * A [Query] object.
-    pub fn search<T: Into<Float32Array>>(&self, query_vector: Option<T>) -> Query {
-        Query::new(self.dataset.clone(), query_vector.map(|q| q.into()))
+        Query::new(self.dataset.clone())
     }
 
     pub fn filter(&self, expr: String) -> Query {
-        Query::new(self.dataset.clone(), None).filter(Some(expr))
+        Query::new(self.dataset.clone()).filter(Some(expr))
     }
 
     /// Returns the number of rows in this Table
@@ -574,6 +565,10 @@ impl Table for TableImpl {
             }
         };
         Ok(())
+    }
+
+    fn search(&self, query: &[f32]) -> Query {
+        Query::new(self.dataset.clone()).query_vector(query)
     }
 
     /// Delete rows from the table
@@ -1002,9 +997,8 @@ mod tests {
 
         let table = TableImpl::open(uri).await.unwrap();
 
-        let vector = Float32Array::from_iter_values([0.1, 0.2]);
-        let query = table.search(Some(vector.clone()));
-        assert_eq!(vector, query.query_vector.unwrap());
+        let query = table.search(&[0.1, 0.2]);
+        assert_eq!(&[0.1, 0.2], query.query_vector.unwrap().values());
     }
 
     #[derive(Default, Debug)]

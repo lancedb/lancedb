@@ -46,7 +46,7 @@
 //! #### Connect to a database.
 //!
 //! ```rust
-//! use vectordb::{connection::{Database, Connection}, TableImpl, WriteMode};
+//! use vectordb::{connection::{Database, Connection}, WriteMode};
 //! use arrow_schema::{Field, Schema};
 //! # tokio::runtime::Runtime::new().unwrap().block_on(async {
 //! let db = Database::connect("data/sample-lancedb").await.unwrap();
@@ -119,7 +119,7 @@
 //! # db.create_table("my_table", Box::new(batches), None).await.unwrap();
 //! let table = db.open_table("my_table").await.unwrap();
 //! let results = table
-//!     .search(Some(vec![1.0; 128]))
+//!     .search(&[1.0; 128])
 //!     .execute()
 //!     .await
 //!     .unwrap()
