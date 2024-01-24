@@ -29,10 +29,14 @@ pub(crate) fn table_create_scalar_index(mut cx: FunctionContext) -> JsResult<JsP
 
     let (deferred, promise) = cx.promise();
     let channel = cx.channel();
-    let mut table = js_table.table.clone();
+    let table = js_table.table.clone();
 
     rt.spawn(async move {
-        let idx_result = table.create_scalar_index(&column, replace).await;
+        let idx_result = table
+            .as_native()
+            .unwrap()
+            .create_scalar_index(&column, replace)
+            .await;
 
         deferred.settle_with(&channel, move |mut cx| {
             idx_result.or_throw(&mut cx)?;

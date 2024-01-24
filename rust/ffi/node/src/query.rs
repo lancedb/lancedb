@@ -70,14 +70,15 @@ impl JsQuery {
         let query = query_vector.map(|q| convert::js_array_to_vec(q.deref(), &mut cx));
 
         rt.spawn(async move {
-            let mut builder = table
-                .search(query)
-                .refine_factor(refine_factor)
-                .nprobes(nprobes)
-                .filter(filter)
-                .metric_type(metric_type)
-                .select(select)
-                .prefilter(prefilter);
+            let mut builder = table.query();
+            if let Some(query) = query {
+                builder = builder
+                    .query_vector(&query)
+                    .refine_factor(refine_factor)
+                    .nprobes(nprobes)
+                    .metric_type(metric_type);
+            };
+            builder = builder.filter(filter).select(select).prefilter(prefilter);
             if let Some(limit) = limit {
                 builder = builder.limit(limit as usize);
             };

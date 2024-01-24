@@ -124,7 +124,12 @@ pub trait Table: std::fmt::Display + Send + Sync {
     async fn create_index(&self, column: &[&str], params: Option<IndexParameters>) -> Result<()>;
 
     /// Search the table with a given query vector.
-    fn search(&self, query: &[f32]) -> Query;
+    fn search(&self, query: &[f32]) -> Query {
+        self.query().query_vector(query)
+    }
+
+    /// Create a Query builder.
+    fn query(&self) -> Query;
 }
 
 /// Reference to a Table pointer.
@@ -347,7 +352,7 @@ impl NativeTable {
     }
 
     /// Create a scalar index on the table
-    pub async fn create_scalar_index(&mut self, column: &str, replace: bool) -> Result<()> {
+    pub async fn create_scalar_index(&self, column: &str, replace: bool) -> Result<()> {
         let mut dataset = self.clone_inner_dataset()?;
         let params = ScalarIndexParams::default();
         dataset
@@ -386,11 +391,7 @@ impl NativeTable {
         Ok(())
     }
 
-    pub async fn update(
-        &mut self,
-        predicate: Option<&str>,
-        updates: Vec<(&str, &str)>,
-    ) -> Result<()> {
+    pub async fn update(&self, predicate: Option<&str>, updates: Vec<(&str, &str)>) -> Result<()> {
         let mut builder = UpdateBuilder::new(self.clone_inner_dataset()?.into());
         if let Some(predicate) = predicate {
             builder = builder.update_where(predicate)?;
@@ -401,8 +402,8 @@ impl NativeTable {
         }
 
         let operation = builder.build()?;
-        operation.execute().await?;
-        self.dataset = self.checkout_latest().await?.dataset;
+        let ds = operation.execute().await?;
+        self.reset_dataset(ds.as_ref().clone());
         Ok(())
     }
 
@@ -435,13 +436,13 @@ impl NativeTable {
     ///
     /// This calls into [lance::dataset::optimize::compact_files].
     pub async fn compact_files(
-        &mut self,
+        &self,
         options: CompactionOptions,
         remap_options: Option<Arc<dyn IndexRemapperOptions>>,
     ) -> Result<CompactionMetrics> {
         let mut dataset = self.clone_inner_dataset()?;
         let metrics = compact_files(&mut dataset, options, remap_options).await?;
-        self.dataset = Arc::new(Mutex::new(dataset));
+        self.reset_dataset(dataset);
         Ok(metrics)
     }
 
@@ -561,7 +562,7 @@ impl Table for NativeTable {
         }
 
         let schema = self.schema();
-        let field = schema.field_with_name(&column[0])?;
+        let field = schema.field_with_name(column[0])?;
         let params = if let Some(params) = params {
             params
         } else {
@@ -587,8 +588,8 @@ impl Table for NativeTable {
         Ok(())
     }
 
-    fn search(&self, query: &[f32]) -> Query {
-        Query::new(Arc::new(self.dataset.lock().expect("lock poison").clone())).query_vector(query)
+    fn query(&self) -> Query {
+        Query::new(Arc::new(self.dataset.lock().expect("lock poison").clone()))
     }
 
     /// Delete rows from the table
