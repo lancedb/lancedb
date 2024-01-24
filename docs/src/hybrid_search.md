@@ -97,7 +97,7 @@ Arguments
     Only returns `_relevance_score`. Does not support `return_score = "all"`.
 
 ### Cross Encoder Reranker
-This re-ranker uses the [Sentence Transformers](https://www.sbert.net/) library to combine the results of semantic and full-text search. You can use this re-ranker by passing `CrossEncoderReranker()` to the `rerank()` method.
+This reranker uses the [Sentence Transformers](https://www.sbert.net/) library to combine the results of semantic and full-text search. You can use it by passing `CrossEncoderReranker()` to the `rerank()` method.
 
 ```python
 from lancedb.rerankers import CrossEncoderReranker
