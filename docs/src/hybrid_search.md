@@ -1,6 +1,6 @@
 # Hybrid Search
 
-2 common serching techiniques are semantic and keyword-based search. LanceDB supports both of these approaches. In real world applications, it is often useful to combine these two approaches to get the best best results. For example, you may want to search for a document that is semantically similar to a query document, but also contains a specific keyword. This is an example of hybrid search. Hybrid search simply means a searching algorithm that combines multiple search techniques. The most common ones are Semantic and Full-text search but it can be extended to other techniques as well.
+LanceDB supports both semantic and keyword-based search. In real world applications, it is often useful to combine these two approaches to get the best best results. For example, you may want to search for a document that is semantically similar to a query document, but also contains a specific keyword. This is an example of *hybrid search*, a search algorithm that combines multiple search techniques.
 
 ## Hybrid search in LanceDB
 You can perform hybrid search in LanceDB by combining the results of semantic and full-text search using the re-ranking algorithm of your choice. You can either choose one of the many re-rankers supported by lancedb or you can write your own custom re-ranker.
