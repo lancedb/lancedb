@@ -42,7 +42,7 @@ By default, LanceDB uses `LinearCombinationReranker(weights=0.7)` to combine & R
 * `normalize`: `str`, default `"score"`:
     The method to normalize the scores. Can be "rank" or "score". If "rank", the scores are converted to ranks and then normalized. If "score", the scores are normalized directly.
 * `reranker`: `Reranker`, default `LinearCombinationReranker(weights=0.7)`.
-    The re-ranker to use. If not specified, the default re-ranker is used.
+    The reranker to use. If not specified, the default reranker is used.
 
 
 ## Available Rerankers
