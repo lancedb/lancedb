@@ -85,6 +85,11 @@ class Reranker(ABC):
         Merge the results from the vector and FTS search. This is a vanilla merging
         function that just concatenates the results and removes the duplicates.
 
+        NOTE: This doesn't take score into account. It'll keep the instance that was
+        encountered first. This is designed for rerankers that don't use the score.
+        In case you want to use the score, or support `return_scores="all"` you'll
+        have to implement your own merging function.
+
         Parameters
         ----------
         vector_results : pa.Table

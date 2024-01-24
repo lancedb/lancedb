@@ -79,12 +79,12 @@ def get_test_table(tmp_path):
 def test_linear_combination(tmp_path):
     table, schema = get_test_table(tmp_path)
     # The default reranker
-    result1 = (  # noqa
+    result1 = (
         table.search("Our father who art in heaven", query_type="hybrid")
         .rerank(normalize="score")
         .to_pydantic(schema)
     )
-    result2 = (
+    result2 = (  # noqa
         table.search("Our father who art in heaven.", query_type="hybrid")
         .rerank(normalize="rank")
         .to_pydantic(schema)
@@ -93,7 +93,7 @@ def test_linear_combination(tmp_path):
         "Our father who art in heaven..", query_type="hybrid"
     ).to_pydantic(schema)
 
-    assert result2 == result3  # 2 & 3 should be the same as they use rank as score
+    assert result1 == result3  # 2 & 3 should be the same as they use score as score
 
     result = (
         table.search("Our father who art in heaven", query_type="hybrid")

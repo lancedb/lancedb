@@ -722,12 +722,12 @@ def test_hybrid_search(db):
     # Create a fts index
     table.create_fts_index("text")
 
-    result1 = (  # noqa
+    result1 = (
         table.search("Our father who art in heaven", query_type="hybrid")
         .rerank(normalize="score")
         .to_pydantic(MyTable)
     )
-    result2 = (
+    result2 = (  # noqa
         table.search("Our father who art in heaven", query_type="hybrid")
         .rerank(normalize="rank")
         .to_pydantic(MyTable)
@@ -735,4 +735,4 @@ def test_hybrid_search(db):
     result3 = table.search(
         "Our father who art in heaven", query_type="hybrid"
     ).to_pydantic(MyTable)
-    assert result2 == result3
+    assert result1 == result3

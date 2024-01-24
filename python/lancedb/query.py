@@ -625,22 +625,23 @@ class LanceEmptyQueryBuilder(LanceQueryBuilder):
 class LanceHybridQueryBuilder(LanceQueryBuilder):
     def __init__(self, table: "Table", query: str, vector_column: str):
         super().__init__(table)
-        self.validate()
+        self._validate_fts_index()
         self._query = query
         vector_query, fts_query = self._validate_query(query)
         self._fts_query = LanceFtsQueryBuilder(table, fts_query)
         vector_query = self._query_to_vector(table, vector_query, vector_column)
         self._vector_query = LanceVectorQueryBuilder(table, vector_query, vector_column)
-        self._norm = "rank"
+        self._norm = "score"
         self._reranker = LinearCombinationReranker(weight=0.7, fill=1.0)
 
-    def validate(self):
+    def _validate_fts_index(self):
         if self._table._get_fts_index_path() is None:
             raise ValueError(
                 "Please create a full-text search index " "to perform hybrid search."
             )
 
     def _validate_query(self, query):
+        # Temp hack to support vectorized queries for hybrid search
         if isinstance(query, str):
             return query, query
         elif isinstance(query, tuple):
@@ -674,8 +675,8 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         # normalize the scores to be between 0 and 1, 0 being most relevant
         vector_results = self._normalize_scores(vector_results, "_distance")
 
-        # fts higher scores are represent relevance. Not inverting them here
-        # as it should be left on rerankers as we might need to preserve this score.
+        # In fts higher scores represent relevance. Not inverting them here as
+        # rerankers might need to preserve this score to support `return_score="all"`
         fts_results = self._normalize_scores(fts_results, "score")
 
         results = self._reranker.rerank_hybrid(self, vector_results, fts_results)
