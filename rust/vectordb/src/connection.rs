@@ -246,14 +246,16 @@ impl Connection for Database {
     ) -> Result<TableRef> {
         let table_uri = self.table_uri(name)?;
 
-        Ok(Arc::new(TableImpl::create(
-            &table_uri,
-            name,
-            batches,
-            self.store_wrapper.clone(),
-            params,
-        )
-        .await?))
+        Ok(Arc::new(
+            TableImpl::create(
+                &table_uri,
+                name,
+                batches,
+                self.store_wrapper.clone(),
+                params,
+            )
+            .await?,
+        ))
     }
 
     /// Open a table in the database.

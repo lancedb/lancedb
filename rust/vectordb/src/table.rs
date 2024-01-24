@@ -15,9 +15,9 @@
 //! LanceDB Table APIs
 
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use arrow_array::{Float32Array, RecordBatchReader};
+use arrow_array::RecordBatchReader;
 use arrow_schema::{DataType, Schema, SchemaRef};
 use chrono::Duration;
 use lance::dataset::builder::DatasetBuilder;
@@ -36,7 +36,7 @@ use crate::index::vector::{VectorIndex, VectorIndexBuilder, VectorIndexStatistic
 use crate::index::{IndexParameters, IndexParamsBuilder};
 use crate::query::Query;
 use crate::utils::{PatchReadParam, PatchWriteParam};
-use crate::WriteMode;
+use crate::{data, WriteMode};
 
 pub const VECTOR_COLUMN_NAME: &str = "vector";
 
@@ -63,7 +63,7 @@ pub trait Table: std::fmt::Display + Send + Sync {
     /// * `batches` RecordBatch to be saved in the Table
     /// * `params` Append / Overwrite existing records. Default: Append
     async fn add(
-        &mut self,
+        &self,
         batches: Box<dyn RecordBatchReader + Send>,
         params: Option<WriteParams>,
     ) -> Result<()>;
@@ -76,10 +76,33 @@ pub trait Table: std::fmt::Display + Send + Sync {
     /// # Example
     ///
     /// ```no_run
+    /// # use std::sync::Arc;
     /// # use vectordb::connection::{Database, Connection};
+    /// # use arrow_array::{FixedSizeListArray, types::Float32Type, RecordBatch,
+    ///     RecordBatchIterator, Int32Array};
+    /// # use arrow_schema::{Schema, Field, DataType};
+    /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+    /// let tmpdir = tempfile::tempdir().unwrap();
+    /// let db = Database::connect(tmpdir.path().to_str().unwrap()).await.unwrap();
+    /// # let schema = Arc::new(Schema::new(vec![
+    /// #  Field::new("id", DataType::Int32, false),
+    /// #  Field::new("vector", DataType::FixedSizeList(
+    /// #    Arc::new(Field::new("item", DataType::Float32, true)), 128), true),
+    /// # ]));
+    /// let batches = RecordBatchIterator::new(vec![
+    ///     RecordBatch::try_new(schema.clone(),
+    ///        vec![
+    ///            Arc::new(Int32Array::from_iter_values(0..10)),
+    ///            Arc::new(FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
+    ///                (0..10).map(|_| Some(vec![Some(1.0); 128])), 128)),
+    ///        ]).unwrap()
+    ///    ].into_iter().map(Ok),
+    ///   schema.clone());
+    /// let tbl = db.create_table("delete_test", Box::new(batches), None).await.unwrap();
     /// tbl.delete("id > 5").await.unwrap();
+    /// # });
     /// ```
-    async fn delete(&mut self, predicate: &str) -> Result<()>;
+    async fn delete(&self, predicate: &str) -> Result<()>;
 
     /// Create an index on the column name.
     ///
@@ -95,11 +118,7 @@ pub trait Table: std::fmt::Display + Send + Sync {
     /// # use vectordb::connection::{Database, Connection};
     /// tbl.create_index(&["vector"], None).await.unwrap();
     /// ```
-    async fn create_index(
-        &mut self,
-        column: &[&str],
-        params: Option<IndexParameters>,
-    ) -> Result<()>;
+    async fn create_index(&self, column: &[&str], params: Option<IndexParameters>) -> Result<()>;
 
     /// Search the table with a given query vector.
     fn search(&self, query: &[f32]) -> Query;
@@ -113,7 +132,7 @@ pub type TableRef = Arc<dyn Table>;
 pub struct TableImpl {
     name: String,
     uri: String,
-    dataset: Arc<Dataset>,
+    dataset: Arc<Mutex<Dataset>>,
 
     // the object store wrapper to use on write path
     store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
@@ -139,11 +158,6 @@ impl TableImpl {
     pub async fn open(uri: &str) -> Result<Self> {
         let name = Self::get_table_name(uri)?;
         Self::open_with_params(uri, &name, None, ReadParams::default()).await
-    }
-
-    /// Open an Table with a given name.
-    pub async fn open_with_name(uri: &str, name: &str) -> Result<Self> {
-        Self::open_with_params(uri, name, None, ReadParams::default()).await
     }
 
     /// Opens an existing Table
@@ -184,9 +198,14 @@ impl TableImpl {
         Ok(TableImpl {
             name: name.to_string(),
             uri: uri.to_string(),
-            dataset: Arc::new(dataset),
+            dataset: Arc::new(Mutex::new(dataset)),
             store_wrapper: write_store_wrapper,
         })
+    }
+
+    /// Make a new clone of the intenral lance dataset.
+    fn clone_inner_dataset(&self) -> Result<Dataset> {
+        Ok(self.dataset.lock()?.clone())
     }
 
     /// Checkout a specific version of this [`TableImpl`]
@@ -194,10 +213,6 @@ impl TableImpl {
     pub async fn checkout(uri: &str, version: u64) -> Result<Self> {
         let name = Self::get_table_name(uri)?;
         Self::checkout_with_params(uri, &name, version, None, ReadParams::default()).await
-    }
-
-    pub async fn checkout_with_name(uri: &str, name: &str, version: u64) -> Result<Self> {
-        Self::checkout_with_params(uri, name, version, None, ReadParams::default()).await
     }
 
     pub async fn checkout_with_params(
@@ -225,23 +240,24 @@ impl TableImpl {
         Ok(TableImpl {
             name: name.to_string(),
             uri: uri.to_string(),
-            dataset: Arc::new(dataset),
+            dataset: Arc::new(Mutex::new(dataset)),
             store_wrapper: write_store_wrapper,
         })
     }
 
     pub async fn checkout_latest(&self) -> Result<Self> {
-        let latest_version_id = self.dataset.latest_version_id().await?;
-        let dataset = if latest_version_id == self.dataset.version().version {
-            self.dataset.clone()
+        let dataset = self.clone_inner_dataset()?;
+        let latest_version_id = dataset.latest_version_id().await?;
+        let dataset = if latest_version_id == dataset.version().version {
+            dataset
         } else {
-            Arc::new(self.dataset.checkout_version(latest_version_id).await?)
+            dataset.checkout_version(latest_version_id).await?
         };
 
-        Ok(TableImpl {
+        Ok(Self {
             name: self.name.clone(),
             uri: self.uri.clone(),
-            dataset,
+            dataset: Arc::new(Mutex::new(dataset)),
             store_wrapper: self.store_wrapper.clone(),
         })
     }
@@ -298,22 +314,19 @@ impl TableImpl {
         Ok(TableImpl {
             name: name.to_string(),
             uri: uri.to_string(),
-            dataset: Arc::new(dataset),
+            dataset: Arc::new(Mutex::new(dataset)),
             store_wrapper: write_store_wrapper,
         })
     }
 
     /// Version of this Table
     pub fn version(&self) -> u64 {
-        self.dataset.version().version
+        self.dataset.lock().expect("lock poison").version().version
     }
 
     /// Create index on the table.
-    pub async fn create_vector_index(
-        &mut self,
-        index_builder: &impl VectorIndexBuilder,
-    ) -> Result<()> {
-        let mut dataset = self.dataset.as_ref().clone();
+    pub async fn create_vector_index(&self, index_builder: &impl VectorIndexBuilder) -> Result<()> {
+        let mut dataset = self.clone_inner_dataset()?;
         dataset
             .create_index(
                 &[index_builder
@@ -326,13 +339,13 @@ impl TableImpl {
                 index_builder.get_replace(),
             )
             .await?;
-        self.dataset = Arc::new(dataset);
+        *self.dataset.lock()? = dataset;
         Ok(())
     }
 
     /// Create a scalar index on the table
     pub async fn create_scalar_index(&mut self, column: &str, replace: bool) -> Result<()> {
-        let mut dataset = self.dataset.as_ref().clone();
+        let mut dataset = self.clone_inner_dataset()?;
         let params = ScalarIndexParams::default();
         dataset
             .create_index(&[column], IndexType::Scalar, None, &params, replace)
@@ -341,18 +354,18 @@ impl TableImpl {
     }
 
     pub async fn optimize_indices(&mut self, options: &OptimizeOptions) -> Result<()> {
-        let mut dataset = self.dataset.as_ref().clone();
+        let mut dataset = self.clone_inner_dataset()?;
         dataset.optimize_indices(options).await?;
 
         Ok(())
     }
 
     pub fn query(&self) -> Query {
-        Query::new(self.dataset.clone())
+        Query::new(self.dataset.lock().expect("Lock poison").clone().into())
     }
 
     pub fn filter(&self, expr: String) -> Query {
-        Query::new(self.dataset.clone()).filter(Some(expr))
+        Query::new(self.dataset.lock().expect("Lock poison").clone().into()).filter(Some(expr))
     }
 
     /// Returns the number of rows in this Table
@@ -364,9 +377,9 @@ impl TableImpl {
         left_on: &str,
         right_on: &str,
     ) -> Result<()> {
-        let mut dataset = self.dataset.as_ref().clone();
+        let mut dataset = self.clone_inner_dataset()?;
         dataset.merge(batches, left_on, right_on).await?;
-        self.dataset = Arc::new(dataset);
+        self.dataset = Arc::new(Mutex::new(dataset));
         Ok(())
     }
 
@@ -375,7 +388,7 @@ impl TableImpl {
         predicate: Option<&str>,
         updates: Vec<(&str, &str)>,
     ) -> Result<()> {
-        let mut builder = UpdateBuilder::new(self.dataset.clone());
+        let mut builder = UpdateBuilder::new(self.clone_inner_dataset()?.into());
         if let Some(predicate) = predicate {
             builder = builder.update_where(predicate)?;
         }
@@ -385,9 +398,8 @@ impl TableImpl {
         }
 
         let operation = builder.build()?;
-        let new_ds = operation.execute().await?;
-        self.dataset = new_ds;
-
+        operation.execute().await?;
+        self.dataset = self.checkout_latest().await?.dataset;
         Ok(())
     }
 
@@ -407,8 +419,8 @@ impl TableImpl {
         older_than: Duration,
         delete_unverified: Option<bool>,
     ) -> Result<RemovalStats> {
-        Ok(self
-            .dataset
+        let dataset = self.clone_inner_dataset()?;
+        Ok(dataset
             .cleanup_old_versions(older_than, delete_unverified)
             .await?)
     }
@@ -424,22 +436,24 @@ impl TableImpl {
         options: CompactionOptions,
         remap_options: Option<Arc<dyn IndexRemapperOptions>>,
     ) -> Result<CompactionMetrics> {
-        let mut dataset = self.dataset.as_ref().clone();
+        let mut dataset = self.clone_inner_dataset()?;
         let metrics = compact_files(&mut dataset, options, remap_options).await?;
-        self.dataset = Arc::new(dataset);
+        self.dataset = Arc::new(Mutex::new(dataset));
         Ok(metrics)
     }
 
     pub fn count_fragments(&self) -> usize {
-        self.dataset.count_fragments()
+        self.dataset.lock().expect("lock poison").count_fragments()
     }
 
     pub async fn count_deleted_rows(&self) -> Result<usize> {
-        Ok(self.dataset.count_deleted_rows().await?)
+        let dataset = { self.dataset.lock().expect("lock poison").clone() };
+        Ok(dataset.count_deleted_rows().await?)
     }
 
     pub async fn num_small_files(&self, max_rows_per_group: usize) -> usize {
-        self.dataset.num_small_files(max_rows_per_group).await
+        let dataset = { self.dataset.lock().expect("lock poison").clone() };
+        dataset.num_small_files(max_rows_per_group).await
     }
 
     pub async fn count_indexed_rows(&self, index_uuid: &str) -> Result<Option<usize>> {
@@ -457,8 +471,8 @@ impl TableImpl {
     }
 
     pub async fn load_indices(&self) -> Result<Vec<VectorIndex>> {
-        let (indices, mf) =
-            futures::try_join!(self.dataset.load_indices(), self.dataset.latest_manifest())?;
+        let dataset = { self.dataset.lock()?.clone() };
+        let (indices, mf) = futures::try_join!(dataset.load_indices(), dataset.latest_manifest())?;
         Ok(indices
             .iter()
             .map(|i| VectorIndex::new_from_format(&mf, i))
@@ -474,10 +488,8 @@ impl TableImpl {
         if index.is_none() {
             return Ok(None);
         }
-        let index_stats = self
-            .dataset
-            .index_statistics(&index.unwrap().index_name)
-            .await?;
+        let dataset = { self.dataset.lock()?.clone() };
+        let index_stats = dataset.index_statistics(&index.unwrap().index_name).await?;
         let index_stats: VectorIndexStatistics =
             serde_json::from_str(&index_stats).map_err(|e| Error::Lance {
                 message: format!(
@@ -487,6 +499,10 @@ impl TableImpl {
             })?;
 
         Ok(Some(index_stats))
+    }
+
+    fn reset_dataset(&self, dataset: Dataset) {
+        *self.dataset.lock().expect("lock poison") = dataset;
     }
 }
 
@@ -501,15 +517,17 @@ impl Table for TableImpl {
     }
 
     fn schema(&self) -> SchemaRef {
-        Arc::new(Schema::from(self.dataset.schema()))
+        let lance_schema = { self.dataset.lock().expect("lock poison").schema().clone() };
+        Arc::new(Schema::from(&lance_schema))
     }
 
     async fn count_rows(&self) -> Result<usize> {
-        Ok(self.dataset.count_rows().await?)
+        let dataset = { self.dataset.lock().expect("lock poison").clone() };
+        Ok(dataset.count_rows().await?)
     }
 
     async fn add(
-        &mut self,
+        &self,
         batches: Box<dyn RecordBatchReader + Send>,
         params: Option<WriteParams>,
     ) -> Result<()> {
@@ -524,24 +542,19 @@ impl Table for TableImpl {
             None => params,
         };
 
-        self.dataset = Arc::new(Dataset::write(batches, &self.uri, params).await?);
+        self.reset_dataset(Dataset::write(batches, &self.uri, params).await?);
         Ok(())
     }
 
-    async fn create_index(
-        &mut self,
-        column: &[&str],
-        params: Option<IndexParameters>,
-    ) -> Result<()> {
+    async fn create_index(&self, column: &[&str], params: Option<IndexParameters>) -> Result<()> {
         if column.len() != 1 {
             return Err(Error::Lance {
                 message: "only one column is supported for index creation".into(),
             });
         }
 
-        let field = self.dataset.schema().field(column[0]).ok_or(Error::Lance {
-            message: format!("column {} not found", column[0]),
-        })?;
+        let schema = self.schema();
+        let field = schema.field_with_name(&column[0])?;
         let params = if let Some(params) = params {
             params
         } else {
@@ -551,7 +564,7 @@ impl Table for TableImpl {
                 DataType::FixedSizeList(f, _) if f.data_type().is_floating() => {
                     IndexParamsBuilder::ivf_pq().build()?
                 }
-                dt if dt.is_numeric() || dt == DataType::Boolean => {
+                dt if dt.is_numeric() || dt == &DataType::Boolean => {
                     IndexParamsBuilder::scalar().build()?
                 }
                 _ => {
@@ -568,14 +581,13 @@ impl Table for TableImpl {
     }
 
     fn search(&self, query: &[f32]) -> Query {
-        Query::new(self.dataset.clone()).query_vector(query)
+        Query::new(Arc::new(self.dataset.lock().expect("lock poison").clone())).query_vector(query)
     }
 
     /// Delete rows from the table
-    async fn delete(&mut self, predicate: &str) -> Result<()> {
-        let mut dataset = self.dataset.as_ref().clone();
+    async fn delete(&self, predicate: &str) -> Result<()> {
+        let mut dataset = self.clone_inner_dataset()?;
         dataset.delete(predicate).await?;
-        self.dataset = Arc::new(dataset);
         Ok(())
     }
 }
@@ -664,7 +676,7 @@ mod tests {
 
         let batches = make_test_batches();
         let schema = batches.schema().clone();
-        let mut table = TableImpl::create(&uri, "test", batches, None, None)
+        let table = TableImpl::create(&uri, "test", batches, None, None)
             .await
             .unwrap();
         assert_eq!(table.count_rows().await.unwrap(), 10);
@@ -1112,7 +1124,7 @@ mod tests {
 
         table.create_vector_index(index_builder).await.unwrap();
 
-        assert_eq!(table.dataset.load_indices().await.unwrap().len(), 1);
+        assert_eq!(table.load_indices().await.unwrap().len(), 1);
         assert_eq!(table.count_rows().await.unwrap(), 512);
         assert_eq!(table.name, "test");
 
