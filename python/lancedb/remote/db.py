@@ -116,6 +116,7 @@ class RemoteDBConnection(DBConnection):
         schema: Optional[Union[pa.Schema, LanceModel]] = None,
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
+        mode: Optional[str] = None,
         embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
     ) -> Table:
         """Create a [Table][lancedb.table.Table] in the database.
@@ -214,10 +215,12 @@ class RemoteDBConnection(DBConnection):
             raise ValueError("Either data or schema must be provided.")
         if embedding_functions is not None:
             raise NotImplementedError(
-                "embedding_functions is not supported for remote databases."
+                "embedding_functions is not supported on the LanceDB Cloud."
                 "Please vote https://github.com/lancedb/lancedb/issues/626 "
                 "for this feature."
             )
+        if mode is not None:
+            raise NotImplementedError("mode is not supported on the LanceDB Cloud.")
 
         if inspect.isclass(schema) and issubclass(schema, LanceModel):
             # convert LanceModel to pyarrow schema

@@ -71,52 +71,86 @@ class RemoteTable(Table):
         metric="L2",
         vector_column_name: str = VECTOR_COLUMN_NAME,
         index_cache_size: Optional[int] = None,
+        num_partitions: Optional[int] = None,
+        num_sub_vectors: Optional[int] = None,
+        replace: Optional[bool] = None,
+        accelerator: Optional[str] = None,
     ):
-        """Create an index on the table.
-        Currently, the only parameters that matter are
-        the metric and the vector column name.
-
-        Parameters
-        ----------
-        metric : str
-            The metric to use for the index. Default is "L2".
-        vector_column_name : str
-            The name of the vector column. Default is "vector".
-
-        Examples
-        --------
-        >>> import lancedb
-        >>> import uuid
-        >>> from lancedb.schema import vector
-        >>> db = lancedb.connect("db://...", api_key="...", # doctest: +SKIP
-        ...                      region="...") # doctest: +SKIP
-        >>> table_name = uuid.uuid4().hex
-        >>> schema = pa.schema(
-        ...     [
-        ...             pa.field("id", pa.uint32(), False),
-        ...            pa.field("vector", vector(128), False),
-        ...             pa.field("s", pa.string(), False),
-        ...     ]
-        ... )
-        >>> table = db.create_table( # doctest: +SKIP
-        ...     table_name, # doctest: +SKIP
-        ...     schema=schema, # doctest: +SKIP
-        ... )
-        >>> table.create_index("L2", "vector") # doctest: +SKIP
-        """
-        index_type = "vector"
-
-        data = {
-            "column": vector_column_name,
-            "index_type": index_type,
-            "metric_type": metric,
-            "index_cache_size": index_cache_size,
-        }
-        resp = self._conn._client.post(
-            f"/v1/table/{self._name}/create_index/", data=data
+        """create_index() is not supported on the LanceDB cloud"""
+        raise NotImplementedError(
+            "create_index() is not supported on the LanceDB cloud"
+            "We are working on adding this feature."
         )
 
-        return resp
+        # this API will be available after
+        # https://github.com/lancedb/sophon/issues/1694 is fixed
+        # """Create an index on the table.
+        # Currently, the only parameters that matter are
+        # the metric and the vector column name.
+
+        # Parameters
+        # ----------
+        # metric : str
+        #     The metric to use for the index. Default is "L2".
+        # vector_column_name : str
+        #     The name of the vector column. Default is "vector".
+
+        # Examples
+        # --------
+        # >>> import lancedb
+        # >>> import uuid
+        # >>> from lancedb.schema import vector
+        # >>> db = lancedb.connect("db://...", api_key="...", # doctest: +SKIP
+        # ...                      region="...") # doctest: +SKIP
+        # >>> table_name = uuid.uuid4().hex
+        # >>> schema = pa.schema(
+        # ...     [
+        # ...             pa.field("id", pa.uint32(), False),
+        # ...            pa.field("vector", vector(128), False),
+        # ...             pa.field("s", pa.string(), False),
+        # ...     ]
+        # ... )
+        # >>> table = db.create_table( # doctest: +SKIP
+        # ...     table_name, # doctest: +SKIP
+        # ...     schema=schema, # doctest: +SKIP
+        # ... )
+        # >>> table.create_index("L2", "vector") # doctest: +SKIP
+        # """
+
+        # if num_partitions is not None:
+        #     raise NotImplementedError(
+        #         "num_partitions is not supported on the LanceDB Cloud."
+        #         "This parameter will be tuned automatically."
+        #     )
+        # if num_sub_vectors is not None:
+        #     raise NotImplementedError(
+        #         "num_sub_vectors is not supported on the LanceDB Cloud."
+        #         "This parameter will be tuned automatically."
+        #     )
+        # if accelerator is not None:
+        #     raise NotImplementedError(
+        #         "GPU accelerator is not supported on the LanceDB Cloud."
+        #         "If you have 100M+ vectors to index,"
+        #          "please contact us at contact@lancedb.com"
+        #     )
+        # if replace is not None:
+        #     raise NotImplementedError(
+        #         "replace is not supported on the LanceDB Cloud."
+        #         "Existing indexes will always be replaced."
+        #     )
+        # index_type = "vector"
+
+        # data = {
+        #     "column": vector_column_name,
+        #     "index_type": index_type,
+        #     "metric_type": metric,
+        #     "index_cache_size": index_cache_size,
+        # }
+        # resp = self._conn._client.post(
+        #     f"/v1/table/{self._name}/create_index/", data=data
+        # )
+
+        # return resp
 
     def add(
         self,
