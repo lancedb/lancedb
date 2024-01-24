@@ -143,12 +143,11 @@ impl<'a> IndexBuilder<'a> {
         if self.columns.len() != 1 {
             return Err(Error::Schema {
                 message: "Only one column is supported for index".to_string(),
-            }
-            .into());
+            });
         }
         let column = &self.columns[0];
         let schema = self.table.schema();
-        let field = schema.field_with_name(&column)?;
+        let field = schema.field_with_name(column)?;
 
         let params = match self.index_type {
             IndexType::Scalar => IndexParams::Scalar {
@@ -172,8 +171,7 @@ impl<'a> IndexBuilder<'a> {
                                 "Column '{}' is not a FixedSizeList",
                                 &self.columns[0]
                             ),
-                        }
-                        .into()),
+                        }),
                     }?
                 };
                 IndexParams::IvfPq {
@@ -198,7 +196,7 @@ impl<'a> IndexBuilder<'a> {
                 self.table
                     .as_native()
                     .unwrap()
-                    .create_scalar_index(&column, replace)
+                    .create_scalar_index(column, replace)
                     .await?
             }
             IndexParams::IvfPq {
