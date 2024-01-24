@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use arrow_array::RecordBatchReader;
 use lance::dataset::WriteParams;
-use lance::io::object_store::{ObjectStore, WrappingObjectStore};
+use lance::io::{ObjectStore, WrappingObjectStore};
 use object_store::local::LocalFileSystem;
 use snafu::prelude::*;
 

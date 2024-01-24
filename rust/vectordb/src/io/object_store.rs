@@ -23,7 +23,7 @@ use std::{
 
 use bytes::Bytes;
 use futures::{stream::BoxStream, FutureExt, StreamExt};
-use lance::io::object_store::WrappingObjectStore;
+use lance::io::WrappingObjectStore;
 use object_store::{
     path::Path, Error, GetOptions, GetResult, ListResult, MultipartId, ObjectMeta, ObjectStore,
     PutOptions, PutResult, Result,
@@ -338,7 +338,7 @@ mod test {
     use crate::connection::{Connection, Database};
     use arrow_array::PrimitiveArray;
     use futures::TryStreamExt;
-    use lance::{dataset::WriteParams, io::object_store::ObjectStoreParams};
+    use lance::{dataset::WriteParams, io::ObjectStoreParams};
     use lance_testing::datagen::{BatchGenerator, IncrementingInt32, RandomVector};
     use object_store::local::LocalFileSystem;
     use tempfile;
