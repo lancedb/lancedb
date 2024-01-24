@@ -35,7 +35,7 @@ table.add(data)
 results = table.search("flower moon", query_type="hybrid").to_pandas()
 ```
 
-By default, LanceDB uses `LinearCombinationReranker(weights=0.7)` to combine & Rerank the results of semantic and full-text search. You can customize the hyperparameters, use a different re-ranker or write your own custom re-ranker. Here's how you can use any of the available re-rankers:
+By default, LanceDB uses `LinearCombinationReranker(weights=0.7)` to combine and rerank the results of semantic and full-text search. You can customize the hyperparameters as needed or write your own custom reranker. Here's how you can use any of the available rerankers:
 
 
 ### `rerank()` arguments
