@@ -16,16 +16,16 @@ use crate::query::Query;
 use arrow_ipc::writer::FileWriter;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
-use vectordb::{ipc::ipc_file_to_batches, table::Table as LanceDBTable};
+use vectordb::{ipc::ipc_file_to_batches, table::TableRef};
 
 #[napi]
 pub struct Table {
-    pub(crate) table: LanceDBTable,
+    pub(crate) table: TableRef,
 }
 
 #[napi]
 impl Table {
-    pub(crate) fn new(table: LanceDBTable) -> Self {
+    pub(crate) fn new(table: TableRef) -> Self {
         Self { table }
     }
 
@@ -46,7 +46,7 @@ impl Table {
     pub async unsafe fn add(&mut self, buf: Buffer) -> napi::Result<()> {
         let batches = ipc_file_to_batches(buf.to_vec())
             .map_err(|e| napi::Error::from_reason(format!("Failed to read IPC file: {}", e)))?;
-        self.table.add(batches, None).await.map_err(|e| {
+        self.table.add(Box::new(batches), None).await.map_err(|e| {
             napi::Error::from_reason(format!(
                 "Failed to add batches to table {}: {}",
                 self.table, e
