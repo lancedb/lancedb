@@ -161,10 +161,17 @@ impl IndexBuilder {
     }
 
     /// Build the parameters.
-    pub async fn build(&self) -> Result<()> {
+    pub async fn build(&mut self) -> Result<()> {
         let schema = self.table.schema();
 
+        // TODO: simplify this after GH lance#1864.
+        let mut index_type = match self.index_type {
+            IndexType::Scalar => IndexType::Scalar,
+            IndexType::Vector => IndexType::Vector,
+        };
         let columns = if self.columns.is_empty() {
+            // By default we create vector index.
+            index_type = IndexType::Vector;
             vec![default_column_for_index(&schema)?]
         } else {
             self.columns.clone()
@@ -179,7 +186,7 @@ impl IndexBuilder {
 
         let field = schema.field_with_name(column)?;
 
-        let params = match self.index_type {
+        let params = match index_type {
             IndexType::Scalar => IndexParams::Scalar {
                 replace: self.replace,
             },
@@ -282,6 +289,7 @@ fn suggested_num_sub_vectors(dim: u32) -> u32 {
     }
 }
 
+/// Find one default column to create index.
 fn default_column_for_index(schema: &Schema) -> Result<String> {
     // Try to find one fixed size list array column.
     let candidates = schema
