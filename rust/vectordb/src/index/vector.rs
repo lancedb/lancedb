@@ -14,7 +14,7 @@
 
 use serde::Deserialize;
 
-use lance::format::{Index, Manifest};
+use lance::table::format::{Index, Manifest};
 
 pub struct VectorIndex {
     pub columns: Vec<String>,

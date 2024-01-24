@@ -27,9 +27,9 @@ use lance::dataset::optimize::{
 };
 pub use lance::dataset::ReadParams;
 use lance::dataset::{Dataset, UpdateBuilder, WriteParams};
+use lance::index::scalar::ScalarIndexParams;
 use lance::io::WrappingObjectStore;
-use lance_index::DatasetIndexExt;
-use lance_index::IndexType;
+use lance_index::{optimize::OptimizeOptions, DatasetIndexExt, IndexType};
 
 use crate::error::{Error, Result};
 use crate::index::vector::{VectorIndex, VectorIndexStatistics};
@@ -575,9 +575,7 @@ mod tests {
     use arrow_schema::{DataType, Field, Schema, TimeUnit};
     use futures::TryStreamExt;
     use lance::dataset::{Dataset, WriteMode};
-    use lance::index::vector::pq::PQBuildParams;
     use lance::io::{ObjectStoreParams, WrappingObjectStore};
-    use lance_index::vector::ivf::IvfBuildParams;
     use rand::Rng;
     use tempfile::tempdir;
 
