@@ -83,28 +83,47 @@ impl IndexBuilder {
         }
     }
 
+    /// Build a Scalar Index.
+    ///
+    /// Accepted parameters:
+    ///  - `replace`: Replace the existing index.
+    ///  - `name`: Index name. Default: `None`
     pub fn scalar(&mut self) -> &mut Self {
         self.index_type = IndexType::Scalar;
         self
     }
 
     /// Build an IVF PQ index.
+    ///
+    /// Accepted parameters:
+    /// - `replace`: Replace the existing index.
+    /// - `name`: Index name. Default: `None`
+    /// - `metric_type`: [MetricType] to use to build Vector Index.
+    /// - `num_partitions`: Number of IVF partitions.
+    /// - `num_sub_vectors`: Number of sub-vectors of PQ.
+    /// - `num_bits`: Number of bits used for PQ centroids.
+    /// - `sample_rate`: The rate to find samples to train kmeans.
+    /// - `max_iterations`: Max iteration to train kmeans.
     pub fn ivf_pq(&mut self) -> &mut Self {
         self.index_type = IndexType::Vector;
         self
     }
 
+    /// Replace the existing index.
     pub fn replace(&mut self) -> &mut Self {
         self.replace = true;
         self
     }
 
+    /// Set the index name.
     pub fn name(&mut self, name: &str) -> &mut Self {
         self.name = Some(name.to_string());
         self
     }
 
     /// [MetricType] to use to build Vector Index.
+    ///
+    /// Default value is [MetricType::L2].
     pub fn metric_type(&mut self, metric_type: MetricType) -> &mut Self {
         self.metric_type = metric_type;
         self

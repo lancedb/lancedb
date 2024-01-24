@@ -109,12 +109,6 @@ pub trait Table: std::fmt::Display + Send + Sync {
 
     /// Create an index on the column name.
     ///
-    /// If no `params` is provided, we will try to guess the parameters, with the following rules:
-    ///
-    /// - If the column is a vector column, which is `FixedSizeList` or `FixedShapedTensor`,
-    ///   an `IVF_PQ` index is created.
-    /// - if the column is a scalar type, i.e., float, integer, or boolean, a Scalar index is created.
-    ///
     /// # Examples
     ///
     /// ```no_run
