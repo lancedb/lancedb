@@ -88,11 +88,7 @@ fn get_index_params_builder(
         builder.num_bits(num_bits);
     }
     if let Some(replace) = obj.get_opt::<JsBoolean, _, _>(cx, "replace")? {
-        if replace.value(cx) {
-            builder.replace();
-        }
-    } else {
-        builder.replace();
+        builder.replace(replace.value(cx));
     }
     Ok(())
 }

@@ -219,9 +219,9 @@ impl NativeTable {
         })
     }
 
-    /// Make a new clone of the intenral lance dataset.
-    pub(crate) fn clone_inner_dataset(&self) -> Result<Dataset> {
-        Ok(self.dataset.lock()?.clone())
+    /// Make a new clone of the internal lance dataset.
+    pub(crate) fn clone_inner_dataset(&self) -> Dataset {
+        self.dataset.lock().expect("Lock poison").clone()
     }
 
     /// Checkout a specific version of this [NativeTable]
@@ -262,7 +262,7 @@ impl NativeTable {
     }
 
     pub async fn checkout_latest(&self) -> Result<Self> {
-        let dataset = self.clone_inner_dataset()?;
+        let dataset = self.clone_inner_dataset();
         let latest_version_id = dataset.latest_version_id().await?;
         let dataset = if latest_version_id == dataset.version().version {
             dataset
@@ -342,7 +342,7 @@ impl NativeTable {
 
     /// Create a scalar index on the table
     pub async fn create_scalar_index(&self, column: &str, replace: bool) -> Result<()> {
-        let mut dataset = self.clone_inner_dataset()?;
+        let mut dataset = self.clone_inner_dataset();
         let params = ScalarIndexParams::default();
         dataset
             .create_index(&[column], IndexType::Scalar, None, &params, replace)
@@ -351,18 +351,18 @@ impl NativeTable {
     }
 
     pub async fn optimize_indices(&mut self, options: &OptimizeOptions) -> Result<()> {
-        let mut dataset = self.clone_inner_dataset()?;
+        let mut dataset = self.clone_inner_dataset();
         dataset.optimize_indices(options).await?;
 
         Ok(())
     }
 
     pub fn query(&self) -> Query {
-        Query::new(self.dataset.lock().expect("Lock poison").clone().into())
+        Query::new(self.clone_inner_dataset().into())
     }
 
     pub fn filter(&self, expr: String) -> Query {
-        Query::new(self.dataset.lock().expect("Lock poison").clone().into()).filter(Some(expr))
+        Query::new(self.clone_inner_dataset().into()).filter(Some(expr))
     }
 
     /// Returns the number of rows in this Table
@@ -374,14 +374,14 @@ impl NativeTable {
         left_on: &str,
         right_on: &str,
     ) -> Result<()> {
-        let mut dataset = self.clone_inner_dataset()?;
+        let mut dataset = self.clone_inner_dataset();
         dataset.merge(batches, left_on, right_on).await?;
         self.dataset = Arc::new(Mutex::new(dataset));
         Ok(())
     }
 
     pub async fn update(&self, predicate: Option<&str>, updates: Vec<(&str, &str)>) -> Result<()> {
-        let mut builder = UpdateBuilder::new(self.clone_inner_dataset()?.into());
+        let mut builder = UpdateBuilder::new(self.clone_inner_dataset().into());
         if let Some(predicate) = predicate {
             builder = builder.update_where(predicate)?;
         }
@@ -412,7 +412,7 @@ impl NativeTable {
         older_than: Duration,
         delete_unverified: Option<bool>,
     ) -> Result<RemovalStats> {
-        let dataset = self.clone_inner_dataset()?;
+        let dataset = self.clone_inner_dataset();
         Ok(dataset
             .cleanup_old_versions(older_than, delete_unverified)
             .await?)
@@ -429,7 +429,7 @@ impl NativeTable {
         options: CompactionOptions,
         remap_options: Option<Arc<dyn IndexRemapperOptions>>,
     ) -> Result<CompactionMetrics> {
-        let mut dataset = self.clone_inner_dataset()?;
+        let mut dataset = self.clone_inner_dataset();
         let metrics = compact_files(&mut dataset, options, remap_options).await?;
         self.reset_dataset(dataset);
         Ok(metrics)
@@ -440,12 +440,12 @@ impl NativeTable {
     }
 
     pub async fn count_deleted_rows(&self) -> Result<usize> {
-        let dataset = { self.dataset.lock().expect("lock poison").clone() };
+        let dataset = self.clone_inner_dataset();
         Ok(dataset.count_deleted_rows().await?)
     }
 
     pub async fn num_small_files(&self, max_rows_per_group: usize) -> usize {
-        let dataset = { self.dataset.lock().expect("lock poison").clone() };
+        let dataset = self.clone_inner_dataset();
         dataset.num_small_files(max_rows_per_group).await
     }
 
@@ -464,7 +464,7 @@ impl NativeTable {
     }
 
     pub async fn load_indices(&self) -> Result<Vec<VectorIndex>> {
-        let dataset = { self.dataset.lock()?.clone() };
+        let dataset = self.clone_inner_dataset();
         let (indices, mf) = futures::try_join!(dataset.load_indices(), dataset.latest_manifest())?;
         Ok(indices
             .iter()
@@ -481,7 +481,7 @@ impl NativeTable {
         if index.is_none() {
             return Ok(None);
         }
-        let dataset = { self.dataset.lock()?.clone() };
+        let dataset = self.clone_inner_dataset();
         let index_stats = dataset.index_statistics(&index.unwrap().index_name).await?;
         let index_stats: VectorIndexStatistics =
             serde_json::from_str(&index_stats).map_err(|e| Error::Lance {
@@ -553,7 +553,7 @@ impl Table for NativeTable {
 
     /// Delete rows from the table
     async fn delete(&self, predicate: &str) -> Result<()> {
-        let mut dataset = self.clone_inner_dataset()?;
+        let mut dataset = self.clone_inner_dataset();
         dataset.delete(predicate).await?;
         self.reset_dataset(dataset);
         Ok(())

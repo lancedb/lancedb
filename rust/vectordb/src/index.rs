@@ -72,7 +72,7 @@ impl IndexBuilder {
             table,
             columns: columns.iter().map(|c| c.to_string()).collect(),
             name: None,
-            replace: false,
+            replace: true,
             index_type: IndexType::Scalar,
             metric_type: MetricType::L2,
             num_partitions: None,
@@ -109,9 +109,9 @@ impl IndexBuilder {
         self
     }
 
-    /// Replace the existing index.
-    pub fn replace(&mut self) -> &mut Self {
-        self.replace = true;
+    /// Whether to replace the existing index, default is `true`.
+    pub fn replace(&mut self, v: bool) -> &mut Self {
+        self.replace = v;
         self
     }
 
@@ -211,7 +211,7 @@ impl IndexBuilder {
             .table
             .as_native()
             .expect("Only native table is supported here");
-        let mut dataset = tbl.clone_inner_dataset()?;
+        let mut dataset = tbl.clone_inner_dataset();
         match params {
             IndexParams::Scalar { replace } => {
                 self.table
