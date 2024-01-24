@@ -15,10 +15,16 @@
 import { Connection } from "./connection";
 import { Connection as NativeConnection, ConnectionOptions } from "./native.js";
 
-export { ConnectionOptions, WriteOptions, Query } from "./native.js";
+export {
+  ConnectionOptions,
+  WriteOptions,
+  Query,
+  MetricType,
+} from "./native.js";
 export { Connection } from "./connection";
 export { Table } from "./table";
 export { Data } from "./arrow";
+export { IvfPQOptions, IndexBuilder, ScalarOptions } from "./indexer";
 
 /**
  * Connect to a LanceDB instance at the given URI.

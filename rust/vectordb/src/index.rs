@@ -14,6 +14,7 @@
 
 use std::{cmp::max, sync::Arc};
 
+use arrow_schema::Schema;
 use lance_index::{DatasetIndexExt, IndexType};
 pub use lance_linalg::distance::MetricType;
 
@@ -161,13 +162,21 @@ impl IndexBuilder {
 
     /// Build the parameters.
     pub async fn build(&self) -> Result<()> {
-        if self.columns.len() != 1 {
+        let schema = self.table.schema();
+
+        let columns = if self.columns.is_empty() {
+            vec![default_column_for_index(&schema)?]
+        } else {
+            self.columns.clone()
+        };
+
+        if columns.len() != 1 {
             return Err(Error::Schema {
                 message: "Only one column is supported for index".to_string(),
             });
         }
-        let column = &self.columns[0];
-        let schema = self.table.schema();
+        let column = &columns[0];
+
         let field = schema.field_with_name(column)?;
 
         let params = match self.index_type {
@@ -271,4 +280,39 @@ fn suggested_num_sub_vectors(dim: u32) -> u32 {
         );
         1
     }
+}
+
+fn default_column_for_index(schema: &Schema) -> Result<String> {
+    // Try to find one fixed size list array column.
+    let candidates = schema
+        .fields()
+        .iter()
+        .filter_map(|field| match field.data_type() {
+            arrow_schema::DataType::FixedSizeList(f, _) if f.data_type().is_floating() => {
+                Some(field.name())
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if candidates.is_empty() {
+        Err(Error::Store {
+            message: "No vector column found to create index".to_string(),
+        })
+    } else if candidates.len() != 1 {
+        Err(Error::Store {
+            message:
+                "More than one vector columns found, please specify which column to create index"
+                    .to_string(),
+        })
+    } else {
+        Ok(candidates[0].to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_guess_default_column() {}
 }

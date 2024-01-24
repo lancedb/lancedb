@@ -12,11 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::query::Query;
 use arrow_ipc::writer::FileWriter;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use vectordb::{ipc::ipc_file_to_batches, table::TableRef};
+
+use crate::index::IndexBuilder;
+use crate::query::Query;
 
 #[napi]
 pub struct Table {
@@ -43,7 +45,7 @@ impl Table {
     }
 
     #[napi]
-    pub async unsafe fn add(&mut self, buf: Buffer) -> napi::Result<()> {
+    pub async fn add(&self, buf: Buffer) -> napi::Result<()> {
         let batches = ipc_file_to_batches(buf.to_vec())
             .map_err(|e| napi::Error::from_reason(format!("Failed to read IPC file: {}", e)))?;
         self.table.add(Box::new(batches), None).await.map_err(|e| {
@@ -65,13 +67,18 @@ impl Table {
     }
 
     #[napi]
-    pub async unsafe fn delete(&mut self, predicate: String) -> napi::Result<()> {
+    pub async fn delete(&self, predicate: String) -> napi::Result<()> {
         self.table.delete(&predicate).await.map_err(|e| {
             napi::Error::from_reason(format!(
                 "Failed to delete rows in table {}: predicate={}",
                 self.table, e
             ))
         })
+    }
+
+    #[napi]
+    pub fn create_index(&self) -> napi::Result<IndexBuilder> {
+        todo!()
     }
 
     #[napi]
