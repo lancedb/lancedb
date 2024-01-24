@@ -492,7 +492,7 @@ mod tests {
     use futures::TryStreamExt;
     use lance::dataset::{Dataset, WriteMode};
     use lance::index::vector::pq::PQBuildParams;
-    use lance::io::object_store::{ObjectStoreParams, WrappingObjectStore};
+    use lance::io::{ObjectStoreParams, WrappingObjectStore};
     use lance_index::vector::ivf::IvfBuildParams;
     use rand::Rng;
     use tempfile::tempdir;

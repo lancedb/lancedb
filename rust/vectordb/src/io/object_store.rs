@@ -338,7 +338,7 @@ mod test {
     use crate::connection::{Connection, Database};
     use arrow_array::PrimitiveArray;
     use futures::TryStreamExt;
-    use lance::{dataset::WriteParams, io::object_store::ObjectStoreParams};
+    use lance::{dataset::WriteParams, io::ObjectStoreParams};
     use lance_testing::datagen::{BatchGenerator, IncrementingInt32, RandomVector};
     use object_store::local::LocalFileSystem;
     use tempfile;
