@@ -335,7 +335,10 @@ impl WrappingObjectStore for MirroringObjectStoreWrapper {
 #[cfg(all(test, not(windows)))]
 mod test {
     use super::*;
-    use crate::connection::{Connection, Database};
+    use crate::{
+        connection::{Connection, Database},
+        table::TableImpl,
+    };
     use arrow_array::PrimitiveArray;
     use futures::TryStreamExt;
     use lance::{dataset::WriteParams, io::ObjectStoreParams};
@@ -374,6 +377,9 @@ mod test {
         assert_eq!(t.count_rows().await.unwrap(), 100);
 
         let q = t
+            .as_any()
+            .downcast_ref::<TableImpl>()
+            .unwrap()
             .search(Some(PrimitiveArray::from_iter_values(vec![
                 0.1, 0.1, 0.1, 0.1,
             ])))

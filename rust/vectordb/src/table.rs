@@ -18,13 +18,14 @@ use std::path::Path;
 use std::sync::Arc;
 
 use arrow_array::{Float32Array, RecordBatchReader};
-use arrow_schema::{Schema, SchemaRef};
+use arrow_schema::{DataType, Schema, SchemaRef};
 use chrono::Duration;
 use lance::dataset::builder::DatasetBuilder;
 use lance::dataset::cleanup::RemovalStats;
 use lance::dataset::optimize::{
     compact_files, CompactionMetrics, CompactionOptions, IndexRemapperOptions,
 };
+pub use lance::dataset::ReadParams;
 use lance::dataset::{Dataset, UpdateBuilder, WriteParams};
 use lance::io::WrappingObjectStore;
 use lance_index::DatasetIndexExt;
@@ -32,11 +33,10 @@ use lance_index::IndexType;
 
 use crate::error::{Error, Result};
 use crate::index::vector::{VectorIndex, VectorIndexBuilder, VectorIndexStatistics};
+use crate::index::{IndexParameters, IndexParamsBuilder};
 use crate::query::Query;
 use crate::utils::{PatchReadParam, PatchWriteParam};
 use crate::WriteMode;
-
-pub use lance::dataset::ReadParams;
 
 pub const VECTOR_COLUMN_NAME: &str = "vector";
 
@@ -44,7 +44,9 @@ pub const VECTOR_COLUMN_NAME: &str = "vector";
 ///
 /// The type of the each row is defined in Apache Arrow [Schema].
 #[async_trait::async_trait]
-pub trait Table: std::fmt::Display {
+pub trait Table: std::fmt::Display + Send + Sync {
+    fn as_any(&self) -> &dyn std::any::Any;
+
     /// Get the name of the table.
     fn name(&self) -> &str;
 
@@ -78,13 +80,33 @@ pub trait Table: std::fmt::Display {
     /// tbl.delete("id > 5").await.unwrap();
     /// ```
     async fn delete(&mut self, predicate: &str) -> Result<()>;
+
+    /// Create an index on the column name.
+    ///
+    /// If no `params` is provided, we will try to guess the parameters, with the following rules:
+    ///
+    /// - If the column is a vector column, which is `FixedSizeList` or `FixedShapedTensor`,
+    ///   an `IVF_PQ` index is created.
+    /// - if the column is a scalar type, i.e., float, integer, or boolean, a Scalar index is created.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use vectordb::connection::{Database, Connection};
+    /// tbl.create_index(&["vector"], None).await.unwrap();
+    /// ```
+    async fn create_index(
+        &mut self,
+        column: &[&str],
+        params: Option<IndexParameters>,
+    ) -> Result<()>;
 }
 
 /// Reference to a Table pointer.
 pub type TableRef = Arc<dyn Table>;
 
 /// A table in a LanceDB database.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TableImpl {
     name: String,
     uri: String,
@@ -284,7 +306,10 @@ impl TableImpl {
     }
 
     /// Create index on the table.
-    pub async fn create_index(&mut self, index_builder: &impl VectorIndexBuilder) -> Result<()> {
+    pub async fn create_vector_index(
+        &mut self,
+        index_builder: &impl VectorIndexBuilder,
+    ) -> Result<()> {
         let mut dataset = self.dataset.as_ref().clone();
         dataset
             .create_index(
@@ -476,6 +501,10 @@ impl TableImpl {
 
 #[async_trait::async_trait]
 impl Table for TableImpl {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn name(&self) -> &str {
         self.name.as_str()
     }
@@ -505,6 +534,45 @@ impl Table for TableImpl {
         };
 
         self.dataset = Arc::new(Dataset::write(batches, &self.uri, params).await?);
+        Ok(())
+    }
+
+    async fn create_index(
+        &mut self,
+        column: &[&str],
+        params: Option<IndexParameters>,
+    ) -> Result<()> {
+        if column.len() != 1 {
+            return Err(Error::Lance {
+                message: "only one column is supported for index creation".into(),
+            });
+        }
+
+        let field = self.dataset.schema().field(column[0]).ok_or(Error::Lance {
+            message: format!("column {} not found", column[0]),
+        })?;
+        let params = if let Some(params) = params {
+            params
+        } else {
+            // Best guess of index parameters.
+            match field.data_type() {
+                // This is a vector column.
+                DataType::FixedSizeList(f, _) if f.data_type().is_floating() => {
+                    IndexParamsBuilder::ivf_pq().build()?
+                }
+                dt if dt.is_numeric() || dt == DataType::Boolean => {
+                    IndexParamsBuilder::scalar().build()?
+                }
+                _ => {
+                    return Err(Error::Lance {
+                        message: format!(
+                            "unsupported column type {} for index creation",
+                            field.data_type()
+                        ),
+                    })
+                }
+            }
+        };
         Ok(())
     }
 
@@ -617,7 +685,7 @@ mod tests {
             schema.clone(),
         );
 
-        table.add(new_batches, None).await.unwrap();
+        table.add(Box::new(new_batches), None).await.unwrap();
         assert_eq!(table.count_rows().await.unwrap(), 20);
         assert_eq!(table.name, "test");
     }
@@ -650,7 +718,7 @@ mod tests {
             ..Default::default()
         };
 
-        table.add(new_batches, Some(param)).await.unwrap();
+        table.add(Box::new(new_batches), Some(param)).await.unwrap();
         assert_eq!(table.count_rows().await.unwrap(), 10);
         assert_eq!(table.name, "test");
     }
@@ -1048,7 +1116,7 @@ mod tests {
             .ivf_params(IvfBuildParams::new(256))
             .pq_params(PQBuildParams::default());
 
-        table.create_index(index_builder).await.unwrap();
+        table.create_vector_index(index_builder).await.unwrap();
 
         assert_eq!(table.dataset.load_indices().await.unwrap().len(), 1);
         assert_eq!(table.count_rows().await.unwrap(), 512);
