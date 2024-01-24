@@ -124,7 +124,7 @@ Arguments
 ## Building Custom Rerankers
 You can build your own custom re-ranker by subclassing the `Reranker` class and implementing the `rerank_hybrid()` method. Here's an example of a custom re-ranker that combines the results of semantic and full-text search using a linear combination of the scores.
 
-`Reranker` base interface comes with a `merge_results()` method that can be used to combine the results of semantic and full-text search. This is a vanilla merging algo that just concatenates the results and removes the duplicates without taking the scores into consideration. It just keeps the first copy of the row encountered. This works well in case of rerankers that don't use the scores of semantic and full-text search to combine the results. If you want to use the scores or want to support `return_score="all"`, you'll need to implement your own merging algorithm.
+The `Reranker` base interface comes with a `merge_results()` method that can be used to combine the results of semantic and full-text search. This is a vanilla merging algorithm that simply concatenates the results and removes the duplicates without taking the scores into consideration. It only keeps the first copy of the row encountered. This works well in cases that don't require the scores of semantic and full-text search to combine the results. If you want to use the scores or want to support `return_score="all"`, you'll need to implement your own merging algorithm.
 
 ```python
 
