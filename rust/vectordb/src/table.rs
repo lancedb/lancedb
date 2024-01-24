@@ -555,6 +555,7 @@ impl Table for NativeTable {
     async fn delete(&self, predicate: &str) -> Result<()> {
         let mut dataset = self.clone_inner_dataset()?;
         dataset.delete(predicate).await?;
+        self.reset_dataset(dataset);
         Ok(())
     }
 }
