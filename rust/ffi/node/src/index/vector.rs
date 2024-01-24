@@ -87,7 +87,7 @@ fn get_index_params_builder(
     if let Some(num_bits) = obj.get_opt_u32(cx, "num_bits")? {
         builder.num_bits(num_bits);
     }
-    if let Some(_) = obj.get_opt::<JsBoolean, _, _>(cx, "replace")? {
+    if obj.get_opt::<JsBoolean, _, _>(cx, "replace")?.is_some() {
         builder.replace();
     }
     Ok(())
