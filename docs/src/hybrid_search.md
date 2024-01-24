@@ -26,7 +26,7 @@ data = [
     { "text": "have won their first victory against the evil Galactic Empire"},
     { "text": "during the battle rebel spies managed to steal secret plans"},
     { "text": "to the Empire's ultimate weapon the Death Star"}
-    ]
+]
 
 # ingest docs with auto-vectorization
 table.add(data)
