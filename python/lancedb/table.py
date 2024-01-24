@@ -643,18 +643,79 @@ class Table(ABC):
         """
 
 
-class LanceTableMode:
-    pass
+class _LanceDatasetRef(ABC):
+    @property
+    @abstractmethod
+    def dataset(self) -> LanceDataset:
+        pass
+
+    @property
+    @abstractmethod
+    def dataset_mut(self) -> LanceDataset:
+        pass
 
 
 @dataclass
-class LanceStandardMode(LanceTableMode):
+class _LanceLatestDatasetRef(_LanceDatasetRef):
+    """Reference to the latest version of a LanceDataset."""
+
+    uri: str
+    read_consistency_interval: Optional[timedelta] = None
     last_consistency_check: Optional[float] = None
+    _dataset: Optional[LanceDataset] = None
+
+    @property
+    def dataset(self) -> LanceDataset:
+        if not self._dataset:
+            self._dataset = lance.dataset(self.uri)
+            self.last_consistency_check = time.monotonic()
+        elif self.read_consistency_interval is not None:
+            now = time.monotonic()
+            diff = timedelta(seconds=now - self.last_consistency_check)
+            if (
+                self.last_consistency_check is None
+                or diff > self.read_consistency_interval
+            ):
+                self._dataset = self._dataset.checkout_version(
+                    self._dataset.latest_version
+                )
+                self.last_consistency_check = time.monotonic()
+        return self._dataset
+
+    @dataset.setter
+    def dataset(self, value: LanceDataset):
+        self._dataset = value
+        self.last_consistency_check = time.monotonic()
+
+    @property
+    def dataset_mut(self) -> LanceDataset:
+        return self.dataset
 
 
 @dataclass
-class LanceTimeTravelMode(LanceTableMode):
+class _LanceTimeTravelRef(_LanceDatasetRef):
+    uri: str
     version: int
+    _dataset: Optional[LanceDataset] = None
+
+    @property
+    def dataset(self) -> LanceDataset:
+        if not self._dataset:
+            self._dataset = lance.dataset(self.uri, version=self.version)
+        return self._dataset
+
+    @dataset.setter
+    def dataset(self, value: LanceDataset):
+        self._dataset = value
+        self.version = value.version
+
+    @property
+    def dataset_mut(self) -> LanceDataset:
+        raise ValueError(
+            "Cannot mutate table reference fixed at version "
+            f"{self.version}. Call checkout_latest() to get a mutable "
+            "table reference."
+        )
 
 
 class LanceTable(Table):
@@ -682,12 +743,15 @@ class LanceTable(Table):
         self.name = name
 
         if version is not None:
-            self._mode = LanceTimeTravelMode(version)
+            self._ref = _LanceTimeTravelRef(
+                uri=self._dataset_uri,
+                version=version,
+            )
         else:
-            self._mode = LanceStandardMode()
-
-        # Dataset is lazily loaded
-        self._ds: Optional[LanceDataset] = None
+            self._ref = _LanceLatestDatasetRef(
+                uri=self._dataset_uri,
+                read_consistency_interval=connection.read_consistency_interval,
+            )
 
     @classmethod
     def open(cls, db, name, **kwargs):
@@ -709,39 +773,11 @@ class LanceTable(Table):
 
     @property
     def _dataset(self) -> LanceDataset:
-        # Returns the LanceDataset this wraps. This handles lazy loading (if
-        # self._ds is None) and checking for new versions (if user has specified
-        # a read_consistency_interval).
-        if not self._ds and isinstance(self._mode, LanceTimeTravelMode):
-            self._ds = lance.dataset(self._dataset_uri, version=self._mode.version)
-        elif not self._ds and isinstance(self._mode, LanceStandardMode):
-            self._mode.last_consistency_check = time.monotonic()
-            self._ds = lance.dataset(self._dataset_uri)
-        elif (
-            isinstance(self._mode, LanceStandardMode)
-            and self._conn.read_consistency_interval is not None
-        ):
-            now = time.monotonic()
-            diff = timedelta(seconds=now - self._mode.last_consistency_check)
-            if (
-                self._mode.last_consistency_check is None
-                or diff > self._conn.read_consistency_interval
-            ):
-                self._ds = self._ds.checkout_version(self._ds.latest_version)
-
-        return self._ds
+        return self._ref.dataset
 
     @property
     def _dataset_mut(self) -> LanceDataset:
-        # Returns the LanceDataset this wraps, but raises an error if the
-        # dataset is fixed to a specific version.
-        if isinstance(self._mode, LanceTimeTravelMode):
-            raise ValueError(
-                "Cannot mutate table reference fixed at version "
-                f"{self._mode.version}. Call checkout_latest() to get a mutable "
-                "table reference."
-            )
-        return self._dataset
+        return self._ref.dataset_mut
 
     def to_lance(self) -> LanceDataset:
         """Return the LanceDataset backing this table."""
@@ -805,7 +841,7 @@ class LanceTable(Table):
             raise ValueError(f"Invalid version {version}")
 
         try:
-            self._ds = self._ds.checkout_version(version)
+            ds = self._dataset.checkout_version(version)
         except IOError as e:
             if "not found" in str(e):
                 raise ValueError(
@@ -813,7 +849,13 @@ class LanceTable(Table):
                 )
             else:
                 raise e
-        self._mode = LanceTimeTravelMode(version)
+
+        self._ref = _LanceTimeTravelRef(
+            uri=self._dataset_uri,
+            version=version,
+        )
+        # We've already loaded the version so we can populate it directly.
+        self._ref.dataset = ds
 
     def checkout_latest(self):
         """Checkout the latest version of the table. This is an in-place operation.
@@ -821,8 +863,13 @@ class LanceTable(Table):
         The table will be set back into standard mode, and will track the latest
         version of the table.
         """
-        self.checkout(self._ds.latest_version)
-        self._mode = LanceStandardMode(last_consistency_check=time.monotonic())
+        self.checkout(self._dataset.latest_version)
+        ds = self._ref.dataset
+        self._ref = _LanceLatestDatasetRef(
+            uri=self._dataset_uri,
+            read_consistency_interval=self._conn.read_consistency_interval,
+        )
+        self._ref.dataset = ds
 
     def restore(self, version: int = None):
         """Restore a version of the table. This is an in-place operation.
@@ -866,13 +913,17 @@ class LanceTable(Table):
         else:
             self.checkout(version)
 
-        self._mode = LanceStandardMode(last_consistency_check=time.monotonic())
+        ds = self._dataset
 
-        if version == max_ver:
-            # no-op if restoring the latest version
-            return
+        # no-op if restoring the latest version
+        if version != max_ver:
+            ds.restore()
 
-        self._ds.restore()
+        self._ref = _LanceLatestDatasetRef(
+            uri=self._dataset_uri,
+            read_consistency_interval=self._conn.read_consistency_interval,
+        )
+        self._ref.dataset = ds
 
     def count_rows(self, filter: Optional[str] = None) -> int:
         """
@@ -890,8 +941,8 @@ class LanceTable(Table):
 
     def __repr__(self) -> str:
         val = f'{self.__class__.__name__}(connection={self._conn!r}, name="{self.name}"'
-        if isinstance(self._mode, LanceTimeTravelMode):
-            val += f", version={self._mode.version}"
+        if isinstance(self._ref, _LanceTimeTravelRef):
+            val += f", version={self._ref.version}"
         val += ")"
         return val
 
@@ -1050,7 +1101,9 @@ class LanceTable(Table):
             on_bad_vectors=on_bad_vectors,
             fill_value=fill_value,
         )
-        self._ds = lance.write_dataset(
+        # Access the dataset_mut property to ensure that the dataset is mutable.
+        self._ref.dataset_mut
+        self._ref.dataset = lance.write_dataset(
             data, self._dataset_uri, schema=self.schema, mode=mode
         )
         register_event("add")
@@ -1113,7 +1166,7 @@ class LanceTable(Table):
             other_table = other_table.to_lance()
         if isinstance(other_table, LanceDataset):
             other_table = other_table.to_table()
-        self._ds = self._dataset_mut.merge(
+        self._ref.dataset = self._dataset_mut.merge(
             other_table, left_on=left_on, right_on=right_on, schema=schema
         )
         register_event("merge")

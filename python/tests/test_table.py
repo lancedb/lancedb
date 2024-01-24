@@ -272,7 +272,7 @@ def test_versioning(db):
 
 def test_create_index_method():
     with patch.object(
-        LanceTable, "_dataset", new_callable=PropertyMock
+        LanceTable, "_dataset_mut", new_callable=PropertyMock
     ) as mock_dataset:
         # Setup mock responses
         mock_dataset.return_value.create_index.return_value = None
