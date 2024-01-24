@@ -33,7 +33,7 @@ use lance_index::IndexType;
 
 use crate::error::{Error, Result};
 use crate::index::vector::{VectorIndex, VectorIndexBuilder, VectorIndexStatistics};
-use crate::index::{IndexParameters, IndexParamsBuilder};
+use crate::index::{IndexParams, IndexParamsBuilder};
 use crate::query::Query;
 use crate::utils::{PatchReadParam, PatchWriteParam};
 use crate::WriteMode;
@@ -121,7 +121,9 @@ pub trait Table: std::fmt::Display + Send + Sync {
     /// # use vectordb::connection::{Database, Connection};
     /// tbl.create_index(&["vector"], None).await.unwrap();
     /// ```
-    async fn create_index(&self, column: &[&str], params: Option<IndexParameters>) -> Result<()>;
+    async fn create_index(&self, column: &[&str], params: Option<IndexParams>) -> Result<()>;
+
+    fn index_params_builder<'a>(&'a self, column: &str) -> IndexParamsBuilder<'a>;
 
     /// Search the table with a given query vector.
     fn search(&self, query: &[f32]) -> Query {
@@ -333,21 +335,22 @@ impl NativeTable {
     }
 
     /// Create index on the table.
-    pub async fn create_vector_index(&self, index_builder: &impl VectorIndexBuilder) -> Result<()> {
+    pub async fn create_vector_index(
+        &self,
+        col: &str,
+        index_name: Option<String>,
+        index_builder: &impl VectorIndexBuilder,
+    ) -> Result<()> {
         let mut dataset = self.clone_inner_dataset()?;
         dataset
             .create_index(
-                &[index_builder
-                    .get_column()
-                    .unwrap_or(VECTOR_COLUMN_NAME.to_string())
-                    .as_str()],
+                &[col],
                 IndexType::Vector,
-                index_builder.get_index_name(),
+                index_name,
                 &index_builder.build(),
                 index_builder.get_replace(),
             )
             .await?;
-        *self.dataset.lock()? = dataset;
         Ok(())
     }
 
@@ -554,13 +557,18 @@ impl Table for NativeTable {
         Ok(())
     }
 
-    async fn create_index(&self, column: &[&str], params: Option<IndexParameters>) -> Result<()> {
+    fn index_params_builder<'a>(&'a self, column: &str) -> IndexParamsBuilder<'a> {
+        IndexParamsBuilder::new(self, column)
+    }
+
+    async fn create_index(&self, column: &[&str], params: Option<IndexParams>) -> Result<()> {
         if column.len() != 1 {
             return Err(Error::Lance {
                 message: "only one column is supported for index creation".into(),
             });
         }
 
+        let mut dataset = self.clone_inner_dataset()?;
         let schema = self.schema();
         let field = schema.field_with_name(column[0])?;
         let params = if let Some(params) = params {
@@ -570,10 +578,16 @@ impl Table for NativeTable {
             match field.data_type() {
                 // This is a vector column.
                 DataType::FixedSizeList(f, _) if f.data_type().is_floating() => {
-                    IndexParamsBuilder::ivf_pq().build()?
+                    IndexParamsBuilder::new(self, column[0])
+                        .ivf_pq()
+                        .build()
+                        .await
                 }
                 dt if dt.is_numeric() || dt == &DataType::Boolean => {
-                    IndexParamsBuilder::scalar().build()?
+                    IndexParamsBuilder::new(self, column[0])
+                        .scalar()
+                        .build()
+                        .await
                 }
                 _ => {
                     return Err(Error::Lance {
@@ -583,8 +597,40 @@ impl Table for NativeTable {
                         ),
                     })
                 }
-            }
+            }?
         };
+
+        match params {
+            IndexParams::Scalar { replace } => self.create_scalar_index(column[0], replace).await?,
+            IndexParams::IvfPq {
+                replace,
+                metric_type,
+                num_partitions,
+                num_sub_vectors,
+                num_bits,
+                max_iterations,
+                ..
+            } => {
+                let lance_idx_params = lance::index::vector::VectorIndexParams::ivf_pq(
+                    num_partitions as usize,
+                    num_bits as u8,
+                    num_sub_vectors as usize,
+                    false,
+                    metric_type,
+                    max_iterations as usize,
+                );
+                dataset
+                    .create_index(
+                        &[column[0]],
+                        IndexType::Vector,
+                        None,
+                        &lance_idx_params,
+                        replace,
+                    )
+                    .await?;
+            }
+        }
+        self.reset_dataset(dataset);
         Ok(())
     }
 
@@ -1116,21 +1162,25 @@ mod tests {
             schema,
         );
 
-        let mut table = NativeTable::create(uri, "test", batches, None, None)
+        let table = NativeTable::create(uri, "test", batches, None, None)
             .await
             .unwrap();
-        let mut i = IvfPQIndexBuilder::new();
 
         assert_eq!(table.count_indexed_rows("my_index").await.unwrap(), None);
         assert_eq!(table.count_unindexed_rows("my_index").await.unwrap(), None);
 
-        let index_builder = i
-            .column("embeddings".to_string())
-            .index_name("my_index".to_string())
-            .ivf_params(IvfBuildParams::new(256))
-            .pq_params(PQBuildParams::default());
-
-        table.create_vector_index(index_builder).await.unwrap();
+        let params = table
+            .index_params_builder("embeddings")
+            .ivf_pq()
+            .name("my_index")
+            .num_partitions(256)
+            .build()
+            .await
+            .unwrap();
+        table
+            .create_index(&["embeddings"], Some(params))
+            .await
+            .unwrap();
 
         assert_eq!(table.load_indices().await.unwrap().len(), 1);
         assert_eq!(table.count_rows().await.unwrap(), 512);
