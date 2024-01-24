@@ -9,7 +9,7 @@ class LinearCombinationReranker(Reranker):
     vector and FTS search. For missing scores, fill with `fill` value.
     Parameters
     ----------
-    weight : float, default 0.5
+    weight : float, default 0.7
         The weight to give to the vector score. Must be between 0 and 1.
     fill : float, default 1.0
         The score to give to results that are only in one of the two result sets.
