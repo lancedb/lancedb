@@ -521,6 +521,31 @@ def test_create_with_embedding_function(db):
     assert actual == expected
 
 
+def test_create_f16_table(db):
+    class MyTable(LanceModel):
+        text: str
+        vector: Vector(128, value_type=pa.float16())
+
+    df = pd.DataFrame(
+        {
+            "text": [f"s-{i}" for i in range(10000)],
+            "vector": [np.random.randn(128).astype(np.float16) for _ in range(10000)],
+        }
+    )
+    table = LanceTable.create(
+        db,
+        "f16_tbl",
+        schema=MyTable,
+    )
+    table.add(df)
+    table.create_index(num_partitions=2, num_sub_vectors=8)
+
+    query = df.vector.iloc[2]
+    expected = table.search(query).limit(2).to_arrow()
+
+    assert "s-2" in expected["text"].to_pylist()
+
+
 def test_add_with_embedding_function(db):
     emb = EmbeddingFunctionRegistry.get_instance().get("test")()
 

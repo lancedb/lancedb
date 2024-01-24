@@ -16,7 +16,8 @@ import { type Schema, Table as ArrowTable, tableFromIPC } from 'apache-arrow'
 import {
   createEmptyTable,
   fromRecordsToBuffer,
-  fromTableToBuffer
+  fromTableToBuffer,
+  makeArrowTable
 } from './arrow'
 import type { EmbeddingFunction } from './embedding/embedding_function'
 import { RemoteConnection } from './remote'
@@ -41,12 +42,13 @@ const {
   tableListIndices,
   tableIndexStats,
   tableSchema
-// eslint-disable-next-line @typescript-eslint/no-var-requires
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
 } = require('../native.js')
 
 export { Query }
 export type { EmbeddingFunction }
 export { OpenAIEmbeddingFunction } from './embedding/openai'
+export { makeArrowTable, type MakeArrowTableOptions } from './arrow'
 
 const defaultAwsRegion = 'us-west-2'
 
@@ -77,7 +79,11 @@ export interface ConnectionOptions {
   /** AWS region to connect to. Default is {@link defaultAwsRegion}. */
   awsRegion?: string
 
-  // API key for the remote connections
+  /**
+   * API key for the remote connections
+   *
+   * Can also be passed by setting environment variable `LANCEDB_API_KEY`
+   */
   apiKey?: string
 
   /** Region to connect */
@@ -218,7 +224,7 @@ export interface Connection {
    */
   createTable(
     name: string,
-    data: Array<Record<string, unknown>>
+    data: Array<Record<string, unknown>> | ArrowTable
   ): Promise<Table>
 
   /**
@@ -230,7 +236,7 @@ export interface Connection {
    */
   createTable(
     name: string,
-    data: Array<Record<string, unknown>>,
+    data: Array<Record<string, unknown>> | ArrowTable,
     options: WriteOptions
   ): Promise<Table>
 
@@ -243,7 +249,7 @@ export interface Connection {
    */
   createTable<T>(
     name: string,
-    data: Array<Record<string, unknown>>,
+    data: Array<Record<string, unknown>> | ArrowTable,
     embeddings: EmbeddingFunction<T>
   ): Promise<Table<T>>
   /**
@@ -256,7 +262,7 @@ export interface Connection {
    */
   createTable<T>(
     name: string,
-    data: Array<Record<string, unknown>>,
+    data: Array<Record<string, unknown>> | ArrowTable,
     embeddings: EmbeddingFunction<T>,
     options: WriteOptions
   ): Promise<Table<T>>
@@ -286,7 +292,7 @@ export interface Table<T = number[]> {
    * @param data Records to be inserted into the Table
    * @return The number of rows added to the table
    */
-  add: (data: Array<Record<string, unknown>>) => Promise<number>
+  add: (data: Array<Record<string, unknown>> | ArrowTable) => Promise<number>
 
   /**
    * Insert records into this Table, replacing its contents.
@@ -294,7 +300,9 @@ export interface Table<T = number[]> {
    * @param data Records to be inserted into the Table
    * @return The number of rows added to the table
    */
-  overwrite: (data: Array<Record<string, unknown>>) => Promise<number>
+  overwrite: (
+    data: Array<Record<string, unknown>> | ArrowTable
+  ) => Promise<number>
 
   /**
    * Create an ANN index on this Table vector index.
@@ -539,7 +547,7 @@ export class LocalConnection implements Connection {
 
   async createTable<T>(
     name: string | CreateTableOptions<T>,
-    data?: Array<Record<string, unknown>>,
+    data?: Array<Record<string, unknown>> | ArrowTable,
     optsOrEmbedding?: WriteOptions | EmbeddingFunction<T>,
     opt?: WriteOptions
   ): Promise<Table<T>> {
@@ -691,12 +699,20 @@ export class LocalTable<T = number[]> implements Table<T> {
    * @param data Records to be inserted into the Table
    * @return The number of rows added to the table
    */
-  async add (data: Array<Record<string, unknown>>): Promise<number> {
+  async add (
+    data: Array<Record<string, unknown>> | ArrowTable
+  ): Promise<number> {
     const schema = await this.schema
+    let tbl: ArrowTable
+    if (data instanceof ArrowTable) {
+      tbl = data
+    } else {
+      tbl = makeArrowTable(data, { schema })
+    }
     return tableAdd
       .call(
         this._tbl,
-        await fromRecordsToBuffer(data, this._embeddings, schema),
+        await fromTableToBuffer(tbl, this._embeddings, schema),
         WriteMode.Append.toString(),
         ...getAwsArgs(this._options())
       )
@@ -711,11 +727,19 @@ export class LocalTable<T = number[]> implements Table<T> {
    * @param data Records to be inserted into the Table
    * @return The number of rows added to the table
    */
-  async overwrite (data: Array<Record<string, unknown>>): Promise<number> {
+  async overwrite (
+    data: Array<Record<string, unknown>> | ArrowTable
+  ): Promise<number> {
+    let buffer: Buffer
+    if (data instanceof ArrowTable) {
+      buffer = await fromTableToBuffer(data, this._embeddings)
+    } else {
+      buffer = await fromRecordsToBuffer(data, this._embeddings)
+    }
     return tableAdd
       .call(
         this._tbl,
-        await fromRecordsToBuffer(data, this._embeddings),
+        buffer,
         WriteMode.Overwrite.toString(),
         ...getAwsArgs(this._options())
       )
@@ -859,7 +883,10 @@ export class LocalTable<T = number[]> implements Table<T> {
   private checkElectron (): boolean {
     try {
       // eslint-disable-next-line no-prototype-builtins
-      return (process?.versions?.hasOwnProperty('electron') || navigator?.userAgent?.toLowerCase()?.includes(' electron'))
+      return (
+        Object.prototype.hasOwnProperty.call(process?.versions, 'electron') ||
+        navigator?.userAgent?.toLowerCase()?.includes(' electron')
+      )
     } catch (e) {
       return false
     }

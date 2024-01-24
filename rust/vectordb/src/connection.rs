@@ -12,6 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! LanceDB Database
+//!
+
 use std::fs::create_dir_all;
 use std::path::Path;
 use std::sync::Arc;
@@ -27,6 +30,40 @@ use crate::io::object_store::MirroringObjectStoreWrapper;
 use crate::table::{ReadParams, Table};
 
 pub const LANCE_FILE_EXTENSION: &str = "lance";
+
+/// A connection to LanceDB
+#[async_trait::async_trait]
+pub trait Connection: Send + Sync {
+    /// Get the names of all tables in the database.
+    async fn table_names(&self) -> Result<Vec<String>>;
+
+    /// Create a new table in the database.
+    ///
+    /// # Parameters
+    ///
+    /// * `name` - The name of the table.
+    /// * `batches` - The initial data to write to the table.
+    /// * `params` - Optional [`WriteParams`] to create the table.
+    ///
+    /// # Returns
+    /// Created [`Table`], or [`Err(Error::TableAlreadyExists)`] if the table already exists.
+    async fn create_table(
+        &self,
+        name: &str,
+        batches: Box<dyn RecordBatchReader + Send>,
+        params: Option<WriteParams>,
+    ) -> Result<Table>;
+
+    async fn open_table(&self, name: &str) -> Result<Table>;
+
+    async fn open_table_with_params(&self, name: &str, params: ReadParams) -> Result<Table>;
+
+    /// Drop a table in the database.
+    ///
+    /// # Arguments
+    /// * `name` - The name of the table.
+    async fn drop_table(&self, name: &str) -> Result<()>;
+}
 
 pub struct Database {
     object_store: ObjectStore,
@@ -49,7 +86,7 @@ impl Database {
     ///
     /// # Arguments
     ///
-    /// * `path` - URI where the database is located, can be a local file or a supported remote cloud storage
+    /// * `uri` - URI where the database is located, can be a local file or a supported remote cloud storage
     ///
     /// # Returns
     ///
@@ -155,12 +192,30 @@ impl Database {
         Ok(())
     }
 
-    /// Get the names of all tables in the database.
-    ///
-    /// # Returns
-    ///
-    /// * A [Vec<String>] with all table names.
-    pub async fn table_names(&self) -> Result<Vec<String>> {
+    /// Get the URI of a table in the database.
+    fn table_uri(&self, name: &str) -> Result<String> {
+        let path = Path::new(&self.uri);
+        let table_uri = path.join(format!("{}.{}", name, LANCE_FILE_EXTENSION));
+
+        let mut uri = table_uri
+            .as_path()
+            .to_str()
+            .context(InvalidTableNameSnafu { name })?
+            .to_string();
+
+        // If there are query string set on the connection, propagate to lance
+        if let Some(query) = self.query_string.as_ref() {
+            uri.push('?');
+            uri.push_str(query.as_str());
+        }
+
+        Ok(uri)
+    }
+}
+
+#[async_trait::async_trait]
+impl Connection for Database {
+    async fn table_names(&self) -> Result<Vec<String>> {
         let mut f = self
             .object_store
             .read_dir(self.base_path.clone())
@@ -180,16 +235,10 @@ impl Database {
         Ok(f)
     }
 
-    /// Create a new table in the database.
-    ///
-    /// # Arguments
-    /// * `name` - The name of the table.
-    /// * `batches` - The initial data to write to the table.
-    /// * `params` - Optional [`WriteParams`] to create the table.
-    pub async fn create_table(
+    async fn create_table(
         &self,
         name: &str,
-        batches: impl RecordBatchReader + Send + 'static,
+        batches: Box<dyn RecordBatchReader + Send>,
         params: Option<WriteParams>,
     ) -> Result<Table> {
         let table_uri = self.table_uri(name)?;
@@ -212,7 +261,7 @@ impl Database {
     /// # Returns
     ///
     /// * A [Table] object.
-    pub async fn open_table(&self, name: &str) -> Result<Table> {
+    async fn open_table(&self, name: &str) -> Result<Table> {
         self.open_table_with_params(name, ReadParams::default())
             .await
     }
@@ -226,40 +275,16 @@ impl Database {
     /// # Returns
     ///
     /// * A [Table] object.
-    pub async fn open_table_with_params(&self, name: &str, params: ReadParams) -> Result<Table> {
+    async fn open_table_with_params(&self, name: &str, params: ReadParams) -> Result<Table> {
         let table_uri = self.table_uri(name)?;
         Table::open_with_params(&table_uri, name, self.store_wrapper.clone(), params).await
     }
 
-    /// Drop a table in the database.
-    ///
-    /// # Arguments
-    /// * `name` - The name of the table.
-    pub async fn drop_table(&self, name: &str) -> Result<()> {
+    async fn drop_table(&self, name: &str) -> Result<()> {
         let dir_name = format!("{}.{}", name, LANCE_EXTENSION);
         let full_path = self.base_path.child(dir_name.clone());
         self.object_store.remove_dir_all(full_path).await?;
         Ok(())
-    }
-
-    /// Get the URI of a table in the database.
-    fn table_uri(&self, name: &str) -> Result<String> {
-        let path = Path::new(&self.uri);
-        let table_uri = path.join(format!("{}.{}", name, LANCE_FILE_EXTENSION));
-
-        let mut uri = table_uri
-            .as_path()
-            .to_str()
-            .context(InvalidTableNameSnafu { name })?
-            .to_string();
-
-        // If there are query string set on the connection, propagate to lance
-        if let Some(query) = self.query_string.as_ref() {
-            uri.push('?');
-            uri.push_str(query.as_str());
-        }
-
-        Ok(uri)
     }
 }
 
@@ -269,7 +294,7 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use crate::database::Database;
+    use super::*;
 
     #[tokio::test]
     async fn test_connect() {

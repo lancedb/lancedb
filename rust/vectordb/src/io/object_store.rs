@@ -335,7 +335,7 @@ impl WrappingObjectStore for MirroringObjectStoreWrapper {
 #[cfg(all(test, not(windows)))]
 mod test {
     use super::*;
-    use crate::Database;
+    use crate::connection::{Connection, Database};
     use arrow_array::PrimitiveArray;
     use futures::TryStreamExt;
     use lance::{dataset::WriteParams, io::object_store::ObjectStoreParams};
@@ -365,7 +365,7 @@ mod test {
         datagen = datagen.col(Box::new(RandomVector::default().named("vector".into())));
 
         let res = db
-            .create_table("test", datagen.batch(100), Some(param.clone()))
+            .create_table("test", Box::new(datagen.batch(100)), Some(param.clone()))
             .await;
 
         // leave this here for easy debugging

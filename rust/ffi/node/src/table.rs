@@ -77,7 +77,7 @@ impl JsTable {
         rt.spawn(async move {
             let batch_reader = RecordBatchIterator::new(batches.into_iter().map(Ok), schema);
             let table_rst = database
-                .create_table(&table_name, batch_reader, Some(params))
+                .create_table(&table_name, Box::new(batch_reader), Some(params))
                 .await;
 
             deferred.settle_with(&channel, move |mut cx| {
