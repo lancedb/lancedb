@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::sync::Arc;
+use std::{cmp::max, sync::Arc};
 
 use lance_index::{DatasetIndexExt, IndexType};
 pub use lance_linalg::distance::MetricType;
@@ -255,18 +255,20 @@ impl IndexBuilder {
 
 fn suggested_num_partitions(rows: usize) -> u64 {
     let num_partitions = (rows as f64).sqrt() as u64;
-    if num_partitions < 1 {
-        1
-    } else {
-        num_partitions
-    }
+    max(1, num_partitions)
 }
 
 fn suggested_num_sub_vectors(dim: u32) -> u32 {
-    let num_sub_vectors = dim / 16;
-    if num_sub_vectors < 1 {
-        1
+    if dim % 16 == 0 {
+        // Should be more aggressive than this default.
+        dim / 16
+    } else if dim % 8 == 0 {
+        dim / 8
     } else {
-        num_sub_vectors
+        log::warn!(
+            "The dimension of the vector is not divisible by 8 or 16, \
+                which may cause performance degradation in PQ"
+        );
+        1
     }
 }
