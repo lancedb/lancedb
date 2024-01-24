@@ -118,10 +118,24 @@ pub trait Table: std::fmt::Display + Send + Sync {
     /// # Examples
     ///
     /// ```no_run
+    /// # use std::sync::Arc;
     /// # use vectordb::connection::{Database, Connection};
-    /// tbl.create_index(&["vector"]).ivf_pq().build().await.unwrap();
+    /// # use arrow_array::{FixedSizeListArray, types::Float32Type, RecordBatch,
+    /// #   RecordBatchIterator, Int32Array};
+    /// # use arrow_schema::{Schema, Field, DataType};
+    /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+    /// let tmpdir = tempfile::tempdir().unwrap();
+    /// let db = Database::connect(tmpdir.path().to_str().unwrap()).await.unwrap();
+    /// # let tbl = db.open_table("delete_test").await.unwrap();
+    /// tbl.create_index(&["vector"])
+    ///     .ivf_pq()
+    ///     .num_partitions(256)
+    ///     .build()
+    ///     .await
+    ///     .unwrap();
+    /// # });
     /// ```
-    fn create_index<'a>(&'a self, column: &[&str]) -> IndexBuilder<'a>;
+    fn create_index(&self, column: &[&str]) -> IndexBuilder;
 
     /// Search the table with a given query vector.
     fn search(&self, query: &[f32]) -> Query {
@@ -536,7 +550,7 @@ impl Table for NativeTable {
     }
 
     fn create_index(&self, columns: &[&str]) -> IndexBuilder {
-        IndexBuilder::new(self, columns)
+        IndexBuilder::new(Arc::new(self.clone()), columns)
     }
 
     fn query(&self) -> Query {

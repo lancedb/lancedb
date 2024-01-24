@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::sync::Arc;
+
 use lance_index::{DatasetIndexExt, IndexType};
 pub use lance_linalg::distance::MetricType;
 
@@ -37,8 +39,8 @@ pub enum IndexParams {
 
 /// Builder for Index Parameters.
 
-pub struct IndexBuilder<'a> {
-    table: &'a dyn Table,
+pub struct IndexBuilder {
+    table: Arc<dyn Table>,
     columns: Vec<String>,
     // General parameters
     /// Index name.
@@ -64,8 +66,8 @@ pub struct IndexBuilder<'a> {
     max_iterations: u32,
 }
 
-impl<'a> IndexBuilder<'a> {
-    pub(crate) fn new(table: &'a dyn Table, columns: &[&str]) -> Self {
+impl IndexBuilder {
+    pub(crate) fn new(table: Arc<dyn Table>, columns: &[&str]) -> Self {
         IndexBuilder {
             table,
             columns: columns.iter().map(|c| c.to_string()).collect(),
