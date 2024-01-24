@@ -72,7 +72,7 @@ Arguments
         The type of score to return. If "relevance", will return only the `_relevance_score. If "all", will return all scores from the vector and FTS search along with the relevance score.
 
 ### Cohere Reranker
-This re-ranker uses the [Cohere](https://cohere.ai/) API to combine the results of semantic and full-text search. You can use this re-ranker by passing `CohereReranker()` to the `rerank()` method. You'll need to set the `COHERE_API_KEY` environment variable to use this re-ranker.
+This re-ranker uses the [Cohere](https://cohere.ai/) API to combine the results of semantic and full-text search. You can use this re-ranker by passing `CohereReranker()` to the `rerank()` method. Note that you'll need to set the `COHERE_API_KEY` environment variable to use this re-ranker.
 
 ```python
 from lancedb.rerankers import CohereReranker
