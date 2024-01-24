@@ -17,14 +17,14 @@
 use std::io::Cursor;
 
 use arrow_array::RecordBatchReader;
-use arrow_ipc::reader::FileReader;
+use arrow_ipc::reader::StreamReader;
 
 use crate::Result;
 
 /// Convert a Arrow IPC file to a batch reader
 pub fn ipc_file_to_batches(buf: Vec<u8>) -> Result<impl RecordBatchReader> {
     let buf_reader = Cursor::new(buf);
-    let reader = FileReader::try_new(buf_reader, None)?;
+    let reader = StreamReader::try_new(buf_reader, None)?;
     Ok(reader)
 }
 

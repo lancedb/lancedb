@@ -77,8 +77,8 @@ impl Table {
     }
 
     #[napi]
-    pub fn create_index(&self) -> napi::Result<IndexBuilder> {
-        todo!()
+    pub fn create_index(&self) -> IndexBuilder {
+        IndexBuilder::new(self.table.as_ref())
     }
 
     #[napi]
