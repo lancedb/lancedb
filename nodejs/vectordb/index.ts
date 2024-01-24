@@ -24,7 +24,7 @@ export {
 export { Connection } from "./connection";
 export { Table } from "./table";
 export { Data } from "./arrow";
-export { IvfPQOptions, IndexBuilder, ScalarOptions } from "./indexer";
+export { IvfPQOptions, IndexBuilder } from "./indexer";
 
 /**
  * Connect to a LanceDB instance at the given URI.

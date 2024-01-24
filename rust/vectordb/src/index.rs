@@ -56,7 +56,7 @@ pub struct IndexBuilder {
 
     // IVF_PQ parameters
     metric_type: MetricType,
-    num_partitions: Option<u64>,
+    num_partitions: Option<u32>,
     // PQ related
     num_sub_vectors: Option<u32>,
     num_bits: u32,
@@ -110,6 +110,11 @@ impl IndexBuilder {
         self
     }
 
+    pub fn columns(&mut self, cols: &[&str]) -> &mut Self {
+        self.columns = cols.iter().map(|s| s.to_string()).collect();
+        self
+    }
+
     /// Whether to replace the existing index, default is `true`.
     pub fn replace(&mut self, v: bool) -> &mut Self {
         self.replace = v;
@@ -131,7 +136,7 @@ impl IndexBuilder {
     }
 
     /// Number of IVF partitions.
-    pub fn num_partitions(&mut self, num_partitions: u64) -> &mut Self {
+    pub fn num_partitions(&mut self, num_partitions: u32) -> &mut Self {
         self.num_partitions = Some(num_partitions);
         self
     }
@@ -161,7 +166,7 @@ impl IndexBuilder {
     }
 
     /// Build the parameters.
-    pub async fn build(&mut self) -> Result<()> {
+    pub async fn build(&self) -> Result<()> {
         let schema = self.table.schema();
 
         // TODO: simplify this after GH lance#1864.
@@ -214,7 +219,7 @@ impl IndexBuilder {
                 IndexParams::IvfPq {
                     replace: self.replace,
                     metric_type: self.metric_type,
-                    num_partitions,
+                    num_partitions: num_partitions as u64,
                     num_sub_vectors,
                     num_bits: self.num_bits,
                     sample_rate: self.sample_rate,
@@ -269,8 +274,8 @@ impl IndexBuilder {
     }
 }
 
-fn suggested_num_partitions(rows: usize) -> u64 {
-    let num_partitions = (rows as f64).sqrt() as u64;
+fn suggested_num_partitions(rows: usize) -> u32 {
+    let num_partitions = (rows as f64).sqrt() as u32;
     max(1, num_partitions)
 }
 

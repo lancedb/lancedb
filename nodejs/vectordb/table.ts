@@ -13,7 +13,7 @@
 // limitations under the License.
 
 import { Schema, tableFromIPC } from "apache-arrow";
-import { Table as _NativeTable, IndexType } from "./native";
+import { Table as _NativeTable } from "./native";
 import { toBuffer, Data } from "./arrow";
 import { Query } from "./query";
 import { IndexBuilder } from "./indexer";
@@ -87,7 +87,7 @@ export class Table {
    * await table.createIndex("my_float_col").build();
    * ```
    */
-  async createIndex(column?: string | string[]): Promise<IndexBuilder> {
+  createIndex(column?: string): IndexBuilder {
     // await this.inner.createIndex(column);
     let builder = new IndexBuilder(this.inner);
     if (column !== undefined) {

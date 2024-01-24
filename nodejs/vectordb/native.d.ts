@@ -47,7 +47,11 @@ export class Connection {
   dropTable(name: string): Promise<void>
 }
 export class IndexBuilder {
-  replace(v: boolean): Promise<void>
+  replace(v: boolean): void
+  column(c: string): void
+  name(name: string): void
+  ivfPq(metricType?: MetricType | undefined | null, numPartitions?: number | undefined | null, numSubVectors?: number | undefined | null, numBits?: number | undefined | null, maxIterations?: number | undefined | null, sampleRate?: number | undefined | null): void
+  scalar(): void
   build(): Promise<void>
 }
 export class Query {
