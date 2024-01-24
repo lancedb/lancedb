@@ -46,7 +46,7 @@
 //! #### Connect to a database.
 //!
 //! ```rust
-//! use vectordb::{connection::{Database, Connection}, Table, WriteMode};
+//! use vectordb::{connection::{Database, Connection}, TableImpl, WriteMode};
 //! use arrow_schema::{Field, Schema};
 //! # tokio::runtime::Runtime::new().unwrap().block_on(async {
 //! let db = Database::connect("data/sample-lancedb").await.unwrap();
@@ -143,6 +143,6 @@ pub mod utils;
 
 pub use connection::{Connection, Database};
 pub use error::{Error, Result};
-pub use table::Table;
+pub use table::{Table, TableRef};
 
 pub use lance::dataset::WriteMode;

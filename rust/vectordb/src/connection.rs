@@ -27,7 +27,7 @@ use snafu::prelude::*;
 
 use crate::error::{CreateDirSnafu, Error, InvalidTableNameSnafu, Result};
 use crate::io::object_store::MirroringObjectStoreWrapper;
-use crate::table::{ReadParams, Table};
+use crate::table::{ReadParams, Table, TableImpl, TableRef};
 
 pub const LANCE_FILE_EXTENSION: &str = "lance";
 
@@ -46,17 +46,20 @@ pub trait Connection: Send + Sync {
     /// * `params` - Optional [`WriteParams`] to create the table.
     ///
     /// # Returns
-    /// Created [`Table`], or [`Err(Error::TableAlreadyExists)`] if the table already exists.
+    /// Created [`TableRef`], or [`Err(Error::TableAlreadyExists)`] if the table already exists.
     async fn create_table(
         &self,
         name: &str,
         batches: Box<dyn RecordBatchReader + Send>,
         params: Option<WriteParams>,
-    ) -> Result<Table>;
+    ) -> Result<TableRef>;
 
-    async fn open_table(&self, name: &str) -> Result<Table>;
+    async fn open_table(&self, name: &str) -> Result<TableRef> {
+        self.open_table_with_params(name, ReadParams::default())
+            .await
+    }
 
-    async fn open_table_with_params(&self, name: &str, params: ReadParams) -> Result<Table>;
+    async fn open_table_with_params(&self, name: &str, params: ReadParams) -> Result<TableRef>;
 
     /// Drop a table in the database.
     ///
@@ -240,30 +243,17 @@ impl Connection for Database {
         name: &str,
         batches: Box<dyn RecordBatchReader + Send>,
         params: Option<WriteParams>,
-    ) -> Result<Table> {
+    ) -> Result<TableRef> {
         let table_uri = self.table_uri(name)?;
 
-        Table::create(
+        Ok(Arc::new(TableImpl::create(
             &table_uri,
             name,
             batches,
             self.store_wrapper.clone(),
             params,
         )
-        .await
-    }
-
-    /// Open a table in the database.
-    ///
-    /// # Arguments
-    /// * `name` - The name of the table.
-    ///
-    /// # Returns
-    ///
-    /// * A [Table] object.
-    async fn open_table(&self, name: &str) -> Result<Table> {
-        self.open_table_with_params(name, ReadParams::default())
-            .await
+        .await?))
     }
 
     /// Open a table in the database.
@@ -274,10 +264,13 @@ impl Connection for Database {
     ///
     /// # Returns
     ///
-    /// * A [Table] object.
-    async fn open_table_with_params(&self, name: &str, params: ReadParams) -> Result<Table> {
+    /// * A [TableRef] object.
+    async fn open_table_with_params(&self, name: &str, params: ReadParams) -> Result<TableRef> {
         let table_uri = self.table_uri(name)?;
-        Table::open_with_params(&table_uri, name, self.store_wrapper.clone(), params).await
+        Ok(Arc::new(
+            TableImpl::open_with_params(&table_uri, name, self.store_wrapper.clone(), params)
+                .await?,
+        ))
     }
 
     async fn drop_table(&self, name: &str) -> Result<()> {

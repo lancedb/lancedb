@@ -16,17 +16,19 @@ use crate::query::Query;
 use arrow_ipc::writer::FileWriter;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
-use vectordb::{ipc::ipc_file_to_batches, table::Table as LanceDBTable};
+use vectordb::{ipc::ipc_file_to_batches, table::TableRef};
 
 #[napi]
 pub struct Table {
-    pub(crate) table: LanceDBTable,
+    pub(crate) table: TableRef,
 }
 
 #[napi]
 impl Table {
-    pub(crate) fn new(table: LanceDBTable) -> Self {
-        Self { table }
+    pub(crate) fn new(table: TableRef) -> Self {
+        Self {
+            table: table.into(),
+        }
     }
 
     /// Return Schema as empty Arrow IPC file.

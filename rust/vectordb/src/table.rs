@@ -1,4 +1,4 @@
-// Copyright 2023 LanceDB Developers.
+// Copyright 2024 LanceDB Developers.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,15 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use chrono::Duration;
-use lance::dataset::builder::DatasetBuilder;
-use lance::index::scalar::ScalarIndexParams;
-use lance_index::optimize::OptimizeOptions;
-use lance_index::IndexType;
+//! LanceDB Table APIs
+
+use std::path::Path;
 use std::sync::Arc;
 
 use arrow_array::{Float32Array, RecordBatchReader};
-use arrow_schema::SchemaRef;
+use arrow_schema::{Schema, SchemaRef};
+use chrono::Duration;
+use lance::dataset::builder::DatasetBuilder;
 use lance::dataset::cleanup::RemovalStats;
 use lance::dataset::optimize::{
     compact_files, CompactionMetrics, CompactionOptions, IndexRemapperOptions,
@@ -28,7 +28,7 @@ use lance::dataset::optimize::{
 use lance::dataset::{Dataset, UpdateBuilder, WriteParams};
 use lance::io::WrappingObjectStore;
 use lance_index::DatasetIndexExt;
-use std::path::Path;
+use lance_index::IndexType;
 
 use crate::error::{Error, Result};
 use crate::index::vector::{VectorIndex, VectorIndexBuilder, VectorIndexStatistics};
@@ -40,9 +40,52 @@ pub use lance::dataset::ReadParams;
 
 pub const VECTOR_COLUMN_NAME: &str = "vector";
 
+/// A Table is a collection of strong typed Rows.
+///
+/// The type of the each row is defined in Apache Arrow [Schema].
+#[async_trait::async_trait]
+pub trait Table: std::fmt::Display {
+    /// Get the name of the table.
+    fn name(&self) -> &str;
+
+    /// Get the arrow [Schema] of the table.
+    fn schema(&self) -> SchemaRef;
+
+    /// Count the number of rows in this dataset.
+    async fn count_rows(&self) -> Result<usize>;
+
+    /// Insert new records into this Table
+    ///
+    /// # Arguments
+    ///
+    /// * `batches` RecordBatch to be saved in the Table
+    /// * `params` Append / Overwrite existing records. Default: Append
+    async fn add(
+        &mut self,
+        batches: Box<dyn RecordBatchReader + Send>,
+        params: Option<WriteParams>,
+    ) -> Result<()>;
+
+    /// Delete the rows from table that match the predicate.
+    ///
+    /// # Arguments
+    /// - `predicate` - The SQL predicate string to filter the rows to be deleted.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use vectordb::connection::{Database, Connection};
+    /// tbl.delete("id > 5").await.unwrap();
+    /// ```
+    async fn delete(&mut self, predicate: &str) -> Result<()>;
+}
+
+/// Reference to a Table pointer.
+pub type TableRef = Arc<dyn Table>;
+
 /// A table in a LanceDB database.
-#[derive(Debug, Clone)]
-pub struct Table {
+#[derive(Debug)]
+pub struct TableImpl {
     name: String,
     uri: String,
     dataset: Arc<Dataset>,
@@ -51,23 +94,23 @@ pub struct Table {
     store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
 }
 
-impl std::fmt::Display for Table {
+impl std::fmt::Display for TableImpl {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Table({})", self.name)
     }
 }
 
-impl Table {
+impl TableImpl {
     /// Opens an existing Table
     ///
     /// # Arguments
     ///
-    /// * `uri` - The uri to a [Table]
+    /// * `uri` - The uri to a [TableImpl]
     /// * `name` - The table name
     ///
     /// # Returns
     ///
-    /// * A [Table] object.
+    /// * A [TableImpl] object.
     pub async fn open(uri: &str) -> Result<Self> {
         let name = Self::get_table_name(uri)?;
         Self::open_with_params(uri, &name, None, ReadParams::default()).await
@@ -88,7 +131,7 @@ impl Table {
     ///
     /// # Returns
     ///
-    /// * A [Table] object.
+    /// * A [TableImpl] object.
     pub async fn open_with_params(
         uri: &str,
         name: &str,
@@ -113,7 +156,7 @@ impl Table {
                     message: e.to_string(),
                 },
             })?;
-        Ok(Table {
+        Ok(TableImpl {
             name: name.to_string(),
             uri: uri.to_string(),
             dataset: Arc::new(dataset),
@@ -121,7 +164,7 @@ impl Table {
         })
     }
 
-    /// Checkout a specific version of this [`Table`]
+    /// Checkout a specific version of this [`TableImpl`]
     ///
     pub async fn checkout(uri: &str, version: u64) -> Result<Self> {
         let name = Self::get_table_name(uri)?;
@@ -154,7 +197,7 @@ impl Table {
                     message: e.to_string(),
                 },
             })?;
-        Ok(Table {
+        Ok(TableImpl {
             name: name.to_string(),
             uri: uri.to_string(),
             dataset: Arc::new(dataset),
@@ -170,7 +213,7 @@ impl Table {
             Arc::new(self.dataset.checkout_version(latest_version_id).await?)
         };
 
-        Ok(Table {
+        Ok(TableImpl {
             name: self.name.clone(),
             uri: self.uri.clone(),
             dataset,
@@ -203,7 +246,7 @@ impl Table {
     ///
     /// # Returns
     ///
-    /// * A [Table] object.
+    /// * A [TableImpl] object.
     pub(crate) async fn create(
         uri: &str,
         name: &str,
@@ -227,17 +270,12 @@ impl Table {
                     message: e.to_string(),
                 },
             })?;
-        Ok(Table {
+        Ok(TableImpl {
             name: name.to_string(),
             uri: uri.to_string(),
             dataset: Arc::new(dataset),
             store_wrapper: write_store_wrapper,
         })
-    }
-
-    /// Schema of this Table.
-    pub fn schema(&self) -> SchemaRef {
-        Arc::new(self.dataset.schema().into())
     }
 
     /// Version of this Table
@@ -281,35 +319,6 @@ impl Table {
         Ok(())
     }
 
-    /// Insert records into this Table
-    ///
-    /// # Arguments
-    ///
-    /// * `batches` RecordBatch to be saved in the Table
-    /// * `write_mode` Append / Overwrite existing records. Default: Append
-    /// # Returns
-    ///
-    /// * The number of rows added
-    pub async fn add(
-        &mut self,
-        batches: impl RecordBatchReader + Send + 'static,
-        params: Option<WriteParams>,
-    ) -> Result<()> {
-        let params = Some(params.unwrap_or(WriteParams {
-            mode: WriteMode::Append,
-            ..WriteParams::default()
-        }));
-
-        // patch the params if we have a write store wrapper
-        let params = match self.store_wrapper.clone() {
-            Some(wrapper) => params.patch_with_store_wrapper(wrapper)?,
-            None => params,
-        };
-
-        self.dataset = Arc::new(Dataset::write(batches, &self.uri, params).await?);
-        Ok(())
-    }
-
     pub fn query(&self) -> Query {
         Query::new(self.dataset.clone(), None)
     }
@@ -331,9 +340,6 @@ impl Table {
     }
 
     /// Returns the number of rows in this Table
-    pub async fn count_rows(&self) -> Result<usize> {
-        Ok(self.dataset.count_rows().await?)
-    }
 
     /// Merge new data into this table.
     pub async fn merge(
@@ -344,14 +350,6 @@ impl Table {
     ) -> Result<()> {
         let mut dataset = self.dataset.as_ref().clone();
         dataset.merge(batches, left_on, right_on).await?;
-        self.dataset = Arc::new(dataset);
-        Ok(())
-    }
-
-    /// Delete rows from the table
-    pub async fn delete(&mut self, predicate: &str) -> Result<()> {
-        let mut dataset = self.dataset.as_ref().clone();
-        dataset.delete(predicate).await?;
         self.dataset = Arc::new(dataset);
         Ok(())
     }
@@ -476,6 +474,49 @@ impl Table {
     }
 }
 
+#[async_trait::async_trait]
+impl Table for TableImpl {
+    fn name(&self) -> &str {
+        self.name.as_str()
+    }
+
+    fn schema(&self) -> SchemaRef {
+        Arc::new(Schema::from(self.dataset.schema()))
+    }
+
+    async fn count_rows(&self) -> Result<usize> {
+        Ok(self.dataset.count_rows().await?)
+    }
+
+    async fn add(
+        &mut self,
+        batches: Box<dyn RecordBatchReader + Send>,
+        params: Option<WriteParams>,
+    ) -> Result<()> {
+        let params = Some(params.unwrap_or(WriteParams {
+            mode: WriteMode::Append,
+            ..WriteParams::default()
+        }));
+
+        // patch the params if we have a write store wrapper
+        let params = match self.store_wrapper.clone() {
+            Some(wrapper) => params.patch_with_store_wrapper(wrapper)?,
+            None => params,
+        };
+
+        self.dataset = Arc::new(Dataset::write(batches, &self.uri, params).await?);
+        Ok(())
+    }
+
+    /// Delete rows from the table
+    async fn delete(&mut self, predicate: &str) -> Result<()> {
+        let mut dataset = self.dataset.as_ref().clone();
+        dataset.delete(predicate).await?;
+        self.dataset = Arc::new(dataset);
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -510,7 +551,9 @@ mod tests {
             .await
             .unwrap();
 
-        let table = Table::open(dataset_path.to_str().unwrap()).await.unwrap();
+        let table = TableImpl::open(dataset_path.to_str().unwrap())
+            .await
+            .unwrap();
 
         assert_eq!(table.name, "test")
     }
@@ -519,7 +562,7 @@ mod tests {
     async fn test_open_not_found() {
         let tmp_dir = tempdir().unwrap();
         let uri = tmp_dir.path().to_str().unwrap();
-        let table = Table::open(uri).await;
+        let table = TableImpl::open(uri).await;
         assert!(matches!(table.unwrap_err(), Error::TableNotFound { .. }));
     }
 
@@ -539,12 +582,12 @@ mod tests {
 
         let batches = make_test_batches();
         let _ = batches.schema().clone();
-        Table::create(&uri, "test", batches, None, None)
+        TableImpl::create(&uri, "test", batches, None, None)
             .await
             .unwrap();
 
         let batches = make_test_batches();
-        let result = Table::create(&uri, "test", batches, None, None).await;
+        let result = TableImpl::create(&uri, "test", batches, None, None).await;
         assert!(matches!(
             result.unwrap_err(),
             Error::TableAlreadyExists { .. }
@@ -558,7 +601,7 @@ mod tests {
 
         let batches = make_test_batches();
         let schema = batches.schema().clone();
-        let mut table = Table::create(&uri, "test", batches, None, None)
+        let mut table = TableImpl::create(&uri, "test", batches, None, None)
             .await
             .unwrap();
         assert_eq!(table.count_rows().await.unwrap(), 10);
@@ -586,7 +629,7 @@ mod tests {
 
         let batches = make_test_batches();
         let schema = batches.schema().clone();
-        let mut table = Table::create(uri, "test", batches, None, None)
+        let mut table = TableImpl::create(uri, "test", batches, None, None)
             .await
             .unwrap();
         assert_eq!(table.count_rows().await.unwrap(), 10);
@@ -640,7 +683,7 @@ mod tests {
         );
 
         Dataset::write(record_batch_iter, uri, None).await.unwrap();
-        let mut table = Table::open(uri).await.unwrap();
+        let mut table = TableImpl::open(uri).await.unwrap();
 
         table
             .update(Some("id > 5"), vec![("name", "'foo'")])
@@ -772,7 +815,7 @@ mod tests {
         );
 
         Dataset::write(record_batch_iter, uri, None).await.unwrap();
-        let mut table = Table::open(uri).await.unwrap();
+        let mut table = TableImpl::open(uri).await.unwrap();
 
         // check it can do update for each type
         let updates: Vec<(&str, &str)> = vec![
@@ -889,7 +932,7 @@ mod tests {
             .await
             .unwrap();
 
-        let table = Table::open(uri).await.unwrap();
+        let table = TableImpl::open(uri).await.unwrap();
 
         let vector = Float32Array::from_iter_values([0.1, 0.2]);
         let query = table.search(Some(vector.clone()));
@@ -937,7 +980,7 @@ mod tests {
             ..Default::default()
         };
         assert!(!wrapper.called());
-        let _ = Table::open_with_params(uri, "test", None, param)
+        let _ = TableImpl::open_with_params(uri, "test", None, param)
             .await
             .unwrap();
         assert!(wrapper.called());
@@ -991,7 +1034,7 @@ mod tests {
             schema,
         );
 
-        let mut table = Table::create(uri, "test", batches, None, None)
+        let mut table = TableImpl::create(uri, "test", batches, None, None)
             .await
             .unwrap();
         let mut i = IvfPQIndexBuilder::new();
