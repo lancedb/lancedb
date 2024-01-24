@@ -20,19 +20,19 @@ use lance::io::ObjectStoreParams;
 use crate::arrow::{arrow_buffer_to_record_batch, record_batch_to_buffer};
 use neon::prelude::*;
 use neon::types::buffer::TypedArray;
-use vectordb::Table;
+use vectordb::TableRef;
 
 use crate::error::ResultExt;
 use crate::{convert, get_aws_creds, get_aws_region, runtime, JsDatabase};
 
 pub(crate) struct JsTable {
-    pub table: Table,
+    pub table: TableRef,
 }
 
 impl Finalize for JsTable {}
 
-impl From<Table> for JsTable {
-    fn from(table: Table) -> Self {
+impl From<TableRef> for JsTable {
+    fn from(table: TableRef) -> Self {
         JsTable { table }
     }
 }
@@ -96,7 +96,7 @@ impl JsTable {
             arrow_buffer_to_record_batch(buffer.as_slice(&cx)).or_throw(&mut cx)?;
         let rt = runtime(&mut cx)?;
         let channel = cx.channel();
-        let mut table = js_table.table.clone();
+        let table = js_table.table.clone();
 
         let (deferred, promise) = cx.promise();
         let write_mode = match write_mode.as_str() {
@@ -118,7 +118,7 @@ impl JsTable {
 
         rt.spawn(async move {
             let batch_reader = RecordBatchIterator::new(batches.into_iter().map(Ok), schema);
-            let add_result = table.add(batch_reader, Some(params)).await;
+            let add_result = table.add(Box::new(batch_reader), Some(params)).await;
 
             deferred.settle_with(&channel, move |mut cx| {
                 add_result.or_throw(&mut cx)?;
@@ -152,7 +152,7 @@ impl JsTable {
         let (deferred, promise) = cx.promise();
         let predicate = cx.argument::<JsString>(0)?.value(&mut cx);
         let channel = cx.channel();
-        let mut table = js_table.table.clone();
+        let table = js_table.table.clone();
 
         rt.spawn(async move {
             let delete_result = table.delete(&predicate).await;
@@ -167,7 +167,7 @@ impl JsTable {
 
     pub(crate) fn js_update(mut cx: FunctionContext) -> JsResult<JsPromise> {
         let js_table = cx.this().downcast_or_throw::<JsBox<JsTable>, _>(&mut cx)?;
-        let mut table = js_table.table.clone();
+        let table = js_table.table.clone();
 
         let rt = runtime(&mut cx)?;
         let (deferred, promise) = cx.promise();
@@ -218,7 +218,11 @@ impl JsTable {
 
             let predicate = predicate.as_deref();
 
-            let update_result = table.update(predicate, updates_arg).await;
+            let update_result = table
+                .as_native()
+                .unwrap()
+                .update(predicate, updates_arg)
+                .await;
             deferred.settle_with(&channel, move |mut cx| {
                 update_result.or_throw(&mut cx)?;
                 Ok(cx.boxed(JsTable::from(table)))
@@ -249,6 +253,8 @@ impl JsTable {
 
         rt.spawn(async move {
             let stats = table
+                .as_native()
+                .unwrap()
                 .cleanup_old_versions(older_than, Some(delete_unverified))
                 .await;
 
@@ -278,7 +284,7 @@ impl JsTable {
         let js_table = cx.this().downcast_or_throw::<JsBox<JsTable>, _>(&mut cx)?;
         let rt = runtime(&mut cx)?;
         let (deferred, promise) = cx.promise();
-        let mut table = js_table.table.clone();
+        let table = js_table.table.clone();
         let channel = cx.channel();
 
         let js_options = cx.argument::<JsObject>(0)?;
@@ -310,7 +316,11 @@ impl JsTable {
         }
 
         rt.spawn(async move {
-            let stats = table.compact_files(options, None).await;
+            let stats = table
+                .as_native()
+                .unwrap()
+                .compact_files(options, None)
+                .await;
 
             deferred.settle_with(&channel, move |mut cx| {
                 let stats = stats.or_throw(&mut cx)?;
@@ -349,7 +359,7 @@ impl JsTable {
         let table = js_table.table.clone();
 
         rt.spawn(async move {
-            let indices = table.load_indices().await;
+            let indices = table.as_native().unwrap().load_indices().await;
 
             deferred.settle_with(&channel, move |mut cx| {
                 let indices = indices.or_throw(&mut cx)?;
@@ -389,8 +399,8 @@ impl JsTable {
 
         rt.spawn(async move {
             let load_stats = futures::try_join!(
-                table.count_indexed_rows(&index_uuid),
-                table.count_unindexed_rows(&index_uuid)
+                table.as_native().unwrap().count_indexed_rows(&index_uuid),
+                table.as_native().unwrap().count_unindexed_rows(&index_uuid)
             );
 
             deferred.settle_with(&channel, move |mut cx| {

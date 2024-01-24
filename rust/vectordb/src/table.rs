@@ -1,4 +1,4 @@
-// Copyright 2023 LanceDB Developers.
+// Copyright 2024 LanceDB Developers.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,70 +12,168 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! LanceDB Table APIs
+
+use std::path::Path;
+use std::sync::{Arc, Mutex};
+
+use arrow_array::RecordBatchReader;
+use arrow_schema::{Schema, SchemaRef};
 use chrono::Duration;
 use lance::dataset::builder::DatasetBuilder;
-use lance::index::scalar::ScalarIndexParams;
-use lance_index::optimize::OptimizeOptions;
-use lance_index::IndexType;
-use std::sync::Arc;
-
-use arrow_array::{Float32Array, RecordBatchReader};
-use arrow_schema::SchemaRef;
 use lance::dataset::cleanup::RemovalStats;
 use lance::dataset::optimize::{
     compact_files, CompactionMetrics, CompactionOptions, IndexRemapperOptions,
 };
+pub use lance::dataset::ReadParams;
 use lance::dataset::{Dataset, UpdateBuilder, WriteParams};
+use lance::index::scalar::ScalarIndexParams;
 use lance::io::WrappingObjectStore;
-use lance_index::DatasetIndexExt;
-use std::path::Path;
+use lance_index::{optimize::OptimizeOptions, DatasetIndexExt, IndexType};
 
 use crate::error::{Error, Result};
-use crate::index::vector::{VectorIndex, VectorIndexBuilder, VectorIndexStatistics};
+use crate::index::vector::{VectorIndex, VectorIndexStatistics};
+use crate::index::IndexBuilder;
 use crate::query::Query;
 use crate::utils::{PatchReadParam, PatchWriteParam};
 use crate::WriteMode;
 
-pub use lance::dataset::ReadParams;
-
 pub const VECTOR_COLUMN_NAME: &str = "vector";
+
+/// A Table is a collection of strong typed Rows.
+///
+/// The type of the each row is defined in Apache Arrow [Schema].
+#[async_trait::async_trait]
+pub trait Table: std::fmt::Display + Send + Sync {
+    fn as_any(&self) -> &dyn std::any::Any;
+
+    /// Cast as [`NativeTable`], or return None it if is not a [`NativeTable`].
+    fn as_native(&self) -> Option<&NativeTable>;
+
+    /// Get the name of the table.
+    fn name(&self) -> &str;
+
+    /// Get the arrow [Schema] of the table.
+    fn schema(&self) -> SchemaRef;
+
+    /// Count the number of rows in this dataset.
+    async fn count_rows(&self) -> Result<usize>;
+
+    /// Insert new records into this Table
+    ///
+    /// # Arguments
+    ///
+    /// * `batches` RecordBatch to be saved in the Table
+    /// * `params` Append / Overwrite existing records. Default: Append
+    async fn add(
+        &self,
+        batches: Box<dyn RecordBatchReader + Send>,
+        params: Option<WriteParams>,
+    ) -> Result<()>;
+
+    /// Delete the rows from table that match the predicate.
+    ///
+    /// # Arguments
+    /// - `predicate` - The SQL predicate string to filter the rows to be deleted.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use std::sync::Arc;
+    /// # use vectordb::connection::{Database, Connection};
+    /// # use arrow_array::{FixedSizeListArray, types::Float32Type, RecordBatch,
+    /// #   RecordBatchIterator, Int32Array};
+    /// # use arrow_schema::{Schema, Field, DataType};
+    /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+    /// let tmpdir = tempfile::tempdir().unwrap();
+    /// let db = Database::connect(tmpdir.path().to_str().unwrap()).await.unwrap();
+    /// # let schema = Arc::new(Schema::new(vec![
+    /// #  Field::new("id", DataType::Int32, false),
+    /// #  Field::new("vector", DataType::FixedSizeList(
+    /// #    Arc::new(Field::new("item", DataType::Float32, true)), 128), true),
+    /// # ]));
+    /// let batches = RecordBatchIterator::new(vec![
+    ///     RecordBatch::try_new(schema.clone(),
+    ///        vec![
+    ///            Arc::new(Int32Array::from_iter_values(0..10)),
+    ///            Arc::new(FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
+    ///                (0..10).map(|_| Some(vec![Some(1.0); 128])), 128)),
+    ///        ]).unwrap()
+    ///    ].into_iter().map(Ok),
+    ///   schema.clone());
+    /// let tbl = db.create_table("delete_test", Box::new(batches), None).await.unwrap();
+    /// tbl.delete("id > 5").await.unwrap();
+    /// # });
+    /// ```
+    async fn delete(&self, predicate: &str) -> Result<()>;
+
+    /// Create an index on the column name.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use std::sync::Arc;
+    /// # use vectordb::connection::{Database, Connection};
+    /// # use arrow_array::{FixedSizeListArray, types::Float32Type, RecordBatch,
+    /// #   RecordBatchIterator, Int32Array};
+    /// # use arrow_schema::{Schema, Field, DataType};
+    /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+    /// let tmpdir = tempfile::tempdir().unwrap();
+    /// let db = Database::connect(tmpdir.path().to_str().unwrap()).await.unwrap();
+    /// # let tbl = db.open_table("delete_test").await.unwrap();
+    /// tbl.create_index(&["vector"])
+    ///     .ivf_pq()
+    ///     .num_partitions(256)
+    ///     .build()
+    ///     .await
+    ///     .unwrap();
+    /// # });
+    /// ```
+    fn create_index(&self, column: &[&str]) -> IndexBuilder;
+
+    /// Search the table with a given query vector.
+    fn search(&self, query: &[f32]) -> Query {
+        self.query().query_vector(query)
+    }
+
+    /// Create a Query builder.
+    fn query(&self) -> Query;
+}
+
+/// Reference to a Table pointer.
+pub type TableRef = Arc<dyn Table>;
 
 /// A table in a LanceDB database.
 #[derive(Debug, Clone)]
-pub struct Table {
+pub struct NativeTable {
     name: String,
     uri: String,
-    dataset: Arc<Dataset>,
+    dataset: Arc<Mutex<Dataset>>,
 
     // the object store wrapper to use on write path
     store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
 }
 
-impl std::fmt::Display for Table {
+impl std::fmt::Display for NativeTable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Table({})", self.name)
     }
 }
 
-impl Table {
+impl NativeTable {
     /// Opens an existing Table
     ///
     /// # Arguments
     ///
-    /// * `uri` - The uri to a [Table]
+    /// * `uri` - The uri to a [NativeTable]
     /// * `name` - The table name
     ///
     /// # Returns
     ///
-    /// * A [Table] object.
+    /// * A [NativeTable] object.
     pub async fn open(uri: &str) -> Result<Self> {
         let name = Self::get_table_name(uri)?;
         Self::open_with_params(uri, &name, None, ReadParams::default()).await
-    }
-
-    /// Open an Table with a given name.
-    pub async fn open_with_name(uri: &str, name: &str) -> Result<Self> {
-        Self::open_with_params(uri, name, None, ReadParams::default()).await
     }
 
     /// Opens an existing Table
@@ -88,7 +186,7 @@ impl Table {
     ///
     /// # Returns
     ///
-    /// * A [Table] object.
+    /// * A [NativeTable] object.
     pub async fn open_with_params(
         uri: &str,
         name: &str,
@@ -113,23 +211,24 @@ impl Table {
                     message: e.to_string(),
                 },
             })?;
-        Ok(Table {
+        Ok(NativeTable {
             name: name.to_string(),
             uri: uri.to_string(),
-            dataset: Arc::new(dataset),
+            dataset: Arc::new(Mutex::new(dataset)),
             store_wrapper: write_store_wrapper,
         })
     }
 
-    /// Checkout a specific version of this [`Table`]
+    /// Make a new clone of the internal lance dataset.
+    pub(crate) fn clone_inner_dataset(&self) -> Dataset {
+        self.dataset.lock().expect("Lock poison").clone()
+    }
+
+    /// Checkout a specific version of this [NativeTable]
     ///
     pub async fn checkout(uri: &str, version: u64) -> Result<Self> {
         let name = Self::get_table_name(uri)?;
         Self::checkout_with_params(uri, &name, version, None, ReadParams::default()).await
-    }
-
-    pub async fn checkout_with_name(uri: &str, name: &str, version: u64) -> Result<Self> {
-        Self::checkout_with_params(uri, name, version, None, ReadParams::default()).await
     }
 
     pub async fn checkout_with_params(
@@ -154,26 +253,27 @@ impl Table {
                     message: e.to_string(),
                 },
             })?;
-        Ok(Table {
+        Ok(NativeTable {
             name: name.to_string(),
             uri: uri.to_string(),
-            dataset: Arc::new(dataset),
+            dataset: Arc::new(Mutex::new(dataset)),
             store_wrapper: write_store_wrapper,
         })
     }
 
     pub async fn checkout_latest(&self) -> Result<Self> {
-        let latest_version_id = self.dataset.latest_version_id().await?;
-        let dataset = if latest_version_id == self.dataset.version().version {
-            self.dataset.clone()
+        let dataset = self.clone_inner_dataset();
+        let latest_version_id = dataset.latest_version_id().await?;
+        let dataset = if latest_version_id == dataset.version().version {
+            dataset
         } else {
-            Arc::new(self.dataset.checkout_version(latest_version_id).await?)
+            dataset.checkout_version(latest_version_id).await?
         };
 
-        Ok(Table {
+        Ok(Self {
             name: self.name.clone(),
             uri: self.uri.clone(),
-            dataset,
+            dataset: Arc::new(Mutex::new(dataset)),
             store_wrapper: self.store_wrapper.clone(),
         })
     }
@@ -203,7 +303,7 @@ impl Table {
     ///
     /// # Returns
     ///
-    /// * A [Table] object.
+    /// * A [TableImpl] object.
     pub(crate) async fn create(
         uri: &str,
         name: &str,
@@ -227,46 +327,22 @@ impl Table {
                     message: e.to_string(),
                 },
             })?;
-        Ok(Table {
+        Ok(NativeTable {
             name: name.to_string(),
             uri: uri.to_string(),
-            dataset: Arc::new(dataset),
+            dataset: Arc::new(Mutex::new(dataset)),
             store_wrapper: write_store_wrapper,
         })
     }
 
-    /// Schema of this Table.
-    pub fn schema(&self) -> SchemaRef {
-        Arc::new(self.dataset.schema().into())
-    }
-
     /// Version of this Table
     pub fn version(&self) -> u64 {
-        self.dataset.version().version
-    }
-
-    /// Create index on the table.
-    pub async fn create_index(&mut self, index_builder: &impl VectorIndexBuilder) -> Result<()> {
-        let mut dataset = self.dataset.as_ref().clone();
-        dataset
-            .create_index(
-                &[index_builder
-                    .get_column()
-                    .unwrap_or(VECTOR_COLUMN_NAME.to_string())
-                    .as_str()],
-                IndexType::Vector,
-                index_builder.get_index_name(),
-                &index_builder.build(),
-                index_builder.get_replace(),
-            )
-            .await?;
-        self.dataset = Arc::new(dataset);
-        Ok(())
+        self.dataset.lock().expect("lock poison").version().version
     }
 
     /// Create a scalar index on the table
-    pub async fn create_scalar_index(&mut self, column: &str, replace: bool) -> Result<()> {
-        let mut dataset = self.dataset.as_ref().clone();
+    pub async fn create_scalar_index(&self, column: &str, replace: bool) -> Result<()> {
+        let mut dataset = self.clone_inner_dataset();
         let params = ScalarIndexParams::default();
         dataset
             .create_index(&[column], IndexType::Scalar, None, &params, replace)
@@ -275,65 +351,21 @@ impl Table {
     }
 
     pub async fn optimize_indices(&mut self, options: &OptimizeOptions) -> Result<()> {
-        let mut dataset = self.dataset.as_ref().clone();
+        let mut dataset = self.clone_inner_dataset();
         dataset.optimize_indices(options).await?;
 
         Ok(())
     }
 
-    /// Insert records into this Table
-    ///
-    /// # Arguments
-    ///
-    /// * `batches` RecordBatch to be saved in the Table
-    /// * `write_mode` Append / Overwrite existing records. Default: Append
-    /// # Returns
-    ///
-    /// * The number of rows added
-    pub async fn add(
-        &mut self,
-        batches: impl RecordBatchReader + Send + 'static,
-        params: Option<WriteParams>,
-    ) -> Result<()> {
-        let params = Some(params.unwrap_or(WriteParams {
-            mode: WriteMode::Append,
-            ..WriteParams::default()
-        }));
-
-        // patch the params if we have a write store wrapper
-        let params = match self.store_wrapper.clone() {
-            Some(wrapper) => params.patch_with_store_wrapper(wrapper)?,
-            None => params,
-        };
-
-        self.dataset = Arc::new(Dataset::write(batches, &self.uri, params).await?);
-        Ok(())
-    }
-
     pub fn query(&self) -> Query {
-        Query::new(self.dataset.clone(), None)
-    }
-
-    /// Creates a new Query object that can be executed.
-    ///
-    /// # Arguments
-    ///
-    /// * `query_vector` The vector used for this query.
-    ///
-    /// # Returns
-    /// * A [Query] object.
-    pub fn search<T: Into<Float32Array>>(&self, query_vector: Option<T>) -> Query {
-        Query::new(self.dataset.clone(), query_vector.map(|q| q.into()))
+        Query::new(self.clone_inner_dataset().into())
     }
 
     pub fn filter(&self, expr: String) -> Query {
-        Query::new(self.dataset.clone(), None).filter(Some(expr))
+        Query::new(self.clone_inner_dataset().into()).filter(Some(expr))
     }
 
     /// Returns the number of rows in this Table
-    pub async fn count_rows(&self) -> Result<usize> {
-        Ok(self.dataset.count_rows().await?)
-    }
 
     /// Merge new data into this table.
     pub async fn merge(
@@ -342,26 +374,14 @@ impl Table {
         left_on: &str,
         right_on: &str,
     ) -> Result<()> {
-        let mut dataset = self.dataset.as_ref().clone();
+        let mut dataset = self.clone_inner_dataset();
         dataset.merge(batches, left_on, right_on).await?;
-        self.dataset = Arc::new(dataset);
+        self.dataset = Arc::new(Mutex::new(dataset));
         Ok(())
     }
 
-    /// Delete rows from the table
-    pub async fn delete(&mut self, predicate: &str) -> Result<()> {
-        let mut dataset = self.dataset.as_ref().clone();
-        dataset.delete(predicate).await?;
-        self.dataset = Arc::new(dataset);
-        Ok(())
-    }
-
-    pub async fn update(
-        &mut self,
-        predicate: Option<&str>,
-        updates: Vec<(&str, &str)>,
-    ) -> Result<()> {
-        let mut builder = UpdateBuilder::new(self.dataset.clone());
+    pub async fn update(&self, predicate: Option<&str>, updates: Vec<(&str, &str)>) -> Result<()> {
+        let mut builder = UpdateBuilder::new(self.clone_inner_dataset().into());
         if let Some(predicate) = predicate {
             builder = builder.update_where(predicate)?;
         }
@@ -371,9 +391,8 @@ impl Table {
         }
 
         let operation = builder.build()?;
-        let new_ds = operation.execute().await?;
-        self.dataset = new_ds;
-
+        let ds = operation.execute().await?;
+        self.reset_dataset(ds.as_ref().clone());
         Ok(())
     }
 
@@ -393,8 +412,8 @@ impl Table {
         older_than: Duration,
         delete_unverified: Option<bool>,
     ) -> Result<RemovalStats> {
-        Ok(self
-            .dataset
+        let dataset = self.clone_inner_dataset();
+        Ok(dataset
             .cleanup_old_versions(older_than, delete_unverified)
             .await?)
     }
@@ -406,26 +425,28 @@ impl Table {
     ///
     /// This calls into [lance::dataset::optimize::compact_files].
     pub async fn compact_files(
-        &mut self,
+        &self,
         options: CompactionOptions,
         remap_options: Option<Arc<dyn IndexRemapperOptions>>,
     ) -> Result<CompactionMetrics> {
-        let mut dataset = self.dataset.as_ref().clone();
+        let mut dataset = self.clone_inner_dataset();
         let metrics = compact_files(&mut dataset, options, remap_options).await?;
-        self.dataset = Arc::new(dataset);
+        self.reset_dataset(dataset);
         Ok(metrics)
     }
 
     pub fn count_fragments(&self) -> usize {
-        self.dataset.count_fragments()
+        self.dataset.lock().expect("lock poison").count_fragments()
     }
 
     pub async fn count_deleted_rows(&self) -> Result<usize> {
-        Ok(self.dataset.count_deleted_rows().await?)
+        let dataset = self.clone_inner_dataset();
+        Ok(dataset.count_deleted_rows().await?)
     }
 
     pub async fn num_small_files(&self, max_rows_per_group: usize) -> usize {
-        self.dataset.num_small_files(max_rows_per_group).await
+        let dataset = self.clone_inner_dataset();
+        dataset.num_small_files(max_rows_per_group).await
     }
 
     pub async fn count_indexed_rows(&self, index_uuid: &str) -> Result<Option<usize>> {
@@ -443,8 +464,8 @@ impl Table {
     }
 
     pub async fn load_indices(&self) -> Result<Vec<VectorIndex>> {
-        let (indices, mf) =
-            futures::try_join!(self.dataset.load_indices(), self.dataset.latest_manifest())?;
+        let dataset = self.clone_inner_dataset();
+        let (indices, mf) = futures::try_join!(dataset.load_indices(), dataset.latest_manifest())?;
         Ok(indices
             .iter()
             .map(|i| VectorIndex::new_from_format(&mf, i))
@@ -460,10 +481,8 @@ impl Table {
         if index.is_none() {
             return Ok(None);
         }
-        let index_stats = self
-            .dataset
-            .index_statistics(&index.unwrap().index_name)
-            .await?;
+        let dataset = self.clone_inner_dataset();
+        let index_stats = dataset.index_statistics(&index.unwrap().index_name).await?;
         let index_stats: VectorIndexStatistics =
             serde_json::from_str(&index_stats).map_err(|e| Error::Lance {
                 message: format!(
@@ -473,6 +492,71 @@ impl Table {
             })?;
 
         Ok(Some(index_stats))
+    }
+
+    pub(crate) fn reset_dataset(&self, dataset: Dataset) {
+        *self.dataset.lock().expect("lock poison") = dataset;
+    }
+}
+
+#[async_trait::async_trait]
+impl Table for NativeTable {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_native(&self) -> Option<&NativeTable> {
+        Some(self)
+    }
+
+    fn name(&self) -> &str {
+        self.name.as_str()
+    }
+
+    fn schema(&self) -> SchemaRef {
+        let lance_schema = { self.dataset.lock().expect("lock poison").schema().clone() };
+        Arc::new(Schema::from(&lance_schema))
+    }
+
+    async fn count_rows(&self) -> Result<usize> {
+        let dataset = { self.dataset.lock().expect("lock poison").clone() };
+        Ok(dataset.count_rows().await?)
+    }
+
+    async fn add(
+        &self,
+        batches: Box<dyn RecordBatchReader + Send>,
+        params: Option<WriteParams>,
+    ) -> Result<()> {
+        let params = Some(params.unwrap_or(WriteParams {
+            mode: WriteMode::Append,
+            ..WriteParams::default()
+        }));
+
+        // patch the params if we have a write store wrapper
+        let params = match self.store_wrapper.clone() {
+            Some(wrapper) => params.patch_with_store_wrapper(wrapper)?,
+            None => params,
+        };
+
+        self.reset_dataset(Dataset::write(batches, &self.uri, params).await?);
+        Ok(())
+    }
+
+    fn create_index(&self, columns: &[&str]) -> IndexBuilder {
+        IndexBuilder::new(Arc::new(self.clone()), columns)
+    }
+
+    fn query(&self) -> Query {
+        Query::new(Arc::new(self.dataset.lock().expect("lock poison").clone()))
+    }
+
+    /// Delete rows from the table
+    async fn delete(&self, predicate: &str) -> Result<()> {
+        let mut dataset = self.clone_inner_dataset();
+        dataset.delete(predicate).await?;
+        self.reset_dataset(dataset);
+        Ok(())
     }
 }
 
@@ -491,14 +575,11 @@ mod tests {
     use arrow_schema::{DataType, Field, Schema, TimeUnit};
     use futures::TryStreamExt;
     use lance::dataset::{Dataset, WriteMode};
-    use lance::index::vector::pq::PQBuildParams;
     use lance::io::{ObjectStoreParams, WrappingObjectStore};
-    use lance_index::vector::ivf::IvfBuildParams;
     use rand::Rng;
     use tempfile::tempdir;
 
     use super::*;
-    use crate::index::vector::IvfPQIndexBuilder;
 
     #[tokio::test]
     async fn test_open() {
@@ -510,7 +591,9 @@ mod tests {
             .await
             .unwrap();
 
-        let table = Table::open(dataset_path.to_str().unwrap()).await.unwrap();
+        let table = NativeTable::open(dataset_path.to_str().unwrap())
+            .await
+            .unwrap();
 
         assert_eq!(table.name, "test")
     }
@@ -519,7 +602,7 @@ mod tests {
     async fn test_open_not_found() {
         let tmp_dir = tempdir().unwrap();
         let uri = tmp_dir.path().to_str().unwrap();
-        let table = Table::open(uri).await;
+        let table = NativeTable::open(uri).await;
         assert!(matches!(table.unwrap_err(), Error::TableNotFound { .. }));
     }
 
@@ -539,12 +622,12 @@ mod tests {
 
         let batches = make_test_batches();
         let _ = batches.schema().clone();
-        Table::create(&uri, "test", batches, None, None)
+        NativeTable::create(&uri, "test", batches, None, None)
             .await
             .unwrap();
 
         let batches = make_test_batches();
-        let result = Table::create(&uri, "test", batches, None, None).await;
+        let result = NativeTable::create(&uri, "test", batches, None, None).await;
         assert!(matches!(
             result.unwrap_err(),
             Error::TableAlreadyExists { .. }
@@ -558,7 +641,7 @@ mod tests {
 
         let batches = make_test_batches();
         let schema = batches.schema().clone();
-        let mut table = Table::create(&uri, "test", batches, None, None)
+        let table = NativeTable::create(&uri, "test", batches, None, None)
             .await
             .unwrap();
         assert_eq!(table.count_rows().await.unwrap(), 10);
@@ -574,7 +657,7 @@ mod tests {
             schema.clone(),
         );
 
-        table.add(new_batches, None).await.unwrap();
+        table.add(Box::new(new_batches), None).await.unwrap();
         assert_eq!(table.count_rows().await.unwrap(), 20);
         assert_eq!(table.name, "test");
     }
@@ -586,7 +669,7 @@ mod tests {
 
         let batches = make_test_batches();
         let schema = batches.schema().clone();
-        let mut table = Table::create(uri, "test", batches, None, None)
+        let table = NativeTable::create(uri, "test", batches, None, None)
             .await
             .unwrap();
         assert_eq!(table.count_rows().await.unwrap(), 10);
@@ -607,7 +690,7 @@ mod tests {
             ..Default::default()
         };
 
-        table.add(new_batches, Some(param)).await.unwrap();
+        table.add(Box::new(new_batches), Some(param)).await.unwrap();
         assert_eq!(table.count_rows().await.unwrap(), 10);
         assert_eq!(table.name, "test");
     }
@@ -640,7 +723,7 @@ mod tests {
         );
 
         Dataset::write(record_batch_iter, uri, None).await.unwrap();
-        let mut table = Table::open(uri).await.unwrap();
+        let table = NativeTable::open(uri).await.unwrap();
 
         table
             .update(Some("id > 5"), vec![("name", "'foo'")])
@@ -772,7 +855,7 @@ mod tests {
         );
 
         Dataset::write(record_batch_iter, uri, None).await.unwrap();
-        let mut table = Table::open(uri).await.unwrap();
+        let table = NativeTable::open(uri).await.unwrap();
 
         // check it can do update for each type
         let updates: Vec<(&str, &str)> = vec![
@@ -889,11 +972,10 @@ mod tests {
             .await
             .unwrap();
 
-        let table = Table::open(uri).await.unwrap();
+        let table = NativeTable::open(uri).await.unwrap();
 
-        let vector = Float32Array::from_iter_values([0.1, 0.2]);
-        let query = table.search(Some(vector.clone()));
-        assert_eq!(vector, query.query_vector.unwrap());
+        let query = table.search(&[0.1, 0.2]);
+        assert_eq!(&[0.1, 0.2], query.query_vector.unwrap().values());
     }
 
     #[derive(Default, Debug)]
@@ -937,7 +1019,7 @@ mod tests {
             ..Default::default()
         };
         assert!(!wrapper.called());
-        let _ = Table::open_with_params(uri, "test", None, param)
+        let _ = NativeTable::open_with_params(uri, "test", None, param)
             .await
             .unwrap();
         assert!(wrapper.called());
@@ -991,23 +1073,23 @@ mod tests {
             schema,
         );
 
-        let mut table = Table::create(uri, "test", batches, None, None)
+        let table = NativeTable::create(uri, "test", batches, None, None)
             .await
             .unwrap();
-        let mut i = IvfPQIndexBuilder::new();
 
         assert_eq!(table.count_indexed_rows("my_index").await.unwrap(), None);
         assert_eq!(table.count_unindexed_rows("my_index").await.unwrap(), None);
 
-        let index_builder = i
-            .column("embeddings".to_string())
-            .index_name("my_index".to_string())
-            .ivf_params(IvfBuildParams::new(256))
-            .pq_params(PQBuildParams::default());
+        table
+            .create_index(&["embeddings"])
+            .ivf_pq()
+            .name("my_index")
+            .num_partitions(256)
+            .build()
+            .await
+            .unwrap();
 
-        table.create_index(index_builder).await.unwrap();
-
-        assert_eq!(table.dataset.load_indices().await.unwrap().len(), 1);
+        assert_eq!(table.load_indices().await.unwrap().len(), 1);
         assert_eq!(table.count_rows().await.unwrap(), 512);
         assert_eq!(table.name, "test");
 

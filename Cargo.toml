@@ -24,11 +24,14 @@ arrow-ord = "49.0"
 arrow-schema = "49.0"
 arrow-arith = "49.0"
 arrow-cast = "49.0"
+async-trait = "0"
 chrono = "0.4.23"
 half = { "version" = "=2.3.1", default-features = false, features = [
     "num-traits",
 ] }
+futures = "0"
 log = "0.4"
 object_store = "0.9.0"
 snafu = "0.7.4"
 url = "2"
+num-traits = "0.2"
