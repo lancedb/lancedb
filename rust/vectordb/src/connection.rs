@@ -27,7 +27,7 @@ use snafu::prelude::*;
 
 use crate::error::{CreateDirSnafu, Error, InvalidTableNameSnafu, Result};
 use crate::io::object_store::MirroringObjectStoreWrapper;
-use crate::table::{ReadParams, Table, TableImpl, TableRef};
+use crate::table::{NativeTable, ReadParams, TableRef};
 
 pub const LANCE_FILE_EXTENSION: &str = "lance";
 
@@ -247,7 +247,7 @@ impl Connection for Database {
         let table_uri = self.table_uri(name)?;
 
         Ok(Arc::new(
-            TableImpl::create(
+            NativeTable::create(
                 &table_uri,
                 name,
                 batches,
@@ -270,7 +270,7 @@ impl Connection for Database {
     async fn open_table_with_params(&self, name: &str, params: ReadParams) -> Result<TableRef> {
         let table_uri = self.table_uri(name)?;
         Ok(Arc::new(
-            TableImpl::open_with_params(&table_uri, name, self.store_wrapper.clone(), params)
+            NativeTable::open_with_params(&table_uri, name, self.store_wrapper.clone(), params)
                 .await?,
         ))
     }

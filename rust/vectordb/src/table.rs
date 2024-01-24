@@ -36,7 +36,7 @@ use crate::index::vector::{VectorIndex, VectorIndexBuilder, VectorIndexStatistic
 use crate::index::{IndexParameters, IndexParamsBuilder};
 use crate::query::Query;
 use crate::utils::{PatchReadParam, PatchWriteParam};
-use crate::{data, WriteMode};
+use crate::WriteMode;
 
 pub const VECTOR_COLUMN_NAME: &str = "vector";
 
@@ -46,6 +46,9 @@ pub const VECTOR_COLUMN_NAME: &str = "vector";
 #[async_trait::async_trait]
 pub trait Table: std::fmt::Display + Send + Sync {
     fn as_any(&self) -> &dyn std::any::Any;
+
+    /// Cast as [`NativeTable`], or return None it if is not a [`NativeTable`].
+    fn as_native(&self) -> Option<&NativeTable>;
 
     /// Get the name of the table.
     fn name(&self) -> &str;
@@ -129,7 +132,7 @@ pub type TableRef = Arc<dyn Table>;
 
 /// A table in a LanceDB database.
 #[derive(Debug, Clone)]
-pub struct TableImpl {
+pub struct NativeTable {
     name: String,
     uri: String,
     dataset: Arc<Mutex<Dataset>>,
@@ -138,13 +141,13 @@ pub struct TableImpl {
     store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
 }
 
-impl std::fmt::Display for TableImpl {
+impl std::fmt::Display for NativeTable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Table({})", self.name)
     }
 }
 
-impl TableImpl {
+impl NativeTable {
     /// Opens an existing Table
     ///
     /// # Arguments
@@ -195,7 +198,7 @@ impl TableImpl {
                     message: e.to_string(),
                 },
             })?;
-        Ok(TableImpl {
+        Ok(NativeTable {
             name: name.to_string(),
             uri: uri.to_string(),
             dataset: Arc::new(Mutex::new(dataset)),
@@ -237,7 +240,7 @@ impl TableImpl {
                     message: e.to_string(),
                 },
             })?;
-        Ok(TableImpl {
+        Ok(NativeTable {
             name: name.to_string(),
             uri: uri.to_string(),
             dataset: Arc::new(Mutex::new(dataset)),
@@ -311,7 +314,7 @@ impl TableImpl {
                     message: e.to_string(),
                 },
             })?;
-        Ok(TableImpl {
+        Ok(NativeTable {
             name: name.to_string(),
             uri: uri.to_string(),
             dataset: Arc::new(Mutex::new(dataset)),
@@ -507,9 +510,13 @@ impl TableImpl {
 }
 
 #[async_trait::async_trait]
-impl Table for TableImpl {
+impl Table for NativeTable {
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+
+    fn as_native(&self) -> Option<&NativeTable> {
+        Some(self)
     }
 
     fn name(&self) -> &str {
@@ -626,7 +633,7 @@ mod tests {
             .await
             .unwrap();
 
-        let table = TableImpl::open(dataset_path.to_str().unwrap())
+        let table = NativeTable::open(dataset_path.to_str().unwrap())
             .await
             .unwrap();
 
@@ -637,7 +644,7 @@ mod tests {
     async fn test_open_not_found() {
         let tmp_dir = tempdir().unwrap();
         let uri = tmp_dir.path().to_str().unwrap();
-        let table = TableImpl::open(uri).await;
+        let table = NativeTable::open(uri).await;
         assert!(matches!(table.unwrap_err(), Error::TableNotFound { .. }));
     }
 
@@ -657,12 +664,12 @@ mod tests {
 
         let batches = make_test_batches();
         let _ = batches.schema().clone();
-        TableImpl::create(&uri, "test", batches, None, None)
+        NativeTable::create(&uri, "test", batches, None, None)
             .await
             .unwrap();
 
         let batches = make_test_batches();
-        let result = TableImpl::create(&uri, "test", batches, None, None).await;
+        let result = NativeTable::create(&uri, "test", batches, None, None).await;
         assert!(matches!(
             result.unwrap_err(),
             Error::TableAlreadyExists { .. }
@@ -676,7 +683,7 @@ mod tests {
 
         let batches = make_test_batches();
         let schema = batches.schema().clone();
-        let table = TableImpl::create(&uri, "test", batches, None, None)
+        let table = NativeTable::create(&uri, "test", batches, None, None)
             .await
             .unwrap();
         assert_eq!(table.count_rows().await.unwrap(), 10);
@@ -704,7 +711,7 @@ mod tests {
 
         let batches = make_test_batches();
         let schema = batches.schema().clone();
-        let mut table = TableImpl::create(uri, "test", batches, None, None)
+        let mut table = NativeTable::create(uri, "test", batches, None, None)
             .await
             .unwrap();
         assert_eq!(table.count_rows().await.unwrap(), 10);
@@ -758,7 +765,7 @@ mod tests {
         );
 
         Dataset::write(record_batch_iter, uri, None).await.unwrap();
-        let mut table = TableImpl::open(uri).await.unwrap();
+        let mut table = NativeTable::open(uri).await.unwrap();
 
         table
             .update(Some("id > 5"), vec![("name", "'foo'")])
@@ -890,7 +897,7 @@ mod tests {
         );
 
         Dataset::write(record_batch_iter, uri, None).await.unwrap();
-        let mut table = TableImpl::open(uri).await.unwrap();
+        let mut table = NativeTable::open(uri).await.unwrap();
 
         // check it can do update for each type
         let updates: Vec<(&str, &str)> = vec![
@@ -1007,7 +1014,7 @@ mod tests {
             .await
             .unwrap();
 
-        let table = TableImpl::open(uri).await.unwrap();
+        let table = NativeTable::open(uri).await.unwrap();
 
         let query = table.search(&[0.1, 0.2]);
         assert_eq!(&[0.1, 0.2], query.query_vector.unwrap().values());
@@ -1054,7 +1061,7 @@ mod tests {
             ..Default::default()
         };
         assert!(!wrapper.called());
-        let _ = TableImpl::open_with_params(uri, "test", None, param)
+        let _ = NativeTable::open_with_params(uri, "test", None, param)
             .await
             .unwrap();
         assert!(wrapper.called());
@@ -1108,7 +1115,7 @@ mod tests {
             schema,
         );
 
-        let mut table = TableImpl::create(uri, "test", batches, None, None)
+        let mut table = NativeTable::create(uri, "test", batches, None, None)
             .await
             .unwrap();
         let mut i = IvfPQIndexBuilder::new();
