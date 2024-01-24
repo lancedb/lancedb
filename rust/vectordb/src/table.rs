@@ -82,7 +82,7 @@ pub trait Table: std::fmt::Display + Send + Sync {
     /// # use std::sync::Arc;
     /// # use vectordb::connection::{Database, Connection};
     /// # use arrow_array::{FixedSizeListArray, types::Float32Type, RecordBatch,
-    ///     RecordBatchIterator, Int32Array};
+    /// #   RecordBatchIterator, Int32Array};
     /// # use arrow_schema::{Schema, Field, DataType};
     /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
     /// let tmpdir = tempfile::tempdir().unwrap();
@@ -119,7 +119,7 @@ pub trait Table: std::fmt::Display + Send + Sync {
     ///
     /// ```no_run
     /// # use vectordb::connection::{Database, Connection};
-    /// tbl.create_index(&["vector"], None).build().await.unwrap();
+    /// tbl.create_index(&["vector"]).ivf_pq().build().await.unwrap();
     /// ```
     fn create_index<'a>(&'a self, column: &[&str]) -> IndexBuilder<'a>;
 
@@ -157,12 +157,12 @@ impl NativeTable {
     ///
     /// # Arguments
     ///
-    /// * `uri` - The uri to a [TableImpl]
+    /// * `uri` - The uri to a [NativeTable]
     /// * `name` - The table name
     ///
     /// # Returns
     ///
-    /// * A [TableImpl] object.
+    /// * A [NativeTable] object.
     pub async fn open(uri: &str) -> Result<Self> {
         let name = Self::get_table_name(uri)?;
         Self::open_with_params(uri, &name, None, ReadParams::default()).await
@@ -178,7 +178,7 @@ impl NativeTable {
     ///
     /// # Returns
     ///
-    /// * A [TableImpl] object.
+    /// * A [NativeTable] object.
     pub async fn open_with_params(
         uri: &str,
         name: &str,
@@ -216,7 +216,7 @@ impl NativeTable {
         Ok(self.dataset.lock()?.clone())
     }
 
-    /// Checkout a specific version of this [`TableImpl`]
+    /// Checkout a specific version of this [NativeTable]
     ///
     pub async fn checkout(uri: &str, version: u64) -> Result<Self> {
         let name = Self::get_table_name(uri)?;

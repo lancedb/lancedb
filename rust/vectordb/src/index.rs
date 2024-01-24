@@ -102,7 +102,7 @@ impl<'a> IndexBuilder<'a> {
         self
     }
 
-    /// [MetricType](lance_linalg::distance::MetricType) to use to build Vector Index.
+    /// [MetricType] to use to build Vector Index.
     pub fn metric_type(&mut self, metric_type: MetricType) -> &mut Self {
         self.metric_type = metric_type;
         self
