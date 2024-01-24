@@ -749,9 +749,8 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         LanceHybridQueryBuilder
             The LanceHybridQueryBuilder object.
         """
-        # TODO: Probably auto can be removed and score should be the default.
-        if normalize not in ["auto", "rank", "score"]:
-            raise ValueError("normalize must be 'auto', 'rank' or 'score'.")
+        if normalize not in ["rank", "score"]:
+            raise ValueError("normalize must be 'rank' or 'score'.")
         if reranker and not isinstance(reranker, Reranker):
             raise ValueError("reranker must be an instance of Reranker class.")
 
