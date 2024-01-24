@@ -15,7 +15,7 @@
 use arrow_array::{RecordBatch, RecordBatchIterator};
 use lance::dataset::optimize::CompactionOptions;
 use lance::dataset::{WriteMode, WriteParams};
-use lance::io::object_store::ObjectStoreParams;
+use lance::io::ObjectStoreParams;
 
 use crate::arrow::{arrow_buffer_to_record_batch, record_batch_to_buffer};
 use neon::prelude::*;

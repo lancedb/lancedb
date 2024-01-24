@@ -141,7 +141,7 @@ pub mod query;
 pub mod table;
 pub mod utils;
 
-pub use connection::Connection;
+pub use connection::{Connection, Database};
 pub use error::{Error, Result};
 pub use table::Table;
 

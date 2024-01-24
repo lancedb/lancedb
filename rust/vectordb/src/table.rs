@@ -26,7 +26,7 @@ use lance::dataset::optimize::{
     compact_files, CompactionMetrics, CompactionOptions, IndexRemapperOptions,
 };
 use lance::dataset::{Dataset, UpdateBuilder, WriteParams};
-use lance::io::object_store::WrappingObjectStore;
+use lance::io::WrappingObjectStore;
 use lance_index::DatasetIndexExt;
 use std::path::Path;
 
@@ -492,7 +492,7 @@ mod tests {
     use futures::TryStreamExt;
     use lance::dataset::{Dataset, WriteMode};
     use lance::index::vector::pq::PQBuildParams;
-    use lance::io::object_store::{ObjectStoreParams, WrappingObjectStore};
+    use lance::io::{ObjectStoreParams, WrappingObjectStore};
     use lance_index::vector::ivf::IvfBuildParams;
     use rand::Rng;
     use tempfile::tempdir;
