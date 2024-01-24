@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::sync::PoisonError;
+
 use arrow_schema::ArrowError;
 use snafu::Snafu;
 
@@ -35,6 +37,8 @@ pub enum Error {
     Lance { message: String },
     #[snafu(display("LanceDB Schema Error: {message}"))]
     Schema { message: String },
+    #[snafu(display("Runtime error: {message}"))]
+    Runtime { message: String },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -66,6 +70,14 @@ impl From<object_store::Error> for Error {
 impl From<object_store::path::Error> for Error {
     fn from(e: object_store::path::Error) -> Self {
         Self::Store {
+            message: e.to_string(),
+        }
+    }
+}
+
+impl<T> From<PoisonError<T>> for Error {
+    fn from(e: PoisonError<T>) -> Self {
+        Self::Runtime {
             message: e.to_string(),
         }
     }
