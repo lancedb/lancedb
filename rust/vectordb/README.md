@@ -1,3 +1,10 @@
 # LanceDB Rust
 
-Rust client for LanceDB, a serverless vector database. Read more at: https://lancedb.com/
+<a href="https://crates.io/crates/vectordb">
+![LanceDB Crate](https://img.shields.io/crates/v/vectordb)
+</a>
+![Docs.rs](https://img.shields.io/docsrs/vectordb)
+
+LanceDB Rust SDK, a serverless vector database.
+
+Read more at: https://lancedb.com/
