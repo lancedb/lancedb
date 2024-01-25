@@ -24,17 +24,27 @@ use crate::error::Result;
 /// A builder for nearest neighbor queries for LanceDB.
 #[derive(Clone)]
 pub struct Query {
-    pub dataset: Arc<Dataset>,
-    pub query_vector: Option<Float32Array>,
-    pub column: String,
-    pub limit: Option<usize>,
-    pub filter: Option<String>,
-    pub select: Option<Vec<String>>,
-    pub nprobes: usize,
-    pub refine_factor: Option<u32>,
-    pub metric_type: Option<MetricType>,
-    pub use_index: bool,
-    pub prefilter: bool,
+    dataset: Arc<Dataset>,
+
+    // The column to run the query on. If not specified, we will attempt to guess
+    // the column based on the dataset's schema.
+    column: Option<String>,
+
+    // IVF PQ - ANN search.
+    query_vector: Option<Float32Array>,
+    nprobes: usize,
+    refine_factor: Option<u32>,
+    metric_type: Option<MetricType>,
+
+    limit: Option<usize>,
+    filter: Option<String>,
+    /// Select column projection.
+    select: Option<Vec<String>>,
+
+    /// Default is true. Set to false to enforce a brute force search.
+    use_index: bool,
+    /// Apply filter before ANN search/
+    prefilter: bool,
 }
 
 impl Query {
@@ -43,7 +53,6 @@ impl Query {
     /// # Arguments
     ///
     /// * `dataset` - The table / dataset the query will be run against.
-    /// * `vector` The vector used for this query.
     ///
     /// # Returns
     ///
@@ -52,7 +61,7 @@ impl Query {
         Query {
             dataset,
             query_vector: None,
-            column: crate::table::VECTOR_COLUMN_NAME.to_string(),
+            column: None,
             limit: None,
             nprobes: 20,
             refine_factor: None,
@@ -197,8 +206,10 @@ mod tests {
     use futures::StreamExt;
     use lance::dataset::Dataset;
     use lance_testing::datagen::{BatchGenerator, IncrementingInt32, RandomVector};
+    use tempfile::tempdir;
 
     use crate::query::Query;
+    use crate::table::{NativeTable, Table};
 
     #[tokio::test]
     async fn test_setters_getters() {
@@ -307,5 +318,22 @@ mod tests {
                 .map(Ok),
             schema,
         )
+    }
+
+    #[tokio::test]
+    async fn test_search() {
+        let tmp_dir = tempdir().unwrap();
+        let dataset_path = tmp_dir.path().join("test.lance");
+        let uri = dataset_path.to_str().unwrap();
+
+        let batches = make_test_batches();
+        Dataset::write(batches, dataset_path.to_str().unwrap(), None)
+            .await
+            .unwrap();
+
+        let table = NativeTable::open(uri).await.unwrap();
+
+        let query = table.search(&[0.1, 0.2]);
+        assert_eq!(&[0.1, 0.2], query.query_vector.unwrap().values());
     }
 }

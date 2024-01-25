@@ -961,22 +961,6 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_search() {
-        let tmp_dir = tempdir().unwrap();
-        let dataset_path = tmp_dir.path().join("test.lance");
-        let uri = dataset_path.to_str().unwrap();
-
-        let batches = make_test_batches();
-        Dataset::write(batches, dataset_path.to_str().unwrap(), None)
-            .await
-            .unwrap();
-
-        let table = NativeTable::open(uri).await.unwrap();
-
-        let query = table.search(&[0.1, 0.2]);
-        assert_eq!(&[0.1, 0.2], query.query_vector.unwrap().values());
-    }
 
     #[derive(Default, Debug)]
     struct NoOpCacheWrapper {
