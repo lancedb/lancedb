@@ -1,3 +1,4 @@
+/* tslint:disable */
 /* eslint-disable */
 /* prettier-ignore */
 
@@ -294,9 +295,12 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { Connection, Query, Table, WriteMode, connect } = nativeBinding
+const { Connection, IndexType, MetricType, IndexBuilder, Query, Table, WriteMode, connect } = nativeBinding
 
 module.exports.Connection = Connection
+module.exports.IndexType = IndexType
+module.exports.MetricType = MetricType
+module.exports.IndexBuilder = IndexBuilder
 module.exports.Query = Query
 module.exports.Table = Table
 module.exports.WriteMode = WriteMode

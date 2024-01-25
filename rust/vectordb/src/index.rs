@@ -14,6 +14,7 @@
 
 use std::{cmp::max, sync::Arc};
 
+use arrow_schema::Schema;
 use lance_index::{DatasetIndexExt, IndexType};
 pub use lance_linalg::distance::MetricType;
 
@@ -55,7 +56,7 @@ pub struct IndexBuilder {
 
     // IVF_PQ parameters
     metric_type: MetricType,
-    num_partitions: Option<u64>,
+    num_partitions: Option<u32>,
     // PQ related
     num_sub_vectors: Option<u32>,
     num_bits: u32,
@@ -109,6 +110,11 @@ impl IndexBuilder {
         self
     }
 
+    pub fn columns(&mut self, cols: &[&str]) -> &mut Self {
+        self.columns = cols.iter().map(|s| s.to_string()).collect();
+        self
+    }
+
     /// Whether to replace the existing index, default is `true`.
     pub fn replace(&mut self, v: bool) -> &mut Self {
         self.replace = v;
@@ -130,7 +136,7 @@ impl IndexBuilder {
     }
 
     /// Number of IVF partitions.
-    pub fn num_partitions(&mut self, num_partitions: u64) -> &mut Self {
+    pub fn num_partitions(&mut self, num_partitions: u32) -> &mut Self {
         self.num_partitions = Some(num_partitions);
         self
     }
@@ -161,16 +167,28 @@ impl IndexBuilder {
 
     /// Build the parameters.
     pub async fn build(&self) -> Result<()> {
-        if self.columns.len() != 1 {
+        let schema = self.table.schema();
+
+        // TODO: simplify this after GH lance#1864.
+        let mut index_type = &self.index_type;
+        let columns = if self.columns.is_empty() {
+            // By default we create vector index.
+            index_type = &IndexType::Vector;
+            vec![default_column_for_index(&schema)?]
+        } else {
+            self.columns.clone()
+        };
+
+        if columns.len() != 1 {
             return Err(Error::Schema {
                 message: "Only one column is supported for index".to_string(),
             });
         }
-        let column = &self.columns[0];
-        let schema = self.table.schema();
+        let column = &columns[0];
+
         let field = schema.field_with_name(column)?;
 
-        let params = match self.index_type {
+        let params = match index_type {
             IndexType::Scalar => IndexParams::Scalar {
                 replace: self.replace,
             },
@@ -198,7 +216,7 @@ impl IndexBuilder {
                 IndexParams::IvfPq {
                     replace: self.replace,
                     metric_type: self.metric_type,
-                    num_partitions,
+                    num_partitions: num_partitions as u64,
                     num_sub_vectors,
                     num_bits: self.num_bits,
                     sample_rate: self.sample_rate,
@@ -253,8 +271,8 @@ impl IndexBuilder {
     }
 }
 
-fn suggested_num_partitions(rows: usize) -> u64 {
-    let num_partitions = (rows as f64).sqrt() as u64;
+fn suggested_num_partitions(rows: usize) -> u32 {
+    let num_partitions = (rows as f64).sqrt() as u32;
     max(1, num_partitions)
 }
 
@@ -270,5 +288,85 @@ fn suggested_num_sub_vectors(dim: u32) -> u32 {
                 which may cause performance degradation in PQ"
         );
         1
+    }
+}
+
+/// Find one default column to create index.
+fn default_column_for_index(schema: &Schema) -> Result<String> {
+    // Try to find one fixed size list array column.
+    let candidates = schema
+        .fields()
+        .iter()
+        .filter_map(|field| match field.data_type() {
+            arrow_schema::DataType::FixedSizeList(f, _) if f.data_type().is_floating() => {
+                Some(field.name())
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if candidates.is_empty() {
+        Err(Error::Store {
+            message: "No vector column found to create index".to_string(),
+        })
+    } else if candidates.len() != 1 {
+        Err(Error::Store {
+            message: format!(
+                "More than one vector columns found, \
+                    please specify which column to create index: {:?}",
+                candidates
+            ),
+        })
+    } else {
+        Ok(candidates[0].to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use arrow_schema::{DataType, Field};
+
+    #[test]
+    fn test_guess_default_column() {
+        let schema_no_vector = Schema::new(vec![
+            Field::new("id", DataType::Int16, true),
+            Field::new("tag", DataType::Utf8, false),
+        ]);
+        assert!(default_column_for_index(&schema_no_vector)
+            .unwrap_err()
+            .to_string()
+            .contains("No vector column"));
+
+        let schema_with_vec_col = Schema::new(vec![
+            Field::new("id", DataType::Int16, true),
+            Field::new(
+                "vec",
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float64, false)), 10),
+                false,
+            ),
+        ]);
+        assert_eq!(
+            default_column_for_index(&schema_with_vec_col).unwrap(),
+            "vec"
+        );
+
+        let multi_vec_col = Schema::new(vec![
+            Field::new("id", DataType::Int16, true),
+            Field::new(
+                "vec",
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float64, false)), 10),
+                false,
+            ),
+            Field::new(
+                "vec2",
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float64, false)), 50),
+                false,
+            ),
+        ]);
+        assert!(default_column_for_index(&multi_vec_col)
+            .unwrap_err()
+            .to_string()
+            .contains("More than one"));
     }
 }

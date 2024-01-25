@@ -75,8 +75,8 @@ fn get_index_params_builder(
         builder.metric_type(metric_type);
     }
 
-    if let Some(np) = obj.get_opt_usize(cx, "num_partitions")? {
-        builder.num_partitions(np as u64);
+    if let Some(np) = obj.get_opt_u32(cx, "num_partitions")? {
+        builder.num_partitions(np);
     }
     if let Some(ns) = obj.get_opt_u32(cx, "num_sub_vectors")? {
         builder.num_sub_vectors(ns);

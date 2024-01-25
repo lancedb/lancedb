@@ -16,6 +16,7 @@ import { Schema, tableFromIPC } from "apache-arrow";
 import { Table as _NativeTable } from "./native";
 import { toBuffer, Data } from "./arrow";
 import { Query } from "./query";
+import { IndexBuilder } from "./indexer";
 
 /**
  * A LanceDB Table is the collection of Records.
@@ -56,6 +57,42 @@ export class Table {
   /** Delete the rows that satisfy the predicate. */
   async delete(predicate: string): Promise<void> {
     await this.inner.delete(predicate);
+  }
+
+  /** Create an index over the columns.
+   *
+   * @param {string} column The column to create the index on. If not specified,
+   *                        it will create an index on vector field.
+   *
+   * @example
+   *
+   * By default, it creates vector idnex on one vector column.
+   *
+   * ```typescript
+   * const table = await conn.openTable("my_table");
+   * await table.createIndex().build();
+   * ```
+   *
+   * You can specify `IVF_PQ` parameters via `ivf_pq({})` call.
+   * ```typescript
+   * const table = await conn.openTable("my_table");
+   * await table.createIndex("my_vec_col")
+   *   .ivf_pq({ num_partitions: 128, num_sub_vectors: 16 })
+   *   .build();
+   * ```
+   *
+   * Or create a Scalar index
+   *
+   * ```typescript
+   * await table.createIndex("my_float_col").build();
+   * ```
+   */
+  createIndex(column?: string): IndexBuilder {
+    let builder = new IndexBuilder(this.inner);
+    if (column !== undefined) {
+      builder = builder.column(column);
+    }
+    return builder;
   }
 
   search(vector?: number[]): Query {
