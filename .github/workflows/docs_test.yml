@@ -22,6 +22,32 @@ env:
   RUST_BACKTRACE: "1"
 
 jobs:
+  test-links:
+    name: Broken Link Checker
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        node-version: [ "18" ]
+        os: ["ubuntu-22.04"]
+    steps:
+    - name: Build docs
+      run: |
+          PYTHONPATH=. mkdocs build -f docs/mkdocs.yml
+
+    - name: Broken Link Checker
+      uses: lycheeverse/lychee-action@v1.9.0
+      with:
+        # Check all markdown and html files in repo. Ignores the following status codes to reduce false positives:
+        #   - 403(OpenVINO, "forbidden")
+        #   - 429(Instagram, "too many requests")
+        #   - 500(Zenodo, "cached")
+        #   - 502(Zenodo, "bad gateway")
+        #   - 999(LinkedIn, "unknown status code")
+        args: --verbose --no-progress 'docs/**/*.md' 'docs/**/*.html'
+        token: ${{ secrets.LANCEDB_RELEASE_TOKEN }}
+        output: ../lychee/results.md
+        fail: true
+      continue-on-error: false
   test-python:
     name: Test doc python code
     runs-on: ${{ matrix.os }}
@@ -94,25 +120,4 @@ jobs:
       run: |
         cd docs/test/node
         for d in *; do cd "$d"; echo "$d".js; node "$d".js; cd ..; done
-  test-links:
-    name: Broken Link Checker
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        node-version: [ "18" ]
-        os: ["ubuntu-22.04"]
-    steps:
-    - name: Broken Link Checker
-      uses: lycheeverse/lychee-action@v1.9.0
-      with:
-        # Check all markdown and html files in repo. Ignores the following status codes to reduce false positives:
-        #   - 403(OpenVINO, "forbidden")
-        #   - 429(Instagram, "too many requests")
-        #   - 500(Zenodo, "cached")
-        #   - 502(Zenodo, "bad gateway")
-        #   - 999(LinkedIn, "unknown status code")
-        args: --verbose --no-progress 'docs/**/*.md' 'docs/**/*.html'
-        token: ${{ secrets.LANCEDB_RELEASE_TOKEN }}
-        output: ../lychee/results.md
-        fail: true
-      continue-on-error: false
+
