@@ -30,11 +30,15 @@ jobs:
         node-version: [ "18" ]
         os: ["ubuntu-22.04"]
     steps:
+    - name: Install docs dependencies
+      working-directory: python
+      run: |
+        python -m pip install -r ../docs/requirements.txt
     - name: Build docs
       run: |
           PYTHONPATH=. mkdocs build -f docs/mkdocs.yml
 
-    - name: Broken Link Checker
+    - name: Broken Link Check
       uses: lycheeverse/lychee-action@v1.9.0
       with:
         # Check all markdown and html files in repo. Ignores the following status codes to reduce false positives:
