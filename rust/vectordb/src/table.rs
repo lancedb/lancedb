@@ -140,9 +140,12 @@ pub trait Table: std::fmt::Display + Send + Sync {
 
     /// Create a generic Query Builder.
     ///
+    /// When appropriate, various indices and statistics based pruning will be used to
+    /// accelerate the query.
+    ///
     /// # Examples
     ///
-    /// Run a vector search (ANN) query.
+    /// ## Run a vector search (ANN) query.
     ///
     /// ```no_run
     /// # use arrow_array::RecordBatch;
@@ -152,6 +155,38 @@ pub trait Table: std::fmt::Display + Send + Sync {
     /// let stream = tbl.query().nearest_to(&[1.0, 2.0, 3.0])
     ///     .refine_factor(5)
     ///     .nprobes(10)
+    ///     .into_stream()
+    ///     .await
+    ///     .unwrap();
+    /// let batches: Vec<RecordBatch> = stream.try_collect().await.unwrap();
+    /// # });
+    /// ```
+    ///
+    /// ## Run a SQL-style filter
+    /// ```no_run
+    /// # use arrow_array::RecordBatch;
+    /// # use futures::TryStreamExt;
+    /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+    /// # let tbl = vectordb::table::NativeTable::open("/tmp/tbl").await.unwrap();
+    /// let stream = tbl
+    ///     .query()
+    ///     .filter("id > 5")
+    ///     .limit(1000)
+    ///     .into_stream()
+    ///     .await
+    ///     .unwrap();
+    /// let batches: Vec<RecordBatch> = stream.try_collect().await.unwrap();
+    /// # });
+    /// ```
+    ///
+    /// ## Run a full scan query.
+    /// ```no_run
+    /// # use arrow_array::RecordBatch;
+    /// # use futures::TryStreamExt;
+    /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+    /// # let tbl = vectordb::table::NativeTable::open("/tmp/tbl").await.unwrap();
+    /// let stream = tbl
+    ///     .query()
     ///     .into_stream()
     ///     .await
     ///     .unwrap();
