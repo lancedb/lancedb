@@ -46,8 +46,8 @@
 //! #### Connect to a database.
 //!
 //! ```rust
-//! use vectordb::{connection::{Database, Connection}, WriteMode};
-//! use arrow_schema::{Field, Schema};
+//! use vectordb::connection::Database;
+//! # use arrow_schema::{Field, Schema};
 //! # tokio::runtime::Runtime::new().unwrap().block_on(async {
 //! let db = Database::connect("data/sample-lancedb").await.unwrap();
 //! # });
@@ -55,7 +55,7 @@
 //!
 //! LanceDB uses [arrow-rs](https://github.com/apache/arrow-rs) to define schema, data types and array itself.
 //! It treats [`FixedSizeList<Float16/Float32>`](https://docs.rs/arrow/latest/arrow/array/struct.FixedSizeListArray.html)
-//! columns as vectors.
+//! columns as vector columns.
 //!
 //! #### Create a table
 //!
@@ -90,6 +90,27 @@
 //! # });
 //! ```
 //!
+//! #### Create vector index (IVF_PQ)
+//!
+//! ```no_run
+//! # use std::sync::Arc;
+//! # use vectordb::connection::{Database, Connection};
+//! # use arrow_array::{FixedSizeListArray, types::Float32Type, RecordBatch,
+//! #   RecordBatchIterator, Int32Array};
+//! # use arrow_schema::{Schema, Field, DataType};
+//! # tokio::runtime::Runtime::new().unwrap().block_on(async {
+//! # let tmpdir = tempfile::tempdir().unwrap();
+//! # let db = Database::connect(tmpdir.path().to_str().unwrap()).await.unwrap();
+//! # let tbl = db.open_table("idx_test").await.unwrap();
+//! tbl.create_index(&["vector"])
+//!     .ivf_pq()
+//!     .num_partitions(256)
+//!     .build()
+//!     .await
+//!     .unwrap();
+//! # });
+//! ```
+//!
 //! #### Open table and run search
 //!
 //! ```rust
@@ -120,7 +141,7 @@
 //! let table = db.open_table("my_table").await.unwrap();
 //! let results = table
 //!     .search(&[1.0; 128])
-//!     .execute()
+//!     .execute_stream()
 //!     .await
 //!     .unwrap()
 //!     .try_collect::<Vec<_>>()
