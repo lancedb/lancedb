@@ -166,9 +166,9 @@ class BedRockText(TextEmbeddingFunction):
                 return response_body.get("embedding")
         except Exception as e:
             help_txt = """
-                Note:
-                    Please check your AWS credentials and ensure that you have access.
-                    You can set up aws credentials using `aws configure` command and
+                boto3 client failed to invoke the bedrock API. In case of AWS credentials error:
+                - Please check your AWS credentials and ensure that you have access.
+                   You can set up aws credentials using `aws configure` command and
                     verify by running `aws sts get-caller-identity` in your terminal.
                 """
             raise ValueError(f"Error raised by boto3 client: {e}. \n {help_txt}")
