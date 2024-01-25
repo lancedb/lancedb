@@ -141,7 +141,7 @@
 //! let table = db.open_table("my_table").await.unwrap();
 //! let results = table
 //!     .search(&[1.0; 128])
-//!     .into_stream()
+//!     .execute_stream()
 //!     .await
 //!     .unwrap()
 //!     .try_collect::<Vec<_>>()

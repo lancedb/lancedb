@@ -155,7 +155,7 @@ pub trait Table: std::fmt::Display + Send + Sync {
     /// let stream = tbl.query().nearest_to(&[1.0, 2.0, 3.0])
     ///     .refine_factor(5)
     ///     .nprobes(10)
-    ///     .into_stream()
+    ///     .execute_stream()
     ///     .await
     ///     .unwrap();
     /// let batches: Vec<RecordBatch> = stream.try_collect().await.unwrap();
@@ -172,7 +172,7 @@ pub trait Table: std::fmt::Display + Send + Sync {
     ///     .query()
     ///     .filter("id > 5")
     ///     .limit(1000)
-    ///     .into_stream()
+    ///     .execute_stream()
     ///     .await
     ///     .unwrap();
     /// let batches: Vec<RecordBatch> = stream.try_collect().await.unwrap();
@@ -187,7 +187,7 @@ pub trait Table: std::fmt::Display + Send + Sync {
     /// # let tbl = vectordb::table::NativeTable::open("/tmp/tbl").await.unwrap();
     /// let stream = tbl
     ///     .query()
-    ///     .into_stream()
+    ///     .execute_stream()
     ///     .await
     ///     .unwrap();
     /// let batches: Vec<RecordBatch> = stream.try_collect().await.unwrap();
