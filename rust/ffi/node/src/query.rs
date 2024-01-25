@@ -88,7 +88,7 @@ impl JsQuery {
         builder = builder.prefilter(prefilter);
 
         rt.spawn(async move {
-            let record_batch_stream = builder.execute();
+            let record_batch_stream = builder.into_stream();
             let results = record_batch_stream
                 .and_then(|stream| {
                     stream
