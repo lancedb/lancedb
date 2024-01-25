@@ -66,7 +66,7 @@ export class Query implements AsyncIterable<RecordBatch> {
   /**
    * Set the query vector.
    */
-  vector(vector: number[]): Query {
+  nearest_to(vector: number[]): Query {
     this._vector = Float32Array.from(vector);
     return this;
   }

@@ -32,17 +32,13 @@ impl Query {
     }
 
     #[napi]
-    pub fn vector(&mut self, vector: Float32Array) {
+    pub fn nearest_to(&mut self, vector: Float32Array) {
         let inn = self.inner.clone().nearest_to(&vector);
         self.inner = inn;
     }
 
     #[napi]
-    pub fn to_arrow(&self) -> napi::Result<()> {
-        // let buf = self.inner.to_arrow().map_err(|e| {
-        //     napi::Error::from_reason(format!("Failed to convert query to arrow: {}", e))
-        // })?;
-        // Ok(buf)
+    pub fn execute_stream(&self) -> napi::Result<()> {
         todo!()
     }
 }

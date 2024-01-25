@@ -95,11 +95,25 @@ export class Table {
     return builder;
   }
 
-  search(vector?: number[]): Query {
-    const q = new Query(this);
-    if (vector !== undefined) {
-      q.vector(vector);
-    }
+  /**
+   * Create a generic {@link Query} Builder.
+   *
+   * When appropriate, various indices and statistics based pruning will be used to
+   * accelerate the query.
+   *
+   * @returns {@link Query}
+   */
+  query(): Query {
+    return new Query(this);
+  }
+
+  /** Search the table with a given query vector.
+   *
+   * This is a convenience method for preparing an ANN {@link Query}.
+   */
+  search(vector: number[]): Query {
+    const q = this.query();
+    q.nearest_to(vector);
     return q;
   }
 }
