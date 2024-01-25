@@ -55,7 +55,25 @@ describe("Test creating index", () => {
     // TODO: check index type.
   });
 
-  test("create vector index", async () => {
+  test("no vector column available", async () => {
+    const db = await connect(tmpDir);
+    const tbl = await db.createTable(
+      "no_vec",
+      makeArrowTable([
+        { id: 1, val: 2 },
+        { id: 2, val: 3 },
+      ])
+    );
+    await expect(tbl.createIndex().build()).rejects.toThrow(
+      "No vector column found"
+    );
+
+    await tbl.createIndex("val").build();
+    const indexDir = path.join(tmpDir, "no_vec.lance", "_indices");
+    expect(fs.readdirSync(indexDir)).toHaveLength(1);
+  });
+
+  test("create scalar index", async () => {
     const db = await connect(tmpDir);
     const data = makeArrowTable(
       Array(300)
