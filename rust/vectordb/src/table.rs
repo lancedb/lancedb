@@ -362,7 +362,7 @@ impl NativeTable {
     }
 
     pub fn filter(&self, expr: String) -> Query {
-        Query::new(self.clone_inner_dataset().into()).filter(Some(expr))
+        Query::new(self.clone_inner_dataset().into()).filter(expr)
     }
 
     /// Returns the number of rows in this Table
@@ -960,7 +960,6 @@ mod tests {
             }
         }
     }
-
 
     #[derive(Default, Debug)]
     struct NoOpCacheWrapper {

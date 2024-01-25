@@ -15,11 +15,15 @@
 use std::sync::Arc;
 
 use arrow_array::Float32Array;
+use arrow_schema::Schema;
 use lance::dataset::scanner::{DatasetRecordBatchStream, Scanner};
 use lance::dataset::Dataset;
 use lance_linalg::distance::MetricType;
 
 use crate::error::Result;
+use crate::utils::default_vector_column;
+
+const DEFAULT_TOP_K: usize = 10;
 
 /// A builder for nearest neighbor queries for LanceDB.
 #[derive(Clone)]
@@ -36,7 +40,9 @@ pub struct Query {
     refine_factor: Option<u32>,
     metric_type: Option<MetricType>,
 
+    /// limit the number of rows to return.
     limit: Option<usize>,
+    /// Apply filter to the returned rows.
     filter: Option<String>,
     /// Select column projection.
     select: Option<Vec<String>>,
@@ -52,11 +58,8 @@ impl Query {
     ///
     /// # Arguments
     ///
-    /// * `dataset` - The table / dataset the query will be run against.
+    /// * `dataset` - Lance dataset.
     ///
-    /// # Returns
-    ///
-    /// * A [Query] object.
     pub(crate) fn new(dataset: Arc<Dataset>) -> Self {
         Query {
             dataset,
@@ -83,7 +86,14 @@ impl Query {
 
         if let Some(query) = self.query_vector.as_ref() {
             // If there is a vector query, default to limit=10 if unspecified
-            scanner.nearest(&self.column, query, self.limit.unwrap_or(10))?;
+            let column = if let Some(col) = self.column.as_ref() {
+                col.clone()
+            } else {
+                // Infer a vector column with the same dimension of the query vector.
+                let arrow_schema = Schema::from(self.dataset.schema());
+                default_vector_column(&arrow_schema, Some(query.len() as i32))?
+            };
+            scanner.nearest(&column, query, self.limit.unwrap_or(DEFAULT_TOP_K))?;
         } else {
             // If there is no vector query, it's ok to not have a limit
             scanner.limit(self.limit.map(|limit| limit as i64), None)?;
@@ -105,7 +115,7 @@ impl Query {
     ///
     /// * `column` - The column name
     pub fn column(mut self, column: &str) -> Query {
-        self.column = column.into();
+        self.column = Some(column.to_string());
         self
     }
 
@@ -144,8 +154,8 @@ impl Query {
     /// # Arguments
     ///
     /// * `refine_factor` - The refine factor to use.
-    pub fn refine_factor(mut self, refine_factor: Option<u32>) -> Query {
-        self.refine_factor = refine_factor;
+    pub fn refine_factor(mut self, refine_factor: u32) -> Query {
+        self.refine_factor = Some(refine_factor);
         self
     }
 
@@ -154,8 +164,8 @@ impl Query {
     /// # Arguments
     ///
     /// * `metric_type` - The distance metric to use. By default [MetricType::L2] is used.
-    pub fn metric_type(mut self, metric_type: Option<MetricType>) -> Query {
-        self.metric_type = metric_type;
+    pub fn metric_type(mut self, metric_type: MetricType) -> Query {
+        self.metric_type = Some(metric_type);
         self
     }
 
@@ -173,17 +183,17 @@ impl Query {
     ///
     /// # Arguments
     ///
-    /// * `filter` -  value A filter in the same format used by a sql WHERE clause.
-    pub fn filter(mut self, filter: Option<String>) -> Query {
-        self.filter = filter;
+    /// * `filter` - SQL filter
+    pub fn filter(mut self, filter: impl AsRef<str>) -> Query {
+        self.filter = Some(filter.as_ref().to_string());
         self
     }
 
     /// Return only the specified columns.
     ///
     /// Only select the specified columns. If not specified, all columns will be returned.
-    pub fn select(mut self, columns: Option<Vec<String>>) -> Query {
-        self.select = columns;
+    pub fn select(mut self, columns: &[impl AsRef<String>]) -> Query {
+        self.select = Some(columns.iter().map(|c| c.as_ref().to_string()).collect());
         self
     }
 
@@ -227,8 +237,8 @@ mod tests {
             .limit(100)
             .nprobes(1000)
             .use_index(true)
-            .metric_type(Some(MetricType::Cosine))
-            .refine_factor(Some(999));
+            .metric_type(MetricType::Cosine)
+            .refine_factor(999);
 
         assert_eq!(query.query_vector.unwrap(), new_vector);
         assert_eq!(query.limit.unwrap(), 100);
@@ -244,11 +254,7 @@ mod tests {
         let ds = Arc::new(Dataset::write(batches, "memory://foo", None).await.unwrap());
 
         let query = Query::new(ds.clone()).query_vector(&[0.1; 4]);
-        let result = query
-            .limit(10)
-            .filter(Some("id % 2 == 0".to_string()))
-            .execute()
-            .await;
+        let result = query.limit(10).filter("id % 2 == 0").execute().await;
         let mut stream = result.expect("should have result");
         // should only have one batch
         while let Some(batch) = stream.next().await {
@@ -259,7 +265,7 @@ mod tests {
         let query = Query::new(ds).query_vector(&[0.1; 4]);
         let result = query
             .limit(10)
-            .filter(Some("id % 2 == 0".to_string()))
+            .filter(String::from("id % 2 == 0")) // Work with String too
             .prefilter(true)
             .execute()
             .await;
@@ -278,10 +284,7 @@ mod tests {
         let ds = Arc::new(Dataset::write(batches, "memory://foo", None).await.unwrap());
 
         let query = Query::new(ds.clone());
-        let result = query
-            .filter(Some("id % 2 == 0".to_string()))
-            .execute()
-            .await;
+        let result = query.filter("id % 2 == 0").execute().await;
         let mut stream = result.expect("should have result");
         // should only have one batch
         while let Some(batch) = stream.next().await {
