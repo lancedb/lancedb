@@ -761,7 +761,8 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
 
     def limit(self, limit: int) -> LanceHybridQueryBuilder:
         """
-        Set the maximum number of results to return.
+        Set the maximum number of results to return for both vector and fts search
+        components.
 
         Parameters
         ----------
@@ -779,7 +780,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
 
     def select(self, columns: list) -> LanceHybridQueryBuilder:
         """
-        Set the columns to return.
+        Set the columns to return for both vector and fts search.
 
         Parameters
         ----------
@@ -797,7 +798,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
 
     def where(self, where: str, prefilter: bool = False) -> LanceHybridQueryBuilder:
         """
-        Set the where clause.
+        Set the where clause for both vector and fts search.
 
         Parameters
         ----------
@@ -822,7 +823,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
 
     def metric(self, metric: Literal["L2", "cosine"]) -> LanceHybridQueryBuilder:
         """
-        Set the distance metric to use.
+        Set the distance metric to use for vector search.
 
         Parameters
         ----------
@@ -839,7 +840,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
 
     def nprobes(self, nprobes: int) -> LanceHybridQueryBuilder:
         """
-        Set the number of probes to use.
+        Set the number of probes to use for vector search.
 
         Higher values will yield better recall (more likely to find vectors if
         they exist) at the expense of latency.
@@ -859,7 +860,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
 
     def refine_factor(self, refine_factor: int) -> LanceHybridQueryBuilder:
         """
-        Refine the results by reading extra elements and re-ranking them in memory.
+        Refine the vector search results by reading extra elements and re-ranking them in memory.
 
         Parameters
         ----------
