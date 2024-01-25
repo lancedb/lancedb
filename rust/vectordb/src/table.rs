@@ -120,7 +120,7 @@ pub trait Table: std::fmt::Display + Send + Sync {
     /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
     /// let tmpdir = tempfile::tempdir().unwrap();
     /// let db = Database::connect(tmpdir.path().to_str().unwrap()).await.unwrap();
-    /// # let tbl = db.open_table("delete_test").await.unwrap();
+    /// # let tbl = db.open_table("idx_test").await.unwrap();
     /// tbl.create_index(&["vector"])
     ///     .ivf_pq()
     ///     .num_partitions(256)
@@ -132,11 +132,67 @@ pub trait Table: std::fmt::Display + Send + Sync {
     fn create_index(&self, column: &[&str]) -> IndexBuilder;
 
     /// Search the table with a given query vector.
+    ///
+    /// This is a convenience method for preparing an ANN query.
     fn search(&self, query: &[f32]) -> Query {
-        self.query().query_vector(query)
+        self.query().nearest_to(query)
     }
 
-    /// Create a Query builder.
+    /// Create a generic [`Query`] Builder.
+    ///
+    /// When appropriate, various indices and statistics based pruning will be used to
+    /// accelerate the query.
+    ///
+    /// # Examples
+    ///
+    /// ## Run a vector search (ANN) query.
+    ///
+    /// ```no_run
+    /// # use arrow_array::RecordBatch;
+    /// # use futures::TryStreamExt;
+    /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+    /// # let tbl = vectordb::table::NativeTable::open("/tmp/tbl").await.unwrap();
+    /// let stream = tbl.query().nearest_to(&[1.0, 2.0, 3.0])
+    ///     .refine_factor(5)
+    ///     .nprobes(10)
+    ///     .execute_stream()
+    ///     .await
+    ///     .unwrap();
+    /// let batches: Vec<RecordBatch> = stream.try_collect().await.unwrap();
+    /// # });
+    /// ```
+    ///
+    /// ## Run a SQL-style filter
+    /// ```no_run
+    /// # use arrow_array::RecordBatch;
+    /// # use futures::TryStreamExt;
+    /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+    /// # let tbl = vectordb::table::NativeTable::open("/tmp/tbl").await.unwrap();
+    /// let stream = tbl
+    ///     .query()
+    ///     .filter("id > 5")
+    ///     .limit(1000)
+    ///     .execute_stream()
+    ///     .await
+    ///     .unwrap();
+    /// let batches: Vec<RecordBatch> = stream.try_collect().await.unwrap();
+    /// # });
+    /// ```
+    ///
+    /// ## Run a full scan query.
+    /// ```no_run
+    /// # use arrow_array::RecordBatch;
+    /// # use futures::TryStreamExt;
+    /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+    /// # let tbl = vectordb::table::NativeTable::open("/tmp/tbl").await.unwrap();
+    /// let stream = tbl
+    ///     .query()
+    ///     .execute_stream()
+    ///     .await
+    ///     .unwrap();
+    /// let batches: Vec<RecordBatch> = stream.try_collect().await.unwrap();
+    /// # });
+    /// ```
     fn query(&self) -> Query;
 }
 
@@ -362,7 +418,7 @@ impl NativeTable {
     }
 
     pub fn filter(&self, expr: String) -> Query {
-        Query::new(self.clone_inner_dataset().into()).filter(Some(expr))
+        Query::new(self.clone_inner_dataset().into()).filter(expr)
     }
 
     /// Returns the number of rows in this Table
@@ -959,23 +1015,6 @@ mod tests {
                 assert_eq!(v, Some(1.0));
             }
         }
-    }
-
-    #[tokio::test]
-    async fn test_search() {
-        let tmp_dir = tempdir().unwrap();
-        let dataset_path = tmp_dir.path().join("test.lance");
-        let uri = dataset_path.to_str().unwrap();
-
-        let batches = make_test_batches();
-        Dataset::write(batches, dataset_path.to_str().unwrap(), None)
-            .await
-            .unwrap();
-
-        let table = NativeTable::open(uri).await.unwrap();
-
-        let query = table.search(&[0.1, 0.2]);
-        assert_eq!(&[0.1, 0.2], query.query_vector.unwrap().values());
     }
 
     #[derive(Default, Debug)]
