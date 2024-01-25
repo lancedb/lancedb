@@ -17,6 +17,7 @@ napi = { version = "2.14", default-features = false, features = [
 napi-derive = "2.14"
 vectordb = { path = "../rust/vectordb" }
 lance.workspace = true
+lance-linalg.workspace = true
 
 [build-dependencies]
 napi-build = "2.1"

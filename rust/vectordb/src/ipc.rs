@@ -17,14 +17,14 @@
 use std::io::Cursor;
 
 use arrow_array::RecordBatchReader;
-use arrow_ipc::reader::FileReader;
+use arrow_ipc::reader::StreamReader;
 
 use crate::Result;
 
 /// Convert a Arrow IPC file to a batch reader
 pub fn ipc_file_to_batches(buf: Vec<u8>) -> Result<impl RecordBatchReader> {
     let buf_reader = Cursor::new(buf);
-    let reader = FileReader::try_new(buf_reader, None)?;
+    let reader = StreamReader::try_new(buf_reader, None)?;
     Ok(reader)
 }
 
@@ -33,7 +33,7 @@ mod tests {
 
     use super::*;
     use arrow_array::{Float32Array, Int64Array, RecordBatch};
-    use arrow_ipc::writer::FileWriter;
+    use arrow_ipc::writer::StreamWriter;
     use arrow_schema::{DataType, Field, Schema};
     use std::sync::Arc;
 
@@ -55,7 +55,7 @@ mod tests {
     fn test_ipc_file_to_batches() -> Result<()> {
         let batch = create_record_batch()?;
 
-        let mut writer = FileWriter::try_new(vec![], &batch.schema())?;
+        let mut writer = StreamWriter::try_new(vec![], &batch.schema())?;
         writer.write(&batch)?;
         writer.finish()?;
 
