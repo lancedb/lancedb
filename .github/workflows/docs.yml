@@ -64,6 +64,26 @@ jobs:
       - name: Build docs
         run: |
           PYTHONPATH=. mkdocs build -f docs/mkdocs.yml
+      - name: Broken Link Checker
+        uses: lycheeverse/lychee-action@v1.9.0
+        with:
+          # Check all markdown and html files in repo. Ignores the following status codes to reduce false positives:
+          #   - 403(OpenVINO, "forbidden")
+          #   - 429(Instagram, "too many requests")
+          #   - 500(Zenodo, "cached")
+          #   - 502(Zenodo, "bad gateway")
+          #   - 999(LinkedIn, "unknown status code")
+          args: |
+            --accept 403,429,500,502,999
+            --exclude-loopback
+            --exclude "https?://(www\.)?(github\.com|linkedin\.com|twitter\.com|instagram\.com|kaggle\.com|fonts\.gstatic\.com|url\.com)"
+            --scheme https
+            "./**/*.md"
+            "./**/*.html"
+          token: ${{ secrets.LANCEDB_RELEASE_TOKEN }}
+          output: ../lychee/results.md
+          fail: true
+        continue-on-error: false
       - name: Setup Pages
         uses: actions/configure-pages@v2
       - name: Upload artifact
