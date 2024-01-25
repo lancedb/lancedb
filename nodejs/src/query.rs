@@ -33,7 +33,7 @@ impl Query {
 
     #[napi]
     pub fn vector(&mut self, vector: Float32Array) {
-        let inn = self.inner.clone().query_vector(&vector);
+        let inn = self.inner.clone().nearest_to(&vector);
         self.inner = inn;
     }
 

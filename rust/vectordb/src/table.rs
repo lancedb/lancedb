@@ -132,11 +132,32 @@ pub trait Table: std::fmt::Display + Send + Sync {
     fn create_index(&self, column: &[&str]) -> IndexBuilder;
 
     /// Search the table with a given query vector.
+    ///
+    /// This is a convenience method for preparing an ANN query.
     fn search(&self, query: &[f32]) -> Query {
-        self.query().query_vector(query)
+        self.query().nearest_to(query)
     }
 
-    /// Create a Query builder.
+    /// Create a generic Query Builder.
+    ///
+    /// # Examples
+    ///
+    /// Run a vector search (ANN) query.
+    ///
+    /// ```no_run
+    /// # use arrow_array::RecordBatch;
+    /// # use futures::TryStreamExt;
+    /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+    /// # let tbl = vectordb::table::NativeTable::open("/tmp/tbl").await.unwrap();
+    /// let stream = tbl.query().nearest_to(&[1.0, 2.0, 3.0])
+    ///     .refine_factor(5)
+    ///     .nprobes(10)
+    ///     .into_stream()
+    ///     .await
+    ///     .unwrap();
+    /// let batches: Vec<RecordBatch> = stream.try_collect().await.unwrap();
+    /// # });
+    /// ```
     fn query(&self) -> Query;
 }
 

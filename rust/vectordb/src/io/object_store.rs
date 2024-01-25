@@ -377,7 +377,7 @@ mod test {
         let q = t
             .search(&[0.1, 0.1, 0.1, 0.1])
             .limit(10)
-            .execute()
+            .into_stream()
             .await
             .unwrap();
 

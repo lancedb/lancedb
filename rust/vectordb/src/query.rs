@@ -76,12 +76,12 @@ impl Query {
         }
     }
 
-    /// Execute the queries and return its results.
+    /// Convert the query plan to a [`DatasetRecordBatchStream`]
     ///
     /// # Returns
     ///
     /// * A [DatasetRecordBatchStream] with the query's results.
-    pub async fn execute(&self) -> Result<DatasetRecordBatchStream> {
+    pub async fn into_stream(&self) -> Result<DatasetRecordBatchStream> {
         let mut scanner: Scanner = self.dataset.scan();
 
         if let Some(query) = self.query_vector.as_ref() {
@@ -129,12 +129,12 @@ impl Query {
         self
     }
 
-    /// Set the vector used for this query.
+    /// Find the nearest vectors to the given query vector.
     ///
     /// # Arguments
     ///
     /// * `vector` - The vector that will be used for search.
-    pub fn query_vector(mut self, vector: &[f32]) -> Self {
+    pub fn nearest_to(mut self, vector: &[f32]) -> Self {
         self.query_vector = Some(Float32Array::from(vector.to_vec()));
         self
     }
@@ -227,13 +227,13 @@ mod tests {
         let ds = Dataset::write(batches, "memory://foo", None).await.unwrap();
 
         let vector = Some(Float32Array::from_iter_values([0.1, 0.2]));
-        let query = Query::new(Arc::new(ds)).query_vector(&[0.1, 0.2]);
+        let query = Query::new(Arc::new(ds)).nearest_to(&[0.1, 0.2]);
         assert_eq!(query.query_vector, vector);
 
         let new_vector = Float32Array::from_iter_values([9.8, 8.7]);
 
         let query = query
-            .query_vector(&[9.8, 8.7])
+            .nearest_to(&[9.8, 8.7])
             .limit(100)
             .nprobes(1000)
             .use_index(true)
@@ -253,8 +253,8 @@ mod tests {
         let batches = make_non_empty_batches();
         let ds = Arc::new(Dataset::write(batches, "memory://foo", None).await.unwrap());
 
-        let query = Query::new(ds.clone()).query_vector(&[0.1; 4]);
-        let result = query.limit(10).filter("id % 2 == 0").execute().await;
+        let query = Query::new(ds.clone()).nearest_to(&[0.1; 4]);
+        let result = query.limit(10).filter("id % 2 == 0").into_stream().await;
         let mut stream = result.expect("should have result");
         // should only have one batch
         while let Some(batch) = stream.next().await {
@@ -262,12 +262,12 @@ mod tests {
             assert!(batch.expect("should be Ok").num_rows() < 10);
         }
 
-        let query = Query::new(ds).query_vector(&[0.1; 4]);
+        let query = Query::new(ds).nearest_to(&[0.1; 4]);
         let result = query
             .limit(10)
             .filter(String::from("id % 2 == 0")) // Work with String too
             .prefilter(true)
-            .execute()
+            .into_stream()
             .await;
         let mut stream = result.expect("should have result");
         // should only have one batch
@@ -284,7 +284,7 @@ mod tests {
         let ds = Arc::new(Dataset::write(batches, "memory://foo", None).await.unwrap());
 
         let query = Query::new(ds.clone());
-        let result = query.filter("id % 2 == 0").execute().await;
+        let result = query.filter("id % 2 == 0").into_stream().await;
         let mut stream = result.expect("should have result");
         // should only have one batch
         while let Some(batch) = stream.next().await {

@@ -59,7 +59,7 @@ impl JsQuery {
         let query_vector = query_obj.get_opt::<JsArray, _, _>(&mut cx, "_queryVector")?;
         let mut builder = table.query();
         if let Some(query) = query_vector.map(|q| convert::js_array_to_vec(q.deref(), &mut cx)) {
-            builder = builder.query_vector(&query);
+            builder = builder.nearest_to(&query);
             if let Some(metric_type) = query_obj
                 .get_opt::<JsString, _, _>(&mut cx, "_metricType")?
                 .map(|s| s.value(&mut cx))
