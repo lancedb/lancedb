@@ -760,28 +760,116 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         return self
 
     def limit(self, limit: int) -> LanceHybridQueryBuilder:
+        """
+        Set the maximum number of results to return.
+
+        Parameters
+        ----------
+        limit: int
+            The maximum number of results to return.
+
+        Returns
+        -------
+        LanceHybridQueryBuilder
+            The LanceHybridQueryBuilder object.
+        """
         self._vector_query.limit(limit)
         self._fts_query.limit(limit)
         return self
 
     def select(self, columns: list) -> LanceHybridQueryBuilder:
+        """
+        Set the columns to return.
+
+        Parameters
+        ----------
+        columns: list
+            The columns to return.
+
+        Returns
+        -------
+        LanceHybridQueryBuilder
+            The LanceHybridQueryBuilder object.
+        """
         self._vector_query.select(columns)
         self._fts_query.select(columns)
         return self
 
     def where(self, where: str, prefilter: bool = False) -> LanceHybridQueryBuilder:
+        """
+        Set the where clause.
+
+        Parameters
+        ----------
+        where: str
+            The where clause which is a valid SQL where clause. See
+            `Lance filter pushdown <https://lancedb.github.io/lance/read_and_write.html#filter-push-down>`_
+            for valid SQL expressions.
+
+        prefilter: bool, default False
+            If True, apply the filter before vector search, otherwise the
+            filter is applied on the result of vector search.
+
+        Returns
+        -------
+        LanceHybridQueryBuilder
+            The LanceHybridQueryBuilder object.
+        """
+
         self._vector_query.where(where, prefilter=prefilter)
         self._fts_query.where(where)
         return self
 
     def metric(self, metric: Literal["L2", "cosine"]) -> LanceHybridQueryBuilder:
+        """
+        Set the distance metric to use.
+
+        Parameters
+        ----------
+        metric: "L2" or "cosine"
+            The distance metric to use. By default "L2" is used.
+
+        Returns
+        -------
+        LanceHybridQueryBuilder
+            The LanceHybridQueryBuilder object.
+        """
         self._vector_query.metric(metric)
         return self
 
     def nprobes(self, nprobes: int) -> LanceHybridQueryBuilder:
+        """
+        Set the number of probes to use.
+
+        Higher values will yield better recall (more likely to find vectors if
+        they exist) at the expense of latency.
+
+        Parameters
+        ----------
+        nprobes: int
+            The number of probes to use.
+
+        Returns
+        -------
+        LanceHybridQueryBuilder
+            The LanceHybridQueryBuilder object.
+        """
         self._vector_query.nprobes(nprobes)
         return self
 
     def refine_factor(self, refine_factor: int) -> LanceHybridQueryBuilder:
+        """
+        Refine the results by reading extra elements and re-ranking them in memory.
+
+        Parameters
+        ----------
+        refine_factor: int
+            The refine factor to use.
+
+        Returns
+        -------
+        LanceHybridQueryBuilder
+            The LanceHybridQueryBuilder object.
+        """
         self._vector_query.refine_factor(refine_factor)
         return self

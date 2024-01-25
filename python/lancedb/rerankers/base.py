@@ -97,13 +97,13 @@ class Reranker(ABC):
         fts_results : pa.Table
             The results from the FTS search
         """
-        comnined = pa.concat_tables([vector_results, fts_results], promote=True)
-        row_id = comnined.column("_rowid")
+        combined = pa.concat_tables([vector_results, fts_results], promote=True)
+        row_id = combined.column("_rowid")
 
         # deduplicate
-        mask = np.full((comnined.shape[0]), False)
+        mask = np.full((combined.shape[0]), False)
         _, mask_indices = np.unique(np.array(row_id), return_index=True)
         mask[mask_indices] = True
-        combined = comnined.filter(mask=mask)
+        combined = combined.filter(mask=mask)
 
         return combined

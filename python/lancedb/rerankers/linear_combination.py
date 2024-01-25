@@ -68,8 +68,8 @@ class LinearCombinationReranker(Reranker):
 
             vi = vector_list[i]
             fj = fts_list[j]
-            # invert the fts score
-            inverted_fts_score = 1 - fj["score"]
+            # invert the fts score from relevance to distance
+            inverted_fts_score = self._invert_score([fj["score"]])
             if vi["_rowid"] == fj["_rowid"]:
                 vi["_relevance_score"] = self._combine_score(
                     vi["_distance"], inverted_fts_score
@@ -109,3 +109,7 @@ class LinearCombinationReranker(Reranker):
     def _combine_score(self, score1, score2):
         # these scores represent distance
         return 1 - (self.weight * score1 + (1 - self.weight) * score2)
+
+    def _invert_score(self, scores: list[float]):
+        # Invert the scores between relevance and distance
+        return 1 - scores
