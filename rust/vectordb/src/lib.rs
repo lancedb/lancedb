@@ -90,6 +90,27 @@
 //! # });
 //! ```
 //!
+//! #### Create vector index (IVF_PQ)
+//!
+//! ```no_run
+//! # use std::sync::Arc;
+//! # use vectordb::connection::{Database, Connection};
+//! # use arrow_array::{FixedSizeListArray, types::Float32Type, RecordBatch,
+//! #   RecordBatchIterator, Int32Array};
+//! # use arrow_schema::{Schema, Field, DataType};
+//! # tokio::runtime::Runtime::new().unwrap().block_on(async {
+//! # let tmpdir = tempfile::tempdir().unwrap();
+//! # let db = Database::connect(tmpdir.path().to_str().unwrap()).await.unwrap();
+//! # let tbl = db.open_table("idx_test").await.unwrap();
+//! tbl.create_index(&["vector"])
+//!     .ivf_pq()
+//!     .num_partitions(256)
+//!     .build()
+//!     .await
+//!     .unwrap();
+//! # });
+//! ```
+//!
 //! #### Open table and run search
 //!
 //! ```rust

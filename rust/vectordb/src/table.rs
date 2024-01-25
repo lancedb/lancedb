@@ -120,7 +120,7 @@ pub trait Table: std::fmt::Display + Send + Sync {
     /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
     /// let tmpdir = tempfile::tempdir().unwrap();
     /// let db = Database::connect(tmpdir.path().to_str().unwrap()).await.unwrap();
-    /// # let tbl = db.open_table("delete_test").await.unwrap();
+    /// # let tbl = db.open_table("idx_test").await.unwrap();
     /// tbl.create_index(&["vector"])
     ///     .ivf_pq()
     ///     .num_partitions(256)
@@ -138,7 +138,7 @@ pub trait Table: std::fmt::Display + Send + Sync {
         self.query().nearest_to(query)
     }
 
-    /// Create a generic Query Builder.
+    /// Create a generic [`Query`] Builder.
     ///
     /// When appropriate, various indices and statistics based pruning will be used to
     /// accelerate the query.
