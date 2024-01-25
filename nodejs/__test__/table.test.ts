@@ -22,16 +22,19 @@ import { makeArrowTable } from "../dist/arrow";
 
 describe("Test creating index", () => {
   let tmpDir: string;
+  const schema = new Schema([
+    new Field("id", new Int32(), true),
+    new Field("vec", new FixedSizeList(32, new Field("item", new Float32()))),
+  ]);
 
   beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "test-open"));
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "index-"));
   });
 
   test("create vector index with no column", async () => {
     const db = await connect(tmpDir);
-    const start = Date.now();
     const data = makeArrowTable(
-      Array(200)
+      Array(300)
         .fill(1)
         .map((_, i) => ({
           id: i,
@@ -40,18 +43,39 @@ describe("Test creating index", () => {
             .map(() => Math.random()),
         })),
       {
-        schema: new Schema([
-          new Field("id", new Int32(), true),
-          new Field(
-            "vec",
-            new FixedSizeList(32, new Field("item", new Float32()))
-          ),
-        ]),
+        schema,
       }
     );
     const tbl = await db.createTable("test", data);
-    await tbl.createIndex().ivf_pq({ num_partitions: 2, num_sub_vectors: 2 });
+    await tbl.createIndex().build();
+
+    // check index directory
+    const indexDir = path.join(tmpDir, "test.lance", "_indices");
+    expect(fs.readdirSync(indexDir)).toHaveLength(1);
+    // TODO: check index type.
   });
 
-  test("create vector index", async () => {});
+  test("create vector index", async () => {
+    const db = await connect(tmpDir);
+    const data = makeArrowTable(
+      Array(300)
+        .fill(1)
+        .map((_, i) => ({
+          id: i,
+          vec: Array(32)
+            .fill(1)
+            .map(() => Math.random()),
+        })),
+      {
+        schema,
+      }
+    );
+    const tbl = await db.createTable("test", data);
+    await tbl.createIndex("id").build();
+
+    // check index directory
+    const indexDir = path.join(tmpDir, "test.lance", "_indices");
+    expect(fs.readdirSync(indexDir)).toHaveLength(1);
+    // Check index type.
+  });
 });
