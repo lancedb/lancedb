@@ -46,8 +46,8 @@
 //! #### Connect to a database.
 //!
 //! ```rust
-//! use vectordb::{connection::{Database, Connection}, WriteMode};
-//! use arrow_schema::{Field, Schema};
+//! use vectordb::connection::Database;
+//! # use arrow_schema::{Field, Schema};
 //! # tokio::runtime::Runtime::new().unwrap().block_on(async {
 //! let db = Database::connect("data/sample-lancedb").await.unwrap();
 //! # });
@@ -55,7 +55,7 @@
 //!
 //! LanceDB uses [arrow-rs](https://github.com/apache/arrow-rs) to define schema, data types and array itself.
 //! It treats [`FixedSizeList<Float16/Float32>`](https://docs.rs/arrow/latest/arrow/array/struct.FixedSizeListArray.html)
-//! columns as vectors.
+//! columns as vector columns.
 //!
 //! #### Create a table
 //!
