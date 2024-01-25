@@ -76,6 +76,6 @@ describe("Test creating index", () => {
     // check index directory
     const indexDir = path.join(tmpDir, "test.lance", "_indices");
     expect(fs.readdirSync(indexDir)).toHaveLength(1);
-    // Check index type.
+    // TODO: check index type.
   });
 });
