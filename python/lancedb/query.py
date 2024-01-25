@@ -860,7 +860,8 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
 
     def refine_factor(self, refine_factor: int) -> LanceHybridQueryBuilder:
         """
-        Refine the vector search results by reading extra elements and re-ranking them in memory.
+        Refine the vector search results by reading extra elements and
+        re-ranking them in memory.
 
         Parameters
         ----------

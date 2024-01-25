@@ -35,18 +35,23 @@ class CohereReranker(Reranker):
         column: str = "text",
         top_n: Union[int, None] = None,
         return_score="relevance",
+        api_key: Union[str, None] = None,
     ):
         super().__init__(return_score)
         self.model_name = model_name
         self.column = column
         self.top_n = top_n
+        self.api_key = api_key
 
     @cached_property
     def _client(self):
         cohere = safe_import("cohere")
-        if os.environ.get("COHERE_API_KEY") is None:
-            self.api_key_not_found_help("cohere")
-        return cohere.Client(os.environ["COHERE_API_KEY"])
+        if os.environ.get("COHERE_API_KEY") is None and self.api_key is None:
+            raise ValueError(
+                "COHERE_API_KEY not set. Either set it in your environment or \
+                pass it as `api_key` argument to the CohereReranker."
+            )
+        return cohere.Client(os.environ.get("COHERE_API_KEY") or self.api_key)
 
     def rerank_hybrid(
         self,
