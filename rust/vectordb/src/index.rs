@@ -170,13 +170,10 @@ impl IndexBuilder {
         let schema = self.table.schema();
 
         // TODO: simplify this after GH lance#1864.
-        let mut index_type = match self.index_type {
-            IndexType::Scalar => IndexType::Scalar,
-            IndexType::Vector => IndexType::Vector,
-        };
+        let mut index_type = &self.index_type;
         let columns = if self.columns.is_empty() {
             // By default we create vector index.
-            index_type = IndexType::Vector;
+            index_type = &IndexType::Vector;
             vec![default_column_for_index(&schema)?]
         } else {
             self.columns.clone()

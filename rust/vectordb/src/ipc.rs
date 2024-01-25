@@ -33,7 +33,7 @@ mod tests {
 
     use super::*;
     use arrow_array::{Float32Array, Int64Array, RecordBatch};
-    use arrow_ipc::writer::FileWriter;
+    use arrow_ipc::writer::StreamWriter;
     use arrow_schema::{DataType, Field, Schema};
     use std::sync::Arc;
 
@@ -55,7 +55,7 @@ mod tests {
     fn test_ipc_file_to_batches() -> Result<()> {
         let batch = create_record_batch()?;
 
-        let mut writer = FileWriter::try_new(vec![], &batch.schema())?;
+        let mut writer = StreamWriter::try_new(vec![], &batch.schema())?;
         writer.write(&batch)?;
         writer.finish()?;
 
