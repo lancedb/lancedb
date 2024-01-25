@@ -1,3 +1,5 @@
+from typing import List
+
 import pyarrow as pa
 
 from .base import Reranker
@@ -110,6 +112,6 @@ class LinearCombinationReranker(Reranker):
         # these scores represent distance
         return 1 - (self.weight * score1 + (1 - self.weight) * score2)
 
-    def _invert_score(self, scores: list[float]):
+    def _invert_score(self, scores: List[float]):
         # Invert the scores between relevance and distance
         return 1 - scores
