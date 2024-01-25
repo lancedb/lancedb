@@ -112,10 +112,6 @@ jobs:
         #   - 502(Zenodo, "bad gateway")
         #   - 999(LinkedIn, "unknown status code")
         args: |
-          --accept 403,429,500,502,999
-          --exclude-loopback
-          --exclude "https?://(www\.)?(github\.com|linkedin\.com|twitter\.com|instagram\.com|kaggle\.com|fonts\.gstatic\.com|url\.com)"
-          --scheme https
           "./**/*.md"
           "./**/*.html"
         token: ${{ secrets.LANCEDB_RELEASE_TOKEN }}
