@@ -114,7 +114,7 @@ impl Query {
     /// # Arguments
     ///
     /// * `column` - The column name
-    pub fn column(mut self, column: &str) -> Query {
+    pub fn column(mut self, column: &str) -> Self {
         self.column = Some(column.to_string());
         self
     }
@@ -124,7 +124,7 @@ impl Query {
     /// # Arguments
     ///
     /// * `limit` - The maximum number of results to return.
-    pub fn limit(mut self, limit: usize) -> Query {
+    pub fn limit(mut self, limit: usize) -> Self {
         self.limit = Some(limit);
         self
     }
@@ -134,7 +134,7 @@ impl Query {
     /// # Arguments
     ///
     /// * `vector` - The vector that will be used for search.
-    pub fn query_vector(mut self, vector: &[f32]) -> Query {
+    pub fn query_vector(mut self, vector: &[f32]) -> Self {
         self.query_vector = Some(Float32Array::from(vector.to_vec()));
         self
     }
@@ -144,7 +144,7 @@ impl Query {
     /// # Arguments
     ///
     /// * `nprobes` - The number of probes to use.
-    pub fn nprobes(mut self, nprobes: usize) -> Query {
+    pub fn nprobes(mut self, nprobes: usize) -> Self {
         self.nprobes = nprobes;
         self
     }
@@ -154,7 +154,7 @@ impl Query {
     /// # Arguments
     ///
     /// * `refine_factor` - The refine factor to use.
-    pub fn refine_factor(mut self, refine_factor: u32) -> Query {
+    pub fn refine_factor(mut self, refine_factor: u32) -> Self {
         self.refine_factor = Some(refine_factor);
         self
     }
@@ -164,7 +164,7 @@ impl Query {
     /// # Arguments
     ///
     /// * `metric_type` - The distance metric to use. By default [MetricType::L2] is used.
-    pub fn metric_type(mut self, metric_type: MetricType) -> Query {
+    pub fn metric_type(mut self, metric_type: MetricType) -> Self {
         self.metric_type = Some(metric_type);
         self
     }
@@ -174,7 +174,7 @@ impl Query {
     /// # Arguments
     ///
     /// * `use_index` - Sets Whether to use an ANN index if available
-    pub fn use_index(mut self, use_index: bool) -> Query {
+    pub fn use_index(mut self, use_index: bool) -> Self {
         self.use_index = use_index;
         self
     }
@@ -184,7 +184,7 @@ impl Query {
     /// # Arguments
     ///
     /// * `filter` - SQL filter
-    pub fn filter(mut self, filter: impl AsRef<str>) -> Query {
+    pub fn filter(mut self, filter: impl AsRef<str>) -> Self {
         self.filter = Some(filter.as_ref().to_string());
         self
     }
@@ -192,12 +192,12 @@ impl Query {
     /// Return only the specified columns.
     ///
     /// Only select the specified columns. If not specified, all columns will be returned.
-    pub fn select(mut self, columns: &[impl AsRef<String>]) -> Query {
+    pub fn select(mut self, columns: &[impl AsRef<str>]) -> Self {
         self.select = Some(columns.iter().map(|c| c.as_ref().to_string()).collect());
         self
     }
 
-    pub fn prefilter(mut self, prefilter: bool) -> Query {
+    pub fn prefilter(mut self, prefilter: bool) -> Self {
         self.prefilter = prefilter;
         self
     }
