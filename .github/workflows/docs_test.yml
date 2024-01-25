@@ -43,7 +43,7 @@ jobs:
         #   - 500(Zenodo, "cached")
         #   - 502(Zenodo, "bad gateway")
         #   - 999(LinkedIn, "unknown status code")
-        args: --verbose --no-progress 'docs/**/*.md' 'docs/**/*.html'
+        args: --verbose --no-progress './**/*.md' './**/*.html'
         token: ${{ secrets.LANCEDB_RELEASE_TOKEN }}
         output: ../lychee/results.md
         fail: true
