@@ -3,6 +3,9 @@ name: NPM Publish
 on:
   release:
     types: [ published ]
+  pull_request:
+    paths:
+      - .github/workflows/npm-publish.yml
 
 jobs:
   node:
@@ -66,7 +69,7 @@ jobs:
           name: native-darwin
           path: |
             node/dist/lancedb-vectordb-darwin*.tgz
-         
+
 
   node-linux:
     name: node-linux (${{ matrix.config.arch}}-unknown-linux-gnu
