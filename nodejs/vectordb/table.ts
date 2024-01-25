@@ -88,7 +88,6 @@ export class Table {
    * ```
    */
   createIndex(column?: string): IndexBuilder {
-    // await this.inner.createIndex(column);
     let builder = new IndexBuilder(this.inner);
     if (column !== undefined) {
       builder = builder.column(column);
