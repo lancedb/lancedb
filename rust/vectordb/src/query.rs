@@ -81,7 +81,7 @@ impl Query {
     /// # Returns
     ///
     /// * A [DatasetRecordBatchStream] with the query's results.
-    pub async fn into_stream(&self) -> Result<DatasetRecordBatchStream> {
+    pub async fn execute_stream(&self) -> Result<DatasetRecordBatchStream> {
         let mut scanner: Scanner = self.dataset.scan();
 
         if let Some(query) = self.query_vector.as_ref() {
@@ -254,7 +254,7 @@ mod tests {
         let ds = Arc::new(Dataset::write(batches, "memory://foo", None).await.unwrap());
 
         let query = Query::new(ds.clone()).nearest_to(&[0.1; 4]);
-        let result = query.limit(10).filter("id % 2 == 0").into_stream().await;
+        let result = query.limit(10).filter("id % 2 == 0").execute_stream().await;
         let mut stream = result.expect("should have result");
         // should only have one batch
         while let Some(batch) = stream.next().await {
@@ -267,7 +267,7 @@ mod tests {
             .limit(10)
             .filter(String::from("id % 2 == 0")) // Work with String too
             .prefilter(true)
-            .into_stream()
+            .execute_stream()
             .await;
         let mut stream = result.expect("should have result");
         // should only have one batch
@@ -284,7 +284,7 @@ mod tests {
         let ds = Arc::new(Dataset::write(batches, "memory://foo", None).await.unwrap());
 
         let query = Query::new(ds.clone());
-        let result = query.filter("id % 2 == 0").into_stream().await;
+        let result = query.filter("id % 2 == 0").execute_stream().await;
         let mut stream = result.expect("should have result");
         // should only have one batch
         while let Some(batch) = stream.next().await {
