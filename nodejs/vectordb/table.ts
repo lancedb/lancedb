@@ -95,10 +95,58 @@ export class Table {
     return builder;
   }
 
-  search(vector?: number[]): Query {
-    const q = new Query(this);
-    if (vector !== undefined) {
-      q.vector(vector);
+  /**
+   * Create a generic {@link Query} Builder.
+   *
+   * When appropriate, various indices and statistics based pruning will be used to
+   * accelerate the query.
+   *
+   * @example
+   *
+   * ### Run a SQL-style query
+   * ```typescript
+   * for await (const batch of table.query()
+   *                          .filter("id > 1").select(["id"]).limit(20)) {
+   *  console.log(batch);
+   * }
+   * ```
+   *
+   * ### Run Top-10 vector similarity search
+   * ```typescript
+   * for await (const batch of table.query()
+   *                    .nearestTo([1, 2, 3])
+   *                    .refineFactor(5).nprobe(10)
+   *                    .limit(10)) {
+   *  console.log(batch);
+   * }
+   *```
+   *
+   * ### Scan the full dataset
+   * ```typescript
+   * for await (const batch of table.query()) {
+   *   console.log(batch);
+   * }
+   *
+   * ### Return the full dataset as Arrow Table
+   * ```typescript
+   * let arrowTbl = await table.query().nearestTo([1.0, 2.0, 0.5, 6.7]).toArrow();
+   * ```
+   *
+   * @returns {@link Query}
+   */
+  query(): Query {
+    return new Query(this.inner);
+  }
+
+  /** Search the table with a given query vector.
+   *
+   * This is a convenience method for preparing an ANN {@link Query}.
+   */
+  search(vector: number[], column?: string): Query {
+    const q = this.query();
+    q.nearestTo(vector);
+    if (column !== undefined) {
+      q.column(column);
     }
     return q;
   }

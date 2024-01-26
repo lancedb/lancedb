@@ -17,6 +17,7 @@ use napi_derive::*;
 
 mod connection;
 mod index;
+mod iterator;
 mod query;
 mod table;
 
