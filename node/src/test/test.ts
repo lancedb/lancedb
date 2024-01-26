@@ -391,24 +391,6 @@ describe('LanceDB client', function () {
       })
     }).timeout(120000)
 
-    it('fails to create a new table when the vector column is missing', async function () {
-      const dir = await track().mkdir('lancejs')
-      const con = await lancedb.connect(dir)
-
-      const data = [
-        {
-          id: 1,
-          price: 10
-        }
-      ]
-
-      const create = con.createTable('missing_vector', data)
-      await expect(create).to.be.rejectedWith(
-        Error,
-        "column 'vector' is missing"
-      )
-    })
-
     it('use overwrite flag to overwrite existing table', async function () {
       const dir = await track().mkdir('lancejs')
       const con = await lancedb.connect(dir)

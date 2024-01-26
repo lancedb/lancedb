@@ -16,6 +16,7 @@ use arrow_array::{RecordBatch, RecordBatchIterator};
 use lance::dataset::optimize::CompactionOptions;
 use lance::dataset::{WriteMode, WriteParams};
 use lance::io::ObjectStoreParams;
+use vectordb::table::OptimizeAction;
 
 use crate::arrow::{arrow_buffer_to_record_batch, record_batch_to_buffer};
 use neon::prelude::*;
@@ -245,27 +246,30 @@ impl JsTable {
             .map(|val| val.value(&mut cx) as i64)
             .unwrap_or_else(|| 2 * 7 * 24 * 60); // 2 weeks
         let older_than = chrono::Duration::minutes(older_than);
-        let delete_unverified: bool = cx
-            .argument_opt(1)
-            .and_then(|val| val.downcast::<JsBoolean, _>(&mut cx).ok())
-            .map(|val| val.value(&mut cx))
-            .unwrap_or_default();
+        let delete_unverified: Option<bool> = Some(
+            cx.argument_opt(1)
+                .and_then(|val| val.downcast::<JsBoolean, _>(&mut cx).ok())
+                .map(|val| val.value(&mut cx))
+                .unwrap_or_default(),
+        );
 
         rt.spawn(async move {
             let stats = table
-                .as_native()
-                .unwrap()
-                .cleanup_old_versions(older_than, Some(delete_unverified))
+                .optimize(OptimizeAction::Prune {
+                    older_than,
+                    delete_unverified,
+                })
                 .await;
 
             deferred.settle_with(&channel, move |mut cx| {
                 let stats = stats.or_throw(&mut cx)?;
 
+                let prune_stats = stats.prune.as_ref().expect("Prune stats missing");
                 let output_metrics = JsObject::new(&mut cx);
-                let bytes_removed = cx.number(stats.bytes_removed as f64);
+                let bytes_removed = cx.number(prune_stats.bytes_removed as f64);
                 output_metrics.set(&mut cx, "bytesRemoved", bytes_removed)?;
 
-                let old_versions = cx.number(stats.old_versions as f64);
+                let old_versions = cx.number(prune_stats.old_versions as f64);
                 output_metrics.set(&mut cx, "oldVersions", old_versions)?;
 
                 let output_table = cx.boxed(JsTable::from(table));
@@ -317,13 +321,15 @@ impl JsTable {
 
         rt.spawn(async move {
             let stats = table
-                .as_native()
-                .unwrap()
-                .compact_files(options, None)
+                .optimize(OptimizeAction::Compact {
+                    options,
+                    remap_options: None,
+                })
                 .await;
 
             deferred.settle_with(&channel, move |mut cx| {
                 let stats = stats.or_throw(&mut cx)?;
+                let stats = stats.compaction.as_ref().expect("Compact stats missing");
 
                 let output_metrics = JsObject::new(&mut cx);
                 let fragments_removed = cx.number(stats.fragments_removed as f64);
