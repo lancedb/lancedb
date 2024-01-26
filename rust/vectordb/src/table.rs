@@ -70,6 +70,15 @@ impl Default for OptimizeAction {
     }
 }
 
+/// Statistics about the optimization.
+pub struct OptimizeStats {
+    /// Stats of the file compaction.
+    pub compaction: Option<CompactionMetrics>,
+
+    /// Stats of the version pruning
+    pub prune: Option<RemovalStats>,
+}
+
 /// A Table is a collection of strong typed Rows.
 ///
 /// The type of the each row is defined in Apache Arrow [Schema].
@@ -231,7 +240,7 @@ pub trait Table: std::fmt::Display + Send + Sync {
     ///
     /// Modeled after ``VACCUM`` in PostgreSQL.
     /// Not all implementations support explicit optimization.
-    async fn optimize(&mut self, action: OptimizeAction) -> Result<()>;
+    async fn optimize(&self, action: OptimizeAction) -> Result<OptimizeStats>;
 }
 
 /// Reference to a Table pointer.
@@ -434,7 +443,7 @@ impl NativeTable {
         self.dataset.lock().expect("lock poison").version().version
     }
 
-    async fn optimize_indices(&mut self, options: &OptimizeOptions) -> Result<()> {
+    async fn optimize_indices(&self, options: &OptimizeOptions) -> Result<()> {
         info!("LanceDB: optimizing indices: {:?}", options);
         let mut dataset = self.clone_inner_dataset();
         dataset.optimize_indices(options).await?;
@@ -644,19 +653,27 @@ impl Table for NativeTable {
         Ok(())
     }
 
-    async fn optimize(&mut self, action: OptimizeAction) -> Result<()> {
+    async fn optimize(&self, action: OptimizeAction) -> Result<OptimizeStats> {
+        let mut stats = OptimizeStats {
+            compaction: None,
+            prune: None,
+        };
         match action {
             OptimizeAction::All => {
-                self.optimize(OptimizeAction::Compact {
-                    options: CompactionOptions::default(),
-                    remap_options: None,
-                })
-                .await?;
-                self.optimize(OptimizeAction::Prune {
-                    older_than: Duration::days(7),
-                    delete_unverified: None,
-                })
-                .await?;
+                stats.compaction = self
+                    .optimize(OptimizeAction::Compact {
+                        options: CompactionOptions::default(),
+                        remap_options: None,
+                    })
+                    .await?
+                    .compaction;
+                stats.prune = self
+                    .optimize(OptimizeAction::Prune {
+                        older_than: Duration::days(7),
+                        delete_unverified: None,
+                    })
+                    .await?
+                    .prune;
                 self.optimize(OptimizeAction::Index(OptimizeOptions::default()))
                     .await?;
             }
@@ -664,20 +681,22 @@ impl Table for NativeTable {
                 options,
                 remap_options,
             } => {
-                self.compact_files(options, remap_options).await?;
+                stats.compaction = Some(self.compact_files(options, remap_options).await?);
             }
             OptimizeAction::Prune {
                 older_than,
                 delete_unverified,
             } => {
-                self.cleanup_old_versions(older_than, delete_unverified)
-                    .await?;
+                stats.prune = Some(
+                    self.cleanup_old_versions(older_than, delete_unverified)
+                        .await?,
+                );
             }
             OptimizeAction::Index(options) => {
                 self.optimize_indices(&options).await?;
             }
         }
-        Ok(())
+        Ok(stats)
     }
 }
 
