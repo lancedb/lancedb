@@ -156,6 +156,29 @@ In this case, you can create an empty table and specify the schema.
       tbl = db.create_table("empty_table", schema=schema)
       ```
 
+=== "Javascript"
+
+    ```typescript
+    import { Schema, Field, FixedSizeList, DataType } from "apache-arrow";
+
+    schema = new Schema([new new Field("vec", new FixedSizeList(2, new Field("item", new Float32())))])
+    tbl = await db.createTable({ name: "empty_table", schema: schema });
+    ```
+
+=== "Rust"
+
+    ```rust
+    use arrow_schema::{Schema, Field, DataType};
+    use arrow_array::{RecordBatch, RecordBatchIterator};
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("vector", DataType::FixedSizeList(
+                Arc::new(Field::new("item", DataType::Float32, true)), 2), true),
+        ]));
+    let batches = RecordBatchIterator::new(vec![].into_iter().map(Ok), schema);
+    db.create_table("empty_table", Box::new(batches), None).await.unwrap();
+    ```
+
 ## How to open an existing table
 
 Once created, you can open a table using the following code:
