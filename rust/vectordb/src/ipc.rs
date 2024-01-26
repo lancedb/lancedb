@@ -16,7 +16,7 @@
 
 use std::io::Cursor;
 
-use arrow_array::{RecordBatchReader, RecordBatch};
+use arrow_array::{RecordBatch, RecordBatchReader};
 use arrow_ipc::{reader::StreamReader, writer::FileWriter};
 
 use crate::{Error, Result};
@@ -33,12 +33,12 @@ pub fn batches_to_ipc_file(batches: &[RecordBatch]) -> Result<Vec<u8>> {
     if batches.is_empty() {
         return Err(Error::Store {
             message: "No batches to write".to_string(),
-        })
+        });
     }
     let schema = batches[0].schema();
     let mut writer = FileWriter::try_new(vec![], &schema)?;
     for batch in batches {
-        writer.write(&batch)?;
+        writer.write(batch)?;
     }
     writer.finish()?;
     Ok(writer.into_inner()?)

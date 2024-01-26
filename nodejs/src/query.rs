@@ -33,7 +33,7 @@ impl Query {
 
     #[napi]
     pub fn filter(&mut self, filter: String) {
-        self.inner = self.inner.clone().filter(&filter);
+        self.inner = self.inner.clone().filter(filter);
     }
 
     #[napi]
