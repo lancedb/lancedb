@@ -74,7 +74,7 @@ A LanceDB Table is the collection of Records. Each Record has one or more vector
 
 #### Defined in
 
-[index.ts:642](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L642)
+[index.ts:649](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L649)
 
 • **new LocalTable**\<`T`\>(`tbl`, `name`, `options`, `embeddings`)
 
@@ -95,7 +95,7 @@ A LanceDB Table is the collection of Records. Each Record has one or more vector
 
 #### Defined in
 
-[index.ts:649](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L649)
+[index.ts:656](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L656)
 
 ## Properties
 
@@ -105,7 +105,7 @@ A LanceDB Table is the collection of Records. Each Record has one or more vector
 
 #### Defined in
 
-[index.ts:639](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L639)
+[index.ts:646](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L646)
 
 ___
 
@@ -115,7 +115,7 @@ ___
 
 #### Defined in
 
-[index.ts:638](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L638)
+[index.ts:645](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L645)
 
 ___
 
@@ -125,7 +125,7 @@ ___
 
 #### Defined in
 
-[index.ts:637](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L637)
+[index.ts:644](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L644)
 
 ___
 
@@ -143,7 +143,7 @@ ___
 
 #### Defined in
 
-[index.ts:640](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L640)
+[index.ts:647](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L647)
 
 ___
 
@@ -153,7 +153,7 @@ ___
 
 #### Defined in
 
-[index.ts:636](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L636)
+[index.ts:643](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L643)
 
 ___
 
@@ -179,7 +179,7 @@ Creates a filter query to find all rows matching the specified criteria
 
 #### Defined in
 
-[index.ts:688](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L688)
+[index.ts:695](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L695)
 
 ## Accessors
 
@@ -197,7 +197,7 @@ Creates a filter query to find all rows matching the specified criteria
 
 #### Defined in
 
-[index.ts:668](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L668)
+[index.ts:675](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L675)
 
 ___
 
@@ -215,7 +215,7 @@ ___
 
 #### Defined in
 
-[index.ts:849](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L849)
+[index.ts:875](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L875)
 
 ## Methods
 
@@ -229,7 +229,7 @@ Insert records into this Table.
 
 | Name | Type | Description |
 | :------ | :------ | :------ |
-| `data` | `Record`\<`string`, `unknown`\>[] | Records to be inserted into the Table |
+| `data` | `Table`\<`any`\> \| `Record`\<`string`, `unknown`\>[] | Records to be inserted into the Table |
 
 #### Returns
 
@@ -243,7 +243,7 @@ The number of rows added to the table
 
 #### Defined in
 
-[index.ts:696](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L696)
+[index.ts:703](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L703)
 
 ___
 
@@ -257,7 +257,7 @@ ___
 
 #### Defined in
 
-[index.ts:861](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L861)
+[index.ts:887](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L887)
 
 ___
 
@@ -266,6 +266,8 @@ ___
 ▸ **cleanupOldVersions**(`olderThan?`, `deleteUnverified?`): `Promise`\<[`CleanupStats`](../interfaces/CleanupStats.md)\>
 
 Clean up old versions of the table, freeing disk space.
+
+Note: this API is not yet available on LanceDB Cloud
 
 #### Parameters
 
@@ -280,7 +282,7 @@ Clean up old versions of the table, freeing disk space.
 
 #### Defined in
 
-[index.ts:808](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L808)
+[index.ts:833](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L833)
 
 ___
 
@@ -292,6 +294,8 @@ Run the compaction process on the table.
 
 This can be run after making several small appends to optimize the table
 for faster reads.
+
+Note: this API is not yet available on LanceDB Cloud
 
 #### Parameters
 
@@ -307,7 +311,7 @@ Metrics about the compaction operation.
 
 #### Defined in
 
-[index.ts:831](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L831)
+[index.ts:857](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L857)
 
 ___
 
@@ -327,7 +331,7 @@ Returns the number of rows in this table.
 
 #### Defined in
 
-[index.ts:749](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L749)
+[index.ts:773](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L773)
 
 ___
 
@@ -357,7 +361,7 @@ VectorIndexParams.
 
 #### Defined in
 
-[index.ts:734](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L734)
+[index.ts:758](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L758)
 
 ___
 
@@ -392,7 +396,7 @@ await table.createScalarIndex('my_col')
 
 #### Defined in
 
-[index.ts:742](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L742)
+[index.ts:766](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L766)
 
 ___
 
@@ -418,7 +422,7 @@ Delete rows from this table.
 
 #### Defined in
 
-[index.ts:758](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L758)
+[index.ts:782](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L782)
 
 ___
 
@@ -440,7 +444,7 @@ Creates a filter query to find all rows matching the specified criteria
 
 #### Defined in
 
-[index.ts:684](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L684)
+[index.ts:691](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L691)
 
 ___
 
@@ -454,7 +458,7 @@ ___
 
 #### Defined in
 
-[index.ts:854](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L854)
+[index.ts:880](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L880)
 
 ___
 
@@ -480,7 +484,7 @@ Get statistics about an index.
 
 #### Defined in
 
-[index.ts:845](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L845)
+[index.ts:871](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L871)
 
 ___
 
@@ -500,7 +504,7 @@ List the indicies on this table.
 
 #### Defined in
 
-[index.ts:841](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L841)
+[index.ts:867](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L867)
 
 ___
 
@@ -514,7 +518,7 @@ Insert records into this Table, replacing its contents.
 
 | Name | Type | Description |
 | :------ | :------ | :------ |
-| `data` | `Record`\<`string`, `unknown`\>[] | Records to be inserted into the Table |
+| `data` | `Table`\<`any`\> \| `Record`\<`string`, `unknown`\>[] | Records to be inserted into the Table Type Table is ArrowTable |
 
 #### Returns
 
@@ -528,7 +532,7 @@ The number of rows added to the table
 
 #### Defined in
 
-[index.ts:716](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L716)
+[index.ts:732](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L732)
 
 ___
 
@@ -554,7 +558,7 @@ Creates a search query to find the nearest neighbors of the given search term
 
 #### Defined in
 
-[index.ts:676](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L676)
+[index.ts:683](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L683)
 
 ___
 
@@ -580,4 +584,4 @@ Update rows in this table.
 
 #### Defined in
 
-[index.ts:771](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L771)
+[index.ts:795](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L795)

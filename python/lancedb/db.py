@@ -87,16 +87,25 @@ class DBConnection(EnforceOverrides):
             Can be either "create" or "overwrite".
             By default, if the table already exists, an exception is raised.
             If you want to overwrite the table, use mode="overwrite".
+
+            **Note: this parameter is not yet supported on LanceDB Cloud**
         exist_ok: bool, default False
             If a table by the same name already exists, then raise an exception
             if exist_ok=False. If exist_ok=True, then open the existing table;
             it will not add the provided data but will validate against any
             schema that's specified.
+
+            **Note: this parameter is not yet supported on LanceDB Cloud**
         on_bad_vectors: str, default "error"
             What to do if any of the vectors are not the same size or contains NaNs.
             One of "error", "drop", "fill".
         fill_value: float
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
+        embedding_functions: List[EmbeddingFunctionConfig], default None
+            The embedding functions to be applied before inserting data to
+            LanceDB table.
+
+            **Note: this parameter is not yet supported on LanceDB Cloud**
 
         Returns
         -------
@@ -230,7 +239,9 @@ class DBConnection(EnforceOverrides):
     def drop_database(self):
         """
         Drop database
-        This is the same thing as dropping all the tables
+        This functions the same as dropping all the tables
+
+        **Note: this API is not yet available on LanceDB Cloud**
         """
         raise NotImplementedError
 

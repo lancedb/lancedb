@@ -19,9 +19,13 @@
 
 • `Optional` **apiKey**: `string`
 
+API key for the remote connections
+
+Can also be passed by setting environment variable `LANCEDB_API_KEY`
+
 #### Defined in
 
-[index.ts:81](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L81)
+[index.ts:88](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L88)
 
 ___
 
@@ -35,7 +39,7 @@ If not provided, LanceDB will use the default credentials provider chain.
 
 #### Defined in
 
-[index.ts:75](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L75)
+[index.ts:78](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L78)
 
 ___
 
@@ -47,7 +51,7 @@ AWS region to connect to. Default is defaultAwsRegion.
 
 #### Defined in
 
-[index.ts:78](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L78)
+[index.ts:81](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L81)
 
 ___
 
@@ -55,13 +59,13 @@ ___
 
 • `Optional` **hostOverride**: `string`
 
-Override the host URL for the remote connections.
+Override the host URL for the remote connection.
 
 This is useful for local testing.
 
 #### Defined in
 
-[index.ts:91](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L91)
+[index.ts:98](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L98)
 
 ___
 
@@ -73,7 +77,7 @@ Region to connect
 
 #### Defined in
 
-[index.ts:84](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L84)
+[index.ts:91](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L91)
 
 ___
 
@@ -85,8 +89,8 @@ LanceDB database URI.
 
 - `/path/to/database` - local database
 - `s3://bucket/path/to/database` or `gs://bucket/path/to/database` - database on cloud storage
-- `db://host:port` - remote database (SaaS)
+- `db://host:port` - remote database (LanceDB cloud)
 
 #### Defined in
 
-[index.ts:69](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L69)
+[index.ts:72](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L72)

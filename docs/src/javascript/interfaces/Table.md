@@ -13,6 +13,7 @@ A LanceDB Table is the collection of Records. Each Record has one or more vector
 ## Implemented by
 
 - [`LocalTable`](../classes/LocalTable.md)
+- [`RemoteTable`](../classes/RemoteTable.md)
 
 ## Table of contents
 
@@ -35,7 +36,7 @@ A LanceDB Table is the collection of Records. Each Record has one or more vector
 
 ### add
 
-• **add**: (`data`: `Record`\<`string`, `unknown`\>[]) => `Promise`\<`number`\>
+• **add**: (`data`: `Table`\<`any`\> \| `Record`\<`string`, `unknown`\>[]) => `Promise`\<`number`\>
 
 #### Type declaration
 
@@ -47,7 +48,7 @@ Insert records into this Table.
 
 | Name | Type | Description |
 | :------ | :------ | :------ |
-| `data` | `Record`\<`string`, `unknown`\>[] | Records to be inserted into the Table |
+| `data` | `Table`\<`any`\> \| `Record`\<`string`, `unknown`\>[] | Records to be inserted into the Table |
 
 ##### Returns
 
@@ -57,7 +58,7 @@ The number of rows added to the table
 
 #### Defined in
 
-[index.ts:291](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L291)
+[index.ts:296](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L296)
 
 ___
 
@@ -77,7 +78,7 @@ Returns the number of rows in this table.
 
 #### Defined in
 
-[index.ts:361](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L361)
+[index.ts:368](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L368)
 
 ___
 
@@ -107,7 +108,7 @@ VectorIndexParams.
 
 #### Defined in
 
-[index.ts:306](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L306)
+[index.ts:313](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L313)
 
 ___
 
@@ -142,7 +143,7 @@ await table.createScalarIndex('my_col')
 
 #### Defined in
 
-[index.ts:356](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L356)
+[index.ts:363](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L363)
 
 ___
 
@@ -194,7 +195,7 @@ await tbl.countRows() // Returns 1
 
 #### Defined in
 
-[index.ts:395](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L395)
+[index.ts:402](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L402)
 
 ___
 
@@ -220,7 +221,7 @@ Get statistics about an index.
 
 #### Defined in
 
-[index.ts:438](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L438)
+[index.ts:445](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L445)
 
 ___
 
@@ -240,7 +241,7 @@ List the indicies on this table.
 
 #### Defined in
 
-[index.ts:433](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L433)
+[index.ts:440](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L440)
 
 ___
 
@@ -250,13 +251,13 @@ ___
 
 #### Defined in
 
-[index.ts:277](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L277)
+[index.ts:282](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L282)
 
 ___
 
 ### overwrite
 
-• **overwrite**: (`data`: `Record`\<`string`, `unknown`\>[]) => `Promise`\<`number`\>
+• **overwrite**: (`data`: `Table`\<`any`\> \| `Record`\<`string`, `unknown`\>[]) => `Promise`\<`number`\>
 
 #### Type declaration
 
@@ -268,7 +269,7 @@ Insert records into this Table, replacing its contents.
 
 | Name | Type | Description |
 | :------ | :------ | :------ |
-| `data` | `Record`\<`string`, `unknown`\>[] | Records to be inserted into the Table |
+| `data` | `Table`\<`any`\> \| `Record`\<`string`, `unknown`\>[] | Records to be inserted into the Table |
 
 ##### Returns
 
@@ -278,7 +279,7 @@ The number of rows added to the table
 
 #### Defined in
 
-[index.ts:299](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L299)
+[index.ts:304](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L304)
 
 ___
 
@@ -288,7 +289,7 @@ ___
 
 #### Defined in
 
-[index.ts:440](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L440)
+[index.ts:447](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L447)
 
 ___
 
@@ -314,7 +315,7 @@ Creates a search query to find the nearest neighbors of the given search term
 
 #### Defined in
 
-[index.ts:283](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L283)
+[index.ts:288](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L288)
 
 ___
 
@@ -365,4 +366,4 @@ let results = await tbl.search([1, 1]).execute();
 
 #### Defined in
 
-[index.ts:428](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L428)
+[index.ts:435](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L435)

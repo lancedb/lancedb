@@ -61,6 +61,7 @@ jobs:
         working-directory: node
         run: |
           npx typedoc --plugin typedoc-plugin-markdown --out ../docs/src/javascript src/index.ts
+          cp ../docs/src/javascript.md ../docs/src/javascript/javascript.md
       - name: Build docs
         run: |
           PYTHONPATH=. mkdocs build -f docs/mkdocs.yml

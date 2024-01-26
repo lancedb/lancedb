@@ -1,6 +1,6 @@
 // Copyright 2023 Lance Developers.
 //
-// Licensed under the Apache License, Version 2.0 (the "License");
+// Licensed under the Apache License, Version 2.0 (the "License")
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
@@ -49,6 +49,7 @@ export { Query }
 export type { EmbeddingFunction }
 export { OpenAIEmbeddingFunction } from './embedding/openai'
 export { makeArrowTable, type MakeArrowTableOptions } from './arrow'
+export { RemoteConnection, RemoteTable } from './remote'
 
 const defaultAwsRegion = 'us-west-2'
 
@@ -725,6 +726,7 @@ export class LocalTable<T = number[]> implements Table<T> {
    * Insert records into this Table, replacing its contents.
    *
    * @param data Records to be inserted into the Table
+   * Type Table is ArrowTable
    * @return The number of rows added to the table
    */
   async overwrite (
@@ -814,7 +816,8 @@ export class LocalTable<T = number[]> implements Table<T> {
 
   /**
    * Clean up old versions of the table, freeing disk space.
-   *
+   * 
+   * Note: this API is not yet available on LanceDB Cloud
    * @param olderThan The minimum age in minutes of the versions to delete. If not
    *                  provided, defaults to two weeks.
    * @param deleteUnverified Because they may be part of an in-progress
@@ -845,6 +848,7 @@ export class LocalTable<T = number[]> implements Table<T> {
    * This can be run after making several small appends to optimize the table
    * for faster reads.
    *
+   * Note: this API is not yet available on LanceDB Cloud
    * @param options Advanced options configuring compaction. In most cases, you
    *               can omit this arguments, as the default options are sensible
    *               for most tables.
@@ -966,6 +970,9 @@ export interface IvfPQIndexConfig {
   /**
    * A unique name for the index
    */
+  /**
+   * Note: this parameter is not supported on LanceDB Cloud
+   */
   index_name?: string
 
   /**
@@ -976,34 +983,56 @@ export interface IvfPQIndexConfig {
   /**
    * The number of partitions this index
    */
+  /**
+   * Note: this parameter is not yet supported on LanceDB Cloud
+   */
   num_partitions?: number
 
   /**
    * The max number of iterations for kmeans training.
+   */
+  /**
+   * Note: this parameter is not yet supported on LanceDB Cloud
    */
   max_iters?: number
 
   /**
    * Train as optimized product quantization.
    */
+  /**
+   * Note: this parameter is not yet supported on LanceDB Cloud
+   */
   use_opq?: boolean
 
   /**
    * Number of subvectors to build PQ code
    */
+  /**
+   * Note: this parameter is not yet supported on LanceDB Cloud
+   */
   num_sub_vectors?: number
+
   /**
    * The number of bits to present one PQ centroid.
+   */
+  /**
+   * Note: this parameter is not yet supported on LanceDB Cloud
    */
   num_bits?: number
 
   /**
    * Max number of iterations to train OPQ, if `use_opq` is true.
    */
+  /**
+   * Note: this parameter is not yet supported on LanceDB Cloud
+   */
   max_opq_iters?: number
 
   /**
    * Replace an existing index with the same name if it exists.
+   */
+  /**
+   * Note: this parameter is not yet supported on LanceDB Cloud
    */
   replace?: boolean
 

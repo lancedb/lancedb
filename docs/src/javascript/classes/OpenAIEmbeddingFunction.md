@@ -40,7 +40,7 @@ An embedding function that automatically creates vector representation for a giv
 
 #### Defined in
 
-[embedding/openai.ts:21](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/embedding/openai.ts#L21)
+[embedding/openai.ts:22](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/embedding/openai.ts#L22)
 
 ## Properties
 
@@ -50,17 +50,17 @@ An embedding function that automatically creates vector representation for a giv
 
 #### Defined in
 
-[embedding/openai.ts:19](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/embedding/openai.ts#L19)
+[embedding/openai.ts:20](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/embedding/openai.ts#L20)
 
 ___
 
 ### \_openai
 
-• `Private` `Readonly` **\_openai**: `any`
+• `Private` `Readonly` **\_openai**: `OpenAI`
 
 #### Defined in
 
-[embedding/openai.ts:18](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/embedding/openai.ts#L18)
+[embedding/openai.ts:19](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/embedding/openai.ts#L19)
 
 ___
 
@@ -76,7 +76,7 @@ The name of the column that will be used as input for the Embedding Function.
 
 #### Defined in
 
-[embedding/openai.ts:50](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/embedding/openai.ts#L50)
+[embedding/openai.ts:56](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/embedding/openai.ts#L56)
 
 ## Methods
 
@@ -102,4 +102,4 @@ Creates a vector representation for the given values.
 
 #### Defined in
 
-[embedding/openai.ts:38](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/embedding/openai.ts#L38)
+[embedding/openai.ts:43](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/embedding/openai.ts#L43)

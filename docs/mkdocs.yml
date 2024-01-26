@@ -129,12 +129,9 @@ nav:
   - 💭 FAQs: faq.md
   - ⚙️ API reference:
     - 🐍 Python: python/python.md
-    - 👾 JavaScript: javascript/modules.md
+    - 👾 JavaScript: javascript/javascript.md
   - ☁️ LanceDB Cloud:
     - Overview: cloud/index.md
-    - API reference:
-      - 🐍 Python: python/saas-python.md
-      - 👾 JavaScript: javascript/saas-modules.md
 
 
 - Quick start: basic.md
@@ -184,12 +181,9 @@ nav:
   - TransformersJS Embedding Search: examples/transformerjs_embedding_search_nodejs.md
 - API reference:
   - Python: python/python.md
-  - Javascript: javascript/modules.md
+  - Javascript: javascript/javascript.md
 - LanceDB Cloud:
     - Overview: cloud/index.md
-    - API reference:
-      - 🐍 Python: python/saas-python.md
-      - 👾 JavaScript: javascript/saas-modules.md
 
 extra_css:
   - styles/global.css

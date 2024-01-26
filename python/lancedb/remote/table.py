@@ -54,16 +54,16 @@ class RemoteTable(Table):
 
     def to_arrow(self) -> pa.Table:
         """to_arrow() is not supported on the LanceDB cloud"""
-        raise NotImplementedError("to_arrow() is not supported on the LanceDB cloud")
+        raise NotImplementedError("to_arrow() is not yet supported on LanceDB Cloud")
 
     def to_pandas(self):
         """to_pandas() is not supported on the LanceDB cloud"""
-        return NotImplementedError("to_pandas() is not supported on the LanceDB cloud")
+        return NotImplementedError("to_pandas() is not yet supported on LanceDB Cloud")
 
     def create_scalar_index(self, *args, **kwargs):
         """Creates a scalar index"""
         return NotImplementedError(
-            "create_scalar_index() is not supported on the LanceDB cloud"
+            "create_scalar_index() is not yet supported on LanceDB Cloud"
         )
 
     def create_index(

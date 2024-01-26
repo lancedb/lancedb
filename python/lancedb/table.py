@@ -178,6 +178,7 @@ class Table(ABC):
     def to_pandas(self) -> "pd.DataFrame":
         """Return the table as a pandas DataFrame.
 
+        **Note: this API is not yet available on LanceDB Cloud**
         Returns
         -------
         pd.DataFrame
@@ -188,6 +189,7 @@ class Table(ABC):
     def to_arrow(self) -> pa.Table:
         """Return the table as a pyarrow Table.
 
+        **Note: this API is not yet available on LanceDB Cloud**
         Returns
         -------
         pa.Table
@@ -215,18 +217,26 @@ class Table(ABC):
         num_partitions: int, default 256
             The number of IVF partitions to use when creating the index.
             Default is 256.
+
+            **Note: this parameter is not supported on LanceDB Cloud**
         num_sub_vectors: int, default 96
             The number of PQ sub-vectors to use when creating the index.
             Default is 96.
+
+            **Note: this parameter is not supported on LanceDB Cloud**
         vector_column_name: str, default "vector"
             The vector column name to create the index.
         replace: bool, default True
             - If True, replace the existing index if it exists.
 
             - If False, raise an error if duplicate index exists.
+
+            **Note: this parameter is not yet supported on LanceDB Cloud**
         accelerator: str, default None
             If set, use the given accelerator to create the index.
             Only support "cuda" for now.
+
+            **Note: this parameter is not yet supported on LanceDB Cloud**
         index_cache_size : int, optional
             The size of the index cache in number of entries. Default value is 256.
         """
@@ -240,6 +250,8 @@ class Table(ABC):
         replace: bool = True,
     ):
         """Create a scalar index on a column.
+
+        **Note: this API is not yet available on LanceDB Cloud**
 
         Scalar indices, like vector indices, can be used to speed up scans.  A scalar
         index can speed up scans that contain filter expressions on the indexed column.
@@ -395,6 +407,8 @@ class Table(ABC):
 
             - If `query` is a string, then the query type is "vector" if the
             table has embedding functions else the query type is "fts"
+
+            **Note: this parameter is not yet supported on LanceDB Cloud**
 
         Returns
         -------

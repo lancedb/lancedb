@@ -29,7 +29,7 @@ The column to be indexed
 
 #### Defined in
 
-[index.ts:942](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L942)
+[index.ts:968](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L968)
 
 ___
 
@@ -41,7 +41,7 @@ Cache size of the index
 
 #### Defined in
 
-[index.ts:991](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L991)
+[index.ts:1042](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L1042)
 
 ___
 
@@ -49,11 +49,11 @@ ___
 
 • `Optional` **index\_name**: `string`
 
-A unique name for the index
+Note: this parameter is not supported on LanceDB Cloud
 
 #### Defined in
 
-[index.ts:947](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L947)
+[index.ts:976](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L976)
 
 ___
 
@@ -61,11 +61,11 @@ ___
 
 • `Optional` **max\_iters**: `number`
 
-The max number of iterations for kmeans training.
+Note: this parameter is not yet supported on LanceDB Cloud
 
 #### Defined in
 
-[index.ts:962](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L962)
+[index.ts:997](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L997)
 
 ___
 
@@ -73,11 +73,11 @@ ___
 
 • `Optional` **max\_opq\_iters**: `number`
 
-Max number of iterations to train OPQ, if `use_opq` is true.
+Note: this parameter is not yet supported on LanceDB Cloud
 
 #### Defined in
 
-[index.ts:981](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L981)
+[index.ts:1029](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L1029)
 
 ___
 
@@ -89,7 +89,7 @@ Metric type, L2 or Cosine
 
 #### Defined in
 
-[index.ts:952](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L952)
+[index.ts:981](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L981)
 
 ___
 
@@ -97,11 +97,11 @@ ___
 
 • `Optional` **num\_bits**: `number`
 
-The number of bits to present one PQ centroid.
+Note: this parameter is not yet supported on LanceDB Cloud
 
 #### Defined in
 
-[index.ts:976](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L976)
+[index.ts:1021](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L1021)
 
 ___
 
@@ -109,11 +109,11 @@ ___
 
 • `Optional` **num\_partitions**: `number`
 
-The number of partitions this index
+Note: this parameter is not yet supported on LanceDB Cloud
 
 #### Defined in
 
-[index.ts:957](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L957)
+[index.ts:989](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L989)
 
 ___
 
@@ -121,11 +121,11 @@ ___
 
 • `Optional` **num\_sub\_vectors**: `number`
 
-Number of subvectors to build PQ code
+Note: this parameter is not yet supported on LanceDB Cloud
 
 #### Defined in
 
-[index.ts:972](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L972)
+[index.ts:1013](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L1013)
 
 ___
 
@@ -133,11 +133,11 @@ ___
 
 • `Optional` **replace**: `boolean`
 
-Replace an existing index with the same name if it exists.
+Note: this parameter is not yet supported on LanceDB Cloud
 
 #### Defined in
 
-[index.ts:986](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L986)
+[index.ts:1037](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L1037)
 
 ___
 
@@ -147,7 +147,7 @@ ___
 
 #### Defined in
 
-[index.ts:993](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L993)
+[index.ts:1044](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L1044)
 
 ___
 
@@ -155,8 +155,8 @@ ___
 
 • `Optional` **use\_opq**: `boolean`
 
-Train as optimized product quantization.
+Note: this parameter is not yet supported on LanceDB Cloud
 
 #### Defined in
 
-[index.ts:967](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L967)
+[index.ts:1005](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L1005)

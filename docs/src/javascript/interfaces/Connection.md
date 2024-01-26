@@ -9,6 +9,7 @@ Connection could be local against filesystem or remote against a server.
 ## Implemented by
 
 - [`LocalConnection`](../classes/LocalConnection.md)
+- [`RemoteConnection`](../classes/RemoteConnection.md)
 
 ## Table of contents
 
@@ -31,7 +32,7 @@ Connection could be local against filesystem or remote against a server.
 
 #### Defined in
 
-[index.ts:183](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L183)
+[index.ts:188](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L188)
 
 ## Methods
 
@@ -59,7 +60,7 @@ Creates a new Table, optionally initializing it with new data.
 
 #### Defined in
 
-[index.ts:207](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L207)
+[index.ts:212](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L212)
 
 ▸ **createTable**(`name`, `data`): `Promise`\<[`Table`](Table.md)\<`number`[]\>\>
 
@@ -70,7 +71,7 @@ Creates a new Table and initialize it with new data.
 | Name | Type | Description |
 | :------ | :------ | :------ |
 | `name` | `string` | The name of the table. |
-| `data` | `Record`\<`string`, `unknown`\>[] | Non-empty Array of Records to be inserted into the table |
+| `data` | `Table`\<`any`\> \| `Record`\<`string`, `unknown`\>[] | Non-empty Array of Records to be inserted into the table |
 
 #### Returns
 
@@ -78,7 +79,7 @@ Creates a new Table and initialize it with new data.
 
 #### Defined in
 
-[index.ts:221](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L221)
+[index.ts:226](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L226)
 
 ▸ **createTable**(`name`, `data`, `options`): `Promise`\<[`Table`](Table.md)\<`number`[]\>\>
 
@@ -89,7 +90,7 @@ Creates a new Table and initialize it with new data.
 | Name | Type | Description |
 | :------ | :------ | :------ |
 | `name` | `string` | The name of the table. |
-| `data` | `Record`\<`string`, `unknown`\>[] | Non-empty Array of Records to be inserted into the table |
+| `data` | `Table`\<`any`\> \| `Record`\<`string`, `unknown`\>[] | Non-empty Array of Records to be inserted into the table |
 | `options` | [`WriteOptions`](WriteOptions.md) | The write options to use when creating the table. |
 
 #### Returns
@@ -98,7 +99,7 @@ Creates a new Table and initialize it with new data.
 
 #### Defined in
 
-[index.ts:233](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L233)
+[index.ts:238](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L238)
 
 ▸ **createTable**\<`T`\>(`name`, `data`, `embeddings`): `Promise`\<[`Table`](Table.md)\<`T`\>\>
 
@@ -115,7 +116,7 @@ Creates a new Table and initialize it with new data.
 | Name | Type | Description |
 | :------ | :------ | :------ |
 | `name` | `string` | The name of the table. |
-| `data` | `Record`\<`string`, `unknown`\>[] | Non-empty Array of Records to be inserted into the table |
+| `data` | `Table`\<`any`\> \| `Record`\<`string`, `unknown`\>[] | Non-empty Array of Records to be inserted into the table |
 | `embeddings` | [`EmbeddingFunction`](EmbeddingFunction.md)\<`T`\> | An embedding function to use on this table |
 
 #### Returns
@@ -124,7 +125,7 @@ Creates a new Table and initialize it with new data.
 
 #### Defined in
 
-[index.ts:246](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L246)
+[index.ts:251](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L251)
 
 ▸ **createTable**\<`T`\>(`name`, `data`, `embeddings`, `options`): `Promise`\<[`Table`](Table.md)\<`T`\>\>
 
@@ -141,7 +142,7 @@ Creates a new Table and initialize it with new data.
 | Name | Type | Description |
 | :------ | :------ | :------ |
 | `name` | `string` | The name of the table. |
-| `data` | `Record`\<`string`, `unknown`\>[] | Non-empty Array of Records to be inserted into the table |
+| `data` | `Table`\<`any`\> \| `Record`\<`string`, `unknown`\>[] | Non-empty Array of Records to be inserted into the table |
 | `embeddings` | [`EmbeddingFunction`](EmbeddingFunction.md)\<`T`\> | An embedding function to use on this table |
 | `options` | [`WriteOptions`](WriteOptions.md) | The write options to use when creating the table. |
 
@@ -151,7 +152,7 @@ Creates a new Table and initialize it with new data.
 
 #### Defined in
 
-[index.ts:259](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L259)
+[index.ts:264](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L264)
 
 ___
 
@@ -173,7 +174,7 @@ Drop an existing table.
 
 #### Defined in
 
-[index.ts:270](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L270)
+[index.ts:275](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L275)
 
 ___
 
@@ -202,7 +203,7 @@ Open a table in the database.
 
 #### Defined in
 
-[index.ts:193](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L193)
+[index.ts:198](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L198)
 
 ___
 
@@ -216,4 +217,4 @@ ___
 
 #### Defined in
 
-[index.ts:185](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L185)
+[index.ts:190](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L190)

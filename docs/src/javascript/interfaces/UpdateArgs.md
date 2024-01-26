@@ -20,7 +20,7 @@ new values to set
 
 #### Defined in
 
-[index.ts:454](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L454)
+[index.ts:461](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L461)
 
 ___
 
@@ -33,4 +33,4 @@ in which case all rows will be updated.
 
 #### Defined in
 
-[index.ts:448](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L448)
+[index.ts:455](https://github.com/lancedb/lancedb/blob/5228ca4/node/src/index.ts#L455)
