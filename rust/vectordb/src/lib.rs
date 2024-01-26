@@ -41,7 +41,7 @@
 //!
 //! ### Quick Start
 //!
-//! <div class="warning">Rust API is not stable yet.</div>
+//! <div class="warning">Rust API is not stable yet, please expect breaking changes.</div>
 //!
 //! #### Connect to a database.
 //!
@@ -52,6 +52,12 @@
 //! let db = connect("data/sample-lancedb").await.unwrap();
 //! # });
 //! ```
+//!
+//! LanceDB accepts the different form of database path:
+//!
+//! - `/path/to/database` - local database on file system.
+//! - `s3://bucket/path/to/database` or `gs://bucket/path/to/database` - database on cloud object store
+//! - `db://dbname` - Lance Cloud
 //!
 //! You can also use [`ConnectOptions`] to configure the connectoin to the database.
 //!
@@ -67,6 +73,8 @@
 //! LanceDB uses [arrow-rs](https://github.com/apache/arrow-rs) to define schema, data types and array itself.
 //! It treats [`FixedSizeList<Float16/Float32>`](https://docs.rs/arrow/latest/arrow/array/struct.FixedSizeListArray.html)
 //! columns as vector columns.
+//!
+//! For more details, please refer to [LanceDB documentation](https://lancedb.github.io/lancedb/).
 //!
 //! #### Create a table
 //!

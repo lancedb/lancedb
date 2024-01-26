@@ -72,7 +72,8 @@ pub trait Connection: Send + Sync {
 pub struct ConnectOptions {
     /// Database URI
     ///
-    /// # Examples
+    /// # Accpeted URI formats
+    ///
     /// - `/path/to/database` - local database on file system.
     /// - `s3://bucket/path/to/database` or `gs://bucket/path/to/database` - database on cloud object store
     /// - `db://dbname` - Lance Cloud
