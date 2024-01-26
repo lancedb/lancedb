@@ -22,6 +22,7 @@ use lance_linalg::distance::MetricType;
 
 use crate::error::Result;
 use crate::utils::default_vector_column;
+use crate::Error;
 
 const DEFAULT_TOP_K: usize = 10;
 
@@ -93,6 +94,19 @@ impl Query {
                 let arrow_schema = Schema::from(self.dataset.schema());
                 default_vector_column(&arrow_schema, Some(query.len() as i32))?
             };
+            let field = self.dataset.schema().field(&column).ok_or(Error::Store {
+                message: format!("Column {} not found in dataset schema", column),
+            })?;
+            if !matches!(field.data_type(), arrow_schema::DataType::FixedSizeList(f, dim) if f.data_type().is_floating() && dim == query.len() as i32)
+            {
+                return Err(Error::Store {
+                    message: format!(
+                        "Vector column '{}' does not match the dimension of the query vector: dim={}",
+                        column,
+                        query.len(),
+                    ),
+                });
+            }
             scanner.nearest(&column, query, self.limit.unwrap_or(DEFAULT_TOP_K))?;
         } else {
             // If there is no vector query, it's ok to not have a limit
