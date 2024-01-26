@@ -12,46 +12,58 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { RecordBatch } from "apache-arrow";
+import { RecordBatch, tableFromIPC } from "apache-arrow";
 import { Table } from "./table";
+import {
+  RecordBatchIterator as NativeBatchIterator,
+  Query as NativeQuery,
+  Table as NativeTable,
+} from "./native";
 
 // TODO: re-eanble eslint once we have a real implementation
 /* eslint-disable */
 class RecordBatchIterator implements AsyncIterator<RecordBatch> {
-  next(
-    ...args: [] | [undefined]
-  ): Promise<IteratorResult<RecordBatch<any>, any>> {
-    throw new Error("Method not implemented.");
+  private inner: NativeBatchIterator;
+
+  constructor() {
+    this.inner = new NativeBatchIterator();
   }
-  return?(value?: any): Promise<IteratorResult<RecordBatch<any>, any>> {
-    throw new Error("Method not implemented.");
-  }
-  throw?(e?: any): Promise<IteratorResult<RecordBatch<any>, any>> {
-    throw new Error("Method not implemented.");
+
+  async next(): Promise<IteratorResult<RecordBatch<any>, any>> {
+    let n = await this.inner.next();
+    if (n == null) {
+      return Promise.resolve({ done: true, value: null });
+    }
+    let tbl = tableFromIPC(n);
+    if (tbl.batches.length != 1) {
+      throw new Error("Expected only one batch");
+    }
+    return Promise.resolve({ done: false, value: tbl.batches[0] });
   }
 }
 /* eslint-enable */
 
 /** Query executor */
 export class Query implements AsyncIterable<RecordBatch> {
-  private readonly tbl: Table;
-  private _filter?: string;
-  private _limit?: number;
+  private readonly inner: NativeQuery;
 
-  // Vector search
-  private _vector?: Float32Array;
-  private _nprobes?: number;
-  private _refine_factor?: number = 1;
-
-  constructor(tbl: Table) {
-    this.tbl = tbl;
+  constructor(tbl: NativeTable) {
+    this.inner = tbl.query();
   }
 
   /** Set the filter predicate, only returns the results that satisfy the filter.
    *
    */
   filter(predicate: string): Query {
-    this._filter = predicate;
+    this.inner.filter(predicate);
+    return this;
+  }
+
+  /**
+   * Select the columns to return. If not set, all columns are returned.
+   */
+  select(columns: string[]): Query {
+    this.inner.select(columns);
     return this;
   }
 
@@ -59,7 +71,12 @@ export class Query implements AsyncIterable<RecordBatch> {
    * Set the limit of rows to return.
    */
   limit(limit: number): Query {
-    this._limit = limit;
+    this.inner.limit(limit);
+    return this;
+  }
+
+  prefilter(prefilter: boolean): Query {
+    this.inner.prefilter(prefilter);
     return this;
   }
 
@@ -67,15 +84,15 @@ export class Query implements AsyncIterable<RecordBatch> {
    * Set the query vector.
    */
   nearest_to(vector: number[]): Query {
-    this._vector = Float32Array.from(vector);
+    this.inner.nearestTo(Float32Array.from(vector));
     return this;
   }
 
   /**
-   * Set the number of probes to use for the query.
+   * Set the number of IVF partitions to use for the query.
    */
   nprobes(nprobes: number): Query {
-    this._nprobes = nprobes;
+    this.inner.nprobes(nprobes);
     return this;
   }
 
@@ -83,11 +100,18 @@ export class Query implements AsyncIterable<RecordBatch> {
    * Set the refine factor for the query.
    */
   refine_factor(refine_factor: number): Query {
-    this._refine_factor = refine_factor;
+    this.inner.refineFactor(refine_factor);
     return this;
   }
 
-  [Symbol.asyncIterator](): AsyncIterator<RecordBatch<any>, any, undefined> {
+  /**
+   * Execute the query and return the results as an AsyncIterator.
+   */
+  execute_stream(): RecordBatchIterator {
     throw new RecordBatchIterator();
+  }
+
+  [Symbol.asyncIterator](): AsyncIterator<RecordBatch<any>, any, undefined> {
+    return this.execute_stream();
   }
 }

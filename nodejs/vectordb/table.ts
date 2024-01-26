@@ -104,7 +104,7 @@ export class Table {
    * @returns {@link Query}
    */
   query(): Query {
-    return new Query(this);
+    return new Query(this.inner);
   }
 
   /** Search the table with a given query vector.
