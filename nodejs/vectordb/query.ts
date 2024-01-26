@@ -122,7 +122,7 @@ export class Query implements AsyncIterable<RecordBatch> {
   }
 
   /** Collect the results as an Arrow Table. */
-  async to_arrow(): Promise<ArrowTable> {
+  async toArrow(): Promise<ArrowTable> {
     const batches = [];
     const stream = await this.execute_stream();
     while (true) {
@@ -133,6 +133,14 @@ export class Query implements AsyncIterable<RecordBatch> {
       batches.push(batch.value);
     }
     return new ArrowTable(batches);
+  }
+
+  /** Returns a JSON Array of All results.
+   *
+   */
+  async toArray() {
+    const tbl = await this.toArrow();
+    return tbl.toArray();
   }
 
   [Symbol.asyncIterator](): AsyncIterator<RecordBatch<any>> {
