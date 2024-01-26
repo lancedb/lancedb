@@ -1,4 +1,4 @@
-// Copyright 2023 Lance Developers.
+// Copyright 2024 Lance Developers.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,19 +19,8 @@ use arrow_array::RecordBatch;
 use arrow_ipc::reader::FileReader;
 use arrow_ipc::writer::FileWriter;
 use arrow_schema::SchemaRef;
-use vectordb::table::VECTOR_COLUMN_NAME;
 
-use crate::error::{MissingColumnSnafu, Result};
-use snafu::prelude::*;
-
-fn validate_vector_column(record_batch: &RecordBatch) -> Result<()> {
-    record_batch
-        .column_by_name(VECTOR_COLUMN_NAME)
-        .map(|_| ())
-        .context(MissingColumnSnafu {
-            name: VECTOR_COLUMN_NAME,
-        })
-}
+use crate::error::Result;
 
 pub(crate) fn arrow_buffer_to_record_batch(slice: &[u8]) -> Result<(Vec<RecordBatch>, SchemaRef)> {
     let mut batches: Vec<RecordBatch> = Vec::new();
@@ -39,7 +28,6 @@ pub(crate) fn arrow_buffer_to_record_batch(slice: &[u8]) -> Result<(Vec<RecordBa
     let schema = file_reader.schema();
     for b in file_reader {
         let record_batch = b?;
-        validate_vector_column(&record_batch)?;
         batches.push(record_batch);
     }
     Ok((batches, schema))
