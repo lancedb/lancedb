@@ -21,7 +21,7 @@ from .utils import weak_lru
 
 
 @register("gte-text")
-class SentenceTransformerEmbeddings(TextEmbeddingFunction):
+class GteEmbeddings(TextEmbeddingFunction):
     """
     An embedding function that uses GTE-LARGE MLX format (for Apple silicon devices only)
     as well as the standard cpu/gpu version from huggingface - https://huggingface.co/thenlper/gte-large    
