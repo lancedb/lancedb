@@ -38,7 +38,15 @@ use crate::query::Query;
 use crate::utils::{PatchReadParam, PatchWriteParam};
 use crate::WriteMode;
 
-pub const VECTOR_COLUMN_NAME: &str = "vector";
+pub enum OptimizeAction {
+    /// Run optimization on every, with default options.
+    All,
+    /// Compact files in the dataset
+    Compact,
+    Index(OptimizeOptions),
+    /// Prune old version of datasets.
+    Prune,
+}
 
 /// A Table is a collection of strong typed Rows.
 ///
@@ -194,6 +202,13 @@ pub trait Table: std::fmt::Display + Send + Sync {
     /// # });
     /// ```
     fn query(&self) -> Query;
+
+    /// Maintaince
+    ///
+    /// <section class="warning">Experimental</section>
+    ///
+    /// Modeled after VACCUM in PostgreSQL.
+    async fn optimize(&self, action: Option<OptimizeAction>) -> Result<()>;
 }
 
 /// Reference to a Table pointer.
@@ -612,6 +627,11 @@ impl Table for NativeTable {
         let mut dataset = self.clone_inner_dataset();
         dataset.delete(predicate).await?;
         self.reset_dataset(dataset);
+        Ok(())
+    }
+
+    async fn optimize(&self, action: Option<OptimizeAction>) -> Result<()> {
+        let action = action.unwrap_or(OptimizeAction::All);
         Ok(())
     }
 }
