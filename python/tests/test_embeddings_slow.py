@@ -208,7 +208,7 @@ def test_gemini_embedding(tmp_path):
     assert len(tbl.to_pandas()["vector"][0]) == model.ndims()
     assert tbl.search("hello").limit(1).to_pandas()["text"][0] == "hello world"
 
-@pytest.mark.skipif(_mlx is None, reason="mlx tests only required for apple users. sentence trasnformer tets already covered")
+@pytest.mark.skipif(_mlx is None, reason="mlx tests only required for apple users. sentence-trasnformer based model tests already covered")
 def test_gte_embedding(tmp_path):
     from lancedb.embeddings import gte
     model = get_registry().get("gte-text").create(flag='mlx')
