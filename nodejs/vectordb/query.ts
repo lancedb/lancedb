@@ -39,11 +39,11 @@ class RecordBatchIterator implements AsyncIterator<RecordBatch> {
     if (this.inner === undefined) {
       throw new Error("Invalid iterator state state");
     }
-    let n = await this.inner.next();
+    const n = await this.inner.next();
     if (n == null) {
       return Promise.resolve({ done: true, value: null });
     }
-    let tbl = tableFromIPC(n);
+    const tbl = tableFromIPC(n);
     if (tbl.batches.length != 1) {
       throw new Error("Expected only one batch");
     }
@@ -124,13 +124,8 @@ export class Query implements AsyncIterable<RecordBatch> {
   /** Collect the results as an Arrow Table. */
   async toArrow(): Promise<ArrowTable> {
     const batches = [];
-    const stream = await this.execute_stream();
-    while (true) {
-      const batch = await stream.next();
-      if (batch.done) {
-        break;
-      }
-      batches.push(batch.value);
+    for await (const batch of this) {
+      batches.push(batch);
     }
     return new ArrowTable(batches);
   }
@@ -138,13 +133,14 @@ export class Query implements AsyncIterable<RecordBatch> {
   /** Returns a JSON Array of All results.
    *
    */
-  async toArray() {
+  async toArray(): Promise<any[]> {
     const tbl = await this.toArrow();
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-return
     return tbl.toArray();
   }
 
   [Symbol.asyncIterator](): AsyncIterator<RecordBatch<any>> {
-    let promise = this.inner.executeStream();
+    const promise = this.inner.executeStream();
     return new RecordBatchIterator(undefined, promise);
   }
 }
