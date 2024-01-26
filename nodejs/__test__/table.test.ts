@@ -71,6 +71,11 @@ describe("Test creating index", () => {
     await tbl.createIndex("val").build();
     const indexDir = path.join(tmpDir, "no_vec.lance", "_indices");
     expect(fs.readdirSync(indexDir)).toHaveLength(1);
+
+    for await (const r of tbl.query().filter("val > 1").select(["id"])) {
+      console.log("Batch: ", r);
+      expect(r.numRows).toBe(1);
+    }
   });
 
   test("create scalar index", async () => {

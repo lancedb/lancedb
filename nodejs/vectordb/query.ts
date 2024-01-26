@@ -20,16 +20,27 @@ import {
   Table as NativeTable,
 } from "./native";
 
-// TODO: re-eanble eslint once we have a real implementation
-/* eslint-disable */
 class RecordBatchIterator implements AsyncIterator<RecordBatch> {
-  private inner: NativeBatchIterator;
+  private promised_inner?: Promise<NativeBatchIterator>;
+  private inner?: NativeBatchIterator;
 
-  constructor() {
-    this.inner = new NativeBatchIterator();
+  constructor(
+    inner?: NativeBatchIterator,
+    promise?: Promise<NativeBatchIterator>
+  ) {
+    // TODO: check promise reliably so we dont need to pass two arguments.
+    this.inner = inner;
+    this.promised_inner = promise;
   }
 
   async next(): Promise<IteratorResult<RecordBatch<any>, any>> {
+    if (this.inner === undefined) {
+      this.inner = await this.promised_inner;
+    }
+    if (this.inner === undefined) {
+      throw new Error("Invalid iterator state state");
+    }
+    console.log("This inner: ", this.inner);
     let n = await this.inner.next();
     if (n == null) {
       return Promise.resolve({ done: true, value: null });
@@ -107,11 +118,13 @@ export class Query implements AsyncIterable<RecordBatch> {
   /**
    * Execute the query and return the results as an AsyncIterator.
    */
-  execute_stream(): RecordBatchIterator {
-    throw new RecordBatchIterator();
+  async execute_stream(): Promise<RecordBatchIterator> {
+    const inner = await this.inner.executeStream();
+    return new RecordBatchIterator(inner);
   }
 
-  [Symbol.asyncIterator](): AsyncIterator<RecordBatch<any>, any, undefined> {
-    return this.execute_stream();
+  [Symbol.asyncIterator](): AsyncIterator<RecordBatch<any>> {
+    let promise = this.inner.executeStream();
+    return new RecordBatchIterator(undefined, promise);
   }
 }
