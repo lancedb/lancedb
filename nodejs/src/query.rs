@@ -32,6 +32,11 @@ impl Query {
     }
 
     #[napi]
+    pub fn column(&mut self, column: String) {
+        self.inner = self.inner.clone().column(&column);
+    }
+
+    #[napi]
     pub fn filter(&mut self, filter: String) {
         self.inner = self.inner.clone().filter(filter);
     }

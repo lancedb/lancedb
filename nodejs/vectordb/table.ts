@@ -142,9 +142,12 @@ export class Table {
    *
    * This is a convenience method for preparing an ANN {@link Query}.
    */
-  search(vector: number[]): Query {
+  search(vector: number[], column?: string): Query {
     const q = this.query();
     q.nearest_to(vector);
+    if (column !== undefined) {
+      q.column(column);
+    }
     return q;
   }
 }

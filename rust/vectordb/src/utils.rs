@@ -82,6 +82,7 @@ pub(crate) fn default_vector_column(schema: &Schema, dim: Option<i32>) -> Result
             _ => None,
         })
         .collect::<Vec<_>>();
+    println!("candidates: {:?}, dim={:?}", candidates, dim);
     if candidates.is_empty() {
         Err(Error::Store {
             message: "No vector column found to create index".to_string(),

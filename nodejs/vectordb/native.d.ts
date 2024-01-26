@@ -59,6 +59,7 @@ export class RecordBatchIterator {
   next(): Promise<Buffer | null>
 }
 export class Query {
+  column(column: string): void
   filter(filter: string): void
   select(columns: Array<string>): void
   limit(limit: number): void

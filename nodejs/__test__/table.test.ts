@@ -53,6 +53,16 @@ describe("Test creating index", () => {
     const indexDir = path.join(tmpDir, "test.lance", "_indices");
     expect(fs.readdirSync(indexDir)).toHaveLength(1);
     // TODO: check index type.
+
+    // Search without specifying the column
+    let query_vector = data.toArray()[5].vec.toJSON();
+    let rst = await tbl.query().nearest_to(query_vector).limit(2).toArrow();
+    expect(rst.numRows).toBe(2);
+
+    // Search with specifying the column
+    let rst2 = await tbl.search(query_vector, "vec").limit(2).toArrow();
+    expect(rst2.numRows).toBe(2);
+    expect(rst.toString()).toEqual(rst2.toString());
   });
 
   test("no vector column available", async () => {
@@ -75,6 +85,76 @@ describe("Test creating index", () => {
     for await (const r of tbl.query().filter("id > 1").select(["id"])) {
       expect(r.numRows).toBe(1);
     }
+  });
+
+  test("two columns with different dimensions", async () => {
+    const db = await connect(tmpDir);
+    const schema = new Schema([
+      new Field("id", new Int32(), true),
+      new Field("vec", new FixedSizeList(32, new Field("item", new Float32()))),
+      new Field(
+        "vec2",
+        new FixedSizeList(64, new Field("item", new Float32()))
+      ),
+    ]);
+    const tbl = await db.createTable(
+      "two_vectors",
+      makeArrowTable(
+        Array(300)
+          .fill(1)
+          .map((_, i) => ({
+            id: i,
+            vec: Array(32)
+              .fill(1)
+              .map(() => Math.random()),
+            vec2: Array(64) // different dimension
+              .fill(1)
+              .map(() => Math.random()),
+          })),
+        { schema }
+      )
+    );
+
+    // Only build index over v1
+    await expect(tbl.createIndex().build()).rejects.toThrow(
+      /.*More than one vector columns found.*/
+    );
+    tbl
+      .createIndex("vec")
+      .ivf_pq({ num_partitions: 2, num_sub_vectors: 2 })
+      .build();
+
+    const rst = await tbl
+      .query()
+      .nearest_to(
+        Array(32)
+          .fill(1)
+          .map(() => Math.random())
+      )
+      .limit(2)
+      .toArrow();
+    expect(rst.numRows).toBe(2);
+
+    // Search with specifying the column
+    await expect(
+      tbl
+        .search(
+          Array(64)
+            .fill(1)
+            .map(() => Math.random()),
+          "vec"
+        )
+        .limit(2)
+        .toArrow()
+    ).rejects.toThrow(/.*does not match the dimension.*/);
+
+    const query64 = Array(64)
+      .fill(1)
+      .map(() => Math.random());
+    const rst64_1 = await tbl.query().nearest_to(query64).limit(2).toArrow();
+    const rst64_2 = await tbl.search(query64, "vec2").limit(2).toArrow();
+    expect(rst64_1.toString()).toEqual(rst64_2.toString());
+    expect(rst64_1.numRows).toBe(2);
   });
 
   test("create scalar index", async () => {

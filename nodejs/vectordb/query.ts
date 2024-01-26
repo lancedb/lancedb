@@ -60,6 +60,12 @@ export class Query implements AsyncIterable<RecordBatch> {
     this.inner = tbl.query();
   }
 
+  /** Set the column to run query. */
+  column(column: string): Query {
+    this.inner.column(column);
+    return this;
+  }
+
   /** Set the filter predicate, only returns the results that satisfy the filter.
    *
    */
