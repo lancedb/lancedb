@@ -41,21 +41,40 @@
 //!
 //! ### Quick Start
 //!
-//! <div class="warning">Rust API is not stable yet.</div>
+//! <div class="warning">Rust API is not stable yet, please expect breaking changes.</div>
 //!
 //! #### Connect to a database.
 //!
 //! ```rust
-//! use vectordb::connection::Database;
+//! use vectordb::connect;
 //! # use arrow_schema::{Field, Schema};
 //! # tokio::runtime::Runtime::new().unwrap().block_on(async {
-//! let db = Database::connect("data/sample-lancedb").await.unwrap();
+//! let db = connect("data/sample-lancedb").await.unwrap();
+//! # });
+//! ```
+//!
+//! LanceDB accepts the different form of database path:
+//!
+//! - `/path/to/database` - local database on file system.
+//! - `s3://bucket/path/to/database` or `gs://bucket/path/to/database` - database on cloud object store
+//! - `db://dbname` - Lance Cloud
+//!
+//! You can also use [`ConnectOptions`] to configure the connectoin to the database.
+//!
+//! ```rust
+//! use vectordb::{connect_with_options, ConnectOptions};
+//! # tokio::runtime::Runtime::new().unwrap().block_on(async {
+//! let options = ConnectOptions::new("data/sample-lancedb")
+//!     .index_cache_size(1024);
+//! let db = connect_with_options(&options).await.unwrap();
 //! # });
 //! ```
 //!
 //! LanceDB uses [arrow-rs](https://github.com/apache/arrow-rs) to define schema, data types and array itself.
 //! It treats [`FixedSizeList<Float16/Float32>`](https://docs.rs/arrow/latest/arrow/array/struct.FixedSizeListArray.html)
 //! columns as vector columns.
+//!
+//! For more details, please refer to [LanceDB documentation](https://lancedb.github.io/lancedb/).
 //!
 //! #### Create a table
 //!
@@ -67,10 +86,11 @@
 //! use arrow_array::{RecordBatch, RecordBatchIterator};
 //! # use arrow_array::{FixedSizeListArray, Float32Array, Int32Array, types::Float32Type};
 //! # use vectordb::connection::{Database, Connection};
+//! # use vectordb::connect;
 //!
 //! # tokio::runtime::Runtime::new().unwrap().block_on(async {
 //! # let tmpdir = tempfile::tempdir().unwrap();
-//! # let db = Database::connect(tmpdir.path().to_str().unwrap()).await.unwrap();
+//! # let db = connect(tmpdir.path().to_str().unwrap()).await.unwrap();
 //! let schema = Arc::new(Schema::new(vec![
 //!   Field::new("id", DataType::Int32, false),
 //!   Field::new("vector", DataType::FixedSizeList(
@@ -94,13 +114,13 @@
 //!
 //! ```no_run
 //! # use std::sync::Arc;
-//! # use vectordb::connection::{Database, Connection};
+//! # use vectordb::connect;
 //! # use arrow_array::{FixedSizeListArray, types::Float32Type, RecordBatch,
 //! #   RecordBatchIterator, Int32Array};
 //! # use arrow_schema::{Schema, Field, DataType};
 //! # tokio::runtime::Runtime::new().unwrap().block_on(async {
 //! # let tmpdir = tempfile::tempdir().unwrap();
-//! # let db = Database::connect(tmpdir.path().to_str().unwrap()).await.unwrap();
+//! # let db = connect(tmpdir.path().to_str().unwrap()).await.unwrap();
 //! # let tbl = db.open_table("idx_test").await.unwrap();
 //! tbl.create_index(&["vector"])
 //!     .ivf_pq()
@@ -166,4 +186,6 @@ pub use connection::{Connection, Database};
 pub use error::{Error, Result};
 pub use table::{Table, TableRef};
 
+/// Connect to a database
+pub use connection::{connect, connect_with_options, ConnectOptions};
 pub use lance::dataset::WriteMode;
