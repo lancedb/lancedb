@@ -27,9 +27,9 @@ use lance::dataset::optimize::{
 };
 pub use lance::dataset::ReadParams;
 use lance::dataset::{Dataset, UpdateBuilder, WriteParams};
-use lance::index::scalar::ScalarIndexParams;
 use lance::io::WrappingObjectStore;
-use lance_index::{optimize::OptimizeOptions, DatasetIndexExt, IndexType};
+use lance_index::{optimize::OptimizeOptions, DatasetIndexExt};
+use log::info;
 
 use crate::error::{Error, Result};
 use crate::index::vector::{VectorIndex, VectorIndexStatistics};
@@ -38,14 +38,36 @@ use crate::query::Query;
 use crate::utils::{PatchReadParam, PatchWriteParam};
 use crate::WriteMode;
 
+/// Optimize the dataset.
+///
+/// Similar to `VACUUM` in PostgreSQL, it offers different options to
+/// optimize different parts of the table on disk.
+///
+/// By default, it optimizes everything, as [`OptimizeAction::All`].
 pub enum OptimizeAction {
     /// Run optimization on every, with default options.
     All,
     /// Compact files in the dataset
-    Compact,
-    Index(OptimizeOptions),
+    Compact {
+        options: CompactionOptions,
+        remap_options: Option<Arc<dyn IndexRemapperOptions>>,
+    },
     /// Prune old version of datasets.
-    Prune,
+    Prune {
+        /// The duration of time to keep versions of the dataset.
+        older_than: Duration,
+        /// Because they may be part of an in-progress transaction, files newer than 7 days old are not deleted by default.
+        /// If you are sure that there are no in-progress transactions, then you can set this to True to delete all files older than `older_than`.
+        delete_unverified: Option<bool>,
+    },
+    /// Optimize index.
+    Index(OptimizeOptions),
+}
+
+impl Default for OptimizeAction {
+    fn default() -> Self {
+        Self::All
+    }
 }
 
 /// A Table is a collection of strong typed Rows.
@@ -203,12 +225,13 @@ pub trait Table: std::fmt::Display + Send + Sync {
     /// ```
     fn query(&self) -> Query;
 
-    /// Maintaince
+    /// Optimize the on-disk data and indices for better performance.
     ///
-    /// <section class="warning">Experimental</section>
+    /// <section class="warning">Experimental API</section>
     ///
-    /// Modeled after VACCUM in PostgreSQL.
-    async fn optimize(&self, action: Option<OptimizeAction>) -> Result<()>;
+    /// Modeled after ``VACCUM`` in PostgreSQL.
+    /// Not all implementations support explicit optimization.
+    async fn optimize(&mut self, action: OptimizeAction) -> Result<()>;
 }
 
 /// Reference to a Table pointer.
@@ -411,17 +434,8 @@ impl NativeTable {
         self.dataset.lock().expect("lock poison").version().version
     }
 
-    /// Create a scalar index on the table
-    pub async fn create_scalar_index(&self, column: &str, replace: bool) -> Result<()> {
-        let mut dataset = self.clone_inner_dataset();
-        let params = ScalarIndexParams::default();
-        dataset
-            .create_index(&[column], IndexType::Scalar, None, &params, replace)
-            .await?;
-        Ok(())
-    }
-
-    pub async fn optimize_indices(&mut self, options: &OptimizeOptions) -> Result<()> {
+    async fn optimize_indices(&mut self, options: &OptimizeOptions) -> Result<()> {
+        info!("LanceDB: optimizing indices: {:?}", options);
         let mut dataset = self.clone_inner_dataset();
         dataset.optimize_indices(options).await?;
 
@@ -478,7 +492,7 @@ impl NativeTable {
     ///
     /// This calls into [lance::dataset::Dataset::cleanup_old_versions] and
     /// returns the result.
-    pub async fn cleanup_old_versions(
+    async fn cleanup_old_versions(
         &self,
         older_than: Duration,
         delete_unverified: Option<bool>,
@@ -495,7 +509,7 @@ impl NativeTable {
     /// for faster reads.
     ///
     /// This calls into [lance::dataset::optimize::compact_files].
-    pub async fn compact_files(
+    async fn compact_files(
         &self,
         options: CompactionOptions,
         remap_options: Option<Arc<dyn IndexRemapperOptions>>,
@@ -630,8 +644,39 @@ impl Table for NativeTable {
         Ok(())
     }
 
-    async fn optimize(&self, action: Option<OptimizeAction>) -> Result<()> {
-        let action = action.unwrap_or(OptimizeAction::All);
+    async fn optimize(&mut self, action: OptimizeAction) -> Result<()> {
+        match action {
+            OptimizeAction::All => {
+                self.optimize(OptimizeAction::Compact {
+                    options: CompactionOptions::default(),
+                    remap_options: None,
+                })
+                .await?;
+                self.optimize(OptimizeAction::Prune {
+                    older_than: Duration::days(7),
+                    delete_unverified: None,
+                })
+                .await?;
+                self.optimize(OptimizeAction::Index(OptimizeOptions::default()))
+                    .await?;
+            }
+            OptimizeAction::Compact {
+                options,
+                remap_options,
+            } => {
+                self.compact_files(options, remap_options).await?;
+            }
+            OptimizeAction::Prune {
+                older_than,
+                delete_unverified,
+            } => {
+                self.cleanup_old_versions(older_than, delete_unverified)
+                    .await?;
+            }
+            OptimizeAction::Index(options) => {
+                self.optimize_indices(&options).await?;
+            }
+        }
         Ok(())
     }
 }

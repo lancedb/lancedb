@@ -20,8 +20,7 @@ use arrow_ipc::reader::FileReader;
 use arrow_ipc::writer::FileWriter;
 use arrow_schema::SchemaRef;
 
-use crate::error::{MissingColumnSnafu, Result};
-use snafu::prelude::*;
+use crate::error::Result;
 
 pub(crate) fn arrow_buffer_to_record_batch(slice: &[u8]) -> Result<(Vec<RecordBatch>, SchemaRef)> {
     let mut batches: Vec<RecordBatch> = Vec::new();

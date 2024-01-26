@@ -14,6 +14,7 @@
 
 use std::{cmp::max, sync::Arc};
 
+use lance::index::scalar::ScalarIndexParams;
 use lance_index::{DatasetIndexExt, IndexType};
 pub use lance_linalg::distance::MetricType;
 
@@ -232,10 +233,14 @@ impl IndexBuilder {
         let mut dataset = tbl.clone_inner_dataset();
         match params {
             IndexParams::Scalar { replace } => {
-                self.table
-                    .as_native()
-                    .unwrap()
-                    .create_scalar_index(column, replace)
+                dataset
+                    .create_index(
+                        &[&column],
+                        IndexType::Scalar,
+                        None,
+                        &ScalarIndexParams::default(),
+                        replace,
+                    )
                     .await?
             }
             IndexParams::IvfPq {
