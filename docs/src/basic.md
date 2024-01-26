@@ -24,9 +24,24 @@
 
 === "Rust"
 
-      ```shell
-      cargo install vectordb
-      ```
+    ```shell
+    cargo install vectordb
+    ```
+
+    !!! info "Rust crate is installed as source. You need install protobuf."
+
+    === "macOS"
+
+        ```shell
+        brew install protobuf
+        ```
+
+    === "Ubuntu/Debian"
+
+        ```shell
+        sudo apt install -y protobuf-compiler libssl-dev
+        ```
+
 
 ## How to connect to a database
 
@@ -49,12 +64,12 @@
 
 === "Rust"
 
-      ```rust
-      use vectordb::connect;
+    ```rust
+    use vectordb::connect;
 
-      let uri = "data/sample-lancedb";
-      let db = connect(&uri).await.unwrap();
-      ```
+    let uri = "data/sample-lancedb";
+    let db = connect(&uri).await.unwrap();
+    ```
 
 LanceDB will create the directory if it doesn't exist (including parent directories).
 
