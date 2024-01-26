@@ -114,8 +114,8 @@ export class Table {
    * ### Run Top-10 vector similarity search
    * ```typescript
    * for await (const batch of table.query()
-   *                    .nearest_to([1, 2, 3])
-   *                    .refine_factor(5).nprobe(10)
+   *                    .nearestTo([1, 2, 3])
+   *                    .refineFactor(5).nprobe(10)
    *                    .limit(10)) {
    *  console.log(batch);
    * }
@@ -129,7 +129,7 @@ export class Table {
    *
    * ### Return the full dataset as Arrow Table
    * ```typescript
-   * let arrowTbl = await table.query().nearest_to([1.0, 2.0, 0.5, 6.7]).toArrow();
+   * let arrowTbl = await table.query().nearestTo([1.0, 2.0, 0.5, 6.7]).toArrow();
    * ```
    *
    * @returns {@link Query}
@@ -144,7 +144,7 @@ export class Table {
    */
   search(vector: number[], column?: string): Query {
     const q = this.query();
-    q.nearest_to(vector);
+    q.nearestTo(vector);
     if (column !== undefined) {
       q.column(column);
     }

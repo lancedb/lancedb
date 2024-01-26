@@ -56,7 +56,7 @@ describe("Test creating index", () => {
 
     // Search without specifying the column
     let query_vector = data.toArray()[5].vec.toJSON();
-    let rst = await tbl.query().nearest_to(query_vector).limit(2).toArrow();
+    let rst = await tbl.query().nearestTo(query_vector).limit(2).toArrow();
     expect(rst.numRows).toBe(2);
 
     // Search with specifying the column
@@ -126,7 +126,7 @@ describe("Test creating index", () => {
 
     const rst = await tbl
       .query()
-      .nearest_to(
+      .nearestTo(
         Array(32)
           .fill(1)
           .map(() => Math.random())
@@ -151,7 +151,7 @@ describe("Test creating index", () => {
     const query64 = Array(64)
       .fill(1)
       .map(() => Math.random());
-    const rst64_1 = await tbl.query().nearest_to(query64).limit(2).toArrow();
+    const rst64_1 = await tbl.query().nearestTo(query64).limit(2).toArrow();
     const rst64_2 = await tbl.search(query64, "vec2").limit(2).toArrow();
     expect(rst64_1.toString()).toEqual(rst64_2.toString());
     expect(rst64_1.numRows).toBe(2);

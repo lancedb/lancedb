@@ -98,7 +98,7 @@ export class Query implements AsyncIterable<RecordBatch> {
   /**
    * Set the query vector.
    */
-  nearest_to(vector: number[]): Query {
+  nearestTo(vector: number[]): Query {
     this.inner.nearestTo(Float32Array.from(vector));
     return this;
   }
@@ -114,7 +114,7 @@ export class Query implements AsyncIterable<RecordBatch> {
   /**
    * Set the refine factor for the query.
    */
-  refine_factor(refine_factor: number): Query {
+  refineFactor(refine_factor: number): Query {
     this.inner.refineFactor(refine_factor);
     return this;
   }
@@ -122,7 +122,7 @@ export class Query implements AsyncIterable<RecordBatch> {
   /**
    * Execute the query and return the results as an AsyncIterator.
    */
-  async execute_stream(): Promise<RecordBatchIterator> {
+  async executeStream(): Promise<RecordBatchIterator> {
     const inner = await this.inner.executeStream();
     return new RecordBatchIterator(inner);
   }
