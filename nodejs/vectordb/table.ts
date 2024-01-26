@@ -101,6 +101,37 @@ export class Table {
    * When appropriate, various indices and statistics based pruning will be used to
    * accelerate the query.
    *
+   * @example
+   *
+   * ### Run a SQL-style query
+   * ```typescript
+   * for await (const batch of table.query()
+   *                          .filter("id > 1").select(["id"]).limit(20)) {
+   *  console.log(batch);
+   * }
+   * ```
+   *
+   * ### Run Top-10 vector similarity search
+   * ```typescript
+   * for await (const batch of table.query()
+   *                    .nearest_to([1, 2, 3])
+   *                    .refine_factor(5).nprobe(10)
+   *                    .limit(10)) {
+   *  console.log(batch);
+   * }
+   *```
+   *
+   * ### Scan the full dataset
+   * ```typescript
+   * for await (const batch of table.query()) {
+   *   console.log(batch);
+   * }
+   *
+   * ### Return the full dataset as Arrow Table
+   * ```typescript
+   * let arrowTbl = await table.query().nearest_to([1.0, 2.0, 0.5, 6.7]).toArrow();
+   * ```
+   *
    * @returns {@link Query}
    */
   query(): Query {
