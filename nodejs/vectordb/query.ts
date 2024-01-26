@@ -12,8 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { RecordBatch, tableFromIPC } from "apache-arrow";
-import { Table } from "./table";
+import { RecordBatch, tableFromIPC, Table as ArrowTable } from "apache-arrow";
 import {
   RecordBatchIterator as NativeBatchIterator,
   Query as NativeQuery,
@@ -40,7 +39,6 @@ class RecordBatchIterator implements AsyncIterator<RecordBatch> {
     if (this.inner === undefined) {
       throw new Error("Invalid iterator state state");
     }
-    console.log("This inner: ", this.inner);
     let n = await this.inner.next();
     if (n == null) {
       return Promise.resolve({ done: true, value: null });
@@ -121,6 +119,20 @@ export class Query implements AsyncIterable<RecordBatch> {
   async execute_stream(): Promise<RecordBatchIterator> {
     const inner = await this.inner.executeStream();
     return new RecordBatchIterator(inner);
+  }
+
+  /** Collect the results as an Arrow Table. */
+  async to_arrow(): Promise<ArrowTable> {
+    const batches = [];
+    const stream = await this.execute_stream();
+    while (true) {
+      const batch = await stream.next();
+      if (batch.done) {
+        break;
+      }
+      batches.push(batch.value);
+    }
+    return new ArrowTable(batches);
   }
 
   [Symbol.asyncIterator](): AsyncIterator<RecordBatch<any>> {

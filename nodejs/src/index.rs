@@ -91,7 +91,6 @@ impl IndexBuilder {
 
     #[napi]
     pub async fn build(&self) -> napi::Result<()> {
-        println!("nodejs::index.rs : build");
         self.inner
             .build()
             .await
