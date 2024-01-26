@@ -22,6 +22,11 @@ import lancedb
 from lancedb.embeddings import get_registry
 from lancedb.pydantic import LanceModel, Vector
 
+try :
+    import mlx
+    _mlx = True 
+except ImportError:
+    _mlx = None
 # These are integration tests for embedding functions.
 # They are slow because they require downloading models
 # or connection to external api
@@ -190,6 +195,23 @@ def test_instructor_embedding(tmp_path):
 )
 def test_gemini_embedding(tmp_path):
     model = get_registry().get("gemini-text").create(max_retries=0)
+
+    class TextModel(LanceModel):
+        text: str = model.SourceField()
+        vector: Vector(model.ndims()) = model.VectorField()
+
+    df = pd.DataFrame({"text": ["hello world", "goodbye world"]})
+    db = lancedb.connect(tmp_path)
+    tbl = db.create_table("test", schema=TextModel, mode="overwrite")
+
+    tbl.add(df)
+    assert len(tbl.to_pandas()["vector"][0]) == model.ndims()
+    assert tbl.search("hello").limit(1).to_pandas()["text"][0] == "hello world"
+
+@pytest.mark.skipif(_mlx is None, reason="mlx tests only required for apple users. sentence trasnformer tets already covered")
+def test_gte_embedding(tmp_path):
+    from lancedb.embeddings import gte
+    model = get_registry().get("gte-text").create(flag='mlx')
 
     class TextModel(LanceModel):
         text: str = model.SourceField()
