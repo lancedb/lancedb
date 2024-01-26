@@ -53,6 +53,17 @@
 //! # });
 //! ```
 //!
+//! You can also use [`ConnectOptions`] to configure the connectoin to the database.
+//!
+//! ```rust
+//! use vectordb::{connect_with_options, ConnectOptions};
+//! # tokio::runtime::Runtime::new().unwrap().block_on(async {
+//! let options = ConnectOptions::new("data/sample-lancedb")
+//!     .index_cache_size(1024);
+//! let db = connect_with_options(&options).await.unwrap();
+//! # });
+//! ```
+//!
 //! LanceDB uses [arrow-rs](https://github.com/apache/arrow-rs) to define schema, data types and array itself.
 //! It treats [`FixedSizeList<Float16/Float32>`](https://docs.rs/arrow/latest/arrow/array/struct.FixedSizeListArray.html)
 //! columns as vector columns.

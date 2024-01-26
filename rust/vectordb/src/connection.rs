@@ -68,7 +68,7 @@ pub trait Connection: Send + Sync {
     async fn drop_table(&self, name: &str) -> Result<()>;
 }
 
-
+#[derive(Debug)]
 pub struct ConnectOptions {
     /// Database URI
     ///
@@ -84,6 +84,9 @@ pub struct ConnectOptions {
     pub region: Option<String>,
     /// Lance Cloud host override
     pub host_override: Option<String>,
+
+    /// The maximum number of indices to cache in memory. Defaults to 256.
+    pub index_cache_size: u32,
 }
 
 impl ConnectOptions {
@@ -94,6 +97,7 @@ impl ConnectOptions {
             api_key: None,
             region: None,
             host_override: None,
+            index_cache_size: 256,
         }
     }
 
@@ -109,6 +113,11 @@ impl ConnectOptions {
 
     pub fn host_override(mut self, host_override: &str) -> Self {
         self.host_override = Some(host_override.to_string());
+        self
+    }
+
+    pub fn index_cache_size(mut self, index_cache_size: u32) -> Self {
+        self.index_cache_size = index_cache_size;
         self
     }
 }
@@ -127,18 +136,17 @@ impl ConnectOptions {
 ///
 pub async fn connect(uri: &str) -> Result<Arc<dyn Connection>> {
     let options = ConnectOptions::new(uri);
-    connect_with_options(options).await
+    connect_with_options(&options).await
 }
 
 /// Connect with [`ConnectOptions`].
 ///
 /// # Arguments
 /// - `options` - [`ConnectOptions`] to connect to the database.
-pub async fn connect_with_options(options: ConnectOptions) -> Result<Arc<dyn Connection>> {
+pub async fn connect_with_options(options: &ConnectOptions) -> Result<Arc<dyn Connection>> {
     let db = Database::connect(&options.uri).await?;
     Ok(Arc::new(db))
 }
-
 
 pub struct Database {
     object_store: ObjectStore,
