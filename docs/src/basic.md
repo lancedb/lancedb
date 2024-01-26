@@ -28,7 +28,7 @@
     cargo install vectordb
     ```
 
-    !!! info "Rust crate is installed as source. You need install protobuf."
+    !!! info "Rust crate is installed as source. You need to install protobuf."
 
     === "macOS"
 
