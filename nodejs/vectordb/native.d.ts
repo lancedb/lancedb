@@ -54,9 +54,20 @@ export class IndexBuilder {
   scalar(): void
   build(): Promise<void>
 }
+/** Typescript-style Async Iterator over RecordBatches  */
+export class RecordBatchIterator {
+  next(): Promise<Buffer | null>
+}
 export class Query {
-  vector(vector: Float32Array): void
-  toArrow(): void
+  column(column: string): void
+  filter(filter: string): void
+  select(columns: Array<string>): void
+  limit(limit: number): void
+  prefilter(prefilter: boolean): void
+  nearestTo(vector: Float32Array): void
+  refineFactor(refineFactor: number): void
+  nprobes(nprobe: number): void
+  executeStream(): Promise<RecordBatchIterator>
 }
 export class Table {
   /** Return Schema as empty Arrow IPC file. */
