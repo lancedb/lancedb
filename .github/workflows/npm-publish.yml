@@ -15,7 +15,7 @@ jobs:
         working-directory: node
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       - uses: actions/setup-node@v3
         with:
           node-version: 20
@@ -51,7 +51,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       - name: Install system dependencies
         run: brew install protobuf
       - name: Install npm dependencies
@@ -83,7 +83,7 @@ jobs:
             runner: buildjet-4vcpu-ubuntu-2204-arm
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       - name: Build Linux Artifacts
         run: |
           bash ci/build_linux_artifacts.sh ${{ matrix.config.arch }}
@@ -104,7 +104,7 @@ jobs:
         target: [x86_64-pc-windows-msvc]
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       - name: Install Protoc v21.12
         working-directory: C:\
         run: |
@@ -154,7 +154,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           ref: main
           persist-credentials: false

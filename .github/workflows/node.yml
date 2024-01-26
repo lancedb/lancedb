@@ -32,7 +32,7 @@ jobs:
         shell: bash
         working-directory: node
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
       with:
         fetch-depth: 0
         lfs: true
@@ -57,7 +57,7 @@ jobs:
         shell: bash
         working-directory: node
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
       with:
         fetch-depth: 0
         lfs: true
@@ -89,7 +89,7 @@ jobs:
         shell: bash
         working-directory: node
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
       with:
         fetch-depth: 0
         lfs: true
@@ -128,7 +128,7 @@ jobs:
       # this one is for dynamodb
       DYNAMODB_ENDPOINT: http://localhost:4566
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
       with:
         fetch-depth: 0
         lfs: true
