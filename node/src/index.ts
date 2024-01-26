@@ -816,7 +816,7 @@ export class LocalTable<T = number[]> implements Table<T> {
 
   /**
    * Clean up old versions of the table, freeing disk space.
-   * 
+   *
    * Note: this API is not yet available on LanceDB Cloud
    * @param olderThan The minimum age in minutes of the versions to delete. If not
    *                  provided, defaults to two weeks.
