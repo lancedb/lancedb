@@ -67,8 +67,11 @@
     ```rust
     use vectordb::connect;
 
-    let uri = "data/sample-lancedb";
-    let db = connect(&uri).await.unwrap();
+    #[tokio::main]
+    async fn main() -> Result<()> {
+        let uri = "data/sample-lancedb";
+        let db = connect(&uri).await?;
+    }
     ```
 
 LanceDB will create the directory if it doesn't exist (including parent directories).
