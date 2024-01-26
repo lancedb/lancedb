@@ -215,7 +215,7 @@ class RemoteDBConnection(DBConnection):
             raise ValueError("Either data or schema must be provided.")
         if embedding_functions is not None:
             raise NotImplementedError(
-                "embedding_functions is not supported on the LanceDB Cloud."
+                "embedding_functions is not yet supported on LanceDB Cloud."
                 "Please vote https://github.com/lancedb/lancedb/issues/626 "
                 "for this feature."
             )
