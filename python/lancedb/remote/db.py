@@ -220,7 +220,7 @@ class RemoteDBConnection(DBConnection):
                 "for this feature."
             )
         if mode is not None:
-            raise NotImplementedError("mode is not supported on the LanceDB Cloud.")
+            raise NotImplementedError("mode is not yet supported on LanceDB Cloud.")
 
         if inspect.isclass(schema) and issubclass(schema, LanceModel):
             # convert LanceModel to pyarrow schema
