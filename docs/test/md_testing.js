@@ -9,6 +9,7 @@ const excludedGlobs = [
   "../src/embedding.md",
   "../src/examples/*.md",
   "../src/guides/tables.md",
+  "../src/guides/storage.md",
   "../src/embeddings/*.md",
 ];
 
