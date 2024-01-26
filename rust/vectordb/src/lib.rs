@@ -46,10 +46,10 @@
 //! #### Connect to a database.
 //!
 //! ```rust
-//! use vectordb::connection::Database;
+//! use vectordb::connect;
 //! # use arrow_schema::{Field, Schema};
 //! # tokio::runtime::Runtime::new().unwrap().block_on(async {
-//! let db = Database::connect("data/sample-lancedb").await.unwrap();
+//! let db = connect("data/sample-lancedb").await.unwrap();
 //! # });
 //! ```
 //!
@@ -67,10 +67,11 @@
 //! use arrow_array::{RecordBatch, RecordBatchIterator};
 //! # use arrow_array::{FixedSizeListArray, Float32Array, Int32Array, types::Float32Type};
 //! # use vectordb::connection::{Database, Connection};
+//! # use vectordb::connect;
 //!
 //! # tokio::runtime::Runtime::new().unwrap().block_on(async {
 //! # let tmpdir = tempfile::tempdir().unwrap();
-//! # let db = Database::connect(tmpdir.path().to_str().unwrap()).await.unwrap();
+//! # let db = connect(tmpdir.path().to_str().unwrap()).await.unwrap();
 //! let schema = Arc::new(Schema::new(vec![
 //!   Field::new("id", DataType::Int32, false),
 //!   Field::new("vector", DataType::FixedSizeList(
@@ -94,13 +95,13 @@
 //!
 //! ```no_run
 //! # use std::sync::Arc;
-//! # use vectordb::connection::{Database, Connection};
+//! # use vectordb::connect;
 //! # use arrow_array::{FixedSizeListArray, types::Float32Type, RecordBatch,
 //! #   RecordBatchIterator, Int32Array};
 //! # use arrow_schema::{Schema, Field, DataType};
 //! # tokio::runtime::Runtime::new().unwrap().block_on(async {
 //! # let tmpdir = tempfile::tempdir().unwrap();
-//! # let db = Database::connect(tmpdir.path().to_str().unwrap()).await.unwrap();
+//! # let db = connect(tmpdir.path().to_str().unwrap()).await.unwrap();
 //! # let tbl = db.open_table("idx_test").await.unwrap();
 //! tbl.create_index(&["vector"])
 //!     .ivf_pq()
@@ -166,4 +167,6 @@ pub use connection::{Connection, Database};
 pub use error::{Error, Result};
 pub use table::{Table, TableRef};
 
+/// Connect to a database
+pub use connection::{connect, connect_with_options, ConnectOptions};
 pub use lance::dataset::WriteMode;

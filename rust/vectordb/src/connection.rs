@@ -68,6 +68,78 @@ pub trait Connection: Send + Sync {
     async fn drop_table(&self, name: &str) -> Result<()>;
 }
 
+
+pub struct ConnectOptions {
+    /// Database URI
+    ///
+    /// # Examples
+    /// - `/path/to/database` - local database on file system.
+    /// - `s3://bucket/path/to/database` or `gs://bucket/path/to/database` - database on cloud object store
+    /// - `db://dbname` - Lance Cloud
+    pub uri: String,
+
+    /// Lance Cloud API key
+    pub api_key: Option<String>,
+    /// Lance Cloud region
+    pub region: Option<String>,
+    /// Lance Cloud host override
+    pub host_override: Option<String>,
+}
+
+impl ConnectOptions {
+    /// Create a new [`ConnectOptions`] with the given database URI.
+    pub fn new(uri: &str) -> Self {
+        Self {
+            uri: uri.to_string(),
+            api_key: None,
+            region: None,
+            host_override: None,
+        }
+    }
+
+    pub fn api_key(mut self, api_key: &str) -> Self {
+        self.api_key = Some(api_key.to_string());
+        self
+    }
+
+    pub fn region(mut self, region: &str) -> Self {
+        self.region = Some(region.to_string());
+        self
+    }
+
+    pub fn host_override(mut self, host_override: &str) -> Self {
+        self.host_override = Some(host_override.to_string());
+        self
+    }
+}
+
+/// Connect to a LanceDB database.
+///
+/// # Arguments
+///
+/// - `uri` - URI where the database is located, can be a local file or a supported remote cloud storage
+///
+/// ## Accepted URI formats
+///
+///  - `/path/to/database` - local database on file system.
+///  - `s3://bucket/path/to/database` or `gs://bucket/path/to/database` - database on cloud object store
+/// - `db://dbname` - Lance Cloud
+///
+pub async fn connect(uri: &str) -> Result<Arc<dyn Connection>> {
+    let options = ConnectOptions::new(uri);
+    connect_with_options(options).await
+}
+
+/// Connect with [`ConnectOptions`].
+///
+/// # Arguments
+/// - `options` - [`ConnectOptions`] to connect to the database.
+pub async fn connect_with_options(options: ConnectOptions) -> Result<Arc<dyn Connection>> {
+    let db = Database::connect(&options.uri).await?;
+    Ok(Arc::new(db))
+}
+
+
 pub struct Database {
     object_store: ObjectStore,
     query_string: Option<String>,
