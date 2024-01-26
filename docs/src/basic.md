@@ -104,7 +104,7 @@ If you need a reminder of the uri, you can call `db.uri()`.
 === "Javascript"
 
     ```javascript
-    const tb = await db.createTable(
+    const tbl = await db.createTable(
         "myTable",
         [{"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
          {"vector": [5.9, 26.5], "item": "bar", "price": 20.0}]
