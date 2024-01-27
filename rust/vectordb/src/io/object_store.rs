@@ -23,7 +23,7 @@ use std::{
 
 use bytes::Bytes;
 use futures::{stream::BoxStream, FutureExt, StreamExt};
-use lance::io::object_store::WrappingObjectStore;
+use lance::io::WrappingObjectStore;
 use object_store::{
     path::Path, Error, GetOptions, GetResult, ListResult, MultipartId, ObjectMeta, ObjectStore,
     PutOptions, PutResult, Result,
@@ -335,13 +335,14 @@ impl WrappingObjectStore for MirroringObjectStoreWrapper {
 #[cfg(all(test, not(windows)))]
 mod test {
     use super::*;
-    use crate::connection::{Connection, Database};
-    use arrow_array::PrimitiveArray;
+
     use futures::TryStreamExt;
-    use lance::{dataset::WriteParams, io::object_store::ObjectStoreParams};
+    use lance::{dataset::WriteParams, io::ObjectStoreParams};
     use lance_testing::datagen::{BatchGenerator, IncrementingInt32, RandomVector};
     use object_store::local::LocalFileSystem;
     use tempfile;
+
+    use crate::connection::{Connection, Database};
 
     #[tokio::test]
     async fn test_e2e() {
@@ -374,11 +375,9 @@ mod test {
         assert_eq!(t.count_rows().await.unwrap(), 100);
 
         let q = t
-            .search(Some(PrimitiveArray::from_iter_values(vec![
-                0.1, 0.1, 0.1, 0.1,
-            ])))
+            .search(&[0.1, 0.1, 0.1, 0.1])
             .limit(10)
-            .execute()
+            .execute_stream()
             .await
             .unwrap();
 

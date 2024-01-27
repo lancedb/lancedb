@@ -16,7 +16,7 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use vectordb::query::Query as LanceDBQuery;
 
-use crate::table::Table;
+use crate::{iterator::RecordBatchIterator, table::Table};
 
 #[napi]
 pub struct Query {
@@ -32,17 +32,50 @@ impl Query {
     }
 
     #[napi]
-    pub fn vector(&mut self, vector: Float32Array) {
-        let inn = self.inner.clone().query_vector(&vector);
-        self.inner = inn;
+    pub fn column(&mut self, column: String) {
+        self.inner = self.inner.clone().column(&column);
     }
 
     #[napi]
-    pub fn to_arrow(&self) -> napi::Result<()> {
-        // let buf = self.inner.to_arrow().map_err(|e| {
-        //     napi::Error::from_reason(format!("Failed to convert query to arrow: {}", e))
-        // })?;
-        // Ok(buf)
-        todo!()
+    pub fn filter(&mut self, filter: String) {
+        self.inner = self.inner.clone().filter(filter);
+    }
+
+    #[napi]
+    pub fn select(&mut self, columns: Vec<String>) {
+        self.inner = self.inner.clone().select(&columns);
+    }
+
+    #[napi]
+    pub fn limit(&mut self, limit: u32) {
+        self.inner = self.inner.clone().limit(limit as usize);
+    }
+
+    #[napi]
+    pub fn prefilter(&mut self, prefilter: bool) {
+        self.inner = self.inner.clone().prefilter(prefilter);
+    }
+
+    #[napi]
+    pub fn nearest_to(&mut self, vector: Float32Array) {
+        self.inner = self.inner.clone().nearest_to(&vector);
+    }
+
+    #[napi]
+    pub fn refine_factor(&mut self, refine_factor: u32) {
+        self.inner = self.inner.clone().refine_factor(refine_factor);
+    }
+
+    #[napi]
+    pub fn nprobes(&mut self, nprobe: u32) {
+        self.inner = self.inner.clone().nprobes(nprobe as usize);
+    }
+
+    #[napi]
+    pub async fn execute_stream(&self) -> napi::Result<RecordBatchIterator> {
+        let inner_stream = self.inner.execute_stream().await.map_err(|e| {
+            napi::Error::from_reason(format!("Failed to execute query stream: {}", e))
+        })?;
+        Ok(RecordBatchIterator::new(Box::new(inner_stream)))
     }
 }

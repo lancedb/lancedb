@@ -91,6 +91,7 @@ nav:
     - Hybrid search: hybrid_search.md
     - Filtering: sql.md
     - Versioning & Reproducibility: notebooks/reproducibility.ipynb
+    - Configuring Storage: guides/storage.md
   - 🧬 Managing embeddings:
     - Overview: embeddings/index.md
     - Explicit management: embeddings/embedding_explicit.md
@@ -130,6 +131,7 @@ nav:
   - ⚙️ API reference:
     - 🐍 Python: python/python.md
     - 👾 JavaScript: javascript/modules.md
+    - 🦀 Rust: https://docs.rs/vectordb/latest/vectordb/
   - ☁️ LanceDB Cloud:
     - Overview: cloud/index.md
     - API reference:
@@ -151,6 +153,7 @@ nav:
     - Hybrid search: hybrid_search.md
     - Filtering: sql.md
     - Versioning & Reproducibility: notebooks/reproducibility.ipynb
+    - Configuring Storage: guides/storage.md
 - Managing Embeddings:
   - Overview: embeddings/index.md
   - Explicit management: embeddings/embedding_explicit.md

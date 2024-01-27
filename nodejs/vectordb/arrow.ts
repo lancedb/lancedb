@@ -179,5 +179,5 @@ export function toBuffer(data: Data, schema?: Schema): Buffer {
   } else {
     tbl = makeArrowTable(data, { schema });
   }
-  return Buffer.from(tableToIPC(tbl, "file"));
+  return Buffer.from(tableToIPC(tbl));
 }
