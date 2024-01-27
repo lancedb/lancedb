@@ -291,13 +291,13 @@ For tables with more than 50K vectors, creating an ANN index is recommended to s
 
 === "Python"
 
-    ```python
+    ```py
     tbl.create_index()
     ```
 
 === "Javascript"
 
-    ```javascript
+    ```{.typescript .ignore}
     await tbl.createIndex({})
     ```
 
