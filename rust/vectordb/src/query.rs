@@ -1,4 +1,4 @@
-// Copyright 2023 Lance Developers.
+// Copyright 2024 Lance Developers.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,25 +15,43 @@
 use std::sync::Arc;
 
 use arrow_array::Float32Array;
+use arrow_schema::Schema;
 use lance::dataset::scanner::{DatasetRecordBatchStream, Scanner};
 use lance::dataset::Dataset;
 use lance_linalg::distance::MetricType;
 
 use crate::error::Result;
+use crate::utils::default_vector_column;
+use crate::Error;
+
+const DEFAULT_TOP_K: usize = 10;
 
 /// A builder for nearest neighbor queries for LanceDB.
+#[derive(Clone)]
 pub struct Query {
-    pub dataset: Arc<Dataset>,
-    pub query_vector: Option<Float32Array>,
-    pub column: String,
-    pub limit: Option<usize>,
-    pub filter: Option<String>,
-    pub select: Option<Vec<String>>,
-    pub nprobes: usize,
-    pub refine_factor: Option<u32>,
-    pub metric_type: Option<MetricType>,
-    pub use_index: bool,
-    pub prefilter: bool,
+    dataset: Arc<Dataset>,
+
+    // The column to run the query on. If not specified, we will attempt to guess
+    // the column based on the dataset's schema.
+    column: Option<String>,
+
+    // IVF PQ - ANN search.
+    query_vector: Option<Float32Array>,
+    nprobes: usize,
+    refine_factor: Option<u32>,
+    metric_type: Option<MetricType>,
+
+    /// limit the number of rows to return.
+    limit: Option<usize>,
+    /// Apply filter to the returned rows.
+    filter: Option<String>,
+    /// Select column projection.
+    select: Option<Vec<String>>,
+
+    /// Default is true. Set to false to enforce a brute force search.
+    use_index: bool,
+    /// Apply filter before ANN search/
+    prefilter: bool,
 }
 
 impl Query {
@@ -41,17 +59,13 @@ impl Query {
     ///
     /// # Arguments
     ///
-    /// * `dataset` - The table / dataset the query will be run against.
-    /// * `vector` The vector used for this query.
+    /// * `dataset` - Lance dataset.
     ///
-    /// # Returns
-    ///
-    /// * A [Query] object.
-    pub(crate) fn new(dataset: Arc<Dataset>, vector: Option<Float32Array>) -> Self {
+    pub(crate) fn new(dataset: Arc<Dataset>) -> Self {
         Query {
             dataset,
-            query_vector: vector,
-            column: crate::table::VECTOR_COLUMN_NAME.to_string(),
+            query_vector: None,
+            column: None,
             limit: None,
             nprobes: 20,
             refine_factor: None,
@@ -63,17 +77,37 @@ impl Query {
         }
     }
 
-    /// Execute the queries and return its results.
+    /// Convert the query plan to a [`DatasetRecordBatchStream`]
     ///
     /// # Returns
     ///
     /// * A [DatasetRecordBatchStream] with the query's results.
-    pub async fn execute(&self) -> Result<DatasetRecordBatchStream> {
+    pub async fn execute_stream(&self) -> Result<DatasetRecordBatchStream> {
         let mut scanner: Scanner = self.dataset.scan();
 
         if let Some(query) = self.query_vector.as_ref() {
             // If there is a vector query, default to limit=10 if unspecified
-            scanner.nearest(&self.column, query, self.limit.unwrap_or(10))?;
+            let column = if let Some(col) = self.column.as_ref() {
+                col.clone()
+            } else {
+                // Infer a vector column with the same dimension of the query vector.
+                let arrow_schema = Schema::from(self.dataset.schema());
+                default_vector_column(&arrow_schema, Some(query.len() as i32))?
+            };
+            let field = self.dataset.schema().field(&column).ok_or(Error::Store {
+                message: format!("Column {} not found in dataset schema", column),
+            })?;
+            if !matches!(field.data_type(), arrow_schema::DataType::FixedSizeList(f, dim) if f.data_type().is_floating() && dim == query.len() as i32)
+            {
+                return Err(Error::Store {
+                    message: format!(
+                        "Vector column '{}' does not match the dimension of the query vector: dim={}",
+                        column,
+                        query.len(),
+                    ),
+                });
+            }
+            scanner.nearest(&column, query, self.limit.unwrap_or(DEFAULT_TOP_K))?;
         } else {
             // If there is no vector query, it's ok to not have a limit
             scanner.limit(self.limit.map(|limit| limit as i64), None)?;
@@ -94,8 +128,8 @@ impl Query {
     /// # Arguments
     ///
     /// * `column` - The column name
-    pub fn column(mut self, column: &str) -> Query {
-        self.column = column.into();
+    pub fn column(mut self, column: &str) -> Self {
+        self.column = Some(column.to_string());
         self
     }
 
@@ -104,18 +138,18 @@ impl Query {
     /// # Arguments
     ///
     /// * `limit` - The maximum number of results to return.
-    pub fn limit(mut self, limit: usize) -> Query {
+    pub fn limit(mut self, limit: usize) -> Self {
         self.limit = Some(limit);
         self
     }
 
-    /// Set the vector used for this query.
+    /// Find the nearest vectors to the given query vector.
     ///
     /// # Arguments
     ///
     /// * `vector` - The vector that will be used for search.
-    pub fn query_vector(mut self, query_vector: Float32Array) -> Query {
-        self.query_vector = Some(query_vector);
+    pub fn nearest_to(mut self, vector: &[f32]) -> Self {
+        self.query_vector = Some(Float32Array::from(vector.to_vec()));
         self
     }
 
@@ -124,7 +158,7 @@ impl Query {
     /// # Arguments
     ///
     /// * `nprobes` - The number of probes to use.
-    pub fn nprobes(mut self, nprobes: usize) -> Query {
+    pub fn nprobes(mut self, nprobes: usize) -> Self {
         self.nprobes = nprobes;
         self
     }
@@ -134,8 +168,8 @@ impl Query {
     /// # Arguments
     ///
     /// * `refine_factor` - The refine factor to use.
-    pub fn refine_factor(mut self, refine_factor: Option<u32>) -> Query {
-        self.refine_factor = refine_factor;
+    pub fn refine_factor(mut self, refine_factor: u32) -> Self {
+        self.refine_factor = Some(refine_factor);
         self
     }
 
@@ -144,8 +178,8 @@ impl Query {
     /// # Arguments
     ///
     /// * `metric_type` - The distance metric to use. By default [MetricType::L2] is used.
-    pub fn metric_type(mut self, metric_type: Option<MetricType>) -> Query {
-        self.metric_type = metric_type;
+    pub fn metric_type(mut self, metric_type: MetricType) -> Self {
+        self.metric_type = Some(metric_type);
         self
     }
 
@@ -154,7 +188,7 @@ impl Query {
     /// # Arguments
     ///
     /// * `use_index` - Sets Whether to use an ANN index if available
-    pub fn use_index(mut self, use_index: bool) -> Query {
+    pub fn use_index(mut self, use_index: bool) -> Self {
         self.use_index = use_index;
         self
     }
@@ -163,21 +197,21 @@ impl Query {
     ///
     /// # Arguments
     ///
-    /// * `filter` -  value A filter in the same format used by a sql WHERE clause.
-    pub fn filter(mut self, filter: Option<String>) -> Query {
-        self.filter = filter;
+    /// * `filter` - SQL filter
+    pub fn filter(mut self, filter: impl AsRef<str>) -> Self {
+        self.filter = Some(filter.as_ref().to_string());
         self
     }
 
     /// Return only the specified columns.
     ///
     /// Only select the specified columns. If not specified, all columns will be returned.
-    pub fn select(mut self, columns: Option<Vec<String>>) -> Query {
-        self.select = columns;
+    pub fn select(mut self, columns: &[impl AsRef<str>]) -> Self {
+        self.select = Some(columns.iter().map(|c| c.as_ref().to_string()).collect());
         self
     }
 
-    pub fn prefilter(mut self, prefilter: bool) -> Query {
+    pub fn prefilter(mut self, prefilter: bool) -> Self {
         self.prefilter = prefilter;
         self
     }
@@ -196,8 +230,10 @@ mod tests {
     use futures::StreamExt;
     use lance::dataset::Dataset;
     use lance_testing::datagen::{BatchGenerator, IncrementingInt32, RandomVector};
+    use tempfile::tempdir;
 
     use crate::query::Query;
+    use crate::table::{NativeTable, Table};
 
     #[tokio::test]
     async fn test_setters_getters() {
@@ -205,18 +241,18 @@ mod tests {
         let ds = Dataset::write(batches, "memory://foo", None).await.unwrap();
 
         let vector = Some(Float32Array::from_iter_values([0.1, 0.2]));
-        let query = Query::new(Arc::new(ds), vector.clone());
+        let query = Query::new(Arc::new(ds)).nearest_to(&[0.1, 0.2]);
         assert_eq!(query.query_vector, vector);
 
         let new_vector = Float32Array::from_iter_values([9.8, 8.7]);
 
         let query = query
-            .query_vector(new_vector.clone())
+            .nearest_to(&[9.8, 8.7])
             .limit(100)
             .nprobes(1000)
             .use_index(true)
-            .metric_type(Some(MetricType::Cosine))
-            .refine_factor(Some(999));
+            .metric_type(MetricType::Cosine)
+            .refine_factor(999);
 
         assert_eq!(query.query_vector.unwrap(), new_vector);
         assert_eq!(query.limit.unwrap(), 100);
@@ -231,14 +267,8 @@ mod tests {
         let batches = make_non_empty_batches();
         let ds = Arc::new(Dataset::write(batches, "memory://foo", None).await.unwrap());
 
-        let vector = Some(Float32Array::from_iter_values([0.1; 4]));
-
-        let query = Query::new(ds.clone(), vector.clone());
-        let result = query
-            .limit(10)
-            .filter(Some("id % 2 == 0".to_string()))
-            .execute()
-            .await;
+        let query = Query::new(ds.clone()).nearest_to(&[0.1; 4]);
+        let result = query.limit(10).filter("id % 2 == 0").execute_stream().await;
         let mut stream = result.expect("should have result");
         // should only have one batch
         while let Some(batch) = stream.next().await {
@@ -246,12 +276,12 @@ mod tests {
             assert!(batch.expect("should be Ok").num_rows() < 10);
         }
 
-        let query = Query::new(ds, vector.clone());
+        let query = Query::new(ds).nearest_to(&[0.1; 4]);
         let result = query
             .limit(10)
-            .filter(Some("id % 2 == 0".to_string()))
+            .filter(String::from("id % 2 == 0")) // Work with String too
             .prefilter(true)
-            .execute()
+            .execute_stream()
             .await;
         let mut stream = result.expect("should have result");
         // should only have one batch
@@ -267,11 +297,8 @@ mod tests {
         let batches = make_non_empty_batches();
         let ds = Arc::new(Dataset::write(batches, "memory://foo", None).await.unwrap());
 
-        let query = Query::new(ds.clone(), None);
-        let result = query
-            .filter(Some("id % 2 == 0".to_string()))
-            .execute()
-            .await;
+        let query = Query::new(ds.clone());
+        let result = query.filter("id % 2 == 0").execute_stream().await;
         let mut stream = result.expect("should have result");
         // should only have one batch
         while let Some(batch) = stream.next().await {
@@ -308,5 +335,22 @@ mod tests {
                 .map(Ok),
             schema,
         )
+    }
+
+    #[tokio::test]
+    async fn test_search() {
+        let tmp_dir = tempdir().unwrap();
+        let dataset_path = tmp_dir.path().join("test.lance");
+        let uri = dataset_path.to_str().unwrap();
+
+        let batches = make_test_batches();
+        Dataset::write(batches, dataset_path.to_str().unwrap(), None)
+            .await
+            .unwrap();
+
+        let table = NativeTable::open(uri).await.unwrap();
+
+        let query = table.search(&[0.1, 0.2]);
+        assert_eq!(&[0.1, 0.2], query.query_vector.unwrap().values());
     }
 }

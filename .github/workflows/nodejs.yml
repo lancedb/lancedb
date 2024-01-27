@@ -1,0 +1,114 @@
+name: NodeJS (NAPI)
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    paths:
+      - nodejs/**
+      - .github/workflows/nodejs.yml
+      - docker-compose.yml
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Disable full debug symbol generation to speed up CI build and keep memory down
+  # "1" means line tables only, which is useful for panic tracebacks.
+  RUSTFLAGS: "-C debuginfo=1"
+  RUST_BACKTRACE: "1"
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        shell: bash
+        working-directory: nodejs
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        lfs: true
+    - uses: actions/setup-node@v3
+      with:
+        node-version: 20
+        cache: 'npm'
+        cache-dependency-path: nodejs/package-lock.json
+    - uses: Swatinem/rust-cache@v2
+    - name: Install dependencies
+      run: |
+        sudo apt update
+        sudo apt install -y protobuf-compiler libssl-dev
+    - name: Lint
+      run: |
+        cargo fmt --all -- --check
+        cargo clippy --all --all-features -- -D warnings
+        npm ci
+        npm run lint
+  linux:
+    name: Linux (NodeJS ${{ matrix.node-version }})
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        node-version: [ "18", "20" ]
+    runs-on: "ubuntu-22.04"
+    defaults:
+      run:
+        shell: bash
+        working-directory: nodejs
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        lfs: true
+    - uses: actions/setup-node@v3
+      with:
+        node-version: ${{ matrix.node-version }}
+        cache: 'npm'
+        cache-dependency-path: node/package-lock.json
+    - uses: Swatinem/rust-cache@v2
+    - name: Install dependencies
+      run: |
+        sudo apt update
+        sudo apt install -y protobuf-compiler libssl-dev
+        npm install -g @napi-rs/cli
+    - name: Build
+      run: |
+        npm ci
+        npm run build
+    - name: Test
+      run: npm run test
+  macos:
+    timeout-minutes: 30
+    runs-on: "macos-13"
+    defaults:
+      run:
+        shell: bash
+        working-directory: nodejs
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        lfs: true
+    - uses: actions/setup-node@v3
+      with:
+        node-version: 20
+        cache: 'npm'
+        cache-dependency-path: node/package-lock.json
+    - uses: Swatinem/rust-cache@v2
+    - name: Install dependencies
+      run: |
+        brew install protobuf
+        npm install -g @napi-rs/cli
+    - name: Build
+      run: |
+        npm ci
+        npm run build
+    - name: Test
+      run: |
+        npm run test
+

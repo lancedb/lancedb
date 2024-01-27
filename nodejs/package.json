@@ -1,0 +1,67 @@
+{
+  "name": "vectordb",
+  "version": "0.4.3",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "napi": {
+    "name": "vectordb-nodejs",
+    "triples": {
+      "defaults": false,
+      "additional": [
+        "aarch64-apple-darwin",
+        "aarch64-unknown-linux-gnu",
+        "x86_64-apple-darwin",
+        "x86_64-unknown-linux-gnu"
+      ]
+    }
+  },
+  "license": "Apache 2.0",
+  "devDependencies": {
+    "@napi-rs/cli": "^2.18.0",
+    "@types/jest": "^29.5.11",
+    "@typescript-eslint/eslint-plugin": "^6.19.0",
+    "@typescript-eslint/parser": "^6.19.0",
+    "eslint": "^8.56.0",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.1.2",
+    "typedoc": "^0.25.7",
+    "typedoc-plugin-markdown": "^3.17.1",
+    "typescript": "^5.3.3"
+  },
+  "ava": {
+    "timeout": "3m"
+  },
+  "engines": {
+    "node": ">= 18"
+  },
+  "cpu": [
+    "x64",
+    "arm64"
+  ],
+  "os": [
+    "darwin",
+    "linux",
+    "windows"
+  ],
+  "scripts": {
+    "artifacts": "napi artifacts",
+    "build:native": "napi build --platform --release --js vectordb/native.js --dts vectordb/native.d.ts dist/",
+    "build:debug": "napi build --platform --dts ../vectordb/native.d.ts --js ../vectordb/native.js dist/",
+    "build": "npm run build:debug && tsc -b",
+    "docs": "typedoc --plugin typedoc-plugin-markdown vectordb/index.ts",
+    "lint": "eslint vectordb --ext .js,.ts",
+    "prepublishOnly": "napi prepublish -t npm",
+    "test": "npm run build && jest",
+    "universal": "napi universal",
+    "version": "napi version"
+  },
+  "optionalDependencies": {
+    "vectordb-darwin-arm64": "0.4.3",
+    "vectordb-darwin-x64": "0.4.3",
+    "vectordb-linux-arm64-gnu": "0.4.3",
+    "vectordb-linux-x64-gnu": "0.4.3"
+  },
+  "dependencies": {
+    "apache-arrow": "^15.0.0"
+  }
+}
