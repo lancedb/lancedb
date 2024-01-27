@@ -24,7 +24,10 @@ from .utils import weak_lru
 class GteEmbeddings(TextEmbeddingFunction):
     """
     An embedding function that uses GTE-LARGE MLX format (for Apple silicon devices only)
-    as well as the standard cpu/gpu version from huggingface - https://huggingface.co/thenlper/gte-large    
+    as well as the standard cpu/gpu version from huggingface - https://huggingface.co/thenlper/gte-large.
+
+    For Apple users, you will need the mlx package insalled, which can be done with:
+        pip install mlx    
     
     Parameters
     ----------
@@ -33,9 +36,9 @@ class GteEmbeddings(TextEmbeddingFunction):
     device: str, default "cpu"
         Sets the device type for the model.
     normalize: str, default "True"
-        Controls normalize param in encode function for the transformer
-    flag: str, default "gte-large"
-        Controls which model to use. Options are "gte-large" or "mlx"
+        Controls normalize param in encode function for the transformer.
+    flag: str, default "gte-std"
+        Controls which model to use. Options are "gte-std" for gte-large, "mlx" for the mlx version.
 
     Examples
     --------
@@ -62,7 +65,7 @@ class GteEmbeddings(TextEmbeddingFunction):
     name: str = "thenlper/gte-large"
     device: str = "cpu"
     normalize: bool = True
-    flag: str = "gte-large"
+    flag: str = "gte-std"
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -92,7 +95,7 @@ class GteEmbeddings(TextEmbeddingFunction):
         self, texts: Union[List[str], np.ndarray]
     ) -> List[np.array]:
         """
-        Get the embeddings for the given texts
+        Get the embeddings for the given texts.
 
         Parameters
         ----------
@@ -114,8 +117,6 @@ class GteEmbeddings(TextEmbeddingFunction):
         Get the embedding model specified by the flag,
         name and device. This is cached so that the model is only loaded
         once per process.
-
-        TODO: use lru_cache instead with a reasonable/configurable maxsize
         """
         if self.flag == "mlx":
             from .gte_mlx_model import Model
