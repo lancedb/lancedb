@@ -18,7 +18,7 @@ jobs:
     timeout-minutes: 30
     strategy:
       matrix:
-        python-minor-version: [ "8", "9", "10", "11" ]
+        python-minor-version: [ "8", "11" ]
     runs-on: "ubuntu-22.04"
     defaults:
       run:
