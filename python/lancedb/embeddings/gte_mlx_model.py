@@ -1,6 +1,4 @@
 import json
-import mlx.core as mx
-import mlx.nn as nn
 import numpy as np
 
 from pydantic import BaseModel
@@ -8,8 +6,12 @@ from huggingface_hub import snapshot_download
 from typing import List, Optional
 from transformers import BertTokenizer
 
-
-
+try :
+    import mlx.core as mx
+    import mlx.nn as nn
+except ImportError:
+    raise ImportError("You need to install MLX to use this model use - pip install mlx")
+    
 def average_pool(last_hidden_state: mx.array, attention_mask: mx.array) -> mx.array:
     last_hidden = mx.multiply(last_hidden_state, attention_mask[..., None])
     return last_hidden.sum(axis=1) / attention_mask.sum(axis=1)[..., None]

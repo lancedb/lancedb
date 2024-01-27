@@ -37,8 +37,8 @@ class GteEmbeddings(TextEmbeddingFunction):
         Sets the device type for the model.
     normalize: str, default "True"
         Controls normalize param in encode function for the transformer.
-    flag: str, default "gte-std"
-        Controls which model to use. Options are "gte-std" for gte-large, "mlx" for the mlx version.
+    mlx: bool, default False
+        Controls which model to use. Options are False for gte-large, True for the mlx version.
 
     Examples
     --------
@@ -65,14 +65,14 @@ class GteEmbeddings(TextEmbeddingFunction):
     name: str = "thenlper/gte-large"
     device: str = "cpu"
     normalize: bool = True
-    flag: str = "gte-std"
+    mlx: bool = False
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._ndims = None
         if kwargs :
-            self.flag = kwargs.get("flag", "mlx")   
-            if self.flag == "mlx":
+            self.mlx = kwargs.get("mlx", False)   
+            if self.mlx == True:
                 self.name == "gte-mlx"
 
     @property
@@ -85,7 +85,7 @@ class GteEmbeddings(TextEmbeddingFunction):
         return self.get_embedding_model()
 
     def ndims(self):
-        if self.flag == 'mlx':
+        if self.mlx == True:
             self._ndims = self.embedding_model.dims
         if self._ndims is None:
             self._ndims = len(self.generate_embeddings("foo")[0])
@@ -102,7 +102,7 @@ class GteEmbeddings(TextEmbeddingFunction):
         texts: list[str] or np.ndarray (of str)
             The texts to embed
         """
-        if self.flag == 'mlx':
+        if self.mlx == True:
             return self.embedding_model.run(list(texts)).tolist()
         
         return self.embedding_model.encode(
@@ -118,7 +118,7 @@ class GteEmbeddings(TextEmbeddingFunction):
         name and device. This is cached so that the model is only loaded
         once per process.
         """
-        if self.flag == "mlx":
+        if self.mlx == True:
             from .gte_mlx_model import Model
             return Model()
         else :
