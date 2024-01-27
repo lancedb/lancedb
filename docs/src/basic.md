@@ -42,7 +42,6 @@
         sudo apt install -y protobuf-compiler libssl-dev
         ```
 
-
 ## How to connect to a database
 
 === "Python"
@@ -70,9 +69,11 @@
     #[tokio::main]
     async fn main() -> Result<()> {
         let uri = "data/sample-lancedb";
-        let db = connect(&uri).await?;
+        let db = connect(uri).await?;
     }
     ```
+
+    !!! info "See [examples/simple.rs](https://github.com/lancedb/lancedb/tree/main/rust/vectordb/src/examples/simple.rs) for a full working example."
 
 LanceDB will create the directory if it doesn't exist (including parent directories).
 
@@ -286,7 +287,7 @@ Once you've embedded the query, you can find its nearest neighbors using the fol
     ```
 
 By default, LanceDB runs a brute-force scan over dataset to find the K nearest neighbours (KNN).
-users can speed up the query by creating vector indices over the vector columns.
+For tables with more than 50K vectors, creating an ANN index is recommended to speed up search performance.
 
 === "Python"
 
