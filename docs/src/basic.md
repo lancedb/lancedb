@@ -73,7 +73,7 @@
     }
     ```
 
-    !!! info "Only the snippet of the Rust example is displayed. For a fully working example, please check [examples/simple.rs](https://github.com/lancedb/lancedb/tree/main/rust/vectordb/src/examples/simple.rs)."
+    !!! info "See [examples/simple.rs](https://github.com/lancedb/lancedb/tree/main/rust/vectordb/src/examples/simple.rs) for a full working example."
 
 LanceDB will create the directory if it doesn't exist (including parent directories).
 
