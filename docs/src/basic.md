@@ -287,8 +287,7 @@ Once you've embedded the query, you can find its nearest neighbors using the fol
     ```
 
 By default, LanceDB runs a brute-force scan over dataset to find the K nearest neighbours (KNN).
-If there are more than 50K vectors in one table, it is suggested to create vector index to speed up
-search.
+For tables with more than 50K vectors, creating an ANN index is recommended to speed up search performance.
 
 === "Python"
 
