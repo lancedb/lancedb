@@ -33,10 +33,7 @@
 //! LanceDB runs in process, to use it in your Rust project, put the following in your `Cargo.toml`:
 //!
 //! ```ignore
-//! [dependencies]
-//! vectordb = "0.4"
-//! arrow-schema = "50"
-//! arrow-array = "50"
+//! cargo install vectordb
 //! ```
 //!
 //! ### Quick Start
@@ -100,9 +97,9 @@
 //! let batches = RecordBatchIterator::new(vec![
 //!     RecordBatch::try_new(schema.clone(),
 //!         vec![
-//!             Arc::new(Int32Array::from_iter_values(0..10)),
+//!             Arc::new(Int32Array::from_iter_values(0..1000)),
 //!             Arc::new(FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
-//!                 (0..10).map(|_| Some(vec![Some(1.0); 128])), 128)),
+//!                 (0..1000).map(|_| Some(vec![Some(1.0); 128])), 128)),
 //!         ]).unwrap()
 //!    ].into_iter().map(Ok),
 //!     schema.clone());
@@ -158,7 +155,7 @@
 //! #   ].into_iter().map(Ok),
 //! #    schema.clone());
 //! # db.create_table("my_table", Box::new(batches), None).await.unwrap();
-//! let table = db.open_table("my_table").await.unwrap();
+//! # let table = db.open_table("my_table").await.unwrap();
 //! let results = table
 //!     .search(&[1.0; 128])
 //!     .execute_stream()
