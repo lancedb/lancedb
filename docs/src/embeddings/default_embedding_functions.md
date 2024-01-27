@@ -119,7 +119,7 @@ texts = [{"text": "Capitalism has been dominant in the Western world since the e
 tbl.add(texts)
 ```
 
-## Gemini Embedding Function
+### Gemini Embeddings
 With Google's Gemini, you can represent text (words, sentences, and blocks of text) in a vectorized form, making it easier to compare and contrast embeddings. For example, two texts that share a similar subject matter or sentiment should have similar embeddings, which can be identified through mathematical comparison techniques such as cosine similarity. For more on how and why you should use embeddings, refer to the Embeddings guide.
 The Gemini Embedding Model API supports various task types:
 
@@ -149,6 +149,51 @@ class TextModel(LanceModel):
 
 df = pd.DataFrame({"text": ["hello world", "goodbye world"]})
 db = lancedb.connect("~/.lancedb")
+tbl = db.create_table("test", schema=TextModel, mode="overwrite")
+
+tbl.add(df)
+rs = tbl.search("hello").limit(1).to_pandas()
+```
+
+### AWS Bedrock Text Embedding Functions
+AWS Bedrock supports multiple base models for generating text embeddings. You need to setup the AWS credentials to use this embedding function.
+You can do so by using `awscli` and also add your session_token:
+```shell
+aws configure
+aws configure set aws_session_token "<your_session_token>"
+```
+to ensure that the credentials are set up correctly, you can run the following command:
+```shell
+aws sts get-caller-identity
+```
+
+Supported Embedding modelIDs are:
+* `amazon.titan-embed-text-v1`
+* `cohere.embed-english-v3`
+* `cohere.embed-multilingual-v3`
+
+Supported paramters (to be passed in `create` method) are:
+| Parameter | Type | Default Value | Description |
+|---|---|---|---|
+| **name** | str | "amazon.titan-embed-text-v1" | The model ID of the bedrock model to use. Supported base models for Text Embeddings: amazon.titan-embed-text-v1, cohere.embed-english-v3, cohere.embed-multilingual-v3 |
+| **region** | str | "us-east-1" | Optional name of the AWS Region in which the service should be called (e.g., "us-east-1"). |
+| **profile_name** | str | None | Optional name of the AWS profile to use for calling the Bedrock service. If not specified, the default profile will be used. |
+| **assumed_role** | str | None | Optional ARN of an AWS IAM role to assume for calling the Bedrock service. If not specified, the current active credentials will be used. |
+| **role_session_name** | str | "lancedb-embeddings" | Optional name of the AWS IAM role session to use for calling the Bedrock service. If not specified, a "lancedb-embeddings" name will be used. |
+| **runtime** | bool | True | Optional choice of getting different client to perform operations with the Amazon Bedrock service. |
+| **max_retries** | int | 7 | Optional number of retries to perform when a request fails. |
+
+Usage Example:
+
+```python
+model = get_registry().get("bedrock-text").create()
+
+class TextModel(LanceModel):
+    text: str = model.SourceField()
+    vector: Vector(model.ndims()) = model.VectorField()
+
+df = pd.DataFrame({"text": ["hello world", "goodbye world"]})
+db = lancedb.connect("tmp_path")
 tbl = db.create_table("test", schema=TextModel, mode="overwrite")
 
 tbl.add(df)
