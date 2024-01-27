@@ -42,7 +42,6 @@
         sudo apt install -y protobuf-compiler libssl-dev
         ```
 
-
 ## How to connect to a database
 
 === "Python"
@@ -70,9 +69,11 @@
     #[tokio::main]
     async fn main() -> Result<()> {
         let uri = "data/sample-lancedb";
-        let db = connect(&uri).await?;
+        let db = connect(uri).await?;
     }
     ```
+
+    !!! info "Only the snippet of the Rust example is displayed. For a fully working example, please check [examples/simple.rs](https://github.com/lancedb/lancedb/tree/main/rust/vectordb/src/examples/simple.rs)."
 
 LanceDB will create the directory if it doesn't exist (including parent directories).
 
