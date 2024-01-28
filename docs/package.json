@@ -5,12 +5,12 @@
   "author": "dev@lancedb.com",
   "license": "Apache 2",
   "dependencies": {
-    "apache-arrow": "^14.0.2",
-    "vectordb": "^0.4.6"
+    "apache-arrow": "file:../node/node_modules/apache-arrow",
+    "vectordb": "file:../node"
   },
   "scripts": {
-    "build": "cd ../node && npm run build",
-    "example": "npm run build && esrun"
+    "build": "tsc -b && cd ../node && npm run build",
+    "example": "npm run build && node"
   },
   "devDependencies": {
     "@types/node": "^20.11.8",
