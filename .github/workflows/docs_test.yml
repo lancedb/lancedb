@@ -77,7 +77,7 @@ jobs:
         npm t
     - name: Install dependencies for generated code
       run: |
-        cd ./test
+        cd docs/test
         npm install
     - name: Install LanceDB
       run: |
