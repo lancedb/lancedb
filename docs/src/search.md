@@ -56,9 +56,9 @@ db.create_table("my_vectors", data=data)
 === "JavaScript"
 
     ```javascript
-    --8<-- "src/search_legacy.ts:import"
+    --8<-- "docs/src/search_legacy.ts:import"
 
-    --8<-- "src/search_legancy.ts:search1"
+    --8<-- "docs/src/search_legacy.ts:search1"
     ```
 
 By default, `l2` will be used as metric type. You can specify the metric type as
@@ -76,7 +76,7 @@ By default, `l2` will be used as metric type. You can specify the metric type as
 === "JavaScript"
 
     ```javascript
-    --8<-- "src/search_legacy.ts:search2"
+    --8<-- "docs/src/search_legacy.ts:search2"
     ```
 
 ## Approximate nearest neighbor (ANN) search

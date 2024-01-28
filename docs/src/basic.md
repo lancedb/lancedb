@@ -16,13 +16,15 @@
       pip install lancedb
       ```
 
-=== "Javascript"
+=== "Typescript"
 
       ```shell
       npm install vectordb
       ```
 
 === "Rust"
+
+    !!! warning "Rust SDK is experimental, might introduce breaking changes in the near future"
 
     ```shell
     cargo add vectordb
@@ -54,12 +56,12 @@
       db = lancedb.connect(uri)
       ```
 
-=== "Javascript"
+=== "Typescript"
 
     ```typescript
-    --8<-- "src/basic_legacy.ts:import"
+    --8<-- "docs/src/basic_legacy.ts:import"
 
-    --8<-- "src/basic_legacy.ts:open_db"
+    --8<-- "docs/src/basic_legacy.ts:open_db"
     ```
 
 === "Rust"
@@ -67,7 +69,7 @@
     ```rust
     #[tokio::main]
     async fn main() -> Result<()> {
-        --8<-- "src/basic.rs:connect"
+        --8<-- "rust/vectordb/examples/simple.rs:connect"
     }
     ```
 
@@ -100,10 +102,10 @@ If you need a reminder of the uri, you can call `db.uri()`.
     tbl = db.create_table("table_from_df", data=df)
     ```
 
-=== "Javascript"
+=== "Typescript"
 
-    ```javascript
-    --8<-- "src/basic_legacy.ts:create_table"
+    ```typescript
+    --8<-- "docs/src/basic_legacy.ts:create_table"
     ```
 
     If the table already exists, LanceDB will raise an error by default.
@@ -116,22 +118,7 @@ If you need a reminder of the uri, you can call `db.uri()`.
     use arrow_schema::{DataType, Schema, Field};
     use arrow_array::{RecordBatch, RecordBatchIterator};
 
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int32, false),
-        Field::new("vector", DataType::FixedSizeList(
-            Arc::new(Field::new("item", DataType::Float32, true)), 128), true),
-    ]));
-    // Create a RecordBatch stream.
-    let batches = RecordBatchIterator::new(vec![
-        RecordBatch::try*new(schema.clone(),
-        vec![
-            Arc::new(Int32Array::from_iter_values(0..10)),
-            Arc::new(FixedSizeListArray::from_iter_primitive::<Float32Type, *, _>(
-                (0..10).map(|_| Some(vec![Some(1.0); 128])), 128)),
-            ]).unwrap()
-        ].into_iter().map(Ok),
-        schema.clone());
-    db.create_table("my_table", Box::new(batches), None).await.unwrap();
+    --8<-- "rust/vectordb/examples/simple.rs:create_table"
     ```
 
     If the table already exists, LanceDB will raise an error by default.
@@ -151,24 +138,16 @@ In this case, you can create an empty table and specify the schema.
       tbl = db.create_table("empty_table", schema=schema)
       ```
 
-=== "Javascript"
+=== "Typescript"
 
     ```typescript
-    --8<-- "src/basic_legacy.ts:create_empty_table"
+    --8<-- "docs/src/basic_legacy.ts:create_empty_table"
     ```
 
 === "Rust"
 
     ```rust
-    use arrow_schema::{Schema, Field, DataType};
-    use arrow_array::{RecordBatch, RecordBatchIterator};
-
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("vector", DataType::FixedSizeList(
-                Arc::new(Field::new("item", DataType::Float32, true)), 2), true),
-        ]));
-    let batches = RecordBatchIterator::new(vec![].into_iter().map(Ok), schema);
-    db.create_table("empty_table", Box::new(batches), None).await.unwrap();
+    --8<-- "rust/vectordb/examples/simple.rs:create_empty_table"
     ```
 
 ## How to open an existing table
@@ -181,7 +160,7 @@ Once created, you can open a table using the following code:
     tbl = db.open_table("my_table")
     ```
 
-=== "Javascript"
+=== "Typescript"
 
     ```typescript
     const tbl = await db.openTable("myTable");
@@ -190,7 +169,7 @@ Once created, you can open a table using the following code:
 === "Rust"
 
     ```rust
-    const tbl = db.open_table_with_params("myTable", None).await.unwrap();
+    --8<-- "rust/vectordb/examples/simple.rs:open_with_existing_file"
     ```
 
 If you forget the name of your table, you can always get a listing of all table names:
@@ -210,7 +189,7 @@ If you forget the name of your table, you can always get a listing of all table 
 === "Rust"
 
     ```rust
-    println!("{:?}", db.table_names().await.unwrap());
+    --8<-- "rust/vectordb/examples/simple.rs:list_names"
     ```
 
 ## How to add data to a table
@@ -231,9 +210,9 @@ After a table has been created, you can always add more data to it using
     tbl.add(data)
     ```
 
-=== "Javascript"
+=== "Typescript"
 
-    ```javascript
+    ```typescript
     await tbl.add([{vector: [1.3, 1.4], item: "fizz", price: 100.0},
                     {vector: [9.5, 56.2], item: "buzz", price: 200.0}])
     ```
@@ -241,8 +220,7 @@ After a table has been created, you can always add more data to it using
 === "Rust"
 
     ```rust
-    let batches = RecordBatchIterator::new(...);
-    tbl.add(Box::new(batches), None).await.unwrap();
+    --8<-- "rust/vectordb/examples/simple.rs:add"
     ```
 
 ## How to search for (approximate) nearest neighbors
@@ -257,24 +235,18 @@ Once you've embedded the query, you can find its nearest neighbors using the fol
 
     This returns a pandas DataFrame with the results.
 
-=== "Javascript"
+=== "Typescript"
 
-    ```javascript
-    --8<-- "src/basic_legacy.ts:search"
+    ```typescript
+    --8<-- "docs/src/basic_legacy.ts:search"
     ```
 
 === "Rust"
 
     ```rust
-    use arrow_array::RecordBatch;
     use futures::TryStreamExt;
 
-    let results: Vec<RecordBatch> = tbl
-        .search(&[100.0, 100.0])
-        .execute_stream()
-        .await
-        .unwrap()
-        .try_collect();
+    --8<-- "rust/vectordb/examples/simple.rs:search"
     ```
 
 By default, LanceDB runs a brute-force scan over dataset to find the K nearest neighbours (KNN).
@@ -286,7 +258,7 @@ For tables with more than 50K vectors, creating an ANN index is recommended to s
     tbl.create_index()
     ```
 
-=== "Javascript"
+=== "Typescript"
 
     ```{.typescript .ignore}
     await tbl.createIndex({})
@@ -295,7 +267,7 @@ For tables with more than 50K vectors, creating an ANN index is recommended to s
 === "Rust"
 
     ```rust
-    tbl.create_index(&["vector"]).build().await.unwrap()
+     --8<-- "rust/vectordb/examples/simple.rs:create_index"
     ```
 
 Check [Approximate Nearest Neighbor (ANN) Indexes](/ann_indices.md) section for more details.
@@ -312,16 +284,16 @@ This can delete any number of rows that match the filter.
     tbl.delete('item = "fizz"')
     ```
 
-=== "Javascript"
+=== "Typescript"
 
-    ```javascript
-    --8<-- "src/basic_legacy.ts:delete"
+    ```typescript
+    --8<-- "docs/src/basic_legacy.ts:delete"
     ```
 
 === "Rust"
 
     ```rust
-    tbl.delete("item = \"fizz\"").await.unwrap();
+    --8<-- "rust/vectordb/examples/simple.rs:delete"
     ```
 
 The deletion predicate is a SQL expression that supports the same expressions
@@ -350,10 +322,10 @@ Use the `drop_table()` method on the database to remove a table.
       By default, if the table does not exist an exception is raised. To suppress this,
       you can pass in `ignore_missing=True`.
 
-=== "JavaScript"
+=== "Typescript"
 
-      ```javascript
-      --8<-- "src/basic_legacy.ts:drop_table"
+      ```typescript
+      --8<-- "docs/src/basic_legacy.ts:drop_table"
       ```
 
       This permanently removes the table and is not recoverable, unlike deleting rows.
@@ -362,7 +334,7 @@ Use the `drop_table()` method on the database to remove a table.
 === "Rust"
 
     ```rust
-    db.drop_table("my_table").await.unwrap()
+    --8<-- "rust/vectordb/examples/simple.rs:drop_table"
     ```
 
 !!! note "Bundling `vectordb` apps with Webpack"
