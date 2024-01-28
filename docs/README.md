@@ -33,3 +33,10 @@ You can run a local server to test the docs prior to deployment by navigating to
 cd docs
 mkdocs serve
 ```
+
+### Run doctest for typescript example
+
+```bash
+npm i
+npm run ts -- src/basic.ts
+```

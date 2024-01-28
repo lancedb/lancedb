@@ -12,18 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { type Schema, Table as ArrowTable, tableFromIPC } from 'apache-arrow'
+import { type Schema, Table as ArrowTable, tableFromIPC } from "apache-arrow";
 import {
   createEmptyTable,
   fromRecordsToBuffer,
   fromTableToBuffer,
-  makeArrowTable
-} from './arrow'
-import type { EmbeddingFunction } from './embedding/embedding_function'
-import { RemoteConnection } from './remote'
-import { Query } from './query'
-import { isEmbeddingFunction } from './embedding/embedding_function'
-import { type Literal, toSQL } from './util'
+  makeArrowTable,
+} from "./arrow";
+import type { EmbeddingFunction } from "./embedding/embedding_function";
+import { RemoteConnection } from "./remote";
+import { Query } from "./query";
+import { isEmbeddingFunction } from "./embedding/embedding_function";
+import { type Literal, toSQL } from "./util";
 
 const {
   databaseNew,
@@ -41,23 +41,23 @@ const {
   tableCompactFiles,
   tableListIndices,
   tableIndexStats,
-  tableSchema
+  tableSchema,
   // eslint-disable-next-line @typescript-eslint/no-var-requires
-} = require('../native.js')
+} = require("../native.js");
 
-export { Query }
-export type { EmbeddingFunction }
-export { OpenAIEmbeddingFunction } from './embedding/openai'
-export { makeArrowTable, type MakeArrowTableOptions } from './arrow'
+export { Query };
+export type { EmbeddingFunction };
+export { OpenAIEmbeddingFunction } from "./embedding/openai";
+export { makeArrowTable, type MakeArrowTableOptions } from "./arrow";
 
-const defaultAwsRegion = 'us-west-2'
+const defaultAwsRegion = "us-west-2";
 
 export interface AwsCredentials {
-  accessKeyId: string
+  accessKeyId: string;
 
-  secretKey: string
+  secretKey: string;
 
-  sessionToken?: string
+  sessionToken?: string;
 }
 
 export interface ConnectionOptions {
@@ -68,65 +68,65 @@ export interface ConnectionOptions {
    * - `s3://bucket/path/to/database` or `gs://bucket/path/to/database` - database on cloud storage
    * - `db://host:port` - remote database (LanceDB cloud)
    */
-  uri: string
+  uri: string;
 
   /** User provided AWS crednetials.
    *
    * If not provided, LanceDB will use the default credentials provider chain.
    */
-  awsCredentials?: AwsCredentials
+  awsCredentials?: AwsCredentials;
 
   /** AWS region to connect to. Default is {@link defaultAwsRegion}. */
-  awsRegion?: string
+  awsRegion?: string;
 
   /**
    * API key for the remote connections
    *
    * Can also be passed by setting environment variable `LANCEDB_API_KEY`
    */
-  apiKey?: string
+  apiKey?: string;
 
   /** Region to connect */
-  region?: string
+  region?: string;
 
   /**
    * Override the host URL for the remote connection.
    *
    * This is useful for local testing.
    */
-  hostOverride?: string
+  hostOverride?: string;
 }
 
-function getAwsArgs (opts: ConnectionOptions): any[] {
-  const callArgs: any[] = []
-  const awsCredentials = opts.awsCredentials
+function getAwsArgs(opts: ConnectionOptions): any[] {
+  const callArgs: any[] = [];
+  const awsCredentials = opts.awsCredentials;
   if (awsCredentials !== undefined) {
-    callArgs.push(awsCredentials.accessKeyId)
-    callArgs.push(awsCredentials.secretKey)
-    callArgs.push(awsCredentials.sessionToken)
+    callArgs.push(awsCredentials.accessKeyId);
+    callArgs.push(awsCredentials.secretKey);
+    callArgs.push(awsCredentials.sessionToken);
   } else {
-    callArgs.fill(undefined, 0, 3)
+    callArgs.fill(undefined, 0, 3);
   }
 
-  callArgs.push(opts.awsRegion)
-  return callArgs
+  callArgs.push(opts.awsRegion);
+  return callArgs;
 }
 
 export interface CreateTableOptions<T> {
   // Name of Table
-  name: string
+  name: string;
 
   // Data to insert into the Table
-  data?: Array<Record<string, unknown>> | ArrowTable | undefined
+  data?: Array<Record<string, unknown>> | ArrowTable | undefined;
 
   // Optional Arrow Schema for this table
-  schema?: Schema | undefined
+  schema?: Schema | undefined;
 
   // Optional embedding function used to create embeddings
-  embeddingFunction?: EmbeddingFunction<T> | undefined
+  embeddingFunction?: EmbeddingFunction<T> | undefined;
 
   // WriteOptions for this operation
-  writeOptions?: WriteOptions | undefined
+  writeOptions?: WriteOptions | undefined;
 }
 
 /**
@@ -142,40 +142,40 @@ export interface CreateTableOptions<T> {
  *
  * @see {@link ConnectionOptions} for more details on the URI format.
  */
-export async function connect (uri: string): Promise<Connection>
+export async function connect(uri: string): Promise<Connection>;
 /**
  * Connect to a LanceDB instance with connection options.
  *
  * @param opts The {@link ConnectionOptions} to use when connecting to the database.
  */
-export async function connect (
+export async function connect(
   opts: Partial<ConnectionOptions>
-): Promise<Connection>
-export async function connect (
+): Promise<Connection>;
+export async function connect(
   arg: string | Partial<ConnectionOptions>
 ): Promise<Connection> {
-  let opts: ConnectionOptions
-  if (typeof arg === 'string') {
-    opts = { uri: arg }
+  let opts: ConnectionOptions;
+  if (typeof arg === "string") {
+    opts = { uri: arg };
   } else {
     // opts = { uri: arg.uri, awsCredentials = arg.awsCredentials }
     opts = Object.assign(
       {
-        uri: '',
+        uri: "",
         awsCredentials: undefined,
         apiKey: undefined,
-        region: defaultAwsRegion
+        region: defaultAwsRegion,
       },
       arg
-    )
+    );
   }
 
-  if (opts.uri.startsWith('db://')) {
+  if (opts.uri.startsWith("db://")) {
     // Remote connection
-    return new RemoteConnection(opts)
+    return new RemoteConnection(opts);
   }
-  const db = await databaseNew(opts.uri)
-  return new LocalConnection(db, opts)
+  const db = await databaseNew(opts.uri);
+  return new LocalConnection(db, opts);
 }
 
 /**
@@ -184,9 +184,9 @@ export async function connect (
  * Connection could be local against filesystem or remote against a server.
  */
 export interface Connection {
-  uri: string
+  uri: string;
 
-  tableNames(): Promise<string[]>
+  tableNames(): Promise<string[]>;
 
   /**
    * Open a table in the database.
@@ -197,7 +197,7 @@ export interface Connection {
   openTable<T>(
     name: string,
     embeddings?: EmbeddingFunction<T>
-  ): Promise<Table<T>>
+  ): Promise<Table<T>>;
 
   /**
    * Creates a new Table, optionally initializing it with new data.
@@ -213,8 +213,8 @@ export interface Connection {
     data,
     schema,
     embeddingFunction,
-    writeOptions
-  }: CreateTableOptions<T>): Promise<Table<T>>
+    writeOptions,
+  }: CreateTableOptions<T>): Promise<Table<T>>;
 
   /**
    * Creates a new Table and initialize it with new data.
@@ -225,7 +225,7 @@ export interface Connection {
   createTable(
     name: string,
     data: Array<Record<string, unknown>> | ArrowTable
-  ): Promise<Table>
+  ): Promise<Table>;
 
   /**
    * Creates a new Table and initialize it with new data.
@@ -238,7 +238,7 @@ export interface Connection {
     name: string,
     data: Array<Record<string, unknown>> | ArrowTable,
     options: WriteOptions
-  ): Promise<Table>
+  ): Promise<Table>;
 
   /**
    * Creates a new Table and initialize it with new data.
@@ -251,7 +251,7 @@ export interface Connection {
     name: string,
     data: Array<Record<string, unknown>> | ArrowTable,
     embeddings: EmbeddingFunction<T>
-  ): Promise<Table<T>>
+  ): Promise<Table<T>>;
   /**
    * Creates a new Table and initialize it with new data.
    *
@@ -265,26 +265,26 @@ export interface Connection {
     data: Array<Record<string, unknown>> | ArrowTable,
     embeddings: EmbeddingFunction<T>,
     options: WriteOptions
-  ): Promise<Table<T>>
+  ): Promise<Table<T>>;
 
   /**
    * Drop an existing table.
    * @param name The name of the table to drop.
    */
-  dropTable(name: string): Promise<void>
+  dropTable(name: string): Promise<void>;
 }
 
 /**
  * A LanceDB Table is the collection of Records. Each Record has one or more vector fields.
  */
 export interface Table<T = number[]> {
-  name: string
+  name: string;
 
   /**
    * Creates a search query to find the nearest neighbors of the given search term
    * @param query The query search term
    */
-  search: (query: T) => Query<T>
+  search: (query: T) => Query<T>;
 
   /**
    * Insert records into this Table.
@@ -292,7 +292,7 @@ export interface Table<T = number[]> {
    * @param data Records to be inserted into the Table
    * @return The number of rows added to the table
    */
-  add: (data: Array<Record<string, unknown>> | ArrowTable) => Promise<number>
+  add: (data: Array<Record<string, unknown>> | ArrowTable) => Promise<number>;
 
   /**
    * Insert records into this Table, replacing its contents.
@@ -302,14 +302,14 @@ export interface Table<T = number[]> {
    */
   overwrite: (
     data: Array<Record<string, unknown>> | ArrowTable
-  ) => Promise<number>
+  ) => Promise<number>;
 
   /**
    * Create an ANN index on this Table vector index.
    *
    * @param indexParams The parameters of this Index, @see VectorIndexParams.
    */
-  createIndex: (indexParams: VectorIndexParams) => Promise<any>
+  createIndex: (indexParams: VectorIndexParams) => Promise<any>;
 
   /**
    * Create a scalar index on this Table for the given column
@@ -359,12 +359,12 @@ export interface Table<T = number[]> {
    * await table.createScalarIndex('my_col')
    * ```
    */
-  createScalarIndex: (column: string, replace: boolean) => Promise<void>
+  createScalarIndex: (column: string, replace: boolean) => Promise<void>;
 
   /**
    * Returns the number of rows in this table.
    */
-  countRows: () => Promise<number>
+  countRows: () => Promise<number>;
 
   /**
    * Delete rows from this table.
@@ -398,7 +398,7 @@ export interface Table<T = number[]> {
    * await tbl.countRows() // Returns 1
    * ```
    */
-  delete: (filter: string) => Promise<void>
+  delete: (filter: string) => Promise<void>;
 
   /**
    * Update rows in this table.
@@ -431,19 +431,19 @@ export interface Table<T = number[]> {
    * ```
    *
    */
-  update: (args: UpdateArgs | UpdateSqlArgs) => Promise<void>
+  update: (args: UpdateArgs | UpdateSqlArgs) => Promise<void>;
 
   /**
    * List the indicies on this table.
    */
-  listIndices: () => Promise<VectorIndex[]>
+  listIndices: () => Promise<VectorIndex[]>;
 
   /**
    * Get statistics about an index.
    */
-  indexStats: (indexUuid: string) => Promise<IndexStats>
+  indexStats: (indexUuid: string) => Promise<IndexStats>;
 
-  schema: Promise<Schema>
+  schema: Promise<Schema>;
 }
 
 export interface UpdateArgs {
@@ -451,13 +451,13 @@ export interface UpdateArgs {
    * A filter in the same format used by a sql WHERE clause. The filter may be empty,
    * in which case all rows will be updated.
    */
-  where?: string
+  where?: string;
 
   /**
    * A key-value map of updates. The keys are the column names, and the values are the
    * new values to set
    */
-  values: Record<string, Literal>
+  values: Record<string, Literal>;
 }
 
 export interface UpdateSqlArgs {
@@ -465,47 +465,47 @@ export interface UpdateSqlArgs {
    * A filter in the same format used by a sql WHERE clause. The filter may be empty,
    * in which case all rows will be updated.
    */
-  where?: string
+  where?: string;
 
   /**
    * A key-value map of updates. The keys are the column names, and the values are the
    * new values to set as SQL expressions.
    */
-  valuesSql: Record<string, string>
+  valuesSql: Record<string, string>;
 }
 
 export interface VectorIndex {
-  columns: string[]
-  name: string
-  uuid: string
+  columns: string[];
+  name: string;
+  uuid: string;
 }
 
 export interface IndexStats {
-  numIndexedRows: number | null
-  numUnindexedRows: number | null
+  numIndexedRows: number | null;
+  numUnindexedRows: number | null;
 }
 
 /**
  * A connection to a LanceDB database.
  */
 export class LocalConnection implements Connection {
-  private readonly _options: () => ConnectionOptions
-  private readonly _db: any
+  private readonly _options: () => ConnectionOptions;
+  private readonly _db: any;
 
-  constructor (db: any, options: ConnectionOptions) {
-    this._options = () => options
-    this._db = db
+  constructor(db: any, options: ConnectionOptions) {
+    this._options = () => options;
+    this._db = db;
   }
 
-  get uri (): string {
-    return this._options().uri
+  get uri(): string {
+    return this._options().uri;
   }
 
   /**
    * Get the names of all tables in the database.
    */
-  async tableNames (): Promise<string[]> {
-    return databaseTableNames.call(this._db)
+  async tableNames(): Promise<string[]> {
+    return databaseTableNames.call(this._db);
   }
 
   /**
@@ -513,7 +513,7 @@ export class LocalConnection implements Connection {
    *
    * @param name The name of the table.
    */
-  async openTable (name: string): Promise<Table>
+  async openTable(name: string): Promise<Table>;
 
   /**
    * Open a table in the database.
@@ -524,11 +524,11 @@ export class LocalConnection implements Connection {
   async openTable<T>(
     name: string,
     embeddings: EmbeddingFunction<T>
-  ): Promise<Table<T>>
+  ): Promise<Table<T>>;
   async openTable<T>(
     name: string,
     embeddings?: EmbeddingFunction<T>
-  ): Promise<Table<T>>
+  ): Promise<Table<T>>;
   async openTable<T>(
     name: string,
     embeddings?: EmbeddingFunction<T>
@@ -537,11 +537,11 @@ export class LocalConnection implements Connection {
       this._db,
       name,
       ...getAwsArgs(this._options())
-    )
+    );
     if (embeddings !== undefined) {
-      return new LocalTable(tbl, name, this._options(), embeddings)
+      return new LocalTable(tbl, name, this._options(), embeddings);
     } else {
-      return new LocalTable(tbl, name, this._options())
+      return new LocalTable(tbl, name, this._options());
     }
   }
 
@@ -551,32 +551,32 @@ export class LocalConnection implements Connection {
     optsOrEmbedding?: WriteOptions | EmbeddingFunction<T>,
     opt?: WriteOptions
   ): Promise<Table<T>> {
-    if (typeof name === 'string') {
-      let writeOptions: WriteOptions = new DefaultWriteOptions()
+    if (typeof name === "string") {
+      let writeOptions: WriteOptions = new DefaultWriteOptions();
       if (opt !== undefined && isWriteOptions(opt)) {
-        writeOptions = opt
+        writeOptions = opt;
       } else if (
         optsOrEmbedding !== undefined &&
         isWriteOptions(optsOrEmbedding)
       ) {
-        writeOptions = optsOrEmbedding
+        writeOptions = optsOrEmbedding;
       }
 
-      let embeddings: undefined | EmbeddingFunction<T>
+      let embeddings: undefined | EmbeddingFunction<T>;
       if (
         optsOrEmbedding !== undefined &&
         isEmbeddingFunction(optsOrEmbedding)
       ) {
-        embeddings = optsOrEmbedding
+        embeddings = optsOrEmbedding;
       }
       return await this.createTableImpl({
         name,
         data,
         embeddingFunction: embeddings,
-        writeOptions
-      })
+        writeOptions,
+      });
     }
-    return await this.createTableImpl(name)
+    return await this.createTableImpl(name);
   }
 
   private async createTableImpl<T>({
@@ -584,35 +584,39 @@ export class LocalConnection implements Connection {
     data,
     schema,
     embeddingFunction,
-    writeOptions = new DefaultWriteOptions()
+    writeOptions = new DefaultWriteOptions(),
   }: {
-    name: string
-    data?: Array<Record<string, unknown>> | ArrowTable | undefined
-    schema?: Schema | undefined
-    embeddingFunction?: EmbeddingFunction<T> | undefined
-    writeOptions?: WriteOptions | undefined
+    name: string;
+    data?: Array<Record<string, unknown>> | ArrowTable | undefined;
+    schema?: Schema | undefined;
+    embeddingFunction?: EmbeddingFunction<T> | undefined;
+    writeOptions?: WriteOptions | undefined;
   }): Promise<Table<T>> {
-    let buffer: Buffer
+    let buffer: Buffer;
 
-    function isEmpty (
+    function isEmpty(
       data: Array<Record<string, unknown>> | ArrowTable<any>
     ): boolean {
       if (data instanceof ArrowTable) {
-        return data.data.length === 0
+        return data.data.length === 0;
       }
-      return data.length === 0
+      return data.length === 0;
     }
 
+    console.log("This is before result: data: ", data?.toString());
+    console.log("Tabe: ", data instanceof ArrowTable);
     if (data === undefined || isEmpty(data)) {
       if (schema === undefined) {
-        throw new Error('Either data or schema needs to defined')
+        throw new Error("Either data or schema needs to defined");
       }
-      buffer = await fromTableToBuffer(createEmptyTable(schema))
+      console.log("Creating empty table with schema", schema);
+      buffer = await fromTableToBuffer(createEmptyTable(schema));
+      console.log("This is after result");
     } else if (data instanceof ArrowTable) {
-      buffer = await fromTableToBuffer(data, embeddingFunction, schema)
+      buffer = await fromTableToBuffer(data, embeddingFunction, schema);
     } else {
       // data is Array<Record<...>>
-      buffer = await fromRecordsToBuffer(data, embeddingFunction, schema)
+      buffer = await fromRecordsToBuffer(data, embeddingFunction, schema);
     }
 
     const tbl = await tableCreate.call(
@@ -621,11 +625,11 @@ export class LocalConnection implements Connection {
       buffer,
       writeOptions?.writeMode?.toString(),
       ...getAwsArgs(this._options())
-    )
+    );
     if (embeddingFunction !== undefined) {
-      return new LocalTable(tbl, name, this._options(), embeddingFunction)
+      return new LocalTable(tbl, name, this._options(), embeddingFunction);
     } else {
-      return new LocalTable(tbl, name, this._options())
+      return new LocalTable(tbl, name, this._options());
     }
   }
 
@@ -633,65 +637,65 @@ export class LocalConnection implements Connection {
    * Drop an existing table.
    * @param name The name of the table to drop.
    */
-  async dropTable (name: string): Promise<void> {
-    await databaseDropTable.call(this._db, name)
+  async dropTable(name: string): Promise<void> {
+    await databaseDropTable.call(this._db, name);
   }
 }
 
 export class LocalTable<T = number[]> implements Table<T> {
-  private _tbl: any
-  private readonly _name: string
-  private readonly _isElectron: boolean
-  private readonly _embeddings?: EmbeddingFunction<T>
-  private readonly _options: () => ConnectionOptions
+  private _tbl: any;
+  private readonly _name: string;
+  private readonly _isElectron: boolean;
+  private readonly _embeddings?: EmbeddingFunction<T>;
+  private readonly _options: () => ConnectionOptions;
 
-  constructor (tbl: any, name: string, options: ConnectionOptions)
+  constructor(tbl: any, name: string, options: ConnectionOptions);
   /**
    * @param tbl
    * @param name
    * @param options
    * @param embeddings An embedding function to use when interacting with this table
    */
-  constructor (
+  constructor(
     tbl: any,
     name: string,
     options: ConnectionOptions,
     embeddings: EmbeddingFunction<T>
-  )
-  constructor (
+  );
+  constructor(
     tbl: any,
     name: string,
     options: ConnectionOptions,
     embeddings?: EmbeddingFunction<T>
   ) {
-    this._tbl = tbl
-    this._name = name
-    this._embeddings = embeddings
-    this._options = () => options
-    this._isElectron = this.checkElectron()
+    this._tbl = tbl;
+    this._name = name;
+    this._embeddings = embeddings;
+    this._options = () => options;
+    this._isElectron = this.checkElectron();
   }
 
-  get name (): string {
-    return this._name
+  get name(): string {
+    return this._name;
   }
 
   /**
    * Creates a search query to find the nearest neighbors of the given search term
    * @param query The query search term
    */
-  search (query: T): Query<T> {
-    return new Query(query, this._tbl, this._embeddings)
+  search(query: T): Query<T> {
+    return new Query(query, this._tbl, this._embeddings);
   }
 
   /**
    * Creates a filter query to find all rows matching the specified criteria
    * @param value The filter criteria (like SQL where clause syntax)
    */
-  filter (value: string): Query<T> {
-    return new Query(undefined, this._tbl, this._embeddings).filter(value)
+  filter(value: string): Query<T> {
+    return new Query(undefined, this._tbl, this._embeddings).filter(value);
   }
 
-  where = this.filter
+  where = this.filter;
 
   /**
    * Insert records into this Table.
@@ -699,15 +703,15 @@ export class LocalTable<T = number[]> implements Table<T> {
    * @param data Records to be inserted into the Table
    * @return The number of rows added to the table
    */
-  async add (
+  async add(
     data: Array<Record<string, unknown>> | ArrowTable
   ): Promise<number> {
-    const schema = await this.schema
-    let tbl: ArrowTable
+    const schema = await this.schema;
+    let tbl: ArrowTable;
     if (data instanceof ArrowTable) {
-      tbl = data
+      tbl = data;
     } else {
-      tbl = makeArrowTable(data, { schema })
+      tbl = makeArrowTable(data, { schema });
     }
     return tableAdd
       .call(
@@ -717,8 +721,8 @@ export class LocalTable<T = number[]> implements Table<T> {
         ...getAwsArgs(this._options())
       )
       .then((newTable: any) => {
-        this._tbl = newTable
-      })
+        this._tbl = newTable;
+      });
   }
 
   /**
@@ -727,14 +731,14 @@ export class LocalTable<T = number[]> implements Table<T> {
    * @param data Records to be inserted into the Table
    * @return The number of rows added to the table
    */
-  async overwrite (
+  async overwrite(
     data: Array<Record<string, unknown>> | ArrowTable
   ): Promise<number> {
-    let buffer: Buffer
+    let buffer: Buffer;
     if (data instanceof ArrowTable) {
-      buffer = await fromTableToBuffer(data, this._embeddings)
+      buffer = await fromTableToBuffer(data, this._embeddings);
     } else {
-      buffer = await fromRecordsToBuffer(data, this._embeddings)
+      buffer = await fromRecordsToBuffer(data, this._embeddings);
     }
     return tableAdd
       .call(
@@ -744,8 +748,8 @@ export class LocalTable<T = number[]> implements Table<T> {
         ...getAwsArgs(this._options())
       )
       .then((newTable: any) => {
-        this._tbl = newTable
-      })
+        this._tbl = newTable;
+      });
   }
 
   /**
@@ -753,23 +757,23 @@ export class LocalTable<T = number[]> implements Table<T> {
    *
    * @param indexParams The parameters of this Index, @see VectorIndexParams.
    */
-  async createIndex (indexParams: VectorIndexParams): Promise<any> {
+  async createIndex(indexParams: VectorIndexParams): Promise<any> {
     return tableCreateVectorIndex
       .call(this._tbl, indexParams)
       .then((newTable: any) => {
-        this._tbl = newTable
-      })
+        this._tbl = newTable;
+      });
   }
 
-  async createScalarIndex (column: string, replace: boolean): Promise<void> {
-    return tableCreateScalarIndex.call(this._tbl, column, replace)
+  async createScalarIndex(column: string, replace: boolean): Promise<void> {
+    return tableCreateScalarIndex.call(this._tbl, column, replace);
   }
 
   /**
    * Returns the number of rows in this table.
    */
-  async countRows (): Promise<number> {
-    return tableCountRows.call(this._tbl)
+  async countRows(): Promise<number> {
+    return tableCountRows.call(this._tbl);
   }
 
   /**
@@ -777,10 +781,10 @@ export class LocalTable<T = number[]> implements Table<T> {
    *
    * @param filter A filter in the same format used by a sql WHERE clause.
    */
-  async delete (filter: string): Promise<void> {
+  async delete(filter: string): Promise<void> {
     return tableDelete.call(this._tbl, filter).then((newTable: any) => {
-      this._tbl = newTable
-    })
+      this._tbl = newTable;
+    });
   }
 
   /**
@@ -790,26 +794,26 @@ export class LocalTable<T = number[]> implements Table<T> {
    *
    * @returns
    */
-  async update (args: UpdateArgs | UpdateSqlArgs): Promise<void> {
-    let filter: string | null
-    let updates: Record<string, string>
+  async update(args: UpdateArgs | UpdateSqlArgs): Promise<void> {
+    let filter: string | null;
+    let updates: Record<string, string>;
 
-    if ('valuesSql' in args) {
-      filter = args.where ?? null
-      updates = args.valuesSql
+    if ("valuesSql" in args) {
+      filter = args.where ?? null;
+      updates = args.valuesSql;
     } else {
-      filter = args.where ?? null
-      updates = {}
+      filter = args.where ?? null;
+      updates = {};
       for (const [key, value] of Object.entries(args.values)) {
-        updates[key] = toSQL(value)
+        updates[key] = toSQL(value);
       }
     }
 
     return tableUpdate
       .call(this._tbl, filter, updates)
       .then((newTable: any) => {
-        this._tbl = newTable
-      })
+        this._tbl = newTable;
+      });
   }
 
   /**
@@ -827,16 +831,16 @@ export class LocalTable<T = number[]> implements Table<T> {
    *                 uphold this promise can lead to corrupted tables.
    * @returns
    */
-  async cleanupOldVersions (
+  async cleanupOldVersions(
     olderThan?: number,
     deleteUnverified?: boolean
   ): Promise<CleanupStats> {
     return tableCleanupOldVersions
       .call(this._tbl, olderThan, deleteUnverified)
-      .then((res: { newTable: any, metrics: CleanupStats }) => {
-        this._tbl = res.newTable
-        return res.metrics
-      })
+      .then((res: { newTable: any; metrics: CleanupStats }) => {
+        this._tbl = res.newTable;
+        return res.metrics;
+      });
   }
 
   /**
@@ -850,45 +854,45 @@ export class LocalTable<T = number[]> implements Table<T> {
    *               for most tables.
    * @returns Metrics about the compaction operation.
    */
-  async compactFiles (options?: CompactionOptions): Promise<CompactionMetrics> {
-    const optionsArg = options ?? {}
+  async compactFiles(options?: CompactionOptions): Promise<CompactionMetrics> {
+    const optionsArg = options ?? {};
     return tableCompactFiles
       .call(this._tbl, optionsArg)
-      .then((res: { newTable: any, metrics: CompactionMetrics }) => {
-        this._tbl = res.newTable
-        return res.metrics
-      })
+      .then((res: { newTable: any; metrics: CompactionMetrics }) => {
+        this._tbl = res.newTable;
+        return res.metrics;
+      });
   }
 
-  async listIndices (): Promise<VectorIndex[]> {
-    return tableListIndices.call(this._tbl)
+  async listIndices(): Promise<VectorIndex[]> {
+    return tableListIndices.call(this._tbl);
   }
 
-  async indexStats (indexUuid: string): Promise<IndexStats> {
-    return tableIndexStats.call(this._tbl, indexUuid)
+  async indexStats(indexUuid: string): Promise<IndexStats> {
+    return tableIndexStats.call(this._tbl, indexUuid);
   }
 
-  get schema (): Promise<Schema> {
+  get schema(): Promise<Schema> {
     // empty table
-    return this.getSchema()
+    return this.getSchema();
   }
 
-  private async getSchema (): Promise<Schema> {
-    const buffer = await tableSchema.call(this._tbl, this._isElectron)
-    const table = tableFromIPC(buffer)
-    return table.schema
+  private async getSchema(): Promise<Schema> {
+    const buffer = await tableSchema.call(this._tbl, this._isElectron);
+    const table = tableFromIPC(buffer);
+    return table.schema;
   }
 
   // See https://github.com/electron/electron/issues/2288
-  private checkElectron (): boolean {
+  private checkElectron(): boolean {
     try {
       // eslint-disable-next-line no-prototype-builtins
       return (
-        Object.prototype.hasOwnProperty.call(process?.versions, 'electron') ||
-        navigator?.userAgent?.toLowerCase()?.includes(' electron')
-      )
+        Object.prototype.hasOwnProperty.call(process?.versions, "electron") ||
+        navigator?.userAgent?.toLowerCase()?.includes(" electron")
+      );
     } catch (e) {
-      return false
+      return false;
     }
   }
 }
@@ -897,11 +901,11 @@ export interface CleanupStats {
   /**
    * The number of bytes removed from disk.
    */
-  bytesRemoved: number
+  bytesRemoved: number;
   /**
    * The number of old table versions removed.
    */
-  oldVersions: number
+  oldVersions: number;
 }
 
 export interface CompactionOptions {
@@ -910,49 +914,49 @@ export interface CompactionOptions {
    * will be compacted into adjacent fragments to produce larger fragments.
    * Defaults to 1024 * 1024.
    */
-  targetRowsPerFragment?: number
+  targetRowsPerFragment?: number;
   /**
    * The maximum number of rows per group. Defaults to 1024.
    */
-  maxRowsPerGroup?: number
+  maxRowsPerGroup?: number;
   /**
    * If true, fragments that have rows that are deleted may be compacted to
    * remove the deleted rows. This can improve the performance of queries.
    * Default is true.
    */
-  materializeDeletions?: boolean
+  materializeDeletions?: boolean;
   /**
    * A number between 0 and 1, representing the proportion of rows that must be
    * marked deleted before a fragment is a candidate for compaction to remove
    * the deleted rows. Default is 10%.
    */
-  materializeDeletionsThreshold?: number
+  materializeDeletionsThreshold?: number;
   /**
    * The number of threads to use for compaction. If not provided, defaults to
    * the number of cores on the machine.
    */
-  numThreads?: number
+  numThreads?: number;
 }
 
 export interface CompactionMetrics {
   /**
    * The number of fragments that were removed.
    */
-  fragmentsRemoved: number
+  fragmentsRemoved: number;
   /**
    * The number of new fragments that were created.
    */
-  fragmentsAdded: number
+  fragmentsAdded: number;
   /**
    * The number of files that were removed. Each fragment may have more than one
    * file.
    */
-  filesRemoved: number
+  filesRemoved: number;
   /**
    * The number of files added. This is typically equal to the number of
    * fragments added.
    */
-  filesAdded: number
+  filesAdded: number;
 }
 
 /// Config to build IVF_PQ index.
@@ -961,72 +965,72 @@ export interface IvfPQIndexConfig {
   /**
    * The column to be indexed
    */
-  column?: string
+  column?: string;
 
   /**
    * A unique name for the index
    */
-  index_name?: string
+  index_name?: string;
 
   /**
    * Metric type, L2 or Cosine
    */
-  metric_type?: MetricType
+  metric_type?: MetricType;
 
   /**
    * The number of partitions this index
    */
-  num_partitions?: number
+  num_partitions?: number;
 
   /**
    * The max number of iterations for kmeans training.
    */
-  max_iters?: number
+  max_iters?: number;
 
   /**
    * Train as optimized product quantization.
    */
-  use_opq?: boolean
+  use_opq?: boolean;
 
   /**
    * Number of subvectors to build PQ code
    */
-  num_sub_vectors?: number
+  num_sub_vectors?: number;
   /**
    * The number of bits to present one PQ centroid.
    */
-  num_bits?: number
+  num_bits?: number;
 
   /**
    * Max number of iterations to train OPQ, if `use_opq` is true.
    */
-  max_opq_iters?: number
+  max_opq_iters?: number;
 
   /**
    * Replace an existing index with the same name if it exists.
    */
-  replace?: boolean
+  replace?: boolean;
 
   /**
    * Cache size of the index
    */
-  index_cache_size?: number
+  index_cache_size?: number;
 
-  type: 'ivf_pq'
+  type: "ivf_pq";
 }
 
-export type VectorIndexParams = IvfPQIndexConfig
+export type VectorIndexParams = IvfPQIndexConfig;
 
 /**
  * Write mode for writing a table.
  */
 export enum WriteMode {
   /** Create a new {@link Table}. */
-  Create = 'create',
+  Create = "create",
   /** Overwrite the existing {@link Table} if presented. */
-  Overwrite = 'overwrite',
+  Overwrite = "overwrite",
   /** Append new data to the table. */
-  Append = 'append',
+  Append = "append",
 }
 
 /**
@@ -1034,18 +1038,18 @@ export enum WriteMode {
  */
 export interface WriteOptions {
   /** A {@link WriteMode} to use on this operation */
-  writeMode?: WriteMode
+  writeMode?: WriteMode;
 }
 
 export class DefaultWriteOptions implements WriteOptions {
-  writeMode = WriteMode.Create
+  writeMode = WriteMode.Create;
 }
 
-export function isWriteOptions (value: any): value is WriteOptions {
+export function isWriteOptions(value: any): value is WriteOptions {
   return (
     Object.keys(value).length === 1 &&
-    (value.writeMode === undefined || typeof value.writeMode === 'string')
-  )
+    (value.writeMode === undefined || typeof value.writeMode === "string")
+  );
 }
 
 /**
@@ -1055,15 +1059,15 @@ export enum MetricType {
   /**
    * Euclidean distance
    */
-  L2 = 'l2',
+  L2 = "l2",
 
   /**
    * Cosine distance
    */
-  Cosine = 'cosine',
+  Cosine = "cosine",
 
   /**
    * Dot product
    */
-  Dot = 'dot',
+  Dot = "dot",
 }

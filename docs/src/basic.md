@@ -54,22 +54,18 @@
 
 === "Javascript"
 
-      ```javascript
-      const lancedb = require("vectordb");
+    ```typescript
+    --8<-- "src/basic_legacy.ts:import"
 
-      const uri = "data/sample-lancedb";
-      const db = await lancedb.connect(uri);
-      ```
+    --8<-- "src/basic_legacy.ts:open_db"
+    ```
 
 === "Rust"
 
     ```rust
-    use vectordb::connect;
-
     #[tokio::main]
     async fn main() -> Result<()> {
-        let uri = "data/sample-lancedb";
-        let db = connect(uri).await?;
+        --8<-- "src/basic.rs:connect"
     }
     ```
 
@@ -105,11 +101,7 @@ If you need a reminder of the uri, you can call `db.uri()`.
 === "Javascript"
 
     ```javascript
-    const tbl = await db.createTable(
-        "myTable",
-        [{"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
-         {"vector": [5.9, 26.5], "item": "bar", "price": 20.0}]
-    )
+    --8<-- "src/basic_legacy.ts:create_table"
     ```
 
     If the table already exists, LanceDB will raise an error by default.
@@ -160,10 +152,7 @@ In this case, you can create an empty table and specify the schema.
 === "Javascript"
 
     ```typescript
-    import { Schema, Field, FixedSizeList, DataType } from "apache-arrow";
-
-    schema = new Schema([new new Field("vec", new FixedSizeList(2, new Field("item", new Float32())))])
-    tbl = await db.createTable({ name: "empty_table", schema: schema });
+    --8<-- "src/basic_legacy.ts:create_empty_table"
     ```
 
 === "Rust"
