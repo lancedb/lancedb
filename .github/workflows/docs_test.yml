@@ -71,7 +71,7 @@ jobs:
     - name: Run doc test
       run: |
         cd docs
-        npm run all
+        npm t
     - name: Install dependencies for generated code
       run: |
         cd ./test
