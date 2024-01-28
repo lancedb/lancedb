@@ -68,6 +68,7 @@ jobs:
       run: |
         cd node
         npm ci
+        npm run build
         cd ../docs
         npm install
     - name: Run doc test
