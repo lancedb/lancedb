@@ -47,7 +47,7 @@ const tbl = await db.createTable('myVectors', data)
 === "JavaScript"
 
     ```javascript
-    --8<-- "src/sql_legacy.ts:search"
+    --8<-- "docs/src/sql_legacy.ts:search"
     ```
 
 ## SQL filters
@@ -80,7 +80,7 @@ For example, the following filter string is acceptable:
 === "Javascript"
 
     ```javascript
-    --8<-- "src/sql_legacy.ts:vec_search"
+    --8<-- "docs/src/sql_legacy.ts:vec_search"
     ```
 
 If your column name contains special characters or is a [SQL Keyword](https://docs.rs/sqlparser/latest/sqlparser/keywords/index.html),
@@ -150,7 +150,7 @@ You can also filter your data without search.
 === "JavaScript"
 
     ```javascript
-    --8<---- "src/sql_legacy.ts:sql_search"
+    --8<---- "docs/src/sql_legacy.ts:sql_search"
     ```
 
 !!!warning "If your table is large, this could potentially return a very large amount of data. Please be sure to use a `limit` clause unless you're sure you want to return the whole result set."

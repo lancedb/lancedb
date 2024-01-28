@@ -57,9 +57,9 @@
 === "Javascript"
 
     ```typescript
-    --8<-- "src/basic_legacy.ts:import"
+    --8<-- "docs/src/basic_legacy.ts:import"
 
-    --8<-- "src/basic_legacy.ts:open_db"
+    --8<-- "docs/src/basic_legacy.ts:open_db"
     ```
 
 === "Rust"
@@ -67,7 +67,7 @@
     ```rust
     #[tokio::main]
     async fn main() -> Result<()> {
-        --8<-- "src/basic.rs:connect"
+        --8<-- "rust/vectordb/examples/simple.rs:connect"
     }
     ```
 
@@ -103,7 +103,7 @@ If you need a reminder of the uri, you can call `db.uri()`.
 === "Javascript"
 
     ```javascript
-    --8<-- "src/basic_legacy.ts:create_table"
+    --8<-- "docs/src/basic_legacy.ts:create_table"
     ```
 
     If the table already exists, LanceDB will raise an error by default.
@@ -154,7 +154,7 @@ In this case, you can create an empty table and specify the schema.
 === "Javascript"
 
     ```typescript
-    --8<-- "src/basic_legacy.ts:create_empty_table"
+    --8<-- "docs/src/basic_legacy.ts:create_empty_table"
     ```
 
 === "Rust"
@@ -260,7 +260,7 @@ Once you've embedded the query, you can find its nearest neighbors using the fol
 === "Javascript"
 
     ```javascript
-    --8<-- "src/basic_legacy.ts:search"
+    --8<-- "docs/src/basic_legacy.ts:search"
     ```
 
 === "Rust"
@@ -315,7 +315,7 @@ This can delete any number of rows that match the filter.
 === "Javascript"
 
     ```javascript
-    --8<-- "src/basic_legacy.ts:delete"
+    --8<-- "docs/src/basic_legacy.ts:delete"
     ```
 
 === "Rust"
@@ -353,7 +353,7 @@ Use the `drop_table()` method on the database to remove a table.
 === "JavaScript"
 
       ```javascript
-      --8<-- "src/basic_legacy.ts:drop_table"
+      --8<-- "docs/src/basic_legacy.ts:drop_table"
       ```
 
       This permanently removes the table and is not recoverable, unlike deleting rows.
