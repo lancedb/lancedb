@@ -47,12 +47,12 @@ Lance supports `IVF_PQ` index type by default.
      tbl.create_index(num_partitions=256, num_sub_vectors=96)
      ```
 
-=== "Javascript"
+=== "Typescript"
 
-     ```javascript
-     --8<--- "src/ann_indexes.ts:import"
+     ```typescript
+     --8<--- "docs/src/ann_indexes.ts:import"
 
-     --8<-- "src/ann_indexes.ts:ingest"
+     --8<-- "docs/src/ann_indexes.ts:ingest"
      ```
 
 - **metric** (default: "L2"): The distance metric to use. By default it uses euclidean distance "`L2`".
@@ -137,10 +137,10 @@ There are a couple of parameters that can be used to fine-tune the search:
      1  [0.48587373, 0.269207, 0.15095535, 0.65531915,...  item 3953  108.393867
      ```
 
-=== "Javascript"
+=== "Typescript"
 
-     ```javascript
-     --8<-- "src/ann_indexes.ts:search1"
+     ```typescript
+     --8<-- "docs/src/ann_indexes.ts:search1"
      ```
 
 The search will return the data requested in addition to the distance of each item.
@@ -155,10 +155,10 @@ You can further filter the elements returned by a search using a where clause.
      tbl.search(np.random.random((1536))).where("item != 'item 1141'").to_pandas()
      ```
 
-=== "Javascript"
+=== "Typescript"
 
      ```javascript
-     --8<-- "src/ann_indexes.ts:search2"
+     --8<-- "docs/src/ann_indexes.ts:search2"
      ```
 
 ### Projections (select clause)
@@ -179,10 +179,10 @@ You can select the columns returned by the query using a select clause.
      ...
      ```
 
-=== "Javascript"
+=== "Typescript"
 
-     ```javascript
-     --8<-- "src/ann_indexes.ts:search3"
+     ```typescript
+     --8<-- "docs/src/ann_indexes.ts:search3"
      ```
 
 ## FAQ
@@ -212,7 +212,3 @@ On `SIFT-1M` dataset, our benchmark shows that keeping each partition 1K-4K rows
 PQ is a lossy compression of the original vector, a higher `num_sub_vectors` usually results in
 less space distortion, and thus yields better accuracy. However, a higher `num_sub_vectors` also causes heavier I/O and
 more PQ computation, and thus, higher latency. `dimension / num_sub_vectors` should be a multiple of 8 for optimum SIMD efficiency.
-
-```
-
-```
