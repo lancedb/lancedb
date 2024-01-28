@@ -16,13 +16,15 @@
       pip install lancedb
       ```
 
-=== "Javascript"
+=== "Typescript"
 
       ```shell
       npm install vectordb
       ```
 
 === "Rust"
+
+    !!! warning "Rust SDK is experimental, might introduce breaking changes in the near future"
 
     ```shell
     cargo add vectordb
@@ -54,7 +56,7 @@
       db = lancedb.connect(uri)
       ```
 
-=== "Javascript"
+=== "Typescript"
 
     ```typescript
     --8<-- "docs/src/basic_legacy.ts:import"
@@ -100,9 +102,9 @@ If you need a reminder of the uri, you can call `db.uri()`.
     tbl = db.create_table("table_from_df", data=df)
     ```
 
-=== "Javascript"
+=== "Typescript"
 
-    ```javascript
+    ```typescript
     --8<-- "docs/src/basic_legacy.ts:create_table"
     ```
 
@@ -136,7 +138,7 @@ In this case, you can create an empty table and specify the schema.
       tbl = db.create_table("empty_table", schema=schema)
       ```
 
-=== "Javascript"
+=== "Typescript"
 
     ```typescript
     --8<-- "docs/src/basic_legacy.ts:create_empty_table"
@@ -158,7 +160,7 @@ Once created, you can open a table using the following code:
     tbl = db.open_table("my_table")
     ```
 
-=== "Javascript"
+=== "Typescript"
 
     ```typescript
     const tbl = await db.openTable("myTable");
@@ -208,9 +210,9 @@ After a table has been created, you can always add more data to it using
     tbl.add(data)
     ```
 
-=== "Javascript"
+=== "Typescript"
 
-    ```javascript
+    ```typescript
     await tbl.add([{vector: [1.3, 1.4], item: "fizz", price: 100.0},
                     {vector: [9.5, 56.2], item: "buzz", price: 200.0}])
     ```
@@ -218,8 +220,7 @@ After a table has been created, you can always add more data to it using
 === "Rust"
 
     ```rust
-    let batches = RecordBatchIterator::new(...);
-    tbl.add(Box::new(batches), None).await.unwrap();
+    --8<-- "rust/vectordb/examples/simple.rs:add"
     ```
 
 ## How to search for (approximate) nearest neighbors
@@ -234,9 +235,9 @@ Once you've embedded the query, you can find its nearest neighbors using the fol
 
     This returns a pandas DataFrame with the results.
 
-=== "Javascript"
+=== "Typescript"
 
-    ```javascript
+    ```typescript
     --8<-- "docs/src/basic_legacy.ts:search"
     ```
 
@@ -257,7 +258,7 @@ For tables with more than 50K vectors, creating an ANN index is recommended to s
     tbl.create_index()
     ```
 
-=== "Javascript"
+=== "Typescript"
 
     ```{.typescript .ignore}
     await tbl.createIndex({})
@@ -283,9 +284,9 @@ This can delete any number of rows that match the filter.
     tbl.delete('item = "fizz"')
     ```
 
-=== "Javascript"
+=== "Typescript"
 
-    ```javascript
+    ```typescript
     --8<-- "docs/src/basic_legacy.ts:delete"
     ```
 
@@ -321,9 +322,9 @@ Use the `drop_table()` method on the database to remove a table.
       By default, if the table does not exist an exception is raised. To suppress this,
       you can pass in `ignore_missing=True`.
 
-=== "JavaScript"
+=== "Typescript"
 
-      ```javascript
+      ```typescript
       --8<-- "docs/src/basic_legacy.ts:drop_table"
       ```
 
