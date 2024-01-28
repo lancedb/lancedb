@@ -116,22 +116,7 @@ If you need a reminder of the uri, you can call `db.uri()`.
     use arrow_schema::{DataType, Schema, Field};
     use arrow_array::{RecordBatch, RecordBatchIterator};
 
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int32, false),
-        Field::new("vector", DataType::FixedSizeList(
-            Arc::new(Field::new("item", DataType::Float32, true)), 128), true),
-    ]));
-    // Create a RecordBatch stream.
-    let batches = RecordBatchIterator::new(vec![
-        RecordBatch::try*new(schema.clone(),
-        vec![
-            Arc::new(Int32Array::from_iter_values(0..10)),
-            Arc::new(FixedSizeListArray::from_iter_primitive::<Float32Type, *, _>(
-                (0..10).map(|_| Some(vec![Some(1.0); 128])), 128)),
-            ]).unwrap()
-        ].into_iter().map(Ok),
-        schema.clone());
-    db.create_table("my_table", Box::new(batches), None).await.unwrap();
+    --8<-- "rust/vectordb/examples/simple.rs:create_table"
     ```
 
     If the table already exists, LanceDB will raise an error by default.
@@ -190,7 +175,7 @@ Once created, you can open a table using the following code:
 === "Rust"
 
     ```rust
-    const tbl = db.open_table_with_params("myTable", None).await.unwrap();
+    --8<-- "rust/vectordb/examples/simple.rs:open_with_existing_file"
     ```
 
 If you forget the name of your table, you can always get a listing of all table names:
@@ -210,7 +195,7 @@ If you forget the name of your table, you can always get a listing of all table 
 === "Rust"
 
     ```rust
-    println!("{:?}", db.table_names().await.unwrap());
+    --8<-- "rust/vectordb/examples/simple.rs:list_names"
     ```
 
 ## How to add data to a table
@@ -266,15 +251,9 @@ Once you've embedded the query, you can find its nearest neighbors using the fol
 === "Rust"
 
     ```rust
-    use arrow_array::RecordBatch;
     use futures::TryStreamExt;
 
-    let results: Vec<RecordBatch> = tbl
-        .search(&[100.0, 100.0])
-        .execute_stream()
-        .await
-        .unwrap()
-        .try_collect();
+    --8<-- "rust/vectordb/examples/simple.rs:search"
     ```
 
 By default, LanceDB runs a brute-force scan over dataset to find the K nearest neighbours (KNN).
@@ -362,7 +341,7 @@ Use the `drop_table()` method on the database to remove a table.
 === "Rust"
 
     ```rust
-    db.drop_table("my_table").await.unwrap()
+    --8<-- "rust/vectordb/examples/simple.rs:drop_table"
     ```
 
 !!! note "Bundling `vectordb` apps with Webpack"

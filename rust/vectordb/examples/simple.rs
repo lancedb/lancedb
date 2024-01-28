@@ -28,24 +28,50 @@ async fn main() -> Result<()> {
     let uri = "data/sample-lancedb";
     let db = connect(uri).await?;
     // --8<-- [end:connect]
-    let tbl = create_table(db).await?;
+
+    // --8<-- [start:list_names]
+    println!("{:?}", db.table_names().await?);
+    // --8<-- [end:list_names]
+    let tbl = create_table(db.clone()).await?;
     create_index(tbl.as_ref()).await?;
     let batches = search(tbl.as_ref()).await?;
     println!("{:?}", batches);
+
+    // --8<-- [start:drop_table]
+    db.drop_table("myTable").await.unwrap();
+    Ok(())
+}
+
+#[allow(dead_code)]
+async fn open_with_existing_tbl() -> Result<()> {
+    let uri = "data/sample-lancedb";
+    let db = connect(uri).await?;
+    // --8<-- [start:open_with_existing_file]
+    let _ = db
+        .open_table_with_params("myTable", Default::default())
+        .await
+        .unwrap();
+    // --8<-- [end:open_with_existing_file]
     Ok(())
 }
 
 async fn create_table(db: Arc<dyn Connection>) -> Result<TableRef> {
+    // --8<-- [start:create_table]
+    const TOTAL: usize = 1000;
+    const DIM: usize = 128;
+
     let schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int32, false),
         Field::new(
             "vector",
-            DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 128),
+            DataType::FixedSizeList(
+                Arc::new(Field::new("item", DataType::Float32, true)),
+                DIM as i32,
+            ),
             true,
         ),
     ]));
-    const TOTAL: usize = 1000;
-    const DIM: usize = 128;
+
     // Create a RecordBatch stream.
     let batches = RecordBatchIterator::new(
         vec![RecordBatch::try_new(
@@ -66,6 +92,7 @@ async fn create_table(db: Arc<dyn Connection>) -> Result<TableRef> {
         schema.clone(),
     );
     db.create_table("my_table", Box::new(batches), None).await
+    // --8<-- [end:create_table]
 }
 
 async fn create_index(table: &dyn Table) -> Result<()> {
@@ -78,6 +105,7 @@ async fn create_index(table: &dyn Table) -> Result<()> {
 }
 
 async fn search(table: &dyn Table) -> Result<Vec<RecordBatch>> {
+    // --8<-- [start:search]
     Ok(table
         .search(&[1.0; 128])
         .limit(2)
@@ -85,4 +113,5 @@ async fn search(table: &dyn Table) -> Result<Vec<RecordBatch>> {
         .await?
         .try_collect::<Vec<_>>()
         .await?)
+    // --8<-- [end:search]
 }
