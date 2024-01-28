@@ -443,7 +443,7 @@ export interface Table<T = number[]> {
    */
   indexStats: (indexUuid: string) => Promise<IndexStats>
 
-  filter (value: string): Query<T>;
+  filter (value: string): Query<T>
 
   schema: Promise<Schema>
 }
