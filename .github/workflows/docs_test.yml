@@ -18,24 +18,20 @@ on:
 env:
   # Disable full debug symbol generation to speed up CI build and keep memory down
   # "1" means line tables only, which is useful for panic tracebacks.
-  RUSTFLAGS: "-C debuginfo=1"
+  RUSTFLAGS: "-C debuginfo=1 -C target-cpu=native -C target-feature=+f16c,+avx2,+fma"
   RUST_BACKTRACE: "1"
 
 jobs:
   test-python:
     name: Test doc python code
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        python-minor-version: [ "11" ]
-        os: ["ubuntu-22.04"]
+    runs-on: "ubuntu-latest"
     steps:
     - name: Checkout
       uses: actions/checkout@v4
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
-        python-version: 3.${{ matrix.python-minor-version }}
+        python-version: 3.11
         cache: "pip"
         cache-dependency-path: "docs/test/requirements.txt"
     - name: Build Python
@@ -52,11 +48,7 @@ jobs:
         for d in *; do cd "$d"; echo "$d".py; python "$d".py; cd ..; done
   test-node:
     name: Test doc nodejs code
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        node-version: [ "18" ]
-        os: ["ubuntu-22.04"]
+    runs-on: "ubuntu-latest"
     steps:
     - name: Checkout
       uses: actions/checkout@v4
@@ -64,22 +56,32 @@ jobs:
         fetch-depth: 0
         lfs: true
     - name: Set up Node
-      uses: actions/setup-node@v3
+      uses: actions/setup-node@v4
       with:
-        node-version: ${{ matrix.node-version }}
+        node-version: 20
     - name: Install dependecies needed for ubuntu
-      if: ${{ matrix.os == 'ubuntu-22.04' }}
       run: |
         sudo apt install -y protobuf-compiler libssl-dev
-    - name: Install node dependencies
-      run: |
-        cd docs/test
-        npm install 
     - name: Rust cache
       uses: swatinem/rust-cache@v2
+    - name: Install node dependencies
+      run: |
+        cd node
+        npm ci
+        npm run build
+        cd ../docs
+        npm install
+    - name: Run doc test
+      run: |
+        cd docs
+        npm t
+    - name: Install dependencies for generated code
+      run: |
+        cd docs/test
+        npm install
     - name: Install LanceDB
       run: |
-        cd docs/test/node_modules/vectordb 
+        cd docs/test/node_modules/vectordb
         npm ci
         npm run build-release
         npm run tsc

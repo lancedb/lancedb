@@ -1,0 +1,20 @@
+{
+  "name": "lancedb-docs-test",
+  "version": "1.0.0",
+  "description": "auto-generated tests from doc",
+  "author": "dev@lancedb.com",
+  "license": "Apache 2",
+  "dependencies": {
+    "apache-arrow": "file:../node/node_modules/apache-arrow",
+    "vectordb": "file:../node"
+  },
+  "scripts": {
+    "build": "tsc -b && cd ../node && npm run build",
+    "example": "npm run build && node",
+    "test": "npm run build && node $(ls dist/*.js)"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.8",
+    "typescript": "^5.3.3"
+  }
+}
