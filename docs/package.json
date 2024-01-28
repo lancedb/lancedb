@@ -15,7 +15,6 @@
   },
   "devDependencies": {
     "@types/node": "^20.11.8",
-    "esrun": "^3.2.26",
     "typescript": "^5.3.3"
   }
 }
