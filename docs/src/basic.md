@@ -145,15 +145,7 @@ In this case, you can create an empty table and specify the schema.
 === "Rust"
 
     ```rust
-    use arrow_schema::{Schema, Field, DataType};
-    use arrow_array::{RecordBatch, RecordBatchIterator};
-
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("vector", DataType::FixedSizeList(
-                Arc::new(Field::new("item", DataType::Float32, true)), 2), true),
-        ]));
-    let batches = RecordBatchIterator::new(vec![].into_iter().map(Ok), schema);
-    db.create_table("empty_table", Box::new(batches), None).await.unwrap();
+    --8<-- "rust/vectordb/examples/simple.rs:create_empty_table"
     ```
 
 ## How to open an existing table
@@ -274,7 +266,7 @@ For tables with more than 50K vectors, creating an ANN index is recommended to s
 === "Rust"
 
     ```rust
-    tbl.create_index(&["vector"]).build().await.unwrap()
+     --8<-- "rust/vectordb/examples/simple.rs:create_index"
     ```
 
 Check [Approximate Nearest Neighbor (ANN) Indexes](/ann_indices.md) section for more details.
@@ -300,7 +292,7 @@ This can delete any number of rows that match the filter.
 === "Rust"
 
     ```rust
-    tbl.delete("item = \"fizz\"").await.unwrap();
+    --8<-- "rust/vectordb/examples/simple.rs:delete"
     ```
 
 The deletion predicate is a SQL expression that supports the same expressions

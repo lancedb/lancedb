@@ -24,6 +24,9 @@ use vectordb::{connect, Result, Table, TableRef};
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    if std::path::Path::new("data").exists() {
+        std::fs::remove_dir_all("data").unwrap();
+    }
     // --8<-- [start:connect]
     let uri = "data/sample-lancedb";
     let db = connect(uri).await?;
@@ -37,8 +40,15 @@ async fn main() -> Result<()> {
     let batches = search(tbl.as_ref()).await?;
     println!("{:?}", batches);
 
+    create_empty_table(db.clone()).await.unwrap();
+
+    // --8<-- [start:delete]
+    tbl.delete("id > 24").await.unwrap();
+    // --8<-- [end:delete]
+
     // --8<-- [start:drop_table]
-    db.drop_table("myTable").await.unwrap();
+    db.drop_table("my_table").await.unwrap();
+    // --8<-- [end:drop_table]
     Ok(())
 }
 
@@ -48,7 +58,7 @@ async fn open_with_existing_tbl() -> Result<()> {
     let db = connect(uri).await?;
     // --8<-- [start:open_with_existing_file]
     let _ = db
-        .open_table_with_params("myTable", Default::default())
+        .open_table_with_params("my_table", Default::default())
         .await
         .unwrap();
     // --8<-- [end:open_with_existing_file]
@@ -91,17 +101,58 @@ async fn create_table(db: Arc<dyn Connection>) -> Result<TableRef> {
         .map(Ok),
         schema.clone(),
     );
-    db.create_table("my_table", Box::new(batches), None).await
+    let tbl = db
+        .create_table("my_table", Box::new(batches), None)
+        .await
+        .unwrap();
     // --8<-- [end:create_table]
+
+    let new_batches = RecordBatchIterator::new(
+        vec![RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from_iter_values(0..TOTAL as i32)),
+                Arc::new(
+                    FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
+                        (0..TOTAL).map(|_| Some(vec![Some(1.0); DIM])),
+                        DIM as i32,
+                    ),
+                ),
+            ],
+        )
+        .unwrap()]
+        .into_iter()
+        .map(Ok),
+        schema.clone(),
+    );
+    // --8<-- [start:add]
+    tbl.add(Box::new(new_batches), None).await.unwrap();
+    // --8<-- [end:add]
+
+    Ok(tbl)
+}
+
+async fn create_empty_table(db: Arc<dyn Connection>) -> Result<TableRef> {
+    // --8<-- [start:create_empty_table]
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("item", DataType::Utf8, true),
+    ]));
+    let batches = RecordBatchIterator::new(vec![], schema.clone());
+    db.create_table("empty_table", Box::new(batches), None)
+        .await
+    // --8<-- [end:create_empty_table]
 }
 
 async fn create_index(table: &dyn Table) -> Result<()> {
+    // --8<-- [start:create_index]
     table
         .create_index(&["vector"])
         .ivf_pq()
-        .num_partitions(2)
+        .num_partitions(8)
         .build()
         .await
+    // --8<-- [end:create_index]
 }
 
 async fn search(table: &dyn Table) -> Result<Vec<RecordBatch>> {
