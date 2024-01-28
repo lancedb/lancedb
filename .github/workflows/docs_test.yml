@@ -24,18 +24,14 @@ env:
 jobs:
   test-python:
     name: Test doc python code
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        python-minor-version: [ "11" ]
-        os: ["ubuntu-22.04"]
+    runs-on: "ubuntu-latest"
     steps:
     - name: Checkout
       uses: actions/checkout@v4
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
-        python-version: 3.${{ matrix.python-minor-version }}
+        python-version: 3.11
         cache: "pip"
         cache-dependency-path: "docs/test/requirements.txt"
     - name: Build Python
@@ -52,6 +48,7 @@ jobs:
         for d in *; do cd "$d"; echo "$d".py; python "$d".py; cd ..; done
   test-node:
     name: Test doc nodejs code
+    runs-on: "ubuntu-latest"
     steps:
     - name: Checkout
       uses: actions/checkout@v4
