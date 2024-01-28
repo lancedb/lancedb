@@ -64,7 +64,9 @@ jobs:
         sudo apt install -y protobuf-compiler libssl-dev
     - name: Install node dependencies
       run: |
-        cd docs/test
+        cd docs
+        npm ci
+        cd ./test
         npm install
     - name: Rust cache
       uses: swatinem/rust-cache@v2
