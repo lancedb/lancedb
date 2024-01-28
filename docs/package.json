@@ -11,7 +11,7 @@
   "scripts": {
     "build": "tsc -b && cd ../node && npm run build",
     "example": "npm run build && node",
-    "all": "npm run build && node $(ls dist/*.js)"
+    "test": "npm run build && node $(ls dist/*.js)"
   },
   "devDependencies": {
     "@types/node": "^20.11.8",
