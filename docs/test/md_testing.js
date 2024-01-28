@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 const glob = require("glob");
 const fs = require("fs");
 const path = require("path");
@@ -7,7 +6,6 @@ const globString = "../src/**/*.md";
 
 const excludedGlobs = [
   "../src/fts.md",
-  "../src/basic.md",
   "../src/embedding.md",
   "../src/examples/*.md",
   "../src/guides/tables.md",
