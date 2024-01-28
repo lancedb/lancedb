@@ -9,7 +9,7 @@
     "vectordb": "file:../node"
   },
   "scripts": {
-    "build": "tsc -b && cd ../node && npm run build",
+    "build": "tsc -b && cd ../node && npm run build-release",
     "example": "npm run build && node",
     "test": "npm run build && ls dist/*.js | xargs -n 1 node"
   },

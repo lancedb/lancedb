@@ -37,18 +37,6 @@ data = [{"vector": row, "item": f"item {i}"}
 db.create_table("my_vectors", data=data)
 ```
 -->
-<!-- Setup Code
-```javascript
-const vectordb_setup = require('vectordb')
-const db_setup = await vectordb_setup.connect('data/sample-lancedb')
-
-let data = []
-for (let i = 0; i < 10_000; i++) {
-     data.push({vector: Array(1536).fill(i), id: `${i}`, content: "", longId: `${i}`},)
-}
-await db_setup.createTable('my_vectors', data)
-```
--->
 
 === "Python"
 
