@@ -65,7 +65,7 @@ jobs:
     - name: Install node dependencies
       run: |
         cd docs
-        npm ci
+        npm install
         cd ./test
         npm install
     - name: Rust cache
