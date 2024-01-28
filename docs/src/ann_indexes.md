@@ -56,7 +56,7 @@ Lance supports `IVF_PQ` index type by default.
          data.push({vector: Array(1536).fill(i), id: `${i}`, content: "", longId: `${i}`},)
      }
      const table = await db.createTable('my_vectors', data)
-     await table.createIndex({ type: 'ivf_pq', column: 'vector', num_partitions: 256, num_sub_vectors: 96 })
+     await table.createIndex({ type: 'ivf_pq', column: 'vector', num_partitions: 16, num_sub_vectors: 48 })
      ```
 
 - **metric** (default: "L2"): The distance metric to use. By default it uses euclidean distance "`L2`".
