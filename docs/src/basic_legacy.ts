@@ -1,8 +1,17 @@
 // --8<-- [start:import]
 import * as lancedb from "vectordb";
-import { Schema, Field, Float32, FixedSizeList, Int32 } from "apache-arrow";
+import {
+  Schema,
+  Field,
+  Float32,
+  FixedSizeList,
+  Int32,
+} from "apache-arrow";
 // --8<-- [end:import]
-import { Table as ArrowTable, Utf8 } from "apache-arrow";
+import {
+  Table as ArrowTable,
+  Utf8,
+} from "apache-arrow";
 
 const example = async () => {
   // --8<-- [start:open_db]
@@ -30,4 +39,8 @@ const example = async () => {
   // --8<-- [end:create_empty_table]
 };
 
-await example();
+async function main() {
+	await example();
+}
+
+main()
