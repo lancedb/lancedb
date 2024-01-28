@@ -1,19 +1,12 @@
 // --8<-- [start:import]
 import * as lancedb from "vectordb";
-import {
-  Schema,
-  Field,
-  Float32,
-  FixedSizeList,
-  Int32,
-} from "apache-arrow";
+import { Schema, Field, Float32, FixedSizeList, Int32 } from "apache-arrow";
 // --8<-- [end:import]
-import {
-  Table as ArrowTable,
-  Utf8,
-} from "apache-arrow";
+import * as fs from "fs";
+import { Table as ArrowTable, Utf8 } from "apache-arrow";
 
 const example = async () => {
+  fs.rmSync("data/sample-lancedb", { recursive: true, force: true });
   // --8<-- [start:open_db]
   const uri = "data/sample-lancedb";
   const db = await lancedb.connect(uri);
@@ -37,10 +30,24 @@ const example = async () => {
   ]);
   const empty_tbl = await db.createTable({ name: "empty_table", schema });
   // --8<-- [end:create_empty_table]
+
+  // --8<-- [start:search]
+  const query = await tbl.search([100, 100]).limit(2).execute();
+  // --8<-- [end:search]
+  console.log(query);
+
+  // --8<-- [start:delete]
+  await tbl.delete('item = "fizz"');
+  // --8<-- [end:delete]
+
+  // --8<-- [start:drop_table]
+  await db.dropTable("myTable");
+  // --8<-- [end:drop_table]
 };
 
 async function main() {
-	await example();
+  await example();
+  console.log("Basic example: done");
 }
 
-main()
+main();

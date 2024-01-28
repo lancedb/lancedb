@@ -38,5 +38,6 @@ mkdocs serve
 
 ```bash
 npm i
-npm run ts -- src/basic.ts
+npm run build
+npm run all
 ```

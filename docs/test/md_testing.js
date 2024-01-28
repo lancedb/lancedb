@@ -10,6 +10,7 @@ const excludedGlobs = [
   "../src/examples/*.md",
   "../src/guides/tables.md",
   "../src/embeddings/*.md",
+  "../src/javascript/**/*.md",
 ];
 
 const nodePrefix = "javascript";
@@ -47,8 +48,11 @@ for (const file of files.filter((file) => !excludedFiles.includes(file))) {
   if (lines.length > 0) {
     const fileName = path.basename(file, ".md");
     const outPath = path.join(nodeFolder, fileName, `${fileName}${nodeFile}`);
-    console.log(outPath)
+    console.log(outPath);
     fs.mkdirSync(path.dirname(outPath), { recursive: true });
-    fs.writeFileSync(outPath, asyncPrefix + "\n" + lines.join("\n") + asyncSuffix);
+    fs.writeFileSync(
+      outPath,
+      asyncPrefix + "\n" + lines.join("\n") + asyncSuffix
+    );
   }
 }

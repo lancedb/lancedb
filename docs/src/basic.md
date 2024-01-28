@@ -258,7 +258,7 @@ Once you've embedded the query, you can find its nearest neighbors using the fol
 === "Javascript"
 
     ```javascript
-    const query = await tbl.search([100, 100]).limit(2).execute();
+    --8<-- "src/basic_legacy.ts:search"
     ```
 
 === "Rust"
@@ -313,7 +313,7 @@ This can delete any number of rows that match the filter.
 === "Javascript"
 
     ```javascript
-    await tbl.delete('item = "fizz"')
+    --8<-- "src/basic_legacy.ts:delete"
     ```
 
 === "Rust"
@@ -351,7 +351,7 @@ Use the `drop_table()` method on the database to remove a table.
 === "JavaScript"
 
       ```javascript
-      await db.dropTable('myTable')
+      --8<-- "src/basic_legacy.ts:drop_table"
       ```
 
       This permanently removes the table and is not recoverable, unlike deleting rows.
