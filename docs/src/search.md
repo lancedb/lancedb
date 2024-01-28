@@ -2,27 +2,26 @@
 
 A vector search finds the approximate or exact nearest neighbors to a given query vector.
 
-* In a recommendation system or search engine, you can find similar records to
-the one you searched.
-* In LLM and other AI applications,
-each data point can be represented by [embeddings generated from existing models](embeddings/index.md),
-following which the search returns the most relevant features.
+- In a recommendation system or search engine, you can find similar records to
+  the one you searched.
+- In LLM and other AI applications,
+  each data point can be represented by [embeddings generated from existing models](embeddings/index.md),
+  following which the search returns the most relevant features.
 
 ## Distance metrics
 
 Distance metrics are a measure of the similarity between a pair of vectors.
 Currently, LanceDB supports the following metrics:
 
-| Metric      | Description                          |
-| ----------- | ------------------------------------ |
-| `l2`        | [Euclidean / L2 distance](https://en.wikipedia.org/wiki/Euclidean_distance) |
-| `cosine`    | [Cosine Similarity](https://en.wikipedia.org/wiki/Cosine_similarity)|
-| `dot`       | [Dot Production](https://en.wikipedia.org/wiki/Dot_product) |
-
+| Metric   | Description                                                                 |
+| -------- | --------------------------------------------------------------------------- |
+| `l2`     | [Euclidean / L2 distance](https://en.wikipedia.org/wiki/Euclidean_distance) |
+| `cosine` | [Cosine Similarity](https://en.wikipedia.org/wiki/Cosine_similarity)        |
+| `dot`    | [Dot Production](https://en.wikipedia.org/wiki/Dot_product)                 |
 
 ## Exhaustive search (kNN)
 
-If you do not create a vector index, LanceDB exhaustively scans the *entire* vector space
+If you do not create a vector index, LanceDB exhaustively scans the _entire_ vector space
 and compute the distance to every vector in order to find the exact nearest neighbors. This is effectively a kNN search.
 
 <!-- Setup Code
@@ -38,21 +37,8 @@ data = [{"vector": row, "item": f"item {i}"}
 db.create_table("my_vectors", data=data)
 ```
 -->
-<!-- Setup Code
-```javascript
-const vectordb_setup = require('vectordb')
-const db_setup = await vectordb_setup.connect('data/sample-lancedb')
-
-let data = []
-for (let i = 0; i < 10_000; i++) {
-     data.push({vector: Array(1536).fill(i), id: `${i}`, content: "", longId: `${i}`},)
-}
-await db_setup.createTable('my_vectors', data)
-```
--->
 
 === "Python"
-
 
     ```python
     import lancedb
@@ -70,17 +56,12 @@ await db_setup.createTable('my_vectors', data)
 === "JavaScript"
 
     ```javascript
-    const vectordb = require('vectordb')
-    const db = await vectordb.connect('data/sample-lancedb')
+    --8<-- "src/search_legacy.ts:import"
 
-    const tbl = await db.openTable("my_vectors")
-
-    const results_1 = await tbl.search(Array(1536).fill(1.2))
-        .limit(10)
-        .execute()
+    --8<-- "src/search_legancy.ts:search1"
     ```
 
-By default, `l2` will be used as metric type. You can specify the metric type as 
+By default, `l2` will be used as metric type. You can specify the metric type as
 `cosine` or `dot` if required.
 
 === "Python"
@@ -92,20 +73,16 @@ By default, `l2` will be used as metric type. You can specify the metric type as
         .to_list()
     ```
 
-
 === "JavaScript"
 
     ```javascript
-    const results_2 = await tbl.search(Array(1536).fill(1.2))
-        .metricType("cosine")
-        .limit(10)
-        .execute()
+    --8<-- "src/search_legacy.ts:search2"
     ```
 
 ## Approximate nearest neighbor (ANN) search
 
 To perform scalable vector retrieval with acceptable latencies, it's common to build a vector index.
-While the exhaustive search is guaranteed to always return 100% recall, the approximate nature of 
+While the exhaustive search is guaranteed to always return 100% recall, the approximate nature of
 an ANN search means that using an index often involves a trade-off between recall and latency.
 
 See the [IVF_PQ index](./concepts/index_ivfpq.md.md) for a deeper description of how `IVF_PQ`
@@ -117,7 +94,9 @@ LanceDB returns vector search results via different formats commonly used in pyt
 Let's create a LanceDB table with a nested schema:
 
 === "Python"
+
     ```python
+
     from datetime import datetime
     import lancedb
     from lancedb.pydantic import LanceModel, Vector
@@ -153,7 +132,7 @@ Let's create a LanceDB table with a nested schema:
     ### As a PyArrow table
 
     Using `to_arrow()` we can get the results back as a pyarrow Table.
-    This result table has the same columns as the LanceDB table, with 
+    This result table has the same columns as the LanceDB table, with
     the addition of an `_distance` column for vector search or a `score`
     column for full text search.
 
@@ -169,11 +148,11 @@ Let's create a LanceDB table with a nested schema:
     tbl.search(np.random.randn(1536)).to_pandas()
     ```
 
-    While other formats like Arrow/Pydantic/Python dicts have a natural 
-    way to handle nested schemas, pandas can only store nested data as a 
+    While other formats like Arrow/Pydantic/Python dicts have a natural
+    way to handle nested schemas, pandas can only store nested data as a
     python dict column, which makes it difficult to support nested references.
-    So for convenience, you can also tell LanceDB to flatten a nested schema 
-    when creating the pandas dataframe. 
+    So for convenience, you can also tell LanceDB to flatten a nested schema
+    when creating the pandas dataframe.
 
     ```python
     tbl.search(np.random.randn(1536)).to_pandas(flatten=True)
