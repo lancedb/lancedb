@@ -11,6 +11,7 @@ const excludedGlobs = [
   "../src/guides/tables.md",
   "../src/embeddings/*.md",
   "../src/javascript/**/*.md",
+  "../src/basic.md",
 ];
 
 const nodePrefix = "javascript";

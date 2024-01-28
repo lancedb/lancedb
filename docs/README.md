@@ -37,6 +37,7 @@ mkdocs serve
 ### Run doctest for typescript example
 
 ```bash
+cd lancedb/docs
 npm i
 npm run build
 npm run all
