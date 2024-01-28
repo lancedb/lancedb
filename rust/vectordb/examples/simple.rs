@@ -24,8 +24,10 @@ use vectordb::{connect, Result, Table, TableRef};
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // --8<-- [start:connect]
     let uri = "data/sample-lancedb";
     let db = connect(uri).await?;
+    // --8<-- [end:connect]
     let tbl = create_table(db).await?;
     create_index(tbl.as_ref()).await?;
     let batches = search(tbl.as_ref()).await?;

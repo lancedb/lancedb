@@ -1,0 +1,1 @@
+../../rust/vectordb/examples/simple.rs
