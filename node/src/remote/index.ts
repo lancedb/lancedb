@@ -175,6 +175,7 @@ export class RemoteConnection implements Connection {
   async dropTable (name: string): Promise<void> {
     await this._client.post(`/v1/table/${name}/drop/`)
   }
+
 }
 
 export class RemoteQuery<T = number[]> extends Query<T> {
@@ -268,6 +269,10 @@ export class RemoteTable<T = number[]> implements Table<T> {
 
   search (query: T): Query<T> {
     return new RemoteQuery(query, this._client, this._name) //, this._embeddings_new)
+  }
+
+  filter (where: string): Query<T> {
+	throw new Error("Not implemented")
   }
 
   async add (data: Array<Record<string, unknown>> | ArrowTable): Promise<number> {
