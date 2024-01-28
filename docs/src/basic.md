@@ -25,10 +25,10 @@
 === "Rust"
 
     ```shell
-    cargo install vectordb
+    cargo add vectordb
     ```
 
-    !!! info "Rust crate is installed as source. You need to install protobuf."
+    !!! info "To use the vectordb create, you first need to install protobuf."
 
     === "macOS"
 
@@ -41,6 +41,8 @@
         ```shell
         sudo apt install -y protobuf-compiler libssl-dev
         ```
+
+    !!! info "Please also make sure you're using the same version of Arrow as in the [vectordb crate](https://github.com/lancedb/lancedb/blob/main/Cargo.toml)"
 
 ## How to connect to a database
 
@@ -69,7 +71,7 @@
     }
     ```
 
-    !!! info "See [examples/simple.rs](https://github.com/lancedb/lancedb/tree/main/rust/vectordb/src/examples/simple.rs) for a full working example."
+    !!! info "See [examples/simple.rs](https://github.com/lancedb/lancedb/tree/main/rust/vectordb/examples/simple.rs) for a full working example."
 
 LanceDB will create the directory if it doesn't exist (including parent directories).
 
