@@ -42,7 +42,7 @@ jobs:
       - name: Set up node
         uses: actions/setup-node@v3
         with:
-          node-version: ${{ matrix.node-version }}
+          node-version: 20
           cache: 'npm'
           cache-dependency-path: node/package-lock.json
       - uses: Swatinem/rust-cache@v2
@@ -62,8 +62,9 @@ jobs:
         run: |
           npx typedoc --plugin typedoc-plugin-markdown --out ../docs/src/javascript src/index.ts
       - name: Build docs
+        working-directory: docs
         run: |
-          PYTHONPATH=. mkdocs build -f docs/mkdocs.yml
+          PYTHONPATH=. mkdocs build
       - name: Setup Pages
         uses: actions/configure-pages@v2
       - name: Upload artifact
