@@ -18,7 +18,7 @@ on:
 env:
   # Disable full debug symbol generation to speed up CI build and keep memory down
   # "1" means line tables only, which is useful for panic tracebacks.
-  RUSTFLAGS: "-C debuginfo=1"
+  RUSTFLAGS: "-C debuginfo=1 -C target-cpu=native -C target-feature=+f16c,+avx2,+fma"
   RUST_BACKTRACE: "1"
 
 jobs:
