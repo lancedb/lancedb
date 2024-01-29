@@ -42,11 +42,12 @@ class GteEmbeddings(TextEmbeddingFunction):
     Examples
     --------
     import lancedb
+    import lancedb.embeddings.gte
     from lancedb.embeddings import get_registry
     from lancedb.pydantic import LanceModel, Vector
     import pandas as pd
 
-    model = get_registry().get("gte-text").create(flag='mlx')
+    model = get_registry().get("gte-text").create() # mlx=True for Apple silicon
     class TextModel(LanceModel):
         text: str = model.SourceField()
         vector: Vector(model.ndims()) = model.VectorField()
