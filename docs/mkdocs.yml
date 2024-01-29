@@ -68,6 +68,7 @@ markdown_extensions:
     pygments_lang_class: true
 - pymdownx.inlinehilite
 - pymdownx.snippets:
+    base_path: ..
     dedent_subsections: true
 - pymdownx.superfences
 - pymdownx.tabbed:

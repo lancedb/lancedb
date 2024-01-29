@@ -7,7 +7,7 @@ for brute-force scanning of the entire vector space.
 A vector index is faster but less accurate than exhaustive search (kNN or flat search).
 LanceDB provides many parameters to fine-tune the index's size, the speed of queries, and the accuracy of results.
 
-Currently, LanceDB does *not* automatically create the ANN index.
+Currently, LanceDB does _not_ automatically create the ANN index.
 LanceDB has optimized code for kNN as well. For many use-cases, datasets under 100K vectors won't require index creation at all.
 If you can live with <100ms latency, skipping index creation is a simpler workflow while guaranteeing 100% recall.
 
@@ -17,16 +17,17 @@ In the future we will look to automatically create and configure the ANN index a
 
 Lance can support multiple index types, the most widely used one is `IVF_PQ`.
 
-* `IVF_PQ`: use **Inverted File Index (IVF)** to first divide the dataset into `N` partitions,
-   and then use **Product Quantization** to compress vectors in each partition.
-* `DiskANN` (**Experimental**): organize the vector as a on-disk graph, where the vertices approximately
-   represent the nearest neighbors of each vector.
+- `IVF_PQ`: use **Inverted File Index (IVF)** to first divide the dataset into `N` partitions,
+  and then use **Product Quantization** to compress vectors in each partition.
+- `DiskANN` (**Experimental**): organize the vector as a on-disk graph, where the vertices approximately
+  represent the nearest neighbors of each vector.
 
 ## Creating an IVF_PQ Index
 
 Lance supports `IVF_PQ` index type by default.
 
 === "Python"
+
      Creating indexes is done via the [create_index](https://lancedb.github.io/lancedb/python/#lancedb.table.LanceTable.create_index) method.
 
      ```python
@@ -46,25 +47,20 @@ Lance supports `IVF_PQ` index type by default.
      tbl.create_index(num_partitions=256, num_sub_vectors=96)
      ```
 
-=== "Javascript"
-     ```javascript
-     const vectordb = require('vectordb')
-     const db = await vectordb.connect('data/sample-lancedb')
+=== "Typescript"
 
-     let data = []
-     for (let i = 0; i < 10_000; i++) {
-         data.push({vector: Array(1536).fill(i), id: `${i}`, content: "", longId: `${i}`},)
-     }
-     const table = await db.createTable('my_vectors', data)
-     await table.createIndex({ type: 'ivf_pq', column: 'vector', num_partitions: 16, num_sub_vectors: 48 })
+     ```typescript
+     --8<--- "docs/src/ann_indexes.ts:import"
+
+     --8<-- "docs/src/ann_indexes.ts:ingest"
      ```
 
 - **metric** (default: "L2"): The distance metric to use. By default it uses euclidean distance "`L2`".
-We also support "cosine" and "dot" distance as well.
+  We also support "cosine" and "dot" distance as well.
 - **num_partitions** (default: 256): The number of partitions of the index.
 - **num_sub_vectors** (default: 96): The number of sub-vectors (M) that will be created during Product Quantization (PQ).
-For D dimensional vector, it will be divided into `M` of `D/M` sub-vectors, each of which is presented by
-a single PQ code.
+  For D dimensional vector, it will be divided into `M` of `D/M` sub-vectors, each of which is presented by
+  a single PQ code.
 
 <figure markdown>
   ![IVF PQ](./assets/ivf_pq.png)
@@ -78,7 +74,7 @@ Using GPU for index creation requires [PyTorch>2.0](https://pytorch.org/) being 
 
 You can specify the GPU device to train IVF partitions via
 
-- **accelerator**: Specify to ``cuda`` or ``mps`` (on Apple Silicon) to enable GPU training.
+- **accelerator**: Specify to `cuda` or `mps` (on Apple Silicon) to enable GPU training.
 
 === "Linux"
 
@@ -106,9 +102,8 @@ You can specify the GPU device to train IVF partitions via
 
 Trouble shootings:
 
-If you see ``AssertionError: Torch not compiled with CUDA enabled``, you need to [install
+If you see `AssertionError: Torch not compiled with CUDA enabled`, you need to [install
 PyTorch with CUDA support](https://pytorch.org/get-started/locally/).
-
 
 ## Querying an ANN Index
 
@@ -127,6 +122,7 @@ There are a couple of parameters that can be used to fine-tune the search:
   Note: refine_factor is only applicable if an ANN index is present. If specified on a table without an ANN index, it is ignored.
 
 === "Python"
+
      ```python
      tbl.search(np.random.random((1536))) \
          .limit(2) \
@@ -134,41 +130,35 @@ There are a couple of parameters that can be used to fine-tune the search:
          .refine_factor(10) \
          .to_pandas()
      ```
-     ```
+
+     ```text
                                               vector       item       _distance
      0  [0.44949695, 0.8444449, 0.06281311, 0.23338133...  item 1141  103.575333
      1  [0.48587373, 0.269207, 0.15095535, 0.65531915,...  item 3953  108.393867
      ```
 
-=== "Javascript"
-     ```javascript
-     const results_1 = await table
-         .search(Array(1536).fill(1.2))
-         .limit(2)
-         .nprobes(20)
-         .refineFactor(10)
-         .execute()
+=== "Typescript"
+
+     ```typescript
+     --8<-- "docs/src/ann_indexes.ts:search1"
      ```
 
 The search will return the data requested in addition to the distance of each item.
-
 
 ### Filtering (where clause)
 
 You can further filter the elements returned by a search using a where clause.
 
 === "Python"
+
      ```python
      tbl.search(np.random.random((1536))).where("item != 'item 1141'").to_pandas()
      ```
 
-=== "Javascript"
+=== "Typescript"
+
      ```javascript
-     const results_2 = await table
-         .search(Array(1536).fill(1.2))
-         .where("id != '1141'")
-         .limit(2)
-         .execute()
+     --8<-- "docs/src/ann_indexes.ts:search2"
      ```
 
 ### Projections (select clause)
@@ -176,23 +166,23 @@ You can further filter the elements returned by a search using a where clause.
 You can select the columns returned by the query using a select clause.
 
 === "Python"
+
      ```python
      tbl.search(np.random.random((1536))).select(["vector"]).to_pandas()
      ```
-     ```
-        vector                                             _distance
+
+
+     ```text
+                                                   vector _distance
      0  [0.30928212, 0.022668175, 0.1756372, 0.4911822...  93.971092
      1  [0.2525465, 0.01723831, 0.261568, 0.002007689,...  95.173485
      ...
      ```
 
-=== "Javascript"
-     ```javascript
-     const results_3 = await table
-         .search(Array(1536).fill(1.2))
-         .select(["id"])
-         .limit(2)
-         .execute()
+=== "Typescript"
+
+     ```typescript
+     --8<-- "docs/src/ann_indexes.ts:search3"
      ```
 
 ## FAQ
