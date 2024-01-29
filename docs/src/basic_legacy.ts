@@ -23,6 +23,23 @@ const example = async () => {
   );
   // --8<-- [end:create_table]
 
+  // --8<-- [start:add]
+  const newData = Array.from({ length: 500 }, (_, i) => ({
+    vector: [i, i + 1],
+    item: "fizz",
+    price: i * 0.1,
+  }));
+  await tbl.add(newData);
+  // --8<-- [end:add]
+
+  // --8<-- [start:create_index]
+  await tbl.createIndex({
+    type: "ivf_pq",
+    num_partitions: 2,
+    num_sub_vectors: 2,
+  });
+  // --8<-- [end:create_index]
+
   // --8<-- [start:create_empty_table]
   const schema = new Schema([
     new Field("id", new Int32()),
