@@ -48,6 +48,7 @@ def yield_lines(lines: Iterator[str], prefix: str, suffix: str):
             if not skip_test:
                 yield line[strip_length:]
 
+
 for file in filter(lambda file: file not in excluded_files, files):
     with open(file, "r") as f:
         lines = list(yield_lines(iter(f), "```", "```"))

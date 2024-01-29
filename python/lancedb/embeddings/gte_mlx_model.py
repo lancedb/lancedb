@@ -6,12 +6,13 @@ from huggingface_hub import snapshot_download
 from typing import List, Optional
 from transformers import BertTokenizer
 
-try :
+try:
     import mlx.core as mx
     import mlx.nn as nn
 except ImportError:
     raise ImportError("You need to install MLX to use this model use - pip install mlx")
-    
+
+
 def average_pool(last_hidden_state: mx.array, attention_mask: mx.array) -> mx.array:
     last_hidden = mx.multiply(last_hidden_state, attention_mask[..., None])
     return last_hidden.sum(axis=1) / attention_mask.sum(axis=1)[..., None]
@@ -146,6 +147,8 @@ class Model:
         embeddings = average_pool(
             last_hidden_state, tokens["attention_mask"].astype(mx.float32)
         )
-        self.embeddings = embeddings / mx.linalg.norm(embeddings, ord=2, axis=1)[..., None]
+        self.embeddings = (
+            embeddings / mx.linalg.norm(embeddings, ord=2, axis=1)[..., None]
+        )
 
         return np.array(embeddings.astype(mx.float32))

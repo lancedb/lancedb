@@ -22,9 +22,10 @@ import lancedb
 from lancedb.embeddings import get_registry
 from lancedb.pydantic import LanceModel, Vector
 
-try :
+try:
     import mlx
-    _mlx = True 
+
+    _mlx = True
 except ImportError:
     _mlx = None
 # These are integration tests for embedding functions.
@@ -209,10 +210,14 @@ def test_gemini_embedding(tmp_path):
     assert tbl.search("hello").limit(1).to_pandas()["text"][0] == "hello world"
 
 
-@pytest.mark.skipif(_mlx is None, reason="mlx tests only required for apple users. sentence-transformer tests already covered")
+@pytest.mark.skipif(
+    _mlx is None,
+    reason="mlx tests only required for apple users. sentence-transformer tests already covered",
+)
 def test_gte_embedding(tmp_path):
     from lancedb.embeddings import gte
-    model = get_registry().get("gte-text").create(flag='mlx')
+
+    model = get_registry().get("gte-text").create(flag="mlx")
 
     class TextModel(LanceModel):
         text: str = model.SourceField()
@@ -260,4 +265,3 @@ def test_bedrock_embedding(tmp_path):
 
         tbl.add(df)
         assert len(tbl.to_pandas()["vector"][0]) == model.ndims()
-

@@ -19,7 +19,6 @@ from .registry import register
 from .utils import weak_lru
 
 
-
 @register("gte-text")
 class GteEmbeddings(TextEmbeddingFunction):
     """
@@ -27,8 +26,8 @@ class GteEmbeddings(TextEmbeddingFunction):
     as well as the standard cpu/gpu version from huggingface - https://huggingface.co/thenlper/gte-large.
 
     For Apple users, you will need the mlx package insalled, which can be done with:
-        pip install mlx    
-    
+        pip install mlx
+
     Parameters
     ----------
     name: str, default "thenlper/gte-large"
@@ -70,8 +69,8 @@ class GteEmbeddings(TextEmbeddingFunction):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._ndims = None
-        if kwargs :
-            self.mlx = kwargs.get("mlx", False)   
+        if kwargs:
+            self.mlx = kwargs.get("mlx", False)
             if self.mlx == True:
                 self.name == "gte-mlx"
 
@@ -104,7 +103,7 @@ class GteEmbeddings(TextEmbeddingFunction):
         """
         if self.mlx == True:
             return self.embedding_model.run(list(texts)).tolist()
-        
+
         return self.embedding_model.encode(
             list(texts),
             convert_to_numpy=True,
@@ -120,9 +119,12 @@ class GteEmbeddings(TextEmbeddingFunction):
         """
         if self.mlx == True:
             from .gte_mlx_model import Model
+
             return Model()
-        else :
+        else:
             sentence_transformers = self.safe_import(
                 "sentence_transformers", "sentence-transformers"
             )
-            return sentence_transformers.SentenceTransformer(self.name, device=self.device)
+            return sentence_transformers.SentenceTransformer(
+                self.name, device=self.device
+            )
