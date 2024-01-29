@@ -60,7 +60,7 @@ const table = await db.createTable({
 })
 
 const query = table.search([0.1, 0.3]).limit(2);
-const results = await vectorSearchQuery.execute();
+const results = await query.execute();
 
 // You can also search for rows by specific criteria without involving a vector search.
 const rowsByCriteria = await table.search(undefined).where("price >= 10").execute();
