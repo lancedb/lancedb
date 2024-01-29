@@ -109,7 +109,7 @@ class RestfulLanceDBClient:
             urljoin(self.url, uri),
             params=params,
             headers=self.headers,
-            timeout=(10.0, 300.0),
+            timeout=(120.0, 300.0),
         ) as resp:
             self._check_status(resp)
             return resp.json()
@@ -151,7 +151,7 @@ class RestfulLanceDBClient:
             urljoin(self.url, uri),
             headers=headers,
             params=params,
-            timeout=(10.0, 300.0),
+            timeout=(120.0, 300.0),
             **req_kwargs,
         ) as resp:
             self._check_status(resp)
