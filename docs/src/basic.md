@@ -213,8 +213,7 @@ After a table has been created, you can always add more data to it using
 === "Typescript"
 
     ```typescript
-    await tbl.add([{vector: [1.3, 1.4], item: "fizz", price: 100.0},
-                    {vector: [9.5, 56.2], item: "buzz", price: 200.0}])
+    --8<-- "docs/src/basic_legacy.ts:add"
     ```
 
 === "Rust"
@@ -261,7 +260,7 @@ For tables with more than 50K vectors, creating an ANN index is recommended to s
 === "Typescript"
 
     ```{.typescript .ignore}
-    await tbl.createIndex({})
+    --8<-- "docs/src/basic_legacy.ts:create_index"
     ```
 
 === "Rust"
