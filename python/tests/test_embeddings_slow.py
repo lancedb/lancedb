@@ -214,6 +214,7 @@ def test_gemini_embedding(tmp_path):
     _mlx is None,
     reason="mlx tests only required for apple users.",
 )
+@pytest.mark.slow
 def test_gte_embedding(tmp_path):
     import lancedb.embeddings.gte
 
