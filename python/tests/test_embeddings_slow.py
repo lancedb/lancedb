@@ -218,7 +218,7 @@ def test_gemini_embedding(tmp_path):
 def test_gte_embedding(tmp_path):
     import lancedb.embeddings.gte
 
-    model = get_registry().get("gte-text").create(mlx=True)
+    model = get_registry().get("gte-text").create()
 
     class TextModel(LanceModel):
         text: str = model.SourceField()
