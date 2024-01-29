@@ -111,12 +111,12 @@ class RemoteTable(Table):
 
         if num_partitions is not None:
             raise NotImplementedError(
-                "num_partitions is not yet supported on LanceDB cloud."
+                "num_partitions is not supported on LanceDB cloud."
                 "This parameter will be tuned automatically."
             )
         if num_sub_vectors is not None:
             raise NotImplementedError(
-                "num_sub_vectors is not yet supported on LanceDB cloud."
+                "num_sub_vectors is not supported on LanceDB cloud."
                 "This parameter will be tuned automatically."
             )
         if accelerator is not None:
@@ -127,7 +127,7 @@ class RemoteTable(Table):
             )
         if replace is not None:
             raise NotImplementedError(
-                "replace is not yet supported on LanceDB cloud."
+                "replace is not supported on LanceDB cloud."
                 "Existing indexes will always be replaced."
             )
         index_type = "vector"
