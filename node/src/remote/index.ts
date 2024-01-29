@@ -270,6 +270,10 @@ export class RemoteTable<T = number[]> implements Table<T> {
     return new RemoteQuery(query, this._client, this._name) //, this._embeddings_new)
   }
 
+  filter (where: string): Query<T> {
+    throw new Error('Not implemented')
+  }
+
   async add (data: Array<Record<string, unknown>> | ArrowTable): Promise<number> {
     let tbl: ArrowTable
     if (data instanceof ArrowTable) {
