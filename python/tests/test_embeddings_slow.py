@@ -10,6 +10,7 @@
 #  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
+import importlib
 import io
 import os
 
@@ -23,9 +24,8 @@ from lancedb.embeddings import get_registry
 from lancedb.pydantic import LanceModel, Vector
 
 try:
-    import mlx
-
-    _mlx = True
+    if importlib.util.find_spec("mlx.core") is not None:
+        _mlx = True
 except ImportError:
     _mlx = None
 # These are integration tests for embedding functions.
@@ -212,10 +212,10 @@ def test_gemini_embedding(tmp_path):
 
 @pytest.mark.skipif(
     _mlx is None,
-    reason="mlx tests only required for apple users. sentence-transformer tests already covered",
+    reason="mlx tests only required for apple users.",
 )
 def test_gte_embedding(tmp_path):
-    from lancedb.embeddings import gte
+    import lancedb.embeddings.gte
 
     model = get_registry().get("gte-text").create(flag="mlx")
 

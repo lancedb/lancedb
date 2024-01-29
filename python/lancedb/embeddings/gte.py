@@ -22,8 +22,8 @@ from .utils import weak_lru
 @register("gte-text")
 class GteEmbeddings(TextEmbeddingFunction):
     """
-    An embedding function that uses GTE-LARGE MLX format (for Apple silicon devices only)
-    as well as the standard cpu/gpu version from huggingface - https://huggingface.co/thenlper/gte-large.
+    An embedding function that uses GTE-LARGE MLX format(for Apple silicon devices only)
+    as well as the standard cpu/gpu version from: https://huggingface.co/thenlper/gte-large.
 
     For Apple users, you will need the mlx package insalled, which can be done with:
         pip install mlx
@@ -37,12 +37,11 @@ class GteEmbeddings(TextEmbeddingFunction):
     normalize: str, default "True"
         Controls normalize param in encode function for the transformer.
     mlx: bool, default False
-        Controls which model to use. Options are False for gte-large, True for the mlx version.
+        Controls which model to use. False for gte-large,True for the mlx version.
 
     Examples
     --------
     import lancedb
-    from lancedb.embeddings import gte
     from lancedb.embeddings import get_registry
     from lancedb.pydantic import LanceModel, Vector
     import pandas as pd
@@ -71,7 +70,7 @@ class GteEmbeddings(TextEmbeddingFunction):
         self._ndims = None
         if kwargs:
             self.mlx = kwargs.get("mlx", False)
-            if self.mlx == True:
+            if self.mlx is True:
                 self.name == "gte-mlx"
 
     @property
@@ -84,7 +83,7 @@ class GteEmbeddings(TextEmbeddingFunction):
         return self.get_embedding_model()
 
     def ndims(self):
-        if self.mlx == True:
+        if self.mlx is True:
             self._ndims = self.embedding_model.dims
         if self._ndims is None:
             self._ndims = len(self.generate_embeddings("foo")[0])
@@ -101,7 +100,7 @@ class GteEmbeddings(TextEmbeddingFunction):
         texts: list[str] or np.ndarray (of str)
             The texts to embed
         """
-        if self.mlx == True:
+        if self.mlx is True:
             return self.embedding_model.run(list(texts)).tolist()
 
         return self.embedding_model.encode(
@@ -117,7 +116,7 @@ class GteEmbeddings(TextEmbeddingFunction):
         name and device. This is cached so that the model is only loaded
         once per process.
         """
-        if self.mlx == True:
+        if self.mlx is True:
             from .gte_mlx_model import Model
 
             return Model()

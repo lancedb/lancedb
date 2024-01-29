@@ -1,9 +1,9 @@
 import json
-import numpy as np
-
-from pydantic import BaseModel
-from huggingface_hub import snapshot_download
 from typing import List, Optional
+
+import numpy as np
+from huggingface_hub import snapshot_download
+from pydantic import BaseModel
 from transformers import BertTokenizer
 
 try:
