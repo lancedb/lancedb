@@ -72,7 +72,7 @@ class GteEmbeddings(TextEmbeddingFunction):
         if kwargs:
             self.mlx = kwargs.get("mlx", False)
             if self.mlx is True:
-                self.name == "gte-mlx"
+                self.name = "gte-mlx"
 
     @property
     def embedding_model(self):
