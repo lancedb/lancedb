@@ -357,11 +357,15 @@ class RemoteTable(Table):
 
     def cleanup_old_versions(self, *_):
         """cleanup_old_versions() is not supported on the LanceDB cloud"""
-        raise NotImplementedError("cleanup_old_versions() is not supported on the LanceDB cloud")
+        raise NotImplementedError(
+            "cleanup_old_versions() is not supported on the LanceDB cloud"
+        )
 
     def compact_files(self, *_):
         """compact_files() is not supported on the LanceDB cloud"""
-        raise NotImplementedError("compact_files() is not supported on the LanceDB cloud")
+        raise NotImplementedError(
+            "compact_files() is not supported on the LanceDB cloud"
+        )
 
 
 def add_index(tbl: pa.Table, i: int) -> pa.Table:
