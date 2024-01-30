@@ -521,6 +521,52 @@ class Table(ABC):
         """
         raise NotImplementedError
 
+    @abstractmethod
+    def cleanup_old_versions(
+        self,
+        older_than: Optional[timedelta] = None,
+        *,
+        delete_unverified: bool = False,
+    ) -> CleanupStats:
+        """
+        Clean up old versions of the table, freeing disk space.
+
+        Note: This function is not available in LanceDb Cloud (since LanceDb
+        Cloud manages cleanup for you automatically)
+
+        Parameters
+        ----------
+        older_than: timedelta, default None
+            The minimum age of the version to delete. If None, then this defaults
+            to two weeks.
+        delete_unverified: bool, default False
+            Because they may be part of an in-progress transaction, files newer
+            than 7 days old are not deleted by default. If you are sure that
+            there are no in-progress transactions, then you can set this to True
+            to delete all files older than `older_than`.
+
+        Returns
+        -------
+        CleanupStats
+            The stats of the cleanup operation, including how many bytes were
+            freed.
+        """
+
+    @abstractmethod
+    def compact_files(self, *args, **kwargs):
+        """
+        Run the compaction process on the table.
+
+        Note: This function is not available in LanceDb Cloud (since LanceDb
+        Cloud manages cleanup for you automatically)
+
+        This can be run after making several small appends to optimize the table
+        for faster reads.
+
+        Arguments are passed onto :meth:`lance.dataset.DatasetOptimizer.compact_files`.
+        For most cases, the default should be fine.
+        """
+
 
 class LanceTable(Table):
     """
