@@ -197,6 +197,9 @@ extra_css:
   - styles/global.css
   - styles/extra.css
 
+extra_javascript:
+  - "extra_js/init_ask_ai_widget.js"
+
 extra:
   analytics:
     provider: google
