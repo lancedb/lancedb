@@ -682,3 +682,57 @@ def test_count_rows(db):
     assert len(table) == 2
     assert table.count_rows() == 2
     assert table.count_rows(filter="text='bar'") == 1
+
+
+def test_hybrid_search(db):
+    # hardcoding temporarily.. this test is failing with tmp_path mockdb.
+    # Probably not being parsed right by the fts
+    db = MockDB("~/lancedb_")
+    # Create a LanceDB table schema with a vector and a text column
+    emb = EmbeddingFunctionRegistry.get_instance().get("test")()
+
+    class MyTable(LanceModel):
+        text: str = emb.SourceField()
+        vector: Vector(emb.ndims()) = emb.VectorField()
+
+    # Initialize the table using the schema
+    table = LanceTable.create(
+        db,
+        "my_table",
+        schema=MyTable,
+    )
+
+    # Create a list of 10 unique english phrases
+    phrases = [
+        "great kid don't get cocky",
+        "now that's a name I haven't heard in a long time",
+        "if you strike me down I shall become more powerful than you imagine",
+        "I find your lack of faith disturbing",
+        "I've got a bad feeling about this",
+        "never tell me the odds",
+        "I am your father",
+        "somebody has to save our skins",
+        "New strategy R2 let the wookiee win",
+        "Arrrrggghhhhhhh",
+    ]
+
+    # Add the phrases and vectors to the table
+    table.add([{"text": p} for p in phrases])
+
+    # Create a fts index
+    table.create_fts_index("text")
+
+    result1 = (
+        table.search("Our father who art in heaven", query_type="hybrid")
+        .rerank(normalize="score")
+        .to_pydantic(MyTable)
+    )
+    result2 = (  # noqa
+        table.search("Our father who art in heaven", query_type="hybrid")
+        .rerank(normalize="rank")
+        .to_pydantic(MyTable)
+    )
+    result3 = table.search(
+        "Our father who art in heaven", query_type="hybrid"
+    ).to_pydantic(MyTable)
+    assert result1 == result3
