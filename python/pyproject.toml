@@ -49,8 +49,8 @@ tests = ["aiohttp", "pandas>=1.4", "pytest", "pytest-mock", "pytest-asyncio", "d
 dev = ["ruff", "pre-commit"]
 docs = ["mkdocs", "mkdocs-jupyter", "mkdocs-material", "mkdocstrings[python]"]
 clip = ["torch", "pillow", "open-clip"]
-embeddings = ["openai>=1.6.1", "sentence-transformers", "torch", "pillow", "open-clip-torch", "cohere",
-                "InstructorEmbedding", "google.generativeai", "boto3>=1.28.57", "awscli>=1.29.57", "botocore>=1.31.57" ]
+embeddings = ["openai>=1.6.1", "sentence-transformers", "torch", "pillow", "open-clip-torch", "cohere", "huggingface_hub",
+                "InstructorEmbedding", "google.generativeai", "boto3>=1.28.57", "awscli>=1.29.57", "botocore>=1.31.57"]
 
 [build-system]
 requires = ["setuptools", "wheel"]
@@ -60,7 +60,8 @@ build-backend = "setuptools.build_meta"
 select = ["F", "E", "W", "I", "G", "TCH", "PERF"]
 
 [tool.pytest.ini_options]
-addopts = "--strict-markers"
+addopts = "--strict-markers --ignore-glob=lancedb/embeddings/*.py"
+
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "asyncio"
