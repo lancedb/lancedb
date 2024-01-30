@@ -84,7 +84,7 @@ jobs:
       run: npm run test
   macos:
     timeout-minutes: 30
-    runs-on: "macos-13"
+    runs-on: "macos-14"
     defaults:
       run:
         shell: bash
