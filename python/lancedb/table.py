@@ -558,7 +558,7 @@ class Table(ABC):
         Run the compaction process on the table.
 
         Note: This function is not available in LanceDb Cloud (since LanceDb
-        Cloud manages cleanup for you automatically)
+        Cloud manages compaction for you automatically)
 
         This can be run after making several small appends to optimize the table
         for faster reads.
