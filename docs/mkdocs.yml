@@ -90,6 +90,7 @@ nav:
     - Building an ANN index: ann_indexes.md
     - Vector Search: search.md
     - Full-text search: fts.md
+    - Hybrid search: hybrid_search.md
     - Filtering: sql.md
     - Versioning & Reproducibility: notebooks/reproducibility.ipynb
     - Configuring Storage: guides/storage.md
@@ -150,6 +151,7 @@ nav:
     - Building an ANN index: ann_indexes.md
     - Vector Search: search.md
     - Full-text search: fts.md
+    - Hybrid search: hybrid_search.md
     - Filtering: sql.md
     - Versioning & Reproducibility: notebooks/reproducibility.ipynb
     - Configuring Storage: guides/storage.md

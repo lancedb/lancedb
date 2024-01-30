@@ -11,6 +11,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
+import importlib
 import os
 import pathlib
 from datetime import date, datetime
@@ -114,22 +115,23 @@ def join_uri(base: Union[str, pathlib.Path], *parts: str) -> str:
     return "/".join([p.rstrip("/") for p in [base, *parts]])
 
 
-def safe_import_pandas():
+def safe_import(module: str, mitigation=None):
+    """
+    Import the specified module. If the module is not installed,
+    raise an ImportError with a helpful message.
+
+    Parameters
+    ----------
+    module : str
+        The name of the module to import
+    mitigation : Optional[str]
+        The package(s) to install to mitigate the error.
+        If not provided then the module name will be used.
+    """
     try:
-        import pandas as pd
-
-        return pd
+        return importlib.import_module(module)
     except ImportError:
-        return None
-
-
-def safe_import_polars():
-    try:
-        import polars as pl
-
-        return pl
-    except ImportError:
-        return None
+        raise ImportError(f"Please install {mitigation or module}")
 
 
 @singledispatch

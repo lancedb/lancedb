@@ -16,7 +16,7 @@ from __future__ import annotations
 import inspect
 from abc import ABC, abstractmethod
 from functools import cached_property
-from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Union
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Tuple, Union
 
 import lance
 import numpy as np
@@ -33,8 +33,7 @@ from .query import LanceQueryBuilder, Query
 from .util import (
     fs_from_uri,
     join_uri,
-    safe_import_pandas,
-    safe_import_polars,
+    safe_import,
     value_to_sql,
 )
 
@@ -47,8 +46,8 @@ if TYPE_CHECKING:
     from .db import LanceDBConnection
 
 
-pd = safe_import_pandas()
-pl = safe_import_polars()
+pd = safe_import("pandas")
+pl = safe_import("polars")
 
 
 def _sanitize_data(
@@ -337,7 +336,7 @@ class Table(ABC):
     @abstractmethod
     def search(
         self,
-        query: Optional[Union[VEC, str, "PIL.Image.Image"]] = None,
+        query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
         vector_column_name: str = VECTOR_COLUMN_NAME,
         query_type: str = "auto",
     ) -> LanceQueryBuilder:
@@ -919,7 +918,7 @@ class LanceTable(Table):
 
     def search(
         self,
-        query: Optional[Union[VEC, str, "PIL.Image.Image"]] = None,
+        query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
         vector_column_name: str = VECTOR_COLUMN_NAME,
         query_type: str = "auto",
     ) -> LanceQueryBuilder:
@@ -1186,6 +1185,7 @@ class LanceTable(Table):
                 "nprobes": query.nprobes,
                 "refine_factor": query.refine_factor,
             },
+            with_row_id=query.with_row_id,
         )
 
     def cleanup_old_versions(
