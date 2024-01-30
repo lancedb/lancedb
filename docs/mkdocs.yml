@@ -90,6 +90,7 @@ nav:
     - Building an ANN index: ann_indexes.md
     - Vector Search: search.md
     - Full-text search: fts.md
+    - Hybrid search: hybrid_search.md
     - Filtering: sql.md
     - Versioning & Reproducibility: notebooks/reproducibility.ipynb
     - Configuring Storage: guides/storage.md
@@ -151,6 +152,7 @@ nav:
     - Building an ANN index: ann_indexes.md
     - Vector Search: search.md
     - Full-text search: fts.md
+    - Hybrid search: hybrid_search.md
     - Filtering: sql.md
     - Versioning & Reproducibility: notebooks/reproducibility.ipynb
     - Configuring Storage: guides/storage.md
@@ -197,6 +199,9 @@ nav:
 extra_css:
   - styles/global.css
   - styles/extra.css
+
+extra_javascript:
+  - "extra_js/init_ask_ai_widget.js"
 
 extra:
   analytics:
