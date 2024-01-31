@@ -248,7 +248,6 @@ class RemoteTable(Table):
         """_do_merge() is not supported on the LanceDB cloud yet"""
         return NotImplementedError("_do_merge() is not supported on the LanceDB cloud")
 
-
     def delete(self, predicate: str):
         """Delete rows from the table.
 

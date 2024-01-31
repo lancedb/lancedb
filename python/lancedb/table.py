@@ -472,11 +472,13 @@ class Table(ABC):
         pass
 
     @abstractmethod
-    def _do_merge(self,
-                  merge: LanceMergeInsertBuilder,
-                  new_data: DATA,
-                  *,
-                  schema: Optional[pa.Schema] = None):
+    def _do_merge(
+        self,
+        merge: LanceMergeInsertBuilder,
+        new_data: DATA,
+        *,
+        schema: Optional[pa.Schema] = None,
+    ):
         pass
 
     @abstractmethod

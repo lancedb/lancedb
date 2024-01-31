@@ -25,7 +25,7 @@ class LanceMergeInsertBuilder(object):
     more context
     """
 
-    def __init__(self, table: 'Table', on: Iterable[str]):  # noqa: F821
+    def __init__(self, table: "Table", on: Iterable[str]):  # noqa: F821
         # Do not put a docstring here.  This method should be hidden
         # from API docs.  Users should use merge_insert to create
         # this object.
@@ -58,8 +58,8 @@ class LanceMergeInsertBuilder(object):
         return self
 
     def when_not_matched_by_source_delete(
-            self,
-            condition: Optional[str] = None) -> LanceMergeInsertBuilder:
+        self, condition: Optional[str] = None
+    ) -> LanceMergeInsertBuilder:
         """
         Rows that exist only in the target table (old data) will be
         deleted.  An optional condition can be provided to limit what
