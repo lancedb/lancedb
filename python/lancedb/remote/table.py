@@ -244,6 +244,11 @@ class RemoteTable(Table):
             result = self._conn._client.query(self._name, query)
             return result.to_arrow()
 
+    def _do_merge(self, *_args):
+        """_do_merge() is not supported on the LanceDB cloud yet"""
+        return NotImplementedError("_do_merge() is not supported on the LanceDB cloud")
+
+
     def delete(self, predicate: str):
         """Delete rows from the table.
 
