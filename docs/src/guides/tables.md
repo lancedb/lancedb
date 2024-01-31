@@ -16,9 +16,22 @@ This guide will show how to create tables, insert data into them, and update the
     db = lancedb.connect("./.lancedb")
     ```
 
+=== "Javascript"
+
+    Initialize a VectorDB connection and create a table using one of the many methods listed below.
+
+    ```javascript
+    const lancedb = require("vectordb");
+
+    const uri = "data/sample-lancedb";
+    const db = await lancedb.connect(uri);
+    ```
+
     LanceDB allows ingesting data from various sources - `dict`, `list[dict]`, `pd.DataFrame`, `pa.Table` or a `Iterator[pa.RecordBatch]`. Let's take a look at some of the these.
 
-    ### From list of tuples or dictionaries
+### From list of tuples or dictionaries
+
+=== "Python"
 
     ```python
     import lancedb
@@ -32,7 +45,6 @@ This guide will show how to create tables, insert data into them, and update the
 
     db["my_table"].head()
     ```
-
     !!! info "Note"
         If the table already exists, LanceDB will raise an error by default. 
 
@@ -51,7 +63,28 @@ This guide will show how to create tables, insert data into them, and update the
         db.create_table("name", data, mode="overwrite")
         ```
 
-    ### From a Pandas DataFrame
+=== "Javascript"
+    You can create a LanceDB table in JavaScript using an array of JSON records as follows.
+
+    ```javascript
+    const tb = await db.createTable("my_table", [{
+        "vector": [3.1, 4.1],
+        "item": "foo",
+        "price": 10.0
+    }, {
+        "vector": [5.9, 26.5],
+        "item": "bar",
+        "price": 20.0
+    }]);
+    ```
+    !!! info "Note"
+    If the table already exists, LanceDB will raise an error by default. If you want to overwrite the table, you need to specify the `WriteMode` in the createTable function.
+
+    ```javascript
+    const table = await con.createTable(tableName, data, { writeMode: WriteMode.Overwrite })
+    ```
+
+### From a Pandas DataFrame
 
     ```python
     import pandas as pd
@@ -79,7 +112,7 @@ This guide will show how to create tables, insert data into them, and update the
     table = db.create_table("my_table", data, schema=custom_schema)
     ```
 
-    ### From a Polars DataFrame
+### From a Polars DataFrame
 
     LanceDB supports [Polars](https://pola.rs/), a modern, fast DataFrame library
     written in Rust. Just like in Pandas, the Polars integration is enabled by PyArrow
@@ -97,26 +130,44 @@ This guide will show how to create tables, insert data into them, and update the
     table = db.create_table("pl_table", data=data)
     ```
 
-    ### From PyArrow Tables
-    You can also create LanceDB tables directly from PyArrow tables
+### From an Arrow Table
+=== "Python"
+    You can also create LanceDB tables directly from Arrow tables. 
+    LanceDB supports float16 data type!
 
     ```python
-    table = pa.Table.from_arrays(
-            [
-                pa.array([[3.1, 4.1, 5.1, 6.1], [5.9, 26.5, 4.7, 32.8]],
-                        pa.list_(pa.float32(), 4)),
-                pa.array(["foo", "bar"]),
-                pa.array([10.0, 20.0]),
-            ],
-            ["vector", "item", "price"],
-        )
+    import pyarrows as pa
+    import numpy as np
+    
+    dim = 16
+    total = 2
+    schema = pa.schema(
+        [
+            pa.field("vector", pa.list_(pa.float16(), dim)),
+            pa.field("text", pa.string())
+        ]
+    )
+    data = pa.Table.from_arrays(
+        [
+            pa.array([np.random.randn(dim).astype(np.float16) for _ in range(total)],
+                    pa.list_(pa.float16(), dim)),
+            pa.array(["foo", "bar"])
+        ],
+        ["vector", "text"],
+    )
+    tbl = db.create_table("f16_tbl", data, schema=schema)
+    ```
 
-    db = lancedb.connect("db")
+=== "Javascript"
+    You can also create LanceDB tables directly from Arrow tables. 
+    LanceDB supports Float16 data type!
 
-    tbl = db.create_table("my_table", table)
+    ```javascript
+    --8<-- "docs/src/basic_legacy.ts:create_f16_table"
     ```
 
     ### From Pydantic Models
+
     When you create an empty table without data, you must specify the table schema.
     LanceDB supports creating tables by specifying a PyArrow schema or a specialized
     Pydantic model called `LanceModel`.
@@ -260,37 +311,6 @@ This guide will show how to create tables, insert data into them, and update the
     ```
 
     You can also use iterators of other types like Pandas DataFrame or Pylists directly in the above example.
-
-=== "JavaScript"
-    Initialize a VectorDB connection and create a table using one of the many methods listed below.
-
-    ```javascript
-    const lancedb = require("vectordb");
-
-    const uri = "data/sample-lancedb";
-    const db = await lancedb.connect(uri);
-    ```
-
-    You can create a LanceDB table in JavaScript using an array of JSON records as follows.
-
-    ```javascript
-    const tb = await db.createTable("my_table", [{
-        "vector": [3.1, 4.1],
-        "item": "foo",
-        "price": 10.0
-    }, {
-        "vector": [5.9, 26.5],
-        "item": "bar",
-        "price": 20.0
-    }]);
-    ```
-
-    !!! info "Note"
-    If the table already exists, LanceDB will raise an error by default. If you want to overwrite the table, you need to specify the `WriteMode` in the createTable function.
-
-    ```javascript
-    const table = await con.createTable(tableName, data, { writeMode: WriteMode.Overwrite })
-    ```
 
 ## Open existing tables
 
