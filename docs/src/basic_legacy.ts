@@ -8,6 +8,7 @@ import { Table as ArrowTable, Utf8 } from "apache-arrow";
 const example = async () => {
   fs.rmSync("data/sample-lancedb", { recursive: true, force: true });
   // --8<-- [start:open_db]
+  const lancedb = require("vectordb");
   const uri = "data/sample-lancedb";
   const db = await lancedb.connect(uri);
   // --8<-- [end:open_db]
@@ -49,8 +50,6 @@ const example = async () => {
   // --8<-- [end:create_empty_table]
 
   // --8<-- [start:create_f16_table]
-  const lancedb = require("vectordb");
-  const con = await lancedb.connect(uri)
   const dim = 16
   const total = 10
   const f16_schema = new Schema([
@@ -68,7 +67,7 @@ const example = async () => {
       })),
       { f16_schema }
     )
-  const table = await con.createTable('f16_tbl', data)
+  const table = await db.createTable('f16_tbl', data)
   // --8<-- [end:create_f16_table]
 
   // --8<-- [start:search]
