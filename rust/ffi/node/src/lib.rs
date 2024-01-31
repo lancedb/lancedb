@@ -17,14 +17,14 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use lance::io::ObjectStoreParams;
 use neon::prelude::*;
-use object_store::aws::{AwsCredential, AwsCredentialProvider};
+use object_store::aws::{self, AwsCredential, AwsCredentialProvider};
 use object_store::CredentialProvider;
 use once_cell::sync::OnceCell;
 use tokio::runtime::Runtime;
 
 use vectordb::connection::Database;
 use vectordb::table::ReadParams;
-use vectordb::Connection;
+use vectordb::{ConnectOptions, Connection};
 
 use crate::error::ResultExt;
 use crate::query::JsQuery;
@@ -82,13 +82,26 @@ fn runtime<'a, C: Context<'a>>(cx: &mut C) -> NeonResult<&'static Runtime> {
 
 fn database_new(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let path = cx.argument::<JsString>(0)?.value(&mut cx);
+    let aws_creds = get_aws_creds(&mut cx, 1)?;
+    let region = get_aws_region(&mut cx, 4)?;
 
     let rt = runtime(&mut cx)?;
     let channel = cx.channel();
     let (deferred, promise) = cx.promise();
 
+    let mut conn_options = ConnectOptions::new(&path);
+    if let Some(region) = region {
+        conn_options = conn_options.region(&region);
+    }
+    if let Some(aws_creds) = aws_creds {
+        conn_options = conn_options.aws_creds(AwsCredential {
+            key_id: aws_creds.key_id,
+            secret_key: aws_creds.secret_key,
+            token: aws_creds.token,
+        });
+    }
     rt.spawn(async move {
-        let database = Database::connect(&path).await;
+        let database = Database::connect_with_options(&conn_options).await;
 
         deferred.settle_with(&channel, move |mut cx| {
             let db = JsDatabase {
@@ -127,7 +140,7 @@ fn database_table_names(mut cx: FunctionContext) -> JsResult<JsPromise> {
 fn get_aws_creds(
     cx: &mut FunctionContext,
     arg_starting_location: i32,
-) -> NeonResult<Option<AwsCredentialProvider>> {
+) -> NeonResult<Option<AwsCredential>> {
     let secret_key_id = cx
         .argument_opt(arg_starting_location)
         .filter(|arg| arg.is_a::<JsString, _>(cx))
@@ -147,16 +160,24 @@ fn get_aws_creds(
         .map(|v| v.value(cx));
 
     match (secret_key_id, secret_key, temp_token) {
-        (Some(key_id), Some(key), optional_token) => Ok(Some(Arc::new(
-            StaticCredentialProvider::new(AwsCredential {
-                key_id,
-                secret_key: key,
-                token: optional_token,
-            }),
-        ))),
+        (Some(key_id), Some(key), optional_token) => Ok(Some(AwsCredential {
+            key_id,
+            secret_key: key,
+            token: optional_token,
+        })),
         (None, None, None) => Ok(None),
         _ => cx.throw_error("Invalid credentials configuration"),
     }
+}
+
+fn get_aws_credential_provider(
+    cx: &mut FunctionContext,
+    arg_starting_location: i32,
+) -> NeonResult<Option<AwsCredentialProvider>> {
+    Ok(get_aws_creds(cx, arg_starting_location)?.map(|aws_cred| {
+        Arc::new(StaticCredentialProvider::new(aws_cred))
+            as Arc<dyn CredentialProvider<Credential = AwsCredential>>
+    }))
 }
 
 /// Get AWS region arguments from the context
@@ -179,7 +200,7 @@ fn database_open_table(mut cx: FunctionContext) -> JsResult<JsPromise> {
         .downcast_or_throw::<JsBox<JsDatabase>, _>(&mut cx)?;
     let table_name = cx.argument::<JsString>(0)?.value(&mut cx);
 
-    let aws_creds = get_aws_creds(&mut cx, 1)?;
+    let aws_creds = get_aws_credential_provider(&mut cx, 1)?;
 
     let aws_region = get_aws_region(&mut cx, 4)?;
 

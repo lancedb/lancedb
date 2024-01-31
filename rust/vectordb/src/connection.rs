@@ -123,6 +123,13 @@ impl ConnectOptions {
         self
     }
 
+    /// [`AwsCredential`] to use when connecting to S3.
+    ///
+    pub fn aws_creds(mut self, aws_creds: AwsCredential) -> Self {
+        self.aws_creds = Some(aws_creds);
+        self
+    }
+
     pub fn index_cache_size(mut self, index_cache_size: u32) -> Self {
         self.index_cache_size = index_cache_size;
         self
@@ -240,12 +247,13 @@ impl Database {
 
                 let plain_uri = url.to_string();
                 let os_params: ObjectStoreParams = if let Some(aws_creds) = &options.aws_creds {
-                    let credential_provider: Arc<dyn CredentialProvider<Credential = AwsCredential>> =
-                        Arc::new(StaticCredentialProvider::new(AwsCredential {
-                            key_id: aws_creds.key_id.clone(),
-                            secret_key: aws_creds.secret_key.clone(),
-                            token: aws_creds.token.clone(),
-                        }));
+                    let credential_provider: Arc<
+                        dyn CredentialProvider<Credential = AwsCredential>,
+                    > = Arc::new(StaticCredentialProvider::new(AwsCredential {
+                        key_id: aws_creds.key_id.clone(),
+                        secret_key: aws_creds.secret_key.clone(),
+                        token: aws_creds.token.clone(),
+                    }));
                     ObjectStoreParams::with_aws_credentials(
                         Some(credential_provider),
                         options.region.clone(),
