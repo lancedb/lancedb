@@ -382,7 +382,9 @@ class Table(ABC):
         ...      .when_matched_update_all()     \\
         ...      .when_not_matched_insert_all() \\
         ...      .execute(new_data)
-        >>> table.to_pandas()
+        >>> # The order of new rows is non-deterministic since we use
+        >>> # a hash-join as part of this operation and so we sort here
+        >>> table.to_arrow().sort_by("a").to_pandas()
            a  b
         0  1  b
         1  2  x
