@@ -163,6 +163,7 @@ export async function connect (
       {
         uri: '',
         awsCredentials: undefined,
+        awsRegion: defaultAwsRegion,
         apiKey: undefined,
         region: defaultAwsRegion
       },
