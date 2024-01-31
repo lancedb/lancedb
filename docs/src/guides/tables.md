@@ -97,23 +97,32 @@ This guide will show how to create tables, insert data into them, and update the
     table = db.create_table("pl_table", data=data)
     ```
 
-    ### From PyArrow Tables
-    You can also create LanceDB tables directly from PyArrow tables
+    ### From an Arrow Table
+    === "Python"
+    You can also create LanceDB tables directly from Arrow tables. 
+    LanceDB supports float16 data type!
 
     ```python
-    table = pa.Table.from_arrays(
-            [
-                pa.array([[3.1, 4.1, 5.1, 6.1], [5.9, 26.5, 4.7, 32.8]],
-                        pa.list_(pa.float32(), 4)),
-                pa.array(["foo", "bar"]),
-                pa.array([10.0, 20.0]),
-            ],
-            ["vector", "item", "price"],
-        )
-
-    db = lancedb.connect("db")
-
-    tbl = db.create_table("my_table", table)
+    import pyarrows as pa
+    import numpy as np
+    
+    dim = 16
+    total = 2
+    schema = pa.schema(
+        [
+            pa.field("vector", pa.list_(pa.float16(), dim)),
+            pa.field("text", pa.string())
+        ]
+    )
+    data = pa.Table.from_arrays(
+        [
+            pa.array([np.random.randn(dim).astype(np.float16) for _ in range(total)],
+                    pa.list_(pa.float16(), dim)),
+            pa.array(["foo", "bar"])
+        ],
+        ["vector", "text"],
+    )
+    tbl = db.create_table("f16_tbl", data, schema=schema)
     ```
 
     ### From Pydantic Models
@@ -271,6 +280,7 @@ This guide will show how to create tables, insert data into them, and update the
     const db = await lancedb.connect(uri);
     ```
 
+    ### From an array of JSON records
     You can create a LanceDB table in JavaScript using an array of JSON records as follows.
 
     ```javascript
@@ -283,6 +293,35 @@ This guide will show how to create tables, insert data into them, and update the
         "item": "bar",
         "price": 20.0
     }]);
+    ```
+    ### From an Arrow Table
+    You can also create LanceDB tables directly from Arrow tables. 
+    LanceDB supports Float16 data type!
+
+    ```javascript
+    import { FixedSizeList,Field,Int32,Schema,Float16, Table as ArrowTable } from 'apache-arrow'
+
+    const lancedb = require("vectordb");
+    const uri = "data/sample-lancedb";
+    const con = await lancedb.connect(uri)
+    const dim = 16
+    const total = 10
+    const schema = new Schema([
+        new Field('id', new Int32()),
+        new Field(
+          'vector',
+          new FixedSizeList(dim, new Field('item', new Float16(), true)),
+          false
+        )
+      ])
+    const data = lancedb.makeArrowTable(
+        Array.from(Array(total), (_, i) => ({
+          id: i,
+          vector: Array.from(Array(dim), Math.random)
+        })),
+        { schema }
+      )
+    const table = await con.createTable('f16', data)
     ```
 
     !!! info "Note"
