@@ -11,10 +11,11 @@ license = "Apache-2.0"
 repository = "https://github.com/lancedb/lancedb"
 
 [workspace.dependencies]
-lance = { "version" = "=0.9.10", "features" = ["dynamodb"] }
-lance-index = { "version" = "=0.9.10" }
-lance-linalg = { "version" = "=0.9.10" }
-lance-testing = { "version" = "=0.9.10" }
+lance = { "version" = "=0.9.11", "features" = ["dynamodb"] }
+lance-datafusion = { "version" = "=0.9.11" }
+lance-index = { "version" = "=0.9.11" }
+lance-linalg = { "version" = "=0.9.11" }
+lance-testing = { "version" = "=0.9.11" }
 # Note that this one does not include pyarrow
 arrow = { version = "50.0", optional = false }
 arrow-array = "50.0"
