@@ -163,29 +163,7 @@ This guide will show how to create tables, insert data into them, and update the
     LanceDB supports Float16 data type!
 
     ```javascript
-    import { FixedSizeList,Field,Int32,Schema,Float16, Table as ArrowTable } from 'apache-arrow'
-
-    const lancedb = require("vectordb");
-    const uri = "data/sample-lancedb";
-    const con = await lancedb.connect(uri)
-    const dim = 16
-    const total = 10
-    const schema = new Schema([
-        new Field('id', new Int32()),
-        new Field(
-          'vector',
-          new FixedSizeList(dim, new Field('item', new Float16(), true)),
-          false
-        )
-      ])
-    const data = lancedb.makeArrowTable(
-        Array.from(Array(total), (_, i) => ({
-          id: i,
-          vector: Array.from(Array(dim), Math.random)
-        })),
-        { schema }
-      )
-    const table = await con.createTable('f16_tbl', data)
+    --8<-- "docs/src/basic_legacy.ts:create_f16_table"
     ```
 
     ### From Pydantic Models
