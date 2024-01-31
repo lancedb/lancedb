@@ -122,7 +122,6 @@ For **read-only access**, LanceDB will need a policy such as:
             "Effect": "Allow",
             "Action": [
               "s3:GetObject",
-              "s3:DeleteObject"
             ],
             "Resource": "arn:aws:s3:::<bucket>/<prefix>/*"
         },
