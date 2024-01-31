@@ -163,6 +163,7 @@ export async function connect (
       {
         uri: '',
         awsCredentials: undefined,
+        awsRegion: defaultAwsRegion,
         apiKey: undefined,
         region: defaultAwsRegion
       },
@@ -174,7 +175,13 @@ export async function connect (
     // Remote connection
     return new RemoteConnection(opts)
   }
-  const db = await databaseNew(opts.uri)
+  const db = await databaseNew(
+    opts.uri,
+    opts.awsCredentials?.accessKeyId,
+    opts.awsCredentials?.secretKey,
+    opts.awsCredentials?.sessionToken,
+    opts.awsRegion
+  )
   return new LocalConnection(db, opts)
 }
 
@@ -443,7 +450,7 @@ export interface Table<T = number[]> {
    */
   indexStats: (indexUuid: string) => Promise<IndexStats>
 
-  filter (value: string): Query<T>
+  filter(value: string): Query<T>
 
   schema: Promise<Schema>
 }
