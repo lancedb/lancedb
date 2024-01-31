@@ -24,6 +24,8 @@ import {
   type IndexStats,
   type UpdateArgs,
   type UpdateSqlArgs,
+  type MergeInsertParams,
+  MergeInsertBuilder,
   makeArrowTable
 } from '../index'
 import { Query } from '../query'
@@ -423,5 +425,37 @@ export class RemoteTable<T = number[]> implements Table<T> {
       numIndexedRows: results.data.num_indexed_rows,
       numUnindexedRows: results.data.num_unindexed_rows
     }
+  }
+
+  mergeInsert: () => MergeInsertBuilder = () => {
+    return new MergeInsertBuilder(async ({ data, params }: {
+      params: MergeInsertParams
+      data: Array<Record<string, unknown>> | ArrowTable
+    }) => {
+      // TODO -- uncomment this this 
+      // let tbl: ArrowTable
+      // if (data instanceof ArrowTable) {
+      //   tbl = data
+      // } else {
+      //   tbl = makeArrowTable(data, await this.schema)
+      // }
+      const tbl = data as ArrowTable
+
+      const buffer = await fromTableToStreamBuffer(tbl, this._embeddings)
+
+      console.log({ buffer })
+
+      await this._client.post(
+        `/v1/table/${this._name}/merge_insert/`,
+        buffer,
+        {
+          when_matched_update_all: params.whenMatchedUpdateAll,
+          when_not_matched_insert_all: params.whenNotMatchedInsertAll,
+          when_not_matched_by_source_delete: params.whenNotMatchedBySourceDelete,
+          when_not_matched_by_source_condition: params.whenNotMatchedBySourceCondition
+        },
+        'application/vnd.apache.arrow.stream'
+      )
+    })
   }
 }

@@ -120,7 +120,7 @@ export class HttpLancedbClient {
   public async post (
     path: string,
     data?: any,
-    params?: Record<string, string | number>,
+    params?: Record<string, string | number | boolean>,
     content?: string | undefined
   ): Promise<AxiosResponse> {
     const response = await axios.post(

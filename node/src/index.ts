@@ -451,6 +451,11 @@ export interface Table<T = number[]> {
   indexStats: (indexUuid: string) => Promise<IndexStats>
 
   filter(value: string): Query<T>
+  
+  /**
+   * TODO comment
+   */
+  mergeInsert: () => MergeInsertBuilder
 
   schema: Promise<Schema>
 }
@@ -900,6 +905,15 @@ export class LocalTable<T = number[]> implements Table<T> {
       return false
     }
   }
+
+  mergeInsert: () => MergeInsertBuilder = () => {
+    return new MergeInsertBuilder(async (args: {
+      params: MergeInsertParams
+      data: Array<Record<string, unknown>> | ArrowTable
+    }) => {
+      throw new Error('Not implemented')
+    })
+  }
 }
 
 export interface CleanupStats {
@@ -1075,4 +1089,57 @@ export enum MetricType {
    * Dot product
    */
   Dot = 'dot',
+}
+
+export interface MergeInsertParams {
+  whenMatchedUpdateAll: boolean
+  whenNotMatchedInsertAll: boolean
+  whenNotMatchedBySourceDelete: boolean
+  whenNotMatchedBySourceCondition: boolean
+}
+
+type MergeInsertCallback = (args: {
+  params: MergeInsertParams
+  data: Array<Record<string, unknown>> | ArrowTable
+}) => Promise<void>
+
+export class MergeInsertBuilder {
+  readonly #callback: MergeInsertCallback
+  readonly #params: MergeInsertParams
+
+  constructor (callback: MergeInsertCallback) {
+    this.#callback = callback
+    this.#params = {
+      whenMatchedUpdateAll: false,
+      whenNotMatchedInsertAll: false,
+      whenNotMatchedBySourceDelete: false,
+      whenNotMatchedBySourceCondition: false
+    }
+  }
+
+  whenMatchedUpdateAll (): MergeInsertBuilder {
+    this.#params.whenMatchedUpdateAll = true
+    return this
+  }
+
+  whenNotMatchedInsertAll (): MergeInsertBuilder {
+    this.#params.whenNotMatchedInsertAll = true
+    return this
+  }
+
+  whenNotMatchedBySourceDelete (): MergeInsertBuilder {
+    this.#params.whenNotMatchedBySourceDelete = true
+    return this
+  }
+
+  whenNotMatchedBySourceCondition (): MergeInsertBuilder {
+    this.#params.whenNotMatchedBySourceCondition = true
+    return this
+  }
+
+  async execute ({ data }: {
+    data: Array<Record<string, unknown>> | ArrowTable
+  }): Promise<void> {
+    await this.#callback({ params: this.#params, data })
+  }
 }

@@ -175,6 +175,7 @@ pub mod error;
 pub mod index;
 pub mod io;
 pub mod ipc;
+pub mod merge_insert;
 pub mod query;
 pub mod table;
 pub mod utils;
