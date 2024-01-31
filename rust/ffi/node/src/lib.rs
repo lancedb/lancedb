@@ -17,7 +17,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use lance::io::ObjectStoreParams;
 use neon::prelude::*;
-use object_store::aws::{self, AwsCredential, AwsCredentialProvider};
+use object_store::aws::{AwsCredential, AwsCredentialProvider};
 use object_store::CredentialProvider;
 use once_cell::sync::OnceCell;
 use tokio::runtime::Runtime;
