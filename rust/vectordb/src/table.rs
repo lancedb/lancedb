@@ -34,6 +34,7 @@ use log::info;
 use crate::error::{Error, Result};
 use crate::index::vector::{VectorIndex, VectorIndexStatistics};
 use crate::index::IndexBuilder;
+use crate::merge_insert::MergeInsertBuilder;
 use crate::query::Query;
 use crate::utils::{PatchReadParam, PatchWriteParam};
 use crate::WriteMode;
@@ -241,6 +242,8 @@ pub trait Table: std::fmt::Display + Send + Sync {
     /// Modeled after ``VACCUM`` in PostgreSQL.
     /// Not all implementations support explicit optimization.
     async fn optimize(&self, action: OptimizeAction) -> Result<OptimizeStats>;
+
+    fn merge_insert(&self) -> MergeInsertBuilder;
 }
 
 /// Reference to a Table pointer.
@@ -697,6 +700,10 @@ impl Table for NativeTable {
             }
         }
         Ok(stats)
+    }
+
+    fn merge_insert(&self) -> MergeInsertBuilder {
+        MergeInsertBuilder::new(Arc::new(self.clone()))
     }
 }
 

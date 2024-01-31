@@ -90,8 +90,8 @@ impl MergeInsertBuilder {
         // }
 
         let job = builder.try_build().unwrap(); // TODO no unwrap
-        let bitches = reader_to_stream(batches).await.unwrap().0; // TODO no unwrap
-        let ds2 = job.execute(bitches).await.unwrap(); // TODO no unwrap
+        let batches = reader_to_stream(batches).await.unwrap().0; // TODO no unwrap
+        let ds2 = job.execute(batches).await.unwrap(); // TODO no unwrap
 
         native_table.reset_dataset(ds2.as_ref().clone());
 
