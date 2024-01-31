@@ -16,9 +16,22 @@ This guide will show how to create tables, insert data into them, and update the
     db = lancedb.connect("./.lancedb")
     ```
 
+=== "Javascript"
+
+    Initialize a VectorDB connection and create a table using one of the many methods listed below.
+
+    ```javascript
+    const lancedb = require("vectordb");
+
+    const uri = "data/sample-lancedb";
+    const db = await lancedb.connect(uri);
+    ```
+
     LanceDB allows ingesting data from various sources - `dict`, `list[dict]`, `pd.DataFrame`, `pa.Table` or a `Iterator[pa.RecordBatch]`. Let's take a look at some of the these.
 
-    ### From list of tuples or dictionaries
+### From list of tuples or dictionaries
+
+=== "Python"
 
     ```python
     import lancedb
@@ -32,7 +45,6 @@ This guide will show how to create tables, insert data into them, and update the
 
     db["my_table"].head()
     ```
-
     !!! info "Note"
         If the table already exists, LanceDB will raise an error by default. 
 
@@ -51,7 +63,28 @@ This guide will show how to create tables, insert data into them, and update the
         db.create_table("name", data, mode="overwrite")
         ```
 
-    ### From a Pandas DataFrame
+=== "Javascript"
+    You can create a LanceDB table in JavaScript using an array of JSON records as follows.
+
+    ```javascript
+    const tb = await db.createTable("my_table", [{
+        "vector": [3.1, 4.1],
+        "item": "foo",
+        "price": 10.0
+    }, {
+        "vector": [5.9, 26.5],
+        "item": "bar",
+        "price": 20.0
+    }]);
+    ```
+    !!! info "Note"
+    If the table already exists, LanceDB will raise an error by default. If you want to overwrite the table, you need to specify the `WriteMode` in the createTable function.
+
+    ```javascript
+    const table = await con.createTable(tableName, data, { writeMode: WriteMode.Overwrite })
+    ```
+
+### From a Pandas DataFrame
 
     ```python
     import pandas as pd
@@ -79,7 +112,7 @@ This guide will show how to create tables, insert data into them, and update the
     table = db.create_table("my_table", data, schema=custom_schema)
     ```
 
-    ### From a Polars DataFrame
+### From a Polars DataFrame
 
     LanceDB supports [Polars](https://pola.rs/), a modern, fast DataFrame library
     written in Rust. Just like in Pandas, the Polars integration is enabled by PyArrow
@@ -97,8 +130,8 @@ This guide will show how to create tables, insert data into them, and update the
     table = db.create_table("pl_table", data=data)
     ```
 
-    ### From an Arrow Table
-    === "Python"
+### From an Arrow Table
+=== "Python"
     You can also create LanceDB tables directly from Arrow tables. 
     LanceDB supports float16 data type!
 
@@ -125,7 +158,38 @@ This guide will show how to create tables, insert data into them, and update the
     tbl = db.create_table("f16_tbl", data, schema=schema)
     ```
 
+=== "Javascript"
+    You can also create LanceDB tables directly from Arrow tables. 
+    LanceDB supports Float16 data type!
+
+    ```javascript
+    import { FixedSizeList,Field,Int32,Schema,Float16, Table as ArrowTable } from 'apache-arrow'
+
+    const lancedb = require("vectordb");
+    const uri = "data/sample-lancedb";
+    const con = await lancedb.connect(uri)
+    const dim = 16
+    const total = 10
+    const schema = new Schema([
+        new Field('id', new Int32()),
+        new Field(
+          'vector',
+          new FixedSizeList(dim, new Field('item', new Float16(), true)),
+          false
+        )
+      ])
+    const data = lancedb.makeArrowTable(
+        Array.from(Array(total), (_, i) => ({
+          id: i,
+          vector: Array.from(Array(dim), Math.random)
+        })),
+        { schema }
+      )
+    const table = await con.createTable('f16_tbl', data)
+    ```
+
     ### From Pydantic Models
+
     When you create an empty table without data, you must specify the table schema.
     LanceDB supports creating tables by specifying a PyArrow schema or a specialized
     Pydantic model called `LanceModel`.
@@ -269,67 +333,6 @@ This guide will show how to create tables, insert data into them, and update the
     ```
 
     You can also use iterators of other types like Pandas DataFrame or Pylists directly in the above example.
-
-=== "JavaScript"
-    Initialize a VectorDB connection and create a table using one of the many methods listed below.
-
-    ```javascript
-    const lancedb = require("vectordb");
-
-    const uri = "data/sample-lancedb";
-    const db = await lancedb.connect(uri);
-    ```
-
-    ### From an array of JSON records
-    You can create a LanceDB table in JavaScript using an array of JSON records as follows.
-
-    ```javascript
-    const tb = await db.createTable("my_table", [{
-        "vector": [3.1, 4.1],
-        "item": "foo",
-        "price": 10.0
-    }, {
-        "vector": [5.9, 26.5],
-        "item": "bar",
-        "price": 20.0
-    }]);
-    ```
-    ### From an Arrow Table
-    You can also create LanceDB tables directly from Arrow tables. 
-    LanceDB supports Float16 data type!
-
-    ```javascript
-    import { FixedSizeList,Field,Int32,Schema,Float16, Table as ArrowTable } from 'apache-arrow'
-
-    const lancedb = require("vectordb");
-    const uri = "data/sample-lancedb";
-    const con = await lancedb.connect(uri)
-    const dim = 16
-    const total = 10
-    const schema = new Schema([
-        new Field('id', new Int32()),
-        new Field(
-          'vector',
-          new FixedSizeList(dim, new Field('item', new Float16(), true)),
-          false
-        )
-      ])
-    const data = lancedb.makeArrowTable(
-        Array.from(Array(total), (_, i) => ({
-          id: i,
-          vector: Array.from(Array(dim), Math.random)
-        })),
-        { schema }
-      )
-    const table = await con.createTable('f16', data)
-    ```
-
-    !!! info "Note"
-    If the table already exists, LanceDB will raise an error by default. If you want to overwrite the table, you need to specify the `WriteMode` in the createTable function.
-
-    ```javascript
-    const table = await con.createTable(tableName, data, { writeMode: WriteMode.Overwrite })
-    ```
 
 ## Open existing tables
 
