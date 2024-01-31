@@ -20,17 +20,23 @@ We do not yet support musl-based Linux (such as Alpine Linux) or arch64 Windows.
 ## Usage
 
 ### Basic Example
-
+Connect to a local directory
 ```javascript
 const lancedb = require('vectordb');
 //connect to a local database
 const db = await lancedb.connect('data/sample-lancedb');
-// connect to LanceDB Cloud
-// const db = await lancedb.connect({
-//     uri: "db://your-project-slug",
-//     apiKey: "sk_...",
-//     region: "us-east-1"
-// });
+```
+Connect to LancdDB cloud
+```javascript
+connect to LanceDB Cloud
+const db = await lancedb.connect({
+    uri: "db://my-database",
+    apiKey: "sk_...",
+    region: "us-east-1"
+});
+```
+Create a table followed by a search
+```javascript
 const table = await db.createTable("my_table",
       [{ id: 1, vector: [0.1, 1.0], item: "foo", price: 10.0 },
       { id: 2, vector: [3.9, 0.5], item: "bar", price: 20.0 }])
