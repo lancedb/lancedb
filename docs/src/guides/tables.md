@@ -84,7 +84,7 @@ This guide will show how to create tables, insert data into them, and update the
     const table = await con.createTable(tableName, data, { writeMode: WriteMode.Overwrite })
     ```
 
-### From a Pandas DataFrame
+    ### From a Pandas DataFrame
 
     ```python
     import pandas as pd
