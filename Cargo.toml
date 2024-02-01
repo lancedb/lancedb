@@ -35,9 +35,3 @@ object_store = "0.9.0"
 snafu = "0.7.4"
 url = "2"
 num-traits = "0.2"
-
-[patch.crates-io]
-lance = { path = "/home/pace/dev/lance/rust/lance" }
-lance-index = { path = "/home/pace/dev/lance/rust/lance-index" }
-lance-linalg = { path = "/home/pace/dev/lance/rust/lance-linalg" }
-lance-testing = { path = "/home/pace/dev/lance/rust/lance-testing" }

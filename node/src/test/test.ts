@@ -780,7 +780,7 @@ describe('LanceDB client', function () {
     class TextEmbedding implements EmbeddingFunction<string> {
       sourceColumn: string
 
-      constructor(targetColumn: string) {
+      constructor (targetColumn: string) {
         this.sourceColumn = targetColumn
       }
 
@@ -789,7 +789,7 @@ describe('LanceDB client', function () {
         ['bar', [3.1, 3.2]]
       ])
 
-      async embed(data: string[]): Promise<number[][]> {
+      async embed (data: string[]): Promise<number[][]> {
         return data.map(
           (datum) => this._embedding_map.get(datum) ?? [0.0, 0.0]
         )
@@ -922,7 +922,7 @@ describe('Query object', function () {
   })
 })
 
-async function createTestDB(
+async function createTestDB (
   numDimensions: number = 2,
   numRows: number = 2
 ): Promise<string> {
