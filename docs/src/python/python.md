@@ -58,6 +58,8 @@ pip install lancedb
 
 ::: lancedb.schema.vector
 
+::: lancedb.merge.LanceMergeInsertBuilder
+
 ## Integrations
 
 ### Pydantic
