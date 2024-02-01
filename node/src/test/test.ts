@@ -294,6 +294,7 @@ describe('LanceDB client', function () {
       })
       assert.equal(table.name, 'vectors')
       assert.equal(await table.countRows(), 10)
+      assert.equal(await table.countRows("vectors IS NULL"), 0)
       assert.deepEqual(await con.tableNames(), ['vectors'])
     })
 
@@ -369,6 +370,7 @@ describe('LanceDB client', function () {
       const table = await con.createTable('f16', data)
       assert.equal(table.name, 'f16')
       assert.equal(await table.countRows(), total)
+      assert.equal(await table.countRows("id < 5"), 5)
       assert.deepEqual(await con.tableNames(), ['f16'])
       assert.deepEqual(await table.schema, schema)
 
@@ -780,7 +782,7 @@ describe('LanceDB client', function () {
     class TextEmbedding implements EmbeddingFunction<string> {
       sourceColumn: string
 
-      constructor (targetColumn: string) {
+      constructor(targetColumn: string) {
         this.sourceColumn = targetColumn
       }
 

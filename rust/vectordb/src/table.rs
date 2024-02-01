@@ -102,7 +102,11 @@ pub trait Table: std::fmt::Display + Send + Sync {
     fn schema(&self) -> SchemaRef;
 
     /// Count the number of rows in this dataset.
-    async fn count_rows(&self) -> Result<usize>;
+    ///
+    /// # Arguments
+    ///
+    /// * `filter` if present, only count rows matching the filter
+    async fn count_rows(&self, filter: Option<String>) -> Result<usize>;
 
     /// Insert new records into this Table
     ///
@@ -719,9 +723,15 @@ impl Table for NativeTable {
         Arc::new(Schema::from(&lance_schema))
     }
 
-    async fn count_rows(&self) -> Result<usize> {
+    async fn count_rows(&self, filter: Option<String>) -> Result<usize> {
         let dataset = { self.dataset.lock().expect("lock poison").clone() };
-        Ok(dataset.count_rows().await?)
+        if let Some(filter) = filter {
+            let mut scanner = dataset.scan();
+            scanner.filter(&filter)?;
+            Ok(scanner.count_rows().await? as usize)
+        } else {
+            Ok(dataset.count_rows().await?)
+        }
     }
 
     async fn add(
@@ -887,6 +897,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_count_rows() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        let batches = make_test_batches();
+        let table = NativeTable::create(&uri, "test", batches, None, None)
+            .await
+            .unwrap();
+
+        assert_eq!(table.count_rows(None).await.unwrap(), 10);
+        assert_eq!(
+            table.count_rows(Some("i >= 5".to_string())).await.unwrap(),
+            5
+        );
+    }
+
+    #[tokio::test]
     async fn test_add() {
         let tmp_dir = tempdir().unwrap();
         let uri = tmp_dir.path().to_str().unwrap();
@@ -896,7 +923,7 @@ mod tests {
         let table = NativeTable::create(&uri, "test", batches, None, None)
             .await
             .unwrap();
-        assert_eq!(table.count_rows().await.unwrap(), 10);
+        assert_eq!(table.count_rows(None).await.unwrap(), 10);
 
         let new_batches = RecordBatchIterator::new(
             vec![RecordBatch::try_new(
@@ -910,7 +937,7 @@ mod tests {
         );
 
         table.add(Box::new(new_batches), None).await.unwrap();
-        assert_eq!(table.count_rows().await.unwrap(), 20);
+        assert_eq!(table.count_rows(None).await.unwrap(), 20);
         assert_eq!(table.name, "test");
     }
 
@@ -956,7 +983,7 @@ mod tests {
         let table = NativeTable::create(uri, "test", batches, None, None)
             .await
             .unwrap();
-        assert_eq!(table.count_rows().await.unwrap(), 10);
+        assert_eq!(table.count_rows(None).await.unwrap(), 10);
 
         let new_batches = RecordBatchIterator::new(
             vec![RecordBatch::try_new(
@@ -975,7 +1002,7 @@ mod tests {
         };
 
         table.add(Box::new(new_batches), Some(param)).await.unwrap();
-        assert_eq!(table.count_rows().await.unwrap(), 10);
+        assert_eq!(table.count_rows(None).await.unwrap(), 10);
         assert_eq!(table.name, "test");
     }
 
@@ -1365,7 +1392,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(table.load_indices().await.unwrap().len(), 1);
-        assert_eq!(table.count_rows().await.unwrap(), 512);
+        assert_eq!(table.count_rows(None).await.unwrap(), 512);
         assert_eq!(table.name, "test");
 
         let indices = table.load_indices().await.unwrap();
