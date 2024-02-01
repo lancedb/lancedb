@@ -10,6 +10,7 @@
 #  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
+import importlib
 import io
 import os
 
@@ -190,6 +191,36 @@ def test_instructor_embedding(tmp_path):
 )
 def test_gemini_embedding(tmp_path):
     model = get_registry().get("gemini-text").create(max_retries=0)
+
+    class TextModel(LanceModel):
+        text: str = model.SourceField()
+        vector: Vector(model.ndims()) = model.VectorField()
+
+    df = pd.DataFrame({"text": ["hello world", "goodbye world"]})
+    db = lancedb.connect(tmp_path)
+    tbl = db.create_table("test", schema=TextModel, mode="overwrite")
+
+    tbl.add(df)
+    assert len(tbl.to_pandas()["vector"][0]) == model.ndims()
+    assert tbl.search("hello").limit(1).to_pandas()["text"][0] == "hello world"
+
+
+try:
+    if importlib.util.find_spec("mlx.core") is not None:
+        _mlx = True
+except ImportError:
+    _mlx = None
+
+
+@pytest.mark.skipif(
+    _mlx is None,
+    reason="mlx tests only required for apple users.",
+)
+@pytest.mark.slow
+def test_gte_embedding(tmp_path):
+    import lancedb.embeddings.gte
+
+    model = get_registry().get("gte-text").create()
 
     class TextModel(LanceModel):
         text: str = model.SourceField()
