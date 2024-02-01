@@ -39,6 +39,8 @@ class OpenAIEmbeddings(TextEmbeddingFunction):
             return self.dim or 3072
         elif self.name == "text-embedding-3-small":
             return self.dim or 1536
+        else:
+            raise ValueError(f"Unknown model name {self.name}")
 
     def generate_embeddings(
         self, texts: Union[List[str], np.ndarray]
