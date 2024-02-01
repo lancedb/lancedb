@@ -493,6 +493,62 @@ def test_update_types(db):
     assert actual == expected
 
 
+def test_merge_insert(db):
+    table = LanceTable.create(
+        db,
+        "my_table",
+        data=pa.table({"a": [1, 2, 3], "b": ["a", "b", "c"]}),
+    )
+    assert len(table) == 3
+    version = table.version
+
+    new_data = pa.table({"a": [2, 3, 4], "b": ["x", "y", "z"]})
+
+    # upsert
+    table.merge_insert(
+        "a"
+    ).when_matched_update_all().when_not_matched_insert_all().execute(new_data)
+
+    expected = pa.table({"a": [1, 2, 3, 4], "b": ["a", "x", "y", "z"]})
+    # These `sort_by` calls can be removed once lance#1892
+    # is merged (it fixes the ordering)
+    assert table.to_arrow().sort_by("a") == expected
+
+    table.restore(version)
+
+    # insert-if-not-exists
+    table.merge_insert("a").when_not_matched_insert_all().execute(new_data)
+
+    expected = pa.table({"a": [1, 2, 3, 4], "b": ["a", "b", "c", "z"]})
+    assert table.to_arrow().sort_by("a") == expected
+
+    table.restore(version)
+
+    new_data = pa.table({"a": [2, 4], "b": ["x", "z"]})
+
+    # replace-range
+    table.merge_insert(
+        "a"
+    ).when_matched_update_all().when_not_matched_insert_all().when_not_matched_by_source_delete(
+        "a > 2"
+    ).execute(new_data)
+
+    expected = pa.table({"a": [1, 2, 4], "b": ["a", "x", "z"]})
+    assert table.to_arrow().sort_by("a") == expected
+
+    table.restore(version)
+
+    # replace-range no condition
+    table.merge_insert(
+        "a"
+    ).when_matched_update_all().when_not_matched_insert_all().when_not_matched_by_source_delete().execute(
+        new_data
+    )
+
+    expected = pa.table({"a": [2, 4], "b": ["x", "z"]})
+    assert table.to_arrow().sort_by("a") == expected
+
+
 def test_create_with_embedding_function(db):
     class MyTable(LanceModel):
         text: str
