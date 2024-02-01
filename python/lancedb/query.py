@@ -678,7 +678,9 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         # rerankers might need to preserve this score to support `return_score="all"`
         fts_results = self._normalize_scores(fts_results, "score")
 
-        results = self._reranker.rerank_hybrid(self._fts_query._query, vector_results, fts_results)
+        results = self._reranker.rerank_hybrid(
+            self._fts_query._query, vector_results, fts_results
+        )
         if not isinstance(results, pa.Table):  # Enforce type
             raise TypeError(
                 f"rerank_hybrid must return a pyarrow.Table, got {type(results)}"

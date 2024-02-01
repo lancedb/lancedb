@@ -1,4 +1,3 @@
-import typing
 from functools import cached_property
 from typing import Union
 
@@ -6,9 +5,6 @@ import pyarrow as pa
 
 from ..util import safe_import
 from .base import Reranker
-
-if typing.TYPE_CHECKING:
-    import lancedb
 
 
 class CrossEncoderReranker(Reranker):
