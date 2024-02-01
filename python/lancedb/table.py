@@ -1279,8 +1279,9 @@ class LanceTable(Table):
         This can be run after making several small appends to optimize the table
         for faster reads.
 
-        Arguments are passed onto :meth:`lance.dataset.DatasetOptimizer.compact_files`.
-        For most cases, the default should be fine.
+        Arguments are passed onto `lance.dataset.DatasetOptimizer.compact_files`.
+         (see Lance documentation for more details) For most cases, the default
+        should be fine.
         """
         return self.to_lance().optimize.compact_files(*args, **kwargs)
 
