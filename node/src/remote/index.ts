@@ -24,7 +24,8 @@ import {
   type IndexStats,
   type UpdateArgs,
   type UpdateSqlArgs,
-  makeArrowTable
+  makeArrowTable,
+  MergeInsertArgs
 } from '../index'
 import { Query } from '../query'
 
@@ -45,7 +46,7 @@ export class RemoteConnection implements Connection {
   private readonly _client: HttpLancedbClient
   private readonly _dbName: string
 
-  constructor (opts: ConnectionOptions) {
+  constructor(opts: ConnectionOptions) {
     if (!opts.uri.startsWith('db://')) {
       throw new Error(`Invalid remote DB URI: ${opts.uri}`)
     }
@@ -72,12 +73,12 @@ export class RemoteConnection implements Connection {
     )
   }
 
-  get uri (): string {
+  get uri(): string {
     // add the lancedb+ prefix back
     return 'db://' + this._client.uri
   }
 
-  async tableNames (
+  async tableNames(
     pageToken: string = '',
     limit: number = 10
   ): Promise<string[]> {
@@ -88,7 +89,7 @@ export class RemoteConnection implements Connection {
     return response.data.tables
   }
 
-  async openTable (name: string): Promise<Table>
+  async openTable(name: string): Promise<Table>
   async openTable<T>(
     name: string,
     embeddings: EmbeddingFunction<T>
@@ -130,7 +131,7 @@ export class RemoteConnection implements Connection {
 
     let buffer: Buffer
 
-    function isEmpty (
+    function isEmpty(
       data: Array<Record<string, unknown>> | ArrowTable<any>
     ): boolean {
       if (data instanceof ArrowTable) {
@@ -160,8 +161,8 @@ export class RemoteConnection implements Connection {
     if (res.status !== 200) {
       throw new Error(
         `Server Error, status: ${res.status}, ` +
-          // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
-          `message: ${res.statusText}: ${res.data}`
+        // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
+        `message: ${res.statusText}: ${res.data}`
       )
     }
 
@@ -172,13 +173,13 @@ export class RemoteConnection implements Connection {
     }
   }
 
-  async dropTable (name: string): Promise<void> {
+  async dropTable(name: string): Promise<void> {
     await this._client.post(`/v1/table/${name}/drop/`)
   }
 }
 
 export class RemoteQuery<T = number[]> extends Query<T> {
-  constructor (
+  constructor(
     query: T,
     private readonly _client: HttpLancedbClient,
     private readonly _name: string,
@@ -231,13 +232,13 @@ export class RemoteTable<T = number[]> implements Table<T> {
   private readonly _embeddings?: EmbeddingFunction<T>
   private readonly _name: string
 
-  constructor (client: HttpLancedbClient, name: string)
-  constructor (
+  constructor(client: HttpLancedbClient, name: string)
+  constructor(
     client: HttpLancedbClient,
     name: string,
     embeddings: EmbeddingFunction<T>
   )
-  constructor (
+  constructor(
     client: HttpLancedbClient,
     name: string,
     embeddings?: EmbeddingFunction<T>
@@ -247,34 +248,38 @@ export class RemoteTable<T = number[]> implements Table<T> {
     this._embeddings = embeddings
   }
 
-  get name (): string {
+  get name(): string {
     return this._name
   }
 
-  get schema (): Promise<any> {
+  get schema(): Promise<any> {
     return this._client
       .post(`/v1/table/${this._name}/describe/`)
       .then((res) => {
         if (res.status !== 200) {
           throw new Error(
             `Server Error, status: ${res.status}, ` +
-              // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
-              `message: ${res.statusText}: ${res.data}`
+            // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
+            `message: ${res.statusText}: ${res.data}`
           )
         }
         return res.data?.schema
       })
   }
 
-  search (query: T): Query<T> {
+  search(query: T): Query<T> {
     return new RemoteQuery(query, this._client, this._name) //, this._embeddings_new)
   }
 
-  filter (where: string): Query<T> {
+  filter(where: string): Query<T> {
     throw new Error('Not implemented')
   }
 
-  async add (data: Array<Record<string, unknown>> | ArrowTable): Promise<number> {
+  async mergeInsert(on: string, data: Array<Record<string, unknown>> | ArrowTable, args: MergeInsertArgs): Promise<void> {
+    throw new Error('Not implemented')
+  }
+
+  async add(data: Array<Record<string, unknown>> | ArrowTable): Promise<number> {
     let tbl: ArrowTable
     if (data instanceof ArrowTable) {
       tbl = data
@@ -294,14 +299,14 @@ export class RemoteTable<T = number[]> implements Table<T> {
     if (res.status !== 200) {
       throw new Error(
         `Server Error, status: ${res.status}, ` +
-          // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
-          `message: ${res.statusText}: ${res.data}`
+        // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
+        `message: ${res.statusText}: ${res.data}`
       )
     }
     return tbl.numRows
   }
 
-  async overwrite (data: Array<Record<string, unknown>> | ArrowTable): Promise<number> {
+  async overwrite(data: Array<Record<string, unknown>> | ArrowTable): Promise<number> {
     let tbl: ArrowTable
     if (data instanceof ArrowTable) {
       tbl = data
@@ -320,14 +325,14 @@ export class RemoteTable<T = number[]> implements Table<T> {
     if (res.status !== 200) {
       throw new Error(
         `Server Error, status: ${res.status}, ` +
-          // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
-          `message: ${res.statusText}: ${res.data}`
+        // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
+        `message: ${res.statusText}: ${res.data}`
       )
     }
     return tbl.numRows
   }
 
-  async createIndex (indexParams: VectorIndexParams): Promise<void> {
+  async createIndex(indexParams: VectorIndexParams): Promise<void> {
     const unsupportedParams = [
       'index_name',
       'num_partitions',
@@ -363,28 +368,28 @@ export class RemoteTable<T = number[]> implements Table<T> {
     if (res.status !== 200) {
       throw new Error(
         `Server Error, status: ${res.status}, ` +
-          // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
-          `message: ${res.statusText}: ${res.data}`
+        // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
+        `message: ${res.statusText}: ${res.data}`
       )
     }
   }
 
-  async createScalarIndex (column: string, replace: boolean): Promise<void> {
+  async createScalarIndex(column: string, replace: boolean): Promise<void> {
     throw new Error('Not implemented')
   }
 
-  async countRows (): Promise<number> {
+  async countRows(): Promise<number> {
     const result = await this._client.post(`/v1/table/${this._name}/describe/`)
     return result.data?.stats?.num_rows
   }
 
-  async delete (filter: string): Promise<void> {
+  async delete(filter: string): Promise<void> {
     await this._client.post(`/v1/table/${this._name}/delete/`, {
       predicate: filter
     })
   }
 
-  async update (args: UpdateArgs | UpdateSqlArgs): Promise<void> {
+  async update(args: UpdateArgs | UpdateSqlArgs): Promise<void> {
     let filter: string | null
     let updates: Record<string, string>
 
@@ -404,7 +409,7 @@ export class RemoteTable<T = number[]> implements Table<T> {
     })
   }
 
-  async listIndices (): Promise<VectorIndex[]> {
+  async listIndices(): Promise<VectorIndex[]> {
     const results = await this._client.post(
       `/v1/table/${this._name}/index/list/`
     )
@@ -415,7 +420,7 @@ export class RemoteTable<T = number[]> implements Table<T> {
     }))
   }
 
-  async indexStats (indexUuid: string): Promise<IndexStats> {
+  async indexStats(indexUuid: string): Promise<IndexStats> {
     const results = await this._client.post(
       `/v1/table/${this._name}/index/${indexUuid}/stats/`
     )

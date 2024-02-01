@@ -531,6 +531,44 @@ describe('LanceDB client', function () {
       assert.equal(await table.countRows(), 2)
     })
 
+    it('can merge insert records into the table', async function () {
+      const dir = await track().mkdir('lancejs')
+      const con = await lancedb.connect(dir)
+
+      const data = [{ id: 1, age: 1, }, { id: 2, age: 1, }]
+      const table = await con.createTable('my_table', data)
+
+      let newData = [{ id: 2, age: 2, }, { id: 3, age: 2, }]
+      await table.mergeInsert("id", newData, {
+        when_not_matched_insert_all: true,
+      })
+      assert.equal(await table.countRows(), 3)
+      assert.equal((await table.filter('age = 2').execute()).length, 1)
+
+      newData = [{ id: 3, age: 3, }, { id: 4, age: 3, }]
+      await table.mergeInsert("id", newData, {
+        when_not_matched_insert_all: true,
+        when_matched_update_all: true,
+      })
+      assert.equal(await table.countRows(), 4)
+      assert.equal((await table.filter('age = 3').execute()).length, 2)
+
+      newData = [{ id: 5, age: 4, }]
+      await table.mergeInsert("id", newData, {
+        when_not_matched_insert_all: true,
+        when_matched_update_all: true,
+        when_not_matched_by_source_delete: "age < 3",
+      })
+      assert.equal(await table.countRows(), 3)
+
+      await table.mergeInsert("id", newData, {
+        when_not_matched_insert_all: true,
+        when_matched_update_all: true,
+        when_not_matched_by_source_delete: true,
+      })
+      assert.equal(await table.countRows(), 1)
+    })
+
     it('can update records in the table', async function () {
       const uri = await createTestDB()
       const con = await lancedb.connect(uri)
@@ -742,7 +780,7 @@ describe('LanceDB client', function () {
     class TextEmbedding implements EmbeddingFunction<string> {
       sourceColumn: string
 
-      constructor (targetColumn: string) {
+      constructor(targetColumn: string) {
         this.sourceColumn = targetColumn
       }
 
@@ -751,7 +789,7 @@ describe('LanceDB client', function () {
         ['bar', [3.1, 3.2]]
       ])
 
-      async embed (data: string[]): Promise<number[][]> {
+      async embed(data: string[]): Promise<number[][]> {
         return data.map(
           (datum) => this._embedding_map.get(datum) ?? [0.0, 0.0]
         )
@@ -884,7 +922,7 @@ describe('Query object', function () {
   })
 })
 
-async function createTestDB (
+async function createTestDB(
   numDimensions: number = 2,
   numRows: number = 2
 ): Promise<string> {

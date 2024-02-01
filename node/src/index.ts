@@ -37,6 +37,7 @@ const {
   tableCountRows,
   tableDelete,
   tableUpdate,
+  tableMergeInsert,
   tableCleanupOldVersions,
   tableCompactFiles,
   tableListIndices,
@@ -97,7 +98,7 @@ export interface ConnectionOptions {
   hostOverride?: string
 }
 
-function getAwsArgs (opts: ConnectionOptions): any[] {
+function getAwsArgs(opts: ConnectionOptions): any[] {
   const callArgs: any[] = []
   const awsCredentials = opts.awsCredentials
   if (awsCredentials !== undefined) {
@@ -142,16 +143,16 @@ export interface CreateTableOptions<T> {
  *
  * @see {@link ConnectionOptions} for more details on the URI format.
  */
-export async function connect (uri: string): Promise<Connection>
+export async function connect(uri: string): Promise<Connection>
 /**
  * Connect to a LanceDB instance with connection options.
  *
  * @param opts The {@link ConnectionOptions} to use when connecting to the database.
  */
-export async function connect (
+export async function connect(
   opts: Partial<ConnectionOptions>
 ): Promise<Connection>
-export async function connect (
+export async function connect(
   arg: string | Partial<ConnectionOptions>
 ): Promise<Connection> {
   let opts: ConnectionOptions
@@ -441,6 +442,38 @@ export interface Table<T = number[]> {
   update: (args: UpdateArgs | UpdateSqlArgs) => Promise<void>
 
   /**
+   * Runs a "merge insert" operation on the table
+   *
+   * This operation can add rows, update rows, and remove rows all in a single
+   * transaction. It is a very generic tool that can be used to create
+   * behaviors like "insert if not exists", "update or insert (i.e. upsert)",
+   * or even replace a portion of existing data with new data (e.g. replace
+   * all data where month="january")
+   *
+   * The merge insert operation works by combining new data from a
+   * **source table** with existing data in a **target table** by using a
+   * join.  There are three categories of records.
+   *
+   * "Matched" records are records that exist in both the source table and
+   * the target table. "Not matched" records exist only in the source table
+   * (e.g. these are new data) "Not matched by source" records exist only
+   * in the target table (this is old data)
+   *
+   * The MergeInsertArgs can be used to customize what should happen for
+   * each category of data.
+   *
+   * Please note that the data may appear to be reordered as part of this
+   * operation.  This is because updated rows will be deleted from the
+   * dataset and then reinserted at the end with the new values.
+   * 
+   * @param on a column to join on.  This is how records from the source
+   *           table and target table are matched.
+   * @param data the new data to insert
+   * @param args parameters controlling how the operation should behave
+   */
+  mergeInsert: (on: string, data: Array<Record<string, unknown>> | ArrowTable, args: MergeInsertArgs) => Promise<void>
+
+  /**
    * List the indicies on this table.
    */
   listIndices: () => Promise<VectorIndex[]>
@@ -483,6 +516,36 @@ export interface UpdateSqlArgs {
   valuesSql: Record<string, string>
 }
 
+export interface MergeInsertArgs {
+  /**
+   * If true then rows that exist in both the source table (new data) and
+   * the target table (old data) will be updated, replacing the old row
+   * with the corresponding matching row.
+   *
+   * If there are multiple matches then the behavior is undefined.
+   * Currently this causes multiple copies of the row to be created
+   * but that behavior is subject to change.
+   */
+  when_matched_update_all?: boolean,
+  /**
+   * If true then rows that exist only in the source table (new data)
+   * will be inserted into the target table.
+   */
+  when_not_matched_insert_all?: boolean,
+  /**
+   * If true then rows that exist only in the target table (old data)
+   * will be deleted.
+   * 
+   * If this is a string then it will be treated as an SQL filter and
+   * only rows that both do not match any row in the source table and
+   * match the given filter will be deleted.
+   * 
+   * This can be used to replace a selection of existing data with
+   * new data.
+   */
+  when_not_matched_by_source_delete?: string | boolean,
+}
+
 export interface VectorIndex {
   columns: string[]
   name: string
@@ -501,19 +564,19 @@ export class LocalConnection implements Connection {
   private readonly _options: () => ConnectionOptions
   private readonly _db: any
 
-  constructor (db: any, options: ConnectionOptions) {
+  constructor(db: any, options: ConnectionOptions) {
     this._options = () => options
     this._db = db
   }
 
-  get uri (): string {
+  get uri(): string {
     return this._options().uri
   }
 
   /**
    * Get the names of all tables in the database.
    */
-  async tableNames (): Promise<string[]> {
+  async tableNames(): Promise<string[]> {
     return databaseTableNames.call(this._db)
   }
 
@@ -522,7 +585,7 @@ export class LocalConnection implements Connection {
    *
    * @param name The name of the table.
    */
-  async openTable (name: string): Promise<Table>
+  async openTable(name: string): Promise<Table>
 
   /**
    * Open a table in the database.
@@ -603,7 +666,7 @@ export class LocalConnection implements Connection {
   }): Promise<Table<T>> {
     let buffer: Buffer
 
-    function isEmpty (
+    function isEmpty(
       data: Array<Record<string, unknown>> | ArrowTable<any>
     ): boolean {
       if (data instanceof ArrowTable) {
@@ -642,7 +705,7 @@ export class LocalConnection implements Connection {
    * Drop an existing table.
    * @param name The name of the table to drop.
    */
-  async dropTable (name: string): Promise<void> {
+  async dropTable(name: string): Promise<void> {
     await databaseDropTable.call(this._db, name)
   }
 }
@@ -654,20 +717,20 @@ export class LocalTable<T = number[]> implements Table<T> {
   private readonly _embeddings?: EmbeddingFunction<T>
   private readonly _options: () => ConnectionOptions
 
-  constructor (tbl: any, name: string, options: ConnectionOptions)
+  constructor(tbl: any, name: string, options: ConnectionOptions)
   /**
    * @param tbl
    * @param name
    * @param options
    * @param embeddings An embedding function to use when interacting with this table
    */
-  constructor (
+  constructor(
     tbl: any,
     name: string,
     options: ConnectionOptions,
     embeddings: EmbeddingFunction<T>
   )
-  constructor (
+  constructor(
     tbl: any,
     name: string,
     options: ConnectionOptions,
@@ -680,7 +743,7 @@ export class LocalTable<T = number[]> implements Table<T> {
     this._isElectron = this.checkElectron()
   }
 
-  get name (): string {
+  get name(): string {
     return this._name
   }
 
@@ -688,7 +751,7 @@ export class LocalTable<T = number[]> implements Table<T> {
    * Creates a search query to find the nearest neighbors of the given search term
    * @param query The query search term
    */
-  search (query: T): Query<T> {
+  search(query: T): Query<T> {
     return new Query(query, this._tbl, this._embeddings)
   }
 
@@ -696,7 +759,7 @@ export class LocalTable<T = number[]> implements Table<T> {
    * Creates a filter query to find all rows matching the specified criteria
    * @param value The filter criteria (like SQL where clause syntax)
    */
-  filter (value: string): Query<T> {
+  filter(value: string): Query<T> {
     return new Query(undefined, this._tbl, this._embeddings).filter(value)
   }
 
@@ -708,7 +771,7 @@ export class LocalTable<T = number[]> implements Table<T> {
    * @param data Records to be inserted into the Table
    * @return The number of rows added to the table
    */
-  async add (
+  async add(
     data: Array<Record<string, unknown>> | ArrowTable
   ): Promise<number> {
     const schema = await this.schema
@@ -736,7 +799,7 @@ export class LocalTable<T = number[]> implements Table<T> {
    * @param data Records to be inserted into the Table
    * @return The number of rows added to the table
    */
-  async overwrite (
+  async overwrite(
     data: Array<Record<string, unknown>> | ArrowTable
   ): Promise<number> {
     let buffer: Buffer
@@ -762,7 +825,7 @@ export class LocalTable<T = number[]> implements Table<T> {
    *
    * @param indexParams The parameters of this Index, @see VectorIndexParams.
    */
-  async createIndex (indexParams: VectorIndexParams): Promise<any> {
+  async createIndex(indexParams: VectorIndexParams): Promise<any> {
     return tableCreateVectorIndex
       .call(this._tbl, indexParams)
       .then((newTable: any) => {
@@ -770,14 +833,14 @@ export class LocalTable<T = number[]> implements Table<T> {
       })
   }
 
-  async createScalarIndex (column: string, replace: boolean): Promise<void> {
+  async createScalarIndex(column: string, replace: boolean): Promise<void> {
     return tableCreateScalarIndex.call(this._tbl, column, replace)
   }
 
   /**
    * Returns the number of rows in this table.
    */
-  async countRows (): Promise<number> {
+  async countRows(): Promise<number> {
     return tableCountRows.call(this._tbl)
   }
 
@@ -786,7 +849,7 @@ export class LocalTable<T = number[]> implements Table<T> {
    *
    * @param filter A filter in the same format used by a sql WHERE clause.
    */
-  async delete (filter: string): Promise<void> {
+  async delete(filter: string): Promise<void> {
     return tableDelete.call(this._tbl, filter).then((newTable: any) => {
       this._tbl = newTable
     })
@@ -799,7 +862,7 @@ export class LocalTable<T = number[]> implements Table<T> {
    *
    * @returns
    */
-  async update (args: UpdateArgs | UpdateSqlArgs): Promise<void> {
+  async update(args: UpdateArgs | UpdateSqlArgs): Promise<void> {
     let filter: string | null
     let updates: Record<string, string>
 
@@ -821,6 +884,38 @@ export class LocalTable<T = number[]> implements Table<T> {
       })
   }
 
+  async mergeInsert(on: string, data: Array<Record<string, unknown>> | ArrowTable, args: MergeInsertArgs): Promise<void> {
+    const when_matched_update_all = args.when_matched_update_all || false;
+    const when_not_matched_insert_all = args.when_not_matched_insert_all || false;
+    let when_not_matched_by_source_delete = false;
+    let when_not_matched_by_source_delete_filt = null;
+    if (args.when_not_matched_by_source_delete !== undefined && args.when_not_matched_by_source_delete !== null) {
+      when_not_matched_by_source_delete = true;
+      if (args.when_not_matched_by_source_delete !== true) {
+        when_not_matched_by_source_delete_filt = args.when_not_matched_by_source_delete;
+      }
+    }
+
+    const schema = await this.schema
+    let tbl: ArrowTable
+    if (data instanceof ArrowTable) {
+      tbl = data
+    } else {
+      tbl = makeArrowTable(data, { schema })
+    }
+    const buffer = await fromTableToBuffer(tbl, this._embeddings, schema);
+
+    this._tbl = await tableMergeInsert.call(
+      this._tbl,
+      on,
+      when_matched_update_all,
+      when_not_matched_insert_all,
+      when_not_matched_by_source_delete,
+      when_not_matched_by_source_delete_filt,
+      buffer,
+    )
+  }
+
   /**
    * Clean up old versions of the table, freeing disk space.
    *
@@ -836,7 +931,7 @@ export class LocalTable<T = number[]> implements Table<T> {
    *                 uphold this promise can lead to corrupted tables.
    * @returns
    */
-  async cleanupOldVersions (
+  async cleanupOldVersions(
     olderThan?: number,
     deleteUnverified?: boolean
   ): Promise<CleanupStats> {
@@ -859,7 +954,7 @@ export class LocalTable<T = number[]> implements Table<T> {
    *               for most tables.
    * @returns Metrics about the compaction operation.
    */
-  async compactFiles (options?: CompactionOptions): Promise<CompactionMetrics> {
+  async compactFiles(options?: CompactionOptions): Promise<CompactionMetrics> {
     const optionsArg = options ?? {}
     return tableCompactFiles
       .call(this._tbl, optionsArg)
@@ -869,27 +964,27 @@ export class LocalTable<T = number[]> implements Table<T> {
       })
   }
 
-  async listIndices (): Promise<VectorIndex[]> {
+  async listIndices(): Promise<VectorIndex[]> {
     return tableListIndices.call(this._tbl)
   }
 
-  async indexStats (indexUuid: string): Promise<IndexStats> {
+  async indexStats(indexUuid: string): Promise<IndexStats> {
     return tableIndexStats.call(this._tbl, indexUuid)
   }
 
-  get schema (): Promise<Schema> {
+  get schema(): Promise<Schema> {
     // empty table
     return this.getSchema()
   }
 
-  private async getSchema (): Promise<Schema> {
+  private async getSchema(): Promise<Schema> {
     const buffer = await tableSchema.call(this._tbl, this._isElectron)
     const table = tableFromIPC(buffer)
     return table.schema
   }
 
   // See https://github.com/electron/electron/issues/2288
-  private checkElectron (): boolean {
+  private checkElectron(): boolean {
     try {
       // eslint-disable-next-line no-prototype-builtins
       return (
@@ -1050,7 +1145,7 @@ export class DefaultWriteOptions implements WriteOptions {
   writeMode = WriteMode.Create
 }
 
-export function isWriteOptions (value: any): value is WriteOptions {
+export function isWriteOptions(value: any): value is WriteOptions {
   return (
     Object.keys(value).length === 1 &&
     (value.writeMode === undefined || typeof value.writeMode === 'string')
