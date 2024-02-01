@@ -681,6 +681,10 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         results = self._reranker.rerank_hybrid(
             self._fts_query._query, vector_results, fts_results
         )
+
+        # apply limit after reranking
+        results = results.slice(length=self._limit)
+
         if not isinstance(results, pa.Table):  # Enforce type
             raise TypeError(
                 f"rerank_hybrid must return a pyarrow.Table, got {type(results)}"
@@ -777,6 +781,8 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         """
         self._vector_query.limit(limit)
         self._fts_query.limit(limit)
+        self._limit = limit
+
         return self
 
     def select(self, columns: list) -> LanceHybridQueryBuilder:
