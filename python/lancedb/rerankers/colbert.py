@@ -19,6 +19,7 @@ class ColbertReranker(Reranker):
     return_score : str, default "relevance"
         options are "relevance" or "all". Only "relevance" is supported for now.
     """
+
     def __init__(
         self,
         model_name: str = "colbert-ir/colbertv2.0",

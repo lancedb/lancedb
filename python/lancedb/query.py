@@ -682,13 +682,13 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             self._fts_query._query, vector_results, fts_results
         )
 
-        # apply limit after reranking
-        results = results.slice(length=self._limit)
-
         if not isinstance(results, pa.Table):  # Enforce type
             raise TypeError(
                 f"rerank_hybrid must return a pyarrow.Table, got {type(results)}"
             )
+
+        # apply limit after reranking
+        results = results.slice(length=self._limit)
 
         if not self._with_row_id:
             results = results.drop(["_rowid"])
