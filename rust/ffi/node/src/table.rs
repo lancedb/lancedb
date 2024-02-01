@@ -135,9 +135,15 @@ impl JsTable {
         let js_table = cx.this().downcast_or_throw::<JsBox<Self>, _>(&mut cx)?;
         let filter = cx
             .argument_opt(0)
-            .map(|filt| {
-                filt.downcast_or_throw::<JsString, _>(&mut cx)
-                    .map(|js_filt| js_filt.deref().value(&mut cx))
+            .and_then(|filt| {
+                if filt.is_a::<JsUndefined, _>(&mut cx) || filt.is_a::<JsNull, _>(&mut cx) {
+                    None
+                } else {
+                    Some(
+                        filt.downcast_or_throw::<JsString, _>(&mut cx)
+                            .map(|js_filt| js_filt.deref().value(&mut cx)),
+                    )
+                }
             })
             .transpose()?;
         let rt = runtime(&mut cx)?;
