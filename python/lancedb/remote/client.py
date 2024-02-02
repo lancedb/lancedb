@@ -188,19 +188,19 @@ class RestfulLanceDBClient:
         session = self.session
 
         session.mount(
-            urljoin(self.url, f"/v1/table/{table_name}/query/"),
-            retry_adapter_instance
+            urljoin(self.url, f"/v1/table/{table_name}/query/"), retry_adapter_instance
         )
         session.mount(
-            urljoin(self.url,f"/v1/table/{table_name}/describe/"),
-            retry_adapter_instance
+            urljoin(self.url, f"/v1/table/{table_name}/describe/"),
+            retry_adapter_instance,
         )
         session.mount(
             urljoin(self.url, f"/v1/table/{table_name}/index/list/"),
-            retry_adapter_instance
+            retry_adapter_instance,
         )
 
-def retry_adapter_options(methods = ["GET"]) -> Dict[str, Any]:
+
+def retry_adapter_options(methods=["GET"]) -> Dict[str, Any]:
     return {
         "retries": int(os.environ.get("LANCE_CLIENT_MAX_RETRIES", "3")),
         "connect_retries": int(os.environ.get("LANCE_CLIENT_CONNECT_RETRIES", "3")),
@@ -212,12 +212,14 @@ def retry_adapter_options(methods = ["GET"]) -> Dict[str, Any]:
             os.environ.get("LANCE_CLIENT_RETRY_BACKOFF_JITTER", "0.25")
         ),
         "statuses": [
-            int(i.strip()) for i in os.environ.get(
+            int(i.strip())
+            for i in os.environ.get(
                 "LANCE_CLIENT_RETRY_STATUSES", "429, 500, 502, 503"
             ).split(",")
         ],
         "methods": methods,
     }
+
 
 def retry_adapter(options: Dict[str, Any]) -> HTTPAdapter:
     total_retries = options["retries"]
@@ -227,17 +229,21 @@ def retry_adapter(options: Dict[str, Any]) -> HTTPAdapter:
     backoff_jitter = options["backoff_jitter"]
     statuses = options["statuses"]
     methods = frozenset(options["methods"])
-    logging.debug(f"Setting up retry adapter with {total_retries} retries," + # noqa G003
-                  f"connect retries {connect_retries}, read retries {read_retries}," +
-                  f"backoff factor {backoff_factor}, statuses {statuses}, " +
-                  f"methods {methods}")
+    logging.debug(
+        f"Setting up retry adapter with {total_retries} retries,"  # noqa G003
+        + f"connect retries {connect_retries}, read retries {read_retries},"
+        + f"backoff factor {backoff_factor}, statuses {statuses}, "
+        + f"methods {methods}"
+    )
 
-    return HTTPAdapter(max_retries=Retry(
-        total=total_retries,
-        connect=connect_retries,
-        read=read_retries,
-        backoff_factor=backoff_factor,
-        backoff_jitter=backoff_jitter,
-        status_forcelist=statuses,
-        allowed_methods=methods,
-    ))
+    return HTTPAdapter(
+        max_retries=Retry(
+            total=total_retries,
+            connect=connect_retries,
+            read=read_retries,
+            backoff_factor=backoff_factor,
+            backoff_jitter=backoff_jitter,
+            status_forcelist=statuses,
+            allowed_methods=methods,
+        )
+    )
