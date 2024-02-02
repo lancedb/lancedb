@@ -284,10 +284,10 @@ export class RemoteTable<T = number[]> implements Table<T> {
     }
 
     const queryParams: any = {}
-    if (args.whenMatchedUpdateAll) {
+    if (args.whenMatchedUpdateAll ?? false) {
       queryParams.when_matched_update_all = 'true'
     }
-    if (args.whenNotMatchedInsertAll) {
+    if (args.whenNotMatchedInsertAll ?? false) {
       queryParams.when_not_matched_insert_all = 'true'
     }
     if (args.whenNotMatchedBySourceDelete !== false && args.whenNotMatchedBySourceDelete !== null && args.whenNotMatchedBySourceDelete !== undefined) {
