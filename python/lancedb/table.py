@@ -437,6 +437,8 @@ class Table(ABC):
             the table
         vector_column_name: str
             The name of the vector column to search.
+
+            The vector column needs to be a pyarrow fixed size list type
             *default "vector"*
         query_type: str
             *default "auto"*.
