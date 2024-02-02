@@ -19,6 +19,7 @@ import pyarrow as pa
 from lance import json_to_schema
 
 from lancedb.common import DATA, VEC, VECTOR_COLUMN_NAME
+from lancedb.merge import LanceMergeInsertBuilder
 
 from ..query import LanceVectorQueryBuilder
 from ..table import Query, Table, _sanitize_data
@@ -244,9 +245,46 @@ class RemoteTable(Table):
             result = self._conn._client.query(self._name, query)
             return result.to_arrow()
 
-    def _do_merge(self, *_args):
-        """_do_merge() is not supported on the LanceDB cloud yet"""
-        return NotImplementedError("_do_merge() is not supported on the LanceDB cloud")
+    def _do_merge(
+        self,
+        merge: LanceMergeInsertBuilder,
+        new_data: DATA,
+        on_bad_vectors: str,
+        fill_value: float,
+    ):
+        data = _sanitize_data(
+            new_data,
+            self.schema,
+            metadata=None,
+            on_bad_vectors=on_bad_vectors,
+            fill_value=fill_value,
+        )
+        payload = to_ipc_binary(data)
+
+        params = {}
+        if len(merge._on) != 1:
+            raise ValueError(
+                "RemoteTable only supports a single on key in merge_insert"
+            )
+        params["on"] = merge._on[0]
+        params["when_matched_update_all"] = str(merge._when_matched_update_all).lower()
+        params["when_not_matched_insert_all"] = str(
+            merge._when_not_matched_insert_all
+        ).lower()
+        params["when_not_matched_by_source_delete"] = str(
+            merge._when_not_matched_by_source_delete
+        ).lower()
+        if merge._when_not_matched_by_source_condition is not None:
+            params[
+                "when_not_matched_by_source_delete_filt"
+            ] = merge._when_not_matched_by_source_condition
+
+        self._conn._client.post(
+            f"/v1/table/{self._name}/merge_insert/",
+            data=payload,
+            params=params,
+            content_type=ARROW_STREAM_CONTENT_TYPE,
+        )
 
     def delete(self, predicate: str):
         """Delete rows from the table.
