@@ -37,6 +37,7 @@ const {
   tableCountRows,
   tableDelete,
   tableUpdate,
+  tableMergeInsert,
   tableCleanupOldVersions,
   tableCompactFiles,
   tableListIndices,
@@ -441,6 +442,38 @@ export interface Table<T = number[]> {
   update: (args: UpdateArgs | UpdateSqlArgs) => Promise<void>
 
   /**
+   * Runs a "merge insert" operation on the table
+   *
+   * This operation can add rows, update rows, and remove rows all in a single
+   * transaction. It is a very generic tool that can be used to create
+   * behaviors like "insert if not exists", "update or insert (i.e. upsert)",
+   * or even replace a portion of existing data with new data (e.g. replace
+   * all data where month="january")
+   *
+   * The merge insert operation works by combining new data from a
+   * **source table** with existing data in a **target table** by using a
+   * join.  There are three categories of records.
+   *
+   * "Matched" records are records that exist in both the source table and
+   * the target table. "Not matched" records exist only in the source table
+   * (e.g. these are new data) "Not matched by source" records exist only
+   * in the target table (this is old data)
+   *
+   * The MergeInsertArgs can be used to customize what should happen for
+   * each category of data.
+   *
+   * Please note that the data may appear to be reordered as part of this
+   * operation.  This is because updated rows will be deleted from the
+   * dataset and then reinserted at the end with the new values.
+   *
+   * @param on a column to join on.  This is how records from the source
+   *           table and target table are matched.
+   * @param data the new data to insert
+   * @param args parameters controlling how the operation should behave
+   */
+  mergeInsert: (on: string, data: Array<Record<string, unknown>> | ArrowTable, args: MergeInsertArgs) => Promise<void>
+
+  /**
    * List the indicies on this table.
    */
   listIndices: () => Promise<VectorIndex[]>
@@ -481,6 +514,36 @@ export interface UpdateSqlArgs {
    * new values to set as SQL expressions.
    */
   valuesSql: Record<string, string>
+}
+
+export interface MergeInsertArgs {
+  /**
+   * If true then rows that exist in both the source table (new data) and
+   * the target table (old data) will be updated, replacing the old row
+   * with the corresponding matching row.
+   *
+   * If there are multiple matches then the behavior is undefined.
+   * Currently this causes multiple copies of the row to be created
+   * but that behavior is subject to change.
+   */
+  whenMatchedUpdateAll?: boolean
+  /**
+   * If true then rows that exist only in the source table (new data)
+   * will be inserted into the target table.
+   */
+  whenNotMatchedInsertAll?: boolean
+  /**
+   * If true then rows that exist only in the target table (old data)
+   * will be deleted.
+   *
+   * If this is a string then it will be treated as an SQL filter and
+   * only rows that both do not match any row in the source table and
+   * match the given filter will be deleted.
+   *
+   * This can be used to replace a selection of existing data with
+   * new data.
+   */
+  whenNotMatchedBySourceDelete?: string | boolean
 }
 
 export interface VectorIndex {
@@ -819,6 +882,38 @@ export class LocalTable<T = number[]> implements Table<T> {
       .then((newTable: any) => {
         this._tbl = newTable
       })
+  }
+
+  async mergeInsert (on: string, data: Array<Record<string, unknown>> | ArrowTable, args: MergeInsertArgs): Promise<void> {
+    const whenMatchedUpdateAll = args.whenMatchedUpdateAll ?? false
+    const whenNotMatchedInsertAll = args.whenNotMatchedInsertAll ?? false
+    let whenNotMatchedBySourceDelete = false
+    let whenNotMatchedBySourceDeleteFilt = null
+    if (args.whenNotMatchedBySourceDelete !== undefined && args.whenNotMatchedBySourceDelete !== null) {
+      whenNotMatchedBySourceDelete = true
+      if (args.whenNotMatchedBySourceDelete !== true) {
+        whenNotMatchedBySourceDeleteFilt = args.whenNotMatchedBySourceDelete
+      }
+    }
+
+    const schema = await this.schema
+    let tbl: ArrowTable
+    if (data instanceof ArrowTable) {
+      tbl = data
+    } else {
+      tbl = makeArrowTable(data, { schema })
+    }
+    const buffer = await fromTableToBuffer(tbl, this._embeddings, schema)
+
+    this._tbl = await tableMergeInsert.call(
+      this._tbl,
+      on,
+      whenMatchedUpdateAll,
+      whenNotMatchedInsertAll,
+      whenNotMatchedBySourceDelete,
+      whenNotMatchedBySourceDeleteFilt,
+      buffer
+    )
   }
 
   /**

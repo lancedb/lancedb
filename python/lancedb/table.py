@@ -390,6 +390,8 @@ class Table(ABC):
         2  3  y
         3  4  z
         """
+        on = [on] if isinstance(on, str) else list(on.iter())
+
         return LanceMergeInsertBuilder(self, on)
 
     @abstractmethod
@@ -479,8 +481,8 @@ class Table(ABC):
         self,
         merge: LanceMergeInsertBuilder,
         new_data: DATA,
-        *,
-        schema: Optional[pa.Schema] = None,
+        on_bad_vectors: str,
+        fill_value: float,
     ):
         pass
 
@@ -1305,7 +1307,20 @@ class LanceTable(Table):
             with_row_id=query.with_row_id,
         )
 
-    def _do_merge(self, merge: LanceMergeInsertBuilder, new_data: DATA, *, schema=None):
+    def _do_merge(
+        self,
+        merge: LanceMergeInsertBuilder,
+        new_data: DATA,
+        on_bad_vectors: str,
+        fill_value: float,
+    ):
+        new_data = _sanitize_data(
+            new_data,
+            self.schema,
+            metadata=self.schema.metadata,
+            on_bad_vectors=on_bad_vectors,
+            fill_value=fill_value,
+        )
         ds = self.to_lance()
         builder = ds.merge_insert(merge._on)
         if merge._when_matched_update_all:
@@ -1315,7 +1330,7 @@ class LanceTable(Table):
         if merge._when_not_matched_by_source_delete:
             cond = merge._when_not_matched_by_source_condition
             builder.when_not_matched_by_source_delete(cond)
-        builder.execute(new_data, schema=schema)
+        builder.execute(new_data)
 
     def cleanup_old_versions(
         self,
