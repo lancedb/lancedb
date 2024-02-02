@@ -197,6 +197,7 @@ def retry_adapter_options(methods = ["GET"]) -> Dict[str, Any]:
         "connect_retries": int(os.environ.get("LANCE_CLIENT_CONNECT_RETRIES", "3")),
         "read_retries": int(os.environ.get("LANCE_CLIENT_READ_RETRIES", "3")),
         "backoff_factor": float(os.environ.get("LANCE_CLIENT_RETRY_BACKOFF_FACTOR", "0.25")),
+        "backoff_jitter": float(os.environ.get("LANCE_CLIENT_RETRY_BACKOFF_JITTER", "0.25")),
         "statuses": [
             int(i.strip()) for i in os.environ.get(
                 "LANCE_CLIENT_RETRY_STATUSES", "429, 500, 502, 503"
@@ -210,6 +211,7 @@ def retry_adapter(options: Dict[str, Any]) -> HTTPAdapter:
     connect_retries = options["connect_retries"]
     read_retries = options["read_retries"]
     backoff_factor = options["backoff_factor"]
+    backoff_jitter = options["backoff_jitter"]
     statuses = options["statuses"]
     methods = frozenset(options["methods"])
     logging.debug(f"Setting up retry adapter with {total_retries} retries," + 
@@ -222,6 +224,7 @@ def retry_adapter(options: Dict[str, Any]) -> HTTPAdapter:
         connect=connect_retries,
         read=read_retries,
         backoff_factor=backoff_factor,
+        backoff_jitter=backoff_jitter,
         status_forcelist=statuses,
         allowed_methods=methods,
     ))
