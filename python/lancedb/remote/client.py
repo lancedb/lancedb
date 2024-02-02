@@ -199,7 +199,7 @@ def retry_adapter_options(methods = ["GET"]) -> Dict[str, Any]:
         "backoff_factor": float(os.environ.get("LANCE_CLIENT_RETRY_BACKOFF_FACTOR", "0.25")),
         "statuses": [
             int(i.strip()) for i in os.environ.get(
-                "LANCE_CLIENT_RETRY_STATUSES", "500, 502, 503"
+                "LANCE_CLIENT_RETRY_STATUSES", "429, 500, 502, 503"
             ).split(",")
         ],
         "methods": methods,
