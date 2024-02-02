@@ -209,13 +209,35 @@ pub trait Table: std::fmt::Display + Send + Sync {
     /// # Examples
     ///
     /// ```no_run
+    /// # use std::sync::Arc;
+    /// # use vectordb::connection::{Database, Connection};
+    /// # use arrow_array::{FixedSizeListArray, types::Float32Type, RecordBatch,
+    /// #   RecordBatchIterator, Int32Array};
+    /// # use arrow_schema::{Schema, Field, DataType};
+    /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+    /// let tmpdir = tempfile::tempdir().unwrap();
     /// let db = Database::connect(tmpdir.path().to_str().unwrap()).await.unwrap();
-    /// let tbl = db.open_table("idx_test").await.unwrap();
-    /// # Perform an upsert operation
+    /// # let tbl = db.open_table("idx_test").await.unwrap();
+    /// # let schema = Arc::new(Schema::new(vec![
+    /// #  Field::new("id", DataType::Int32, false),
+    /// #  Field::new("vector", DataType::FixedSizeList(
+    /// #    Arc::new(Field::new("item", DataType::Float32, true)), 128), true),
+    /// # ]));
+    /// let new_data = RecordBatchIterator::new(vec![
+    ///     RecordBatch::try_new(schema.clone(),
+    ///        vec![
+    ///            Arc::new(Int32Array::from_iter_values(0..10)),
+    ///            Arc::new(FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
+    ///                (0..10).map(|_| Some(vec![Some(1.0); 128])), 128)),
+    ///        ]).unwrap()
+    ///    ].into_iter().map(Ok),
+    ///   schema.clone());
+    /// // Perform an upsert operation
     /// let mut merge_insert = tbl.merge_insert(&["id"]);
     /// merge_insert.when_matched_update_all()
     ///             .when_not_matched_insert_all();
-    /// merge_insert.execute(new_data).await.unwrap();
+    /// merge_insert.execute(Box::new(new_data)).await.unwrap();
+    /// # });
     /// ```
     fn merge_insert(&self, on: &[&str]) -> MergeInsertBuilder;
 
