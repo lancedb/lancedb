@@ -255,14 +255,15 @@ class RemoteTable(Table):
 
         params = {}
         if merge._when_matched_update_all:
-            params['when_matched_update_all'] = 'true'
+            params["when_matched_update_all"] = "true"
         if merge._when_not_matched_insert_all:
-            params['when_not_matched_insert_all'] = 'true'
+            params["when_not_matched_insert_all"] = "true"
         if merge._when_not_matched_by_source_delete:
-            params['when_not_matched_by_source_delete'] = 'true'
+            params["when_not_matched_by_source_delete"] = "true"
             if merge._when_not_matched_by_source_condition is not None:
-                params['when_not_matched_by_source_delete_filt'] = \
-                    merge._when_not_matched_by_source_condition
+                params[
+                    "when_not_matched_by_source_delete_filt"
+                ] = merge._when_not_matched_by_source_condition
 
         self._conn._client.post(
             f"/v1/table/{self._name}/merge_insert/",
