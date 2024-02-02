@@ -675,9 +675,13 @@ impl MergeInsert for NativeTable {
         let mut builder = LanceMergeInsertBuilder::try_new(dataset.clone(), params.on)?;
         if params.when_matched_update_all {
             builder.when_matched(lance::dataset::WhenMatched::UpdateAll);
+        } else {
+            builder.when_matched(lance::dataset::WhenMatched::DoNothing);
         }
         if params.when_not_matched_insert_all {
             builder.when_not_matched(lance::dataset::WhenNotMatched::InsertAll);
+        } else {
+            builder.when_not_matched(lance::dataset::WhenNotMatched::DoNothing);
         }
         if params.when_not_matched_by_source_delete {
             let behavior = if let Some(filter) = params.when_not_matched_by_source_delete_filt {
@@ -686,6 +690,8 @@ impl MergeInsert for NativeTable {
                 WhenNotMatchedBySource::Delete
             };
             builder.when_not_matched_by_source(behavior);
+        } else {
+            builder.when_not_matched_by_source(WhenNotMatchedBySource::Keep);
         }
         let job = builder.try_build()?;
         let new_dataset = job.execute_reader(new_data).await?;
@@ -920,7 +926,7 @@ mod tests {
             .unwrap();
         assert_eq!(table.count_rows().await.unwrap(), 10);
 
-        // Create new data with i=15..25
+        // Create new data with i=5..15
         let new_batches = Box::new(make_test_batches_with_offset(5));
 
         // Perform a "insert if not exists"
@@ -928,6 +934,15 @@ mod tests {
         merge_insert_builder.when_not_matched_insert_all();
         merge_insert_builder.execute(new_batches).await.unwrap();
         // Only 5 rows should actually be inserted
+        assert_eq!(table.count_rows().await.unwrap(), 15);
+
+        // Create new data with i=15..25 (no id matches)
+        let new_batches = Box::new(make_test_batches_with_offset(15));
+        // Perform a "bulk update" (should not affect anything)
+        let mut merge_insert_builder = table.merge_insert(&["i"]);
+        merge_insert_builder.when_matched_update_all();
+        merge_insert_builder.execute(new_batches).await.unwrap();
+        // No new rows should have been inserted
         assert_eq!(table.count_rows().await.unwrap(), 15);
     }
 

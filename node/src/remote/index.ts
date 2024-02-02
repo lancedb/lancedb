@@ -283,18 +283,26 @@ export class RemoteTable<T = number[]> implements Table<T> {
       tbl = makeArrowTable(data, await this.schema)
     }
 
-    const queryParams: any = {}
+    const queryParams: any = {
+      on
+    }
     if (args.whenMatchedUpdateAll ?? false) {
       queryParams.when_matched_update_all = 'true'
+    } else {
+      queryParams.when_matched_update_all = 'false'
     }
     if (args.whenNotMatchedInsertAll ?? false) {
       queryParams.when_not_matched_insert_all = 'true'
+    } else {
+      queryParams.when_not_matched_insert_all = 'false'
     }
     if (args.whenNotMatchedBySourceDelete !== false && args.whenNotMatchedBySourceDelete !== null && args.whenNotMatchedBySourceDelete !== undefined) {
       queryParams.when_not_matched_by_source_delete = 'true'
       if (typeof args.whenNotMatchedBySourceDelete === 'string') {
         queryParams.when_not_matched_by_source_delete_filt = args.whenNotMatchedBySourceDelete
       }
+    } else {
+      queryParams.when_not_matched_by_source_delete = 'false'
     }
 
     const buffer = await fromTableToStreamBuffer(tbl, this._embeddings)

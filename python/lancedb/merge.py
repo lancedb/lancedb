@@ -12,7 +12,7 @@
 #  limitations under the License.
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Iterable, Optional
+from typing import TYPE_CHECKING, List, Optional
 
 if TYPE_CHECKING:
     from .common import DATA
@@ -25,7 +25,7 @@ class LanceMergeInsertBuilder(object):
     more context
     """
 
-    def __init__(self, table: "Table", on: Iterable[str]):  # noqa: F821
+    def __init__(self, table: "Table", on: List[str]):  # noqa: F821
         # Do not put a docstring here.  This method should be hidden
         # from API docs.  Users should use merge_insert to create
         # this object.
@@ -77,7 +77,12 @@ class LanceMergeInsertBuilder(object):
             self._when_not_matched_by_source_condition = condition
         return self
 
-    def execute(self, new_data: DATA):
+    def execute(
+        self,
+        new_data: DATA,
+        on_bad_vectors: str = "error",
+        fill_value: float = 0.0,
+    ):
         """
         Executes the merge insert operation
 
@@ -89,5 +94,10 @@ class LanceMergeInsertBuilder(object):
             New records which will be matched against the existing records
             to potentially insert or update into the table.  This parameter
             can be anything you use for [`add`][lancedb.table.Table.add]
+        on_bad_vectors: str, default "error"
+            What to do if any of the vectors are not the same size or contains NaNs.
+            One of "error", "drop", "fill".
+        fill_value: float, default 0.
+            The value to use when filling vectors. Only used if on_bad_vectors="fill".
         """
-        self._table._do_merge(self, new_data)
+        self._table._do_merge(self, new_data, on_bad_vectors, fill_value)
