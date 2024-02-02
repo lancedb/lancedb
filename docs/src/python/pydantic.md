@@ -13,7 +13,7 @@ via [pydantic_to_schema()](python.md#lancedb.pydantic.pydantic_to_schema) method
 
 ## Vector Field
 
-LanceDB provides a [`Vector(dim)`](python.md#lancedb.pydantic.Vector) method to define a
+LanceDB provides a [`Vector(dim)`](python.md#utilities) method to define a
 vector Field in a Pydantic Model.
 
 ::: lancedb.pydantic.Vector

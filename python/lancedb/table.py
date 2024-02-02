@@ -438,6 +438,8 @@ class Table(ABC):
             the table
         vector_column_name: str
             The name of the vector column to search.
+            
+            The vector column needs to be a "pyarrow.FixedSizeList" type
             *default "vector"*
         query_type: str
             *default "auto"*.
