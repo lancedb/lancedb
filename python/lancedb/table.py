@@ -477,9 +477,7 @@ class Table(ABC):
     def _do_merge(
         self,
         merge: LanceMergeInsertBuilder,
-        new_data: DATA,
-        *,
-        schema: Optional[pa.Schema] = None,
+        new_data: DATA
     ):
         pass
 
@@ -1265,7 +1263,7 @@ class LanceTable(Table):
             with_row_id=query.with_row_id,
         )
 
-    def _do_merge(self, merge: LanceMergeInsertBuilder, new_data: DATA, *, schema=None):
+    def _do_merge(self, merge: LanceMergeInsertBuilder, new_data: DATA):
         ds = self.to_lance()
         builder = ds.merge_insert(merge._on)
         if merge._when_matched_update_all:
@@ -1275,7 +1273,7 @@ class LanceTable(Table):
         if merge._when_not_matched_by_source_delete:
             cond = merge._when_not_matched_by_source_condition
             builder.when_not_matched_by_source_delete(cond)
-        builder.execute(new_data, schema=schema)
+        builder.execute(new_data)
 
     def cleanup_old_versions(
         self,

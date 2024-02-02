@@ -276,7 +276,41 @@ export class RemoteTable<T = number[]> implements Table<T> {
   }
 
   async mergeInsert (on: string, data: Array<Record<string, unknown>> | ArrowTable, args: MergeInsertArgs): Promise<void> {
-    throw new Error('Not implemented')
+    let tbl: ArrowTable
+    if (data instanceof ArrowTable) {
+      tbl = data
+    } else {
+      tbl = makeArrowTable(data, await this.schema)
+    }
+
+    let queryParams: any = {}
+    if (args.whenMatchedUpdateAll??false) {
+      queryParams['when_matched_update_all'] = 'true'
+    }
+    if (args.whenNotMatchedInsertAll??false) {
+      queryParams['when_not_matched_insert_all'] = 'true'
+    }
+    if (args.whenNotMatchedBySourceDelete !== false && args.whenNotMatchedBySourceDelete !== null && args.whenNotMatchedBySourceDelete !== undefined) {
+      queryParams['when_not_matched_by_source_delete'] = 'true'
+      if (typeof args.whenNotMatchedBySourceDelete === 'string') {
+        queryParams['when_not_matched_by_source_delete_filt'] = args.whenNotMatchedBySourceDelete
+      }
+    }
+
+    const buffer = await fromTableToStreamBuffer(tbl, this._embeddings)
+    const res = await this._client.post(
+      `/v1/table/${this._name}/merge_insert/`,
+      buffer,
+      queryParams,
+      'application/vnd.apache.arrow.stream'
+    )
+    if (res.status !== 200) {
+      throw new Error(
+        `Server Error, status: ${res.status}, ` +
+          // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
+          `message: ${res.statusText}: ${res.data}`
+      )
+    }
   }
 
   async add (data: Array<Record<string, unknown>> | ArrowTable): Promise<number> {

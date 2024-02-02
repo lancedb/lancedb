@@ -82,5 +82,12 @@ class LanceMergeInsertBuilder(object):
         Executes the merge insert operation
 
         Nothing is returned but the [`Table`][lancedb.table.Table] is updated
+
+        Parameters
+        ----------
+        new_data: DATA
+            New records which will be matched against the existing records
+            to potentially insert or update into the table.  This parameter
+            can be anything you use for [`add`][lancedb.table.Table.add]
         """
         self._table._do_merge(self, new_data)
