@@ -29,6 +29,9 @@ class FakeLanceDBClient:
     def post(self, path: str):
         pass
 
+    def mount_retry_adapter_for_table(self, table_name: str):
+        pass
+
 
 def test_remote_db():
     conn = lancedb.connect("db://client-will-be-injected", api_key="fake")
