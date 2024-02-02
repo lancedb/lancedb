@@ -25,7 +25,7 @@ import {
   type UpdateArgs,
   type UpdateSqlArgs,
   makeArrowTable,
-  MergeInsertArgs
+  type MergeInsertArgs
 } from '../index'
 import { Query } from '../query'
 

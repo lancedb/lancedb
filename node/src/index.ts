@@ -149,10 +149,10 @@ export async function connect (uri: string): Promise<Connection>
  *
  * @param opts The {@link ConnectionOptions} to use when connecting to the database.
  */
-export async function connect(
+export async function connect (
   opts: Partial<ConnectionOptions>
 ): Promise<Connection>
-export async function connect(
+export async function connect (
   arg: string | Partial<ConnectionOptions>
 ): Promise<Connection> {
   let opts: ConnectionOptions
@@ -465,7 +465,7 @@ export interface Table<T = number[]> {
    * Please note that the data may appear to be reordered as part of this
    * operation.  This is because updated rows will be deleted from the
    * dataset and then reinserted at the end with the new values.
-   * 
+   *
    * @param on a column to join on.  This is how records from the source
    *           table and target table are matched.
    * @param data the new data to insert
@@ -526,24 +526,24 @@ export interface MergeInsertArgs {
    * Currently this causes multiple copies of the row to be created
    * but that behavior is subject to change.
    */
-  when_matched_update_all?: boolean,
+  whenMatchedUpdateAll?: boolean
   /**
    * If true then rows that exist only in the source table (new data)
    * will be inserted into the target table.
    */
-  when_not_matched_insert_all?: boolean,
+  whenNotMatchedInsertAll?: boolean
   /**
    * If true then rows that exist only in the target table (old data)
    * will be deleted.
-   * 
+   *
    * If this is a string then it will be treated as an SQL filter and
    * only rows that both do not match any row in the source table and
    * match the given filter will be deleted.
-   * 
+   *
    * This can be used to replace a selection of existing data with
    * new data.
    */
-  when_not_matched_by_source_delete?: string | boolean,
+  whenNotMatchedBySourceDelete?: string | boolean
 }
 
 export interface VectorIndex {
@@ -885,14 +885,14 @@ export class LocalTable<T = number[]> implements Table<T> {
   }
 
   async mergeInsert (on: string, data: Array<Record<string, unknown>> | ArrowTable, args: MergeInsertArgs): Promise<void> {
-    const when_matched_update_all = args.when_matched_update_all || false;
-    const when_not_matched_insert_all = args.when_not_matched_insert_all || false;
-    let when_not_matched_by_source_delete = false;
-    let when_not_matched_by_source_delete_filt = null;
-    if (args.when_not_matched_by_source_delete !== undefined && args.when_not_matched_by_source_delete !== null) {
-      when_not_matched_by_source_delete = true;
-      if (args.when_not_matched_by_source_delete !== true) {
-        when_not_matched_by_source_delete_filt = args.when_not_matched_by_source_delete;
+    const whenMatchedUpdateAll = args.whenMatchedUpdateAll ?? false
+    const whenNotMatchedInsertAll = args.whenNotMatchedInsertAll ?? false
+    let whenNotMatchedBySourceDelete = false
+    let whenNotMatchedBySourceDeleteFilt = null
+    if (args.whenNotMatchedBySourceDelete !== undefined && args.whenNotMatchedBySourceDelete !== null) {
+      whenNotMatchedBySourceDelete = true
+      if (args.whenNotMatchedBySourceDelete !== true) {
+        whenNotMatchedBySourceDeleteFilt = args.whenNotMatchedBySourceDelete
       }
     }
 
@@ -903,16 +903,16 @@ export class LocalTable<T = number[]> implements Table<T> {
     } else {
       tbl = makeArrowTable(data, { schema })
     }
-    const buffer = await fromTableToBuffer(tbl, this._embeddings, schema);
+    const buffer = await fromTableToBuffer(tbl, this._embeddings, schema)
 
     this._tbl = await tableMergeInsert.call(
       this._tbl,
       on,
-      when_matched_update_all,
-      when_not_matched_insert_all,
-      when_not_matched_by_source_delete,
-      when_not_matched_by_source_delete_filt,
-      buffer,
+      whenMatchedUpdateAll,
+      whenNotMatchedInsertAll,
+      whenNotMatchedBySourceDelete,
+      whenNotMatchedBySourceDeleteFilt,
+      buffer
     )
   }
 
