@@ -186,7 +186,7 @@ class MyReranker(Reranker):
         self.param1 = param1
         self.param2 = param2
     
-    def rerank_hybrid(self, vector_results: pa.Table, fts_results: pa.Table):
+    def rerank_hybrid(self, query: str, vector_results: pa.Table, fts_results: pa.Table):
         # Use the built-in merging function
         combined_result = self.merge_results(vector_results, fts_results)
         
@@ -208,7 +208,7 @@ import pyarrow as pa
 class MyReranker(Reranker):
     ...
     
-    def rerank_hybrid(self, vector_results: pa.Table, fts_results: pa.Table, filter: str):
+    def rerank_hybrid(self, query: str, vector_results: pa.Table, fts_results: pa.Table, filter: str):
         # Use the built-in merging function
         combined_result = self.merge_results(vector_results, fts_results)
         
