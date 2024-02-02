@@ -17,9 +17,9 @@ from typing import Dict, Optional, Union
 
 import pyarrow as pa
 from lance import json_to_schema
-from python.lancedb.merge import LanceMergeInsertBuilder
 
 from lancedb.common import DATA, VEC, VECTOR_COLUMN_NAME
+from lancedb.merge import LanceMergeInsertBuilder
 
 from ..query import LanceVectorQueryBuilder
 from ..table import Query, Table, _sanitize_data
