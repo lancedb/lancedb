@@ -102,7 +102,7 @@ This guide will show how to create tables, insert data into them, and update the
     !!! info "Note"
     Data is converted to Arrow before being written to disk. For maximum control over how data is saved, either provide the PyArrow schema to convert to or else provide a PyArrow Table directly.
 
-    The **`vector`** column needs to be a [Vector](../python/pydantic.md#vector-field) (defined as [pyarrow.FixedSizeList](https://arrow.apache.org/docs/python/ generated/pyarrow.list_.html)) type. 
+    The **`vector`** column needs to be a [Vector](../python/pydantic.md#vector-field) (defined as [pyarrow.FixedSizeList](https://arrow.apache.org/docs/python/generated/pyarrow.list_.html)) type. 
 
     ```python
     custom_schema = pa.schema([
