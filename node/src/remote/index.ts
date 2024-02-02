@@ -283,17 +283,17 @@ export class RemoteTable<T = number[]> implements Table<T> {
       tbl = makeArrowTable(data, await this.schema)
     }
 
-    let queryParams: any = {}
-    if (args.whenMatchedUpdateAll??false) {
-      queryParams['when_matched_update_all'] = 'true'
+    const queryParams: any = {}
+    if (args.whenMatchedUpdateAll) {
+      queryParams.when_matched_update_all = 'true'
     }
-    if (args.whenNotMatchedInsertAll??false) {
-      queryParams['when_not_matched_insert_all'] = 'true'
+    if (args.whenNotMatchedInsertAll) {
+      queryParams.when_not_matched_insert_all = 'true'
     }
     if (args.whenNotMatchedBySourceDelete !== false && args.whenNotMatchedBySourceDelete !== null && args.whenNotMatchedBySourceDelete !== undefined) {
-      queryParams['when_not_matched_by_source_delete'] = 'true'
+      queryParams.when_not_matched_by_source_delete = 'true'
       if (typeof args.whenNotMatchedBySourceDelete === 'string') {
-        queryParams['when_not_matched_by_source_delete_filt'] = args.whenNotMatchedBySourceDelete
+        queryParams.when_not_matched_by_source_delete_filt = args.whenNotMatchedBySourceDelete
       }
     }
 
