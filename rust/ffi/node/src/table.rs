@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::ops::Deref;
+
 use arrow_array::{RecordBatch, RecordBatchIterator};
 use lance::dataset::optimize::CompactionOptions;
 use lance::dataset::{WriteMode, WriteParams};
@@ -160,6 +162,53 @@ impl JsTable {
 
             deferred.settle_with(&channel, move |mut cx| {
                 delete_result.or_throw(&mut cx)?;
+                Ok(cx.boxed(JsTable::from(table)))
+            })
+        });
+        Ok(promise)
+    }
+
+    pub(crate) fn js_merge_insert(mut cx: FunctionContext) -> JsResult<JsPromise> {
+        let js_table = cx.this().downcast_or_throw::<JsBox<JsTable>, _>(&mut cx)?;
+        let rt = runtime(&mut cx)?;
+        let (deferred, promise) = cx.promise();
+        let channel = cx.channel();
+        let table = js_table.table.clone();
+
+        let key = cx.argument::<JsString>(0)?.value(&mut cx);
+        let mut builder = table.merge_insert(&[&key]);
+        if cx.argument::<JsBoolean>(1)?.value(&mut cx) {
+            builder.when_matched_update_all();
+        }
+        if cx.argument::<JsBoolean>(2)?.value(&mut cx) {
+            builder.when_not_matched_insert_all();
+        }
+        if cx.argument::<JsBoolean>(3)?.value(&mut cx) {
+            if let Some(filter) = cx.argument_opt(4) {
+                if filter.is_a::<JsNull, _>(&mut cx) {
+                    builder.when_not_matched_by_source_delete(None);
+                } else {
+                    let filter = filter
+                        .downcast_or_throw::<JsString, _>(&mut cx)?
+                        .deref()
+                        .value(&mut cx);
+                    builder.when_not_matched_by_source_delete(Some(filter));
+                }
+            } else {
+                builder.when_not_matched_by_source_delete(None);
+            }
+        }
+
+        let buffer = cx.argument::<JsBuffer>(5)?;
+        let (batches, schema) =
+            arrow_buffer_to_record_batch(buffer.as_slice(&cx)).or_throw(&mut cx)?;
+
+        rt.spawn(async move {
+            let new_data = RecordBatchIterator::new(batches.into_iter().map(Ok), schema);
+            let merge_insert_result = builder.execute(Box::new(new_data)).await;
+
+            deferred.settle_with(&channel, move |mut cx| {
+                merge_insert_result.or_throw(&mut cx)?;
                 Ok(cx.boxed(JsTable::from(table)))
             })
         });

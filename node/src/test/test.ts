@@ -531,6 +531,44 @@ describe('LanceDB client', function () {
       assert.equal(await table.countRows(), 2)
     })
 
+    it('can merge insert records into the table', async function () {
+      const dir = await track().mkdir('lancejs')
+      const con = await lancedb.connect(dir)
+
+      const data = [{ id: 1, age: 1 }, { id: 2, age: 1 }]
+      const table = await con.createTable('my_table', data)
+
+      let newData = [{ id: 2, age: 2 }, { id: 3, age: 2 }]
+      await table.mergeInsert('id', newData, {
+        whenNotMatchedInsertAll: true
+      })
+      assert.equal(await table.countRows(), 3)
+      assert.equal((await table.filter('age = 2').execute()).length, 1)
+
+      newData = [{ id: 3, age: 3 }, { id: 4, age: 3 }]
+      await table.mergeInsert('id', newData, {
+        whenNotMatchedInsertAll: true,
+        whenMatchedUpdateAll: true
+      })
+      assert.equal(await table.countRows(), 4)
+      assert.equal((await table.filter('age = 3').execute()).length, 2)
+
+      newData = [{ id: 5, age: 4 }]
+      await table.mergeInsert('id', newData, {
+        whenNotMatchedInsertAll: true,
+        whenMatchedUpdateAll: true,
+        whenNotMatchedBySourceDelete: 'age < 3'
+      })
+      assert.equal(await table.countRows(), 3)
+
+      await table.mergeInsert('id', newData, {
+        whenNotMatchedInsertAll: true,
+        whenMatchedUpdateAll: true,
+        whenNotMatchedBySourceDelete: true
+      })
+      assert.equal(await table.countRows(), 1)
+    })
+
     it('can update records in the table', async function () {
       const uri = await createTestDB()
       const con = await lancedb.connect(uri)

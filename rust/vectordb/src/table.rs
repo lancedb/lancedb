@@ -19,6 +19,7 @@ use std::sync::{Arc, Mutex};
 
 use arrow_array::RecordBatchReader;
 use arrow_schema::{Schema, SchemaRef};
+use async_trait::async_trait;
 use chrono::Duration;
 use lance::dataset::builder::DatasetBuilder;
 use lance::dataset::cleanup::RemovalStats;
@@ -27,6 +28,7 @@ use lance::dataset::optimize::{
 };
 pub use lance::dataset::ReadParams;
 use lance::dataset::{Dataset, UpdateBuilder, WriteParams};
+use lance::dataset::{MergeInsertBuilder as LanceMergeInsertBuilder, WhenNotMatchedBySource};
 use lance::io::WrappingObjectStore;
 use lance_index::{optimize::OptimizeOptions, DatasetIndexExt};
 use log::info;
@@ -37,6 +39,10 @@ use crate::index::IndexBuilder;
 use crate::query::Query;
 use crate::utils::{PatchReadParam, PatchWriteParam};
 use crate::WriteMode;
+
+use self::merge::{MergeInsert, MergeInsertBuilder};
+
+pub mod merge;
 
 /// Optimize the dataset.
 ///
@@ -169,6 +175,71 @@ pub trait Table: std::fmt::Display + Send + Sync {
     /// # });
     /// ```
     fn create_index(&self, column: &[&str]) -> IndexBuilder;
+
+    /// Create a builder for a merge insert operation
+    ///
+    /// This operation can add rows, update rows, and remove rows all in a single
+    /// transaction. It is a very generic tool that can be used to create
+    /// behaviors like "insert if not exists", "update or insert (i.e. upsert)",
+    /// or even replace a portion of existing data with new data (e.g. replace
+    /// all data where month="january")
+    ///
+    /// The merge insert operation works by combining new data from a
+    /// **source table** with existing data in a **target table** by using a
+    /// join.  There are three categories of records.
+    ///
+    /// "Matched" records are records that exist in both the source table and
+    /// the target table. "Not matched" records exist only in the source table
+    /// (e.g. these are new data) "Not matched by source" records exist only
+    /// in the target table (this is old data)
+    ///
+    /// The builder returned by this method can be used to customize what
+    /// should happen for each category of data.
+    ///
+    /// Please note that the data may appear to be reordered as part of this
+    /// operation.  This is because updated rows will be deleted from the
+    /// dataset and then reinserted at the end with the new values.
+    ///
+    /// # Arguments
+    ///
+    /// * `on` One or more columns to join on.  This is how records from the
+    ///    source table and target table are matched.  Typically this is some
+    ///    kind of key or id column.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use std::sync::Arc;
+    /// # use vectordb::connection::{Database, Connection};
+    /// # use arrow_array::{FixedSizeListArray, types::Float32Type, RecordBatch,
+    /// #   RecordBatchIterator, Int32Array};
+    /// # use arrow_schema::{Schema, Field, DataType};
+    /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+    /// let tmpdir = tempfile::tempdir().unwrap();
+    /// let db = Database::connect(tmpdir.path().to_str().unwrap()).await.unwrap();
+    /// # let tbl = db.open_table("idx_test").await.unwrap();
+    /// # let schema = Arc::new(Schema::new(vec![
+    /// #  Field::new("id", DataType::Int32, false),
+    /// #  Field::new("vector", DataType::FixedSizeList(
+    /// #    Arc::new(Field::new("item", DataType::Float32, true)), 128), true),
+    /// # ]));
+    /// let new_data = RecordBatchIterator::new(vec![
+    ///     RecordBatch::try_new(schema.clone(),
+    ///        vec![
+    ///            Arc::new(Int32Array::from_iter_values(0..10)),
+    ///            Arc::new(FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
+    ///                (0..10).map(|_| Some(vec![Some(1.0); 128])), 128)),
+    ///        ]).unwrap()
+    ///    ].into_iter().map(Ok),
+    ///   schema.clone());
+    /// // Perform an upsert operation
+    /// let mut merge_insert = tbl.merge_insert(&["id"]);
+    /// merge_insert.when_matched_update_all()
+    ///             .when_not_matched_insert_all();
+    /// merge_insert.execute(Box::new(new_data)).await.unwrap();
+    /// # });
+    /// ```
+    fn merge_insert(&self, on: &[&str]) -> MergeInsertBuilder;
 
     /// Search the table with a given query vector.
     ///
@@ -593,6 +664,42 @@ impl NativeTable {
     }
 }
 
+#[async_trait]
+impl MergeInsert for NativeTable {
+    async fn do_merge_insert(
+        &self,
+        params: MergeInsertBuilder,
+        new_data: Box<dyn RecordBatchReader + Send>,
+    ) -> Result<()> {
+        let dataset = Arc::new(self.clone_inner_dataset());
+        let mut builder = LanceMergeInsertBuilder::try_new(dataset.clone(), params.on)?;
+        if params.when_matched_update_all {
+            builder.when_matched(lance::dataset::WhenMatched::UpdateAll);
+        } else {
+            builder.when_matched(lance::dataset::WhenMatched::DoNothing);
+        }
+        if params.when_not_matched_insert_all {
+            builder.when_not_matched(lance::dataset::WhenNotMatched::InsertAll);
+        } else {
+            builder.when_not_matched(lance::dataset::WhenNotMatched::DoNothing);
+        }
+        if params.when_not_matched_by_source_delete {
+            let behavior = if let Some(filter) = params.when_not_matched_by_source_delete_filt {
+                WhenNotMatchedBySource::delete_if(dataset.as_ref(), &filter)?
+            } else {
+                WhenNotMatchedBySource::Delete
+            };
+            builder.when_not_matched_by_source(behavior);
+        } else {
+            builder.when_not_matched_by_source(WhenNotMatchedBySource::Keep);
+        }
+        let job = builder.try_build()?;
+        let new_dataset = job.execute_reader(new_data).await?;
+        self.reset_dataset((*new_dataset).clone());
+        Ok(())
+    }
+}
+
 #[async_trait::async_trait]
 impl Table for NativeTable {
     fn as_any(&self) -> &dyn std::any::Any {
@@ -635,6 +742,11 @@ impl Table for NativeTable {
 
         self.reset_dataset(Dataset::write(batches, &self.uri, params).await?);
         Ok(())
+    }
+
+    fn merge_insert(&self, on: &[&str]) -> MergeInsertBuilder {
+        let on = Vec::from_iter(on.iter().map(|key| key.to_string()));
+        MergeInsertBuilder::new(Arc::new(self.clone()), on)
     }
 
     fn create_index(&self, columns: &[&str]) -> IndexBuilder {
@@ -800,6 +912,38 @@ mod tests {
         table.add(Box::new(new_batches), None).await.unwrap();
         assert_eq!(table.count_rows().await.unwrap(), 20);
         assert_eq!(table.name, "test");
+    }
+
+    #[tokio::test]
+    async fn test_merge_insert() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        // Create a dataset with i=0..10
+        let batches = make_test_batches_with_offset(0);
+        let table = NativeTable::create(&uri, "test", batches, None, None)
+            .await
+            .unwrap();
+        assert_eq!(table.count_rows().await.unwrap(), 10);
+
+        // Create new data with i=5..15
+        let new_batches = Box::new(make_test_batches_with_offset(5));
+
+        // Perform a "insert if not exists"
+        let mut merge_insert_builder = table.merge_insert(&["i"]);
+        merge_insert_builder.when_not_matched_insert_all();
+        merge_insert_builder.execute(new_batches).await.unwrap();
+        // Only 5 rows should actually be inserted
+        assert_eq!(table.count_rows().await.unwrap(), 15);
+
+        // Create new data with i=15..25 (no id matches)
+        let new_batches = Box::new(make_test_batches_with_offset(15));
+        // Perform a "bulk update" (should not affect anything)
+        let mut merge_insert_builder = table.merge_insert(&["i"]);
+        merge_insert_builder.when_matched_update_all();
+        merge_insert_builder.execute(new_batches).await.unwrap();
+        // No new rows should have been inserted
+        assert_eq!(table.count_rows().await.unwrap(), 15);
     }
 
     #[tokio::test]
@@ -1148,15 +1292,23 @@ mod tests {
         assert!(wrapper.called());
     }
 
-    fn make_test_batches() -> impl RecordBatchReader + Send + Sync + 'static {
+    fn make_test_batches_with_offset(
+        offset: i32,
+    ) -> impl RecordBatchReader + Send + Sync + 'static {
         let schema = Arc::new(Schema::new(vec![Field::new("i", DataType::Int32, false)]));
         RecordBatchIterator::new(
             vec![RecordBatch::try_new(
                 schema.clone(),
-                vec![Arc::new(Int32Array::from_iter_values(0..10))],
+                vec![Arc::new(Int32Array::from_iter_values(
+                    offset..(offset + 10),
+                ))],
             )],
             schema,
         )
+    }
+
+    fn make_test_batches() -> impl RecordBatchReader + Send + Sync + 'static {
+        make_test_batches_with_offset(0)
     }
 
     #[tokio::test]
