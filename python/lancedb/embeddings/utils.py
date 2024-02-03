@@ -29,7 +29,7 @@ from retry import retry
 from ..util import safe_import_pandas
 from ..utils.general import LOGGER
 
-pd = safe_import_pandas
+pd = safe_import_pandas()
 
 DATA = Union[pa.Table, "pd.DataFrame"]
 TEXT = Union[str, List[str], pa.Array, pa.ChunkedArray, np.ndarray]

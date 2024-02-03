@@ -36,7 +36,7 @@ if TYPE_CHECKING:
     from .pydantic import LanceModel
     from .table import Table
 
-pd = safe_import_pandas
+pd = safe_import_pandas()
 
 
 class Query(pydantic.BaseModel):
