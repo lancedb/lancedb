@@ -26,10 +26,10 @@ import pyarrow as pa
 from lance.vector import vec_to_table
 from retry import retry
 
-from ..util import safe_import
+from ..util import safe_import_pandas
 from ..utils.general import LOGGER
 
-pd = safe_import("pandas")
+pd = safe_import_pandas()
 
 DATA = Union[pa.Table, "pd.DataFrame"]
 TEXT = Union[str, List[str], pa.Array, pa.ChunkedArray, np.ndarray]
