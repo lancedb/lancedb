@@ -19,6 +19,7 @@ import numpy as np
 
 from lancedb.pydantic import PYDANTIC_VERSION
 
+from ..util import attempt_import
 from .base import TextEmbeddingFunction
 from .registry import register
 from .utils import TEXT
@@ -183,8 +184,8 @@ class BedRockText(TextEmbeddingFunction):
         boto3.client
             The boto3 client for Amazon Bedrock service
         """
-        botocore = self.safe_import("botocore")
-        boto3 = self.safe_import("boto3")
+        botocore = attempt_import("botocore")
+        boto3 = attempt_import("boto3")
 
         session_kwargs = {"region_name": self.region}
         client_kwargs = {**session_kwargs}

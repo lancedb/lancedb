@@ -14,6 +14,7 @@ from typing import List, Union
 
 import numpy as np
 
+from ..util import attempt_import
 from .base import TextEmbeddingFunction
 from .registry import register
 from .utils import weak_lru
@@ -75,7 +76,7 @@ class SentenceTransformerEmbeddings(TextEmbeddingFunction):
 
         TODO: use lru_cache instead with a reasonable/configurable maxsize
         """
-        sentence_transformers = self.safe_import(
+        sentence_transformers = attempt_import(
             "sentence_transformers", "sentence-transformers"
         )
         return sentence_transformers.SentenceTransformer(self.name, device=self.device)

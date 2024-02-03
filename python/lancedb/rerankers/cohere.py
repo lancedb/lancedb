@@ -5,7 +5,7 @@ from typing import Union
 
 import pyarrow as pa
 
-from ..util import safe_import
+from ..util import attempt_import
 from .base import Reranker
 
 if typing.TYPE_CHECKING:
@@ -45,7 +45,7 @@ class CohereReranker(Reranker):
 
     @cached_property
     def _client(self):
-        cohere = safe_import("cohere")
+        cohere = attempt_import("cohere")
         if os.environ.get("COHERE_API_KEY") is None and self.api_key is None:
             raise ValueError(
                 "COHERE_API_KEY not set. Either set it in your environment or \

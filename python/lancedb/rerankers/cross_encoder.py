@@ -4,7 +4,7 @@ from typing import Union
 
 import pyarrow as pa
 
-from ..util import safe_import
+from ..util import attempt_import
 from .base import Reranker
 
 if typing.TYPE_CHECKING:
@@ -36,7 +36,7 @@ class CrossEncoderReranker(Reranker):
         return_score="relevance",
     ):
         super().__init__(return_score)
-        torch = safe_import("torch")
+        torch = attempt_import("torch")
         self.model_name = model_name
         self.column = column
         self.device = device
@@ -45,7 +45,7 @@ class CrossEncoderReranker(Reranker):
 
     @cached_property
     def model(self):
-        sbert = safe_import("sentence_transformers")
+        sbert = attempt_import("sentence_transformers")
         cross_encoder = sbert.CrossEncoder(self.model_name)
 
         return cross_encoder

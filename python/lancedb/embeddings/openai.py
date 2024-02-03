@@ -16,6 +16,7 @@ from typing import List, Union
 
 import numpy as np
 
+from ..util import attempt_import
 from .base import TextEmbeddingFunction
 from .registry import register
 from .utils import api_key_not_found_help
@@ -52,7 +53,7 @@ class OpenAIEmbeddings(TextEmbeddingFunction):
 
     @cached_property
     def _openai_client(self):
-        openai = self.safe_import("openai")
+        openai = attempt_import("openai")
 
         if not os.environ.get("OPENAI_API_KEY"):
             api_key_not_found_help("openai")

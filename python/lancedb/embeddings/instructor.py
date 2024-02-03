@@ -14,6 +14,7 @@ from typing import List
 
 import numpy as np
 
+from ..util import attempt_import
 from .base import TextEmbeddingFunction
 from .registry import register
 from .utils import TEXT, weak_lru
@@ -131,10 +132,10 @@ class InstructorEmbeddingFunction(TextEmbeddingFunction):
 
     @weak_lru(maxsize=1)
     def get_model(self):
-        instructor_embedding = self.safe_import(
+        instructor_embedding = attempt_import(
             "InstructorEmbedding", "InstructorEmbedding"
         )
-        torch = self.safe_import("torch", "torch")
+        torch = attempt_import("torch", "torch")
 
         model = instructor_embedding.INSTRUCTOR(self.name)
         if self.quantize:

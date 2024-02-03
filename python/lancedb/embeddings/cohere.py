@@ -16,6 +16,7 @@ from typing import ClassVar, List, Union
 
 import numpy as np
 
+from ..util import attempt_import
 from .base import TextEmbeddingFunction
 from .registry import register
 from .utils import api_key_not_found_help
@@ -84,7 +85,7 @@ class CohereEmbeddingFunction(TextEmbeddingFunction):
         return [emb for emb in rs.embeddings]
 
     def _init_client(self):
-        cohere = self.safe_import("cohere")
+        cohere = attempt_import("cohere")
         if CohereEmbeddingFunction.client is None:
             if os.environ.get("COHERE_API_KEY") is None:
                 api_key_not_found_help("cohere")
