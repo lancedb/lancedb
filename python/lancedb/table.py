@@ -34,7 +34,8 @@ from .query import LanceQueryBuilder, Query
 from .util import (
     fs_from_uri,
     join_uri,
-    safe_import,
+    safe_import_pandas,
+    safe_import_polars,
     value_to_sql,
 )
 from .utils.events import register_event
@@ -48,8 +49,8 @@ if TYPE_CHECKING:
     from .db import LanceDBConnection
 
 
-pd = safe_import("pandas")
-pl = safe_import("polars")
+pd = safe_import_pandas()
+pl = safe_import_polars()
 
 
 def _sanitize_data(
