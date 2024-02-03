@@ -6,17 +6,24 @@ LanceDB supports both semantic and keyword-based search. In real world applicati
 You can perform hybrid search in LanceDB by combining the results of semantic and full-text search via a reranking algorithm of your choice. LanceDB provides multiple rerankers out of the box. However, you can always write a custom reranker if your use case need more sophisticated logic .
 
 ```python
+import os
+
 import lancedb
+import openai
 from lancedb.embeddings import get_registry
-from lancedb.pydanatic import LanceModel, Vector
+from lancedb.pydantic import LanceModel, Vector
 
 db = lancedb.connect("~/.lancedb")
 
 # Ingest embedding function in LanceDB table
+# Configuring the environment variable OPENAI_API_KEY
+if "OPENAI_API_KEY" not in os.environ:
+# OR set the key here as a variable
+    openai.api_key = "sk-..."
 embeddings = get_registry().get("openai").create()
 
 class Documents(LanceModel):
-    vector: Vector(embeddings.ndims) = embeddings.VectorField()
+    vector: Vector(embeddings.ndims()) = embeddings.VectorField()
     text: str = embeddings.SourceField()
 
 table = db.create_table("documents", schema=Documents)
@@ -31,17 +38,19 @@ data = [
 # ingest docs with auto-vectorization
 table.add(data)
 
+# Create a fts index before the hybrid search
+table.create_fts_index("text")
 # hybrid search with default re-ranker
 results = table.search("flower moon", query_type="hybrid").to_pandas()
 ```
 
-By default, LanceDB uses `LinearCombinationReranker(weights=0.7)` to combine and rerank the results of semantic and full-text search. You can customize the hyperparameters as needed or write your own custom reranker. Here's how you can use any of the available rerankers:
+By default, LanceDB uses `LinearCombinationReranker(weight=0.7)` to combine and rerank the results of semantic and full-text search. You can customize the hyperparameters as needed or write your own custom reranker. Here's how you can use any of the available rerankers:
 
 
 ### `rerank()` arguments
 * `normalize`: `str`, default `"score"`:
     The method to normalize the scores. Can be "rank" or "score". If "rank", the scores are converted to ranks and then normalized. If "score", the scores are normalized directly.
-* `reranker`: `Reranker`, default `LinearCombinationReranker(weights=0.7)`.
+* `reranker`: `Reranker`, default `LinearCombinationReranker(weight=0.7)`.
     The reranker to use. If not specified, the default reranker is used.
 
 
@@ -55,7 +64,7 @@ This is the default re-ranker used by LanceDB. It combines the results of semant
 ```python
 from lancedb.rerankers import LinearCombinationReranker
 
-reranker = LinearCombinationReranker(weights=0.3) # Use 0.3 as the weight for vector search
+reranker = LinearCombinationReranker(weight=0.3) # Use 0.3 as the weight for vector search
 
 results = table.search("rebel", query_type="hybrid").rerank(reranker=reranker).to_pandas()
 ```
