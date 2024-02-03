@@ -1,6 +1,6 @@
 {
   "name": "vectordb",
-  "version": "0.4.6",
+  "version": "0.4.8",
   "description": " Serverless, low-latency vector database for AI applications",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -17,7 +17,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/lancedb/lancedb/node"
+    "url": "https://github.com/lancedb/lancedb.git"
+  },
+  "homepage": "https://lancedb.github.io/lancedb/",
+  "bugs": {
+    "url": "https://github.com/lancedb/lancedb/issues"
   },
   "keywords": [
     "data-format",
@@ -81,10 +85,10 @@
     }
   },
   "optionalDependencies": {
-    "@lancedb/vectordb-darwin-arm64": "0.4.6",
-    "@lancedb/vectordb-darwin-x64": "0.4.6",
-    "@lancedb/vectordb-linux-arm64-gnu": "0.4.6",
-    "@lancedb/vectordb-linux-x64-gnu": "0.4.6",
-    "@lancedb/vectordb-win32-x64-msvc": "0.4.6"
+    "@lancedb/vectordb-darwin-arm64": "0.4.8",
+    "@lancedb/vectordb-darwin-x64": "0.4.8",
+    "@lancedb/vectordb-linux-arm64-gnu": "0.4.8",
+    "@lancedb/vectordb-linux-x64-gnu": "0.4.8",
+    "@lancedb/vectordb-win32-x64-msvc": "0.4.8"
   }
 }

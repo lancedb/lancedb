@@ -24,7 +24,8 @@ import {
   type IndexStats,
   type UpdateArgs,
   type UpdateSqlArgs,
-  makeArrowTable
+  makeArrowTable,
+  type MergeInsertArgs
 } from '../index'
 import { Query } from '../query'
 
@@ -272,6 +273,52 @@ export class RemoteTable<T = number[]> implements Table<T> {
 
   filter (where: string): Query<T> {
     throw new Error('Not implemented')
+  }
+
+  async mergeInsert (on: string, data: Array<Record<string, unknown>> | ArrowTable, args: MergeInsertArgs): Promise<void> {
+    let tbl: ArrowTable
+    if (data instanceof ArrowTable) {
+      tbl = data
+    } else {
+      tbl = makeArrowTable(data, await this.schema)
+    }
+
+    const queryParams: any = {
+      on
+    }
+    if (args.whenMatchedUpdateAll ?? false) {
+      queryParams.when_matched_update_all = 'true'
+    } else {
+      queryParams.when_matched_update_all = 'false'
+    }
+    if (args.whenNotMatchedInsertAll ?? false) {
+      queryParams.when_not_matched_insert_all = 'true'
+    } else {
+      queryParams.when_not_matched_insert_all = 'false'
+    }
+    if (args.whenNotMatchedBySourceDelete !== false && args.whenNotMatchedBySourceDelete !== null && args.whenNotMatchedBySourceDelete !== undefined) {
+      queryParams.when_not_matched_by_source_delete = 'true'
+      if (typeof args.whenNotMatchedBySourceDelete === 'string') {
+        queryParams.when_not_matched_by_source_delete_filt = args.whenNotMatchedBySourceDelete
+      }
+    } else {
+      queryParams.when_not_matched_by_source_delete = 'false'
+    }
+
+    const buffer = await fromTableToStreamBuffer(tbl, this._embeddings)
+    const res = await this._client.post(
+      `/v1/table/${this._name}/merge_insert/`,
+      buffer,
+      queryParams,
+      'application/vnd.apache.arrow.stream'
+    )
+    if (res.status !== 200) {
+      throw new Error(
+        `Server Error, status: ${res.status}, ` +
+          // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
+          `message: ${res.statusText}: ${res.data}`
+      )
+    }
   }
 
   async add (data: Array<Record<string, unknown>> | ArrowTable): Promise<number> {

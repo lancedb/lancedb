@@ -28,12 +28,14 @@ from lance.vector import vec_to_table
 
 from .common import DATA, VEC, VECTOR_COLUMN_NAME
 from .embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
+from .merge import LanceMergeInsertBuilder
 from .pydantic import LanceModel, model_to_dict
 from .query import LanceQueryBuilder, Query
 from .util import (
     fs_from_uri,
     join_uri,
-    safe_import,
+    safe_import_pandas,
+    safe_import_polars,
     value_to_sql,
 )
 from .utils.events import register_event
@@ -47,8 +49,8 @@ if TYPE_CHECKING:
     from .db import LanceDBConnection
 
 
-pd = safe_import("pandas")
-pl = safe_import("polars")
+pd = safe_import_pandas()
+pl = safe_import_polars()
 
 
 def _sanitize_data(
@@ -334,6 +336,66 @@ class Table(ABC):
         """
         raise NotImplementedError
 
+    def merge_insert(self, on: Union[str, Iterable[str]]) -> LanceMergeInsertBuilder:
+        """
+        Returns a [`LanceMergeInsertBuilder`][lancedb.merge.LanceMergeInsertBuilder]
+        that can be used to create a "merge insert" operation
+
+        This operation can add rows, update rows, and remove rows all in a single
+        transaction. It is a very generic tool that can be used to create
+        behaviors like "insert if not exists", "update or insert (i.e. upsert)",
+        or even replace a portion of existing data with new data (e.g. replace
+        all data where month="january")
+
+        The merge insert operation works by combining new data from a
+        **source table** with existing data in a **target table** by using a
+        join.  There are three categories of records.
+
+        "Matched" records are records that exist in both the source table and
+        the target table. "Not matched" records exist only in the source table
+        (e.g. these are new data) "Not matched by source" records exist only
+        in the target table (this is old data)
+
+        The builder returned by this method can be used to customize what
+        should happen for each category of data.
+
+        Please note that the data may appear to be reordered as part of this
+        operation.  This is because updated rows will be deleted from the
+        dataset and then reinserted at the end with the new values.
+
+        Parameters
+        ----------
+
+        on: Union[str, Iterable[str]]
+            A column (or columns) to join on.  This is how records from the
+            source table and target table are matched.  Typically this is some
+            kind of key or id column.
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> data = pa.table({"a": [2, 1, 3], "b": ["a", "b", "c"]})
+        >>> db = lancedb.connect("./.lancedb")
+        >>> table = db.create_table("my_table", data)
+        >>> new_data = pa.table({"a": [2, 3, 4], "b": ["x", "y", "z"]})
+        >>> # Perform a "upsert" operation
+        >>> table.merge_insert("a")             \\
+        ...      .when_matched_update_all()     \\
+        ...      .when_not_matched_insert_all() \\
+        ...      .execute(new_data)
+        >>> # The order of new rows is non-deterministic since we use
+        >>> # a hash-join as part of this operation and so we sort here
+        >>> table.to_arrow().sort_by("a").to_pandas()
+           a  b
+        0  1  b
+        1  2  x
+        2  3  y
+        3  4  z
+        """
+        on = [on] if isinstance(on, str) else list(on.iter())
+
+        return LanceMergeInsertBuilder(self, on)
+
     @abstractmethod
     def search(
         self,
@@ -379,6 +441,8 @@ class Table(ABC):
             the table
         vector_column_name: str
             The name of the vector column to search.
+
+            The vector column needs to be a pyarrow fixed size list type
             *default "vector"*
         query_type: str
             *default "auto"*.
@@ -412,6 +476,16 @@ class Table(ABC):
 
     @abstractmethod
     def _execute_query(self, query: Query) -> pa.Table:
+        pass
+
+    @abstractmethod
+    def _do_merge(
+        self,
+        merge: LanceMergeInsertBuilder,
+        new_data: DATA,
+        on_bad_vectors: str,
+        fill_value: float,
+    ):
         pass
 
     @abstractmethod
@@ -520,6 +594,52 @@ class Table(ABC):
         2  3  [10.0, 10.0]
         """
         raise NotImplementedError
+
+    @abstractmethod
+    def cleanup_old_versions(
+        self,
+        older_than: Optional[timedelta] = None,
+        *,
+        delete_unverified: bool = False,
+    ) -> CleanupStats:
+        """
+        Clean up old versions of the table, freeing disk space.
+
+        Note: This function is not available in LanceDb Cloud (since LanceDb
+        Cloud manages cleanup for you automatically)
+
+        Parameters
+        ----------
+        older_than: timedelta, default None
+            The minimum age of the version to delete. If None, then this defaults
+            to two weeks.
+        delete_unverified: bool, default False
+            Because they may be part of an in-progress transaction, files newer
+            than 7 days old are not deleted by default. If you are sure that
+            there are no in-progress transactions, then you can set this to True
+            to delete all files older than `older_than`.
+
+        Returns
+        -------
+        CleanupStats
+            The stats of the cleanup operation, including how many bytes were
+            freed.
+        """
+
+    @abstractmethod
+    def compact_files(self, *args, **kwargs):
+        """
+        Run the compaction process on the table.
+
+        Note: This function is not available in LanceDb Cloud (since LanceDb
+        Cloud manages compaction for you automatically)
+
+        This can be run after making several small appends to optimize the table
+        for faster reads.
+
+        Arguments are passed onto :meth:`lance.dataset.DatasetOptimizer.compact_files`.
+        For most cases, the default should be fine.
+        """
 
 
 class LanceTable(Table):
@@ -1196,6 +1316,31 @@ class LanceTable(Table):
             with_row_id=query.with_row_id,
         )
 
+    def _do_merge(
+        self,
+        merge: LanceMergeInsertBuilder,
+        new_data: DATA,
+        on_bad_vectors: str,
+        fill_value: float,
+    ):
+        new_data = _sanitize_data(
+            new_data,
+            self.schema,
+            metadata=self.schema.metadata,
+            on_bad_vectors=on_bad_vectors,
+            fill_value=fill_value,
+        )
+        ds = self.to_lance()
+        builder = ds.merge_insert(merge._on)
+        if merge._when_matched_update_all:
+            builder.when_matched_update_all()
+        if merge._when_not_matched_insert_all:
+            builder.when_not_matched_insert_all()
+        if merge._when_not_matched_by_source_delete:
+            cond = merge._when_not_matched_by_source_condition
+            builder.when_not_matched_by_source_delete(cond)
+        builder.execute(new_data)
+
     def cleanup_old_versions(
         self,
         older_than: Optional[timedelta] = None,
@@ -1233,8 +1378,9 @@ class LanceTable(Table):
         This can be run after making several small appends to optimize the table
         for faster reads.
 
-        Arguments are passed onto :meth:`lance.dataset.DatasetOptimizer.compact_files`.
-        For most cases, the default should be fine.
+        Arguments are passed onto `lance.dataset.DatasetOptimizer.compact_files`.
+         (see Lance documentation for more details) For most cases, the default
+        should be fine.
         """
         return self.to_lance().optimize.compact_files(*args, **kwargs)
 
