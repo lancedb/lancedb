@@ -134,9 +134,9 @@ Arguments
 This reranker uses the ColBERT model to combine the results of semantic and full-text search. You can use it by passing `ColbertrReranker()` to the `rerank()` method. 
 
 ```python
-from lancedb.rerankers import ColbertrReranker
+from lancedb.rerankers import ColbertReranker
 
-reranker = ColbertrReranker()
+reranker = ColbertReranker()
 
 results = table.search("harmony hall", query_type="hybrid").rerank(reranker=reranker).to_pandas()
 ```
