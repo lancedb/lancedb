@@ -16,9 +16,9 @@ from typing import Iterable, List, Union
 import numpy as np
 import pyarrow as pa
 
-from .util import safe_import
+from .util import safe_import_pandas
 
-pd = safe_import("pandas")
+pd = safe_import_pandas()
 
 DATA = Union[List[dict], dict, "pd.DataFrame", pa.Table, Iterable[pa.RecordBatch]]
 VEC = Union[list, np.ndarray, pa.Array, pa.ChunkedArray]

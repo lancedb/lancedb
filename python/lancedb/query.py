@@ -27,7 +27,7 @@ from . import __version__
 from .common import VEC, VECTOR_COLUMN_NAME
 from .rerankers.base import Reranker
 from .rerankers.linear_combination import LinearCombinationReranker
-from .util import safe_import
+from .util import safe_import_pandas
 
 if TYPE_CHECKING:
     import PIL
@@ -36,7 +36,7 @@ if TYPE_CHECKING:
     from .pydantic import LanceModel
     from .table import Table
 
-pd = safe_import("pandas")
+pd = safe_import_pandas()
 
 
 class Query(pydantic.BaseModel):
