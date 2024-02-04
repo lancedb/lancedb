@@ -13,7 +13,7 @@ use crate::neon_ext::js_object_ext::JsObjectExt;
 use crate::table::JsTable;
 use crate::{convert, runtime};
 
-pub(crate) struct JsQuery {}
+pub struct JsQuery {}
 
 impl JsQuery {
     pub(crate) fn js_search(mut cx: FunctionContext) -> JsResult<JsPromise> {

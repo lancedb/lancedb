@@ -385,7 +385,7 @@ impl NativeTable {
                     message: e.to_string(),
                 },
             })?;
-        Ok(NativeTable {
+        Ok(Self {
             name: name.to_string(),
             uri: uri.to_string(),
             dataset: Arc::new(Mutex::new(dataset)),
@@ -427,7 +427,7 @@ impl NativeTable {
                     message: e.to_string(),
                 },
             })?;
-        Ok(NativeTable {
+        Ok(Self {
             name: name.to_string(),
             uri: uri.to_string(),
             dataset: Arc::new(Mutex::new(dataset)),
@@ -501,7 +501,7 @@ impl NativeTable {
                     message: e.to_string(),
                 },
             })?;
-        Ok(NativeTable {
+        Ok(Self {
             name: name.to_string(),
             uri: uri.to_string(),
             dataset: Arc::new(Mutex::new(dataset)),

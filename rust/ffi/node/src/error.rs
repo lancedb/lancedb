@@ -18,7 +18,6 @@ use neon::prelude::NeonResult;
 use snafu::Snafu;
 
 #[derive(Debug, Snafu)]
-#[snafu(visibility(pub(crate)))]
 pub enum Error {
     #[snafu(display("column '{name}' is missing"))]
     MissingColumn { name: String },

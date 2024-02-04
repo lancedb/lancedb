@@ -17,7 +17,7 @@ use neon::types::buffer::TypedArray;
 
 use crate::error::ResultExt;
 
-pub(crate) fn vec_str_to_array<'a, C: Context<'a>>(
+pub fn vec_str_to_array<'a, C: Context<'a>>(
     vec: &Vec<String>,
     cx: &mut C,
 ) -> JsResult<'a, JsArray> {
@@ -29,7 +29,7 @@ pub(crate) fn vec_str_to_array<'a, C: Context<'a>>(
     Ok(a)
 }
 
-pub(crate) fn js_array_to_vec(array: &JsArray, cx: &mut FunctionContext) -> Vec<f32> {
+pub fn js_array_to_vec(array: &JsArray, cx: &mut FunctionContext) -> Vec<f32> {
     let mut query_vec: Vec<f32> = Vec::new();
     for i in 0..array.len(cx) {
         let entry: Handle<JsNumber> = array.get(cx, i).unwrap();
@@ -39,7 +39,7 @@ pub(crate) fn js_array_to_vec(array: &JsArray, cx: &mut FunctionContext) -> Vec<
 }
 
 // Creates a new JsBuffer from a rust buffer with a special logic for electron
-pub(crate) fn new_js_buffer<'a>(
+pub fn new_js_buffer<'a>(
     buffer: Vec<u8>,
     cx: &mut TaskContext<'a>,
     is_electron: bool,
