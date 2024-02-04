@@ -23,13 +23,13 @@ pub struct VectorIndex {
 }
 
 impl VectorIndex {
-    pub fn new_from_format(manifest: &Manifest, index: &Index) -> VectorIndex {
+    pub fn new_from_format(manifest: &Manifest, index: &Index) -> Self {
         let fields = index
             .fields
             .iter()
             .map(|i| manifest.schema.fields[*i as usize].name.clone())
             .collect();
-        VectorIndex {
+        Self {
             columns: fields,
             index_name: index.name.clone(),
             index_uuid: index.uuid.to_string(),

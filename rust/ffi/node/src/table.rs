@@ -28,7 +28,7 @@ use vectordb::TableRef;
 use crate::error::ResultExt;
 use crate::{convert, get_aws_credential_provider, get_aws_region, runtime, JsDatabase};
 
-pub(crate) struct JsTable {
+pub struct JsTable {
     pub table: TableRef,
 }
 
@@ -36,7 +36,7 @@ impl Finalize for JsTable {}
 
 impl From<TableRef> for JsTable {
     fn from(table: TableRef) -> Self {
-        JsTable { table }
+        Self { table }
     }
 }
 
@@ -85,14 +85,14 @@ impl JsTable {
 
             deferred.settle_with(&channel, move |mut cx| {
                 let table = table_rst.or_throw(&mut cx)?;
-                Ok(cx.boxed(JsTable::from(table)))
+                Ok(cx.boxed(Self::from(table)))
             });
         });
         Ok(promise)
     }
 
     pub(crate) fn js_add(mut cx: FunctionContext) -> JsResult<JsPromise> {
-        let js_table = cx.this().downcast_or_throw::<JsBox<JsTable>, _>(&mut cx)?;
+        let js_table = cx.this().downcast_or_throw::<JsBox<Self>, _>(&mut cx)?;
         let buffer = cx.argument::<JsBuffer>(0)?;
         let write_mode = cx.argument::<JsString>(1)?.value(&mut cx);
         let (batches, schema) =
@@ -125,14 +125,14 @@ impl JsTable {
 
             deferred.settle_with(&channel, move |mut cx| {
                 add_result.or_throw(&mut cx)?;
-                Ok(cx.boxed(JsTable::from(table)))
+                Ok(cx.boxed(Self::from(table)))
             });
         });
         Ok(promise)
     }
 
     pub(crate) fn js_count_rows(mut cx: FunctionContext) -> JsResult<JsPromise> {
-        let js_table = cx.this().downcast_or_throw::<JsBox<JsTable>, _>(&mut cx)?;
+        let js_table = cx.this().downcast_or_throw::<JsBox<Self>, _>(&mut cx)?;
         let rt = runtime(&mut cx)?;
         let (deferred, promise) = cx.promise();
         let channel = cx.channel();
@@ -150,7 +150,7 @@ impl JsTable {
     }
 
     pub(crate) fn js_delete(mut cx: FunctionContext) -> JsResult<JsPromise> {
-        let js_table = cx.this().downcast_or_throw::<JsBox<JsTable>, _>(&mut cx)?;
+        let js_table = cx.this().downcast_or_throw::<JsBox<Self>, _>(&mut cx)?;
         let rt = runtime(&mut cx)?;
         let (deferred, promise) = cx.promise();
         let predicate = cx.argument::<JsString>(0)?.value(&mut cx);
@@ -162,14 +162,14 @@ impl JsTable {
 
             deferred.settle_with(&channel, move |mut cx| {
                 delete_result.or_throw(&mut cx)?;
-                Ok(cx.boxed(JsTable::from(table)))
+                Ok(cx.boxed(Self::from(table)))
             })
         });
         Ok(promise)
     }
 
     pub(crate) fn js_merge_insert(mut cx: FunctionContext) -> JsResult<JsPromise> {
-        let js_table = cx.this().downcast_or_throw::<JsBox<JsTable>, _>(&mut cx)?;
+        let js_table = cx.this().downcast_or_throw::<JsBox<Self>, _>(&mut cx)?;
         let rt = runtime(&mut cx)?;
         let (deferred, promise) = cx.promise();
         let channel = cx.channel();
@@ -209,14 +209,14 @@ impl JsTable {
 
             deferred.settle_with(&channel, move |mut cx| {
                 merge_insert_result.or_throw(&mut cx)?;
-                Ok(cx.boxed(JsTable::from(table)))
+                Ok(cx.boxed(Self::from(table)))
             })
         });
         Ok(promise)
     }
 
     pub(crate) fn js_update(mut cx: FunctionContext) -> JsResult<JsPromise> {
-        let js_table = cx.this().downcast_or_throw::<JsBox<JsTable>, _>(&mut cx)?;
+        let js_table = cx.this().downcast_or_throw::<JsBox<Self>, _>(&mut cx)?;
         let table = js_table.table.clone();
 
         let rt = runtime(&mut cx)?;
@@ -275,7 +275,7 @@ impl JsTable {
                 .await;
             deferred.settle_with(&channel, move |mut cx| {
                 update_result.or_throw(&mut cx)?;
-                Ok(cx.boxed(JsTable::from(table)))
+                Ok(cx.boxed(Self::from(table)))
             })
         });
 
@@ -283,7 +283,7 @@ impl JsTable {
     }
 
     pub(crate) fn js_cleanup(mut cx: FunctionContext) -> JsResult<JsPromise> {
-        let js_table = cx.this().downcast_or_throw::<JsBox<JsTable>, _>(&mut cx)?;
+        let js_table = cx.this().downcast_or_throw::<JsBox<Self>, _>(&mut cx)?;
         let rt = runtime(&mut cx)?;
         let (deferred, promise) = cx.promise();
         let table = js_table.table.clone();
@@ -321,7 +321,7 @@ impl JsTable {
                 let old_versions = cx.number(prune_stats.old_versions as f64);
                 output_metrics.set(&mut cx, "oldVersions", old_versions)?;
 
-                let output_table = cx.boxed(JsTable::from(table));
+                let output_table = cx.boxed(Self::from(table));
 
                 let output = JsObject::new(&mut cx);
                 output.set(&mut cx, "metrics", output_metrics)?;
@@ -334,7 +334,7 @@ impl JsTable {
     }
 
     pub(crate) fn js_compact(mut cx: FunctionContext) -> JsResult<JsPromise> {
-        let js_table = cx.this().downcast_or_throw::<JsBox<JsTable>, _>(&mut cx)?;
+        let js_table = cx.this().downcast_or_throw::<JsBox<Self>, _>(&mut cx)?;
         let rt = runtime(&mut cx)?;
         let (deferred, promise) = cx.promise();
         let table = js_table.table.clone();
@@ -393,7 +393,7 @@ impl JsTable {
                 let files_added = cx.number(stats.files_added as f64);
                 output_metrics.set(&mut cx, "filesAdded", files_added)?;
 
-                let output_table = cx.boxed(JsTable::from(table));
+                let output_table = cx.boxed(Self::from(table));
 
                 let output = JsObject::new(&mut cx);
                 output.set(&mut cx, "metrics", output_metrics)?;
@@ -406,7 +406,7 @@ impl JsTable {
     }
 
     pub(crate) fn js_list_indices(mut cx: FunctionContext) -> JsResult<JsPromise> {
-        let js_table = cx.this().downcast_or_throw::<JsBox<JsTable>, _>(&mut cx)?;
+        let js_table = cx.this().downcast_or_throw::<JsBox<Self>, _>(&mut cx)?;
         let rt = runtime(&mut cx)?;
         let (deferred, promise) = cx.promise();
         // let predicate = cx.argument::<JsString>(0)?.value(&mut cx);
@@ -445,7 +445,7 @@ impl JsTable {
     }
 
     pub(crate) fn js_index_stats(mut cx: FunctionContext) -> JsResult<JsPromise> {
-        let js_table = cx.this().downcast_or_throw::<JsBox<JsTable>, _>(&mut cx)?;
+        let js_table = cx.this().downcast_or_throw::<JsBox<Self>, _>(&mut cx)?;
         let rt = runtime(&mut cx)?;
         let (deferred, promise) = cx.promise();
         let index_uuid = cx.argument::<JsString>(0)?.value(&mut cx);
@@ -493,7 +493,7 @@ impl JsTable {
     }
 
     pub(crate) fn js_schema(mut cx: FunctionContext) -> JsResult<JsPromise> {
-        let js_table = cx.this().downcast_or_throw::<JsBox<JsTable>, _>(&mut cx)?;
+        let js_table = cx.this().downcast_or_throw::<JsBox<Self>, _>(&mut cx)?;
         let rt = runtime(&mut cx)?;
         let (deferred, promise) = cx.promise();
         let channel = cx.channel();

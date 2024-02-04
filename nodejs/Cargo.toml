@@ -1,9 +1,12 @@
 [package]
 name = "vectordb-nodejs"
-edition = "2021"
+edition.workspace = true
 version = "0.0.0"
 license.workspace = true
+description.workspace = true
 repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [lib]
 crate-type = ["cdylib"]

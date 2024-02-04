@@ -188,12 +188,12 @@ impl Database {
     /// # Returns
     ///
     /// * A [Database] object.
-    pub async fn connect(uri: &str) -> Result<Database> {
+    pub async fn connect(uri: &str) -> Result<Self> {
         let options = ConnectOptions::new(uri);
         Self::connect_with_options(&options).await
     }
 
-    pub async fn connect_with_options(options: &ConnectOptions) -> Result<Database> {
+    pub async fn connect_with_options(options: &ConnectOptions) -> Result<Self> {
         let uri = &options.uri;
         let parse_res = url::Url::parse(uri);
 
@@ -276,7 +276,7 @@ impl Database {
                     None => None,
                 };
 
-                Ok(Database {
+                Ok(Self {
                     uri: table_base_uri,
                     query_string,
                     base_path,
@@ -288,7 +288,7 @@ impl Database {
         }
     }
 
-    async fn open_path(path: &str) -> Result<Database> {
+    async fn open_path(path: &str) -> Result<Self> {
         let (object_store, base_path) = ObjectStore::from_uri(path).await?;
         if object_store.is_local() {
             Self::try_create_dir(path).context(CreateDirSnafu { path })?;
