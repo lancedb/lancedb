@@ -2,7 +2,6 @@
 module.exports = {
   preset: 'ts-jest',
   testEnvironment: 'node',
-  // testMatch: ["**/?(*.)+(spec|test).[jt]s?(x)"],
-  testPathIgnorePatterns: ["/node_modules/", ".*vectordb-nodejs.*\.node\b"],
-  modulePathIgnorePatterns: [".*\.node"]
+  moduleDirectories: ["node_modules", "./dist"],
+  moduleFileExtensions: ["js", "ts"],
 };
