@@ -24,7 +24,7 @@ use crate::neon_ext::js_object_ext::JsObjectExt;
 use crate::runtime;
 use crate::table::JsTable;
 
-pub(crate) fn table_create_vector_index(mut cx: FunctionContext) -> JsResult<JsPromise> {
+pub fn table_create_vector_index(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let js_table = cx.this().downcast_or_throw::<JsBox<JsTable>, _>(&mut cx)?;
     let index_params = cx.argument::<JsObject>(0)?;
 
