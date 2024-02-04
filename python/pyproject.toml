@@ -14,7 +14,8 @@ dependencies = [
     "pyyaml>=6.0",
     "click>=8.1.7",
     "requests>=2.31.0",
-    "overrides>=0.7"
+    "overrides>=0.7",
+    "pyarrow>=14.0"
 ]
 description = "lancedb"
 authors = [{ name = "LanceDB Devs", email = "dev@lancedb.com" }]

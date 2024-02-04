@@ -836,9 +836,7 @@ class LanceTable(Table):
         -------
         pl.LazyFrame
         """
-        return pl.scan_pyarrow_dataset(
-            self.to_lance(), allow_pyarrow_filter=False, batch_size=batch_size
-        )
+        return pl.scan_pyarrow_dataset(self.to_lance(), batch_size=batch_size)
 
     @property
     def _dataset_uri(self) -> str:
