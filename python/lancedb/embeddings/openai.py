@@ -31,10 +31,10 @@ class OpenAIEmbeddings(TextEmbeddingFunction):
 
     name: str = "text-embedding-ada-002"
     dim: Optional[int] = None
-    
+
     def ndims(self):
         return self._ndims
-    
+
     @cached_property
     def _ndims(self):
         if self.name == "text-embedding-ada-002":
