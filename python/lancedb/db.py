@@ -26,6 +26,8 @@ from .table import LanceTable, Table
 from .util import fs_from_uri, get_uri_location, get_uri_scheme, join_uri
 
 if TYPE_CHECKING:
+    from datetime import timedelta
+
     from .common import DATA, URI
     from .embeddings import EmbeddingFunctionConfig
     from .pydantic import LanceModel
@@ -118,7 +120,7 @@ class DBConnection(EnforceOverrides):
         >>> data = [{"vector": [1.1, 1.2], "lat": 45.5, "long": -122.7},
         ...         {"vector": [0.2, 1.8], "lat": 40.1, "long":  -74.1}]
         >>> db.create_table("my_table", data)
-        LanceTable(my_table)
+        LanceTable(connection=..., name="my_table")
         >>> db["my_table"].head()
         pyarrow.Table
         vector: fixed_size_list<item: float>[2]
@@ -139,7 +141,7 @@ class DBConnection(EnforceOverrides):
         ...    "long": [-122.7, -74.1]
         ... })
         >>> db.create_table("table2", data)
-        LanceTable(table2)
+        LanceTable(connection=..., name="table2")
         >>> db["table2"].head()
         pyarrow.Table
         vector: fixed_size_list<item: float>[2]
@@ -161,7 +163,7 @@ class DBConnection(EnforceOverrides):
         ...   pa.field("long", pa.float32())
         ... ])
         >>> db.create_table("table3", data, schema = custom_schema)
-        LanceTable(table3)
+        LanceTable(connection=..., name="table3")
         >>> db["table3"].head()
         pyarrow.Table
         vector: fixed_size_list<item: float>[2]
@@ -195,7 +197,7 @@ class DBConnection(EnforceOverrides):
         ...     pa.field("price", pa.float32()),
         ... ])
         >>> db.create_table("table4", make_batches(), schema=schema)
-        LanceTable(table4)
+        LanceTable(connection=..., name="table4")
 
         """
         raise NotImplementedError
@@ -243,6 +245,16 @@ class LanceDBConnection(DBConnection):
     ----------
     uri: str or Path
         The root uri of the database.
+    read_consistency_interval: timedelta, default None
+        The interval at which to check for updates to the table from other
+        processes. If None, then consistency is not checked. For performance
+        reasons, this is the default. For strong consistency, set this to
+        zero seconds. Then every read will check for updates from other
+        processes. As a compromise, you can set this to a non-zero timedelta
+        for eventual consistency. If more than that interval has passed since
+        the last check, then the table will be checked for updates. Note: this
+        consistency only applies to read operations. Write operations are
+        always consistent.
 
     Examples
     --------
@@ -250,22 +262,24 @@ class LanceDBConnection(DBConnection):
     >>> db = lancedb.connect("./.lancedb")
     >>> db.create_table("my_table", data=[{"vector": [1.1, 1.2], "b": 2},
     ...                                   {"vector": [0.5, 1.3], "b": 4}])
-    LanceTable(my_table)
+    LanceTable(connection=..., name="my_table")
     >>> db.create_table("another_table", data=[{"vector": [0.4, 0.4], "b": 6}])
-    LanceTable(another_table)
+    LanceTable(connection=..., name="another_table")
     >>> sorted(db.table_names())
     ['another_table', 'my_table']
     >>> len(db)
     2
     >>> db["my_table"]
-    LanceTable(my_table)
+    LanceTable(connection=..., name="my_table")
     >>> "my_table" in db
     True
     >>> db.drop_table("my_table")
     >>> db.drop_table("another_table")
     """
 
-    def __init__(self, uri: URI):
+    def __init__(
+        self, uri: URI, *, read_consistency_interval: Optional[timedelta] = None
+    ):
         if not isinstance(uri, Path):
             scheme = get_uri_scheme(uri)
         is_local = isinstance(uri, Path) or scheme == "file"
@@ -277,6 +291,14 @@ class LanceDBConnection(DBConnection):
         self._uri = str(uri)
 
         self._entered = False
+        self.read_consistency_interval = read_consistency_interval
+
+    def __repr__(self) -> str:
+        val = f"{self.__class__.__name__}({self._uri}"
+        if self.read_consistency_interval is not None:
+            val += f", read_consistency_interval={repr(self.read_consistency_interval)}"
+        val += ")"
+        return val
 
     @property
     def uri(self) -> str:
