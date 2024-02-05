@@ -161,6 +161,9 @@ This reranker uses the OpenAI API to combine the results of semantic and full-te
 !!! Note
     This prompts chat model to rerank results which is not a dedicated reranker model. This should be treated as experimental.
 
+!!! Tip
+    You might run out of token limit so set the search `limits` based on your token limit.
+
 ```python
 from lancedb.rerankers import OpenaiReranker
 
