@@ -103,12 +103,15 @@ def test_linear_combination(tmp_path):
     query_vector = table.to_pandas()["vector"][0]
     result = (
         table.search((query_vector, query))
-        .limit(50)
+        .limit(30)
         .rerank(normalize="score")
         .to_arrow()
     )
+
+    assert len(result) == 30
+
     assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), (
-        "The _score column of the results returned by the reranker "
+        "The _relevance_score column of the results returned by the reranker "
         "represents the relevance of the result to the query & should "
         "be descending."
     )
@@ -137,12 +140,15 @@ def test_cohere_reranker(tmp_path):
     query_vector = table.to_pandas()["vector"][0]
     result = (
         table.search((query_vector, query))
-        .limit(50)
+        .limit(30)
         .rerank(reranker=CohereReranker())
         .to_arrow()
     )
+
+    assert len(result) == 30
+
     assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), (
-        "The _score column of the results returned by the reranker "
+        "The _relevance_score column of the results returned by the reranker "
         "represents the relevance of the result to the query & should "
         "be descending."
     )
@@ -168,12 +174,15 @@ def test_cross_encoder_reranker(tmp_path):
     query_vector = table.to_pandas()["vector"][0]
     result = (
         table.search((query_vector, query), query_type="hybrid")
-        .limit(50)
+        .limit(30)
         .rerank(reranker=CrossEncoderReranker())
         .to_arrow()
     )
+
+    assert len(result) == 30
+
     assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), (
-        "The _score column of the results returned by the reranker "
+        "The _relevance_score column of the results returned by the reranker "
         "represents the relevance of the result to the query & should "
         "be descending."
     )
@@ -199,12 +208,15 @@ def test_colbert_reranker(tmp_path):
     query_vector = table.to_pandas()["vector"][0]
     result = (
         table.search((query_vector, query))
-        .limit(50)
+        .limit(30)
         .rerank(reranker=ColbertReranker())
         .to_arrow()
     )
+
+    assert len(result) == 30
+
     assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), (
-        "The _score column of the results returned by the reranker "
+        "The _relevance_score column of the results returned by the reranker "
         "represents the relevance of the result to the query & should "
         "be descending."
     )
@@ -233,12 +245,15 @@ def test_openai_reranker(tmp_path):
     query_vector = table.to_pandas()["vector"][0]
     result = (
         table.search((query_vector, query))
-        .limit(50)
+        .limit(30)
         .rerank(reranker=OpenaiReranker())
         .to_arrow()
     )
+
+    assert len(result) == 30
+
     assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), (
-        "The _score column of the results returned by the reranker "
+        "The _relevance_score column of the results returned by the reranker "
         "represents the relevance of the result to the query & should "
         "be descending."
     )

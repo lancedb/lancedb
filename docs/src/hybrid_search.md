@@ -133,6 +133,8 @@ Arguments
 ### ColBERT Reranker
 This reranker uses the ColBERT model to combine the results of semantic and full-text search. You can use it by passing `ColbertrReranker()` to the `rerank()` method. 
 
+ColBERT reranker model calculates relevance of given docs against the query and don't take existing fts and vector search scores into account, so it currently only supports `return_score="relevance"`. By default, it looks for `text` column to rerank the results. But you can specify the column name to use as input to the cross encoder model as described below.
+
 ```python
 from lancedb.rerankers import ColbertReranker
 
@@ -157,7 +159,7 @@ Arguments
 This reranker uses the OpenAI API to combine the results of semantic and full-text search. You can use it by passing `OpenaiReranker()` to the `rerank()` method.
 
 !!! Note
-    This prompts chat model to rerank results. This is not a dedicated reranker model.
+    This prompts chat model to rerank results which is not a dedicated reranker model. This should be treated as experimental.
 
 ```python
 from lancedb.rerankers import OpenaiReranker

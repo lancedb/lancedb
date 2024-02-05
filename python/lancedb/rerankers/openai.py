@@ -13,7 +13,7 @@ class OpenaiReranker(Reranker):
     """
     Reranks the results using the OpenAI API.
     WARNING: This is a prompt based reranker that uses chat model that is
-    not a dedicated reranker API.
+    not a dedicated reranker API. This should be treated as experimental.
 
     Parameters
     ----------
@@ -59,7 +59,8 @@ class OpenaiReranker(Reranker):
                         each document is for answering the query. Your output is JSON,\
                         which is a list of documents. Each document has two fields,\
                         content and relevance_score.  relevance_score is from 0.0 to\
-                        1.0 indicating the relevance of the text to the given query.",
+                        1.0 indicating the relevance of the text to the given query.\
+                        Make sure to include all documents in the response.",
                 },
                 {"role": "user", "content": f"Query: {query} Docs: {docs}"},
             ],
@@ -68,7 +69,6 @@ class OpenaiReranker(Reranker):
         docs, scores = list(
             zip(*[(result["content"], result["relevance_score"]) for result in results])
         )  # tuples
-
         # replace the self.column column with the docs
         combined_results = combined_results.drop(self.column)
         combined_results = combined_results.append_column(
