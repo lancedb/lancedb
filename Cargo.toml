@@ -6,9 +6,12 @@ resolver = "2"
 
 [workspace.package]
 edition = "2021"
-authors = ["Lance Devs <dev@lancedb.com>"]
+authors = ["LanceDB Devs <dev@lancedb.com>"]
 license = "Apache-2.0"
 repository = "https://github.com/lancedb/lancedb"
+description = "Serverless, low-latency vector database for AI applications"
+keywords = ["lancedb", "lance", "database", "vector", "search"]
+categories = ["database-implementations"]
 
 [workspace.dependencies]
 lance = { "version" = "=0.9.12", "features" = ["dynamodb"] }

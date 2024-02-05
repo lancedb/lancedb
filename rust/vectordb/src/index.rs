@@ -69,7 +69,7 @@ pub struct IndexBuilder {
 
 impl IndexBuilder {
     pub(crate) fn new(table: Arc<dyn Table>, columns: &[&str]) -> Self {
-        IndexBuilder {
+        Self {
             table,
             columns: columns.iter().map(|c| c.to_string()).collect(),
             name: None,

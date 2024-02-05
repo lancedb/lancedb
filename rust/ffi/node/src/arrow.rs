@@ -22,7 +22,7 @@ use arrow_schema::SchemaRef;
 
 use crate::error::Result;
 
-pub(crate) fn arrow_buffer_to_record_batch(slice: &[u8]) -> Result<(Vec<RecordBatch>, SchemaRef)> {
+pub fn arrow_buffer_to_record_batch(slice: &[u8]) -> Result<(Vec<RecordBatch>, SchemaRef)> {
     let mut batches: Vec<RecordBatch> = Vec::new();
     let file_reader = FileReader::try_new(Cursor::new(slice), None)?;
     let schema = file_reader.schema();
@@ -33,7 +33,7 @@ pub(crate) fn arrow_buffer_to_record_batch(slice: &[u8]) -> Result<(Vec<RecordBa
     Ok((batches, schema))
 }
 
-pub(crate) fn record_batch_to_buffer(batches: Vec<RecordBatch>) -> Result<Vec<u8>> {
+pub fn record_batch_to_buffer(batches: Vec<RecordBatch>) -> Result<Vec<u8>> {
     if batches.is_empty() {
         return Ok(Vec::new());
     }

@@ -1,9 +1,12 @@
 [package]
 name = "vectordb-nodejs"
-edition = "2021"
+edition.workspace = true
 version = "0.0.0"
 license.workspace = true
+description.workspace = true
 repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [lib]
 crate-type = ["cdylib"]
@@ -14,15 +17,11 @@ futures.workspace = true
 lance-linalg.workspace = true
 lance.workspace = true
 vectordb = { path = "../rust/vectordb" }
-napi = { version = "2.14", default-features = false, features = [
+napi = { version = "2.15", default-features = false, features = [
     "napi7",
     "async"
 ] }
-napi-derive = "2.14"
+napi-derive = "2"
 
 [build-dependencies]
 napi-build = "2.1"
-
-[profile.release]
-lto = true
-strip = "symbols"
