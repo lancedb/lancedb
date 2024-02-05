@@ -48,7 +48,6 @@ jobs:
         for d in *; do cd "$d"; echo "$d".py; python "$d".py; cd ..; done
   test-node:
     name: Test doc nodejs code
-    timeout-minutes: 30
     runs-on: "ubuntu-latest"
     steps:
     - name: Checkout
@@ -66,6 +65,7 @@ jobs:
     - name: Rust cache
       uses: swatinem/rust-cache@v2
     - name: Install node dependencies
+      timeout-minutes: 30
       run: |
         cd node
         npm ci
