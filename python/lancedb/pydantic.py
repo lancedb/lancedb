@@ -20,7 +20,6 @@ import sys
 import types
 from abc import ABC, abstractmethod
 from datetime import date, datetime
-import types
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -28,7 +27,6 @@ from typing import (
     Dict,
     Generator,
     List,
-    Optional,
     Type,
     Union,
     _GenericAlias,
@@ -412,7 +410,7 @@ class SearchableModel(LanceModel):
 
     1. Define a new class that inherits from `SearchableModel`
     2. Define the fields of the model as class attributes (like any pydantic model)
-    3. By default, the `upsert` functionality assumes there's an `id` primary key attribute.
+    3. By default, the `upsert` functionality assumes there's an `id` primary key.
        If you want to use a different column as the primary key,
        override the `id_column` class attribute when you call `upsert`.
 
@@ -482,7 +480,7 @@ class SearchableModel(LanceModel):
         return cls.__name__.lower() + "s"
 
     @classmethod
-    def bind(cls, db: "lancedb.LanceDBConnection"):
+    def bind(cls, db):
         setattr(cls, "_DB", db)
 
     @classmethod
