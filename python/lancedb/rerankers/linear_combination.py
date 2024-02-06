@@ -36,7 +36,7 @@ class LinearCombinationReranker(Reranker):
 
     def rerank_hybrid(
         self,
-        query_builder: "lancedb.HybridQueryBuilder",  # noqa: F821
+        query: str,  # noqa: F821
         vector_results: pa.Table,
         fts_results: pa.Table,
     ):
