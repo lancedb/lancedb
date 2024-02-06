@@ -1,11 +1,7 @@
-import typing
 from abc import ABC, abstractmethod
 
 import numpy as np
 import pyarrow as pa
-
-if typing.TYPE_CHECKING:
-    import lancedb
 
 
 class Reranker(ABC):
@@ -30,7 +26,7 @@ class Reranker(ABC):
 
     @abstractmethod
     def rerank_hybrid(
-        query_builder: "lancedb.HybridQueryBuilder",
+        query: str,
         vector_results: pa.Table,
         fts_results: pa.Table,
     ):
@@ -41,44 +37,14 @@ class Reranker(ABC):
 
         Parameters
         ----------
-        query_builder : "lancedb.HybridQueryBuilder"
-            The query builder object that was used to generate the results
+        query : str
+            The input query
         vector_results : pa.Table
             The results from the vector search
         fts_results : pa.Table
             The results from the FTS search
         """
         pass
-
-    def rerank_vector(
-        query_builder: "lancedb.VectorQueryBuilder", vector_results: pa.Table
-    ):
-        """
-        Rerank function receives the individual results from the vector search.
-        This isn't mandatory to implement
-
-        Parameters
-        ----------
-        query_builder : "lancedb.VectorQueryBuilder"
-            The query builder object that was used to generate the results
-        vector_results : pa.Table
-            The results from the vector search
-        """
-        raise NotImplementedError("Vector Reranking is not implemented")
-
-    def rerank_fts(query_builder: "lancedb.FTSQueryBuilder", fts_results: pa.Table):
-        """
-        Rerank function receives the individual results from the FTS search.
-        This isn't mandatory to implement
-
-        Parameters
-        ----------
-        query_builder : "lancedb.FTSQueryBuilder"
-            The query builder object that was used to generate the results
-        fts_results : pa.Table
-            The results from the FTS search
-        """
-        raise NotImplementedError("FTS Reranking is not implemented")
 
     def merge_results(self, vector_results: pa.Table, fts_results: pa.Table):
         """

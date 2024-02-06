@@ -49,6 +49,9 @@ jobs:
   test-node:
     name: Test doc nodejs code
     runs-on: "ubuntu-latest"
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
     steps:
     - name: Checkout
       uses: actions/checkout@v4
@@ -66,6 +69,12 @@ jobs:
       uses: swatinem/rust-cache@v2
     - name: Install node dependencies
       run: |
+        sudo swapoff -a
+        sudo fallocate -l 8G /swapfile
+        sudo chmod 600 /swapfile
+        sudo mkswap /swapfile
+        sudo swapon /swapfile
+        sudo swapon --show
         cd node
         npm ci
         npm run build-release

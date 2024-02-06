@@ -446,7 +446,7 @@ class Table(ABC):
             *default "vector"*
         query_type: str
             *default "auto"*.
-            Acceptable types are: "vector", "fts", or "auto"
+            Acceptable types are: "vector", "fts", "hybrid", or "auto"
 
             - If "auto" then the query type is inferred from the query;
 
