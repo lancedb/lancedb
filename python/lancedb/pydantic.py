@@ -418,20 +418,56 @@ class SearchableModel(LanceModel):
 
     To ingest data:
 
-    1. call `upsert` classmethod with a list of instances of your model
+    1. call `bind` classmethod with a LanceDBConnection instance
+    2. call `upsert` classmethod with a list of instances of your model
        (or any legal input to lancedb table, e.g., pandas DataFrame, arrow table, etc.)
-    2. call `get_or_create_table` and insert data directly into the table
+    3. call `get_or_create_table` and insert data directly into the table
 
     To search:
 
-    1. call `search` classmethod with a query text or vector. If you pass in
+    1. call `bind` classmethod with a LanceDBConnection instance
+    2. call `search` classmethod with a query text or vector. If you pass in
        a text query, then make sure the table is initialized with an
        embedding function so the embedding generation happens automatically.
        The output of search is a query builder so that you call chain calls
        like `limit`, `where`, etc, then finally call `get_instances()`, to
        get the results as a list of instances of your model.
-    2. call `get_or_create_table` and search directly. Instead of calling
+    3. call `get_or_create_table` and search directly. Instead of calling
        `get_instances`, you can call `to_pydantic` to get the results as a list.
+
+    Example
+    -------
+    Define model
+
+    ```python
+    from typing import Optional
+
+    from lancedb.pydantic import SearchableModel, Vector
+    from lancedb.embeddings import get_registry
+
+    registry = get_registry()
+    openai = registry.get("openai").create(name="text-embedding-3-small", dim=256)
+
+    class Document(SearchableModel):
+        id: int
+        text: str = openai.SourceField()
+        vector: Optional[Vector(openai.ndims())] = openai.VectorField(default=None)
+    ```
+
+    Ingest data
+    ```python
+    db = lancedb.connect("~/.lancedb")
+    Document.bind(db)
+
+    Document.upsert([Document(id=1, text="hello world"),
+                     Document(id=2, text="goodbye world")])
+    ```
+
+    Search
+    ```python
+    Document.search("greetings").limit(1).get_instances()
+    # returns [Document(id=1, text='hello world', vector=FixedSizeList(dim=256))]
+    ```
     """
 
     @classmethod
