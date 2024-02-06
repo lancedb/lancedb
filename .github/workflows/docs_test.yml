@@ -64,17 +64,17 @@ jobs:
         node-version: 20
     - name: Install dependecies needed for ubuntu
       run: |
-        sudo swapoff -a
-        sudo fallocate -l 15G /swapfile
-        sudo chmod 600 /swapfile
-        sudo mkswap /swapfile
-        sudo swapon /swapfile
-        sudo swapon --show
         sudo apt install -y protobuf-compiler libssl-dev
     - name: Rust cache
       uses: swatinem/rust-cache@v2
     - name: Install node dependencies
       run: |
+        sudo swapoff -a
+        sudo fallocate -l 8G /swapfile
+        sudo chmod 600 /swapfile
+        sudo mkswap /swapfile
+        sudo swapon /swapfile
+        sudo swapon --show
         cd node
         npm ci
         npm run build-release
