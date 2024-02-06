@@ -412,20 +412,20 @@ class SearchableModel(LanceModel):
 
     1. Define a new class that inherits from `SearchableModel`
     2. Define the fields of the model as class attributes (like any pydantic model)
-    3. By default, the `upsert` functionality assumes there's an `id` primary key attribute. 
-       If you want to use a different column as the primary key, 
+    3. By default, the `upsert` functionality assumes there's an `id` primary key attribute.
+       If you want to use a different column as the primary key,
        override the `id_column` class attribute when you call `upsert`.
-    
+
     To ingest data:
 
-    1. call `upsert` classmethod with a list of instances of your model 
+    1. call `upsert` classmethod with a list of instances of your model
        (or any legal input to lancedb table, e.g., pandas DataFrame, arrow table, etc.)
     2. call `get_or_create_table` and insert data directly into the table
 
     To search:
 
     1. call `search` classmethod with a query text or vector. If you pass in
-       a text query, then make sure the table is initialized with an 
+       a text query, then make sure the table is initialized with an
        embedding function so the embedding generation happens automatically.
        The output of search is a query builder so that you call chain calls
        like `limit`, `where`, etc, then finally call `get_instances()`, to
@@ -475,16 +475,18 @@ class SearchableModel(LanceModel):
 
         Parameters
         ----------
-        instances : 
+        instances :
             A list of instances of this model
         id_column : str, optional
             The primary key column name. Default is `id`.
         """
         table = cls.get_or_create_table()
-        (table.merge_insert(id_column)
-         .when_matched_update_all()
-         .when_not_matched_insert_all()
-         .execute(instances))
+        (
+            table.merge_insert(id_column)
+            .when_matched_update_all()
+            .when_not_matched_insert_all()
+            .execute(instances)
+        )
 
     @classmethod
     def clear_data(cls):
@@ -502,16 +504,18 @@ class SearchableModel(LanceModel):
         Parameters
         ----------
         query : Union[str, List[float], np.array[float]]
-            The query text or vector        
+            The query text or vector
             If the query is a vector then the vector search is assumed.
-            If the query is a str and the table is configured with an embedding 
+            If the query is a str and the table is configured with an embedding
             function, then vector search is used and the embedding is generated
             automatically.
             TODO: add support for full text search and hybrid search
         """
         table = cls.get_or_create_table()
         query = table.search(query)
+
         def get_instances(self):
             return self.to_pydantic(cls)
+
         query.get_instances = types.MethodType(get_instances, query)
         return query
