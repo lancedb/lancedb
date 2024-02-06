@@ -2,8 +2,11 @@
 name = "vectordb-node"
 version = "0.4.8"
 description = "Serverless, low-latency vector database for AI applications"
-license = "Apache-2.0"
-edition = "2018"
+license.workspace = true
+edition.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
 exclude = ["index.node"]
 
 [lib]

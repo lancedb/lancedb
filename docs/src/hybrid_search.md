@@ -130,6 +130,60 @@ Arguments
     Only returns `_relevance_score`. Does not support `return_score = "all"`.
 
 
+### ColBERT Reranker
+This reranker uses the ColBERT model to combine the results of semantic and full-text search. You can use it by passing `ColbertrReranker()` to the `rerank()` method. 
+
+ColBERT reranker model calculates relevance of given docs against the query and don't take existing fts and vector search scores into account, so it currently only supports `return_score="relevance"`. By default, it looks for `text` column to rerank the results. But you can specify the column name to use as input to the cross encoder model as described below.
+
+```python
+from lancedb.rerankers import ColbertReranker
+
+reranker = ColbertReranker()
+
+results = table.search("harmony hall", query_type="hybrid").rerank(reranker=reranker).to_pandas()
+```
+
+Arguments
+----------------
+* `model_name` : `str`, default `"colbert-ir/colbertv2.0"`
+        The name of the cross encoder model to use.
+* `column` : `str`, default `"text"`
+        The name of the column to use as input to the cross encoder model.
+* `return_score` : `str`, default `"relevance"`
+        options are `"relevance"` or `"all"`. Only `"relevance"` is supported for now.
+
+!!! Note
+    Only returns `_relevance_score`. Does not support `return_score = "all"`.
+
+### OpenAI Reranker
+This reranker uses the OpenAI API to combine the results of semantic and full-text search. You can use it by passing `OpenaiReranker()` to the `rerank()` method.
+
+!!! Note
+    This prompts chat model to rerank results which is not a dedicated reranker model. This should be treated as experimental.
+
+!!! Tip
+    You might run out of token limit so set the search `limits` based on your token limit.
+
+```python
+from lancedb.rerankers import OpenaiReranker
+
+reranker = OpenaiReranker()
+
+results = table.search("harmony hall", query_type="hybrid").rerank(reranker=reranker).to_pandas()
+```
+
+Arguments
+----------------
+`model_name` : `str`, default `"gpt-3.5-turbo-1106"`
+    The name of the cross encoder model to use.
+`column` : `str`, default `"text"`
+    The name of the column to use as input to the cross encoder model.
+`return_score` : `str`, default `"relevance"`
+    options are "relevance" or "all". Only "relevance" is supported for now.
+`api_key` : `str`, default `None`
+    The API key to use. If None, will use the OPENAI_API_KEY environment variable.
+
+
 ## Building Custom Rerankers
 You can build your own custom reranker by subclassing the `Reranker` class and implementing the `rerank_hybrid()` method. Here's an example of a custom reranker that combines the results of semantic and full-text search using a linear combination of the scores.
 
@@ -146,7 +200,7 @@ class MyReranker(Reranker):
         self.param1 = param1
         self.param2 = param2
     
-    def rerank_hybrid(self, vector_results: pa.Table, fts_results: pa.Table):
+    def rerank_hybrid(self, query: str, vector_results: pa.Table, fts_results: pa.Table):
         # Use the built-in merging function
         combined_result = self.merge_results(vector_results, fts_results)
         
@@ -168,7 +222,7 @@ import pyarrow as pa
 class MyReranker(Reranker):
     ...
     
-    def rerank_hybrid(self, vector_results: pa.Table, fts_results: pa.Table, filter: str):
+    def rerank_hybrid(self, query: str, vector_results: pa.Table, fts_results: pa.Table, filter: str):
         # Use the built-in merging function
         combined_result = self.merge_results(vector_results, fts_results)
         

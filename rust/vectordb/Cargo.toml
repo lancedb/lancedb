@@ -1,12 +1,12 @@
 [package]
 name = "vectordb"
 version = "0.4.8"
-edition = "2021"
+edition.workspace = true
 description = "LanceDB: A serverless, low-latency vector database for AI applications"
-license = "Apache-2.0"
-repository = "https://github.com/lancedb/lancedb"
-keywords = ["lancedb", "lance", "database", "search"]
-categories = ["database-implementations"]
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [dependencies]

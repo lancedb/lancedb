@@ -88,6 +88,7 @@ def test_embedding_function(tmp_path):
     assert np.allclose(actual, expected)
 
 
+@pytest.mark.slow
 def test_embedding_function_rate_limit(tmp_path):
     def _get_schema_from_model(model):
         class Schema(LanceModel):

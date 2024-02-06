@@ -1,5 +1,4 @@
 import os
-import typing
 from functools import cached_property
 from typing import Union
 
@@ -7,9 +6,6 @@ import pyarrow as pa
 
 from ..util import attempt_import
 from .base import Reranker
-
-if typing.TYPE_CHECKING:
-    import lancedb
 
 
 class CohereReranker(Reranker):
@@ -55,14 +51,14 @@ class CohereReranker(Reranker):
 
     def rerank_hybrid(
         self,
-        query_builder: "lancedb.HybridQueryBuilder",
+        query: str,
         vector_results: pa.Table,
         fts_results: pa.Table,
     ):
         combined_results = self.merge_results(vector_results, fts_results)
         docs = combined_results[self.column].to_pylist()
         results = self._client.rerank(
-            query=query_builder._query,
+            query=query,
             documents=docs,
             top_n=self.top_n,
             model=self.model_name,

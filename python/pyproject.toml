@@ -48,7 +48,7 @@ classifiers = [
 repository = "https://github.com/lancedb/lancedb"
 
 [project.optional-dependencies]
-tests = ["aiohttp", "pandas>=1.4", "pytest", "pytest-mock", "pytest-asyncio", "duckdb", "pytz", "polars"]
+tests = ["aiohttp", "pandas>=1.4", "pytest", "pytest-mock", "pytest-asyncio", "duckdb", "pytz", "polars>=0.19"]
 dev = ["ruff", "pre-commit"]
 docs = ["mkdocs", "mkdocs-jupyter", "mkdocs-material", "mkdocstrings[python]"]
 clip = ["torch", "pillow", "open-clip"]

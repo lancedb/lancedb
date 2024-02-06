@@ -42,6 +42,12 @@ To run the unit tests:
 pytest
 ```
 
+To run the doc tests:
+
+```bash
+pytest --doctest-modules lancedb
+```
+
 To run linter and automatically fix all errors:
 
 ```bash

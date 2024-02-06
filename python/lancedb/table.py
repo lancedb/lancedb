@@ -14,7 +14,10 @@
 from __future__ import annotations
 
 import inspect
+import time
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from datetime import timedelta
 from functools import cached_property
 from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Tuple, Union
 
@@ -41,8 +44,6 @@ from .util import (
 from .utils.events import register_event
 
 if TYPE_CHECKING:
-    from datetime import timedelta
-
     import PIL
     from lance.dataset import CleanupStats, ReaderLike
 
@@ -299,7 +300,7 @@ class Table(ABC):
 
             import lance
 
-            dataset = lance.dataset("/tmp/images.lance")
+            dataset = lance.dataset("./images.lance")
             dataset.create_scalar_index("category")
         """
         raise NotImplementedError
@@ -446,7 +447,7 @@ class Table(ABC):
             *default "vector"*
         query_type: str
             *default "auto"*.
-            Acceptable types are: "vector", "fts", or "auto"
+            Acceptable types are: "vector", "fts", "hybrid", or "auto"
 
             - If "auto" then the query type is inferred from the query;
 
@@ -642,23 +643,145 @@ class Table(ABC):
         """
 
 
+class _LanceDatasetRef(ABC):
+    @property
+    @abstractmethod
+    def dataset(self) -> LanceDataset:
+        pass
+
+    @property
+    @abstractmethod
+    def dataset_mut(self) -> LanceDataset:
+        pass
+
+
+@dataclass
+class _LanceLatestDatasetRef(_LanceDatasetRef):
+    """Reference to the latest version of a LanceDataset."""
+
+    uri: str
+    read_consistency_interval: Optional[timedelta] = None
+    last_consistency_check: Optional[float] = None
+    _dataset: Optional[LanceDataset] = None
+
+    @property
+    def dataset(self) -> LanceDataset:
+        if not self._dataset:
+            self._dataset = lance.dataset(self.uri)
+            self.last_consistency_check = time.monotonic()
+        elif self.read_consistency_interval is not None:
+            now = time.monotonic()
+            diff = timedelta(seconds=now - self.last_consistency_check)
+            if (
+                self.last_consistency_check is None
+                or diff > self.read_consistency_interval
+            ):
+                self._dataset = self._dataset.checkout_version(
+                    self._dataset.latest_version
+                )
+                self.last_consistency_check = time.monotonic()
+        return self._dataset
+
+    @dataset.setter
+    def dataset(self, value: LanceDataset):
+        self._dataset = value
+        self.last_consistency_check = time.monotonic()
+
+    @property
+    def dataset_mut(self) -> LanceDataset:
+        return self.dataset
+
+
+@dataclass
+class _LanceTimeTravelRef(_LanceDatasetRef):
+    uri: str
+    version: int
+    _dataset: Optional[LanceDataset] = None
+
+    @property
+    def dataset(self) -> LanceDataset:
+        if not self._dataset:
+            self._dataset = lance.dataset(self.uri, version=self.version)
+        return self._dataset
+
+    @dataset.setter
+    def dataset(self, value: LanceDataset):
+        self._dataset = value
+        self.version = value.version
+
+    @property
+    def dataset_mut(self) -> LanceDataset:
+        raise ValueError(
+            "Cannot mutate table reference fixed at version "
+            f"{self.version}. Call checkout_latest() to get a mutable "
+            "table reference."
+        )
+
+
 class LanceTable(Table):
     """
     A table in a LanceDB database.
+
+    This can be opened in two modes: standard and time-travel.
+
+    Standard mode is the default. In this mode, the table is mutable and tracks
+    the latest version of the table. The level of read consistency is controlled
+    by the `read_consistency_interval` parameter on the connection.
+
+    Time-travel mode is activated by specifying a version number. In this mode,
+    the table is immutable and fixed to a specific version. This is useful for
+    querying historical versions of the table.
     """
 
-    def __init__(self, connection: "LanceDBConnection", name: str, version: int = None):
+    def __init__(
+        self,
+        connection: "LanceDBConnection",
+        name: str,
+        version: Optional[int] = None,
+    ):
         self._conn = connection
         self.name = name
-        self._version = version
 
-    def _reset_dataset(self, version=None):
-        try:
-            if "_dataset" in self.__dict__:
-                del self.__dict__["_dataset"]
-            self._version = version
-        except AttributeError:
-            pass
+        if version is not None:
+            self._ref = _LanceTimeTravelRef(
+                uri=self._dataset_uri,
+                version=version,
+            )
+        else:
+            self._ref = _LanceLatestDatasetRef(
+                uri=self._dataset_uri,
+                read_consistency_interval=connection.read_consistency_interval,
+            )
+
+    @classmethod
+    def open(cls, db, name, **kwargs):
+        tbl = cls(db, name, **kwargs)
+        fs, path = fs_from_uri(tbl._dataset_uri)
+        file_info = fs.get_file_info(path)
+        if file_info.type != pa.fs.FileType.Directory:
+            raise FileNotFoundError(
+                f"Table {name} does not exist."
+                f"Please first call db.create_table({name}, data)"
+            )
+        register_event("open_table")
+
+        return tbl
+
+    @property
+    def _dataset_uri(self) -> str:
+        return join_uri(self._conn.uri, f"{self.name}.lance")
+
+    @property
+    def _dataset(self) -> LanceDataset:
+        return self._ref.dataset
+
+    @property
+    def _dataset_mut(self) -> LanceDataset:
+        return self._ref.dataset_mut
+
+    def to_lance(self) -> LanceDataset:
+        """Return the LanceDataset backing this table."""
+        return self._dataset
 
     @property
     def schema(self) -> pa.Schema:
@@ -686,6 +809,9 @@ class LanceTable(Table):
         keep writing to the dataset starting from an old version, then use
         the `restore` function.
 
+        Calling this method will set the table into time-travel mode. If you
+        wish to return to standard mode, call `checkout_latest`.
+
         Parameters
         ----------
         version : int
@@ -710,21 +836,40 @@ class LanceTable(Table):
                vector    type
         0  [1.1, 0.9]  vector
         """
-        max_ver = max([v["version"] for v in self._dataset.versions()])
+        max_ver = self._dataset.latest_version
         if version < 1 or version > max_ver:
             raise ValueError(f"Invalid version {version}")
-        self._reset_dataset(version=version)
 
         try:
-            # Accessing the property updates the cached value
-            _ = self._dataset
-        except Exception as e:
+            ds = self._dataset.checkout_version(version)
+        except IOError as e:
             if "not found" in str(e):
                 raise ValueError(
                     f"Version {version} no longer exists. Was it cleaned up?"
                 )
             else:
                 raise e
+
+        self._ref = _LanceTimeTravelRef(
+            uri=self._dataset_uri,
+            version=version,
+        )
+        # We've already loaded the version so we can populate it directly.
+        self._ref.dataset = ds
+
+    def checkout_latest(self):
+        """Checkout the latest version of the table. This is an in-place operation.
+
+        The table will be set back into standard mode, and will track the latest
+        version of the table.
+        """
+        self.checkout(self._dataset.latest_version)
+        ds = self._ref.dataset
+        self._ref = _LanceLatestDatasetRef(
+            uri=self._dataset_uri,
+            read_consistency_interval=self._conn.read_consistency_interval,
+        )
+        self._ref.dataset = ds
 
     def restore(self, version: int = None):
         """Restore a version of the table. This is an in-place operation.
@@ -760,7 +905,7 @@ class LanceTable(Table):
         >>> len(table.list_versions())
         4
         """
-        max_ver = max([v["version"] for v in self._dataset.versions()])
+        max_ver = self._dataset.latest_version
         if version is None:
             version = self.version
         elif version < 1 or version > max_ver:
@@ -768,12 +913,17 @@ class LanceTable(Table):
         else:
             self.checkout(version)
 
-        if version == max_ver:
-            # no-op if restoring the latest version
-            return
+        ds = self._dataset
 
-        self._dataset.restore()
-        self._reset_dataset()
+        # no-op if restoring the latest version
+        if version != max_ver:
+            ds.restore()
+
+        self._ref = _LanceLatestDatasetRef(
+            uri=self._dataset_uri,
+            read_consistency_interval=self._conn.read_consistency_interval,
+        )
+        self._ref.dataset = ds
 
     def count_rows(self, filter: Optional[str] = None) -> int:
         """
@@ -790,7 +940,11 @@ class LanceTable(Table):
         return self.count_rows()
 
     def __repr__(self) -> str:
-        return f"LanceTable({self.name})"
+        val = f'{self.__class__.__name__}(connection={self._conn!r}, name="{self.name}"'
+        if isinstance(self._ref, _LanceTimeTravelRef):
+            val += f", version={self._ref.version}"
+        val += ")"
+        return val
 
     def __str__(self) -> str:
         return self.__repr__()
@@ -840,10 +994,6 @@ class LanceTable(Table):
             self.to_lance(), allow_pyarrow_filter=False, batch_size=batch_size
         )
 
-    @property
-    def _dataset_uri(self) -> str:
-        return join_uri(self._conn.uri, f"{self.name}.lance")
-
     def create_index(
         self,
         metric="L2",
@@ -855,7 +1005,7 @@ class LanceTable(Table):
         index_cache_size: Optional[int] = None,
     ):
         """Create an index on the table."""
-        self._dataset.create_index(
+        self._dataset_mut.create_index(
             column=vector_column_name,
             index_type="IVF_PQ",
             metric=metric,
@@ -865,11 +1015,12 @@ class LanceTable(Table):
             accelerator=accelerator,
             index_cache_size=index_cache_size,
         )
-        self._reset_dataset()
         register_event("create_index")
 
     def create_scalar_index(self, column: str, *, replace: bool = True):
-        self._dataset.create_scalar_index(column, index_type="BTREE", replace=replace)
+        self._dataset_mut.create_scalar_index(
+            column, index_type="BTREE", replace=replace
+        )
 
     def create_fts_index(
         self,
@@ -912,14 +1063,6 @@ class LanceTable(Table):
     def _get_fts_index_path(self):
         return join_uri(self._dataset_uri, "_indices", "tantivy")
 
-    @cached_property
-    def _dataset(self) -> LanceDataset:
-        return lance.dataset(self._dataset_uri, version=self._version)
-
-    def to_lance(self) -> LanceDataset:
-        """Return the LanceDataset backing this table."""
-        return self._dataset
-
     def add(
         self,
         data: DATA,
@@ -958,8 +1101,11 @@ class LanceTable(Table):
             on_bad_vectors=on_bad_vectors,
             fill_value=fill_value,
         )
-        lance.write_dataset(data, self._dataset_uri, schema=self.schema, mode=mode)
-        self._reset_dataset()
+        # Access the dataset_mut property to ensure that the dataset is mutable.
+        self._ref.dataset_mut
+        self._ref.dataset = lance.write_dataset(
+            data, self._dataset_uri, schema=self.schema, mode=mode
+        )
         register_event("add")
 
     def merge(
@@ -1020,10 +1166,9 @@ class LanceTable(Table):
             other_table = other_table.to_lance()
         if isinstance(other_table, LanceDataset):
             other_table = other_table.to_table()
-        self._dataset.merge(
+        self._ref.dataset = self._dataset_mut.merge(
             other_table, left_on=left_on, right_on=right_on, schema=schema
         )
-        self._reset_dataset()
         register_event("merge")
 
     @cached_property
@@ -1226,22 +1371,8 @@ class LanceTable(Table):
         register_event("create_table")
         return new_table
 
-    @classmethod
-    def open(cls, db, name):
-        tbl = cls(db, name)
-        fs, path = fs_from_uri(tbl._dataset_uri)
-        file_info = fs.get_file_info(path)
-        if file_info.type != pa.fs.FileType.Directory:
-            raise FileNotFoundError(
-                f"Table {name} does not exist."
-                f"Please first call db.create_table({name}, data)"
-            )
-        register_event("open_table")
-
-        return tbl
-
     def delete(self, where: str):
-        self._dataset.delete(where)
+        self._dataset_mut.delete(where)
 
     def update(
         self,
@@ -1295,8 +1426,7 @@ class LanceTable(Table):
         if values is not None:
             values_sql = {k: value_to_sql(v) for k, v in values.items()}
 
-        self.to_lance().update(values_sql, where)
-        self._reset_dataset()
+        self._dataset_mut.update(values_sql, where)
         register_event("update")
 
     def _execute_query(self, query: Query) -> pa.Table:

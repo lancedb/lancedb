@@ -1,4 +1,3 @@
-import typing
 from functools import cached_property
 from typing import Union
 
@@ -6,9 +5,6 @@ import pyarrow as pa
 
 from ..util import attempt_import
 from .base import Reranker
-
-if typing.TYPE_CHECKING:
-    import lancedb
 
 
 class CrossEncoderReranker(Reranker):
@@ -52,13 +48,13 @@ class CrossEncoderReranker(Reranker):
 
     def rerank_hybrid(
         self,
-        query_builder: "lancedb.HybridQueryBuilder",
+        query: str,
         vector_results: pa.Table,
         fts_results: pa.Table,
     ):
         combined_results = self.merge_results(vector_results, fts_results)
         passages = combined_results[self.column].to_pylist()
-        cross_inp = [[query_builder._query, passage] for passage in passages]
+        cross_inp = [[query, passage] for passage in passages]
         cross_scores = self.model.predict(cross_inp)
         combined_results = combined_results.append_column(
             "_relevance_score", pa.array(cross_scores, type=pa.float32())

@@ -21,7 +21,7 @@ use neon::{
 use crate::{error::ResultExt, runtime, table::JsTable};
 use vectordb::Table;
 
-pub(crate) fn table_create_scalar_index(mut cx: FunctionContext) -> JsResult<JsPromise> {
+pub fn table_create_scalar_index(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let js_table = cx.this().downcast_or_throw::<JsBox<JsTable>, _>(&mut cx)?;
     let column = cx.argument::<JsString>(0)?.value(&mut cx);
     let replace = cx.argument::<JsBoolean>(1)?.value(&mut cx);

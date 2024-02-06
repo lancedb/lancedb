@@ -62,7 +62,7 @@ impl Query {
     /// * `dataset` - Lance dataset.
     ///
     pub(crate) fn new(dataset: Arc<Dataset>) -> Self {
-        Query {
+        Self {
             dataset,
             query_vector: None,
             column: None,
