@@ -49,6 +49,9 @@ jobs:
   test-node:
     name: Test doc nodejs code
     runs-on: "ubuntu-latest"
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
     steps:
     - name: Checkout
       uses: actions/checkout@v4
@@ -65,7 +68,6 @@ jobs:
     - name: Rust cache
       uses: swatinem/rust-cache@v2
     - name: Install node dependencies
-      timeout-minutes: 30
       run: |
         cd node
         npm ci
