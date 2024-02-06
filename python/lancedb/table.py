@@ -105,7 +105,9 @@ def _append_vector_col(data: pa.Table, metadata: dict, schema: Optional[pa.Schem
     functions = EmbeddingFunctionRegistry.get_instance().parse_functions(metadata)
     for vector_column, conf in functions.items():
         func = conf.function
-        if vector_column not in data.column_names:
+        no_vec = vector_column not in data.column_names
+        empty_vec = no_vec or data.column(vector_column).null_count == len(data)
+        if no_vec or empty_vec:
             col_data = func.compute_source_embeddings_with_retry(
                 data[conf.source_column]
             )
@@ -113,9 +115,15 @@ def _append_vector_col(data: pa.Table, metadata: dict, schema: Optional[pa.Schem
                 dtype = schema.field(vector_column).type
             else:
                 dtype = pa.list_(pa.float32(), len(col_data[0]))
-            data = data.append_column(
-                pa.field(vector_column, type=dtype), pa.array(col_data, type=dtype)
-            )
+
+            if no_vec:
+                data = data.append_column(
+                    pa.field(vector_column, type=dtype), pa.array(col_data, type=dtype)
+                )
+            elif empty_vec:
+                data = data.set_column(
+                    data.num_columns - 1, vector_column, pa.array(col_data, type=dtype)
+                )
     return data
 
 

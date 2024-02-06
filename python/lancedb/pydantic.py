@@ -20,6 +20,7 @@ import sys
 import types
 from abc import ABC, abstractmethod
 from datetime import date, datetime
+import types
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -27,6 +28,7 @@ from typing import (
     Dict,
     Generator,
     List,
+    Optional,
     Type,
     Union,
     _GenericAlias,
@@ -181,6 +183,8 @@ def _py_type_to_arrow_type(py_type: Type[Any], field: FieldInfo) -> pa.DataType:
     elif getattr(py_type, "__origin__", None) in (list, tuple):
         child = py_type.__args__[0]
         return pa.list_(_py_type_to_arrow_type(child, field))
+    elif py_type.__name__ == "FixedSizeList":
+        return pa.list_(py_type.value_arrow_type(), py_type.dim())
     raise TypeError(
         f"Converting Pydantic type to Arrow Type: unsupported type {py_type}."
     )
@@ -398,3 +402,116 @@ else:
         Convert a Pydantic model to a dictionary.
         """
         return model.model_dump()
+
+
+class SearchableModel(LanceModel):
+    """
+    A base class for models that can be searched in LanceDB.
+
+    To create your own SearchableModel:
+
+    1. Define a new class that inherits from `SearchableModel`
+    2. Define the fields of the model as class attributes (like any pydantic model)
+    3. By default, the `upsert` functionality assumes there's an `id` primary key attribute. 
+       If you want to use a different column as the primary key, 
+       override the `id_column` class attribute when you call `upsert`.
+    
+    To ingest data:
+
+    1. call `upsert` classmethod with a list of instances of your model 
+       (or any legal input to lancedb table, e.g., pandas DataFrame, arrow table, etc.)
+    2. call `get_or_create_table` and insert data directly into the table
+
+    To search:
+
+    1. call `search` classmethod with a query text or vector. If you pass in
+       a text query, then make sure the table is initialized with an 
+       embedding function so the embedding generation happens automatically.
+       The output of search is a query builder so that you call chain calls
+       like `limit`, `where`, etc, then finally call `get_instances()`, to
+       get the results as a list of instances of your model.
+    2. call `get_or_create_table` and search directly. Instead of calling
+       `get_instances`, you can call `to_pydantic` to get the results as a list.
+    """
+
+    @classmethod
+    def get_table_name(cls):
+        """
+        The LanceDB table name is the class name lowered and pluralized
+
+        Example
+        -------
+        If the class name is `Document`, the LanceDB table name will be `documents`
+        """
+        return cls.__name__.lower() + "s"
+
+    @classmethod
+    def bind(cls, db: "lancedb.LanceDBConnection"):
+        setattr(cls, "_DB", db)
+
+    @classmethod
+    def get_or_create_table(cls):
+        """
+        If the table exists in the database, return it. Otherwise, create it using
+        the schema determined by this model.
+        """
+        if getattr(cls, "_DB", None) is None:
+            raise ValueError("Please `bind` this class to a LanceDBConnection first")
+        if getattr(cls, "_TABLE", None) is None:
+            name = cls.get_table_name()
+            if name in cls._DB:
+                table = cls._DB[name]
+            else:
+                table = cls._DB.create_table(name=name, schema=cls)
+            setattr(cls, "_TABLE", table)
+        return cls._TABLE
+
+    @classmethod
+    def upsert(cls, instances: List[SearchableModel], id_column="id"):
+        """
+        Insert or update the instances into the table.
+        A primary key column is assumed to be `id`. If you want to use a different
+        column as the primary key, override the `id_column` parameter.
+
+        Parameters
+        ----------
+        instances : 
+            A list of instances of this model
+        id_column : str, optional
+            The primary key column name. Default is `id`.
+        """
+        table = cls.get_or_create_table()
+        (table.merge_insert(id_column)
+         .when_matched_update_all()
+         .when_not_matched_insert_all()
+         .execute(instances))
+
+    @classmethod
+    def clear_data(cls):
+        """
+        Delete the underlying table
+        """
+        cls._DB.drop_table(cls.get_table_name(), ignore_missing=True)
+
+    @classmethod
+    def search(cls, query: Union[str, List[float], np.array[float]]):
+        """
+        Search for instances of this model in the underlying
+        LanceDB table.
+
+        Parameters
+        ----------
+        query : Union[str, List[float], np.array[float]]
+            The query text or vector        
+            If the query is a vector then the vector search is assumed.
+            If the query is a str and the table is configured with an embedding 
+            function, then vector search is used and the embedding is generated
+            automatically.
+            TODO: add support for full text search and hybrid search
+        """
+        table = cls.get_or_create_table()
+        query = table.search(query)
+        def get_instances(self):
+            return self.to_pydantic(cls)
+        query.get_instances = types.MethodType(get_instances, query)
+        return query
