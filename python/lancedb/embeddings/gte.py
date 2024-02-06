@@ -14,7 +14,7 @@ from typing import List, Union
 
 import numpy as np
 
-from ..util import attempt_import
+from ..util import attempt_import_or_raise
 from .base import TextEmbeddingFunction
 from .registry import register
 from .utils import weak_lru
@@ -123,7 +123,7 @@ class GteEmbeddings(TextEmbeddingFunction):
 
             return Model()
         else:
-            sentence_transformers = attempt_import(
+            sentence_transformers = attempt_import_or_raise(
                 "sentence_transformers", "sentence-transformers"
             )
             return sentence_transformers.SentenceTransformer(

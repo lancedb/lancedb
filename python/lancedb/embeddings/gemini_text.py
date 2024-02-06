@@ -19,7 +19,7 @@ import numpy as np
 
 from lancedb.pydantic import PYDANTIC_VERSION
 
-from ..util import attempt_import
+from ..util import attempt_import_or_raise
 from .base import TextEmbeddingFunction
 from .registry import register
 from .utils import TEXT, api_key_not_found_help
@@ -135,7 +135,7 @@ class GeminiText(TextEmbeddingFunction):
 
     @cached_property
     def client(self):
-        genai = attempt_import("google.generativeai", "google.generativeai")
+        genai = attempt_import_or_raise("google.generativeai", "google.generativeai")
 
         if not os.environ.get("GOOGLE_API_KEY"):
             api_key_not_found_help("google")

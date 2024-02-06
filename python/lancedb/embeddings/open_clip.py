@@ -21,7 +21,7 @@ import pyarrow as pa
 from pydantic import PrivateAttr
 from tqdm import tqdm
 
-from ..util import attempt_import
+from ..util import attempt_import_or_raise
 from .base import EmbeddingFunction
 from .registry import register
 from .utils import IMAGES, url_retrieve
@@ -51,7 +51,7 @@ class OpenClipEmbeddings(EmbeddingFunction):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        open_clip = attempt_import("open_clip", "open-clip")
+        open_clip = attempt_import_or_raise("open_clip", "open-clip")
         model, _, preprocess = open_clip.create_model_and_transforms(
             self.name, pretrained=self.pretrained
         )
@@ -79,14 +79,14 @@ class OpenClipEmbeddings(EmbeddingFunction):
         if isinstance(query, str):
             return [self.generate_text_embeddings(query)]
         else:
-            PIL = attempt_import("PIL", "pillow")
+            PIL = attempt_import_or_raise("PIL", "pillow")
             if isinstance(query, PIL.Image.Image):
                 return [self.generate_image_embedding(query)]
             else:
                 raise TypeError("OpenClip supports str or PIL Image as query")
 
     def generate_text_embeddings(self, text: str) -> np.ndarray:
-        torch = attempt_import("torch")
+        torch = attempt_import_or_raise("torch")
         text = self.sanitize_input(text)
         text = self._tokenizer(text)
         text.to(self.device)
@@ -145,7 +145,7 @@ class OpenClipEmbeddings(EmbeddingFunction):
             The image to embed. If the image is a str, it is treated as a uri.
             If the image is bytes, it is treated as the raw image bytes.
         """
-        torch = attempt_import("torch")
+        torch = attempt_import_or_raise("torch")
         # TODO handle retry and errors for https
         image = self._to_pil(image)
         image = self._preprocess(image).unsqueeze(0)
@@ -153,7 +153,7 @@ class OpenClipEmbeddings(EmbeddingFunction):
             return self._encode_and_normalize_image(image)
 
     def _to_pil(self, image: Union[str, bytes]):
-        PIL = attempt_import("PIL", "pillow")
+        PIL = attempt_import_or_raise("PIL", "pillow")
         if isinstance(image, bytes):
             return PIL.Image.open(io.BytesIO(image))
         if isinstance(image, PIL.Image.Image):

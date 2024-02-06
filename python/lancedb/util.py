@@ -115,7 +115,7 @@ def join_uri(base: Union[str, pathlib.Path], *parts: str) -> str:
     return "/".join([p.rstrip("/") for p in [base, *parts]])
 
 
-def attempt_import(module: str, mitigation=None):
+def attempt_import_or_raise(module: str, mitigation=None):
     """
     Import the specified module. If the module is not installed,
     raise an ImportError with a helpful message.

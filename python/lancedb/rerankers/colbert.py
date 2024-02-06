@@ -2,7 +2,7 @@ from functools import cached_property
 
 import pyarrow as pa
 
-from ..util import safe_import
+from ..util import attempt_import_or_raise
 from .base import Reranker
 
 
@@ -29,7 +29,7 @@ class ColbertReranker(Reranker):
         super().__init__(return_score)
         self.model_name = model_name
         self.column = column
-        self.torch = safe_import("torch")  # import here for faster ops later
+        self.torch = attempt_import_or_raise("torch")  # import here for faster ops later
 
     def rerank_hybrid(
         self,
@@ -80,7 +80,7 @@ class ColbertReranker(Reranker):
 
     @cached_property
     def _model(self):
-        transformers = safe_import("transformers")
+        transformers = attempt_import_or_raise("transformers")
         tokenizer = transformers.AutoTokenizer.from_pretrained(self.model_name)
         model = transformers.AutoModel.from_pretrained(self.model_name)
 

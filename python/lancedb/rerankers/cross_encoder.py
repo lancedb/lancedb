@@ -3,7 +3,7 @@ from typing import Union
 
 import pyarrow as pa
 
-from ..util import attempt_import
+from ..util import attempt_import_or_raise
 from .base import Reranker
 
 
@@ -32,7 +32,7 @@ class CrossEncoderReranker(Reranker):
         return_score="relevance",
     ):
         super().__init__(return_score)
-        torch = attempt_import("torch")
+        torch = attempt_import_or_raise("torch")
         self.model_name = model_name
         self.column = column
         self.device = device
@@ -41,7 +41,7 @@ class CrossEncoderReranker(Reranker):
 
     @cached_property
     def model(self):
-        sbert = attempt_import("sentence_transformers")
+        sbert = attempt_import_or_raise("sentence_transformers")
         cross_encoder = sbert.CrossEncoder(self.model_name)
 
         return cross_encoder
