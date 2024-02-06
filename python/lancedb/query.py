@@ -626,7 +626,6 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
     def __init__(self, table: "Table", query: str, vector_column: str):
         super().__init__(table)
         self._validate_fts_index()
-        self._query = query
         vector_query, fts_query = self._validate_query(query)
         self._fts_query = LanceFtsQueryBuilder(table, fts_query)
         vector_query = self._query_to_vector(table, vector_query, vector_column)
@@ -679,11 +678,17 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         # rerankers might need to preserve this score to support `return_score="all"`
         fts_results = self._normalize_scores(fts_results, "score")
 
-        results = self._reranker.rerank_hybrid(self, vector_results, fts_results)
+        results = self._reranker.rerank_hybrid(
+            self._fts_query._query, vector_results, fts_results
+        )
+
         if not isinstance(results, pa.Table):  # Enforce type
             raise TypeError(
                 f"rerank_hybrid must return a pyarrow.Table, got {type(results)}"
             )
+
+        # apply limit after reranking
+        results = results.slice(length=self._limit)
 
         if not self._with_row_id:
             results = results.drop(["_rowid"])
@@ -776,6 +781,8 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         """
         self._vector_query.limit(limit)
         self._fts_query.limit(limit)
+        self._limit = limit
+
         return self
 
     def select(self, columns: list) -> LanceHybridQueryBuilder:
