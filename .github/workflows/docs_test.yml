@@ -53,6 +53,14 @@ jobs:
     strategy:
       fail-fast: false
     steps:
+    - name: Increase swapfile
+      run: |
+        sudo swapoff -a
+        sudo fallocate -l 15G /swapfile
+        sudo chmod 600 /swapfile
+        sudo mkswap /swapfile
+        sudo swapon /swapfile
+        sudo swapon --show
     - name: Checkout
       uses: actions/checkout@v4
       with:
