@@ -34,8 +34,12 @@ impl Table {
 
     /// Return Schema as empty Arrow IPC file.
     #[napi]
-    pub fn schema(&self) -> napi::Result<Buffer> {
-        let mut writer = FileWriter::try_new(vec![], &self.table.schema())
+    pub async fn schema(&self) -> napi::Result<Buffer> {
+        let schema =
+            self.table.schema().await.map_err(|e| {
+                napi::Error::from_reason(format!("Failed to create IPC file: {}", e))
+            })?;
+        let mut writer = FileWriter::try_new(vec![], &schema)
             .map_err(|e| napi::Error::from_reason(format!("Failed to create IPC file: {}", e)))?;
         writer
             .finish()

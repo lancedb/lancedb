@@ -168,7 +168,7 @@ impl IndexBuilder {
 
     /// Build the parameters.
     pub async fn build(&self) -> Result<()> {
-        let schema = self.table.schema();
+        let schema = self.table.schema().await?;
 
         // TODO: simplify this after GH lance#1864.
         let mut index_type = &self.index_type;
@@ -230,7 +230,7 @@ impl IndexBuilder {
             .table
             .as_native()
             .expect("Only native table is supported here");
-        let mut dataset = tbl.clone_inner_dataset();
+        let mut dataset = tbl.dataset.get_mut().await?;
         match params {
             IndexParams::Scalar { replace } => {
                 dataset
@@ -271,7 +271,6 @@ impl IndexBuilder {
                     .await?;
             }
         }
-        tbl.reset_dataset(dataset);
         Ok(())
     }
 }

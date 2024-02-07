@@ -12,15 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::sync::Arc;
-
 use arrow_array::Float32Array;
 use arrow_schema::Schema;
 use lance::dataset::scanner::{DatasetRecordBatchStream, Scanner};
-use lance::dataset::Dataset;
 use lance_linalg::distance::MetricType;
 
 use crate::error::Result;
+use crate::table::dataset::DatasetConsistencyWrapper;
 use crate::utils::default_vector_column;
 use crate::Error;
 
@@ -29,7 +27,7 @@ const DEFAULT_TOP_K: usize = 10;
 /// A builder for nearest neighbor queries for LanceDB.
 #[derive(Clone)]
 pub struct Query {
-    dataset: Arc<Dataset>,
+    dataset: DatasetConsistencyWrapper,
 
     // The column to run the query on. If not specified, we will attempt to guess
     // the column based on the dataset's schema.
@@ -60,7 +58,8 @@ impl Query {
     /// # Arguments
     ///
     /// * `dataset` - Lance dataset.
-    pub(crate) fn new(dataset: Arc<Dataset>) -> Self {
+    ///
+    pub(crate) fn new(dataset: DatasetConsistencyWrapper) -> Self {
         Self {
             dataset,
             query_vector: None,
@@ -82,7 +81,8 @@ impl Query {
     ///
     /// * A [DatasetRecordBatchStream] with the query's results.
     pub async fn execute_stream(&self) -> Result<DatasetRecordBatchStream> {
-        let mut scanner: Scanner = self.dataset.scan();
+        let ds_ref = self.dataset.get().await?;
+        let mut scanner: Scanner = ds_ref.scan();
 
         if let Some(query) = self.query_vector.as_ref() {
             // If there is a vector query, default to limit=10 if unspecified
@@ -90,10 +90,10 @@ impl Query {
                 col.clone()
             } else {
                 // Infer a vector column with the same dimension of the query vector.
-                let arrow_schema = Schema::from(self.dataset.schema());
+                let arrow_schema = Schema::from(ds_ref.schema());
                 default_vector_column(&arrow_schema, Some(query.len() as i32))?
             };
-            let field = self.dataset.schema().field(&column).ok_or(Error::Store {
+            let field = ds_ref.schema().field(&column).ok_or(Error::Store {
                 message: format!("Column {} not found in dataset schema", column),
             })?;
             if !matches!(field.data_type(), arrow_schema::DataType::FixedSizeList(f, dim) if f.data_type().is_floating() && dim == query.len() as i32)
@@ -239,8 +239,10 @@ mod tests {
         let batches = make_test_batches();
         let ds = Dataset::write(batches, "memory://foo", None).await.unwrap();
 
+        let ds = DatasetConsistencyWrapper::from_dataset(ds, None);
+
         let vector = Some(Float32Array::from_iter_values([0.1, 0.2]));
-        let query = Query::new(Arc::new(ds)).nearest_to(&[0.1, 0.2]);
+        let query = Query::new(ds).nearest_to(&[0.1, 0.2]);
         assert_eq!(query.query_vector, vector);
 
         let new_vector = Float32Array::from_iter_values([9.8, 8.7]);
@@ -264,7 +266,9 @@ mod tests {
     #[tokio::test]
     async fn test_execute() {
         let batches = make_non_empty_batches();
-        let ds = Arc::new(Dataset::write(batches, "memory://foo", None).await.unwrap());
+        let ds = Dataset::write(batches, "memory://foo", None).await.unwrap();
+
+        let ds = DatasetConsistencyWrapper::from_dataset(ds, None);
 
         let query = Query::new(ds.clone()).nearest_to(&[0.1; 4]);
         let result = query.limit(10).filter("id % 2 == 0").execute_stream().await;
@@ -294,9 +298,11 @@ mod tests {
     async fn test_execute_no_vector() {
         // test that it's ok to not specify a query vector (just filter / limit)
         let batches = make_non_empty_batches();
-        let ds = Arc::new(Dataset::write(batches, "memory://foo", None).await.unwrap());
+        let ds = Dataset::write(batches, "memory://foo", None).await.unwrap();
 
-        let query = Query::new(ds.clone());
+        let ds = DatasetConsistencyWrapper::from_dataset(ds, None);
+
+        let query = Query::new(ds);
         let result = query.filter("id % 2 == 0").execute_stream().await;
         let mut stream = result.expect("should have result");
         // should only have one batch
