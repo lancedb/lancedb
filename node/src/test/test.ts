@@ -838,8 +838,6 @@ describe('LanceDB client', function () {
       const names = vectorFromArray(['foo', 'bar'], new Utf8())
       const data = new ArrowTable({ name: names })
 
-      console.log(data.schema.fields)
-
       const table = await con.createTable({
         name: 'vectors',
         data,
