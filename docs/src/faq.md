@@ -69,3 +69,19 @@ MinIO supports an S3 compatible API. In order to connect to a MinIO instance, yo
 - Set the envvar `AWS_ENDPOINT` to the URL of your MinIO API
 - Set the envvars `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` with your MinIO credential
 - Call `lancedb.connect("s3://minio_bucket_name")`
+
+### Where can I find benchmarks for LanceDB?
+
+Refer to this [post](https://blog.lancedb.com/benchmarking-lancedb-92b01032874a) for recent benchmarks.
+
+### How much data can LanceDB practically manage without effecting performance?
+
+We target good performance on ~10-50 billion rows and ~10-30 TB of data.
+
+### Does LanceDB support concurrent operations?
+
+LanceDB can handle concurrent reads very well, and can scale horizontally. The main constraint is how well the [storage layer](https://lancedb.github.io/lancedb/concepts/storage/) you've chosen scales. For writes, we support concurrent writing, though too many concurrent writers can lead to failing writes as there is a limited number of times a writer retries a commit
+
+!!! info "Multiprocessing with LanceDB"
+
+    For multiprocessing you should probably not use ```fork``` as lance is multi-threaded internally and ```fork``` and multi-thread do not work well.[Refer to this discussion](https://discuss.python.org/t/concerns-regarding-deprecation-of-fork-with-alive-threads/33555)
