@@ -6,17 +6,24 @@ LanceDB supports both semantic and keyword-based search. In real world applicati
 You can perform hybrid search in LanceDB by combining the results of semantic and full-text search via a reranking algorithm of your choice. LanceDB provides multiple rerankers out of the box. However, you can always write a custom reranker if your use case need more sophisticated logic .
 
 ```python
+import os
+
 import lancedb
+import openai
 from lancedb.embeddings import get_registry
-from lancedb.pydanatic import LanceModel, Vector
+from lancedb.pydantic import LanceModel, Vector
 
 db = lancedb.connect("~/.lancedb")
 
 # Ingest embedding function in LanceDB table
+# Configuring the environment variable OPENAI_API_KEY
+if "OPENAI_API_KEY" not in os.environ:
+# OR set the key here as a variable
+    openai.api_key = "sk-..."
 embeddings = get_registry().get("openai").create()
 
 class Documents(LanceModel):
-    vector: Vector(embeddings.ndims) = embeddings.VectorField()
+    vector: Vector(embeddings.ndims()) = embeddings.VectorField()
     text: str = embeddings.SourceField()
 
 table = db.create_table("documents", schema=Documents)
@@ -31,17 +38,19 @@ data = [
 # ingest docs with auto-vectorization
 table.add(data)
 
+# Create a fts index before the hybrid search
+table.create_fts_index("text")
 # hybrid search with default re-ranker
 results = table.search("flower moon", query_type="hybrid").to_pandas()
 ```
 
-By default, LanceDB uses `LinearCombinationReranker(weights=0.7)` to combine and rerank the results of semantic and full-text search. You can customize the hyperparameters as needed or write your own custom reranker. Here's how you can use any of the available rerankers:
+By default, LanceDB uses `LinearCombinationReranker(weight=0.7)` to combine and rerank the results of semantic and full-text search. You can customize the hyperparameters as needed or write your own custom reranker. Here's how you can use any of the available rerankers:
 
 
 ### `rerank()` arguments
 * `normalize`: `str`, default `"score"`:
     The method to normalize the scores. Can be "rank" or "score". If "rank", the scores are converted to ranks and then normalized. If "score", the scores are normalized directly.
-* `reranker`: `Reranker`, default `LinearCombinationReranker(weights=0.7)`.
+* `reranker`: `Reranker`, default `LinearCombinationReranker(weight=0.7)`.
     The reranker to use. If not specified, the default reranker is used.
 
 
@@ -55,7 +64,7 @@ This is the default re-ranker used by LanceDB. It combines the results of semant
 ```python
 from lancedb.rerankers import LinearCombinationReranker
 
-reranker = LinearCombinationReranker(weights=0.3) # Use 0.3 as the weight for vector search
+reranker = LinearCombinationReranker(weight=0.3) # Use 0.3 as the weight for vector search
 
 results = table.search("rebel", query_type="hybrid").rerank(reranker=reranker).to_pandas()
 ```
@@ -121,6 +130,60 @@ Arguments
     Only returns `_relevance_score`. Does not support `return_score = "all"`.
 
 
+### ColBERT Reranker
+This reranker uses the ColBERT model to combine the results of semantic and full-text search. You can use it by passing `ColbertrReranker()` to the `rerank()` method. 
+
+ColBERT reranker model calculates relevance of given docs against the query and don't take existing fts and vector search scores into account, so it currently only supports `return_score="relevance"`. By default, it looks for `text` column to rerank the results. But you can specify the column name to use as input to the cross encoder model as described below.
+
+```python
+from lancedb.rerankers import ColbertReranker
+
+reranker = ColbertReranker()
+
+results = table.search("harmony hall", query_type="hybrid").rerank(reranker=reranker).to_pandas()
+```
+
+Arguments
+----------------
+* `model_name` : `str`, default `"colbert-ir/colbertv2.0"`
+        The name of the cross encoder model to use.
+* `column` : `str`, default `"text"`
+        The name of the column to use as input to the cross encoder model.
+* `return_score` : `str`, default `"relevance"`
+        options are `"relevance"` or `"all"`. Only `"relevance"` is supported for now.
+
+!!! Note
+    Only returns `_relevance_score`. Does not support `return_score = "all"`.
+
+### OpenAI Reranker
+This reranker uses the OpenAI API to combine the results of semantic and full-text search. You can use it by passing `OpenaiReranker()` to the `rerank()` method.
+
+!!! Note
+    This prompts chat model to rerank results which is not a dedicated reranker model. This should be treated as experimental.
+
+!!! Tip
+    You might run out of token limit so set the search `limits` based on your token limit.
+
+```python
+from lancedb.rerankers import OpenaiReranker
+
+reranker = OpenaiReranker()
+
+results = table.search("harmony hall", query_type="hybrid").rerank(reranker=reranker).to_pandas()
+```
+
+Arguments
+----------------
+`model_name` : `str`, default `"gpt-3.5-turbo-1106"`
+    The name of the cross encoder model to use.
+`column` : `str`, default `"text"`
+    The name of the column to use as input to the cross encoder model.
+`return_score` : `str`, default `"relevance"`
+    options are "relevance" or "all". Only "relevance" is supported for now.
+`api_key` : `str`, default `None`
+    The API key to use. If None, will use the OPENAI_API_KEY environment variable.
+
+
 ## Building Custom Rerankers
 You can build your own custom reranker by subclassing the `Reranker` class and implementing the `rerank_hybrid()` method. Here's an example of a custom reranker that combines the results of semantic and full-text search using a linear combination of the scores.
 
@@ -137,7 +200,7 @@ class MyReranker(Reranker):
         self.param1 = param1
         self.param2 = param2
     
-    def rerank_hybrid(self, vector_results: pa.Table, fts_results: pa.Table):
+    def rerank_hybrid(self, query: str, vector_results: pa.Table, fts_results: pa.Table):
         # Use the built-in merging function
         combined_result = self.merge_results(vector_results, fts_results)
         
@@ -159,7 +222,7 @@ import pyarrow as pa
 class MyReranker(Reranker):
     ...
     
-    def rerank_hybrid(self, vector_results: pa.Table, fts_results: pa.Table, filter: str):
+    def rerank_hybrid(self, query: str, vector_results: pa.Table, fts_results: pa.Table, filter: str):
         # Use the built-in merging function
         combined_result = self.merge_results(vector_results, fts_results)
         

@@ -30,7 +30,7 @@ jobs:
         fetch-depth: 0
         lfs: true
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: 3.${{ matrix.python-minor-version }}
     - name: Install lancedb
@@ -55,7 +55,7 @@ jobs:
           - name: x86 Mac
             runner: macos-13
           - name: Arm Mac
-            runner: macos-13-xlarge
+            runner: macos-14
           - name: x86 Windows
             runner: windows-latest
     runs-on: "${{ matrix.config.runner }}"
@@ -69,7 +69,7 @@ jobs:
         fetch-depth: 0
         lfs: true
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: "3.11"
     - name: Install lancedb
@@ -92,7 +92,7 @@ jobs:
         fetch-depth: 0
         lfs: true
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: 3.9
     - name: Install lancedb

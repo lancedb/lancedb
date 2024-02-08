@@ -16,9 +16,9 @@ import deprecation
 
 from . import __version__
 from .exceptions import MissingColumnError, MissingValueError
-from .util import safe_import
+from .util import safe_import_pandas
 
-pd = safe_import("pandas")
+pd = safe_import_pandas()
 
 
 def contextualize(raw_df: "pd.DataFrame") -> Contextualizer:

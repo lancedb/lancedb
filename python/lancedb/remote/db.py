@@ -95,6 +95,8 @@ class RemoteDBConnection(DBConnection):
         """
         from .table import RemoteTable
 
+        self._client.mount_retry_adapter_for_table(name)
+
         # check if table exists
         try:
             self._client.post(f"/v1/table/{name}/describe/")

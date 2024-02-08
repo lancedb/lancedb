@@ -1,0 +1,34 @@
+[profile.release]
+lto = "fat"
+codegen-units = 1
+
+[profile.release-with-debug]
+inherits = "release"
+debug = true
+# Prioritize compile time over runtime performance
+codegen-units = 16
+lto = "thin"
+
+[target.'cfg(all())']
+rustflags = [
+    "-Wclippy::all",
+    "-Wclippy::style",
+    "-Wclippy::fallible_impl_from",
+    "-Wclippy::manual_let_else",
+    "-Wclippy::redundant_pub_crate",
+    "-Wclippy::string_add_assign",
+    "-Wclippy::string_add",
+    "-Wclippy::string_lit_as_bytes",
+    "-Wclippy::string_to_string",
+    "-Wclippy::use_self",
+    "-Dclippy::cargo",
+    "-Dclippy::dbg_macro",
+    # not too much we can do to avoid multiple crate versions
+    "-Aclippy::multiple-crate-versions",
+]
+
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "target-cpu=haswell", "-C", "target-feature=+avx2,+fma,+f16c"]
+
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "target-cpu=apple-m1", "-C", "target-feature=+neon,+fp16,+fhm,+dotprod"]

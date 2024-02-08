@@ -21,8 +21,10 @@ use std::sync::Arc;
 
 use arrow_array::RecordBatchReader;
 use lance::dataset::WriteParams;
-use lance::io::{ObjectStore, WrappingObjectStore};
-use object_store::local::LocalFileSystem;
+use lance::io::{ObjectStore, ObjectStoreParams, WrappingObjectStore};
+use object_store::{
+    aws::AwsCredential, local::LocalFileSystem, CredentialProvider, StaticCredentialProvider,
+};
 use snafu::prelude::*;
 
 use crate::error::{CreateDirSnafu, Error, InvalidTableNameSnafu, Result};
@@ -86,6 +88,9 @@ pub struct ConnectOptions {
     /// Lance Cloud host override
     pub host_override: Option<String>,
 
+    /// User provided AWS credentials
+    pub aws_creds: Option<AwsCredential>,
+
     /// The maximum number of indices to cache in memory. Defaults to 256.
     pub index_cache_size: u32,
 }
@@ -98,6 +103,7 @@ impl ConnectOptions {
             api_key: None,
             region: None,
             host_override: None,
+            aws_creds: None,
             index_cache_size: 256,
         }
     }
@@ -114,6 +120,13 @@ impl ConnectOptions {
 
     pub fn host_override(mut self, host_override: &str) -> Self {
         self.host_override = Some(host_override.to_string());
+        self
+    }
+
+    /// [`AwsCredential`] to use when connecting to S3.
+    ///
+    pub fn aws_creds(mut self, aws_creds: AwsCredential) -> Self {
+        self.aws_creds = Some(aws_creds);
         self
     }
 
@@ -175,7 +188,13 @@ impl Database {
     /// # Returns
     ///
     /// * A [Database] object.
-    pub async fn connect(uri: &str) -> Result<Database> {
+    pub async fn connect(uri: &str) -> Result<Self> {
+        let options = ConnectOptions::new(uri);
+        Self::connect_with_options(&options).await
+    }
+
+    pub async fn connect_with_options(options: &ConnectOptions) -> Result<Self> {
+        let uri = &options.uri;
         let parse_res = url::Url::parse(uri);
 
         match parse_res {
@@ -227,7 +246,23 @@ impl Database {
                 };
 
                 let plain_uri = url.to_string();
-                let (object_store, base_path) = ObjectStore::from_uri(&plain_uri).await?;
+                let os_params: ObjectStoreParams = if let Some(aws_creds) = &options.aws_creds {
+                    let credential_provider: Arc<
+                        dyn CredentialProvider<Credential = AwsCredential>,
+                    > = Arc::new(StaticCredentialProvider::new(AwsCredential {
+                        key_id: aws_creds.key_id.clone(),
+                        secret_key: aws_creds.secret_key.clone(),
+                        token: aws_creds.token.clone(),
+                    }));
+                    ObjectStoreParams::with_aws_credentials(
+                        Some(credential_provider),
+                        options.region.clone(),
+                    )
+                } else {
+                    ObjectStoreParams::default()
+                };
+                let (object_store, base_path) =
+                    ObjectStore::from_uri_and_params(&plain_uri, &os_params).await?;
                 if object_store.is_local() {
                     Self::try_create_dir(&plain_uri).context(CreateDirSnafu { path: plain_uri })?;
                 }
@@ -241,7 +276,7 @@ impl Database {
                     None => None,
                 };
 
-                Ok(Database {
+                Ok(Self {
                     uri: table_base_uri,
                     query_string,
                     base_path,
@@ -253,7 +288,7 @@ impl Database {
         }
     }
 
-    async fn open_path(path: &str) -> Result<Database> {
+    async fn open_path(path: &str) -> Result<Self> {
         let (object_store, base_path) = ObjectStore::from_uri(path).await?;
         if object_store.is_local() {
             Self::try_create_dir(path).context(CreateDirSnafu { path })?;
