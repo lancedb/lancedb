@@ -372,7 +372,7 @@ export interface Table<T = number[]> {
   /**
    * Returns the number of rows in this table.
    */
-  countRows: () => Promise<number>
+  countRows: (filter?: string) => Promise<number>
 
   /**
    * Delete rows from this table.
@@ -840,8 +840,8 @@ export class LocalTable<T = number[]> implements Table<T> {
   /**
    * Returns the number of rows in this table.
    */
-  async countRows (): Promise<number> {
-    return tableCountRows.call(this._tbl)
+  async countRows (filter?: string): Promise<number> {
+    return tableCountRows.call(this._tbl, filter)
   }
 
   /**

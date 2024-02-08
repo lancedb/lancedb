@@ -197,7 +197,7 @@ impl IndexBuilder {
                 let num_partitions = if let Some(n) = self.num_partitions {
                     n
                 } else {
-                    suggested_num_partitions(self.table.count_rows().await?)
+                    suggested_num_partitions(self.table.count_rows(None).await?)
                 };
                 let num_sub_vectors: u32 = if let Some(n) = self.num_sub_vectors {
                     n

@@ -372,7 +372,7 @@ mod test {
         // leave this here for easy debugging
         let t = res.unwrap();
 
-        assert_eq!(t.count_rows().await.unwrap(), 100);
+        assert_eq!(t.count_rows(None).await.unwrap(), 100);
 
         let q = t
             .search(&[0.1, 0.1, 0.1, 0.1])

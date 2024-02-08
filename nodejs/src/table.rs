@@ -57,8 +57,8 @@ impl Table {
     }
 
     #[napi]
-    pub async fn count_rows(&self) -> napi::Result<usize> {
-        self.table.count_rows().await.map_err(|e| {
+    pub async fn count_rows(&self, filter: Option<String>) -> napi::Result<usize> {
+        self.table.count_rows(filter).await.map_err(|e| {
             napi::Error::from_reason(format!(
                 "Failed to count rows in table {}: {}",
                 self.table, e

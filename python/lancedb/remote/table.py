@@ -37,6 +37,9 @@ class RemoteTable(Table):
     def __repr__(self) -> str:
         return f"RemoteTable({self._conn.db_name}.{self._name})"
 
+    def __len__(self) -> int:
+        self.count_rows(None)
+
     @cached_property
     def schema(self) -> pa.Schema:
         """The [Arrow Schema](https://arrow.apache.org/docs/python/api/datatypes.html#)
@@ -407,6 +410,13 @@ class RemoteTable(Table):
         """compact_files() is not supported on the LanceDB cloud"""
         raise NotImplementedError(
             "compact_files() is not supported on the LanceDB cloud"
+        )
+
+    def count_rows(self, filter: Optional[str] = None) -> int:
+        # payload = {"filter": filter}
+        # self._conn._client.post(f"/v1/table/{self._name}/count_rows/", data=payload)
+        return NotImplementedError(
+            "count_rows() is not yet supported on the LanceDB cloud"
         )
 
 

@@ -133,13 +133,26 @@ impl JsTable {
 
     pub(crate) fn js_count_rows(mut cx: FunctionContext) -> JsResult<JsPromise> {
         let js_table = cx.this().downcast_or_throw::<JsBox<Self>, _>(&mut cx)?;
+        let filter = cx
+            .argument_opt(0)
+            .and_then(|filt| {
+                if filt.is_a::<JsUndefined, _>(&mut cx) || filt.is_a::<JsNull, _>(&mut cx) {
+                    None
+                } else {
+                    Some(
+                        filt.downcast_or_throw::<JsString, _>(&mut cx)
+                            .map(|js_filt| js_filt.deref().value(&mut cx)),
+                    )
+                }
+            })
+            .transpose()?;
         let rt = runtime(&mut cx)?;
         let (deferred, promise) = cx.promise();
         let channel = cx.channel();
         let table = js_table.table.clone();
 
         rt.spawn(async move {
-            let num_rows_result = table.count_rows().await;
+            let num_rows_result = table.count_rows(filter).await;
 
             deferred.settle_with(&channel, move |mut cx| {
                 let num_rows = num_rows_result.or_throw(&mut cx)?;
