@@ -951,7 +951,7 @@ mod tests {
         let table = NativeTable::create(&uri, "test", batches, None, None)
             .await
             .unwrap();
-        assert_eq!(table.count_rows().await.unwrap(), 10);
+        assert_eq!(table.count_rows(None).await.unwrap(), 10);
 
         // Create new data with i=5..15
         let new_batches = Box::new(make_test_batches_with_offset(5));
@@ -961,7 +961,7 @@ mod tests {
         merge_insert_builder.when_not_matched_insert_all();
         merge_insert_builder.execute(new_batches).await.unwrap();
         // Only 5 rows should actually be inserted
-        assert_eq!(table.count_rows().await.unwrap(), 15);
+        assert_eq!(table.count_rows(None).await.unwrap(), 15);
 
         // Create new data with i=15..25 (no id matches)
         let new_batches = Box::new(make_test_batches_with_offset(15));
@@ -970,7 +970,7 @@ mod tests {
         merge_insert_builder.when_matched_update_all();
         merge_insert_builder.execute(new_batches).await.unwrap();
         // No new rows should have been inserted
-        assert_eq!(table.count_rows().await.unwrap(), 15);
+        assert_eq!(table.count_rows(None).await.unwrap(), 15);
     }
 
     #[tokio::test]
