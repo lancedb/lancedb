@@ -50,8 +50,8 @@ export class Table {
   }
 
   /** Count the total number of rows in the dataset. */
-  async countRows(): Promise<bigint> {
-    return await this.inner.countRows();
+  async countRows(filter?: string): Promise<bigint> {
+    return await this.inner.countRows(filter);
   }
 
   /** Delete the rows that satisfy the predicate. */
