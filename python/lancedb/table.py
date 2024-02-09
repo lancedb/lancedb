@@ -445,7 +445,6 @@ class Table(ABC):
             The name of the vector column to search.
 
             The vector column needs to be a pyarrow fixed size list type
-            *default "vector"*
 
             - If not specified then the vector column is inferred from
             the table schema

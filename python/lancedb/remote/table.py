@@ -189,7 +189,7 @@ class RemoteTable(Table):
         ... ]
         >>> table = db.create_table("my_table", data) # doctest: +SKIP
         >>> query = [0.4, 1.4, 2.4]
-        >>> (table.search(query, vector_column_name="vector") # doctest: +SKIP
+        >>> (table.search(query) # doctest: +SKIP
         ...     .where("original_width > 1000", prefilter=True) # doctest: +SKIP
         ...     .select(["caption", "original_width"]) # doctest: +SKIP
         ...     .limit(2) # doctest: +SKIP
@@ -208,9 +208,14 @@ class RemoteTable(Table):
 
             - If None then the select/where/limit clauses are applied to filter
             the table
-        vector_column_name: str
+        vector_column_name: str, optional
             The name of the vector column to search.
-            *default "vector"*
+            
+            - If not specified then the vector column is inferred from
+            the table schema
+
+            - If the table has multiple vector columns then the *vector_column_name*
+            needs to be specified. Otherwise, an error is raised.
 
         Returns
         -------

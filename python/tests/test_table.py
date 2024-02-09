@@ -752,8 +752,7 @@ def test_search_with_schema_inf_multiple_vector(db):
     table.add(df)
 
     q = np.random.randn(10)
-    with pytest.raises(Exception, match="Schema has more than one vector column. "
-                       "Please specify the vector column name for vector search"):
+    with pytest.raises(ValueError):
         table.search(q).limit(1).to_pandas()
 
 
