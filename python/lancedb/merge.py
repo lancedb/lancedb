@@ -37,7 +37,9 @@ class LanceMergeInsertBuilder(object):
         self._when_not_matched_by_source_delete = False
         self._when_not_matched_by_source_condition = None
 
-    def when_matched_update_all(self, *, where: Optional[str] = None) -> LanceMergeInsertBuilder:
+    def when_matched_update_all(
+        self, *, where: Optional[str] = None
+    ) -> LanceMergeInsertBuilder:
         """
         Rows that exist in both the source table (new data) and
         the target table (old data) will be updated, replacing

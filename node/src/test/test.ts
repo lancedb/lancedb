@@ -549,7 +549,7 @@ describe('LanceDB client', function () {
       assert.equal(await table.countRows('age = 2'), 1)
 
       // conditional update
-      newData = [{ id: 2, age: 3}, { id: 3, age: 3 }]
+      newData = [{ id: 2, age: 3 }, { id: 3, age: 3 }]
       await table.mergeInsert('id', newData, {
         whenMatchedUpdateAll: 'target.age = 1'
       })

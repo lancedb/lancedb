@@ -518,9 +518,9 @@ def test_merge_insert(db):
     table.restore(version)
 
     # conditional update
-    table.merge_insert("a").when_matched_update_all(
-        where="target.b = 'b'"
-    ).execute(new_data)
+    table.merge_insert("a").when_matched_update_all(where="target.b = 'b'").execute(
+        new_data
+    )
     expected = pa.table({"a": [1, 2, 3], "b": ["a", "x", "c"]})
     assert table.to_arrow().sort_by("a") == expected
 
