@@ -27,7 +27,7 @@ use lance::dataset::optimize::{
     compact_files, CompactionMetrics, CompactionOptions, IndexRemapperOptions,
 };
 pub use lance::dataset::ReadParams;
-use lance::dataset::{Dataset, UpdateBuilder, WriteParams};
+use lance::dataset::{Dataset, UpdateBuilder, WhenMatched, WriteParams};
 use lance::dataset::{MergeInsertBuilder as LanceMergeInsertBuilder, WhenNotMatchedBySource};
 use lance::io::WrappingObjectStore;
 use lance_index::{optimize::OptimizeOptions, DatasetIndexExt};
@@ -238,7 +238,7 @@ pub trait Table: std::fmt::Display + Send + Sync {
     ///   schema.clone());
     /// // Perform an upsert operation
     /// let mut merge_insert = tbl.merge_insert(&["id"]);
-    /// merge_insert.when_matched_update_all()
+    /// merge_insert.when_matched_update_all(None)
     ///             .when_not_matched_insert_all();
     /// merge_insert.execute(Box::new(new_data)).await.unwrap();
     /// # });
@@ -677,11 +677,14 @@ impl MergeInsert for NativeTable {
     ) -> Result<()> {
         let dataset = Arc::new(self.clone_inner_dataset());
         let mut builder = LanceMergeInsertBuilder::try_new(dataset.clone(), params.on)?;
-        if params.when_matched_update_all {
-            builder.when_matched(lance::dataset::WhenMatched::UpdateAll);
-        } else {
-            builder.when_matched(lance::dataset::WhenMatched::DoNothing);
-        }
+        match (
+            params.when_matched_update_all,
+            params.when_matched_update_all_filt,
+        ) {
+            (false, _) => builder.when_matched(WhenMatched::DoNothing),
+            (true, None) => builder.when_matched(WhenMatched::UpdateAll),
+            (true, Some(filt)) => builder.when_matched(WhenMatched::update_if(&dataset, &filt)?),
+        };
         if params.when_not_matched_insert_all {
             builder.when_not_matched(lance::dataset::WhenNotMatched::InsertAll);
         } else {
@@ -824,6 +827,7 @@ impl Table for NativeTable {
 
 #[cfg(test)]
 mod tests {
+    use std::iter;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
 
@@ -947,14 +951,14 @@ mod tests {
         let uri = tmp_dir.path().to_str().unwrap();
 
         // Create a dataset with i=0..10
-        let batches = make_test_batches_with_offset(0);
+        let batches = merge_insert_test_batches(0, 0);
         let table = NativeTable::create(&uri, "test", batches, None, None)
             .await
             .unwrap();
         assert_eq!(table.count_rows(None).await.unwrap(), 10);
 
         // Create new data with i=5..15
-        let new_batches = Box::new(make_test_batches_with_offset(5));
+        let new_batches = Box::new(merge_insert_test_batches(5, 1));
 
         // Perform a "insert if not exists"
         let mut merge_insert_builder = table.merge_insert(&["i"]);
@@ -964,13 +968,27 @@ mod tests {
         assert_eq!(table.count_rows(None).await.unwrap(), 15);
 
         // Create new data with i=15..25 (no id matches)
-        let new_batches = Box::new(make_test_batches_with_offset(15));
+        let new_batches = Box::new(merge_insert_test_batches(15, 2));
         // Perform a "bulk update" (should not affect anything)
         let mut merge_insert_builder = table.merge_insert(&["i"]);
-        merge_insert_builder.when_matched_update_all();
+        merge_insert_builder.when_matched_update_all(None);
         merge_insert_builder.execute(new_batches).await.unwrap();
         // No new rows should have been inserted
         assert_eq!(table.count_rows(None).await.unwrap(), 15);
+        assert_eq!(
+            table.count_rows(Some("age = 2".to_string())).await.unwrap(),
+            0
+        );
+
+        // Conditional update that only replaces the age=0 data
+        let new_batches = Box::new(merge_insert_test_batches(5, 3));
+        let mut merge_insert_builder = table.merge_insert(&["i"]);
+        merge_insert_builder.when_matched_update_all(Some("target.age = 0".to_string()));
+        merge_insert_builder.execute(new_batches).await.unwrap();
+        assert_eq!(
+            table.count_rows(Some("age = 3".to_string())).await.unwrap(),
+            5
+        );
     }
 
     #[tokio::test]
@@ -1319,23 +1337,35 @@ mod tests {
         assert!(wrapper.called());
     }
 
-    fn make_test_batches_with_offset(
+    fn merge_insert_test_batches(
         offset: i32,
+        age: i32,
     ) -> impl RecordBatchReader + Send + Sync + 'static {
-        let schema = Arc::new(Schema::new(vec![Field::new("i", DataType::Int32, false)]));
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("i", DataType::Int32, false),
+            Field::new("age", DataType::Int32, false),
+        ]));
         RecordBatchIterator::new(
             vec![RecordBatch::try_new(
                 schema.clone(),
-                vec![Arc::new(Int32Array::from_iter_values(
-                    offset..(offset + 10),
-                ))],
+                vec![
+                    Arc::new(Int32Array::from_iter_values(offset..(offset + 10))),
+                    Arc::new(Int32Array::from_iter_values(iter::repeat(age).take(10))),
+                ],
             )],
             schema,
         )
     }
 
     fn make_test_batches() -> impl RecordBatchReader + Send + Sync + 'static {
-        make_test_batches_with_offset(0)
+        let schema = Arc::new(Schema::new(vec![Field::new("i", DataType::Int32, false)]));
+        RecordBatchIterator::new(
+            vec![RecordBatch::try_new(
+                schema.clone(),
+                vec![Arc::new(Int32Array::from_iter_values(0..10))],
+            )],
+            schema,
+        )
     }
 
     #[tokio::test]

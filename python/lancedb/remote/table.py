@@ -298,6 +298,10 @@ class RemoteTable(Table):
             )
         params["on"] = merge._on[0]
         params["when_matched_update_all"] = str(merge._when_matched_update_all).lower()
+        if merge._when_matched_update_all_condition is not None:
+            params[
+                "when_matched_update_all_filt"
+            ] = merge._when_matched_update_all_condition
         params["when_not_matched_insert_all"] = str(
             merge._when_not_matched_insert_all
         ).lower()
