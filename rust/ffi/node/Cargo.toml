@@ -1,6 +1,6 @@
 [package]
 name = "vectordb-node"
-version = "0.4.8"
+version = "0.4.9"
 description = "Serverless, low-latency vector database for AI applications"
 license.workspace = true
 edition.workspace = true
