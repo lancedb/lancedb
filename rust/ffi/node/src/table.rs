@@ -191,28 +191,34 @@ impl JsTable {
         let key = cx.argument::<JsString>(0)?.value(&mut cx);
         let mut builder = table.merge_insert(&[&key]);
         if cx.argument::<JsBoolean>(1)?.value(&mut cx) {
-            builder.when_matched_update_all();
-        }
-        if cx.argument::<JsBoolean>(2)?.value(&mut cx) {
-            builder.when_not_matched_insert_all();
+            let filter = cx.argument_opt(2).unwrap();
+            if filter.is_a::<JsNull, _>(&mut cx) {
+                builder.when_matched_update_all(None);
+            } else {
+                let filter = filter
+                    .downcast_or_throw::<JsString, _>(&mut cx)?
+                    .deref()
+                    .value(&mut cx);
+                builder.when_matched_update_all(Some(filter));
+            }
         }
         if cx.argument::<JsBoolean>(3)?.value(&mut cx) {
-            if let Some(filter) = cx.argument_opt(4) {
-                if filter.is_a::<JsNull, _>(&mut cx) {
-                    builder.when_not_matched_by_source_delete(None);
-                } else {
-                    let filter = filter
-                        .downcast_or_throw::<JsString, _>(&mut cx)?
-                        .deref()
-                        .value(&mut cx);
-                    builder.when_not_matched_by_source_delete(Some(filter));
-                }
-            } else {
+            builder.when_not_matched_insert_all();
+        }
+        if cx.argument::<JsBoolean>(4)?.value(&mut cx) {
+            let filter = cx.argument_opt(5).unwrap();
+            if filter.is_a::<JsNull, _>(&mut cx) {
                 builder.when_not_matched_by_source_delete(None);
+            } else {
+                let filter = filter
+                    .downcast_or_throw::<JsString, _>(&mut cx)?
+                    .deref()
+                    .value(&mut cx);
+                builder.when_not_matched_by_source_delete(Some(filter));
             }
         }
 
-        let buffer = cx.argument::<JsBuffer>(5)?;
+        let buffer = cx.argument::<JsBuffer>(6)?;
         let (batches, schema) =
             arrow_buffer_to_record_batch(buffer.as_slice(&cx)).or_throw(&mut cx)?;
 
