@@ -513,8 +513,15 @@ def test_merge_insert(db):
     ).when_matched_update_all().when_not_matched_insert_all().execute(new_data)
 
     expected = pa.table({"a": [1, 2, 3, 4], "b": ["a", "x", "y", "z"]})
-    # These `sort_by` calls can be removed once lance#1892
-    # is merged (it fixes the ordering)
+    assert table.to_arrow().sort_by("a") == expected
+
+    table.restore(version)
+
+    # conditional update
+    table.merge_insert("a").when_matched_update_all(where="target.b = 'b'").execute(
+        new_data
+    )
+    expected = pa.table({"a": [1, 2, 3], "b": ["a", "x", "c"]})
     assert table.to_arrow().sort_by("a") == expected
 
     table.restore(version)

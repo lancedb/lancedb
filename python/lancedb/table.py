@@ -1459,7 +1459,7 @@ class LanceTable(Table):
         ds = self.to_lance()
         builder = ds.merge_insert(merge._on)
         if merge._when_matched_update_all:
-            builder.when_matched_update_all()
+            builder.when_matched_update_all(merge._when_matched_update_all_condition)
         if merge._when_not_matched_insert_all:
             builder.when_not_matched_insert_all()
         if merge._when_not_matched_by_source_delete:
