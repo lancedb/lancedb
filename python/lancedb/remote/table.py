@@ -210,7 +210,7 @@ class RemoteTable(Table):
             the table
         vector_column_name: str, optional
             The name of the vector column to search.
-            
+
             - If not specified then the vector column is inferred from
             the table schema
 

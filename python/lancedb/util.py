@@ -152,6 +152,7 @@ def safe_import_polars():
     except ImportError:
         return None
 
+
 def inf_vector_column_query(schema: pa.Schema) -> str:
     """
     Get the vector column name
@@ -169,20 +170,26 @@ def inf_vector_column_query(schema: pa.Schema) -> str:
     vector_col_count = 0
     for field_name in schema.names:
         field = schema.field(field_name)
-        if pa.types.is_fixed_size_list(field.type) and \
-        pa.types.is_floating(field.type.value_type):
+        if pa.types.is_fixed_size_list(field.type) and pa.types.is_floating(
+            field.type.value_type
+        ):
             vector_col_count += 1
             if vector_col_count > 1:
-                raise ValueError("Schema has more than one vector column. "
-                                 "Please specify the vector column name "
-                                 "for vector search")
+                raise ValueError(
+                    "Schema has more than one vector column. "
+                    "Please specify the vector column name "
+                    "for vector search"
+                )
                 break
             elif vector_col_count == 1:
                 vector_col_name = field_name
     if vector_col_count == 0:
-        raise ValueError("There is no vector column in the data. "
-                         "Please specify the vector column name for vector search")
+        raise ValueError(
+            "There is no vector column in the data. "
+            "Please specify the vector column name for vector search"
+        )
     return vector_col_name
+
 
 @singledispatch
 def value_to_sql(value):
