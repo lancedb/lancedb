@@ -69,10 +69,10 @@ def test_basic_text_embeddings(alias, tmp_path):
     )
 
     query = "greetings"
-    actual = table.search(query).limit(1).to_pydantic(Words)[0]
+    actual = table.search(query, vector_column_name="vector").limit(1).to_pydantic(Words)[0]
 
     vec = func.compute_query_embeddings(query)[0]
-    expected = table.search(vec).limit(1).to_pydantic(Words)[0]
+    expected = table.search(vec, vector_column_name="vector").limit(1).to_pydantic(Words)[0]
     assert actual.text == expected.text
     assert actual.text == "hello world"
     assert not np.allclose(actual.vector, actual.vector2)
@@ -116,7 +116,7 @@ def test_openclip(tmp_path):
     )
 
     # text search
-    actual = table.search("man's best friend").limit(1).to_pydantic(Images)[0]
+    actual = table.search("man's best friend", vector_column_name="vector").limit(1).to_pydantic(Images)[0]
     assert actual.label == "dog"
     frombytes = (
         table.search("man's best friend", vector_column_name="vec_from_bytes")
@@ -130,7 +130,7 @@ def test_openclip(tmp_path):
     query_image_uri = "http://farm1.staticflickr.com/200/467715466_ed4a31801f_z.jpg"
     image_bytes = requests.get(query_image_uri).content
     query_image = Image.open(io.BytesIO(image_bytes))
-    actual = table.search(query_image).limit(1).to_pydantic(Images)[0]
+    actual = table.search(query_image, vector_column_name="vector").limit(1).to_pydantic(Images)[0]
     assert actual.label == "dog"
     other = (
         table.search(query_image, vector_column_name="vec_from_bytes")
