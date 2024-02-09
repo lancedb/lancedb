@@ -214,13 +214,13 @@ class RemoteDBConnection(DBConnection):
         if data is None and schema is None:
             raise ValueError("Either data or schema must be provided.")
         if embedding_functions is not None:
-            raise NotImplementedError(
+            logging.warning(
                 "embedding_functions is not yet supported on LanceDB Cloud."
                 "Please vote https://github.com/lancedb/lancedb/issues/626 "
                 "for this feature."
             )
         if mode is not None:
-            raise NotImplementedError("mode is not yet supported on LanceDB Cloud.")
+            logging.warning("mode is not yet supported on LanceDB Cloud.")
 
         if inspect.isclass(schema) and issubclass(schema, LanceModel):
             # convert LanceModel to pyarrow schema

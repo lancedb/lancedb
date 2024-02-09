@@ -11,6 +11,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
+import logging
 import uuid
 from functools import cached_property
 from typing import Dict, Optional, Union
@@ -110,23 +111,23 @@ class RemoteTable(Table):
         """
 
         if num_partitions is not None:
-            raise NotImplementedError(
+            logging.warning(
                 "num_partitions is not supported on LanceDB cloud."
                 "This parameter will be tuned automatically."
             )
         if num_sub_vectors is not None:
-            raise NotImplementedError(
+            logging.warning(
                 "num_sub_vectors is not supported on LanceDB cloud."
                 "This parameter will be tuned automatically."
             )
         if accelerator is not None:
-            raise NotImplementedError(
+            logging.warning(
                 "GPU accelerator is not yet supported on LanceDB cloud."
                 "If you have 100M+ vectors to index,"
                 "please contact us at contact@lancedb.com"
             )
         if replace is not None:
-            raise NotImplementedError(
+            logging.warning(
                 "replace is not supported on LanceDB cloud."
                 "Existing indexes will always be replaced."
             )
