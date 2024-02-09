@@ -11,6 +11,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
+import logging
 import uuid
 from functools import cached_property
 from typing import Dict, Optional, Union
@@ -57,17 +58,17 @@ class RemoteTable(Table):
         return resp["version"]
 
     def to_arrow(self) -> pa.Table:
-        """to_arrow() is not supported on the LanceDB cloud"""
-        raise NotImplementedError("to_arrow() is not supported on the LanceDB cloud")
+        """to_arrow() is not yet supported on LanceDB cloud."""
+        raise NotImplementedError("to_arrow() is not yet supported on LanceDB cloud.")
 
     def to_pandas(self):
-        """to_pandas() is not supported on the LanceDB cloud"""
-        return NotImplementedError("to_pandas() is not supported on the LanceDB cloud")
+        """to_pandas() is not yet supported on LanceDB cloud."""
+        return NotImplementedError("to_pandas() is not yet supported on LanceDB cloud.")
 
     def create_scalar_index(self, *args, **kwargs):
         """Creates a scalar index"""
         return NotImplementedError(
-            "create_scalar_index() is not supported on the LanceDB cloud"
+            "create_scalar_index() is not yet supported on LanceDB cloud."
         )
 
     def create_index(
@@ -75,6 +76,10 @@ class RemoteTable(Table):
         metric="L2",
         vector_column_name: str = VECTOR_COLUMN_NAME,
         index_cache_size: Optional[int] = None,
+        num_partitions: Optional[int] = None,
+        num_sub_vectors: Optional[int] = None,
+        replace: Optional[bool] = None,
+        accelerator: Optional[str] = None,
     ):
         """Create an index on the table.
         Currently, the only parameters that matter are
@@ -108,6 +113,28 @@ class RemoteTable(Table):
         ... )
         >>> table.create_index("L2", "vector") # doctest: +SKIP
         """
+
+        if num_partitions is not None:
+            logging.warning(
+                "num_partitions is not supported on LanceDB cloud."
+                "This parameter will be tuned automatically."
+            )
+        if num_sub_vectors is not None:
+            logging.warning(
+                "num_sub_vectors is not supported on LanceDB cloud."
+                "This parameter will be tuned automatically."
+            )
+        if accelerator is not None:
+            logging.warning(
+                "GPU accelerator is not yet supported on LanceDB cloud."
+                "If you have 100M+ vectors to index,"
+                "please contact us at contact@lancedb.com"
+            )
+        if replace is not None:
+            logging.warning(
+                "replace is not supported on LanceDB cloud."
+                "Existing indexes will always be replaced."
+            )
         index_type = "vector"
 
         data = {
