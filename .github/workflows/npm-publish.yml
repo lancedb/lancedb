@@ -80,7 +80,7 @@ jobs:
           - arch: x86_64
             runner: ubuntu-latest
           - arch: aarch64
-            runner: buildjet-4vcpu-ubuntu-2204-arm
+            runner: buildjet-8vcpu-ubuntu-2204-arm
     steps:
       - name: Checkout
         uses: actions/checkout@v4
