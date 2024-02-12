@@ -372,7 +372,7 @@ export interface Table<T = number[]> {
   /**
    * Returns the number of rows in this table.
    */
-  countRows: () => Promise<number>
+  countRows: (filter?: string) => Promise<number>
 
   /**
    * Delete rows from this table.
@@ -525,8 +525,19 @@ export interface MergeInsertArgs {
    * If there are multiple matches then the behavior is undefined.
    * Currently this causes multiple copies of the row to be created
    * but that behavior is subject to change.
+   *
+   * Optionally, a filter can be specified.  This should be an SQL
+   * filter where fields with the prefix "target." refer to fields
+   * in the target table (old data) and fields with the prefix
+   * "source." refer to fields in the source table (new data).  For
+   * example, the filter "target.lastUpdated < source.lastUpdated" will
+   * only update matched rows when the incoming `lastUpdated` value is
+   * newer.
+   *
+   * Rows that do not match the filter will not be updated.  Rows that
+   * do not match the filter do become "not matched" rows.
    */
-  whenMatchedUpdateAll?: boolean
+  whenMatchedUpdateAll?: string | boolean
   /**
    * If true then rows that exist only in the source table (new data)
    * will be inserted into the target table.
@@ -840,8 +851,8 @@ export class LocalTable<T = number[]> implements Table<T> {
   /**
    * Returns the number of rows in this table.
    */
-  async countRows (): Promise<number> {
-    return tableCountRows.call(this._tbl)
+  async countRows (filter?: string): Promise<number> {
+    return tableCountRows.call(this._tbl, filter)
   }
 
   /**
@@ -885,7 +896,14 @@ export class LocalTable<T = number[]> implements Table<T> {
   }
 
   async mergeInsert (on: string, data: Array<Record<string, unknown>> | ArrowTable, args: MergeInsertArgs): Promise<void> {
-    const whenMatchedUpdateAll = args.whenMatchedUpdateAll ?? false
+    let whenMatchedUpdateAll = false
+    let whenMatchedUpdateAllFilt = null
+    if (args.whenMatchedUpdateAll !== undefined && args.whenMatchedUpdateAll !== null) {
+      whenMatchedUpdateAll = true
+      if (args.whenMatchedUpdateAll !== true) {
+        whenMatchedUpdateAllFilt = args.whenMatchedUpdateAll
+      }
+    }
     const whenNotMatchedInsertAll = args.whenNotMatchedInsertAll ?? false
     let whenNotMatchedBySourceDelete = false
     let whenNotMatchedBySourceDeleteFilt = null
@@ -909,6 +927,7 @@ export class LocalTable<T = number[]> implements Table<T> {
       this._tbl,
       on,
       whenMatchedUpdateAll,
+      whenMatchedUpdateAllFilt,
       whenNotMatchedInsertAll,
       whenNotMatchedBySourceDelete,
       whenNotMatchedBySourceDeleteFilt,

@@ -73,7 +73,7 @@ export class Table {
   /** Return Schema as empty Arrow IPC file. */
   schema(): Buffer
   add(buf: Buffer): Promise<void>
-  countRows(): Promise<bigint>
+  countRows(filter?: string): Promise<bigint>
   delete(predicate: string): Promise<void>
   createIndex(): IndexBuilder
   query(): Query

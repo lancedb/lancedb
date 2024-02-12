@@ -177,6 +177,18 @@ class Table(ABC):
         """
         raise NotImplementedError
 
+    @abstractmethod
+    def count_rows(self, filter: Optional[str] = None) -> int:
+        """
+        Count the number of rows in the table.
+
+        Parameters
+        ----------
+        filter: str, optional
+            A SQL where clause to filter the rows to count.
+        """
+        raise NotImplementedError
+
     def to_pandas(self) -> "pd.DataFrame":
         """Return the table as a pandas DataFrame.
 
@@ -926,14 +938,6 @@ class LanceTable(Table):
         self._ref.dataset = ds
 
     def count_rows(self, filter: Optional[str] = None) -> int:
-        """
-        Count the number of rows in the table.
-
-        Parameters
-        ----------
-        filter: str, optional
-            A SQL where clause to filter the rows to count.
-        """
         return self._dataset.count_rows(filter)
 
     def __len__(self):
@@ -1463,7 +1467,7 @@ class LanceTable(Table):
         ds = self.to_lance()
         builder = ds.merge_insert(merge._on)
         if merge._when_matched_update_all:
-            builder.when_matched_update_all()
+            builder.when_matched_update_all(merge._when_matched_update_all_condition)
         if merge._when_not_matched_insert_all:
             builder.when_not_matched_insert_all()
         if merge._when_not_matched_by_source_delete:

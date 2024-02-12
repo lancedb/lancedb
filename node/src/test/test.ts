@@ -294,6 +294,7 @@ describe('LanceDB client', function () {
       })
       assert.equal(table.name, 'vectors')
       assert.equal(await table.countRows(), 10)
+      assert.equal(await table.countRows('vector IS NULL'), 0)
       assert.deepEqual(await con.tableNames(), ['vectors'])
     })
 
@@ -369,6 +370,7 @@ describe('LanceDB client', function () {
       const table = await con.createTable('f16', data)
       assert.equal(table.name, 'f16')
       assert.equal(await table.countRows(), total)
+      assert.equal(await table.countRows('id < 5'), 5)
       assert.deepEqual(await con.tableNames(), ['f16'])
       assert.deepEqual(await table.schema, schema)
 
@@ -538,26 +540,36 @@ describe('LanceDB client', function () {
       const data = [{ id: 1, age: 1 }, { id: 2, age: 1 }]
       const table = await con.createTable('my_table', data)
 
+      // insert if not exists
       let newData = [{ id: 2, age: 2 }, { id: 3, age: 2 }]
       await table.mergeInsert('id', newData, {
         whenNotMatchedInsertAll: true
       })
       assert.equal(await table.countRows(), 3)
-      assert.equal((await table.filter('age = 2').execute()).length, 1)
+      assert.equal(await table.countRows('age = 2'), 1)
 
-      newData = [{ id: 3, age: 3 }, { id: 4, age: 3 }]
+      // conditional update
+      newData = [{ id: 2, age: 3 }, { id: 3, age: 3 }]
+      await table.mergeInsert('id', newData, {
+        whenMatchedUpdateAll: 'target.age = 1'
+      })
+      assert.equal(await table.countRows(), 3)
+      assert.equal(await table.countRows('age = 1'), 1)
+      assert.equal(await table.countRows('age = 3'), 1)
+
+      newData = [{ id: 3, age: 4 }, { id: 4, age: 4 }]
       await table.mergeInsert('id', newData, {
         whenNotMatchedInsertAll: true,
         whenMatchedUpdateAll: true
       })
       assert.equal(await table.countRows(), 4)
-      assert.equal((await table.filter('age = 3').execute()).length, 2)
+      assert.equal((await table.filter('age = 4').execute()).length, 2)
 
-      newData = [{ id: 5, age: 4 }]
+      newData = [{ id: 5, age: 5 }]
       await table.mergeInsert('id', newData, {
         whenNotMatchedInsertAll: true,
         whenMatchedUpdateAll: true,
-        whenNotMatchedBySourceDelete: 'age < 3'
+        whenNotMatchedBySourceDelete: 'age < 4'
       })
       assert.equal(await table.countRows(), 3)
 
