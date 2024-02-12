@@ -31,3 +31,6 @@ object_store = { workspace = true, features = ["aws"] }
 snafu = { workspace = true }
 async-trait = "0"
 env_logger = "0"
+
+# Prevent dynamic linking of lzma, which comes from datafusion
+lzma-sys = { version = "*", features = ["static"] }
