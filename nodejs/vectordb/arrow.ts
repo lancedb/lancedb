@@ -13,6 +13,7 @@
 // limitations under the License.
 
 import {
+  Int64,
   Field,
   FixedSizeList,
   Float,
@@ -23,6 +24,7 @@ import {
   Vector,
   vectorFromArray,
   tableToIPC,
+  DataType,
 } from "apache-arrow";
 
 /** Data type accepted by NodeJS SDK */
@@ -137,15 +139,18 @@ export function makeArrowTable(
   const columnNames = Object.keys(data[0]);
   for (const colName of columnNames) {
     // eslint-disable-next-line @typescript-eslint/no-unsafe-return
-    const values = data.map((datum) => datum[colName]);
+    let values = data.map((datum) => datum[colName]);
     let vector: Vector;
 
     if (opt.schema !== undefined) {
       // Explicit schema is provided, highest priority
-      vector = vectorFromArray(
-        values,
-        opt.schema?.fields.filter((f) => f.name === colName)[0]?.type
-      );
+      const fieldType: DataType | undefined = opt.schema.fields.filter((f) => f.name === colName)[0]?.type as DataType;
+      if (fieldType instanceof Int64) {
+        // wrap in BigInt to avoid bug: https://github.com/apache/arrow/issues/40051
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+        values = values.map((v) => BigInt(v)) as any[];
+      }
+      vector = vectorFromArray(values, fieldType);
     } else {
       const vectorColumnOptions = opt.vectorColumns[colName];
       if (vectorColumnOptions !== undefined) {
