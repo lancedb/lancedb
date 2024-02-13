@@ -153,7 +153,7 @@ export function makeArrowTable (
       if (fieldType instanceof Int64) {
         // wrap in BigInt to avoid bug: https://github.com/apache/arrow/issues/40051
         // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
-        values = values.map((v) => BigInt(v)) as any[]
+        values = values.map((v) => BigInt(v))
       }
       vector = vectorFromArray(values, fieldType)
     } else {
