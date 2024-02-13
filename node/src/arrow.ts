@@ -220,7 +220,12 @@ export function makeArrowTable (
       type = opt.schema?.fields.filter((f) => f.name === colName)[0]?.type
       if (DataType.isInt(type) && type.bitWidth === 64) {
         // wrap in BigInt to avoid bug: https://github.com/apache/arrow/issues/40051
-        values = values.map((v) => BigInt(v))
+        values = values.map((v) => {
+          if (v === null) {
+            return v
+          }
+          return BigInt(v)
+        })
       }
     } else {
       // Otherwise, check to see if this column is one of the vector columns

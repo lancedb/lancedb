@@ -33,7 +33,8 @@ import {
   Struct,
   List,
   DataType,
-  Dictionary
+  Dictionary,
+  Int64
 } from 'apache-arrow'
 import { type EmbeddingFunction } from '../embedding/embedding_function'
 
@@ -89,13 +90,14 @@ describe('The function makeArrowTable', function () {
     const schema = new Schema([
       new Field('a', new Int32()),
       new Field('b', new Float32()),
-      new Field('c', new FixedSizeList(3, new Field('item', new Float16())))
+      new Field('c', new FixedSizeList(3, new Field('item', new Float16()))),
+      new Field('d', new Int64())
     ])
     const table = makeArrowTable(
       [
-        { a: 1, b: 2, c: [1, 2, 3] },
-        { a: 4, b: 5, c: [4, 5, 6] },
-        { a: 7, b: 8, c: [7, 8, 9] }
+        { a: 1, b: 2, c: [1, 2, 3], d: 9 },
+        { a: 4, b: 5, c: [4, 5, 6], d: 10 },
+        { a: 7, b: 8, c: [7, 8, 9], d: null }
       ],
       { schema }
     )
