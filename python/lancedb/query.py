@@ -24,7 +24,7 @@ import pyarrow as pa
 import pydantic
 
 from . import __version__
-from .common import VEC, VECTOR_COLUMN_NAME
+from .common import VEC
 from .rerankers.base import Reranker
 from .rerankers.linear_combination import LinearCombinationReranker
 from .util import safe_import_pandas
@@ -75,7 +75,7 @@ class Query(pydantic.BaseModel):
           tuning advice.
     """
 
-    vector_column: str = VECTOR_COLUMN_NAME
+    vector_column: Optional[str] = None
 
     # vector to search for
     vector: Union[List[float], List[List[float]]]
@@ -403,7 +403,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         self,
         table: "Table",
         query: Union[np.ndarray, list, "PIL.Image.Image"],
-        vector_column: str = VECTOR_COLUMN_NAME,
+        vector_column: str,
     ):
         super().__init__(table)
         self._query = query

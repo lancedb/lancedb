@@ -38,4 +38,5 @@ def test_remote_db():
     setattr(conn, "_client", FakeLanceDBClient())
 
     table = conn["test"]
+    table.schema = pa.schema([pa.field("vector", pa.list_(pa.float32(), 2))])
     table.search([1.0, 2.0]).to_pandas()
