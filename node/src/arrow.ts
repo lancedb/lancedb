@@ -241,7 +241,7 @@ export function makeArrowTable (
       columns[colName] = makeVector(values, type, opt.dictionaryEncodeStrings)
     } catch (error: unknown) {
       // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
-      throw TypeError(`Could not convert column "${colName}" to Arrow: ${error}`)
+      throw Error(`Could not convert column "${colName}" to Arrow: ${error}`)
     }
   }
 
@@ -275,7 +275,7 @@ export function makeEmptyTable (schema: Schema): ArrowTable {
 // Helper function to convert Array<Array<any>> to a variable sized list array
 function makeListVector (lists: any[][]): Vector<any> {
   if (lists.length === 0 || lists[0].length === 0) {
-    throw TypeError('Cannot infer list vector from empty array or empty list')
+    throw Error('Cannot infer list vector from empty array or empty list')
   }
   const sampleList = lists[0]
   let inferredType
@@ -284,7 +284,7 @@ function makeListVector (lists: any[][]): Vector<any> {
     inferredType = sampleVector.type
   } catch (error: unknown) {
     // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
-    throw TypeError(`Cannot infer list vector.  Cannot infer inner type: ${error}`)
+    throw Error(`Cannot infer list vector.  Cannot infer inner type: ${error}`)
   }
 
   const listBuilder = makeBuilder({
@@ -303,11 +303,11 @@ function makeVector (values: any[], type?: DataType, stringAsDictionary?: boolea
     return vectorFromArray(values, type)
   }
   if (values.length === 0) {
-    throw TypeError('makeVector requires at least one value or the type must be specfied')
+    throw Error('makeVector requires at least one value or the type must be specfied')
   }
   const sampleValue = values.find(val => val !== null && val !== undefined)
   if (sampleValue === undefined) {
-    throw TypeError('makeVector cannot infer the type if all values are null or undefined')
+    throw Error('makeVector cannot infer the type if all values are null or undefined')
   }
   if (Array.isArray(sampleValue)) {
     // Default Arrow inference doesn't handle list types
