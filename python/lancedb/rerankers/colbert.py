@@ -29,7 +29,9 @@ class ColbertReranker(Reranker):
         super().__init__(return_score)
         self.model_name = model_name
         self.column = column
-        self.torch = attempt_import_or_raise("torch")  # import here for faster ops later
+        self.torch = attempt_import_or_raise(
+            "torch"
+        )  # import here for faster ops later
 
     def rerank_hybrid(
         self,

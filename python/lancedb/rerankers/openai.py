@@ -93,7 +93,9 @@ class OpenaiReranker(Reranker):
 
     @cached_property
     def _client(self):
-        openai = attempt_import_or_raise("openai")  # TODO: force version or handle versions < 1.0
+        openai = attempt_import_or_raise(
+            "openai"
+        )  # TODO: force version or handle versions < 1.0
         if os.environ.get("OPENAI_API_KEY") is None and self.api_key is None:
             raise ValueError(
                 "OPENAI_API_KEY not set. Either set it in your environment or \
