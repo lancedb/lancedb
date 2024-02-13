@@ -13,6 +13,7 @@
 // limitations under the License.
 
 import {
+  Int64,
   Field,
   type FixedSizeListBuilder,
   Float32,
@@ -30,7 +31,8 @@ import {
   RecordBatch,
   makeData,
   Struct,
-  type Float
+  type Float,
+  type DataType
 } from 'apache-arrow'
 import { type EmbeddingFunction } from './index'
 
@@ -142,15 +144,18 @@ export function makeArrowTable (
   // TODO: sample dataset to find missing columns
   const columnNames = Object.keys(data[0])
   for (const colName of columnNames) {
-    const values = data.map((datum) => datum[colName])
+    let values = data.map((datum) => datum[colName])
     let vector: Vector
 
     if (opt.schema !== undefined) {
       // Explicit schema is provided, highest priority
-      vector = vectorFromArray(
-        values,
-        opt.schema?.fields.filter((f) => f.name === colName)[0]?.type
-      )
+      const fieldType: DataType | undefined = opt.schema.fields.filter((f) => f.name === colName)[0]?.type as DataType
+      if (fieldType instanceof Int64) {
+        // wrap in BigInt to avoid bug: https://github.com/apache/arrow/issues/40051
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
+        values = values.map((v) => BigInt(v))
+      }
+      vector = vectorFromArray(values, fieldType)
     } else {
       const vectorColumnOptions = opt.vectorColumns[colName]
       if (vectorColumnOptions !== undefined) {

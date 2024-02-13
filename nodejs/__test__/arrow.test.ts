@@ -14,6 +14,7 @@
 
 import { makeArrowTable, toBuffer } from "../vectordb/arrow";
 import {
+  Int64,
   Field,
   FixedSizeList,
   Float16,
@@ -104,3 +105,16 @@ test("2 vector columns", function () {
   const actualSchema = actual.schema;
   expect(actualSchema.toString()).toEqual(schema.toString());
 });
+
+test("handles int64", function() {
+  // https://github.com/lancedb/lancedb/issues/960
+  const schema = new Schema([
+    new Field("x", new Int64(), true)
+  ]);
+  const table = makeArrowTable([
+    { x: 1 },
+    { x: 2 },
+    { x: 3 }
+  ], { schema });
+  expect(table.schema).toEqual(schema);
+})
