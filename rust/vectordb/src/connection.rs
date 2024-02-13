@@ -422,13 +422,11 @@ mod tests {
         let tmp_dir = tempdir().unwrap();
         let uri = std::fs::canonicalize(tmp_dir.path().to_str().unwrap()).unwrap();
 
-        let mut relative_anacestors = vec![];
         let current_dir = std::env::current_dir().unwrap();
-        let mut ancestors = current_dir.ancestors();
-        while let Some(_) = ancestors.next() {
-            relative_anacestors.push("..");
-        }
-        let relative_root = std::path::PathBuf::from(relative_anacestors.join("/"));
+        let ancestors = current_dir.ancestors();
+        let relative_ancestors = vec![".."; ancestors.count()];
+
+        let relative_root = std::path::PathBuf::from(relative_ancestors.join("/"));
         let relative_uri = relative_root.join(&uri);
 
         let db = Database::connect(relative_uri.to_str().unwrap())
