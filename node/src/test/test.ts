@@ -844,7 +844,6 @@ describe('LanceDB client', function () {
         embeddingFunction
       })
       assert.equal(table.name, 'vectors')
-      console.log((await table.schema).fields)
       const results = await table.search('foo').execute()
       assert.equal(results.length, 2)
     })
