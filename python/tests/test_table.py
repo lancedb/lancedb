@@ -710,6 +710,59 @@ def test_empty_query(db):
     assert len(df) == 100
 
 
+def test_search_with_schema_inf_single_vector(db):
+    class MyTable(LanceModel):
+        text: str
+        vector_col: Vector(10)
+
+    table = LanceTable.create(
+        db,
+        "my_table",
+        schema=MyTable,
+    )
+
+    v1 = np.random.randn(10)
+    v2 = np.random.randn(10)
+    data = [
+        {"vector_col": v1, "text": "foo"},
+        {"vector_col": v2, "text": "bar"},
+    ]
+    df = pd.DataFrame(data)
+    table.add(df)
+
+    q = np.random.randn(10)
+    result1 = table.search(q, vector_column_name="vector_col").limit(1).to_pandas()
+    result2 = table.search(q).limit(1).to_pandas()
+
+    assert result1["text"].iloc[0] == result2["text"].iloc[0]
+
+
+def test_search_with_schema_inf_multiple_vector(db):
+    class MyTable(LanceModel):
+        text: str
+        vector1: Vector(10)
+        vector2: Vector(10)
+
+    table = LanceTable.create(
+        db,
+        "my_table",
+        schema=MyTable,
+    )
+
+    v1 = np.random.randn(10)
+    v2 = np.random.randn(10)
+    data = [
+        {"vector1": v1, "vector2": v2, "text": "foo"},
+        {"vector1": v2, "vector2": v1, "text": "bar"},
+    ]
+    df = pd.DataFrame(data)
+    table.add(df)
+
+    q = np.random.randn(10)
+    with pytest.raises(ValueError):
+        table.search(q).limit(1).to_pandas()
+
+
 def test_compact_cleanup(db):
     table = LanceTable.create(
         db,

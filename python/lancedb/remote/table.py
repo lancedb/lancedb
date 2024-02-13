@@ -24,7 +24,7 @@ from lancedb.merge import LanceMergeInsertBuilder
 
 from ..query import LanceVectorQueryBuilder
 from ..table import Query, Table, _sanitize_data
-from ..util import value_to_sql
+from ..util import inf_vector_column_query, value_to_sql
 from .arrow import to_ipc_binary
 from .client import ARROW_STREAM_CONTENT_TYPE
 from .db import RemoteDBConnection
@@ -198,7 +198,9 @@ class RemoteTable(Table):
         )
 
     def search(
-        self, query: Union[VEC, str], vector_column_name: str = VECTOR_COLUMN_NAME
+        self,
+        query: Union[VEC, str],
+        vector_column_name: Optional[str] = None,
     ) -> LanceVectorQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support [vector search][search]
@@ -217,7 +219,7 @@ class RemoteTable(Table):
         ... ]
         >>> table = db.create_table("my_table", data) # doctest: +SKIP
         >>> query = [0.4, 1.4, 2.4]
-        >>> (table.search(query, vector_column_name="vector") # doctest: +SKIP
+        >>> (table.search(query) # doctest: +SKIP
         ...     .where("original_width > 1000", prefilter=True) # doctest: +SKIP
         ...     .select(["caption", "original_width"]) # doctest: +SKIP
         ...     .limit(2) # doctest: +SKIP
@@ -236,9 +238,14 @@ class RemoteTable(Table):
 
             - If None then the select/where/limit clauses are applied to filter
             the table
-        vector_column_name: str
+        vector_column_name: str, optional
             The name of the vector column to search.
-            *default "vector"*
+
+            - If not specified then the vector column is inferred from
+            the table schema
+
+            - If the table has multiple vector columns then the *vector_column_name*
+            needs to be specified. Otherwise, an error is raised.
 
         Returns
         -------
@@ -253,6 +260,8 @@ class RemoteTable(Table):
             - and also the "_distance" column which is the distance between the query
             vector and the returned vector.
         """
+        if vector_column_name is None:
+            vector_column_name = inf_vector_column_query(self.schema)
         return LanceVectorQueryBuilder(self, query, vector_column_name)
 
     def _execute_query(self, query: Query) -> pa.Table:

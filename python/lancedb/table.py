@@ -36,6 +36,7 @@ from .pydantic import LanceModel, model_to_dict
 from .query import LanceQueryBuilder, Query
 from .util import (
     fs_from_uri,
+    inf_vector_column_query,
     join_uri,
     safe_import_pandas,
     safe_import_polars,
@@ -412,7 +413,7 @@ class Table(ABC):
     def search(
         self,
         query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
-        vector_column_name: str = VECTOR_COLUMN_NAME,
+        vector_column_name: Optional[str] = None,
         query_type: str = "auto",
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
@@ -432,7 +433,7 @@ class Table(ABC):
         ... ]
         >>> table = db.create_table("my_table", data)
         >>> query = [0.4, 1.4, 2.4]
-        >>> (table.search(query, vector_column_name="vector")
+        >>> (table.search(query)
         ...     .where("original_width > 1000", prefilter=True)
         ...     .select(["caption", "original_width"])
         ...     .limit(2)
@@ -451,11 +452,16 @@ class Table(ABC):
 
             - If None then the select/where/limit clauses are applied to filter
             the table
-        vector_column_name: str
+        vector_column_name: str, optional
             The name of the vector column to search.
 
             The vector column needs to be a pyarrow fixed size list type
-            *default "vector"*
+
+            - If not specified then the vector column is inferred from
+            the table schema
+
+            - If the table has multiple vector columns then the *vector_column_name*
+            needs to be specified. Otherwise, an error is raised.
         query_type: str
             *default "auto"*.
             Acceptable types are: "vector", "fts", "hybrid", or "auto"
@@ -1188,7 +1194,7 @@ class LanceTable(Table):
     def search(
         self,
         query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
-        vector_column_name: str = VECTOR_COLUMN_NAME,
+        vector_column_name: Optional[str] = None,
         query_type: str = "auto",
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
@@ -1206,7 +1212,7 @@ class LanceTable(Table):
         ... ]
         >>> table = db.create_table("my_table", data)
         >>> query = [0.4, 1.4, 2.4]
-        >>> (table.search(query, vector_column_name="vector")
+        >>> (table.search(query)
         ...     .where("original_width > 1000", prefilter=True)
         ...     .select(["caption", "original_width"])
         ...     .limit(2)
@@ -1225,8 +1231,17 @@ class LanceTable(Table):
 
             - If None then the select/[where][sql]/limit clauses are applied
             to filter the table
-        vector_column_name: str, default "vector"
+        vector_column_name: str, optional
             The name of the vector column to search.
+
+            The vector column needs to be a pyarrow fixed size list type
+            *default "vector"*
+
+            - If not specified then the vector column is inferred from
+            the table schema
+
+            - If the table has multiple vector columns then the *vector_column_name*
+            needs to be specified. Otherwise, an error is raised.
         query_type: str, default "auto"
             "vector", "fts", or "auto"
             If "auto" then the query type is inferred from the query;
@@ -1244,6 +1259,8 @@ class LanceTable(Table):
             and also the "_distance" column which is the distance between the query
             vector and the returned vector.
         """
+        if vector_column_name is None and query is not None:
+            vector_column_name = inf_vector_column_query(self.schema)
         return LanceQueryBuilder.create(
             self, query, query_type, vector_column_name=vector_column_name
         )
@@ -1427,6 +1444,7 @@ class LanceTable(Table):
 
     def _execute_query(self, query: Query) -> pa.Table:
         ds = self.to_lance()
+
         return ds.to_table(
             columns=query.columns,
             filter=query.filter,
