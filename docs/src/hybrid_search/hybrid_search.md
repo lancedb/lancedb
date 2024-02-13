@@ -237,3 +237,6 @@ class MofidifiedCohereReranker(CohereReranker):
         return pa.Table.from_pandas(df)
 
 ```
+
+!!! tip
+    The `vector_results` and `fts_results` are pyarrow tables. You can convert them to pandas dataframes using `to_pandas()` method and perform any operations you want. After you are done, you can convert the dataframe back to pyarrow table using `pa.Table.from_pandas()` method and return it.
