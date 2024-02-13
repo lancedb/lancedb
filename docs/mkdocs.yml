@@ -91,8 +91,8 @@ nav:
     - Vector Search: search.md
     - Full-text search: fts.md
     - Hybrid search:
-      - hybrid_search/hybrid_search.md
-      - AirBNB financial data example: notebooks/hybrid_search.ipynb
+      - Overview: hybrid_search/hybrid_search.md
+      - Airbnb financial data example: notebooks/hybrid_search.ipynb
     - Filtering: sql.md
     - Versioning & Reproducibility: notebooks/reproducibility.ipynb
     - Configuring Storage: guides/storage.md
@@ -155,8 +155,8 @@ nav:
     - Vector Search: search.md
     - Full-text search: fts.md
     - Hybrid search:
-      - hybrid_search/hybrid_search.md
-      - AirBNB financial data example: notebooks/hybrid_search.ipynb
+      - Overview: hybrid_search/hybrid_search.md
+      - Airbnb financial data example: notebooks/hybrid_search.ipynb
     - Filtering: sql.md
     - Versioning & Reproducibility: notebooks/reproducibility.ipynb
     - Configuring Storage: guides/storage.md
