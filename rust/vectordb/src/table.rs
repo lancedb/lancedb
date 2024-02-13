@@ -888,12 +888,12 @@ mod tests {
 
         let batches = make_test_batches();
         let _ = batches.schema().clone();
-        NativeTable::create(&uri, "test", batches, None, None)
+        NativeTable::create(uri, "test", batches, None, None)
             .await
             .unwrap();
 
         let batches = make_test_batches();
-        let result = NativeTable::create(&uri, "test", batches, None, None).await;
+        let result = NativeTable::create(uri, "test", batches, None, None).await;
         assert!(matches!(
             result.unwrap_err(),
             Error::TableAlreadyExists { .. }
@@ -906,7 +906,7 @@ mod tests {
         let uri = tmp_dir.path().to_str().unwrap();
 
         let batches = make_test_batches();
-        let table = NativeTable::create(&uri, "test", batches, None, None)
+        let table = NativeTable::create(uri, "test", batches, None, None)
             .await
             .unwrap();
 
@@ -924,7 +924,7 @@ mod tests {
 
         let batches = make_test_batches();
         let schema = batches.schema().clone();
-        let table = NativeTable::create(&uri, "test", batches, None, None)
+        let table = NativeTable::create(uri, "test", batches, None, None)
             .await
             .unwrap();
         assert_eq!(table.count_rows(None).await.unwrap(), 10);
@@ -952,7 +952,7 @@ mod tests {
 
         // Create a dataset with i=0..10
         let batches = merge_insert_test_batches(0, 0);
-        let table = NativeTable::create(&uri, "test", batches, None, None)
+        let table = NativeTable::create(uri, "test", batches, None, None)
             .await
             .unwrap();
         assert_eq!(table.count_rows(None).await.unwrap(), 10);
@@ -1149,12 +1149,8 @@ mod tests {
                     Arc::new(LargeStringArray::from_iter_values(vec![
                         "a", "b", "c", "d", "e", "f", "g", "h", "i", "j",
                     ])),
-                    Arc::new(Float32Array::from_iter_values(
-                        (0..10).into_iter().map(|i| i as f32),
-                    )),
-                    Arc::new(Float64Array::from_iter_values(
-                        (0..10).into_iter().map(|i| i as f64),
-                    )),
+                    Arc::new(Float32Array::from_iter_values((0..10).map(|i| i as f32))),
+                    Arc::new(Float64Array::from_iter_values((0..10).map(|i| i as f64))),
                     Arc::new(Into::<BooleanArray>::into(vec![
                         true, false, true, false, true, false, true, false, true, false,
                     ])),
@@ -1163,14 +1159,14 @@ mod tests {
                     Arc::new(TimestampMillisecondArray::from_iter_values(0..10)),
                     Arc::new(
                         create_fixed_size_list(
-                            Float32Array::from_iter_values((0..20).into_iter().map(|i| i as f32)),
+                            Float32Array::from_iter_values((0..20).map(|i| i as f32)),
                             2,
                         )
                         .unwrap(),
                     ),
                     Arc::new(
                         create_fixed_size_list(
-                            Float64Array::from_iter_values((0..20).into_iter().map(|i| i as f64)),
+                            Float64Array::from_iter_values((0..20).map(|i| i as f64)),
                             2,
                         )
                         .unwrap(),
@@ -1307,7 +1303,7 @@ mod tests {
             original: Arc<dyn object_store::ObjectStore>,
         ) -> Arc<dyn object_store::ObjectStore> {
             self.called.store(true, Ordering::Relaxed);
-            return original;
+            original
         }
     }
 
@@ -1324,8 +1320,10 @@ mod tests {
 
         let wrapper = Arc::new(NoOpCacheWrapper::default());
 
-        let mut object_store_params = ObjectStoreParams::default();
-        object_store_params.object_store_wrapper = Some(wrapper.clone());
+        let object_store_params = ObjectStoreParams {
+            object_store_wrapper: Some(wrapper.clone()),
+            ..Default::default()
+        };
         let param = ReadParams {
             store_options: Some(object_store_params),
             ..Default::default()
