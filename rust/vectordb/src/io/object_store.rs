@@ -357,12 +357,14 @@ mod test {
         let db = Database::connect(dir1.to_str().unwrap()).await.unwrap();
 
         let mut param = WriteParams::default();
-        let mut store_params = ObjectStoreParams::default();
-        store_params.object_store_wrapper = Some(object_store_wrapper);
+        let store_params = ObjectStoreParams {
+            object_store_wrapper: Some(object_store_wrapper),
+            ..Default::default()
+        };
         param.store_params = Some(store_params);
 
         let mut datagen = BatchGenerator::new();
-        datagen = datagen.col(Box::new(IncrementingInt32::default()));
+        datagen = datagen.col(Box::<IncrementingInt32>::default());
         datagen = datagen.col(Box::new(RandomVector::default().named("vector".into())));
 
         let res = db
@@ -372,7 +374,7 @@ mod test {
         // leave this here for easy debugging
         let t = res.unwrap();
 
-        assert_eq!(t.count_rows().await.unwrap(), 100);
+        assert_eq!(t.count_rows(None).await.unwrap(), 100);
 
         let q = t
             .search(&[0.1, 0.1, 0.1, 0.1])

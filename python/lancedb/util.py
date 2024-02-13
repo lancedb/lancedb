@@ -20,6 +20,7 @@ from typing import Tuple, Union
 from urllib.parse import urlparse
 
 import numpy as np
+import pyarrow as pa
 import pyarrow.fs as pa_fs
 
 
@@ -150,6 +151,44 @@ def safe_import_polars():
         return pl
     except ImportError:
         return None
+
+
+def inf_vector_column_query(schema: pa.Schema) -> str:
+    """
+    Get the vector column name
+
+    Parameters
+    ----------
+    schema : pa.Schema
+        The schema of the vector column.
+
+    Returns
+    -------
+    str: the vector column name.
+    """
+    vector_col_name = ""
+    vector_col_count = 0
+    for field_name in schema.names:
+        field = schema.field(field_name)
+        if pa.types.is_fixed_size_list(field.type) and pa.types.is_floating(
+            field.type.value_type
+        ):
+            vector_col_count += 1
+            if vector_col_count > 1:
+                raise ValueError(
+                    "Schema has more than one vector column. "
+                    "Please specify the vector column name "
+                    "for vector search"
+                )
+                break
+            elif vector_col_count == 1:
+                vector_col_name = field_name
+    if vector_col_count == 0:
+        raise ValueError(
+            "There is no vector column in the data. "
+            "Please specify the vector column name for vector search"
+        )
+    return vector_col_name
 
 
 @singledispatch

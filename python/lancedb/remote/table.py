@@ -11,6 +11,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
+import logging
 import uuid
 from functools import cached_property
 from typing import Dict, Optional, Union
@@ -23,7 +24,7 @@ from lancedb.merge import LanceMergeInsertBuilder
 
 from ..query import LanceVectorQueryBuilder
 from ..table import Query, Table, _sanitize_data
-from ..util import value_to_sql
+from ..util import inf_vector_column_query, value_to_sql
 from .arrow import to_ipc_binary
 from .client import ARROW_STREAM_CONTENT_TYPE
 from .db import RemoteDBConnection
@@ -36,6 +37,9 @@ class RemoteTable(Table):
 
     def __repr__(self) -> str:
         return f"RemoteTable({self._conn.db_name}.{self._name})"
+
+    def __len__(self) -> int:
+        self.count_rows(None)
 
     @cached_property
     def schema(self) -> pa.Schema:
@@ -54,17 +58,17 @@ class RemoteTable(Table):
         return resp["version"]
 
     def to_arrow(self) -> pa.Table:
-        """to_arrow() is not supported on the LanceDB cloud"""
-        raise NotImplementedError("to_arrow() is not supported on the LanceDB cloud")
+        """to_arrow() is not yet supported on LanceDB cloud."""
+        raise NotImplementedError("to_arrow() is not yet supported on LanceDB cloud.")
 
     def to_pandas(self):
-        """to_pandas() is not supported on the LanceDB cloud"""
-        return NotImplementedError("to_pandas() is not supported on the LanceDB cloud")
+        """to_pandas() is not yet supported on LanceDB cloud."""
+        return NotImplementedError("to_pandas() is not yet supported on LanceDB cloud.")
 
     def create_scalar_index(self, *args, **kwargs):
         """Creates a scalar index"""
         return NotImplementedError(
-            "create_scalar_index() is not supported on the LanceDB cloud"
+            "create_scalar_index() is not yet supported on LanceDB cloud."
         )
 
     def create_index(
@@ -72,6 +76,10 @@ class RemoteTable(Table):
         metric="L2",
         vector_column_name: str = VECTOR_COLUMN_NAME,
         index_cache_size: Optional[int] = None,
+        num_partitions: Optional[int] = None,
+        num_sub_vectors: Optional[int] = None,
+        replace: Optional[bool] = None,
+        accelerator: Optional[str] = None,
     ):
         """Create an index on the table.
         Currently, the only parameters that matter are
@@ -105,6 +113,28 @@ class RemoteTable(Table):
         ... )
         >>> table.create_index("L2", "vector") # doctest: +SKIP
         """
+
+        if num_partitions is not None:
+            logging.warning(
+                "num_partitions is not supported on LanceDB cloud."
+                "This parameter will be tuned automatically."
+            )
+        if num_sub_vectors is not None:
+            logging.warning(
+                "num_sub_vectors is not supported on LanceDB cloud."
+                "This parameter will be tuned automatically."
+            )
+        if accelerator is not None:
+            logging.warning(
+                "GPU accelerator is not yet supported on LanceDB cloud."
+                "If you have 100M+ vectors to index,"
+                "please contact us at contact@lancedb.com"
+            )
+        if replace is not None:
+            logging.warning(
+                "replace is not supported on LanceDB cloud."
+                "Existing indexes will always be replaced."
+            )
         index_type = "vector"
 
         data = {
@@ -168,7 +198,9 @@ class RemoteTable(Table):
         )
 
     def search(
-        self, query: Union[VEC, str], vector_column_name: str = VECTOR_COLUMN_NAME
+        self,
+        query: Union[VEC, str],
+        vector_column_name: Optional[str] = None,
     ) -> LanceVectorQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support [vector search][search]
@@ -187,7 +219,7 @@ class RemoteTable(Table):
         ... ]
         >>> table = db.create_table("my_table", data) # doctest: +SKIP
         >>> query = [0.4, 1.4, 2.4]
-        >>> (table.search(query, vector_column_name="vector") # doctest: +SKIP
+        >>> (table.search(query) # doctest: +SKIP
         ...     .where("original_width > 1000", prefilter=True) # doctest: +SKIP
         ...     .select(["caption", "original_width"]) # doctest: +SKIP
         ...     .limit(2) # doctest: +SKIP
@@ -206,9 +238,14 @@ class RemoteTable(Table):
 
             - If None then the select/where/limit clauses are applied to filter
             the table
-        vector_column_name: str
+        vector_column_name: str, optional
             The name of the vector column to search.
-            *default "vector"*
+
+            - If not specified then the vector column is inferred from
+            the table schema
+
+            - If the table has multiple vector columns then the *vector_column_name*
+            needs to be specified. Otherwise, an error is raised.
 
         Returns
         -------
@@ -223,6 +260,8 @@ class RemoteTable(Table):
             - and also the "_distance" column which is the distance between the query
             vector and the returned vector.
         """
+        if vector_column_name is None:
+            vector_column_name = inf_vector_column_query(self.schema)
         return LanceVectorQueryBuilder(self, query, vector_column_name)
 
     def _execute_query(self, query: Query) -> pa.Table:
@@ -268,6 +307,10 @@ class RemoteTable(Table):
             )
         params["on"] = merge._on[0]
         params["when_matched_update_all"] = str(merge._when_matched_update_all).lower()
+        if merge._when_matched_update_all_condition is not None:
+            params[
+                "when_matched_update_all_filt"
+            ] = merge._when_matched_update_all_condition
         params["when_not_matched_insert_all"] = str(
             merge._when_not_matched_insert_all
         ).lower()
@@ -407,6 +450,13 @@ class RemoteTable(Table):
         """compact_files() is not supported on the LanceDB cloud"""
         raise NotImplementedError(
             "compact_files() is not supported on the LanceDB cloud"
+        )
+
+    def count_rows(self, filter: Optional[str] = None) -> int:
+        # payload = {"filter": filter}
+        # self._conn._client.post(f"/v1/table/{self._name}/count_rows/", data=payload)
+        return NotImplementedError(
+            "count_rows() is not yet supported on the LanceDB cloud"
         )
 
 

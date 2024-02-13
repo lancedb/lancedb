@@ -17,10 +17,7 @@ use neon::types::buffer::TypedArray;
 
 use crate::error::ResultExt;
 
-pub fn vec_str_to_array<'a, C: Context<'a>>(
-    vec: &Vec<String>,
-    cx: &mut C,
-) -> JsResult<'a, JsArray> {
+pub fn vec_str_to_array<'a, C: Context<'a>>(vec: &[String], cx: &mut C) -> JsResult<'a, JsArray> {
     let a = JsArray::new(cx, vec.len() as u32);
     for (i, s) in vec.iter().enumerate() {
         let v = cx.string(s);
