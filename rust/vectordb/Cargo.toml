@@ -1,6 +1,6 @@
 [package]
 name = "vectordb"
-version = "0.4.9"
+version = "0.4.10"
 edition.workspace = true
 description = "LanceDB: A serverless, low-latency vector database for AI applications"
 license.workspace = true
