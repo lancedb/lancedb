@@ -17,7 +17,7 @@ class OpenaiReranker(Reranker):
 
     Parameters
     ----------
-    model_name : str, default "gpt-3.5-turbo-1106	"
+    model_name : str, default "gpt-4-turbo-preview"
         The name of the cross encoder model to use.
     column : str, default "text"
         The name of the column to use as input to the cross encoder model.
@@ -29,7 +29,7 @@ class OpenaiReranker(Reranker):
 
     def __init__(
         self,
-        model_name: str = "gpt-3.5-turbo-1106",
+        model_name: str = "gpt-4-turbo-preview",
         column: str = "text",
         return_score="relevance",
         api_key: Optional[str] = None,
