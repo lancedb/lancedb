@@ -5,7 +5,7 @@ from typing import Optional
 
 import pyarrow as pa
 
-from ..util import safe_import
+from ..util import attempt_import_or_raise
 from .base import Reranker
 
 
@@ -17,7 +17,7 @@ class OpenaiReranker(Reranker):
 
     Parameters
     ----------
-    model_name : str, default "gpt-3.5-turbo-1106	"
+    model_name : str, default "gpt-4-turbo-preview"
         The name of the cross encoder model to use.
     column : str, default "text"
         The name of the column to use as input to the cross encoder model.
@@ -29,7 +29,7 @@ class OpenaiReranker(Reranker):
 
     def __init__(
         self,
-        model_name: str = "gpt-3.5-turbo-1106",
+        model_name: str = "gpt-4-turbo-preview",
         column: str = "text",
         return_score="relevance",
         api_key: Optional[str] = None,
@@ -93,7 +93,9 @@ class OpenaiReranker(Reranker):
 
     @cached_property
     def _client(self):
-        openai = safe_import("openai")  # TODO: force version or handle versions < 1.0
+        openai = attempt_import_or_raise(
+            "openai"
+        )  # TODO: force version or handle versions < 1.0
         if os.environ.get("OPENAI_API_KEY") is None and self.api_key is None:
             raise ValueError(
                 "OPENAI_API_KEY not set. Either set it in your environment or \

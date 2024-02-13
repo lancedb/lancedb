@@ -14,6 +14,7 @@ from typing import List
 
 import numpy as np
 
+from ..util import attempt_import_or_raise
 from .base import TextEmbeddingFunction
 from .registry import register
 from .utils import TEXT, weak_lru
@@ -102,9 +103,9 @@ class InstructorEmbeddingFunction(TextEmbeddingFunction):
     # convert_to_numpy: bool = True # Hardcoding this as numpy can be ingested directly
 
     source_instruction: str = "represent the document for retrieval"
-    query_instruction: str = (
-        "represent the document for retrieving the most similar documents"
-    )
+    query_instruction: (
+        str
+    ) = "represent the document for retrieving the most similar documents"
 
     @weak_lru(maxsize=1)
     def ndims(self):
@@ -131,10 +132,10 @@ class InstructorEmbeddingFunction(TextEmbeddingFunction):
 
     @weak_lru(maxsize=1)
     def get_model(self):
-        instructor_embedding = self.safe_import(
+        instructor_embedding = attempt_import_or_raise(
             "InstructorEmbedding", "InstructorEmbedding"
         )
-        torch = self.safe_import("torch", "torch")
+        torch = attempt_import_or_raise("torch", "torch")
 
         model = instructor_embedding.INSTRUCTOR(self.name)
         if self.quantize:

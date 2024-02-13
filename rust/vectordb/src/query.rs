@@ -257,7 +257,7 @@ mod tests {
         assert_eq!(query.query_vector.unwrap(), new_vector);
         assert_eq!(query.limit.unwrap(), 100);
         assert_eq!(query.nprobes, 1000);
-        assert_eq!(query.use_index, true);
+        assert!(query.use_index);
         assert_eq!(query.metric_type, Some(MetricType::Cosine));
         assert_eq!(query.refine_factor, Some(999));
     }

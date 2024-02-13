@@ -9,6 +9,9 @@ Contains the text embedding functions registered by default.
 ### Sentence transformers
 Allows you to set parameters when registering a `sentence-transformers` object.
 
+!!! info
+    Sentence transformer embeddings are normalized by default. It is recommended to use normalized embeddings for similarity search.
+
 | Parameter | Type | Default Value | Description |
 |---|---|---|---|
 | `name` | `str` | `all-MiniLM-L6-v2` | The name of the model |
