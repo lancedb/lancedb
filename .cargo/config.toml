@@ -25,6 +25,7 @@ rustflags = [
     "-Dclippy::dbg_macro",
     # not too much we can do to avoid multiple crate versions
     "-Aclippy::multiple-crate-versions",
+    "-Aclippy::wildcard_dependencies",
 ]
 
 [target.x86_64-unknown-linux-gnu]
