@@ -10,7 +10,6 @@
 #  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
-import importlib
 from abc import ABC, abstractmethod
 from typing import List, Union
 
@@ -90,25 +89,6 @@ class EmbeddingFunction(BaseModel, ABC):
         elif isinstance(texts, pa.ChunkedArray):
             texts = texts.combine_chunks().to_pylist()
         return texts
-
-    @classmethod
-    def safe_import(cls, module: str, mitigation=None):
-        """
-        Import the specified module. If the module is not installed,
-        raise an ImportError with a helpful message.
-
-        Parameters
-        ----------
-        module : str
-            The name of the module to import
-        mitigation : Optional[str]
-            The package(s) to install to mitigate the error.
-            If not provided then the module name will be used.
-        """
-        try:
-            return importlib.import_module(module)
-        except ImportError:
-            raise ImportError(f"Please install {mitigation or module}")
 
     def safe_model_dump(self):
         from ..pydantic import PYDANTIC_VERSION

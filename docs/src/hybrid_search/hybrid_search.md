@@ -69,7 +69,7 @@ reranker = LinearCombinationReranker(weight=0.3) # Use 0.3 as the weight for vec
 results = table.search("rebel", query_type="hybrid").rerank(reranker=reranker).to_pandas()
 ```
 
-Arguments
+### Arguments
 ----------------
 * `weight`: `float`, default `0.7`:
     The weight to use for the semantic search score. The weight for the full-text search score is `1 - weights`.
@@ -91,9 +91,9 @@ reranker = CohereReranker()
 results = table.search("vampire weekend", query_type="hybrid").rerank(reranker=reranker).to_pandas()
 ```
 
-Arguments
+### Arguments
 ----------------
-* `model_name`` : str, default `"rerank-english-v2.0"``
+* `model_name` : str, default `"rerank-english-v2.0"`
         The name of the cross encoder model to use. Available cohere models are:
         - rerank-english-v2.0
         - rerank-multilingual-v2.0
@@ -117,7 +117,7 @@ results = table.search("harmony hall", query_type="hybrid").rerank(reranker=rera
 ```
 
 
-Arguments
+### Arguments
 ----------------
 * `model` : str, default `"cross-encoder/ms-marco-TinyBERT-L-6"`
         The name of the cross encoder model to use. Available cross encoder models can be found [here](https://www.sbert.net/docs/pretrained_cross-encoders.html)
@@ -143,7 +143,7 @@ reranker = ColbertReranker()
 results = table.search("harmony hall", query_type="hybrid").rerank(reranker=reranker).to_pandas()
 ```
 
-Arguments
+### Arguments
 ----------------
 * `model_name` : `str`, default `"colbert-ir/colbertv2.0"`
         The name of the cross encoder model to use.
@@ -162,7 +162,8 @@ This reranker uses the OpenAI API to combine the results of semantic and full-te
     This prompts chat model to rerank results which is not a dedicated reranker model. This should be treated as experimental.
 
 !!! Tip
-    You might run out of token limit so set the search `limits` based on your token limit.
+    - You might run out of token limit so set the search `limits` based on your token limit.
+    - It is recommended to use gpt-4-turbo-preview, the default model, older models might lead to undesired behaviour
 
 ```python
 from lancedb.rerankers import OpenaiReranker
@@ -172,15 +173,15 @@ reranker = OpenaiReranker()
 results = table.search("harmony hall", query_type="hybrid").rerank(reranker=reranker).to_pandas()
 ```
 
-Arguments
+### Arguments
 ----------------
-`model_name` : `str`, default `"gpt-3.5-turbo-1106"`
+* `model_name` : `str`, default `"gpt-4-turbo-preview"`
     The name of the cross encoder model to use.
-`column` : `str`, default `"text"`
+* `column` : `str`, default `"text"`
     The name of the column to use as input to the cross encoder model.
-`return_score` : `str`, default `"relevance"`
+* `return_score` : `str`, default `"relevance"`
     options are "relevance" or "all". Only "relevance" is supported for now.
-`api_key` : `str`, default `None`
+* `api_key` : `str`, default `None`
     The API key to use. If None, will use the OPENAI_API_KEY environment variable.
 
 
@@ -212,24 +213,30 @@ class MyReranker(Reranker):
 
 ```
 
-You can also accept additional arguments like a filter along with fts and vector search results
+### Example of a Custom Reranker
+For the sake of simplicity let's build custom reranker that just enchances the Cohere Reranker by accepting a filter query, and accept other CohereReranker params as kwags.
 
 ```python
 
-from lancedb.rerankers import Reranker
-import pyarrow as pa
+from typing import List, Union
+import pandas as pd
+from lancedb.rerankers import CohereReranker
 
-class MyReranker(Reranker):
-    ...
-    
-    def rerank_hybrid(self, query: str, vector_results: pa.Table, fts_results: pa.Table, filter: str):
-        # Use the built-in merging function
-        combined_result = self.merge_results(vector_results, fts_results)
-        
-        # Do something with the combined results & filter
-        # ...
+class MofidifiedCohereReranker(CohereReranker):
+    def __init__(self, filters: Union[str, List[str]], **kwargs):
+        super().__init__(**kwargs)
+        filters = filters if isinstance(filters, list) else [filters]
+        self.filters = filters
 
-        # Return the combined results
-        return combined_result
+    def rerank_hybrid(self, query: str, vector_results: pa.Table, fts_results: pa.Table)-> pa.Table:
+        combined_result = super().rerank_hybrid(query, vector_results, fts_results)
+        df = combined_result.to_pandas()
+        for filter in self.filters:
+            df = df.query("not text.str.contains(@filter)")
+
+        return pa.Table.from_pandas(df)
 
 ```
+
+!!! tip
+    The `vector_results` and `fts_results` are pyarrow tables. You can convert them to pandas dataframes using `to_pandas()` method and perform any operations you want. After you are done, you can convert the dataframe back to pyarrow table using `pa.Table.from_pandas()` method and return it.
