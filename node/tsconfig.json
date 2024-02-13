@@ -9,6 +9,6 @@
     "declaration": true,
     "outDir": "./dist",
     "strict": true,
-    // "esModuleInterop": true,
+    "sourceMap": true,
   }
 }
