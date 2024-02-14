@@ -98,18 +98,19 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Setup tmate session
-        uses: mxschmitt/action-tmate@v3
-      # - name: Add swap
-      #   run: |
-      #     fallocate -l 10G /swapfile
-      #     chmod 600 /swapfile
-      #     mkswap /swapfile
-      #     swapon /swapfile
-      #     echo "/swapfile swap swap defaults 0 0" >> /etc/fstab
-      #     # print info
-      #     swapon --show
-      #     free -h
+      # - name: Setup tmate session
+      #   uses: mxschmitt/action-tmate@v3
+      - name: Add swap
+        run: |
+          free -h
+          sudo fallocate -l 10G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          echo "/swapfile swap swap defaults 0 0" >> sudo /etc/fstab
+          # print info
+          swapon --show
+          free -h
       - name: Build Linux Artifacts
         run: |
           bash ci/build_linux_artifacts.sh ${{ matrix.config.arch }} ${{ matrix.config.build-jobs }}
