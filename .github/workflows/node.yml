@@ -81,39 +81,6 @@ jobs:
         rm index.node
     - name: Test
       run: npm run test
-  test-release:
-    name: node-linux (${{ matrix.config.arch}}-unknown-linux-gnu
-    runs-on: ${{ matrix.config.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        config:
-          - arch: aarch64
-            runner: buildjet-16vcpu-ubuntu-2204-arm
-            # Buildjet aarch64 runners have only 1.5 GB RAM per core, vs 3.5 GB per core for
-            # x86_64 runners. Cargo defaults to spawn a job per core, but needs a lot
-            # of memory per job. Thus for ARM we need to reduce the number of jobs
-            # to avoid OOM errors when building.
-            build-jobs: 4
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      # - name: Setup tmate session
-      #   uses: mxschmitt/action-tmate@v3
-      - name: Add swap
-        run: |
-          free -h
-          sudo fallocate -l 16G /swapfile
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
-          echo "/swapfile swap swap defaults 0 0" >> sudo /etc/fstab
-          # print info
-          swapon --show
-          free -h
-      - name: Build Linux Artifacts
-        run: |
-          bash ci/build_linux_artifacts.sh ${{ matrix.config.arch }} ${{ matrix.config.build-jobs }}
   macos:
     timeout-minutes: 30
     runs-on: "macos-13"
