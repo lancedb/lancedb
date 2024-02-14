@@ -16,6 +16,6 @@ popd
 
 docker run \
     -v $(pwd):/io -w /io \
-    --memory-swap="4g" \
+    --memory-swap=-1 \
     lancedb-node-manylinux \
     bash ci/manylinux_node/build.sh $ARCH
