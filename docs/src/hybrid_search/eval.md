@@ -25,8 +25,9 @@ Vector Search baseline - `0.64`
 | Cohere | `0.81` | `0.81` | `0.85` |
 | ColBERT | `0.68` | `0.68` | `0.73` |
 
-<img width="1112" alt="Screenshot 2024-02-15 at 9 37 01 PM" src="https://github.com/AyushExel/assets/assets/15766192/d57b1780-ef27-414c-a5c3-73bee7808a45">
-
+<p>
+<img src="https://github.com/AyushExel/assets/assets/15766192/d57b1780-ef27-414c-a5c3-73bee7808a45">
+</p>
 
 <b> With OpenAI embedding-v3-small </b>
 
@@ -39,7 +40,9 @@ Vector Search baseline - `0.59`
 | Cohere | `0.79` | `0.79` | `0.84` |
 | ColBERT | `0.70` | `0.70` | `0.76` |
 
-<img width="1109" alt="Screenshot 2024-02-15 at 9 34 17 PM" src="https://github.com/AyushExel/assets/assets/15766192/259adfd2-6ec6-4df6-a77d-1456598970dd">
+<p>
+<img src="https://github.com/AyushExel/assets/assets/15766192/259adfd2-6ec6-4df6-a77d-1456598970dd">
+</p>
 
 ### Conclusion
 
