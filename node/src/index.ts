@@ -49,7 +49,7 @@ const {
 export { Query }
 export type { EmbeddingFunction }
 export { OpenAIEmbeddingFunction } from './embedding/openai'
-export { makeArrowTable, type MakeArrowTableOptions } from './arrow'
+export { convertToTable, makeArrowTable, type MakeArrowTableOptions } from './arrow'
 
 const defaultAwsRegion = 'us-west-2'
 
