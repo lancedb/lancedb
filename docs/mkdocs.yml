@@ -92,7 +92,6 @@ nav:
     - Full-text search: fts.md
     - Hybrid search:
       - Overview: hybrid_search/hybrid_search.md
-      - Comparing Rerankers: hybrid_search/eval.md
       - Airbnb financial data example: notebooks/hybrid_search.ipynb
     - Filtering: sql.md
     - Versioning & Reproducibility: notebooks/reproducibility.ipynb
@@ -157,7 +156,6 @@ nav:
     - Full-text search: fts.md
     - Hybrid search:
       - Overview: hybrid_search/hybrid_search.md
-      - Comparing Rerankers: hybrid_search/eval.md
       - Airbnb financial data example: notebooks/hybrid_search.ipynb
     - Filtering: sql.md
     - Versioning & Reproducibility: notebooks/reproducibility.ipynb
