@@ -1,6 +1,9 @@
 # DuckDB
 
-LanceDB is very well-integrated with [DuckDB](https://duckdb.org/), an in-process SQL OLAP database. This integration is done via [Arrow](https://duckdb.org/docs/guides/python/sql_on_arrow) .
+In Python, LanceDB tables can also be queried with [DuckDB](https://duckdb.org/), an in-process SQL OLAP database. This means you can write complex SQL queries to analyze your data in LanceDB.
+
+This integration is done via [Apache Arrow](https://duckdb.org/docs/guides/python/sql_on_arrow), which provides zero-copy data sharing between LanceDB and DuckDB. DuckDB is capable of passing down column selections and basic filters to LanceDB, reducing the amount of data that needs to be scanned to perform your query. Finally, the integration allows streaming data from LanceDB tables, allowing you to aggregate tables that won't fit into memory. All of this uses the same mechanism described in DuckDB's blog post *[DuckDB quacks Arrow](https://duckdb.org/2021/12/03/duck-arrow.html)*.
+
 
 We can demonstrate this by first installing `duckdb` and `lancedb`.
 
@@ -19,13 +22,14 @@ data = [
     {"vector": [5.9, 26.5], "item": "bar", "price": 20.0}
 ]
 table = db.create_table("pd_table", data=data)
-arrow_table = table.to_arrow()
 ```
 
-DuckDB can directly query the `pyarrow.Table` object:
+To query the table, first call `to_lance` to convert the table to a "dataset", which is an object that can be queried by DuckDB. Then all you need to do is reference that dataset by the same name in your SQL query.
 
 ```python
 import duckdb
+
+arrow_table = table.to_lance()
 
 duckdb.query("SELECT * FROM arrow_table")
 ```
