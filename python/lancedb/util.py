@@ -15,11 +15,11 @@ import functools
 import importlib
 import os
 import pathlib
+import warnings
 from datetime import date, datetime
 from functools import singledispatch
 from typing import Tuple, Union
 from urllib.parse import urlparse
-import warnings
 
 import numpy as np
 import pyarrow as pa
