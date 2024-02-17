@@ -11,9 +11,11 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
+import functools
 import importlib
 import os
 import pathlib
+import warnings
 from datetime import date, datetime
 from functools import singledispatch
 from typing import Tuple, Union
@@ -239,3 +241,25 @@ def _(value: list):
 @value_to_sql.register(np.ndarray)
 def _(value: np.ndarray):
     return value_to_sql(value.tolist())
+
+
+def deprecated(func):
+    """This is a decorator which can be used to mark functions
+    as deprecated. It will result in a warning being emitted
+    when the function is used."""
+
+    @functools.wraps(func)
+    def new_func(*args, **kwargs):
+        warnings.simplefilter("always", DeprecationWarning)  # turn off filter
+        warnings.warn(
+            (
+                f"Function {func.__name__} is deprecated and will be "
+                "removed in a future version"
+            ),
+            category=DeprecationWarning,
+            stacklevel=2,
+        )
+        warnings.simplefilter("default", DeprecationWarning)  # reset filter
+        return func(*args, **kwargs)
+
+    return new_func
