@@ -11,9 +11,9 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
-from concurrent.futures import Future
 import logging
 import uuid
+from concurrent.futures import Future
 from functools import cached_property
 from typing import Dict, Optional, Union
 
