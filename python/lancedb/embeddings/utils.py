@@ -38,7 +38,7 @@ IMAGES = Union[
 ]
 
 
-@deprecated()
+@deprecated
 def with_embeddings(
     func: Callable,
     data: DATA,
