@@ -11,10 +11,10 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
-from concurrent.futures import ThreadPoolExecutor
 import inspect
 import logging
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from typing import Iterable, List, Optional, Union
 from urllib.parse import urlparse
 
