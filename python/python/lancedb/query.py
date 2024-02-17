@@ -107,7 +107,7 @@ class Query(pydantic.BaseModel):
 
 class LanceQueryBuilder(ABC):
     """An abstract query builder. Subclasses are defined for vector search,
-    full text search, hybrid, and plain sql filtering.
+    full text search, hybrid, and plain SQL filtering.
     """
 
     @classmethod
