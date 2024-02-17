@@ -271,17 +271,22 @@ class RemoteTable(Table):
             and not isinstance(query.vector[0], float)
         ):
             if self._conn._request_thread_pool is None:
+
                 def submit(name, q):
                     return self._conn._client.query(name, q)
+
                 def get(x):
                     return x
             else:
+
                 def submit(name, q):
                     return self._conn._request_thread_pool.submit(
                         self._conn._client.query, name, q
                     )
+
                 def get(x):
                     return x.result()
+
             results = []
             for v in query.vector:
                 v = list(v)
