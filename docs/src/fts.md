@@ -75,10 +75,10 @@ applied on top of the full text search results. This can be invoked via the fami
 table.search("puppy").limit(10).where("meta='foo'").to_list()
 ```
 
-## Phrase queries vs. structured queries
+## Phrase queries vs. terms queries
 
 For full-text search you can specify either a **phrase** query like `"the old man and the sea"`, 
-or a **structured** search query like `"(Old AND Man) AND Sea"`. For more details on the structured
+or a **terms** search query like `"(Old AND Man) AND Sea"`. For more details on the structured
 query syntax, see Tantivy's [query parser rules](https://docs.rs/tantivy/latest/tantivy/query/struct.QueryParser.html).
 
 !!! tip "Note"
