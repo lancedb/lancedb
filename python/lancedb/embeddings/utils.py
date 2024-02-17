@@ -26,7 +26,7 @@ import pyarrow as pa
 from lance.vector import vec_to_table
 from retry import retry
 
-from ..util import safe_import_pandas
+from ..util import deprecated, safe_import_pandas
 from ..utils.general import LOGGER
 
 pd = safe_import_pandas()
@@ -38,6 +38,7 @@ IMAGES = Union[
 ]
 
 
+@deprecated()
 def with_embeddings(
     func: Callable,
     data: DATA,
