@@ -90,6 +90,9 @@ conflict with the query syntax. Instead, if you search using
 `table.search('"they could have been dogs OR cats"')`, then the syntax checker avoids
 checking inside the quotes.
 
+Sometimes a phrase query has nested quotes. To explicitly force the query to be a
+phrase query, you can search using `table.search("<a phrase query>").phrase_query()`.
+
 
 ## Configurations
 
