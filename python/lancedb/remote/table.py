@@ -270,7 +270,7 @@ class RemoteTable(Table):
             and len(query.vector) > 0
             and not isinstance(query.vector[0], float)
         ):
-            if self._conn._request_thread_pool is not None:
+            if self._conn._request_thread_pool is None:
                 def submit(name, q):
                     return self._conn._client.query(name, q)
                 def get(x):
