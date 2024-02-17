@@ -105,7 +105,7 @@ enforce it in one of two ways:
 a phrase query.
 2. Explicitly declare the `phrase_query()` method. This is useful when you have a phrase query that
 itself contains double quotes. For example, `table.search('the cats OR dogs were not really "pets" at all').phrase_query()`
-is treated as a phrase query. This is done by wrapping the whole input in double quotes `"` and replacing any nested double quotes with a single quote `'`.
+is treated as a phrase query.
 
 In general, a query that's declared as a phrase query will be wrapped in double quotes during parsing, with nested
 double quotes replaced by single quotes.
