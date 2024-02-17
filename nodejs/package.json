@@ -61,7 +61,7 @@
     "vectordb-linux-arm64-gnu": "0.4.3",
     "vectordb-linux-x64-gnu": "0.4.3"
   },
-  "dependencies": {
+  "peerDependencies": {
     "apache-arrow": "^15.0.0"
   }
 }
