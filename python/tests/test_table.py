@@ -803,10 +803,8 @@ def test_count_rows(db):
     assert table.count_rows(filter="text='bar'") == 1
 
 
-def test_hybrid_search(db):
-    # hardcoding temporarily.. this test is failing with tmp_path mockdb.
-    # Probably not being parsed right by the fts
-    db = MockDB("~/lancedb_")
+def test_hybrid_search(db, tmp_path):
+    db = MockDB(str(tmp_path))
     # Create a LanceDB table schema with a vector and a text column
     emb = EmbeddingFunctionRegistry.get_instance().get("test")()
 

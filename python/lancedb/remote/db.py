@@ -11,6 +11,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
+from concurrent.futures import ThreadPoolExecutor
 import inspect
 import logging
 import uuid
@@ -39,6 +40,7 @@ class RemoteDBConnection(DBConnection):
         api_key: str,
         region: str,
         host_override: Optional[str] = None,
+        request_thread_pool: Optional[ThreadPoolExecutor] = None,
     ):
         """Connect to a remote LanceDB database."""
         parsed = urlparse(db_url)
@@ -49,6 +51,7 @@ class RemoteDBConnection(DBConnection):
         self._client = RestfulLanceDBClient(
             self.db_name, region, api_key, host_override
         )
+        self._request_thread_pool = request_thread_pool
 
     def __repr__(self) -> str:
         return f"RemoteConnect(name={self.db_name})"
