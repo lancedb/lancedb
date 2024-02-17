@@ -163,10 +163,9 @@ nav:
     - Configuring Storage: guides/storage.md
 - Managing Embeddings:
   - Overview: embeddings/index.md
-  - Explicit management: embeddings/embedding_explicit.md
-  - Implicit management: embeddings/embedding_functions.md
-  - Available Functions: embeddings/default_embedding_functions.md
-  - Custom Embedding Functions: embeddings/api.md
+  - Embedding functions: embeddings/embedding_functions.md
+  - Available models: embeddings/default_embedding_functions.md
+  - User-defined embedding functions: embeddings/custom_embedding_function.md
   - "Example: Multi-lingual semantic search": notebooks/multi_lingual_example.ipynb
   - "Example: MultiModal CLIP Embeddings": notebooks/DisappearingEmbeddingFunction.ipynb
 - Integrations:
