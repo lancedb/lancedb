@@ -1568,7 +1568,7 @@ def _sanitize_schema(
             # is a vector column. This is definitely a bit hacky.
             likely_vector_col = (
                 pa.types.is_fixed_size_list(field.type)
-                and pa.types.is_float32(field.type.value_type)
+                and pa.types.is_floating(field.type.value_type)
                 and field.type.list_size >= 10
             )
             is_default_vector_col = field.name == VECTOR_COLUMN_NAME
@@ -1581,6 +1581,11 @@ def _sanitize_schema(
                     on_bad_vectors=on_bad_vectors,
                     fill_value=fill_value,
                 )
+
+            is_tensor_type = isinstance(field.type, pa.FixedShapeTensorType)
+            if is_tensor_type and field.name in data.column_names:
+                data = _sanitize_tensor_column(data, column_name=field.name)
+
         return pa.Table.from_arrays(
             [data[name] for name in schema.names], schema=schema
         )
@@ -1649,6 +1654,31 @@ def _sanitize_vector_column(
     return data
 
 
+def _sanitize_tensor_column(data: pa.Table, column_name: str) -> pa.Table:
+    """
+    Ensure that the tensor column exists and has type tensor(float32)
+
+    Parameters
+    ----------
+    data: pa.Table
+        The table to sanitize.
+    column_name: str
+        The name of the tensor column.
+    """
+    # ChunkedArray is annoying to work with, so we combine chunks here
+    tensor_arr = data[column_name].combine_chunks()
+    typ = data[column_name].type
+    if not isinstance(typ, pa.FixedShapeTensorType):
+        raise TypeError(f"Unsupported tensor column type: {tensor_arr.type}")
+
+    tensor_arr = ensure_tensor(tensor_arr)
+    data = data.set_column(
+        data.column_names.index(column_name), column_name, tensor_arr
+    )
+
+    return data
+
+
 def ensure_fixed_size_list(vec_arr) -> pa.FixedSizeListArray:
     values = vec_arr.values
     if not (pa.types.is_float16(values.type) or pa.types.is_float32(values.type)):
@@ -1659,6 +1689,11 @@ def ensure_fixed_size_list(vec_arr) -> pa.FixedSizeListArray:
         list_size = len(values) / len(vec_arr)
     vec_arr = pa.FixedSizeListArray.from_arrays(values, list_size)
     return vec_arr
+
+
+def ensure_tensor(tensor_arr) -> pa.TensorArray:
+    assert 0 == 1
+    return tensor_arr
 
 
 def _sanitize_jagged(data, fill_value, on_bad_vectors, vec_arr, vector_column_name):

@@ -27,6 +27,7 @@ from typing import (
     Dict,
     Generator,
     List,
+    Tuple,
     Type,
     Union,
     _GenericAlias,
@@ -36,6 +37,11 @@ import numpy as np
 import pyarrow as pa
 import pydantic
 import semver
+
+from lancedb.util import safe_import_tf, safe_import_torch
+
+torch = safe_import_torch()
+tf = safe_import_tf()
 
 PYDANTIC_VERSION = semver.Version.parse(pydantic.__version__)
 try:
@@ -78,9 +84,6 @@ def Vector(
     dim: int, value_type: pa.DataType = pa.float32()
 ) -> Type[FixedSizeListMixin]:
     """Pydantic Vector Type.
-
-    !!! warning
-        Experimental feature.
 
     Parameters
     ----------
@@ -153,6 +156,142 @@ def Vector(
                 field_schema["minItems"] = dim
 
     return FixedSizeList
+
+
+class FixedShapeTensorMixin(ABC):
+    @staticmethod
+    @abstractmethod
+    def shape() -> Tuple[int]:
+        raise NotImplementedError
+
+    @staticmethod
+    @abstractmethod
+    def value_arrow_type() -> pa.DataType:
+        raise NotImplementedError
+
+
+def Tensor(
+    shape: Tuple[int], value_type: pa.DataType = pa.float32()
+) -> Type[FixedShapeTensorMixin]:
+    """Pydantic Tensor Type.
+
+    !!! warning
+        Experimental feature.
+
+    Parameters
+    ----------
+    shape : tuple of int
+        The shape of the tensor
+    value_type : pyarrow.DataType, optional
+        The value type of the vector, by default pa.float32()
+
+    Examples
+    --------
+
+    >>> import pydantic
+    >>> from lancedb.pydantic import LanceModel, Tensor, Vector
+    ...
+    >>> class MyModel(LanceModel):
+    ...     id: int
+    ...     url: str
+    ...     tensor: Tensor((3, 3))
+    ...     embedding: Vector(768)
+    >>> schema = pydantic_to_schema(MyModel)
+    >>> assert schema == pa.schema([
+    ...     pa.field("id", pa.int64(), False),
+    ...     pa.field("url", pa.utf8(), False),
+    ...     pa.field("tensor", pa.fixed_shape_tensor(pa.float32(), (3, 3)), False),
+    ...     pa.field("embeddings", pa.list_(pa.float32(), 768), False)
+    ... ])
+    """
+
+    # TODO: make a public parameterized type.
+    class FixedShapeTensor(FixedShapeTensorMixin):
+        def __repr__(self):
+            return f"FixedShapeTensor(shape={shape})"
+
+        @staticmethod
+        def shape() -> Tuple[int]:
+            return shape
+
+        @staticmethod
+        def value_arrow_type() -> pa.DataType:
+            return value_type
+
+        @classmethod
+        def __get_pydantic_core_schema__(
+            cls, _source_type: Any, _handler: pydantic.GetCoreSchemaHandler
+        ) -> CoreSchema:
+            return core_schema.no_info_after_validator_function(
+                np.asarray,
+                nested_schema(shape, core_schema.float_schema()),
+            )
+
+        @classmethod
+        def __get_validators__(cls) -> Generator[Callable, None, None]:
+            yield cls.validate
+
+        # For pydantic v1
+        @classmethod
+        def validate(cls, v):
+            if isinstance(v, list):
+                v = cls._validate_list(v, shape)
+            elif isinstance(v, np.ndarray):
+                v = cls._validate_ndarray(v, shape)
+            elif torch is not None and isinstance(v, torch.Tensor):
+                v = cls._validate_torch(v, shape)
+            elif tf is not None and isinstance(v, tf.Tensor):
+                v = cls._validate_tf(v, shape)
+            else:
+                raise TypeError(
+                    "A list of numbers, numpy.ndarray, torch.Tensor, "
+                    f"or tf.Tensor is needed but got {type(v)} instead."
+                )
+            return np.asarray(v)
+
+        @classmethod
+        def _validate_list(cls, v, shape):
+            v = np.asarray(v)
+            return cls._validate_ndarray(v, shape)
+
+        @classmethod
+        def _validate_ndarray(cls, v, shape):
+            if v.shape != shape:
+                raise ValueError(f"Invalid shape {v.shape}, expected {shape}")
+            return v
+
+        @classmethod
+        def _validate_torch(cls, v, shape):
+            v = v.detach().cpu().numpy()
+            return cls._validate_ndarray(v, shape)
+
+        @classmethod
+        def _validate_tf(cls, v, shape):
+            v = v.numpy()
+            return cls._validate_ndarray(v, shape)
+
+        if PYDANTIC_VERSION < (2, 0):
+
+            @classmethod
+            def __modify_schema__(cls, field_schema: Dict[str, Any], field):
+                if field and field.sub_fields:
+                    type_with_potential_subtype = f"np.ndarray[{field.sub_fields[0]}]"
+                else:
+                    type_with_potential_subtype = "np.ndarray"
+                field_schema.update({"type": type_with_potential_subtype})
+
+    return FixedShapeTensor
+
+
+def nested_schema(shape, items_schema):
+    if len(shape) == 0:
+        return items_schema
+    else:
+        return core_schema.list_schema(
+            min_length=shape[0],
+            max_length=shape[0],
+            items_schema=nested_schema(shape[1:], items_schema),
+        )
 
 
 def _py_type_to_arrow_type(py_type: Type[Any], field: FieldInfo) -> pa.DataType:
@@ -230,6 +369,10 @@ def _pydantic_to_arrow_type(field: FieldInfo) -> pa.DataType:
             return pa.struct(fields)
         elif issubclass(field.annotation, FixedSizeListMixin):
             return pa.list_(field.annotation.value_arrow_type(), field.annotation.dim())
+        elif issubclass(field.annotation, FixedShapeTensorMixin):
+            return pa.fixed_shape_tensor(
+                field.annotation.value_arrow_type(), field.annotation.shape()
+            )
     return _py_type_to_arrow_type(field.annotation, field)
 
 

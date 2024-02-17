@@ -153,6 +153,24 @@ def safe_import_polars():
         return None
 
 
+def safe_import_torch():
+    try:
+        import torch
+
+        return torch
+    except ImportError:
+        return None
+
+
+def safe_import_tf():
+    try:
+        import tensorflow as tf
+
+        return tf
+    except ImportError:
+        return None
+
+
 def inf_vector_column_query(schema: pa.Schema) -> str:
     """
     Get the vector column name
