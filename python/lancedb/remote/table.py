@@ -11,6 +11,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
+from concurrent.futures import Future
 import logging
 import uuid
 from functools import cached_property
@@ -273,19 +274,15 @@ class RemoteTable(Table):
             if self._conn._request_thread_pool is None:
 
                 def submit(name, q):
-                    return self._conn._client.query(name, q)
-
-                def get(x):
-                    return x
+                    f = Future()
+                    f.set_result(self._conn._client.query(name, q))
+                    return f
             else:
 
                 def submit(name, q):
                     return self._conn._request_thread_pool.submit(
                         self._conn._client.query, name, q
                     )
-
-                def get(x):
-                    return x.result()
 
             results = []
             for v in query.vector:
@@ -295,7 +292,7 @@ class RemoteTable(Table):
                 results.append(submit(self._name, q))
 
             return pa.concat_tables(
-                [add_index(get(r).to_arrow(), i) for i, r in enumerate(results)]
+                [add_index(r.result().to_arrow(), i) for i, r in enumerate(results)]
             )
         else:
             result = self._conn._client.query(self._name, query)
