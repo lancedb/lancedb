@@ -81,9 +81,8 @@ For full-text search you can specify either a **phrase** query like `"the old ma
 or a **terms** search query like `"(Old AND Man) AND Sea"`. For more details on the structured
 query syntax, see Tantivy's [query parser rules](https://docs.rs/tantivy/latest/tantivy/query/struct.QueryParser.html).
 
-!!! tip "Note"
-    As a protection against unintended use, LanceDB will raise a syntax error if your query contains
-    recognized logical or symbolic operators. The following raises a syntax error since `OR` is a recognized operator.
+!!! tip "Example"
+    The query parser will raise an exception on `they could have been dogs OR cats` since the operator `OR` is all caps. However, `they could have been dogs or cats` works fine, and `"they could have been dogs" OR cats` also works (though the semantic meaning of what you're searching for is different).
 
     ```py
     # This raises a syntax error
