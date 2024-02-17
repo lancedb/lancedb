@@ -13,6 +13,7 @@
 
 import logging
 import uuid
+from concurrent.futures import Future
 from functools import cached_property
 from typing import Dict, Optional, Union
 
@@ -270,15 +271,28 @@ class RemoteTable(Table):
             and len(query.vector) > 0
             and not isinstance(query.vector[0], float)
         ):
+            if self._conn._request_thread_pool is None:
+
+                def submit(name, q):
+                    f = Future()
+                    f.set_result(self._conn._client.query(name, q))
+                    return f
+            else:
+
+                def submit(name, q):
+                    return self._conn._request_thread_pool.submit(
+                        self._conn._client.query, name, q
+                    )
+
             results = []
             for v in query.vector:
                 v = list(v)
                 q = query.copy()
                 q.vector = v
-                results.append(self._conn._client.query(self._name, q))
+                results.append(submit(self._name, q))
 
             return pa.concat_tables(
-                [add_index(r.to_arrow(), i) for i, r in enumerate(results)]
+                [add_index(r.result().to_arrow(), i) for i, r in enumerate(results)]
             )
         else:
             result = self._conn._client.query(self._name, query)
