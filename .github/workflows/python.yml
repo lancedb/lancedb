@@ -148,6 +148,7 @@ jobs:
         shell: bash
         working-directory: python
     steps:
+<<<<<<< HEAD
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -164,6 +165,22 @@ jobs:
       # Make sure wheels are not included in the Rust cache
       - name: Delete wheels
         run: rm -rf target/wheels
+=======
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        lfs: true
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
+    - name: Install lancedb
+      run: |
+        pip install -e .[tests]
+        pip install tantivy pytest pytest-mock
+    - name: Run tests
+      run: pytest -m "not slow" -x -v --durations=30 tests      
+>>>>>>> f72e48f (try it with pypi tantivy)
   pydantic1x:
     timeout-minutes: 30
     runs-on: "ubuntu-22.04"
@@ -172,6 +189,7 @@ jobs:
         shell: bash
         working-directory: python
     steps:
+<<<<<<< HEAD
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -191,3 +209,22 @@ jobs:
           pip install tantivy
       - name: Run tests
         run: pytest -m "not slow" -x -v --durations=30 python/tests
+=======
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        lfs: true
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: 3.9
+    - name: Install lancedb
+      run: | 
+        pip install "pydantic<2"
+        pip install -e .[tests]        
+        pip install tantivy pytest pytest-mock
+    - name: Run tests
+      run: pytest -m "not slow" -x -v --durations=30 tests
+    - name: doctest
+      run: pytest --doctest-modules lancedb
+>>>>>>> f72e48f (try it with pypi tantivy)
