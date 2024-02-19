@@ -370,7 +370,6 @@ mod test {
         let create_opts = CreateTableOptions {
             write_options: WriteTableOptions {
                 lance_write_params: Some(param),
-                ..Default::default()
             },
             ..Default::default()
         };

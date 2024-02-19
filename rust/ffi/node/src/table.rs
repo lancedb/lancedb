@@ -87,7 +87,6 @@ impl JsTable {
                     CreateTableOptions {
                         write_options: WriteTableOptions {
                             lance_write_params: Some(params),
-                            ..Default::default()
                         },
                         ..Default::default()
                     },
@@ -135,7 +134,6 @@ impl JsTable {
             let opts = AddDataOptions {
                 write_options: WriteTableOptions {
                     lance_write_params: Some(params),
-                    ..Default::default()
                 },
                 ..Default::default()
             };

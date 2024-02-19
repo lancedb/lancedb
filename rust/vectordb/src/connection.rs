@@ -13,7 +13,6 @@
 // limitations under the License.
 
 //! LanceDB Database
-//!
 
 use std::fs::create_dir_all;
 use std::path::Path;
@@ -56,11 +55,13 @@ impl Default for CreateTableMode {
 /// Describes what happens when a vector either contains NaN or
 /// does not have enough values
 #[derive(Clone, Debug)]
-pub enum BadVectorHandling {
+enum BadVectorHandling {
     /// An error is returned
     Error,
+    #[allow(dead_code)] // https://github.com/lancedb/lancedb/issues/992
     /// The offending row is droppped
     Drop,
+    #[allow(dead_code)] // https://github.com/lancedb/lancedb/issues/992
     /// The invalid/missing items are replaced by fill_value
     Fill(f32),
 }
@@ -85,9 +86,13 @@ pub struct OpenTableOptions {
     ///
     /// The default value is 256
     ///
-    /// The exact meaning will depend on the type of index:
+    /// The exact meaning of an "entry" will depend on the type of index:
     /// * IVF - there is one entry for each IVF partition
     /// * BTREE - there is one entry for the entire index
+    ///
+    /// This cache applies to the entire opened table, across all indices.
+    /// Setting this value higher will increase performance on larger datasets
+    /// at the expense of more RAM
     pub index_cache_size: u64,
     /// Advanced parameters that can be used to customize table reads
     ///
@@ -216,7 +221,6 @@ impl ConnectOptions {
     }
 
     /// [`AwsCredential`] to use when connecting to S3.
-    ///
     pub fn aws_creds(mut self, aws_creds: AwsCredential) -> Self {
         self.aws_creds = Some(aws_creds);
         self
