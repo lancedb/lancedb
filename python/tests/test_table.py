@@ -31,7 +31,7 @@ import lancedb
 from lancedb.conftest import MockTextEmbeddingFunction
 from lancedb.db import LanceDBConnection
 from lancedb.embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
-from lancedb.pydantic import LanceModel, Vector
+from lancedb.pydantic import LanceModel, Tensor, Vector
 from lancedb.table import LanceTable
 
 
@@ -898,3 +898,18 @@ def test_restore_consistency(tmp_path):
     table.add([{"id": 2}])
     assert table_fixed.version == table.version - 1
     assert table_ref_latest.version == table.version
+
+
+def test_tensor_type(tmp_path):
+    # create a model with a tensor column
+    class MyTable(LanceModel):
+        tensor: Tensor((256, 256, 3))
+
+    db = lancedb.connect(tmp_path)
+    table = LanceTable.create(db, "my_table", schema=MyTable)
+
+    tensor = np.random.rand(256, 256, 3)
+    table.add([{"tensor": tensor}, {"tensor": tensor.tolist()}])
+
+    result = table.search().limit(2).to_pandas()
+    assert np.allclose(result.tensor[0], result.tensor[1])

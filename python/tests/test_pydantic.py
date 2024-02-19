@@ -22,7 +22,13 @@ import pydantic
 import pytest
 from pydantic import Field
 
-from lancedb.pydantic import PYDANTIC_VERSION, LanceModel, Vector, pydantic_to_schema
+from lancedb.pydantic import (
+    PYDANTIC_VERSION,
+    LanceModel,
+    Tensor,
+    Vector,
+    pydantic_to_schema,
+)
 
 
 @pytest.mark.skipif(
@@ -244,3 +250,37 @@ def test_lance_model():
 
     t = TestModel()
     assert t == TestModel(vec=[0.0] * 16, li=[1, 2, 3])
+
+
+def test_tensor():
+    class TestModel(LanceModel):
+        tensor: Tensor((3, 3))
+
+    schema = pydantic_to_schema(TestModel)
+    assert schema == TestModel.to_arrow_schema()
+    assert TestModel.field_names() == ["tensor"]
+
+    if PYDANTIC_VERSION >= (2,):
+        json_schema = TestModel.model_json_schema()
+    else:
+        json_schema = TestModel.schema()
+
+    assert json_schema == {
+        "properties": {
+            "tensor": {
+                "items": {
+                    "items": {"type": "number"},
+                    "maxItems": 3,
+                    "minItems": 3,
+                    "type": "array",
+                },
+                "maxItems": 3,
+                "minItems": 3,
+                "title": "Tensor",
+                "type": "array",
+            }
+        },
+        "required": ["tensor"],
+        "title": "TestModel",
+        "type": "object",
+    }
