@@ -18,7 +18,7 @@ use napi::bindgen_prelude::*;
 use napi_derive::*;
 
 use crate::table::Table;
-use vectordb::connection::{Connection as LanceDBConnection, Database};
+use vectordb::connection::{Connection as LanceDBConnection, CreateTableOptions, OpenTableOptions};
 use vectordb::ipc::ipc_file_to_batches;
 
 #[napi]
@@ -32,9 +32,9 @@ impl Connection {
     #[napi(factory)]
     pub async fn new(uri: String) -> napi::Result<Self> {
         Ok(Self {
-            conn: Arc::new(Database::connect(&uri).await.map_err(|e| {
+            conn: vectordb::connect(&uri).await.map_err(|e| {
                 napi::Error::from_reason(format!("Failed to connect to database: {}", e))
-            })?),
+            })?,
         })
     }
 
@@ -59,7 +59,7 @@ impl Connection {
             .map_err(|e| napi::Error::from_reason(format!("Failed to read IPC file: {}", e)))?;
         let tbl = self
             .conn
-            .create_table(&name, Box::new(batches), None)
+            .create_table(&name, Box::new(batches), CreateTableOptions::default())
             .await
             .map_err(|e| napi::Error::from_reason(format!("{}", e)))?;
         Ok(Table::new(tbl))
@@ -69,7 +69,7 @@ impl Connection {
     pub async fn open_table(&self, name: String) -> napi::Result<Table> {
         let tbl = self
             .conn
-            .open_table(&name)
+            .open_table(&name, OpenTableOptions::default())
             .await
             .map_err(|e| napi::Error::from_reason(format!("{}", e)))?;
         Ok(Table::new(tbl))

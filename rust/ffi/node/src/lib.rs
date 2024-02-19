@@ -22,9 +22,9 @@ use object_store::CredentialProvider;
 use once_cell::sync::OnceCell;
 use tokio::runtime::Runtime;
 
-use vectordb::connection::Database;
+use vectordb::connection::OpenTableOptions;
 use vectordb::table::ReadParams;
-use vectordb::{ConnectOptions, Connection};
+use vectordb::{connect_with_options, ConnectOptions, Connection};
 
 use crate::error::ResultExt;
 use crate::query::JsQuery;
@@ -101,11 +101,11 @@ fn database_new(mut cx: FunctionContext) -> JsResult<JsPromise> {
         });
     }
     rt.spawn(async move {
-        let database = Database::connect_with_options(&conn_options).await;
+        let database = connect_with_options(&conn_options).await;
 
         deferred.settle_with(&channel, move |mut cx| {
             let db = JsDatabase {
-                database: Arc::new(database.or_throw(&mut cx)?),
+                database: database.or_throw(&mut cx)?,
             };
             Ok(cx.boxed(db))
         });
@@ -217,7 +217,15 @@ fn database_open_table(mut cx: FunctionContext) -> JsResult<JsPromise> {
 
     let (deferred, promise) = cx.promise();
     rt.spawn(async move {
-        let table_rst = database.open_table_with_params(&table_name, params).await;
+        let table_rst = database
+            .open_table(
+                &table_name,
+                OpenTableOptions {
+                    lance_read_params: Some(params),
+                    ..Default::default()
+                },
+            )
+            .await;
 
         deferred.settle_with(&channel, move |mut cx| {
             let js_table = JsTable::from(table_rst.or_throw(&mut cx)?);

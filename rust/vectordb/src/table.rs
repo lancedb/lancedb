@@ -17,7 +17,7 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use arrow_array::RecordBatchReader;
+use arrow_array::{RecordBatchIterator, RecordBatchReader};
 use arrow_schema::{Schema, SchemaRef};
 use async_trait::async_trait;
 use chrono::Duration;
@@ -33,6 +33,7 @@ use lance::io::WrappingObjectStore;
 use lance_index::{optimize::OptimizeOptions, DatasetIndexExt};
 use log::info;
 
+use crate::connection::{BadVectorHandling, CreateTableMode, CreateTableOptions, OpenTableOptions};
 use crate::error::{Error, Result};
 use crate::index::vector::{VectorIndex, VectorIndexStatistics};
 use crate::index::IndexBuilder;
@@ -85,6 +86,39 @@ pub struct OptimizeStats {
     pub prune: Option<RemovalStats>,
 }
 
+/// Options to use when writing data
+#[derive(Clone, Debug, Default)]
+pub struct WriteTableOptions {
+    /// What behavior to take if the data contains invalid vectors
+    pub on_bad_vectors: BadVectorHandling,
+    /// Advanced parameters that can be used to customize table creation
+    ///
+    /// If set, these will take precedence over any overlapping `OpenTableOptions` options
+    pub lance_write_params: Option<WriteParams>,
+}
+
+#[derive(Debug, Clone)]
+pub enum AddDataMode {
+    /// Rows will be appended to the table (the default)
+    Append,
+    /// The existing table will be overwritten with the new data
+    Overwrite,
+}
+
+impl Default for AddDataMode {
+    fn default() -> Self {
+        Self::Append
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct AddDataOptions {
+    /// Whether to add new rows (the default) or replace the existing data
+    pub mode: AddDataMode,
+    /// Options to use when writing the data
+    pub write_options: WriteTableOptions,
+}
+
 /// A Table is a collection of strong typed Rows.
 ///
 /// The type of the each row is defined in Apache Arrow [Schema].
@@ -112,12 +146,12 @@ pub trait Table: std::fmt::Display + Send + Sync {
     ///
     /// # Arguments
     ///
-    /// * `batches` RecordBatch to be saved in the Table
-    /// * `params` Append / Overwrite existing records. Default: Append
+    /// * `batches` data to be added to the Table
+    /// * `options` options to control how data is added
     async fn add(
         &self,
         batches: Box<dyn RecordBatchReader + Send>,
-        params: Option<WriteParams>,
+        options: AddDataOptions,
     ) -> Result<()>;
 
     /// Delete the rows from table that match the predicate.
@@ -351,7 +385,7 @@ impl NativeTable {
     /// * A [NativeTable] object.
     pub async fn open(uri: &str) -> Result<Self> {
         let name = Self::get_table_name(uri)?;
-        Self::open_with_params(uri, &name, None, ReadParams::default()).await
+        Self::open_with_params(uri, &name, None, OpenTableOptions::default()).await
     }
 
     /// Opens an existing Table
@@ -369,16 +403,17 @@ impl NativeTable {
         uri: &str,
         name: &str,
         write_store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
-        params: ReadParams,
+        params: OpenTableOptions,
     ) -> Result<Self> {
+        let lance_params = params.lance_read_params.unwrap_or_default();
         // patch the params if we have a write store wrapper
-        let params = match write_store_wrapper.clone() {
-            Some(wrapper) => params.patch_with_store_wrapper(wrapper)?,
-            None => params,
+        let lance_params = match write_store_wrapper.clone() {
+            Some(wrapper) => lance_params.patch_with_store_wrapper(wrapper)?,
+            None => lance_params,
         };
 
         let dataset = DatasetBuilder::from_uri(uri)
-            .with_read_params(params)
+            .with_read_params(lance_params)
             .load()
             .await
             .map_err(|e| match e {
@@ -487,30 +522,51 @@ impl NativeTable {
         name: &str,
         batches: impl RecordBatchReader + Send + 'static,
         write_store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
-        params: Option<WriteParams>,
+        params: CreateTableOptions,
     ) -> Result<Self> {
+        let lance_params = params.write_options.lance_write_params.unwrap_or_default();
         // patch the params if we have a write store wrapper
-        let params = match write_store_wrapper.clone() {
-            Some(wrapper) => params.patch_with_store_wrapper(wrapper)?,
-            None => params,
+        let mut lance_params = match write_store_wrapper.clone() {
+            Some(wrapper) => lance_params.patch_with_store_wrapper(wrapper)?,
+            None => lance_params,
         };
 
-        let dataset = Dataset::write(batches, uri, params)
-            .await
-            .map_err(|e| match e {
-                lance::Error::DatasetAlreadyExists { .. } => Error::TableAlreadyExists {
+        if matches!(params.mode, CreateTableMode::Overwrite) {
+            lance_params.mode = WriteMode::Overwrite;
+        }
+
+        let dataset = Dataset::write(batches, uri, Some(lance_params)).await;
+        match dataset {
+            Ok(dataset) => Ok(Self {
+                name: name.to_string(),
+                uri: uri.to_string(),
+                dataset: Arc::new(Mutex::new(dataset)),
+                store_wrapper: write_store_wrapper,
+            }),
+            Err(lance::Error::DatasetAlreadyExists { .. }) => match params.mode {
+                CreateTableMode::ExistOk(open_opts) => {
+                    Self::open_with_params(uri, name, write_store_wrapper, open_opts).await
+                }
+                CreateTableMode::Create => Err(Error::TableAlreadyExists {
                     name: name.to_string(),
-                },
-                e => Error::Lance {
-                    message: e.to_string(),
-                },
-            })?;
-        Ok(Self {
-            name: name.to_string(),
-            uri: uri.to_string(),
-            dataset: Arc::new(Mutex::new(dataset)),
-            store_wrapper: write_store_wrapper,
-        })
+                }),
+                CreateTableMode::Overwrite => unreachable!(),
+            },
+            Err(err) => Err(Error::Lance {
+                message: err.to_string(),
+            }),
+        }
+    }
+
+    pub async fn create_empty(
+        uri: &str,
+        name: &str,
+        schema: SchemaRef,
+        write_store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
+        params: CreateTableOptions,
+    ) -> Result<Self> {
+        let batches = RecordBatchIterator::new(vec![], schema);
+        Self::create(uri, name, batches, write_store_wrapper, params).await
     }
 
     /// Version of this Table
@@ -740,20 +796,25 @@ impl Table for NativeTable {
     async fn add(
         &self,
         batches: Box<dyn RecordBatchReader + Send>,
-        params: Option<WriteParams>,
+        params: AddDataOptions,
     ) -> Result<()> {
-        let params = Some(params.unwrap_or(WriteParams {
-            mode: WriteMode::Append,
-            ..WriteParams::default()
-        }));
+        let mut lance_params = params.write_options.lance_write_params.unwrap_or_default();
+        match params.mode {
+            AddDataMode::Append => {
+                lance_params.mode = WriteMode::Append;
+            }
+            AddDataMode::Overwrite => {
+                lance_params.mode = WriteMode::Overwrite;
+            }
+        }
 
         // patch the params if we have a write store wrapper
-        let params = match self.store_wrapper.clone() {
-            Some(wrapper) => params.patch_with_store_wrapper(wrapper)?,
-            None => params,
+        let lance_params = match self.store_wrapper.clone() {
+            Some(wrapper) => lance_params.patch_with_store_wrapper(wrapper)?,
+            None => lance_params,
         };
 
-        self.reset_dataset(Dataset::write(batches, &self.uri, params).await?);
+        self.reset_dataset(Dataset::write(batches, &self.uri, Some(lance_params)).await?);
         Ok(())
     }
 
@@ -888,12 +949,13 @@ mod tests {
 
         let batches = make_test_batches();
         let _ = batches.schema().clone();
-        NativeTable::create(uri, "test", batches, None, None)
+        NativeTable::create(uri, "test", batches, None, CreateTableOptions::default())
             .await
             .unwrap();
 
         let batches = make_test_batches();
-        let result = NativeTable::create(uri, "test", batches, None, None).await;
+        let result =
+            NativeTable::create(uri, "test", batches, None, CreateTableOptions::default()).await;
         assert!(matches!(
             result.unwrap_err(),
             Error::TableAlreadyExists { .. }
@@ -906,7 +968,7 @@ mod tests {
         let uri = tmp_dir.path().to_str().unwrap();
 
         let batches = make_test_batches();
-        let table = NativeTable::create(uri, "test", batches, None, None)
+        let table = NativeTable::create(uri, "test", batches, None, CreateTableOptions::default())
             .await
             .unwrap();
 
@@ -924,7 +986,7 @@ mod tests {
 
         let batches = make_test_batches();
         let schema = batches.schema().clone();
-        let table = NativeTable::create(uri, "test", batches, None, None)
+        let table = NativeTable::create(uri, "test", batches, None, CreateTableOptions::default())
             .await
             .unwrap();
         assert_eq!(table.count_rows(None).await.unwrap(), 10);
@@ -940,7 +1002,10 @@ mod tests {
             schema.clone(),
         );
 
-        table.add(Box::new(new_batches), None).await.unwrap();
+        table
+            .add(Box::new(new_batches), AddDataOptions::default())
+            .await
+            .unwrap();
         assert_eq!(table.count_rows(None).await.unwrap(), 20);
         assert_eq!(table.name, "test");
     }
@@ -952,7 +1017,7 @@ mod tests {
 
         // Create a dataset with i=0..10
         let batches = merge_insert_test_batches(0, 0);
-        let table = NativeTable::create(uri, "test", batches, None, None)
+        let table = NativeTable::create(uri, "test", batches, None, CreateTableOptions::default())
             .await
             .unwrap();
         assert_eq!(table.count_rows(None).await.unwrap(), 10);
@@ -998,7 +1063,7 @@ mod tests {
 
         let batches = make_test_batches();
         let schema = batches.schema().clone();
-        let table = NativeTable::create(uri, "test", batches, None, None)
+        let table = NativeTable::create(uri, "test", batches, None, CreateTableOptions::default())
             .await
             .unwrap();
         assert_eq!(table.count_rows(None).await.unwrap(), 10);
@@ -1019,7 +1084,15 @@ mod tests {
             ..Default::default()
         };
 
-        table.add(Box::new(new_batches), Some(param)).await.unwrap();
+        let opts = AddDataOptions {
+            write_options: WriteTableOptions {
+                lance_write_params: Some(param),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        table.add(Box::new(new_batches), opts).await.unwrap();
         assert_eq!(table.count_rows(None).await.unwrap(), 10);
         assert_eq!(table.name, "test");
     }
@@ -1329,9 +1402,17 @@ mod tests {
             ..Default::default()
         };
         assert!(!wrapper.called());
-        let _ = NativeTable::open_with_params(uri, "test", None, param)
-            .await
-            .unwrap();
+        let _ = NativeTable::open_with_params(
+            uri,
+            "test",
+            None,
+            OpenTableOptions {
+                lance_read_params: Some(param),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
         assert!(wrapper.called());
     }
 
@@ -1403,7 +1484,7 @@ mod tests {
             schema,
         );
 
-        let table = NativeTable::create(uri, "test", batches, None, None)
+        let table = NativeTable::create(uri, "test", batches, None, CreateTableOptions::default())
             .await
             .unwrap();
 

@@ -19,6 +19,8 @@ use arrow_array::{FixedSizeListArray, Int32Array, RecordBatch, RecordBatchIterat
 use arrow_schema::{DataType, Field, Schema};
 use futures::TryStreamExt;
 
+use vectordb::connection::{CreateTableOptions, OpenTableOptions};
+use vectordb::table::AddDataOptions;
 use vectordb::Connection;
 use vectordb::{connect, Result, Table, TableRef};
 
@@ -58,7 +60,7 @@ async fn open_with_existing_tbl() -> Result<()> {
     let db = connect(uri).await?;
     // --8<-- [start:open_with_existing_file]
     let _ = db
-        .open_table_with_params("my_table", Default::default())
+        .open_table("my_table", OpenTableOptions::default())
         .await
         .unwrap();
     // --8<-- [end:open_with_existing_file]
@@ -102,7 +104,7 @@ async fn create_table(db: Arc<dyn Connection>) -> Result<TableRef> {
         schema.clone(),
     );
     let tbl = db
-        .create_table("my_table", Box::new(batches), None)
+        .create_table("my_table", Box::new(batches), CreateTableOptions::default())
         .await
         .unwrap();
     // --8<-- [end:create_table]
@@ -126,7 +128,9 @@ async fn create_table(db: Arc<dyn Connection>) -> Result<TableRef> {
         schema.clone(),
     );
     // --8<-- [start:add]
-    tbl.add(Box::new(new_batches), None).await.unwrap();
+    tbl.add(Box::new(new_batches), AddDataOptions::default())
+        .await
+        .unwrap();
     // --8<-- [end:add]
 
     Ok(tbl)
@@ -139,8 +143,12 @@ async fn create_empty_table(db: Arc<dyn Connection>) -> Result<TableRef> {
         Field::new("item", DataType::Utf8, true),
     ]));
     let batches = RecordBatchIterator::new(vec![], schema.clone());
-    db.create_table("empty_table", Box::new(batches), None)
-        .await
+    db.create_table(
+        "empty_table",
+        Box::new(batches),
+        CreateTableOptions::default(),
+    )
+    .await
     // --8<-- [end:create_empty_table]
 }
 

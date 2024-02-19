@@ -20,7 +20,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use arrow_array::RecordBatchReader;
-use lance::dataset::WriteParams;
+use arrow_schema::SchemaRef;
+use lance::dataset::ReadParams;
 use lance::io::{ObjectStore, ObjectStoreParams, WrappingObjectStore};
 use object_store::{
     aws::AwsCredential, local::LocalFileSystem, CredentialProvider, StaticCredentialProvider,
@@ -29,70 +30,162 @@ use snafu::prelude::*;
 
 use crate::error::{CreateDirSnafu, Error, InvalidTableNameSnafu, Result};
 use crate::io::object_store::MirroringObjectStoreWrapper;
-use crate::table::{NativeTable, ReadParams, TableRef};
+use crate::table::{NativeTable, TableRef, WriteTableOptions};
 
 pub const LANCE_FILE_EXTENSION: &str = "lance";
 
+/// Describes what happens when creating a table and a table with
+/// the same name already exists
+#[derive(Clone, Debug)]
+pub enum CreateTableMode {
+    /// If the table already exists, an error is returned
+    Create,
+    /// If the table already exists, it is opened (with the provided options)
+    /// and returned.  Any provided data is ignored
+    ExistOk(OpenTableOptions),
+    /// If the table already exists, it is overwritten
+    Overwrite,
+}
+
+impl Default for CreateTableMode {
+    fn default() -> Self {
+        Self::Create
+    }
+}
+
+/// Describes what happens when a vector either contains NaN or
+/// does not have enough values
+#[derive(Clone, Debug)]
+pub enum BadVectorHandling {
+    /// An error is returned
+    Error,
+    /// The offending row is droppped
+    Drop,
+    /// The invalid/missing items are replaced by fill_value
+    Fill(f32),
+}
+
+impl Default for BadVectorHandling {
+    fn default() -> Self {
+        Self::Error
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct CreateTableOptions {
+    /// What behavior to take if a table with the given name already exists
+    pub mode: CreateTableMode,
+    /// Options to use when writing any initial data
+    pub write_options: WriteTableOptions,
+}
+
+#[derive(Clone, Debug)]
+pub struct OpenTableOptions {
+    /// The size of the index cache, specified as a number of entries
+    ///
+    /// The default value is 256
+    ///
+    /// The exact meaning will depend on the type of index:
+    /// * IVF - there is one entry for each IVF partition
+    /// * BTREE - there is one entry for the entire index
+    pub index_cache_size: u64,
+    /// Advanced parameters that can be used to customize table reads
+    ///
+    /// If set, these will take precedence over any overlapping `OpenTableOptions` options
+    pub lance_read_params: Option<ReadParams>,
+}
+
+impl Default for OpenTableOptions {
+    fn default() -> Self {
+        Self {
+            index_cache_size: 256,
+            lance_read_params: None,
+        }
+    }
+}
+
 /// A connection to LanceDB
 #[async_trait::async_trait]
-pub trait Connection: Send + Sync {
+pub trait Connection: Send + Sync + std::fmt::Debug + 'static {
     /// Get the names of all tables in the database.
     async fn table_names(&self) -> Result<Vec<String>>;
 
-    /// Create a new table in the database.
+    /// Create a new table from data
     ///
     /// # Parameters
     ///
-    /// * `name` - The name of the table.
-    /// * `batches` - The initial data to write to the table.
-    /// * `params` - Optional [`WriteParams`] to create the table.
+    /// * `name` - The name of the table
+    /// * `initial_data` - The initial data to write to the table
+    /// * `params` - Optional [`CreateTableOptions`] to create the table
     ///
     /// # Returns
-    /// Created [`TableRef`], or [`Err(Error::TableAlreadyExists)`] if the table already exists.
+    /// Created [`TableRef`], or [`Error::TableAlreadyExists`] if the table already exists
+    /// with that name
     async fn create_table(
         &self,
         name: &str,
-        batches: Box<dyn RecordBatchReader + Send>,
-        params: Option<WriteParams>,
+        initial_data: Box<dyn RecordBatchReader + Send>,
+        params: CreateTableOptions,
     ) -> Result<TableRef>;
 
-    async fn open_table(&self, name: &str) -> Result<TableRef> {
-        self.open_table_with_params(name, ReadParams::default())
-            .await
-    }
+    /// Create an empty table with a given schema
+    ///
+    /// # Parameters
+    ///
+    /// * `name` - The name of the table
+    /// * `schema` - The schema of the table
+    /// * `params` - Optional [`CreateTableOptions`] to create the table
+    ///
+    /// # Returns
+    /// Created [`TableRef`], or [`Error::TableAlreadyExists`] if the table already exists
+    /// with that name
+    async fn create_empty_table(
+        &self,
+        name: &str,
+        schema: SchemaRef,
+        params: CreateTableOptions,
+    ) -> Result<TableRef>;
 
-    async fn open_table_with_params(&self, name: &str, params: ReadParams) -> Result<TableRef>;
-
+    /// Open an existing table in the database
+    ///
+    /// # Arguments
+    /// * `name` - The name of the table
+    ///
+    /// # Returns
+    /// Created [`TableRef`], or [`Error::TableNotFound`] if the table does not exist.
+    async fn open_table(&self, name: &str, options: OpenTableOptions) -> Result<TableRef>;
     /// Drop a table in the database.
     ///
     /// # Arguments
-    /// * `name` - The name of the table.
+    /// * `name` - The name of the table to drop
     async fn drop_table(&self, name: &str) -> Result<()>;
+
+    /// Drop the database
+    ///
+    /// This is the same as dropping all of the tables
+    async fn drop_db(&self) -> Result<()>;
 }
 
 #[derive(Debug)]
 pub struct ConnectOptions {
     /// Database URI
     ///
-    /// # Accpeted URI formats
+    /// ### Accpeted URI formats
     ///
     /// - `/path/to/database` - local database on file system.
     /// - `s3://bucket/path/to/database` or `gs://bucket/path/to/database` - database on cloud object store
-    /// - `db://dbname` - Lance Cloud
+    /// - `db://dbname` - LanceDB Cloud
     pub uri: String,
 
-    /// Lance Cloud API key
+    /// LanceDB Cloud API key, required if using Lance Cloud
     pub api_key: Option<String>,
-    /// Lance Cloud region
+    /// LanceDB Cloud region, required if using Lance Cloud
     pub region: Option<String>,
-    /// Lance Cloud host override
+    /// LanceDB Cloud host override, only required if using an on-premises Lance Cloud instance
     pub host_override: Option<String>,
 
     /// User provided AWS credentials
     pub aws_creds: Option<AwsCredential>,
-
-    /// The maximum number of indices to cache in memory. Defaults to 256.
-    pub index_cache_size: u32,
 }
 
 impl ConnectOptions {
@@ -104,7 +197,6 @@ impl ConnectOptions {
             region: None,
             host_override: None,
             aws_creds: None,
-            index_cache_size: 256,
         }
     }
 
@@ -129,40 +221,30 @@ impl ConnectOptions {
         self.aws_creds = Some(aws_creds);
         self
     }
-
-    pub fn index_cache_size(mut self, index_cache_size: u32) -> Self {
-        self.index_cache_size = index_cache_size;
-        self
-    }
 }
 
 /// Connect to a LanceDB database.
 ///
 /// # Arguments
 ///
-/// - `uri` - URI where the database is located, can be a local file or a supported remote cloud storage
-///
-/// ## Accepted URI formats
-///
-///  - `/path/to/database` - local database on file system.
-///  - `s3://bucket/path/to/database` or `gs://bucket/path/to/database` - database on cloud object store
-/// - `db://dbname` - Lance Cloud
-///
+/// * `uri` - URI where the database is located, can be a local directory, supported remote cloud storage,
+///           or a LanceDB Cloud database.  See [ConnectOptions::uri] for a list of accepted formats
 pub async fn connect(uri: &str) -> Result<Arc<dyn Connection>> {
     let options = ConnectOptions::new(uri);
     connect_with_options(&options).await
 }
 
-/// Connect with [`ConnectOptions`].
+/// Connect to a LanceDB database with [`ConnectOptions`].
 ///
 /// # Arguments
 /// - `options` - [`ConnectOptions`] to connect to the database.
 pub async fn connect_with_options(options: &ConnectOptions) -> Result<Arc<dyn Connection>> {
-    let db = Database::connect(&options.uri).await?;
+    let db = Database::connect_with_options(options).await?;
     Ok(Arc::new(db))
 }
 
-pub struct Database {
+#[derive(Debug)]
+struct Database {
     object_store: ObjectStore,
     query_string: Option<String>,
 
@@ -179,21 +261,7 @@ const MIRRORED_STORE: &str = "mirroredStore";
 
 /// A connection to LanceDB
 impl Database {
-    /// Connects to LanceDB
-    ///
-    /// # Arguments
-    ///
-    /// * `uri` - URI where the database is located, can be a local file or a supported remote cloud storage
-    ///
-    /// # Returns
-    ///
-    /// * A [Database] object.
-    pub async fn connect(uri: &str) -> Result<Self> {
-        let options = ConnectOptions::new(uri);
-        Self::connect_with_options(&options).await
-    }
-
-    pub async fn connect_with_options(options: &ConnectOptions) -> Result<Self> {
+    async fn connect_with_options(options: &ConnectOptions) -> Result<Self> {
         let uri = &options.uri;
         let parse_res = url::Url::parse(uri);
 
@@ -358,7 +426,7 @@ impl Connection for Database {
         &self,
         name: &str,
         batches: Box<dyn RecordBatchReader + Send>,
-        params: Option<WriteParams>,
+        params: CreateTableOptions,
     ) -> Result<TableRef> {
         let table_uri = self.table_uri(name)?;
 
@@ -374,16 +442,21 @@ impl Connection for Database {
         ))
     }
 
-    /// Open a table in the database.
-    ///
-    /// # Arguments
-    /// * `name` - The name of the table.
-    /// * `params` - The parameters to open the table.
-    ///
-    /// # Returns
-    ///
-    /// * A [TableRef] object.
-    async fn open_table_with_params(&self, name: &str, params: ReadParams) -> Result<TableRef> {
+    async fn create_empty_table(
+        &self,
+        name: &str,
+        schema: SchemaRef,
+        params: CreateTableOptions,
+    ) -> Result<TableRef> {
+        let table_uri = self.table_uri(name)?;
+
+        Ok(Arc::new(
+            NativeTable::create_empty(&table_uri, name, schema, self.store_wrapper.clone(), params)
+                .await?,
+        ))
+    }
+
+    async fn open_table(&self, name: &str, params: OpenTableOptions) -> Result<TableRef> {
         let table_uri = self.table_uri(name)?;
         Ok(Arc::new(
             NativeTable::open_with_params(&table_uri, name, self.store_wrapper.clone(), params)
@@ -396,6 +469,10 @@ impl Connection for Database {
         let full_path = self.base_path.child(dir_name.clone());
         self.object_store.remove_dir_all(full_path).await?;
         Ok(())
+    }
+
+    async fn drop_db(&self) -> Result<()> {
+        todo!()
     }
 }
 
@@ -411,7 +488,9 @@ mod tests {
     async fn test_connect() {
         let tmp_dir = tempdir().unwrap();
         let uri = tmp_dir.path().to_str().unwrap();
-        let db = Database::connect(uri).await.unwrap();
+        let db = Database::connect_with_options(&ConnectOptions::new(uri))
+            .await
+            .unwrap();
 
         assert_eq!(db.uri, uri);
     }
@@ -429,9 +508,10 @@ mod tests {
         let relative_root = std::path::PathBuf::from(relative_ancestors.join("/"));
         let relative_uri = relative_root.join(&uri);
 
-        let db = Database::connect(relative_uri.to_str().unwrap())
-            .await
-            .unwrap();
+        let db =
+            Database::connect_with_options(&ConnectOptions::new(relative_uri.to_str().unwrap()))
+                .await
+                .unwrap();
 
         assert_eq!(db.uri, relative_uri.to_str().unwrap().to_string());
     }
@@ -444,7 +524,7 @@ mod tests {
         create_dir_all(tmp_dir.path().join("invalidlance")).unwrap();
 
         let uri = tmp_dir.path().to_str().unwrap();
-        let db = Database::connect(uri).await.unwrap();
+        let db = connect(uri).await.unwrap();
         let tables = db.table_names().await.unwrap();
         assert_eq!(tables.len(), 2);
         assert!(tables[0].eq(&String::from("table1")));
@@ -462,7 +542,7 @@ mod tests {
         create_dir_all(tmp_dir.path().join("table1.lance")).unwrap();
 
         let uri = tmp_dir.path().to_str().unwrap();
-        let db = Database::connect(uri).await.unwrap();
+        let db = connect(uri).await.unwrap();
         db.drop_table("table1").await.unwrap();
 
         let tables = db.table_names().await.unwrap();
