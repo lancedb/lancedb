@@ -116,7 +116,7 @@ def join_uri(base: Union[str, pathlib.Path], *parts: str) -> str:
     return "/".join([p.rstrip("/") for p in [base, *parts]])
 
 
-def attempt_import_or_raise(module: str, mitigation=None):
+def attempt_import_or_raise(module: str, mitigation=None, pkg = None):
     """
     Import the specified module. If the module is not installed,
     raise an ImportError with a helpful message.
@@ -130,6 +130,8 @@ def attempt_import_or_raise(module: str, mitigation=None):
         If not provided then the module name will be used.
     """
     try:
+        if pkg:
+            return importlib.import_module(module, pkg)
         return importlib.import_module(module)
     except ImportError:
         raise ImportError(f"Please install {mitigation or module}")

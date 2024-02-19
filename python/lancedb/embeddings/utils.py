@@ -36,6 +36,9 @@ TEXT = Union[str, List[str], pa.Array, pa.ChunkedArray, np.ndarray]
 IMAGES = Union[
     str, bytes, List[str], List[bytes], pa.Array, pa.ChunkedArray, np.ndarray
 ]
+AUDIO = Union[
+    str, bytes, List[str], List[bytes], pa.Array, pa.ChunkedArray, np.ndarray
+]
 
 
 def with_embeddings(
