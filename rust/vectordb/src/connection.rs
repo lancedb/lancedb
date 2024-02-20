@@ -52,7 +52,7 @@ impl CreateTableMode {
     pub fn exist_ok(
         callback: impl FnOnce(OpenTableBuilder) -> OpenTableBuilder + Send + 'static,
     ) -> Self {
-        CreateTableMode::ExistOk(Box::new(callback))
+        Self::ExistOk(Box::new(callback))
     }
 }
 
@@ -101,7 +101,7 @@ impl CreateTableBuilder<true> {
     ) -> Self {
         Self {
             parent,
-            name: name,
+            name,
             data: Some(data),
             schema: None,
             mode: CreateTableMode::default(),
@@ -126,7 +126,7 @@ impl CreateTableBuilder<false> {
     fn new(parent: Arc<dyn ConnectionInternal>, name: String, schema: SchemaRef) -> Self {
         Self {
             parent,
-            name: name,
+            name,
             data: None,
             schema: Some(schema),
             mode: CreateTableMode::default(),

@@ -1102,7 +1102,6 @@ mod tests {
                 lance_write_params: Some(param),
             },
             mode: AddDataMode::Append,
-            ..Default::default()
         };
 
         let new_batches = RecordBatchIterator::new(batches.clone(), schema.clone());
