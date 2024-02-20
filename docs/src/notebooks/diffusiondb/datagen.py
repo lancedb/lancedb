@@ -23,10 +23,8 @@ from multiprocessing import Pool
 import lance
 import pyarrow as pa
 from datasets import load_dataset
-from PIL import Image
 from transformers import CLIPModel, CLIPProcessor, CLIPTokenizerFast
 
-import lancedb
 
 MODEL_ID = "openai/clip-vit-base-patch32"
 
