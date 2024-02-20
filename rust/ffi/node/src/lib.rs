@@ -22,9 +22,9 @@ use object_store::CredentialProvider;
 use once_cell::sync::OnceCell;
 use tokio::runtime::Runtime;
 
-use vectordb::connection::OpenTableOptions;
+use vectordb::connect;
+use vectordb::connection::Connection;
 use vectordb::table::ReadParams;
-use vectordb::{connect_with_options, ConnectOptions, Connection};
 
 use crate::error::ResultExt;
 use crate::query::JsQuery;
@@ -39,7 +39,7 @@ mod query;
 mod table;
 
 struct JsDatabase {
-    database: Arc<dyn Connection + 'static>,
+    database: Connection,
 }
 
 impl Finalize for JsDatabase {}
@@ -89,19 +89,19 @@ fn database_new(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let channel = cx.channel();
     let (deferred, promise) = cx.promise();
 
-    let mut conn_options = ConnectOptions::new(&path);
+    let mut conn_builder = connect(&path);
     if let Some(region) = region {
-        conn_options = conn_options.region(&region);
+        conn_builder = conn_builder.region(&region);
     }
     if let Some(aws_creds) = aws_creds {
-        conn_options = conn_options.aws_creds(AwsCredential {
+        conn_builder = conn_builder.aws_creds(AwsCredential {
             key_id: aws_creds.key_id,
             secret_key: aws_creds.secret_key,
             token: aws_creds.token,
         });
     }
     rt.spawn(async move {
-        let database = connect_with_options(&conn_options).await;
+        let database = conn_builder.execute().await;
 
         deferred.settle_with(&channel, move |mut cx| {
             let db = JsDatabase {
@@ -218,13 +218,9 @@ fn database_open_table(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let (deferred, promise) = cx.promise();
     rt.spawn(async move {
         let table_rst = database
-            .open_table(
-                &table_name,
-                OpenTableOptions {
-                    lance_read_params: Some(params),
-                    ..Default::default()
-                },
-            )
+            .open_table(&table_name)
+            .lance_read_params(params)
+            .execute()
             .await;
 
         deferred.settle_with(&channel, move |mut cx| {

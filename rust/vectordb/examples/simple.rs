@@ -19,9 +19,8 @@ use arrow_array::{FixedSizeListArray, Int32Array, RecordBatch, RecordBatchIterat
 use arrow_schema::{DataType, Field, Schema};
 use futures::TryStreamExt;
 
-use vectordb::connection::{CreateTableOptions, OpenTableOptions};
+use vectordb::connection::Connection;
 use vectordb::table::AddDataOptions;
-use vectordb::Connection;
 use vectordb::{connect, Result, Table, TableRef};
 
 #[tokio::main]
@@ -31,18 +30,18 @@ async fn main() -> Result<()> {
     }
     // --8<-- [start:connect]
     let uri = "data/sample-lancedb";
-    let db = connect(uri).await?;
+    let db = connect(uri).execute().await?;
     // --8<-- [end:connect]
 
     // --8<-- [start:list_names]
     println!("{:?}", db.table_names().await?);
     // --8<-- [end:list_names]
-    let tbl = create_table(db.clone()).await?;
+    let tbl = create_table(&db).await?;
     create_index(tbl.as_ref()).await?;
     let batches = search(tbl.as_ref()).await?;
     println!("{:?}", batches);
 
-    create_empty_table(db.clone()).await.unwrap();
+    create_empty_table(&db).await.unwrap();
 
     // --8<-- [start:delete]
     tbl.delete("id > 24").await.unwrap();
@@ -57,17 +56,14 @@ async fn main() -> Result<()> {
 #[allow(dead_code)]
 async fn open_with_existing_tbl() -> Result<()> {
     let uri = "data/sample-lancedb";
-    let db = connect(uri).await?;
+    let db = connect(uri).execute().await?;
     // --8<-- [start:open_with_existing_file]
-    let _ = db
-        .open_table("my_table", OpenTableOptions::default())
-        .await
-        .unwrap();
+    let _ = db.open_table("my_table").execute().await.unwrap();
     // --8<-- [end:open_with_existing_file]
     Ok(())
 }
 
-async fn create_table(db: Arc<dyn Connection>) -> Result<TableRef> {
+async fn create_table(db: &Connection) -> Result<TableRef> {
     // --8<-- [start:create_table]
     const TOTAL: usize = 1000;
     const DIM: usize = 128;
@@ -104,7 +100,8 @@ async fn create_table(db: Arc<dyn Connection>) -> Result<TableRef> {
         schema.clone(),
     );
     let tbl = db
-        .create_table("my_table", Box::new(batches), CreateTableOptions::default())
+        .create_table("my_table", Box::new(batches))
+        .execute()
         .await
         .unwrap();
     // --8<-- [end:create_table]
@@ -136,19 +133,13 @@ async fn create_table(db: Arc<dyn Connection>) -> Result<TableRef> {
     Ok(tbl)
 }
 
-async fn create_empty_table(db: Arc<dyn Connection>) -> Result<TableRef> {
+async fn create_empty_table(db: &Connection) -> Result<TableRef> {
     // --8<-- [start:create_empty_table]
     let schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int32, false),
         Field::new("item", DataType::Utf8, true),
     ]));
-    let batches = RecordBatchIterator::new(vec![], schema.clone());
-    db.create_table(
-        "empty_table",
-        Box::new(batches),
-        CreateTableOptions::default(),
-    )
-    .await
+    db.create_empty_table("empty_table", schema).execute().await
     // --8<-- [end:create_empty_table]
 }
 

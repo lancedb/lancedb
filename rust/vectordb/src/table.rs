@@ -27,19 +27,17 @@ use lance::dataset::optimize::{
     compact_files, CompactionMetrics, CompactionOptions, IndexRemapperOptions,
 };
 pub use lance::dataset::ReadParams;
-use lance::dataset::{Dataset, UpdateBuilder, WhenMatched, WriteParams};
+use lance::dataset::{Dataset, UpdateBuilder, WhenMatched, WriteMode, WriteParams};
 use lance::dataset::{MergeInsertBuilder as LanceMergeInsertBuilder, WhenNotMatchedBySource};
 use lance::io::WrappingObjectStore;
 use lance_index::{optimize::OptimizeOptions, DatasetIndexExt};
 use log::info;
 
-use crate::connection::{CreateTableMode, CreateTableOptions, OpenTableOptions};
 use crate::error::{Error, Result};
 use crate::index::vector::{VectorIndex, VectorIndexStatistics};
 use crate::index::IndexBuilder;
 use crate::query::Query;
 use crate::utils::{PatchReadParam, PatchWriteParam};
-use crate::WriteMode;
 
 use self::merge::{MergeInsert, MergeInsertBuilder};
 
@@ -88,7 +86,7 @@ pub struct OptimizeStats {
 
 /// Options to use when writing data
 #[derive(Clone, Debug, Default)]
-pub struct WriteTableOptions {
+pub struct WriteOptions {
     // Coming soon: https://github.com/lancedb/lancedb/issues/992
     // /// What behavior to take if the data contains invalid vectors
     // pub on_bad_vectors: BadVectorHandling,
@@ -117,7 +115,7 @@ pub struct AddDataOptions {
     /// Whether to add new rows (the default) or replace the existing data
     pub mode: AddDataMode,
     /// Options to use when writing the data
-    pub write_options: WriteTableOptions,
+    pub write_options: WriteOptions,
 }
 
 /// A Table is a collection of strong typed Rows.
@@ -164,13 +162,13 @@ pub trait Table: std::fmt::Display + Send + Sync {
     ///
     /// ```no_run
     /// # use std::sync::Arc;
-    /// # use vectordb::connection::{Connection, CreateTableOptions};
     /// # use arrow_array::{FixedSizeListArray, types::Float32Type, RecordBatch,
     /// #   RecordBatchIterator, Int32Array};
     /// # use arrow_schema::{Schema, Field, DataType};
     /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
     /// let tmpdir = tempfile::tempdir().unwrap();
     /// let db = vectordb::connect(tmpdir.path().to_str().unwrap())
+    ///     .execute()
     ///     .await
     ///     .unwrap();
     /// # let schema = Arc::new(Schema::new(vec![
@@ -197,7 +195,8 @@ pub trait Table: std::fmt::Display + Send + Sync {
     ///     schema.clone(),
     /// );
     /// let tbl = db
-    ///     .create_table("delete_test", Box::new(batches), CreateTableOptions::default())
+    ///     .create_table("delete_test", Box::new(batches))
+    ///     .execute()
     ///     .await
     ///     .unwrap();
     /// tbl.delete("id > 5").await.unwrap();
@@ -211,16 +210,16 @@ pub trait Table: std::fmt::Display + Send + Sync {
     ///
     /// ```no_run
     /// # use std::sync::Arc;
-    /// # use vectordb::connection::{Connection, OpenTableOptions};
     /// # use arrow_array::{FixedSizeListArray, types::Float32Type, RecordBatch,
     /// #   RecordBatchIterator, Int32Array};
     /// # use arrow_schema::{Schema, Field, DataType};
     /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
     /// let tmpdir = tempfile::tempdir().unwrap();
     /// let db = vectordb::connect(tmpdir.path().to_str().unwrap())
+    ///     .execute()
     ///     .await
     ///     .unwrap();
-    /// # let tbl = db.open_table("idx_test", OpenTableOptions::default()).await.unwrap();
+    /// # let tbl = db.open_table("idx_test").execute().await.unwrap();
     /// tbl.create_index(&["vector"])
     ///     .ivf_pq()
     ///     .num_partitions(256)
@@ -265,16 +264,16 @@ pub trait Table: std::fmt::Display + Send + Sync {
     ///
     /// ```no_run
     /// # use std::sync::Arc;
-    /// # use vectordb::connection::{Connection, OpenTableOptions};
     /// # use arrow_array::{FixedSizeListArray, types::Float32Type, RecordBatch,
     /// #   RecordBatchIterator, Int32Array};
     /// # use arrow_schema::{Schema, Field, DataType};
     /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
     /// let tmpdir = tempfile::tempdir().unwrap();
     /// let db = vectordb::connect(tmpdir.path().to_str().unwrap())
+    ///     .execute()
     ///     .await
     ///     .unwrap();
-    /// # let tbl = db.open_table("idx_test", OpenTableOptions::default()).await.unwrap();
+    /// # let tbl = db.open_table("idx_test").execute().await.unwrap();
     /// # let schema = Arc::new(Schema::new(vec![
     /// #  Field::new("id", DataType::Int32, false),
     /// #  Field::new("vector", DataType::FixedSizeList(
@@ -412,7 +411,7 @@ impl NativeTable {
     /// * A [NativeTable] object.
     pub async fn open(uri: &str) -> Result<Self> {
         let name = Self::get_table_name(uri)?;
-        Self::open_with_params(uri, &name, None, OpenTableOptions::default()).await
+        Self::open_with_params(uri, &name, None, None).await
     }
 
     /// Opens an existing Table
@@ -430,20 +429,17 @@ impl NativeTable {
         uri: &str,
         name: &str,
         write_store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
-        params: OpenTableOptions,
+        params: Option<ReadParams>,
     ) -> Result<Self> {
-        let lance_params = params.lance_read_params.unwrap_or(ReadParams {
-            index_cache_size: params.index_cache_size as usize,
-            ..Default::default()
-        });
+        let params = params.unwrap_or_default();
         // patch the params if we have a write store wrapper
-        let lance_params = match write_store_wrapper.clone() {
-            Some(wrapper) => lance_params.patch_with_store_wrapper(wrapper)?,
-            None => lance_params,
+        let params = match write_store_wrapper.clone() {
+            Some(wrapper) => params.patch_with_store_wrapper(wrapper)?,
+            None => params,
         };
 
         let dataset = DatasetBuilder::from_uri(uri)
-            .with_read_params(lance_params)
+            .with_read_params(params)
             .load()
             .await
             .map_err(|e| match e {
@@ -551,40 +547,31 @@ impl NativeTable {
         name: &str,
         batches: impl RecordBatchReader + Send + 'static,
         write_store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
-        params: CreateTableOptions,
+        params: Option<WriteParams>,
     ) -> Result<Self> {
-        let lance_params = params.write_options.lance_write_params.unwrap_or_default();
+        let params = params.unwrap_or_default();
         // patch the params if we have a write store wrapper
-        let mut lance_params = match write_store_wrapper.clone() {
-            Some(wrapper) => lance_params.patch_with_store_wrapper(wrapper)?,
-            None => lance_params,
+        let params = match write_store_wrapper.clone() {
+            Some(wrapper) => params.patch_with_store_wrapper(wrapper)?,
+            None => params,
         };
 
-        if matches!(params.mode, CreateTableMode::Overwrite) {
-            lance_params.mode = WriteMode::Overwrite;
-        }
-
-        let dataset = Dataset::write(batches, uri, Some(lance_params)).await;
-        match dataset {
-            Ok(dataset) => Ok(Self {
-                name: name.to_string(),
-                uri: uri.to_string(),
-                dataset: Arc::new(Mutex::new(dataset)),
-                store_wrapper: write_store_wrapper,
-            }),
-            Err(lance::Error::DatasetAlreadyExists { .. }) => match params.mode {
-                CreateTableMode::ExistOk(open_opts) => {
-                    Self::open_with_params(uri, name, write_store_wrapper, open_opts).await
-                }
-                CreateTableMode::Create => Err(Error::TableAlreadyExists {
+        let dataset = Dataset::write(batches, uri, Some(params))
+            .await
+            .map_err(|e| match e {
+                lance::Error::DatasetAlreadyExists { .. } => Error::TableAlreadyExists {
                     name: name.to_string(),
-                }),
-                CreateTableMode::Overwrite => unreachable!(),
-            },
-            Err(err) => Err(Error::Lance {
-                message: err.to_string(),
-            }),
-        }
+                },
+                e => Error::Lance {
+                    message: e.to_string(),
+                },
+            })?;
+        Ok(Self {
+            name: name.to_string(),
+            uri: uri.to_string(),
+            dataset: Arc::new(Mutex::new(dataset)),
+            store_wrapper: write_store_wrapper,
+        })
     }
 
     pub async fn create_empty(
@@ -592,7 +579,7 @@ impl NativeTable {
         name: &str,
         schema: SchemaRef,
         write_store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
-        params: CreateTableOptions,
+        params: Option<WriteParams>,
     ) -> Result<Self> {
         let batches = RecordBatchIterator::new(vec![], schema);
         Self::create(uri, name, batches, write_store_wrapper, params).await
@@ -973,32 +960,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_create_already_exists() {
-        let tmp_dir = tempdir().unwrap();
-        let uri = tmp_dir.path().to_str().unwrap();
-
-        let batches = make_test_batches();
-        let _ = batches.schema().clone();
-        NativeTable::create(uri, "test", batches, None, CreateTableOptions::default())
-            .await
-            .unwrap();
-
-        let batches = make_test_batches();
-        let result =
-            NativeTable::create(uri, "test", batches, None, CreateTableOptions::default()).await;
-        assert!(matches!(
-            result.unwrap_err(),
-            Error::TableAlreadyExists { .. }
-        ));
-    }
-
-    #[tokio::test]
     async fn test_count_rows() {
         let tmp_dir = tempdir().unwrap();
         let uri = tmp_dir.path().to_str().unwrap();
 
         let batches = make_test_batches();
-        let table = NativeTable::create(uri, "test", batches, None, CreateTableOptions::default())
+        let table = NativeTable::create(uri, "test", batches, None, None)
             .await
             .unwrap();
 
@@ -1016,7 +983,7 @@ mod tests {
 
         let batches = make_test_batches();
         let schema = batches.schema().clone();
-        let table = NativeTable::create(uri, "test", batches, None, CreateTableOptions::default())
+        let table = NativeTable::create(uri, "test", batches, None, None)
             .await
             .unwrap();
         assert_eq!(table.count_rows(None).await.unwrap(), 10);
@@ -1047,7 +1014,7 @@ mod tests {
 
         // Create a dataset with i=0..10
         let batches = merge_insert_test_batches(0, 0);
-        let table = NativeTable::create(uri, "test", batches, None, CreateTableOptions::default())
+        let table = NativeTable::create(uri, "test", batches, None, None)
             .await
             .unwrap();
         assert_eq!(table.count_rows(None).await.unwrap(), 10);
@@ -1093,7 +1060,7 @@ mod tests {
 
         let batches = make_test_batches();
         let schema = batches.schema().clone();
-        let table = NativeTable::create(uri, "test", batches, None, CreateTableOptions::default())
+        let table = NativeTable::create(uri, "test", batches, None, None)
             .await
             .unwrap();
         assert_eq!(table.count_rows(None).await.unwrap(), 10);
@@ -1131,7 +1098,7 @@ mod tests {
         };
 
         let opts = AddDataOptions {
-            write_options: WriteTableOptions {
+            write_options: WriteOptions {
                 lance_write_params: Some(param),
             },
             mode: AddDataMode::Append,
@@ -1449,17 +1416,9 @@ mod tests {
             ..Default::default()
         };
         assert!(!wrapper.called());
-        let _ = NativeTable::open_with_params(
-            uri,
-            "test",
-            None,
-            OpenTableOptions {
-                lance_read_params: Some(param),
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
+        let _ = NativeTable::open_with_params(uri, "test", None, Some(param))
+            .await
+            .unwrap();
         assert!(wrapper.called());
     }
 
@@ -1531,7 +1490,7 @@ mod tests {
             schema,
         );
 
-        let table = NativeTable::create(uri, "test", batches, None, CreateTableOptions::default())
+        let table = NativeTable::create(uri, "test", batches, None, None)
             .await
             .unwrap();
 

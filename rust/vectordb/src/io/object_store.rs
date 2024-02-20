@@ -342,7 +342,7 @@ mod test {
     use object_store::local::LocalFileSystem;
     use tempfile;
 
-    use crate::{connect, connection::CreateTableOptions, table::WriteTableOptions};
+    use crate::{connect, table::WriteOptions};
 
     #[tokio::test]
     async fn test_e2e() {
@@ -354,7 +354,7 @@ mod test {
             secondary: Arc::new(secondary_store),
         });
 
-        let db = connect(dir1.to_str().unwrap()).await.unwrap();
+        let db = connect(dir1.to_str().unwrap()).execute().await.unwrap();
 
         let mut param = WriteParams::default();
         let store_params = ObjectStoreParams {
@@ -367,15 +367,12 @@ mod test {
         datagen = datagen.col(Box::<IncrementingInt32>::default());
         datagen = datagen.col(Box::new(RandomVector::default().named("vector".into())));
 
-        let create_opts = CreateTableOptions {
-            write_options: WriteTableOptions {
-                lance_write_params: Some(param),
-            },
-            ..Default::default()
-        };
-
         let res = db
-            .create_table("test", Box::new(datagen.batch(100)), create_opts)
+            .create_table("test", Box::new(datagen.batch(100)))
+            .write_options(WriteOptions {
+                lance_write_params: Some(param),
+            })
+            .execute()
             .await;
 
         // leave this here for easy debugging

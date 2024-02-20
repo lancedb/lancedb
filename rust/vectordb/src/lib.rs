@@ -43,10 +43,9 @@
 //! #### Connect to a database.
 //!
 //! ```rust
-//! use vectordb::connect;
 //! # use arrow_schema::{Field, Schema};
 //! # tokio::runtime::Runtime::new().unwrap().block_on(async {
-//! let db = connect("data/sample-lancedb").await.unwrap();
+//! let db = vectordb::connect("data/sample-lancedb").execute().await.unwrap();
 //! # });
 //! ```
 //!
@@ -59,16 +58,17 @@
 //! You can also use [`ConnectOptions`] to configure the connection to the database.
 //!
 //! ```rust
-//! use vectordb::{connect_with_options, ConnectOptions};
 //! use object_store::aws::AwsCredential;
 //! # tokio::runtime::Runtime::new().unwrap().block_on(async {
-//! let options =
-//! ConnectOptions::new("data/sample-lancedb").aws_creds(AwsCredential {
-//!     key_id: "some_key".to_string(),
-//!     secret_key: "some_secret".to_string(),
-//!     token: None,
-//! });
-//! let db = connect_with_options(&options).await.unwrap();
+//! let db = vectordb::connect("data/sample-lancedb")
+//!     .aws_creds(AwsCredential {
+//!         key_id: "some_key".to_string(),
+//!         secret_key: "some_secret".to_string(),
+//!         token: None,
+//!     })
+//!     .execute()
+//!     .await
+//!     .unwrap();
 //! # });
 //! ```
 //!
@@ -87,11 +87,10 @@
 //! use arrow_array::{RecordBatch, RecordBatchIterator};
 //! use arrow_schema::{DataType, Field, Schema};
 //! # use arrow_array::{FixedSizeListArray, Float32Array, Int32Array, types::Float32Type};
-//! # use vectordb::connection::{Connection, CreateTableOptions};
 //!
 //! # tokio::runtime::Runtime::new().unwrap().block_on(async {
 //! # let tmpdir = tempfile::tempdir().unwrap();
-//! # let db = vectordb::connect(tmpdir.path().to_str().unwrap()).await.unwrap();
+//! # let db = vectordb::connect(tmpdir.path().to_str().unwrap()).execute().await.unwrap();
 //! let schema = Arc::new(Schema::new(vec![
 //!     Field::new("id", DataType::Int32, false),
 //!     Field::new(
@@ -105,10 +104,10 @@
 //!     vec![RecordBatch::try_new(
 //!         schema.clone(),
 //!         vec![
-//!             Arc::new(Int32Array::from_iter_values(0..1000)),
+//!             Arc::new(Int32Array::from_iter_values(0..256)),
 //!             Arc::new(
 //!                 FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
-//!                     (0..1000).map(|_| Some(vec![Some(1.0); 128])),
+//!                     (0..256).map(|_| Some(vec![Some(1.0); 128])),
 //!                     128,
 //!                 ),
 //!             ),
@@ -119,7 +118,8 @@
 //!     .map(Ok),
 //!     schema.clone(),
 //! );
-//! db.create_table("my_table", Box::new(batches), CreateTableOptions::default())
+//! db.create_table("my_table", Box::new(batches))
+//!     .execute()
 //!     .await
 //!     .unwrap();
 //! # });
@@ -129,15 +129,13 @@
 //!
 //! ```no_run
 //! # use std::sync::Arc;
-//! # use vectordb::connect;
-//! # use vectordb::connection::OpenTableOptions;
 //! # use arrow_array::{FixedSizeListArray, types::Float32Type, RecordBatch,
 //! #   RecordBatchIterator, Int32Array};
 //! # use arrow_schema::{Schema, Field, DataType};
 //! # tokio::runtime::Runtime::new().unwrap().block_on(async {
 //! # let tmpdir = tempfile::tempdir().unwrap();
-//! # let db = connect(tmpdir.path().to_str().unwrap()).await.unwrap();
-//! # let tbl = db.open_table("idx_test", OpenTableOptions::default()).await.unwrap();
+//! # let db = vectordb::connect(tmpdir.path().to_str().unwrap()).execute().await.unwrap();
+//! # let tbl = db.open_table("idx_test").execute().await.unwrap();
 //! tbl.create_index(&["vector"])
 //!     .ivf_pq()
 //!     .num_partitions(256)
@@ -155,10 +153,9 @@
 //! # use arrow_schema::{DataType, Schema, Field};
 //! # use arrow_array::{RecordBatch, RecordBatchIterator};
 //! # use arrow_array::{FixedSizeListArray, Float32Array, Int32Array, types::Float32Type};
-//! # use vectordb::connection::{Connection, CreateTableOptions, OpenTableOptions};
 //! # tokio::runtime::Runtime::new().unwrap().block_on(async {
 //! # let tmpdir = tempfile::tempdir().unwrap();
-//! # let db = vectordb::connect(tmpdir.path().to_str().unwrap()).await.unwrap();
+//! # let db = vectordb::connect(tmpdir.path().to_str().unwrap()).execute().await.unwrap();
 //! # let schema = Arc::new(Schema::new(vec![
 //! #  Field::new("id", DataType::Int32, false),
 //! #  Field::new("vector", DataType::FixedSizeList(
@@ -173,8 +170,8 @@
 //! #       ]).unwrap()
 //! #   ].into_iter().map(Ok),
 //! #    schema.clone());
-//! # db.create_table("my_table", Box::new(batches), CreateTableOptions::default()).await.unwrap();
-//! # let table = db.open_table("my_table", OpenTableOptions::default()).await.unwrap();
+//! # db.create_table("my_table", Box::new(batches)).execute().await.unwrap();
+//! # let table = db.open_table("my_table").execute().await.unwrap();
 //! let results = table
 //!     .search(&[1.0; 128])
 //!     .execute_stream()
@@ -196,10 +193,8 @@ pub mod query;
 pub mod table;
 pub mod utils;
 
-pub use connection::Connection;
 pub use error::{Error, Result};
 pub use table::{Table, TableRef};
 
 /// Connect to a database
-pub use connection::{connect, connect_with_options, ConnectOptions};
-pub use lance::dataset::WriteMode;
+pub use connection::connect;
