@@ -45,8 +45,7 @@ class ImageBindEmbeddings(EmbeddingFunction):
     @cached_property
     def embedding_model(self):
         """
-        Get the embedding model specified by the flag,
-        name and device. This is cached so that the model is only loaded
+        Get the embedding model. This is cached so that the model is only loaded
         once per process.
         """
         return self.get_embedding_model()
@@ -78,8 +77,8 @@ class ImageBindEmbeddings(EmbeddingFunction):
 
         Parameters
         ----------
-        query : Union[str, PIL.Image.Image]
-            The query to embed. A query can be either text, image or audio.
+        query : Union[str]
+            The query to embed. A query can be either text, image paths or audio paths.
         """
         query = self.sanitize_input(query)
         if query[0].endswith((".mp3", ".wav", ".flac", ".ogg", ".aac")):
@@ -132,7 +131,7 @@ class ImageBindEmbeddings(EmbeddingFunction):
         self, source: Union[IMAGES, AUDIO], *args, **kwargs
     ) -> List[np.array]:
         """
-        Get the embeddings for the given images
+        Get the embeddings for the given sourcefield column in the pydantic model.
         """
         source = self.sanitize_input(source)
         embeddings = []
@@ -163,7 +162,6 @@ class ImageBindEmbeddings(EmbeddingFunction):
     def get_embedding_model(self):
         """
         fetches the imagebind embedding model
-
         """
         imagebind = attempt_import_or_raise("imagebind", "imagebind")
         model = imagebind.imagebind_model.imagebind_huge(pretrained=True)
