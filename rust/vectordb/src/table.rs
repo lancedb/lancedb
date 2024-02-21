@@ -328,6 +328,7 @@ pub trait Table: std::fmt::Display + Send + Sync {
     /// # use futures::TryStreamExt;
     /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
     /// # let tbl = vectordb::table::NativeTable::open("/tmp/tbl").await.unwrap();
+    /// use crate::vectordb::Table;
     /// let stream = tbl
     ///     .query()
     ///     .nearest_to(&[1.0, 2.0, 3.0])
@@ -346,6 +347,7 @@ pub trait Table: std::fmt::Display + Send + Sync {
     /// # use futures::TryStreamExt;
     /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
     /// # let tbl = vectordb::table::NativeTable::open("/tmp/tbl").await.unwrap();
+    /// use crate::vectordb::Table;
     /// let stream = tbl
     ///     .query()
     ///     .filter("id > 5")
@@ -363,6 +365,7 @@ pub trait Table: std::fmt::Display + Send + Sync {
     /// # use futures::TryStreamExt;
     /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
     /// # let tbl = vectordb::table::NativeTable::open("/tmp/tbl").await.unwrap();
+    /// use crate::vectordb::Table;
     /// let stream = tbl.query().execute_stream().await.unwrap();
     /// let batches: Vec<RecordBatch> = stream.try_collect().await.unwrap();
     /// # });
@@ -1014,7 +1017,7 @@ mod tests {
         let uri = tmp_dir.path().to_str().unwrap();
 
         // Create a dataset with i=0..10
-        let batches = make_test_batches();
+        let batches = merge_insert_test_batches(0, 0);
         let table = NativeTable::create(uri, "test", batches, None, None, None)
             .await
             .unwrap();
