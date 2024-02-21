@@ -102,7 +102,7 @@ def test_linear_combination(tmp_path):
     query = "Our father who art in heaven"
     query_vector = table.to_pandas()["vector"][0]
     result = (
-        table.search((query_vector, query))
+        table.search(vector=query_vector, text=query, query_type="vector")
         .limit(30)
         .rerank(normalize="score")
         .to_arrow()
@@ -114,6 +114,13 @@ def test_linear_combination(tmp_path):
         "The _relevance_score column of the results returned by the reranker "
         "represents the relevance of the result to the query & should "
         "be descending."
+    )
+
+    result = (
+        table.search(vector=query_vector, text=query)
+        .limit(30)
+        .rerank(normalize="score")
+        .to_arrow()
     )
 
 
@@ -139,7 +146,7 @@ def test_cohere_reranker(tmp_path):
     query = "Our father who art in heaven"
     query_vector = table.to_pandas()["vector"][0]
     result = (
-        table.search((query_vector, query))
+        table.search(vector=query_vector, text=query)
         .limit(30)
         .rerank(reranker=CohereReranker())
         .to_arrow()
@@ -173,7 +180,7 @@ def test_cross_encoder_reranker(tmp_path):
     query = "Our father who art in heaven"
     query_vector = table.to_pandas()["vector"][0]
     result = (
-        table.search((query_vector, query), query_type="hybrid")
+        table.search(vector=query_vector, text=query, query_type="hybrid")
         .limit(30)
         .rerank(reranker=CrossEncoderReranker())
         .to_arrow()
@@ -207,7 +214,7 @@ def test_colbert_reranker(tmp_path):
     query = "Our father who art in heaven"
     query_vector = table.to_pandas()["vector"][0]
     result = (
-        table.search((query_vector, query))
+        table.search(vector=query_vector, text=query)
         .limit(30)
         .rerank(reranker=ColbertReranker())
         .to_arrow()
@@ -244,7 +251,7 @@ def test_openai_reranker(tmp_path):
     query = "Our father who art in heaven"
     query_vector = table.to_pandas()["vector"][0]
     result = (
-        table.search((query_vector, query))
+        table.search(vector=query_vector, text=query)
         .limit(30)
         .rerank(reranker=OpenaiReranker())
         .to_arrow()
