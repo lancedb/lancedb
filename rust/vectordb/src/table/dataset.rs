@@ -54,7 +54,7 @@ impl DatasetRef {
                 last_consistency_check,
                 ..
             } => {
-                dataset
+                *dataset = dataset
                     .checkout_version(dataset.latest_version_id().await?)
                     .await?;
                 last_consistency_check.replace(Instant::now());
@@ -156,7 +156,7 @@ impl DatasetConsistencyWrapper {
         self.0.write().await.set_latest(dataset);
     }
 
-    async fn load(&self) -> Result<()> {
+    async fn reload(&self) -> Result<()> {
         self.0.write().await.reload().await
     }
 
@@ -188,7 +188,7 @@ impl DatasetConsistencyWrapper {
     /// version parameters.
     async fn ensure_up_to_date(&self) -> Result<()> {
         if !self.is_up_to_date().await? {
-            self.load().await?;
+            self.reload().await?;
         }
         Ok(())
     }

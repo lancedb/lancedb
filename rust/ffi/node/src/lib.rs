@@ -84,6 +84,12 @@ fn database_new(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let path = cx.argument::<JsString>(0)?.value(&mut cx);
     let aws_creds = get_aws_creds(&mut cx, 1)?;
     let region = get_aws_region(&mut cx, 4)?;
+    let read_consistency_interval = cx.argument_opt(5).and_then(|arg| {
+        arg.downcast_or_throw::<JsNumber, _>(&mut cx)
+            .ok()
+            .map(|v| v.value(&mut cx))
+            .map(std::time::Duration::from_secs_f64)
+    });
 
     let rt = runtime(&mut cx)?;
     let channel = cx.channel();
@@ -99,6 +105,9 @@ fn database_new(mut cx: FunctionContext) -> JsResult<JsPromise> {
             secret_key: aws_creds.secret_key,
             token: aws_creds.token,
         });
+    }
+    if let Some(interval) = read_consistency_interval {
+        conn_builder = conn_builder.read_consistency_interval(interval);
     }
     rt.spawn(async move {
         let database = conn_builder.execute().await;

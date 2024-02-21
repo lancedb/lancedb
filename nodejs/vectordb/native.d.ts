@@ -16,6 +16,18 @@ export interface ConnectionOptions {
   uri: string
   apiKey?: string
   hostOverride?: string
+  /**
+   * (For LanceDB OSS only): The interval, in seconds, at which to check for
+   * updates to the table from other processes. If None, then consistency is not
+   * checked. For performance reasons, this is the default. For strong
+   * consistency, set this to zero seconds. Then every read will check for
+   * updates from other processes. As a compromise, you can set this to a
+   * non-zero value for eventual consistency. If more than that interval
+   * has passed since the last check, then the table will be checked for updates.
+   * Note: this consistency only applies to read operations. Write operations are
+   * always consistent.
+   */
+  readConsistencyInterval?: number
 }
 /** Write mode for writing a table. */
 export const enum WriteMode {
@@ -30,7 +42,7 @@ export interface WriteOptions {
 export function connect(options: ConnectionOptions): Promise<Connection>
 export class Connection {
   /** Create a new Connection instance from the given URI. */
-  static new(uri: string): Promise<Connection>
+  static new(options: ConnectionOptions): Promise<Connection>
   /** List all tables in the dataset. */
   tableNames(): Promise<Array<string>>
   /**
@@ -71,7 +83,7 @@ export class Query {
 }
 export class Table {
   /** Return Schema as empty Arrow IPC file. */
-  schema(): Buffer
+  schema(): Promise<Buffer>
   add(buf: Buffer): Promise<void>
   countRows(filter?: string | undefined | null): Promise<bigint>
   delete(predicate: string): Promise<void>

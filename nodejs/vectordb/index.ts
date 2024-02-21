@@ -53,12 +53,12 @@ export async function connect(
     opts = Object.assign(
       {
         uri: "",
-        apiKey: "",
-        hostOverride: "",
+        apiKey: undefined,
+        hostOverride: undefined,
       },
       args
     );
   }
-  const nativeConn = await NativeConnection.new(opts.uri);
+  const nativeConn = await NativeConnection.new(opts);
   return new Connection(nativeConn);
 }

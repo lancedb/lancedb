@@ -912,6 +912,7 @@ mod tests {
     use std::iter;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::time::Duration;
 
     use arrow_array::{
         Array, BooleanArray, Date32Array, FixedSizeListArray, Float32Array, Float64Array,
@@ -926,6 +927,8 @@ mod tests {
     use lance::io::{ObjectStoreParams, WrappingObjectStore};
     use rand::Rng;
     use tempfile::tempdir;
+
+    use crate::connection::ConnectBuilder;
 
     use super::*;
 
@@ -1537,5 +1540,69 @@ mod tests {
             .unwrap();
 
         Ok(FixedSizeListArray::from(data))
+    }
+
+    #[tokio::test]
+    async fn test_read_consistency_interval() {
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("i", DataType::Int32, false)])),
+            vec![Arc::new(Int32Array::from(vec![1]))],
+        )
+        .unwrap();
+
+        let intervals = vec![
+            None,
+            Some(0),
+            Some(100), // 100 ms
+        ];
+
+        for interval in intervals {
+            let tmp_dir = tempdir().unwrap();
+            let uri = tmp_dir.path().to_str().unwrap();
+
+            let conn1 = ConnectBuilder::new(uri).execute().await.unwrap();
+            let table1 = conn1
+                .create_empty_table("my_table", batch.schema())
+                .execute()
+                .await
+                .unwrap();
+
+            let mut conn2 = ConnectBuilder::new(uri);
+            if let Some(interval) = interval {
+                conn2 = conn2.read_consistency_interval(std::time::Duration::from_millis(interval));
+            }
+            let conn2 = conn2.execute().await.unwrap();
+            let table2 = conn2.open_table("my_table").execute().await.unwrap();
+
+            assert_eq!(table1.count_rows(None).await.unwrap(), 0);
+            assert_eq!(table2.count_rows(None).await.unwrap(), 0);
+
+            table1
+                .add(
+                    Box::new(RecordBatchIterator::new(
+                        vec![Ok(batch.clone())],
+                        batch.schema(),
+                    )),
+                    AddDataOptions::default(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(table1.count_rows(None).await.unwrap(), 1);
+
+            match interval {
+                None => {
+                    assert_eq!(table2.count_rows(None).await.unwrap(), 0);
+                }
+                Some(0) => {
+                    assert_eq!(table2.count_rows(None).await.unwrap(), 1);
+                }
+                Some(100) => {
+                    assert_eq!(table2.count_rows(None).await.unwrap(), 0);
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    assert_eq!(table2.count_rows(None).await.unwrap(), 1);
+                }
+                _ => unreachable!(),
+            }
+        }
     }
 }

@@ -409,8 +409,11 @@ impl Database {
         let uri = &options.uri;
         let parse_res = url::Url::parse(uri);
 
+        // TODO: pass params regardless of OS
         match parse_res {
-            Ok(url) if url.scheme().len() == 1 && cfg!(windows) => Self::open_path(uri).await,
+            Ok(url) if url.scheme().len() == 1 && cfg!(windows) => {
+                Self::open_path(uri, options.read_consistency_interval).await
+            }
             Ok(mut url) => {
                 // iter thru the query params and extract the commit store param
                 let mut engine = None;
@@ -497,11 +500,14 @@ impl Database {
                     read_consistency_interval: options.read_consistency_interval,
                 })
             }
-            Err(_) => Self::open_path(uri).await,
+            Err(_) => Self::open_path(uri, options.read_consistency_interval).await,
         }
     }
 
-    async fn open_path(path: &str) -> Result<Self> {
+    async fn open_path(
+        path: &str,
+        read_consistency_interval: Option<std::time::Duration>,
+    ) -> Result<Self> {
         let (object_store, base_path) = ObjectStore::from_uri(path).await?;
         if object_store.is_local() {
             Self::try_create_dir(path).context(CreateDirSnafu { path })?;
@@ -512,7 +518,7 @@ impl Database {
             base_path,
             object_store,
             store_wrapper: None,
-            read_consistency_interval: None,
+            read_consistency_interval,
         })
     }
 
