@@ -15,6 +15,7 @@
 use arrow_ipc::writer::FileWriter;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
+use vectordb::table::AddDataOptions;
 use vectordb::{ipc::ipc_file_to_batches, table::TableRef};
 
 use crate::index::IndexBuilder;
@@ -48,12 +49,15 @@ impl Table {
     pub async fn add(&self, buf: Buffer) -> napi::Result<()> {
         let batches = ipc_file_to_batches(buf.to_vec())
             .map_err(|e| napi::Error::from_reason(format!("Failed to read IPC file: {}", e)))?;
-        self.table.add(Box::new(batches), None).await.map_err(|e| {
-            napi::Error::from_reason(format!(
-                "Failed to add batches to table {}: {}",
-                self.table, e
-            ))
-        })
+        self.table
+            .add(Box::new(batches), AddDataOptions::default())
+            .await
+            .map_err(|e| {
+                napi::Error::from_reason(format!(
+                    "Failed to add batches to table {}: {}",
+                    self.table, e
+                ))
+            })
     }
 
     #[napi]
