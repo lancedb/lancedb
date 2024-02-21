@@ -174,7 +174,6 @@ fn coerce_schema_batch(
 }
 
 /// Coerce the reader (input data) to match the given [Schema].
-///
 pub fn coerce_schema(
     reader: impl RecordBatchReader + Send + 'static,
     schema: Arc<Schema>,

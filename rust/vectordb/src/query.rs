@@ -60,7 +60,6 @@ impl Query {
     /// # Arguments
     ///
     /// * `dataset` - Lance dataset.
-    ///
     pub(crate) fn new(dataset: Arc<Dataset>) -> Self {
         Self {
             dataset,

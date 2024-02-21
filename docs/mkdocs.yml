@@ -216,6 +216,7 @@ extra_css:
 
 extra_javascript:
   - "extra_js/init_ask_ai_widget.js"
+  - "extra_js/meta_tag.js"
 
 extra:
   analytics:

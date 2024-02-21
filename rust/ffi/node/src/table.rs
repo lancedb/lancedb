@@ -18,7 +18,7 @@ use arrow_array::{RecordBatch, RecordBatchIterator};
 use lance::dataset::optimize::CompactionOptions;
 use lance::dataset::{WriteMode, WriteParams};
 use lance::io::ObjectStoreParams;
-use vectordb::table::OptimizeAction;
+use vectordb::table::{AddDataOptions, OptimizeAction, WriteOptions};
 
 use crate::arrow::{arrow_buffer_to_record_batch, record_batch_to_buffer};
 use neon::prelude::*;
@@ -80,7 +80,11 @@ impl JsTable {
         rt.spawn(async move {
             let batch_reader = RecordBatchIterator::new(batches.into_iter().map(Ok), schema);
             let table_rst = database
-                .create_table(&table_name, Box::new(batch_reader), Some(params))
+                .create_table(&table_name, Box::new(batch_reader))
+                .write_options(WriteOptions {
+                    lance_write_params: Some(params),
+                })
+                .execute()
                 .await;
 
             deferred.settle_with(&channel, move |mut cx| {
@@ -121,7 +125,13 @@ impl JsTable {
 
         rt.spawn(async move {
             let batch_reader = RecordBatchIterator::new(batches.into_iter().map(Ok), schema);
-            let add_result = table.add(Box::new(batch_reader), Some(params)).await;
+            let opts = AddDataOptions {
+                write_options: WriteOptions {
+                    lance_write_params: Some(params),
+                },
+                ..Default::default()
+            };
+            let add_result = table.add(Box::new(batch_reader), opts).await;
 
             deferred.settle_with(&channel, move |mut cx| {
                 add_result.or_throw(&mut cx)?;
