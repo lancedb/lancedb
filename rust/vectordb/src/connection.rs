@@ -64,9 +64,10 @@ impl Default for CreateTableMode {
 
 /// Describes what happens when a vector either contains NaN or
 /// does not have enough values
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 enum BadVectorHandling {
     /// An error is returned
+    #[default]
     Error,
     #[allow(dead_code)] // https://github.com/lancedb/lancedb/issues/992
     /// The offending row is droppped
@@ -74,12 +75,6 @@ enum BadVectorHandling {
     #[allow(dead_code)] // https://github.com/lancedb/lancedb/issues/992
     /// The invalid/missing items are replaced by fill_value
     Fill(f32),
-}
-
-impl Default for BadVectorHandling {
-    fn default() -> Self {
-        Self::Error
-    }
 }
 
 /// A builder for configuring a [`Connection::create_table`] operation

@@ -96,18 +96,13 @@ pub struct WriteOptions {
     pub lance_write_params: Option<WriteParams>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum AddDataMode {
     /// Rows will be appended to the table (the default)
+    #[default]
     Append,
     /// The existing table will be overwritten with the new data
     Overwrite,
-}
-
-impl Default for AddDataMode {
-    fn default() -> Self {
-        Self::Append
-    }
 }
 
 #[derive(Debug, Default, Clone)]
