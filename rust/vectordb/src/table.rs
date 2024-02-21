@@ -17,7 +17,7 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use arrow_array::RecordBatchReader;
+use arrow_array::{RecordBatchIterator, RecordBatchReader};
 use arrow_schema::{Schema, SchemaRef};
 use async_trait::async_trait;
 use chrono::Duration;
@@ -27,7 +27,7 @@ use lance::dataset::optimize::{
     compact_files, CompactionMetrics, CompactionOptions, IndexRemapperOptions,
 };
 pub use lance::dataset::ReadParams;
-use lance::dataset::{Dataset, UpdateBuilder, WhenMatched, WriteParams};
+use lance::dataset::{Dataset, UpdateBuilder, WhenMatched, WriteMode, WriteParams};
 use lance::dataset::{MergeInsertBuilder as LanceMergeInsertBuilder, WhenNotMatchedBySource};
 use lance::io::WrappingObjectStore;
 use lance_index::{optimize::OptimizeOptions, DatasetIndexExt};
@@ -38,7 +38,6 @@ use crate::index::vector::{VectorIndex, VectorIndexStatistics};
 use crate::index::IndexBuilder;
 use crate::query::Query;
 use crate::utils::{PatchReadParam, PatchWriteParam};
-use crate::WriteMode;
 
 use self::merge::{MergeInsert, MergeInsertBuilder};
 
@@ -85,6 +84,35 @@ pub struct OptimizeStats {
     pub prune: Option<RemovalStats>,
 }
 
+/// Options to use when writing data
+#[derive(Clone, Debug, Default)]
+pub struct WriteOptions {
+    // Coming soon: https://github.com/lancedb/lancedb/issues/992
+    // /// What behavior to take if the data contains invalid vectors
+    // pub on_bad_vectors: BadVectorHandling,
+    /// Advanced parameters that can be used to customize table creation
+    ///
+    /// If set, these will take precedence over any overlapping `OpenTableOptions` options
+    pub lance_write_params: Option<WriteParams>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub enum AddDataMode {
+    /// Rows will be appended to the table (the default)
+    #[default]
+    Append,
+    /// The existing table will be overwritten with the new data
+    Overwrite,
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct AddDataOptions {
+    /// Whether to add new rows (the default) or replace the existing data
+    pub mode: AddDataMode,
+    /// Options to use when writing the data
+    pub write_options: WriteOptions,
+}
+
 /// A Table is a collection of strong typed Rows.
 ///
 /// The type of the each row is defined in Apache Arrow [Schema].
@@ -112,12 +140,12 @@ pub trait Table: std::fmt::Display + Send + Sync {
     ///
     /// # Arguments
     ///
-    /// * `batches` RecordBatch to be saved in the Table
-    /// * `params` Append / Overwrite existing records. Default: Append
+    /// * `batches` data to be added to the Table
+    /// * `options` options to control how data is added
     async fn add(
         &self,
         batches: Box<dyn RecordBatchReader + Send>,
-        params: Option<WriteParams>,
+        options: AddDataOptions,
     ) -> Result<()>;
 
     /// Delete the rows from table that match the predicate.
@@ -129,28 +157,43 @@ pub trait Table: std::fmt::Display + Send + Sync {
     ///
     /// ```no_run
     /// # use std::sync::Arc;
-    /// # use vectordb::connection::{Database, Connection};
     /// # use arrow_array::{FixedSizeListArray, types::Float32Type, RecordBatch,
     /// #   RecordBatchIterator, Int32Array};
     /// # use arrow_schema::{Schema, Field, DataType};
     /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
     /// let tmpdir = tempfile::tempdir().unwrap();
-    /// let db = Database::connect(tmpdir.path().to_str().unwrap()).await.unwrap();
+    /// let db = vectordb::connect(tmpdir.path().to_str().unwrap())
+    ///     .execute()
+    ///     .await
+    ///     .unwrap();
     /// # let schema = Arc::new(Schema::new(vec![
     /// #  Field::new("id", DataType::Int32, false),
     /// #  Field::new("vector", DataType::FixedSizeList(
     /// #    Arc::new(Field::new("item", DataType::Float32, true)), 128), true),
     /// # ]));
-    /// let batches = RecordBatchIterator::new(vec![
-    ///     RecordBatch::try_new(schema.clone(),
-    ///        vec![
-    ///            Arc::new(Int32Array::from_iter_values(0..10)),
-    ///            Arc::new(FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
-    ///                (0..10).map(|_| Some(vec![Some(1.0); 128])), 128)),
-    ///        ]).unwrap()
-    ///    ].into_iter().map(Ok),
-    ///   schema.clone());
-    /// let tbl = db.create_table("delete_test", Box::new(batches), None).await.unwrap();
+    /// let batches = RecordBatchIterator::new(
+    ///     vec![RecordBatch::try_new(
+    ///         schema.clone(),
+    ///         vec![
+    ///             Arc::new(Int32Array::from_iter_values(0..10)),
+    ///             Arc::new(
+    ///                 FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
+    ///                     (0..10).map(|_| Some(vec![Some(1.0); 128])),
+    ///                     128,
+    ///                 ),
+    ///             ),
+    ///         ],
+    ///     )
+    ///     .unwrap()]
+    ///     .into_iter()
+    ///     .map(Ok),
+    ///     schema.clone(),
+    /// );
+    /// let tbl = db
+    ///     .create_table("delete_test", Box::new(batches))
+    ///     .execute()
+    ///     .await
+    ///     .unwrap();
     /// tbl.delete("id > 5").await.unwrap();
     /// # });
     /// ```
@@ -162,14 +205,16 @@ pub trait Table: std::fmt::Display + Send + Sync {
     ///
     /// ```no_run
     /// # use std::sync::Arc;
-    /// # use vectordb::connection::{Database, Connection};
     /// # use arrow_array::{FixedSizeListArray, types::Float32Type, RecordBatch,
     /// #   RecordBatchIterator, Int32Array};
     /// # use arrow_schema::{Schema, Field, DataType};
     /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
     /// let tmpdir = tempfile::tempdir().unwrap();
-    /// let db = Database::connect(tmpdir.path().to_str().unwrap()).await.unwrap();
-    /// # let tbl = db.open_table("idx_test").await.unwrap();
+    /// let db = vectordb::connect(tmpdir.path().to_str().unwrap())
+    ///     .execute()
+    ///     .await
+    ///     .unwrap();
+    /// # let tbl = db.open_table("idx_test").execute().await.unwrap();
     /// tbl.create_index(&["vector"])
     ///     .ivf_pq()
     ///     .num_partitions(256)
@@ -214,32 +259,44 @@ pub trait Table: std::fmt::Display + Send + Sync {
     ///
     /// ```no_run
     /// # use std::sync::Arc;
-    /// # use vectordb::connection::{Database, Connection};
     /// # use arrow_array::{FixedSizeListArray, types::Float32Type, RecordBatch,
     /// #   RecordBatchIterator, Int32Array};
     /// # use arrow_schema::{Schema, Field, DataType};
     /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
     /// let tmpdir = tempfile::tempdir().unwrap();
-    /// let db = Database::connect(tmpdir.path().to_str().unwrap()).await.unwrap();
-    /// # let tbl = db.open_table("idx_test").await.unwrap();
+    /// let db = vectordb::connect(tmpdir.path().to_str().unwrap())
+    ///     .execute()
+    ///     .await
+    ///     .unwrap();
+    /// # let tbl = db.open_table("idx_test").execute().await.unwrap();
     /// # let schema = Arc::new(Schema::new(vec![
     /// #  Field::new("id", DataType::Int32, false),
     /// #  Field::new("vector", DataType::FixedSizeList(
     /// #    Arc::new(Field::new("item", DataType::Float32, true)), 128), true),
     /// # ]));
-    /// let new_data = RecordBatchIterator::new(vec![
-    ///     RecordBatch::try_new(schema.clone(),
-    ///        vec![
-    ///            Arc::new(Int32Array::from_iter_values(0..10)),
-    ///            Arc::new(FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
-    ///                (0..10).map(|_| Some(vec![Some(1.0); 128])), 128)),
-    ///        ]).unwrap()
-    ///    ].into_iter().map(Ok),
-    ///   schema.clone());
+    /// let new_data = RecordBatchIterator::new(
+    ///     vec![RecordBatch::try_new(
+    ///         schema.clone(),
+    ///         vec![
+    ///             Arc::new(Int32Array::from_iter_values(0..10)),
+    ///             Arc::new(
+    ///                 FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
+    ///                     (0..10).map(|_| Some(vec![Some(1.0); 128])),
+    ///                     128,
+    ///                 ),
+    ///             ),
+    ///         ],
+    ///     )
+    ///     .unwrap()]
+    ///     .into_iter()
+    ///     .map(Ok),
+    ///     schema.clone(),
+    /// );
     /// // Perform an upsert operation
     /// let mut merge_insert = tbl.merge_insert(&["id"]);
-    /// merge_insert.when_matched_update_all(None)
-    ///             .when_not_matched_insert_all();
+    /// merge_insert
+    ///     .when_matched_update_all(None)
+    ///     .when_not_matched_insert_all();
     /// merge_insert.execute(Box::new(new_data)).await.unwrap();
     /// # });
     /// ```
@@ -266,7 +323,9 @@ pub trait Table: std::fmt::Display + Send + Sync {
     /// # use futures::TryStreamExt;
     /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
     /// # let tbl = vectordb::table::NativeTable::open("/tmp/tbl").await.unwrap();
-    /// let stream = tbl.query().nearest_to(&[1.0, 2.0, 3.0])
+    /// let stream = tbl
+    ///     .query()
+    ///     .nearest_to(&[1.0, 2.0, 3.0])
     ///     .refine_factor(5)
     ///     .nprobes(10)
     ///     .execute_stream()
@@ -299,11 +358,7 @@ pub trait Table: std::fmt::Display + Send + Sync {
     /// # use futures::TryStreamExt;
     /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
     /// # let tbl = vectordb::table::NativeTable::open("/tmp/tbl").await.unwrap();
-    /// let stream = tbl
-    ///     .query()
-    ///     .execute_stream()
-    ///     .await
-    ///     .unwrap();
+    /// let stream = tbl.query().execute_stream().await.unwrap();
     /// let batches: Vec<RecordBatch> = stream.try_collect().await.unwrap();
     /// # });
     /// ```
@@ -351,7 +406,7 @@ impl NativeTable {
     /// * A [NativeTable] object.
     pub async fn open(uri: &str) -> Result<Self> {
         let name = Self::get_table_name(uri)?;
-        Self::open_with_params(uri, &name, None, ReadParams::default()).await
+        Self::open_with_params(uri, &name, None, None).await
     }
 
     /// Opens an existing Table
@@ -369,8 +424,9 @@ impl NativeTable {
         uri: &str,
         name: &str,
         write_store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
-        params: ReadParams,
+        params: Option<ReadParams>,
     ) -> Result<Self> {
+        let params = params.unwrap_or_default();
         // patch the params if we have a write store wrapper
         let params = match write_store_wrapper.clone() {
             Some(wrapper) => params.patch_with_store_wrapper(wrapper)?,
@@ -403,7 +459,6 @@ impl NativeTable {
     }
 
     /// Checkout a specific version of this [NativeTable]
-    ///
     pub async fn checkout(uri: &str, version: u64) -> Result<Self> {
         let name = Self::get_table_name(uri)?;
         Self::checkout_with_params(uri, &name, version, None, ReadParams::default()).await
@@ -489,13 +544,14 @@ impl NativeTable {
         write_store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
         params: Option<WriteParams>,
     ) -> Result<Self> {
+        let params = params.unwrap_or_default();
         // patch the params if we have a write store wrapper
         let params = match write_store_wrapper.clone() {
             Some(wrapper) => params.patch_with_store_wrapper(wrapper)?,
             None => params,
         };
 
-        let dataset = Dataset::write(batches, uri, params)
+        let dataset = Dataset::write(batches, uri, Some(params))
             .await
             .map_err(|e| match e {
                 lance::Error::DatasetAlreadyExists { .. } => Error::TableAlreadyExists {
@@ -511,6 +567,17 @@ impl NativeTable {
             dataset: Arc::new(Mutex::new(dataset)),
             store_wrapper: write_store_wrapper,
         })
+    }
+
+    pub async fn create_empty(
+        uri: &str,
+        name: &str,
+        schema: SchemaRef,
+        write_store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
+        params: Option<WriteParams>,
+    ) -> Result<Self> {
+        let batches = RecordBatchIterator::new(vec![], schema);
+        Self::create(uri, name, batches, write_store_wrapper, params).await
     }
 
     /// Version of this Table
@@ -740,20 +807,26 @@ impl Table for NativeTable {
     async fn add(
         &self,
         batches: Box<dyn RecordBatchReader + Send>,
-        params: Option<WriteParams>,
+        params: AddDataOptions,
     ) -> Result<()> {
-        let params = Some(params.unwrap_or(WriteParams {
-            mode: WriteMode::Append,
-            ..WriteParams::default()
-        }));
+        let lance_params = params
+            .write_options
+            .lance_write_params
+            .unwrap_or(WriteParams {
+                mode: match params.mode {
+                    AddDataMode::Append => WriteMode::Append,
+                    AddDataMode::Overwrite => WriteMode::Overwrite,
+                },
+                ..Default::default()
+            });
 
         // patch the params if we have a write store wrapper
-        let params = match self.store_wrapper.clone() {
-            Some(wrapper) => params.patch_with_store_wrapper(wrapper)?,
-            None => params,
+        let lance_params = match self.store_wrapper.clone() {
+            Some(wrapper) => lance_params.patch_with_store_wrapper(wrapper)?,
+            None => lance_params,
         };
 
-        self.reset_dataset(Dataset::write(batches, &self.uri, params).await?);
+        self.reset_dataset(Dataset::write(batches, &self.uri, Some(lance_params)).await?);
         Ok(())
     }
 
@@ -882,25 +955,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_create_already_exists() {
-        let tmp_dir = tempdir().unwrap();
-        let uri = tmp_dir.path().to_str().unwrap();
-
-        let batches = make_test_batches();
-        let _ = batches.schema().clone();
-        NativeTable::create(uri, "test", batches, None, None)
-            .await
-            .unwrap();
-
-        let batches = make_test_batches();
-        let result = NativeTable::create(uri, "test", batches, None, None).await;
-        assert!(matches!(
-            result.unwrap_err(),
-            Error::TableAlreadyExists { .. }
-        ));
-    }
-
-    #[tokio::test]
     async fn test_count_rows() {
         let tmp_dir = tempdir().unwrap();
         let uri = tmp_dir.path().to_str().unwrap();
@@ -940,7 +994,10 @@ mod tests {
             schema.clone(),
         );
 
-        table.add(Box::new(new_batches), None).await.unwrap();
+        table
+            .add(Box::new(new_batches), AddDataOptions::default())
+            .await
+            .unwrap();
         assert_eq!(table.count_rows(None).await.unwrap(), 20);
         assert_eq!(table.name, "test");
     }
@@ -1003,23 +1060,47 @@ mod tests {
             .unwrap();
         assert_eq!(table.count_rows(None).await.unwrap(), 10);
 
-        let new_batches = RecordBatchIterator::new(
-            vec![RecordBatch::try_new(
-                schema.clone(),
-                vec![Arc::new(Int32Array::from_iter_values(100..110))],
-            )
-            .unwrap()]
-            .into_iter()
-            .map(Ok),
+        let batches = vec![RecordBatch::try_new(
             schema.clone(),
-        );
+            vec![Arc::new(Int32Array::from_iter_values(100..110))],
+        )
+        .unwrap()]
+        .into_iter()
+        .map(Ok);
+
+        let new_batches = RecordBatchIterator::new(batches.clone(), schema.clone());
+
+        // Can overwrite using AddDataOptions::mode
+        table
+            .add(
+                Box::new(new_batches),
+                AddDataOptions {
+                    mode: AddDataMode::Overwrite,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(table.count_rows(None).await.unwrap(), 10);
+        assert_eq!(table.name, "test");
+
+        // Can overwrite using underlying WriteParams (which
+        // take precedence over AddDataOptions::mode)
 
         let param: WriteParams = WriteParams {
             mode: WriteMode::Overwrite,
             ..Default::default()
         };
 
-        table.add(Box::new(new_batches), Some(param)).await.unwrap();
+        let opts = AddDataOptions {
+            write_options: WriteOptions {
+                lance_write_params: Some(param),
+            },
+            mode: AddDataMode::Append,
+        };
+
+        let new_batches = RecordBatchIterator::new(batches.clone(), schema.clone());
+        table.add(Box::new(new_batches), opts).await.unwrap();
         assert_eq!(table.count_rows(None).await.unwrap(), 10);
         assert_eq!(table.name, "test");
     }
@@ -1329,7 +1410,7 @@ mod tests {
             ..Default::default()
         };
         assert!(!wrapper.called());
-        let _ = NativeTable::open_with_params(uri, "test", None, param)
+        let _ = NativeTable::open_with_params(uri, "test", None, Some(param))
             .await
             .unwrap();
         assert!(wrapper.called());
