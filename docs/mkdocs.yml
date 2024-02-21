@@ -57,6 +57,16 @@ plugins:
           - https://arrow.apache.org/docs/objects.inv
           - https://pandas.pydata.org/docs/objects.inv
 - mkdocs-jupyter
+- ultralytics:
+    verbose: True
+    enabled: True
+    default_image: "assets/lancedb_and_lance.png" # Default image for all pages
+    add_image: True # Automatically add meta image
+    add_keywords: True # Add page keywords in the header tag
+    add_share_buttons: True # Add social share buttons
+    add_authors: False # Display page authors 
+    add_desc: False
+    add_dates: False
 
 markdown_extensions:
 - admonition
@@ -206,7 +216,6 @@ extra_css:
 
 extra_javascript:
   - "extra_js/init_ask_ai_widget.js"
-  - "extra_js/meta_tag.js"
 
 extra:
   analytics:
