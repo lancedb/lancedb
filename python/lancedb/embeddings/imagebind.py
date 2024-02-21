@@ -41,6 +41,8 @@ class ImageBindEmbeddings(EmbeddingFunction):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._ndims = 1024
+        self._audio_extensions = (".mp3", ".wav", ".flac", ".ogg", ".aac")
+        self._image_extensions = (".jpg", ".jpeg", ".png", ".gif", ".bmp")
 
     @cached_property
     def embedding_model(self):
@@ -81,9 +83,9 @@ class ImageBindEmbeddings(EmbeddingFunction):
             The query to embed. A query can be either text, image paths or audio paths.
         """
         query = self.sanitize_input(query)
-        if query[0].endswith((".mp3", ".wav", ".flac", ".ogg", ".aac")):
+        if query[0].endswith(self._audio_extensions):
             return [self.generate_audio_embeddings(query)]
-        elif query[0].endswith((".jpg", ".jpeg", ".png", ".gif", ".bmp")):
+        elif query[0].endswith(self._image_extensions):
             return [self.generate_image_embeddings(query)]
         else:
             return [self.generate_text_embeddings(query)]
@@ -135,10 +137,10 @@ class ImageBindEmbeddings(EmbeddingFunction):
         """
         source = self.sanitize_input(source)
         embeddings = []
-        if source[0].endswith((".mp3", ".wav", ".flac", ".ogg", ".aac")):
+        if source[0].endswith(self._audio_extensions):
             embeddings.extend(self.generate_audio_embeddings(source))
             return embeddings
-        elif source[0].endswith((".jpg", ".jpeg", ".png", ".gif", ".bmp")):
+        elif source[0].endswith(self._image_extensions):
             embeddings.extend(self.generate_image_embeddings(source))
             return embeddings
         else:
