@@ -239,7 +239,7 @@ mod tests {
         let batches = make_test_batches();
         let ds = Dataset::write(batches, "memory://foo", None).await.unwrap();
 
-        let ds = DatasetConsistencyWrapper::from_dataset(ds, None);
+        let ds = DatasetConsistencyWrapper::new_latest(ds, None);
 
         let vector = Some(Float32Array::from_iter_values([0.1, 0.2]));
         let query = Query::new(ds).nearest_to(&[0.1, 0.2]);
@@ -268,7 +268,7 @@ mod tests {
         let batches = make_non_empty_batches();
         let ds = Dataset::write(batches, "memory://foo", None).await.unwrap();
 
-        let ds = DatasetConsistencyWrapper::from_dataset(ds, None);
+        let ds = DatasetConsistencyWrapper::new_latest(ds, None);
 
         let query = Query::new(ds.clone()).nearest_to(&[0.1; 4]);
         let result = query.limit(10).filter("id % 2 == 0").execute_stream().await;
@@ -300,7 +300,7 @@ mod tests {
         let batches = make_non_empty_batches();
         let ds = Dataset::write(batches, "memory://foo", None).await.unwrap();
 
-        let ds = DatasetConsistencyWrapper::from_dataset(ds, None);
+        let ds = DatasetConsistencyWrapper::new_latest(ds, None);
 
         let query = Query::new(ds);
         let result = query.filter("id % 2 == 0").execute_stream().await;

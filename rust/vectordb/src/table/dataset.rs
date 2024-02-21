@@ -18,10 +18,7 @@ use std::{
     time::{self, Duration, Instant},
 };
 
-use lance::{
-    dataset::{builder::DatasetBuilder, ReadParams},
-    Dataset,
-};
+use lance::Dataset;
 use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::error::Result;
@@ -40,68 +37,47 @@ pub struct DatasetConsistencyWrapper(Arc<RwLock<DatasetRef>>);
 enum DatasetRef {
     /// In this mode, the dataset is always the latest version.
     Latest {
-        dataset: LazyDatasetRef,
+        dataset: Dataset,
         read_consistency_interval: Option<Duration>,
         last_consistency_check: Option<time::Instant>,
     },
     /// In this mode, the dataset is a specific version. It cannot be mutated.
-    TimeTravel {
-        dataset: LazyDatasetRef,
-        version: u64,
-    },
+    TimeTravel { dataset: Dataset, version: u64 },
 }
 
 impl DatasetRef {
-    async fn load(&mut self) -> Result<()> {
+    /// Reload the dataset to the appropriate version.
+    async fn reload(&mut self) -> Result<()> {
         match self {
             Self::Latest {
                 dataset,
                 last_consistency_check,
                 ..
             } => {
-                if dataset.is_loaded() {
-                    let datset_ref = dataset.get_mut();
-                    datset_ref
-                        .checkout_version(datset_ref.latest_version_id().await?)
-                        .await?;
-                } else {
-                    dataset.load().await?;
-                }
-                last_consistency_check.replace(time::Instant::now());
-                Ok(())
+                dataset
+                    .checkout_version(dataset.latest_version_id().await?)
+                    .await?;
+                last_consistency_check.replace(Instant::now());
             }
-            Self::TimeTravel { dataset, .. } => dataset.load().await,
+            Self::TimeTravel { dataset, version } => {
+                dataset.checkout_version(*version).await?;
+            }
         }
+        Ok(())
     }
 
     async fn as_latest(&mut self, read_consistency_interval: Option<Duration>) -> Result<()> {
         match self {
             Self::Latest { .. } => Ok(()),
             Self::TimeTravel { dataset, .. } => {
-                match dataset {
-                    LazyDatasetRef::Loaded(dataset) => {
-                        dataset
-                            .checkout_version(dataset.latest_version_id().await?)
-                            .await?;
-                        *self = Self::Latest {
-                            dataset: LazyDatasetRef::Loaded(dataset.clone()),
-                            read_consistency_interval,
-                            last_consistency_check: Some(Instant::now()),
-                        };
-                    }
-                    LazyDatasetRef::Pending {
-                        uri, read_params, ..
-                    } => {
-                        let dataset = DatasetBuilder::from_uri(uri)
-                            .with_read_params(clone_read_params(read_params));
-                        let dataset = dataset.load().await?;
-                        *self = Self::Latest {
-                            dataset: LazyDatasetRef::Loaded(dataset),
-                            read_consistency_interval,
-                            last_consistency_check: Some(Instant::now()),
-                        };
-                    }
-                }
+                dataset
+                    .checkout_version(dataset.latest_version_id().await?)
+                    .await?;
+                *self = Self::Latest {
+                    dataset: dataset.clone(),
+                    read_consistency_interval,
+                    last_consistency_check: Some(Instant::now()),
+                };
                 Ok(())
             }
         }
@@ -113,133 +89,28 @@ impl DatasetRef {
                 dataset: ref mut ds,
                 ..
             } => {
-                *ds = LazyDatasetRef::Loaded(dataset);
+                *ds = dataset;
             }
             _ => unreachable!("Dataset should be in latest mode at this point"),
         }
     }
 }
 
-/// Lazy reference to a dataset
-enum LazyDatasetRef {
-    /// The dataset is not yet loaded.
-    Pending {
-        uri: String,
-        version: Option<u64>,
-        read_params: ReadParams,
-    },
-    /// The dataset reference has been materialized.
-    Loaded(Dataset),
-}
-
-impl LazyDatasetRef {
-    fn is_loaded(&self) -> bool {
-        matches!(self, Self::Loaded(_))
-    }
-
-    fn get_mut(&mut self) -> &mut Dataset {
-        match self {
-            Self::Loaded(dataset) => dataset,
-            _ => unreachable!("Dataset should be loaded at this point"),
-        }
-    }
-
-    /// Load the dataset.
-    async fn load(&mut self) -> Result<()> {
-        let dataset = match self {
-            Self::Pending {
-                uri,
-                version,
-                read_params,
-            } => {
-                let mut dataset =
-                    DatasetBuilder::from_uri(uri).with_read_params(clone_read_params(read_params));
-                if let Some(version) = version {
-                    dataset = dataset.with_version(*version);
-                }
-                dataset.load().await?
-            }
-            Self::Loaded(_) => return Ok(()),
-        };
-        *self = Self::Loaded(dataset);
-        Ok(())
-    }
-}
-
-// We only implement this because ReadParams doesn't implement Clone yet.
-// TODO: derive this when https://github.com/lancedb/lance/pull/1931 is released
-impl Clone for LazyDatasetRef {
-    fn clone(&self) -> Self {
-        match self {
-            Self::Pending {
-                uri,
-                version,
-                read_params,
-            } => Self::Pending {
-                uri: uri.clone(),
-                version: *version,
-                read_params: clone_read_params(read_params),
-            },
-            Self::Loaded(dataset) => Self::Loaded(dataset.clone()),
-        }
-    }
-}
-
-fn clone_read_params(read_params: &ReadParams) -> ReadParams {
-    ReadParams {
-        commit_handler: read_params.commit_handler.clone(),
-        index_cache_size: read_params.index_cache_size,
-        metadata_cache_size: read_params.metadata_cache_size,
-        session: read_params.session.clone(),
-        store_options: read_params.store_options.clone(),
-    }
-}
-
-// TODO: derive this once ReadParams implements Debug
-impl std::fmt::Debug for LazyDatasetRef {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Pending { uri, version, .. } => f
-                .debug_struct("Pending")
-                .field("uri", uri)
-                .field("version", version)
-                .finish(),
-            Self::Loaded(dataset) => f.debug_struct("Loaded").field("dataset", dataset).finish(),
-        }
-    }
-}
-
 impl DatasetConsistencyWrapper {
-    pub fn new(
-        uri: &str,
-        version: Option<u64>,
-        read_params: ReadParams,
-        read_consistency_interval: Option<Duration>,
-    ) -> Self {
-        let dataset = LazyDatasetRef::Pending {
-            uri: uri.to_string(),
-            version,
-            read_params,
-        };
-        if let Some(version) = version {
-            Self(Arc::new(RwLock::new(DatasetRef::TimeTravel {
-                dataset,
-                version,
-            })))
-        } else {
-            Self(Arc::new(RwLock::new(DatasetRef::Latest {
-                dataset,
-                read_consistency_interval,
-                last_consistency_check: None,
-            })))
-        }
-    }
-
-    pub fn from_dataset(dataset: Dataset, read_consistency_interval: Option<Duration>) -> Self {
+    /// Create a new wrapper in the latest version mode.
+    pub fn new_latest(dataset: Dataset, read_consistency_interval: Option<Duration>) -> Self {
         Self(Arc::new(RwLock::new(DatasetRef::Latest {
-            dataset: LazyDatasetRef::Loaded(dataset),
+            dataset,
             read_consistency_interval,
             last_consistency_check: None,
+        })))
+    }
+
+    /// Create a new wrapper in the time travel mode.
+    pub fn new_time_travel(dataset: Dataset, version: u64) -> Self {
+        Self(Arc::new(RwLock::new(DatasetRef::TimeTravel {
+            dataset,
+            version,
         })))
     }
 
@@ -247,7 +118,7 @@ impl DatasetConsistencyWrapper {
     ///
     /// This will track versions independently of the original reference and
     /// will be tied to a different RwLock.
-    pub async fn copy(&self) -> Self {
+    pub async fn duplicate(&self) -> Self {
         let ds_ref = self.0.read().await;
         Self(Arc::new(RwLock::new((*ds_ref).clone())))
     }
@@ -286,39 +157,29 @@ impl DatasetConsistencyWrapper {
     }
 
     async fn load(&self) -> Result<()> {
-        self.0.write().await.load().await
+        self.0.write().await.reload().await
     }
 
     async fn is_up_to_date(&self) -> Result<bool> {
         let dataset_ref = self.0.read().await;
         match &*dataset_ref {
             DatasetRef::Latest {
-                dataset,
                 read_consistency_interval,
                 last_consistency_check,
-            } => {
-                if let LazyDatasetRef::Loaded(_) = dataset {
-                    match (read_consistency_interval, last_consistency_check) {
-                        (None, _) => Ok(true),
-                        (Some(_), None) => Ok(false),
-                        (Some(read_consistency_interval), Some(last_consistency_check)) => {
-                            if &last_consistency_check.elapsed() < read_consistency_interval {
-                                Ok(true)
-                            } else {
-                                Ok(false)
-                            }
-                        }
+                ..
+            } => match (read_consistency_interval, last_consistency_check) {
+                (None, _) => Ok(true),
+                (Some(_), None) => Ok(false),
+                (Some(read_consistency_interval), Some(last_consistency_check)) => {
+                    if &last_consistency_check.elapsed() < read_consistency_interval {
+                        Ok(true)
+                    } else {
+                        Ok(false)
                     }
-                } else {
-                    Ok(false)
                 }
-            }
+            },
             DatasetRef::TimeTravel { dataset, version } => {
-                if let LazyDatasetRef::Loaded(dataset) = dataset {
-                    Ok(dataset.version().version == *version)
-                } else {
-                    Ok(false)
-                }
+                Ok(dataset.version().version == *version)
             }
         }
     }
@@ -342,15 +203,8 @@ impl Deref for DatasetReadGuard<'_> {
 
     fn deref(&self) -> &Self::Target {
         match &*self.guard {
-            DatasetRef::Latest {
-                dataset: LazyDatasetRef::Loaded(dataset),
-                ..
-            } => dataset,
-            DatasetRef::TimeTravel {
-                dataset: LazyDatasetRef::Loaded(dataset),
-                ..
-            } => dataset,
-            _ => unreachable!("Dataset should be loaded at this point"),
+            DatasetRef::Latest { dataset, .. } => dataset,
+            DatasetRef::TimeTravel { dataset, .. } => dataset,
         }
     }
 }
@@ -364,15 +218,8 @@ impl Deref for DatasetWriteGuard<'_> {
 
     fn deref(&self) -> &Self::Target {
         match &*self.guard {
-            DatasetRef::Latest {
-                dataset: LazyDatasetRef::Loaded(dataset),
-                ..
-            } => dataset,
-            DatasetRef::TimeTravel {
-                dataset: LazyDatasetRef::Loaded(dataset),
-                ..
-            } => dataset,
-            _ => unreachable!("Dataset should be loaded at this point"),
+            DatasetRef::Latest { dataset, .. } => dataset,
+            DatasetRef::TimeTravel { dataset, .. } => dataset,
         }
     }
 }
@@ -380,15 +227,8 @@ impl Deref for DatasetWriteGuard<'_> {
 impl DerefMut for DatasetWriteGuard<'_> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         match &mut *self.guard {
-            DatasetRef::Latest {
-                dataset: LazyDatasetRef::Loaded(dataset),
-                ..
-            } => dataset,
-            DatasetRef::TimeTravel {
-                dataset: LazyDatasetRef::Loaded(dataset),
-                ..
-            } => dataset,
-            _ => unreachable!("Dataset should be loaded at this point"),
+            DatasetRef::Latest { dataset, .. } => dataset,
+            DatasetRef::TimeTravel { dataset, .. } => dataset,
         }
     }
 }

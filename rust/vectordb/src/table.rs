@@ -21,6 +21,7 @@ use arrow_array::{RecordBatchIterator, RecordBatchReader};
 use arrow_schema::{Schema, SchemaRef};
 use async_trait::async_trait;
 use chrono::Duration;
+use lance::dataset::builder::DatasetBuilder;
 use lance::dataset::cleanup::RemovalStats;
 use lance::dataset::optimize::{
     compact_files, CompactionMetrics, CompactionOptions, IndexRemapperOptions,
@@ -442,8 +443,22 @@ impl NativeTable {
             None => params,
         };
 
-        let dataset = DatasetConsistencyWrapper::new(uri, None, params, read_consistency_interval);
-        Ok(NativeTable {
+        let dataset = DatasetBuilder::from_uri(uri)
+            .with_read_params(params)
+            .load()
+            .await
+            .map_err(|e| match e {
+                lance::Error::DatasetNotFound { .. } => Error::TableNotFound {
+                    name: name.to_string(),
+                },
+                e => Error::Lance {
+                    message: e.to_string(),
+                },
+            })?;
+
+        let dataset = DatasetConsistencyWrapper::new_latest(dataset, read_consistency_interval);
+
+        Ok(Self {
             name: name.to_string(),
             uri: uri.to_string(),
             dataset,
@@ -471,13 +486,14 @@ impl NativeTable {
             Some(wrapper) => params.patch_with_store_wrapper(wrapper)?,
             None => params,
         };
-        let dataset = DatasetConsistencyWrapper::new(
-            uri,
-            Some(version),
-            params,
-            read_consistency_interval, // TODO: pass down consistency interval
-        );
-        Ok(NativeTable {
+        let dataset = DatasetBuilder::from_uri(uri)
+            .with_version(version)
+            .with_read_params(params)
+            .load()
+            .await?;
+        let dataset = DatasetConsistencyWrapper::new_time_travel(dataset, version);
+
+        Ok(Self {
             name: name.to_string(),
             uri: uri.to_string(),
             dataset,
@@ -487,7 +503,7 @@ impl NativeTable {
     }
 
     pub async fn checkout_latest(&self) -> Result<Self> {
-        let mut dataset = self.dataset.copy().await;
+        let mut dataset = self.dataset.duplicate().await;
         dataset.as_latest(self.read_consistency_interval).await?;
         Ok(Self {
             dataset,
@@ -549,7 +565,7 @@ impl NativeTable {
         Ok(Self {
             name: name.to_string(),
             uri: uri.to_string(),
-            dataset: DatasetConsistencyWrapper::from_dataset(dataset, read_consistency_interval),
+            dataset: DatasetConsistencyWrapper::new_latest(dataset, read_consistency_interval),
             store_wrapper: write_store_wrapper,
             read_consistency_interval,
         })
@@ -968,7 +984,7 @@ mod tests {
 
         let batches = make_test_batches();
         let schema = batches.schema().clone();
-        let table = NativeTable::create(&uri, "test", batches, None, None, None)
+        let table = NativeTable::create(uri, "test", batches, None, None, None)
             .await
             .unwrap();
         assert_eq!(table.count_rows(None).await.unwrap(), 10);
@@ -999,7 +1015,7 @@ mod tests {
 
         // Create a dataset with i=0..10
         let batches = make_test_batches();
-        let table = NativeTable::create(&uri, "test", batches, None, None, None)
+        let table = NativeTable::create(uri, "test", batches, None, None, None)
             .await
             .unwrap();
         assert_eq!(table.count_rows(None).await.unwrap(), 10);
