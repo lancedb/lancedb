@@ -32,20 +32,17 @@ impl PatchStoreParam for Option<ObjectStoreParams> {
 }
 
 pub trait PatchWriteParam {
-    fn patch_with_store_wrapper(
-        self,
-        wrapper: Arc<dyn WrappingObjectStore>,
-    ) -> Result<Option<WriteParams>>;
+    fn patch_with_store_wrapper(self, wrapper: Arc<dyn WrappingObjectStore>)
+        -> Result<WriteParams>;
 }
 
-impl PatchWriteParam for Option<WriteParams> {
+impl PatchWriteParam for WriteParams {
     fn patch_with_store_wrapper(
-        self,
+        mut self,
         wrapper: Arc<dyn WrappingObjectStore>,
-    ) -> Result<Option<WriteParams>> {
-        let mut params = self.unwrap_or_default();
-        params.store_params = params.store_params.patch_with_store_wrapper(wrapper)?;
-        Ok(Some(params))
+    ) -> Result<WriteParams> {
+        self.store_params = self.store_params.patch_with_store_wrapper(wrapper)?;
+        Ok(self)
     }
 }
 
