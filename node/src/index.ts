@@ -195,7 +195,7 @@ export async function connect (
     opts.awsCredentials?.secretKey,
     opts.awsCredentials?.sessionToken,
     opts.awsRegion,
-    opts.readConsistencyInterval,
+    opts.readConsistencyInterval
   )
   return new LocalConnection(db, opts)
 }
