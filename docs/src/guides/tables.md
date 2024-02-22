@@ -668,11 +668,13 @@ There are three possible settings for `read_consistency_interval`:
     table = db.open_table("my_table")
     ```
 
-    To manually check for updates, use `checkout_latest`:
+    By default, a `Table` will never check for updates from other writers. To manually check for updates you can use `checkout_latest`:
 
     ```python
     db = lancedb.connect("./.lancedb")
     table = db.open_table("my_table")
+    
+    # (Other writes happen to my_table from another process)
 
     # Check for updates
     table.checkout_latest()
@@ -687,10 +689,10 @@ There are three possible settings for `read_consistency_interval`:
     const table = await db.openTable("my_table");
     ```
 
-    For eventual consistency, use a positive value:
+    For eventual consistency, specify the update interval as seconds:
 
     ```javascript
-    const db = await lancedb.connect({ uri: "./.lancedb", readConsistencyInterval: 5000 });
+    const db = await lancedb.connect({ uri: "./.lancedb", readConsistencyInterval: 5 });
     const table = await db.openTable("my_table");
     ```
 

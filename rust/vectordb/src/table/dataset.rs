@@ -114,9 +114,9 @@ impl DatasetConsistencyWrapper {
         })))
     }
 
-    /// Create a independent copy of the dataset reference.
+    /// Create an independent copy of self.
     ///
-    /// This will track versions independently of the original reference and
+    /// Unlike Clone, this will track versions independently of the original wrapper and
     /// will be tied to a different RwLock.
     pub async fn duplicate(&self) -> Self {
         let ds_ref = self.0.read().await;
@@ -139,7 +139,7 @@ impl DatasetConsistencyWrapper {
         })
     }
 
-    /// Convert into a reference to the latest version of the dataset.
+    /// Convert into a wrapper in latest version mode
     pub async fn as_latest(&mut self, read_consistency_interval: Option<Duration>) -> Result<()> {
         self.0
             .write()

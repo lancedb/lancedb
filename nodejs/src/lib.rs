@@ -21,7 +21,6 @@ mod iterator;
 mod query;
 mod table;
 
-// Because these map from a JS object, we use camelCase names.
 #[napi(object)]
 #[derive(Debug)]
 pub struct ConnectionOptions {

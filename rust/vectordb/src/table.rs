@@ -118,9 +118,6 @@ pub struct AddDataOptions {
 /// A Table is a collection of strong typed Rows.
 ///
 /// The type of the each row is defined in Apache Arrow [Schema].
-///
-/// Because the table data is lazily loaded, almost all methods are async and
-/// fallible.
 #[async_trait::async_trait]
 pub trait Table: std::fmt::Display + Send + Sync {
     fn as_any(&self) -> &dyn std::any::Any;
@@ -395,7 +392,7 @@ pub struct NativeTable {
     store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
 
     // This comes from the connection options. We store here so we can pass down
-    // to the dataset when we create it.
+    // to the dataset when we recreate it (for example, in checkout_latest).
     read_consistency_interval: Option<std::time::Duration>,
 }
 
