@@ -1,8 +1,7 @@
 import json
 
-import pytest
-
 import lancedb
+import pytest
 from lancedb.utils.events import _Events
 
 

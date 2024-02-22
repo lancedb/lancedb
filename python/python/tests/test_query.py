@@ -18,7 +18,6 @@ import numpy as np
 import pandas.testing as tm
 import pyarrow as pa
 import pytest
-
 from lancedb.db import LanceDBConnection
 from lancedb.pydantic import LanceModel, Vector
 from lancedb.query import LanceVectorQueryBuilder, Query

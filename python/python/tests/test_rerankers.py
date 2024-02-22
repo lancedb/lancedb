@@ -1,9 +1,8 @@
 import os
 
+import lancedb
 import numpy as np
 import pytest
-
-import lancedb
 from lancedb.conftest import MockTextEmbeddingFunction  # noqa
 from lancedb.embeddings import EmbeddingFunctionRegistry
 from lancedb.pydantic import LanceModel, Vector
@@ -14,6 +13,9 @@ from lancedb.rerankers import (
     OpenaiReranker,
 )
 from lancedb.table import LanceTable
+
+# Tests rely on FTS index
+pytest.importorskip("lancedb.fts")
 
 
 def get_test_table(tmp_path):

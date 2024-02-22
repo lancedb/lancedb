@@ -28,6 +28,7 @@ from .util import fs_from_uri, get_uri_location, get_uri_scheme, join_uri
 if TYPE_CHECKING:
     from datetime import timedelta
 
+    from ._lancedb import Connection as LanceDbConnection
     from .common import DATA, URI
     from .embeddings import EmbeddingFunctionConfig
     from .pydantic import LanceModel
@@ -40,14 +41,21 @@ class DBConnection(EnforceOverrides):
     def table_names(
         self, page_token: Optional[str] = None, limit: int = 10
     ) -> Iterable[str]:
-        """List all table in this database
+        """List all tables in this database, in sorted order
 
         Parameters
         ----------
         page_token: str, optional
             The token to use for pagination. If not present, start from the beginning.
+            Typically, this token is last table name from the previous page.
+            Only supported by LanceDb Cloud.
         limit: int, default 10
             The size of the page to return.
+            Only supported by LanceDb Cloud.
+
+        Returns
+        -------
+        Iterable of str
         """
         pass
 
@@ -412,3 +420,254 @@ class LanceDBConnection(DBConnection):
     def drop_database(self):
         filesystem, path = fs_from_uri(self.uri)
         filesystem.delete_dir(path)
+
+
+class AsyncConnection(EnforceOverrides):
+    """An active LanceDB connection interface."""
+
+    @abstractmethod
+    async def table_names(
+        self, *, page_token: Optional[str] = None, limit: int = 10
+    ) -> Iterable[str]:
+        """List all tables in this database, in sorted order
+
+        Parameters
+        ----------
+        page_token: str, optional
+            The token to use for pagination. If not present, start from the beginning.
+            Typically, this token is last table name from the previous page.
+            Only supported by LanceDb Cloud.
+        limit: int, default 10
+            The size of the page to return.
+            Only supported by LanceDb Cloud.
+
+        Returns
+        -------
+        Iterable of str
+        """
+        pass
+
+    @abstractmethod
+    async def create_table(
+        self,
+        name: str,
+        data: Optional[DATA] = None,
+        schema: Optional[Union[pa.Schema, LanceModel]] = None,
+        mode: str = "create",
+        exist_ok: bool = False,
+        on_bad_vectors: str = "error",
+        fill_value: float = 0.0,
+        embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
+    ) -> Table:
+        """Create a [Table][lancedb.table.Table] in the database.
+
+        Parameters
+        ----------
+        name: str
+            The name of the table.
+        data: The data to initialize the table, *optional*
+            User must provide at least one of `data` or `schema`.
+            Acceptable types are:
+
+            - dict or list-of-dict
+
+            - pandas.DataFrame
+
+            - pyarrow.Table or pyarrow.RecordBatch
+        schema: The schema of the table, *optional*
+            Acceptable types are:
+
+            - pyarrow.Schema
+
+            - [LanceModel][lancedb.pydantic.LanceModel]
+        mode: str; default "create"
+            The mode to use when creating the table.
+            Can be either "create" or "overwrite".
+            By default, if the table already exists, an exception is raised.
+            If you want to overwrite the table, use mode="overwrite".
+        exist_ok: bool, default False
+            If a table by the same name already exists, then raise an exception
+            if exist_ok=False. If exist_ok=True, then open the existing table;
+            it will not add the provided data but will validate against any
+            schema that's specified.
+        on_bad_vectors: str, default "error"
+            What to do if any of the vectors are not the same size or contains NaNs.
+            One of "error", "drop", "fill".
+        fill_value: float
+            The value to use when filling vectors. Only used if on_bad_vectors="fill".
+
+        Returns
+        -------
+        LanceTable
+            A reference to the newly created table.
+
+        !!! note
+
+            The vector index won't be created by default.
+            To create the index, call the `create_index` method on the table.
+
+        Examples
+        --------
+
+        Can create with list of tuples or dictionaries:
+
+        >>> import lancedb
+        >>> db = lancedb.connect("./.lancedb")
+        >>> data = [{"vector": [1.1, 1.2], "lat": 45.5, "long": -122.7},
+        ...         {"vector": [0.2, 1.8], "lat": 40.1, "long":  -74.1}]
+        >>> db.create_table("my_table", data)
+        LanceTable(connection=..., name="my_table")
+        >>> db["my_table"].head()
+        pyarrow.Table
+        vector: fixed_size_list<item: float>[2]
+          child 0, item: float
+        lat: double
+        long: double
+        ----
+        vector: [[[1.1,1.2],[0.2,1.8]]]
+        lat: [[45.5,40.1]]
+        long: [[-122.7,-74.1]]
+
+        You can also pass a pandas DataFrame:
+
+        >>> import pandas as pd
+        >>> data = pd.DataFrame({
+        ...    "vector": [[1.1, 1.2], [0.2, 1.8]],
+        ...    "lat": [45.5, 40.1],
+        ...    "long": [-122.7, -74.1]
+        ... })
+        >>> db.create_table("table2", data)
+        LanceTable(connection=..., name="table2")
+        >>> db["table2"].head()
+        pyarrow.Table
+        vector: fixed_size_list<item: float>[2]
+          child 0, item: float
+        lat: double
+        long: double
+        ----
+        vector: [[[1.1,1.2],[0.2,1.8]]]
+        lat: [[45.5,40.1]]
+        long: [[-122.7,-74.1]]
+
+        Data is converted to Arrow before being written to disk. For maximum
+        control over how data is saved, either provide the PyArrow schema to
+        convert to or else provide a [PyArrow Table](pyarrow.Table) directly.
+
+        >>> custom_schema = pa.schema([
+        ...   pa.field("vector", pa.list_(pa.float32(), 2)),
+        ...   pa.field("lat", pa.float32()),
+        ...   pa.field("long", pa.float32())
+        ... ])
+        >>> db.create_table("table3", data, schema = custom_schema)
+        LanceTable(connection=..., name="table3")
+        >>> db["table3"].head()
+        pyarrow.Table
+        vector: fixed_size_list<item: float>[2]
+          child 0, item: float
+        lat: float
+        long: float
+        ----
+        vector: [[[1.1,1.2],[0.2,1.8]]]
+        lat: [[45.5,40.1]]
+        long: [[-122.7,-74.1]]
+
+
+        It is also possible to create an table from `[Iterable[pa.RecordBatch]]`:
+
+
+        >>> import pyarrow as pa
+        >>> def make_batches():
+        ...     for i in range(5):
+        ...         yield pa.RecordBatch.from_arrays(
+        ...             [
+        ...                 pa.array([[3.1, 4.1], [5.9, 26.5]],
+        ...                     pa.list_(pa.float32(), 2)),
+        ...                 pa.array(["foo", "bar"]),
+        ...                 pa.array([10.0, 20.0]),
+        ...             ],
+        ...             ["vector", "item", "price"],
+        ...         )
+        >>> schema=pa.schema([
+        ...     pa.field("vector", pa.list_(pa.float32(), 2)),
+        ...     pa.field("item", pa.utf8()),
+        ...     pa.field("price", pa.float32()),
+        ... ])
+        >>> db.create_table("table4", make_batches(), schema=schema)
+        LanceTable(connection=..., name="table4")
+
+        """
+        raise NotImplementedError
+
+    async def open_table(self, name: str) -> Table:
+        """Open a Lance Table in the database.
+
+        Parameters
+        ----------
+        name: str
+            The name of the table.
+
+        Returns
+        -------
+        A LanceTable object representing the table.
+        """
+        raise NotImplementedError
+
+    async def drop_table(self, name: str):
+        """Drop a table from the database.
+
+        Parameters
+        ----------
+        name: str
+            The name of the table.
+        """
+        raise NotImplementedError
+
+    async def drop_database(self):
+        """
+        Drop database
+        This is the same thing as dropping all the tables
+        """
+        raise NotImplementedError
+
+
+class AsyncLanceDBConnection(AsyncConnection):
+    def __init__(self, connection: LanceDbConnection):
+        self._inner = connection
+
+    async def __repr__(self) -> str:
+        pass
+
+    @override
+    async def table_names(
+        self,
+        *,
+        page_token=None,
+        limit=None,
+    ) -> Iterable[str]:
+        return await self._inner.table_names()
+
+    @override
+    async def create_table(
+        self,
+        name: str,
+        data: Optional[DATA] = None,
+        schema: Optional[Union[pa.Schema, LanceModel]] = None,
+        mode: str = "create",
+        exist_ok: bool = False,
+        on_bad_vectors: str = "error",
+        fill_value: float = 0.0,
+        embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
+    ) -> LanceTable:
+        raise NotImplementedError
+
+    @override
+    async def open_table(self, name: str) -> LanceTable:
+        raise NotImplementedError
+
+    @override
+    async def drop_table(self, name: str, ignore_missing: bool = False):
+        raise NotImplementedError
+
+    @override
+    async def drop_database(self):
+        raise NotImplementedError
