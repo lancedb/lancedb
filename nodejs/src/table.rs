@@ -13,10 +13,10 @@
 // limitations under the License.
 
 use arrow_ipc::writer::FileWriter;
+use lancedb::table::AddDataOptions;
+use lancedb::{ipc::ipc_file_to_batches, table::TableRef};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
-use vectordb::table::AddDataOptions;
-use vectordb::{ipc::ipc_file_to_batches, table::TableRef};
 
 use crate::index::IndexBuilder;
 use crate::query::Query;

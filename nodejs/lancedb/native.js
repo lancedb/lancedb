@@ -32,24 +32,24 @@ switch (platform) {
   case 'android':
     switch (arch) {
       case 'arm64':
-        localFileExisted = existsSync(join(__dirname, 'vectordb-nodejs.android-arm64.node'))
+        localFileExisted = existsSync(join(__dirname, 'lancedb-nodejs.android-arm64.node'))
         try {
           if (localFileExisted) {
-            nativeBinding = require('./vectordb-nodejs.android-arm64.node')
+            nativeBinding = require('./lancedb-nodejs.android-arm64.node')
           } else {
-            nativeBinding = require('vectordb-android-arm64')
+            nativeBinding = require('lancedb-android-arm64')
           }
         } catch (e) {
           loadError = e
         }
         break
       case 'arm':
-        localFileExisted = existsSync(join(__dirname, 'vectordb-nodejs.android-arm-eabi.node'))
+        localFileExisted = existsSync(join(__dirname, 'lancedb-nodejs.android-arm-eabi.node'))
         try {
           if (localFileExisted) {
-            nativeBinding = require('./vectordb-nodejs.android-arm-eabi.node')
+            nativeBinding = require('./lancedb-nodejs.android-arm-eabi.node')
           } else {
-            nativeBinding = require('vectordb-android-arm-eabi')
+            nativeBinding = require('lancedb-android-arm-eabi')
           }
         } catch (e) {
           loadError = e
@@ -63,13 +63,13 @@ switch (platform) {
     switch (arch) {
       case 'x64':
         localFileExisted = existsSync(
-          join(__dirname, 'vectordb-nodejs.win32-x64-msvc.node')
+          join(__dirname, 'lancedb-nodejs.win32-x64-msvc.node')
         )
         try {
           if (localFileExisted) {
-            nativeBinding = require('./vectordb-nodejs.win32-x64-msvc.node')
+            nativeBinding = require('./lancedb-nodejs.win32-x64-msvc.node')
           } else {
-            nativeBinding = require('vectordb-win32-x64-msvc')
+            nativeBinding = require('lancedb-win32-x64-msvc')
           }
         } catch (e) {
           loadError = e
@@ -77,13 +77,13 @@ switch (platform) {
         break
       case 'ia32':
         localFileExisted = existsSync(
-          join(__dirname, 'vectordb-nodejs.win32-ia32-msvc.node')
+          join(__dirname, 'lancedb-nodejs.win32-ia32-msvc.node')
         )
         try {
           if (localFileExisted) {
-            nativeBinding = require('./vectordb-nodejs.win32-ia32-msvc.node')
+            nativeBinding = require('./lancedb-nodejs.win32-ia32-msvc.node')
           } else {
-            nativeBinding = require('vectordb-win32-ia32-msvc')
+            nativeBinding = require('lancedb-win32-ia32-msvc')
           }
         } catch (e) {
           loadError = e
@@ -91,13 +91,13 @@ switch (platform) {
         break
       case 'arm64':
         localFileExisted = existsSync(
-          join(__dirname, 'vectordb-nodejs.win32-arm64-msvc.node')
+          join(__dirname, 'lancedb-nodejs.win32-arm64-msvc.node')
         )
         try {
           if (localFileExisted) {
-            nativeBinding = require('./vectordb-nodejs.win32-arm64-msvc.node')
+            nativeBinding = require('./lancedb-nodejs.win32-arm64-msvc.node')
           } else {
-            nativeBinding = require('vectordb-win32-arm64-msvc')
+            nativeBinding = require('lancedb-win32-arm64-msvc')
           }
         } catch (e) {
           loadError = e
@@ -108,23 +108,23 @@ switch (platform) {
     }
     break
   case 'darwin':
-    localFileExisted = existsSync(join(__dirname, 'vectordb-nodejs.darwin-universal.node'))
+    localFileExisted = existsSync(join(__dirname, 'lancedb-nodejs.darwin-universal.node'))
     try {
       if (localFileExisted) {
-        nativeBinding = require('./vectordb-nodejs.darwin-universal.node')
+        nativeBinding = require('./lancedb-nodejs.darwin-universal.node')
       } else {
-        nativeBinding = require('vectordb-darwin-universal')
+        nativeBinding = require('lancedb-darwin-universal')
       }
       break
     } catch {}
     switch (arch) {
       case 'x64':
-        localFileExisted = existsSync(join(__dirname, 'vectordb-nodejs.darwin-x64.node'))
+        localFileExisted = existsSync(join(__dirname, 'lancedb-nodejs.darwin-x64.node'))
         try {
           if (localFileExisted) {
-            nativeBinding = require('./vectordb-nodejs.darwin-x64.node')
+            nativeBinding = require('./lancedb-nodejs.darwin-x64.node')
           } else {
-            nativeBinding = require('vectordb-darwin-x64')
+            nativeBinding = require('lancedb-darwin-x64')
           }
         } catch (e) {
           loadError = e
@@ -132,13 +132,13 @@ switch (platform) {
         break
       case 'arm64':
         localFileExisted = existsSync(
-          join(__dirname, 'vectordb-nodejs.darwin-arm64.node')
+          join(__dirname, 'lancedb-nodejs.darwin-arm64.node')
         )
         try {
           if (localFileExisted) {
-            nativeBinding = require('./vectordb-nodejs.darwin-arm64.node')
+            nativeBinding = require('./lancedb-nodejs.darwin-arm64.node')
           } else {
-            nativeBinding = require('vectordb-darwin-arm64')
+            nativeBinding = require('lancedb-darwin-arm64')
           }
         } catch (e) {
           loadError = e
@@ -152,12 +152,12 @@ switch (platform) {
     if (arch !== 'x64') {
       throw new Error(`Unsupported architecture on FreeBSD: ${arch}`)
     }
-    localFileExisted = existsSync(join(__dirname, 'vectordb-nodejs.freebsd-x64.node'))
+    localFileExisted = existsSync(join(__dirname, 'lancedb-nodejs.freebsd-x64.node'))
     try {
       if (localFileExisted) {
-        nativeBinding = require('./vectordb-nodejs.freebsd-x64.node')
+        nativeBinding = require('./lancedb-nodejs.freebsd-x64.node')
       } else {
-        nativeBinding = require('vectordb-freebsd-x64')
+        nativeBinding = require('lancedb-freebsd-x64')
       }
     } catch (e) {
       loadError = e
@@ -168,26 +168,26 @@ switch (platform) {
       case 'x64':
         if (isMusl()) {
           localFileExisted = existsSync(
-            join(__dirname, 'vectordb-nodejs.linux-x64-musl.node')
+            join(__dirname, 'lancedb-nodejs.linux-x64-musl.node')
           )
           try {
             if (localFileExisted) {
-              nativeBinding = require('./vectordb-nodejs.linux-x64-musl.node')
+              nativeBinding = require('./lancedb-nodejs.linux-x64-musl.node')
             } else {
-              nativeBinding = require('vectordb-linux-x64-musl')
+              nativeBinding = require('lancedb-linux-x64-musl')
             }
           } catch (e) {
             loadError = e
           }
         } else {
           localFileExisted = existsSync(
-            join(__dirname, 'vectordb-nodejs.linux-x64-gnu.node')
+            join(__dirname, 'lancedb-nodejs.linux-x64-gnu.node')
           )
           try {
             if (localFileExisted) {
-              nativeBinding = require('./vectordb-nodejs.linux-x64-gnu.node')
+              nativeBinding = require('./lancedb-nodejs.linux-x64-gnu.node')
             } else {
-              nativeBinding = require('vectordb-linux-x64-gnu')
+              nativeBinding = require('lancedb-linux-x64-gnu')
             }
           } catch (e) {
             loadError = e
@@ -197,26 +197,26 @@ switch (platform) {
       case 'arm64':
         if (isMusl()) {
           localFileExisted = existsSync(
-            join(__dirname, 'vectordb-nodejs.linux-arm64-musl.node')
+            join(__dirname, 'lancedb-nodejs.linux-arm64-musl.node')
           )
           try {
             if (localFileExisted) {
-              nativeBinding = require('./vectordb-nodejs.linux-arm64-musl.node')
+              nativeBinding = require('./lancedb-nodejs.linux-arm64-musl.node')
             } else {
-              nativeBinding = require('vectordb-linux-arm64-musl')
+              nativeBinding = require('lancedb-linux-arm64-musl')
             }
           } catch (e) {
             loadError = e
           }
         } else {
           localFileExisted = existsSync(
-            join(__dirname, 'vectordb-nodejs.linux-arm64-gnu.node')
+            join(__dirname, 'lancedb-nodejs.linux-arm64-gnu.node')
           )
           try {
             if (localFileExisted) {
-              nativeBinding = require('./vectordb-nodejs.linux-arm64-gnu.node')
+              nativeBinding = require('./lancedb-nodejs.linux-arm64-gnu.node')
             } else {
-              nativeBinding = require('vectordb-linux-arm64-gnu')
+              nativeBinding = require('lancedb-linux-arm64-gnu')
             }
           } catch (e) {
             loadError = e
@@ -225,13 +225,13 @@ switch (platform) {
         break
       case 'arm':
         localFileExisted = existsSync(
-          join(__dirname, 'vectordb-nodejs.linux-arm-gnueabihf.node')
+          join(__dirname, 'lancedb-nodejs.linux-arm-gnueabihf.node')
         )
         try {
           if (localFileExisted) {
-            nativeBinding = require('./vectordb-nodejs.linux-arm-gnueabihf.node')
+            nativeBinding = require('./lancedb-nodejs.linux-arm-gnueabihf.node')
           } else {
-            nativeBinding = require('vectordb-linux-arm-gnueabihf')
+            nativeBinding = require('lancedb-linux-arm-gnueabihf')
           }
         } catch (e) {
           loadError = e
@@ -240,26 +240,26 @@ switch (platform) {
       case 'riscv64':
         if (isMusl()) {
           localFileExisted = existsSync(
-            join(__dirname, 'vectordb-nodejs.linux-riscv64-musl.node')
+            join(__dirname, 'lancedb-nodejs.linux-riscv64-musl.node')
           )
           try {
             if (localFileExisted) {
-              nativeBinding = require('./vectordb-nodejs.linux-riscv64-musl.node')
+              nativeBinding = require('./lancedb-nodejs.linux-riscv64-musl.node')
             } else {
-              nativeBinding = require('vectordb-linux-riscv64-musl')
+              nativeBinding = require('lancedb-linux-riscv64-musl')
             }
           } catch (e) {
             loadError = e
           }
         } else {
           localFileExisted = existsSync(
-            join(__dirname, 'vectordb-nodejs.linux-riscv64-gnu.node')
+            join(__dirname, 'lancedb-nodejs.linux-riscv64-gnu.node')
           )
           try {
             if (localFileExisted) {
-              nativeBinding = require('./vectordb-nodejs.linux-riscv64-gnu.node')
+              nativeBinding = require('./lancedb-nodejs.linux-riscv64-gnu.node')
             } else {
-              nativeBinding = require('vectordb-linux-riscv64-gnu')
+              nativeBinding = require('lancedb-linux-riscv64-gnu')
             }
           } catch (e) {
             loadError = e
@@ -268,13 +268,13 @@ switch (platform) {
         break
       case 's390x':
         localFileExisted = existsSync(
-          join(__dirname, 'vectordb-nodejs.linux-s390x-gnu.node')
+          join(__dirname, 'lancedb-nodejs.linux-s390x-gnu.node')
         )
         try {
           if (localFileExisted) {
-            nativeBinding = require('./vectordb-nodejs.linux-s390x-gnu.node')
+            nativeBinding = require('./lancedb-nodejs.linux-s390x-gnu.node')
           } else {
-            nativeBinding = require('vectordb-linux-s390x-gnu')
+            nativeBinding = require('lancedb-linux-s390x-gnu')
           }
         } catch (e) {
           loadError = e

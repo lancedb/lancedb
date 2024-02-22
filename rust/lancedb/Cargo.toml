@@ -1,5 +1,5 @@
 [package]
-name = "vectordb"
+name = "lancedb"
 version = "0.4.10"
 edition.workspace = true
 description = "LanceDB: A serverless, low-latency vector database for AI applications"

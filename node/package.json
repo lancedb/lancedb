@@ -6,7 +6,7 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "tsc": "tsc -b",
-    "build": "npm run tsc && cargo-cp-artifact --artifact cdylib vectordb-node index.node -- cargo build --message-format=json",
+    "build": "npm run tsc && cargo-cp-artifact --artifact cdylib lancedb-node index.node -- cargo build --message-format=json",
     "build-release": "npm run build -- --release",
     "test": "npm run tsc && mocha -recursive dist/test",
     "integration-test": "npm run tsc && mocha -recursive dist/integration_test",

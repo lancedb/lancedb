@@ -17,8 +17,8 @@ use napi_derive::*;
 
 use crate::table::Table;
 use crate::ConnectionOptions;
-use vectordb::connection::{ConnectBuilder, Connection as LanceDBConnection};
-use vectordb::ipc::ipc_file_to_batches;
+use lancedb::connection::{ConnectBuilder, Connection as LanceDBConnection};
+use lancedb::ipc::ipc_file_to_batches;
 
 #[napi]
 pub struct Connection {
@@ -42,10 +42,9 @@ impl Connection {
                 builder.read_consistency_interval(std::time::Duration::from_secs_f64(interval));
         }
         Ok(Self {
-            conn: builder
-                .execute()
-                .await
-                .map_err(|e| napi::Error::from_reason(format!("{}", e)))?,
+            conn: lancedb::connect(&uri).execute().await.map_err(|e| {
+                napi::Error::from_reason(format!("Failed to connect to database: {}", e))
+            })?,
         })
     }
 
