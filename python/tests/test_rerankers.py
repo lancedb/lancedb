@@ -102,7 +102,7 @@ def test_linear_combination(tmp_path):
     query = "Our father who art in heaven"
     query_vector = table.to_pandas()["vector"][0]
     result = (
-        table.search(vector=query_vector, text=query, query_type="vector")
+        table.search(vector=query_vector, text=query, query_type="hybrid")
         .limit(30)
         .rerank(normalize="score")
         .to_arrow()
@@ -116,12 +116,19 @@ def test_linear_combination(tmp_path):
         "be descending."
     )
 
+    # automatically deduce the query type
     result = (
         table.search(vector=query_vector, text=query)
         .limit(30)
         .rerank(normalize="score")
         .to_arrow()
     )
+
+    # wrong query type raises an error
+    with pytest.raises(ValueError):
+        table.search(vector=query_vector, text=query, query_type="vector").rerank(
+            normalize="score"
+        )
 
 
 @pytest.mark.skipif(
