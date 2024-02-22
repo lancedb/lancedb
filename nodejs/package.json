@@ -18,7 +18,7 @@
   "license": "Apache 2.0",
   "devDependencies": {
     "@napi-rs/cli": "^2.18.0",
-    "@types/jest": "^29.5.11",
+    "@types/jest": "^29.1.2",
     "@typescript-eslint/eslint-plugin": "^6.19.0",
     "@typescript-eslint/parser": "^6.19.0",
     "eslint": "^8.56.0",
@@ -51,7 +51,8 @@
     "docs": "typedoc --plugin typedoc-plugin-markdown vectordb/index.ts",
     "lint": "eslint vectordb --ext .js,.ts",
     "prepublishOnly": "napi prepublish -t npm",
-    "test": "npm run build && jest",
+    "//": "maxWorkers=1 is workaround for bigint issue in jest: https://github.com/jestjs/jest/issues/11617#issuecomment-1068732414",
+    "test": "npm run build && jest --maxWorkers=1",
     "universal": "napi universal",
     "version": "napi version"
   },

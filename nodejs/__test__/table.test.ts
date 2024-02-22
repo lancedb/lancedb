@@ -181,3 +181,37 @@ describe("Test creating index", () => {
     // TODO: check index type.
   });
 });
+
+describe("Read consistency interval", () => {
+  let tmpDir: string;
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "read-consistency-"));
+  });
+
+  // const intervals = [undefined, 0, 0.1];
+  const intervals = [0];
+  test.each(intervals)("read consistency interval %p", async (interval) => {
+    const db = await connect({ uri: tmpDir });
+    const table = await db.createTable("my_table", [{ id: 1 }]);
+
+    const db2 = await connect({ uri: tmpDir, readConsistencyInterval: interval });
+    const table2 = await db2.openTable("my_table");
+    expect(await table2.countRows()).toEqual(await table.countRows());
+
+    await table.add([{ id: 2 }]);
+
+    if (interval === undefined) {
+      expect(await table2.countRows()).toEqual(1n);
+      // TODO: once we implement time travel we can uncomment this part of the test.
+      // await table2.checkout_latest();
+      // expect(await table2.countRows()).toEqual(2);
+    } else if (interval === 0) {
+      expect(await table2.countRows()).toEqual(2n);
+    } else {
+      // interval == 0.1
+      expect(await table2.countRows()).toEqual(1n);
+      await new Promise(r => setTimeout(r, 100));
+      expect(await table2.countRows()).toEqual(2n);
+    }
+  });
+});

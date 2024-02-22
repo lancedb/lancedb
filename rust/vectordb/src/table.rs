@@ -15,7 +15,7 @@
 //! LanceDB Table APIs
 
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use arrow_array::{RecordBatchIterator, RecordBatchReader};
 use arrow_schema::{Schema, SchemaRef};
@@ -39,8 +39,10 @@ use crate::index::IndexBuilder;
 use crate::query::Query;
 use crate::utils::{PatchReadParam, PatchWriteParam};
 
+use self::dataset::DatasetConsistencyWrapper;
 use self::merge::{MergeInsert, MergeInsertBuilder};
 
+pub(crate) mod dataset;
 pub mod merge;
 
 /// Optimize the dataset.
@@ -127,7 +129,7 @@ pub trait Table: std::fmt::Display + Send + Sync {
     fn name(&self) -> &str;
 
     /// Get the arrow [Schema] of the table.
-    fn schema(&self) -> SchemaRef;
+    async fn schema(&self) -> Result<SchemaRef>;
 
     /// Count the number of rows in this dataset.
     ///
@@ -323,6 +325,7 @@ pub trait Table: std::fmt::Display + Send + Sync {
     /// # use futures::TryStreamExt;
     /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
     /// # let tbl = vectordb::table::NativeTable::open("/tmp/tbl").await.unwrap();
+    /// use crate::vectordb::Table;
     /// let stream = tbl
     ///     .query()
     ///     .nearest_to(&[1.0, 2.0, 3.0])
@@ -341,6 +344,7 @@ pub trait Table: std::fmt::Display + Send + Sync {
     /// # use futures::TryStreamExt;
     /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
     /// # let tbl = vectordb::table::NativeTable::open("/tmp/tbl").await.unwrap();
+    /// use crate::vectordb::Table;
     /// let stream = tbl
     ///     .query()
     ///     .filter("id > 5")
@@ -358,6 +362,7 @@ pub trait Table: std::fmt::Display + Send + Sync {
     /// # use futures::TryStreamExt;
     /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
     /// # let tbl = vectordb::table::NativeTable::open("/tmp/tbl").await.unwrap();
+    /// use crate::vectordb::Table;
     /// let stream = tbl.query().execute_stream().await.unwrap();
     /// let batches: Vec<RecordBatch> = stream.try_collect().await.unwrap();
     /// # });
@@ -368,7 +373,7 @@ pub trait Table: std::fmt::Display + Send + Sync {
     ///
     /// <section class="warning">Experimental API</section>
     ///
-    /// Modeled after ``VACCUM`` in PostgreSQL.
+    /// Modeled after ``VACUUM`` in PostgreSQL.
     /// Not all implementations support explicit optimization.
     async fn optimize(&self, action: OptimizeAction) -> Result<OptimizeStats>;
 }
@@ -381,10 +386,14 @@ pub type TableRef = Arc<dyn Table>;
 pub struct NativeTable {
     name: String,
     uri: String,
-    dataset: Arc<Mutex<Dataset>>,
+    pub(crate) dataset: dataset::DatasetConsistencyWrapper,
 
     // the object store wrapper to use on write path
     store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
+
+    // This comes from the connection options. We store here so we can pass down
+    // to the dataset when we recreate it (for example, in checkout_latest).
+    read_consistency_interval: Option<std::time::Duration>,
 }
 
 impl std::fmt::Display for NativeTable {
@@ -406,7 +415,7 @@ impl NativeTable {
     /// * A [NativeTable] object.
     pub async fn open(uri: &str) -> Result<Self> {
         let name = Self::get_table_name(uri)?;
-        Self::open_with_params(uri, &name, None, None).await
+        Self::open_with_params(uri, &name, None, None, None).await
     }
 
     /// Opens an existing Table
@@ -425,6 +434,7 @@ impl NativeTable {
         name: &str,
         write_store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
         params: Option<ReadParams>,
+        read_consistency_interval: Option<std::time::Duration>,
     ) -> Result<Self> {
         let params = params.unwrap_or_default();
         // patch the params if we have a write store wrapper
@@ -445,23 +455,22 @@ impl NativeTable {
                     message: e.to_string(),
                 },
             })?;
+
+        let dataset = DatasetConsistencyWrapper::new_latest(dataset, read_consistency_interval);
+
         Ok(Self {
             name: name.to_string(),
             uri: uri.to_string(),
-            dataset: Arc::new(Mutex::new(dataset)),
+            dataset,
             store_wrapper: write_store_wrapper,
+            read_consistency_interval,
         })
-    }
-
-    /// Make a new clone of the internal lance dataset.
-    pub(crate) fn clone_inner_dataset(&self) -> Dataset {
-        self.dataset.lock().expect("Lock poison").clone()
     }
 
     /// Checkout a specific version of this [NativeTable]
     pub async fn checkout(uri: &str, version: u64) -> Result<Self> {
         let name = Self::get_table_name(uri)?;
-        Self::checkout_with_params(uri, &name, version, None, ReadParams::default()).await
+        Self::checkout_with_params(uri, &name, version, None, ReadParams::default(), None).await
     }
 
     pub async fn checkout_with_params(
@@ -470,44 +479,35 @@ impl NativeTable {
         version: u64,
         write_store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
         params: ReadParams,
+        read_consistency_interval: Option<std::time::Duration>,
     ) -> Result<Self> {
         // patch the params if we have a write store wrapper
         let params = match write_store_wrapper.clone() {
             Some(wrapper) => params.patch_with_store_wrapper(wrapper)?,
             None => params,
         };
-        let dataset = Dataset::checkout_with_params(uri, version, &params)
-            .await
-            .map_err(|e| match e {
-                lance::Error::DatasetNotFound { .. } => Error::TableNotFound {
-                    name: name.to_string(),
-                },
-                e => Error::Lance {
-                    message: e.to_string(),
-                },
-            })?;
+        let dataset = DatasetBuilder::from_uri(uri)
+            .with_version(version)
+            .with_read_params(params)
+            .load()
+            .await?;
+        let dataset = DatasetConsistencyWrapper::new_time_travel(dataset, version);
+
         Ok(Self {
             name: name.to_string(),
             uri: uri.to_string(),
-            dataset: Arc::new(Mutex::new(dataset)),
+            dataset,
             store_wrapper: write_store_wrapper,
+            read_consistency_interval,
         })
     }
 
     pub async fn checkout_latest(&self) -> Result<Self> {
-        let dataset = self.clone_inner_dataset();
-        let latest_version_id = dataset.latest_version_id().await?;
-        let dataset = if latest_version_id == dataset.version().version {
-            dataset
-        } else {
-            dataset.checkout_version(latest_version_id).await?
-        };
-
+        let mut dataset = self.dataset.duplicate().await;
+        dataset.as_latest(self.read_consistency_interval).await?;
         Ok(Self {
-            name: self.name.clone(),
-            uri: self.uri.clone(),
-            dataset: Arc::new(Mutex::new(dataset)),
-            store_wrapper: self.store_wrapper.clone(),
+            dataset,
+            ..self.clone()
         })
     }
 
@@ -543,6 +543,7 @@ impl NativeTable {
         batches: impl RecordBatchReader + Send + 'static,
         write_store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
         params: Option<WriteParams>,
+        read_consistency_interval: Option<std::time::Duration>,
     ) -> Result<Self> {
         let params = params.unwrap_or_default();
         // patch the params if we have a write store wrapper
@@ -564,8 +565,9 @@ impl NativeTable {
         Ok(Self {
             name: name.to_string(),
             uri: uri.to_string(),
-            dataset: Arc::new(Mutex::new(dataset)),
+            dataset: DatasetConsistencyWrapper::new_latest(dataset, read_consistency_interval),
             store_wrapper: write_store_wrapper,
+            read_consistency_interval,
         })
     }
 
@@ -575,33 +577,34 @@ impl NativeTable {
         schema: SchemaRef,
         write_store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
         params: Option<WriteParams>,
+        read_consistency_interval: Option<std::time::Duration>,
     ) -> Result<Self> {
         let batches = RecordBatchIterator::new(vec![], schema);
-        Self::create(uri, name, batches, write_store_wrapper, params).await
+        Self::create(
+            uri,
+            name,
+            batches,
+            write_store_wrapper,
+            params,
+            read_consistency_interval,
+        )
+        .await
     }
 
     /// Version of this Table
-    pub fn version(&self) -> u64 {
-        self.dataset.lock().expect("lock poison").version().version
+    pub async fn version(&self) -> Result<u64> {
+        Ok(self.dataset.get().await?.version().version)
     }
 
     async fn optimize_indices(&self, options: &OptimizeOptions) -> Result<()> {
         info!("LanceDB: optimizing indices: {:?}", options);
-        let mut dataset = self.clone_inner_dataset();
-        dataset.optimize_indices(options).await?;
-
+        self.dataset
+            .get_mut()
+            .await?
+            .optimize_indices(options)
+            .await?;
         Ok(())
     }
-
-    pub fn query(&self) -> Query {
-        Query::new(self.clone_inner_dataset().into())
-    }
-
-    pub fn filter(&self, expr: String) -> Query {
-        Query::new(self.clone_inner_dataset().into()).filter(expr)
-    }
-
-    /// Returns the number of rows in this Table
 
     /// Merge new data into this table.
     pub async fn merge(
@@ -610,14 +613,17 @@ impl NativeTable {
         left_on: &str,
         right_on: &str,
     ) -> Result<()> {
-        let mut dataset = self.clone_inner_dataset();
-        dataset.merge(batches, left_on, right_on).await?;
-        self.dataset = Arc::new(Mutex::new(dataset));
+        self.dataset
+            .get_mut()
+            .await?
+            .merge(batches, left_on, right_on)
+            .await?;
         Ok(())
     }
 
     pub async fn update(&self, predicate: Option<&str>, updates: Vec<(&str, &str)>) -> Result<()> {
-        let mut builder = UpdateBuilder::new(self.clone_inner_dataset().into());
+        let dataset = self.dataset.get().await?.clone();
+        let mut builder = UpdateBuilder::new(Arc::new(dataset));
         if let Some(predicate) = predicate {
             builder = builder.update_where(predicate)?;
         }
@@ -628,7 +634,7 @@ impl NativeTable {
 
         let operation = builder.build()?;
         let ds = operation.execute().await?;
-        self.reset_dataset(ds.as_ref().clone());
+        self.dataset.set_latest(ds.as_ref().clone()).await;
         Ok(())
     }
 
@@ -648,8 +654,10 @@ impl NativeTable {
         older_than: Duration,
         delete_unverified: Option<bool>,
     ) -> Result<RemovalStats> {
-        let dataset = self.clone_inner_dataset();
-        Ok(dataset
+        Ok(self
+            .dataset
+            .get_mut()
+            .await?
             .cleanup_old_versions(older_than, delete_unverified)
             .await?)
     }
@@ -665,24 +673,27 @@ impl NativeTable {
         options: CompactionOptions,
         remap_options: Option<Arc<dyn IndexRemapperOptions>>,
     ) -> Result<CompactionMetrics> {
-        let mut dataset = self.clone_inner_dataset();
-        let metrics = compact_files(&mut dataset, options, remap_options).await?;
-        self.reset_dataset(dataset);
+        let mut dataset_mut = self.dataset.get_mut().await?;
+        let metrics = compact_files(&mut dataset_mut, options, remap_options).await?;
         Ok(metrics)
     }
 
-    pub fn count_fragments(&self) -> usize {
-        self.dataset.lock().expect("lock poison").count_fragments()
+    // TODO: why are these individual methods and not some single "get_stats" method?
+    pub async fn count_fragments(&self) -> Result<usize> {
+        Ok(self.dataset.get().await?.count_fragments())
     }
 
     pub async fn count_deleted_rows(&self) -> Result<usize> {
-        let dataset = self.clone_inner_dataset();
-        Ok(dataset.count_deleted_rows().await?)
+        Ok(self.dataset.get().await?.count_deleted_rows().await?)
     }
 
-    pub async fn num_small_files(&self, max_rows_per_group: usize) -> usize {
-        let dataset = self.clone_inner_dataset();
-        dataset.num_small_files(max_rows_per_group).await
+    pub async fn num_small_files(&self, max_rows_per_group: usize) -> Result<usize> {
+        Ok(self
+            .dataset
+            .get()
+            .await?
+            .num_small_files(max_rows_per_group)
+            .await)
     }
 
     pub async fn count_indexed_rows(&self, index_uuid: &str) -> Result<Option<usize>> {
@@ -700,7 +711,7 @@ impl NativeTable {
     }
 
     pub async fn load_indices(&self) -> Result<Vec<VectorIndex>> {
-        let dataset = self.clone_inner_dataset();
+        let dataset = self.dataset.get().await?;
         let (indices, mf) = futures::try_join!(dataset.load_indices(), dataset.latest_manifest())?;
         Ok(indices
             .iter()
@@ -717,7 +728,7 @@ impl NativeTable {
         if index.is_none() {
             return Ok(None);
         }
-        let dataset = self.clone_inner_dataset();
+        let dataset = self.dataset.get().await?;
         let index_stats = dataset.index_statistics(&index.unwrap().index_name).await?;
         let index_stats: VectorIndexStatistics =
             serde_json::from_str(&index_stats).map_err(|e| Error::Lance {
@@ -729,10 +740,6 @@ impl NativeTable {
 
         Ok(Some(index_stats))
     }
-
-    pub(crate) fn reset_dataset(&self, dataset: Dataset) {
-        *self.dataset.lock().expect("lock poison") = dataset;
-    }
 }
 
 #[async_trait]
@@ -742,7 +749,7 @@ impl MergeInsert for NativeTable {
         params: MergeInsertBuilder,
         new_data: Box<dyn RecordBatchReader + Send>,
     ) -> Result<()> {
-        let dataset = Arc::new(self.clone_inner_dataset());
+        let dataset = Arc::new(self.dataset.get().await?.clone());
         let mut builder = LanceMergeInsertBuilder::try_new(dataset.clone(), params.on)?;
         match (
             params.when_matched_update_all,
@@ -769,7 +776,7 @@ impl MergeInsert for NativeTable {
         }
         let job = builder.try_build()?;
         let new_dataset = job.execute_reader(new_data).await?;
-        self.reset_dataset((*new_dataset).clone());
+        self.dataset.set_latest(new_dataset.as_ref().clone()).await;
         Ok(())
     }
 }
@@ -788,13 +795,13 @@ impl Table for NativeTable {
         self.name.as_str()
     }
 
-    fn schema(&self) -> SchemaRef {
-        let lance_schema = { self.dataset.lock().expect("lock poison").schema().clone() };
-        Arc::new(Schema::from(&lance_schema))
+    async fn schema(&self) -> Result<SchemaRef> {
+        let lance_schema = self.dataset.get().await?.schema().clone();
+        Ok(Arc::new(Schema::from(&lance_schema)))
     }
 
     async fn count_rows(&self, filter: Option<String>) -> Result<usize> {
-        let dataset = { self.dataset.lock().expect("lock poison").clone() };
+        let dataset = self.dataset.get().await?;
         if let Some(filter) = filter {
             let mut scanner = dataset.scan();
             scanner.filter(&filter)?;
@@ -826,7 +833,8 @@ impl Table for NativeTable {
             None => lance_params,
         };
 
-        self.reset_dataset(Dataset::write(batches, &self.uri, Some(lance_params)).await?);
+        let dataset = Dataset::write(batches, &self.uri, Some(lance_params)).await?;
+        self.dataset.set_latest(dataset).await;
         Ok(())
     }
 
@@ -840,14 +848,12 @@ impl Table for NativeTable {
     }
 
     fn query(&self) -> Query {
-        Query::new(Arc::new(self.dataset.lock().expect("lock poison").clone()))
+        Query::new(self.dataset.clone())
     }
 
     /// Delete rows from the table
     async fn delete(&self, predicate: &str) -> Result<()> {
-        let mut dataset = self.clone_inner_dataset();
-        dataset.delete(predicate).await?;
-        self.reset_dataset(dataset);
+        self.dataset.get_mut().await?.delete(predicate).await?;
         Ok(())
     }
 
@@ -903,6 +909,7 @@ mod tests {
     use std::iter;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::time::Duration;
 
     use arrow_array::{
         Array, BooleanArray, Date32Array, FixedSizeListArray, Float32Array, Float64Array,
@@ -917,6 +924,8 @@ mod tests {
     use lance::io::{ObjectStoreParams, WrappingObjectStore};
     use rand::Rng;
     use tempfile::tempdir;
+
+    use crate::connection::ConnectBuilder;
 
     use super::*;
 
@@ -960,7 +969,7 @@ mod tests {
         let uri = tmp_dir.path().to_str().unwrap();
 
         let batches = make_test_batches();
-        let table = NativeTable::create(uri, "test", batches, None, None)
+        let table = NativeTable::create(uri, "test", batches, None, None, None)
             .await
             .unwrap();
 
@@ -978,7 +987,7 @@ mod tests {
 
         let batches = make_test_batches();
         let schema = batches.schema().clone();
-        let table = NativeTable::create(uri, "test", batches, None, None)
+        let table = NativeTable::create(uri, "test", batches, None, None, None)
             .await
             .unwrap();
         assert_eq!(table.count_rows(None).await.unwrap(), 10);
@@ -1009,7 +1018,7 @@ mod tests {
 
         // Create a dataset with i=0..10
         let batches = merge_insert_test_batches(0, 0);
-        let table = NativeTable::create(uri, "test", batches, None, None)
+        let table = NativeTable::create(uri, "test", batches, None, None, None)
             .await
             .unwrap();
         assert_eq!(table.count_rows(None).await.unwrap(), 10);
@@ -1055,7 +1064,7 @@ mod tests {
 
         let batches = make_test_batches();
         let schema = batches.schema().clone();
-        let table = NativeTable::create(uri, "test", batches, None, None)
+        let table = NativeTable::create(uri, "test", batches, None, None, None)
             .await
             .unwrap();
         assert_eq!(table.count_rows(None).await.unwrap(), 10);
@@ -1410,7 +1419,7 @@ mod tests {
             ..Default::default()
         };
         assert!(!wrapper.called());
-        let _ = NativeTable::open_with_params(uri, "test", None, Some(param))
+        let _ = NativeTable::open_with_params(uri, "test", None, Some(param), None)
             .await
             .unwrap();
         assert!(wrapper.called());
@@ -1484,7 +1493,7 @@ mod tests {
             schema,
         );
 
-        let table = NativeTable::create(uri, "test", batches, None, None)
+        let table = NativeTable::create(uri, "test", batches, None, None, None)
             .await
             .unwrap();
 
@@ -1528,5 +1537,69 @@ mod tests {
             .unwrap();
 
         Ok(FixedSizeListArray::from(data))
+    }
+
+    #[tokio::test]
+    async fn test_read_consistency_interval() {
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("i", DataType::Int32, false)])),
+            vec![Arc::new(Int32Array::from(vec![1]))],
+        )
+        .unwrap();
+
+        let intervals = vec![
+            None,
+            Some(0),
+            Some(100), // 100 ms
+        ];
+
+        for interval in intervals {
+            let tmp_dir = tempdir().unwrap();
+            let uri = tmp_dir.path().to_str().unwrap();
+
+            let conn1 = ConnectBuilder::new(uri).execute().await.unwrap();
+            let table1 = conn1
+                .create_empty_table("my_table", batch.schema())
+                .execute()
+                .await
+                .unwrap();
+
+            let mut conn2 = ConnectBuilder::new(uri);
+            if let Some(interval) = interval {
+                conn2 = conn2.read_consistency_interval(std::time::Duration::from_millis(interval));
+            }
+            let conn2 = conn2.execute().await.unwrap();
+            let table2 = conn2.open_table("my_table").execute().await.unwrap();
+
+            assert_eq!(table1.count_rows(None).await.unwrap(), 0);
+            assert_eq!(table2.count_rows(None).await.unwrap(), 0);
+
+            table1
+                .add(
+                    Box::new(RecordBatchIterator::new(
+                        vec![Ok(batch.clone())],
+                        batch.schema(),
+                    )),
+                    AddDataOptions::default(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(table1.count_rows(None).await.unwrap(), 1);
+
+            match interval {
+                None => {
+                    assert_eq!(table2.count_rows(None).await.unwrap(), 0);
+                }
+                Some(0) => {
+                    assert_eq!(table2.count_rows(None).await.unwrap(), 1);
+                }
+                Some(100) => {
+                    assert_eq!(table2.count_rows(None).await.unwrap(), 0);
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    assert_eq!(table2.count_rows(None).await.unwrap(), 1);
+                }
+                _ => unreachable!(),
+            }
+        }
     }
 }
