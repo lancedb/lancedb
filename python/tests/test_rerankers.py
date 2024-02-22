@@ -129,6 +129,14 @@ def test_linear_combination(tmp_path):
         table.search(vector=query_vector, text=query, query_type="vector").rerank(
             normalize="score"
         )
+    
+    # raise an error if only vector or text is provided
+    with pytest.raises(ValueError):
+        table.search(vector=query_vector).to_arrow()
+    
+    with pytest.raises(ValueError):
+        table.search(text=query).to_arrow()
+        
 
 
 @pytest.mark.skipif(
