@@ -29,6 +29,6 @@ test("open database", async () => {
   const tbl = await db.createTable("test", [{ id: 1 }, { id: 2 }]);
   expect(await db.tableNames()).toStrictEqual(["test"]);
 
-  const schema = tbl.schema;
+  const schema = await tbl.schema();
   expect(schema).toEqual(new Schema([new Field("id", new Float64(), true)]));
 });

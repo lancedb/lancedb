@@ -32,8 +32,8 @@ export class Table {
   }
 
   /** Get the schema of the table. */
-  get schema(): Schema {
-    const schemaBuf = this.inner.schema();
+  async schema(): Promise<Schema> {
+    const schemaBuf = await this.inner.schema();
     const tbl = tableFromIPC(schemaBuf);
     return tbl.schema;
   }

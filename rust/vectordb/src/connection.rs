@@ -303,6 +303,9 @@ pub struct ConnectBuilder {
 
     /// User provided AWS credentials
     aws_creds: Option<AwsCredential>,
+
+    /// The interval at which to check for updates from other processes.
+    read_consistency_interval: Option<std::time::Duration>,
 }
 
 impl ConnectBuilder {
@@ -314,6 +317,7 @@ impl ConnectBuilder {
             region: None,
             host_override: None,
             aws_creds: None,
+            read_consistency_interval: None,
         }
     }
 
@@ -335,6 +339,29 @@ impl ConnectBuilder {
     /// [`AwsCredential`] to use when connecting to S3.
     pub fn aws_creds(mut self, aws_creds: AwsCredential) -> Self {
         self.aws_creds = Some(aws_creds);
+        self
+    }
+
+    /// The interval at which to check for updates from other processes. This
+    /// only affects LanceDB OSS.
+    ///
+    /// If left unset, consistency is not checked. For maximum read
+    /// performance, this is the default. For strong consistency, set this to
+    /// zero seconds. Then every read will check for updates from other processes.
+    /// As a compromise, set this to a non-zero duration for eventual consistency.
+    /// If more than that duration has passed since the last read, the read will
+    /// check for updates from other processes.
+    ///
+    /// This only affects read operations. Write operations are always
+    /// consistent.
+    ///
+    /// LanceDB Cloud uses eventual consistency under the hood, and is not
+    /// currently configurable.
+    pub fn read_consistency_interval(
+        mut self,
+        read_consistency_interval: std::time::Duration,
+    ) -> Self {
+        self.read_consistency_interval = Some(read_consistency_interval);
         self
     }
 
@@ -368,6 +395,8 @@ struct Database {
 
     // the object store wrapper to use on write path
     pub(crate) store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
+
+    read_consistency_interval: Option<std::time::Duration>,
 }
 
 const LANCE_EXTENSION: &str = "lance";
@@ -380,8 +409,11 @@ impl Database {
         let uri = &options.uri;
         let parse_res = url::Url::parse(uri);
 
+        // TODO: pass params regardless of OS
         match parse_res {
-            Ok(url) if url.scheme().len() == 1 && cfg!(windows) => Self::open_path(uri).await,
+            Ok(url) if url.scheme().len() == 1 && cfg!(windows) => {
+                Self::open_path(uri, options.read_consistency_interval).await
+            }
             Ok(mut url) => {
                 // iter thru the query params and extract the commit store param
                 let mut engine = None;
@@ -465,13 +497,17 @@ impl Database {
                     base_path,
                     object_store,
                     store_wrapper: write_store_wrapper,
+                    read_consistency_interval: options.read_consistency_interval,
                 })
             }
-            Err(_) => Self::open_path(uri).await,
+            Err(_) => Self::open_path(uri, options.read_consistency_interval).await,
         }
     }
 
-    async fn open_path(path: &str) -> Result<Self> {
+    async fn open_path(
+        path: &str,
+        read_consistency_interval: Option<std::time::Duration>,
+    ) -> Result<Self> {
         let (object_store, base_path) = ObjectStore::from_uri(path).await?;
         if object_store.is_local() {
             Self::try_create_dir(path).context(CreateDirSnafu { path })?;
@@ -482,6 +518,7 @@ impl Database {
             base_path,
             object_store,
             store_wrapper: None,
+            read_consistency_interval,
         })
     }
 
@@ -551,6 +588,7 @@ impl ConnectionInternal for Database {
             options.data.unwrap(),
             self.store_wrapper.clone(),
             Some(write_params),
+            self.read_consistency_interval,
         )
         .await
         {
@@ -576,6 +614,7 @@ impl ConnectionInternal for Database {
                 &options.name,
                 self.store_wrapper.clone(),
                 options.lance_read_params,
+                self.read_consistency_interval,
             )
             .await?,
         ))
@@ -696,6 +735,6 @@ mod tests {
             .execute()
             .await
             .unwrap();
-        assert_eq!(other_schema, overwritten.schema());
+        assert_eq!(other_schema, overwritten.schema().await.unwrap());
     }
 }

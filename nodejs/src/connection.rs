@@ -16,7 +16,8 @@ use napi::bindgen_prelude::*;
 use napi_derive::*;
 
 use crate::table::Table;
-use vectordb::connection::Connection as LanceDBConnection;
+use crate::ConnectionOptions;
+use vectordb::connection::{ConnectBuilder, Connection as LanceDBConnection};
 use vectordb::ipc::ipc_file_to_batches;
 
 #[napi]
@@ -28,11 +29,23 @@ pub struct Connection {
 impl Connection {
     /// Create a new Connection instance from the given URI.
     #[napi(factory)]
-    pub async fn new(uri: String) -> napi::Result<Self> {
+    pub async fn new(options: ConnectionOptions) -> napi::Result<Self> {
+        let mut builder = ConnectBuilder::new(&options.uri);
+        if let Some(api_key) = options.api_key {
+            builder = builder.api_key(&api_key);
+        }
+        if let Some(host_override) = options.host_override {
+            builder = builder.host_override(&host_override);
+        }
+        if let Some(interval) = options.read_consistency_interval {
+            builder =
+                builder.read_consistency_interval(std::time::Duration::from_secs_f64(interval));
+        }
         Ok(Self {
-            conn: vectordb::connect(&uri).execute().await.map_err(|e| {
-                napi::Error::from_reason(format!("Failed to connect to database: {}", e))
-            })?,
+            conn: builder
+                .execute()
+                .await
+                .map_err(|e| napi::Error::from_reason(format!("{}", e)))?,
         })
     }
 
