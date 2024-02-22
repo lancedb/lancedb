@@ -1272,7 +1272,7 @@ class LanceTable(Table):
             and also the "_distance" column which is the distance between the query
             vector and the returned vector.
         """
-        is_query_defined = query is not None or (vector is not None and text is not None)
+        is_query_defined = query is not None or vector is not None or text is not None
         if vector_column_name is None and is_query_defined:
             vector_column_name = inf_vector_column_query(self.schema)
         register_event("search_table")
