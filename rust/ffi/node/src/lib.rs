@@ -22,9 +22,9 @@ use object_store::CredentialProvider;
 use once_cell::sync::OnceCell;
 use tokio::runtime::Runtime;
 
-use vectordb::connect;
-use vectordb::connection::Connection;
-use vectordb::table::ReadParams;
+use lancedb::connect;
+use lancedb::connection::Connection;
+use lancedb::table::ReadParams;
 
 use crate::error::ResultExt;
 use crate::query::JsQuery;

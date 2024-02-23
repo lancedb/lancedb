@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use lancedb::query::Query as LanceDBQuery;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
-use vectordb::query::Query as LanceDBQuery;
 
 use crate::{iterator::RecordBatchIterator, table::Table};
 

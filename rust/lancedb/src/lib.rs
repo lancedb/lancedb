@@ -12,8 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! # VectorDB ([LanceDB](https://github.com/lancedb/lancedb)) -- Developer-friendly, serverless vector database for AI applications
-//!
 //! [LanceDB](https://github.com/lancedb/lancedb) is an open-source database for vector-search built with persistent storage,
 //! which greatly simplifies retrevial, filtering and management of embeddings.
 //!
@@ -33,7 +31,7 @@
 //! LanceDB runs in process, to use it in your Rust project, put the following in your `Cargo.toml`:
 //!
 //! ```ignore
-//! cargo install vectordb
+//! cargo install lancedb
 //! ```
 //!
 //! ### Quick Start
@@ -45,7 +43,7 @@
 //! ```rust
 //! # use arrow_schema::{Field, Schema};
 //! # tokio::runtime::Runtime::new().unwrap().block_on(async {
-//! let db = vectordb::connect("data/sample-lancedb").execute().await.unwrap();
+//! let db = lancedb::connect("data/sample-lancedb").execute().await.unwrap();
 //! # });
 //! ```
 //!
@@ -60,7 +58,7 @@
 //! ```rust
 //! use object_store::aws::AwsCredential;
 //! # tokio::runtime::Runtime::new().unwrap().block_on(async {
-//! let db = vectordb::connect("data/sample-lancedb")
+//! let db = lancedb::connect("data/sample-lancedb")
 //!     .aws_creds(AwsCredential {
 //!         key_id: "some_key".to_string(),
 //!         secret_key: "some_secret".to_string(),
@@ -90,7 +88,7 @@
 //!
 //! # tokio::runtime::Runtime::new().unwrap().block_on(async {
 //! # let tmpdir = tempfile::tempdir().unwrap();
-//! # let db = vectordb::connect(tmpdir.path().to_str().unwrap()).execute().await.unwrap();
+//! # let db = lancedb::connect(tmpdir.path().to_str().unwrap()).execute().await.unwrap();
 //! let schema = Arc::new(Schema::new(vec![
 //!     Field::new("id", DataType::Int32, false),
 //!     Field::new(
@@ -134,7 +132,7 @@
 //! # use arrow_schema::{Schema, Field, DataType};
 //! # tokio::runtime::Runtime::new().unwrap().block_on(async {
 //! # let tmpdir = tempfile::tempdir().unwrap();
-//! # let db = vectordb::connect(tmpdir.path().to_str().unwrap()).execute().await.unwrap();
+//! # let db = lancedb::connect(tmpdir.path().to_str().unwrap()).execute().await.unwrap();
 //! # let tbl = db.open_table("idx_test").execute().await.unwrap();
 //! tbl.create_index(&["vector"])
 //!     .ivf_pq()
@@ -155,7 +153,7 @@
 //! # use arrow_array::{FixedSizeListArray, Float32Array, Int32Array, types::Float32Type};
 //! # tokio::runtime::Runtime::new().unwrap().block_on(async {
 //! # let tmpdir = tempfile::tempdir().unwrap();
-//! # let db = vectordb::connect(tmpdir.path().to_str().unwrap()).execute().await.unwrap();
+//! # let db = lancedb::connect(tmpdir.path().to_str().unwrap()).execute().await.unwrap();
 //! # let schema = Arc::new(Schema::new(vec![
 //! #  Field::new("id", DataType::Int32, false),
 //! #  Field::new("vector", DataType::FixedSizeList(

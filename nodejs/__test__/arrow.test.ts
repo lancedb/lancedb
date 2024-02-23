@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { makeArrowTable, toBuffer } from "../vectordb/arrow";
+import { makeArrowTable, toBuffer } from "../lancedb/arrow";
 import {
   Int64,
   Field,

@@ -14,9 +14,9 @@
 
 use futures::StreamExt;
 use lance::io::RecordBatchStream;
+use lancedb::ipc::batches_to_ipc_file;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
-use vectordb::ipc::batches_to_ipc_file;
 
 /** Typescript-style Async Iterator over RecordBatches */
 #[napi]

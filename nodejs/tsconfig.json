@@ -1,8 +1,8 @@
 {
   "include": [
-    "vectordb/*.ts",
-    "vectordb/**/*.ts",
-    "vectordb/*.js",
+    "lancedb/*.ts",
+    "lancedb/**/*.ts",
+    "lancedb/*.js",
   ],
   "compilerOptions": {
     "target": "es2022",
@@ -18,7 +18,7 @@
   ],
   "typedocOptions": {
     "entryPoints": [
-      "vectordb/index.ts"
+      "lancedb/index.ts"
     ],
     "out": "../docs/src/javascript/",
     "visibilityFilters": {
