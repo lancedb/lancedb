@@ -13,8 +13,8 @@
 // limitations under the License.
 
 use arrow_ipc::writer::FileWriter;
-use lancedb::table::AddDataOptions;
-use lancedb::{ipc::ipc_file_to_batches, table::TableRef};
+use lancedb::{ipc::ipc_file_to_batches, table::{TableRef, AddDataOptions}};
+use lance::dataset::ColumnAlteration as LanceColumnAlteration;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
@@ -93,4 +93,89 @@ impl Table {
     pub fn query(&self) -> Query {
         Query::new(self)
     }
+
+    #[napi]
+    pub async fn add_columns(&self, transforms: Vec<AddColumnsSql>) -> napi::Result<()> {
+        let transforms = transforms
+            .into_iter()
+            .map(|sql| (sql.name, sql.value_sql))
+            .collect::<Vec<_>>();
+        let transforms = lance::dataset::NewColumnTransform::SqlExpressions(transforms);
+        self.table
+            .add_columns(transforms, None)
+            .await
+            .map_err(|err| {
+                napi::Error::from_reason(format!(
+                    "Failed to add columns to table {}: {}",
+                    self.table, err
+                ))
+            })?;
+        Ok(())
+    }
+
+    #[napi]
+    pub async fn alter_columns(&self, alterations: Vec<ColumnAlteration>) -> napi::Result<()> {
+        for alteration in &alterations {
+            if alteration.rename.is_none() && alteration.nullable.is_none() {
+                return Err(napi::Error::from_reason(
+                    "Alteration must have a 'rename' or 'nullable' field.",
+                ));
+            }
+        }
+        let alterations = alterations
+            .into_iter()
+            .map(LanceColumnAlteration::from)
+            .collect::<Vec<_>>();
+
+        self.table
+            .alter_columns(&alterations)
+            .await
+            .map_err(|err| {
+                napi::Error::from_reason(format!(
+                    "Failed to alter columns in table {}: {}",
+                    self.table, err
+                ))
+            })?;
+        Ok(())
+    }
+
+    #[napi]
+    pub async fn drop_columns(&self, columns: Vec<String>) -> napi::Result<()> {
+        let col_refs = columns.iter().map(String::as_str).collect::<Vec<_>>();
+        self.table.drop_columns(&col_refs).await.map_err(|err| {
+            napi::Error::from_reason(format!(
+                "Failed to drop columns from table {}: {}",
+                self.table, err
+            ))
+        })?;
+        Ok(())
+    }
+}
+
+#[napi(object)]
+pub struct ColumnAlteration {
+    pub path: String,
+    pub rename: Option<String>,
+    pub nullable: Option<bool>,
+}
+
+impl From<ColumnAlteration> for LanceColumnAlteration {
+    fn from(js: ColumnAlteration) -> Self {
+        let ColumnAlteration {
+            path,
+            rename,
+            nullable,
+        } = js;
+        Self {
+            path,
+            rename,
+            nullable,
+        }
+    }
+}
+
+#[napi(object)]
+pub struct AddColumnsSql {
+    pub name: String,
+    pub value_sql: String,
 }

@@ -12,6 +12,15 @@ export const enum MetricType {
   Cosine = 1,
   Dot = 2
 }
+export interface ColumnAlteration {
+  path: string
+  rename?: string
+  nullable?: boolean
+}
+export interface AddColumnsSql {
+  name: string
+  valueSql: string
+}
 export interface ConnectionOptions {
   uri: string
   apiKey?: string
@@ -89,4 +98,7 @@ export class Table {
   delete(predicate: string): Promise<void>
   createIndex(): IndexBuilder
   query(): Query
+  addColumns(transforms: Array<AddColumnsSql>): Promise<void>
+  alterColumns(alterations: Array<ColumnAlteration>): Promise<void>
+  dropColumns(columns: Array<string>): Promise<void>
 }
