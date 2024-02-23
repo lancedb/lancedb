@@ -17,8 +17,8 @@ use napi_derive::*;
 
 use crate::table::Table;
 use crate::ConnectionOptions;
-use vectordb::connection::{ConnectBuilder, Connection as LanceDBConnection};
-use vectordb::ipc::ipc_file_to_batches;
+use lancedb::connection::{ConnectBuilder, Connection as LanceDBConnection};
+use lancedb::ipc::ipc_file_to_batches;
 
 #[napi]
 pub struct Connection {

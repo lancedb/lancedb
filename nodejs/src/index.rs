@@ -40,12 +40,12 @@ impl From<MetricType> for LanceMetricType {
 
 #[napi]
 pub struct IndexBuilder {
-    inner: vectordb::index::IndexBuilder,
+    inner: lancedb::index::IndexBuilder,
 }
 
 #[napi]
 impl IndexBuilder {
-    pub fn new(tbl: &dyn vectordb::Table) -> Self {
+    pub fn new(tbl: &dyn lancedb::Table) -> Self {
         let inner = tbl.create_index(&[]);
         Self { inner }
     }

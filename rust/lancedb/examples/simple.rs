@@ -19,9 +19,9 @@ use arrow_array::{FixedSizeListArray, Int32Array, RecordBatch, RecordBatchIterat
 use arrow_schema::{DataType, Field, Schema};
 use futures::TryStreamExt;
 
-use vectordb::connection::Connection;
-use vectordb::table::AddDataOptions;
-use vectordb::{connect, Result, Table, TableRef};
+use lancedb::connection::Connection;
+use lancedb::table::AddDataOptions;
+use lancedb::{connect, Result, Table, TableRef};
 
 #[tokio::main]
 async fn main() -> Result<()> {

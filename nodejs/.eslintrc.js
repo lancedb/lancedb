@@ -18,5 +18,5 @@ module.exports = {
     "@typescript-eslint/method-signature-style": "off",
     "@typescript-eslint/no-explicit-any": "off",
   },
-  ignorePatterns: ["node_modules/", "dist/", "build/", "vectordb/native.*"],
+  ignorePatterns: ["node_modules/", "dist/", "build/", "lancedb/native.*"],
 };
