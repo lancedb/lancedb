@@ -27,7 +27,10 @@ use lance::dataset::optimize::{
     compact_files, CompactionMetrics, CompactionOptions, IndexRemapperOptions,
 };
 pub use lance::dataset::ReadParams;
-use lance::dataset::{Dataset, UpdateBuilder, WhenMatched, WriteMode, WriteParams};
+use lance::dataset::{
+    ColumnAlteration, Dataset, NewColumnTransform, UpdateBuilder, WhenMatched, WriteMode,
+    WriteParams,
+};
 use lance::dataset::{MergeInsertBuilder as LanceMergeInsertBuilder, WhenNotMatchedBySource};
 use lance::io::WrappingObjectStore;
 use lance_index::{optimize::OptimizeOptions, DatasetIndexExt};
@@ -376,6 +379,19 @@ pub trait Table: std::fmt::Display + Send + Sync {
     /// Modeled after ``VACUUM`` in PostgreSQL.
     /// Not all implementations support explicit optimization.
     async fn optimize(&self, action: OptimizeAction) -> Result<OptimizeStats>;
+
+    /// Add new columns to the table, providing values to fill in.
+    async fn add_columns(
+        &self,
+        transforms: NewColumnTransform,
+        read_columns: Option<Vec<String>>,
+    ) -> Result<()>;
+
+    /// Change a column's data type, nullability, or name.
+    async fn alter_columns(&self, alterations: &[ColumnAlteration]) -> Result<()>;
+
+    /// Remove columns from the table.
+    async fn drop_columns(&self, columns: &[&str]) -> Result<()>;
 }
 
 /// Reference to a Table pointer.
@@ -901,6 +917,33 @@ impl Table for NativeTable {
             }
         }
         Ok(stats)
+    }
+
+    async fn add_columns(
+        &self,
+        transforms: NewColumnTransform,
+        read_columns: Option<Vec<String>>,
+    ) -> Result<()> {
+        self.dataset
+            .get_mut()
+            .await?
+            .add_columns(transforms, read_columns)
+            .await?;
+        Ok(())
+    }
+
+    async fn alter_columns(&self, alterations: &[ColumnAlteration]) -> Result<()> {
+        self.dataset
+            .get_mut()
+            .await?
+            .alter_columns(alterations)
+            .await?;
+        Ok(())
+    }
+
+    async fn drop_columns(&self, columns: &[&str]) -> Result<()> {
+        self.dataset.get_mut().await?.drop_columns(columns).await?;
+        Ok(())
     }
 }
 

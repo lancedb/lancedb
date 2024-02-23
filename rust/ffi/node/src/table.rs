@@ -544,4 +544,8 @@ impl JsTable {
         });
         Ok(promise)
     }
+
+    pub(crate) fn js_add_columns(mut cx: FunctionContext) -> JsResult<JsPromise> {
+        todo!()
+    }
 }
