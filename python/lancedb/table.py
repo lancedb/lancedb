@@ -680,6 +680,8 @@ class Table(ABC):
         """
         Alter column names and nullability.
 
+        This is not yet available in LanceDB Cloud.
+
         alterations : Iterable[Dict[str, Any]]
             A sequence of dictionaries, each with the following keys:
             - "path": str
@@ -699,6 +701,8 @@ class Table(ABC):
     def drop_columns(self, columns: Iterable[str]):
         """
         Drop columns from the table.
+
+        This is not yet available in LanceDB Cloud.
 
         Parameters
         ----------

@@ -155,7 +155,7 @@ export class Table {
   /**
    * Add new columns with defined values.
    *
-   * @param newColumnTransforms a map of column name to a SQL expression to use
+   * @param newColumnTransforms pairs of column names and the SQL expression to use
    *                            to calculate the value of the new column. These
    *                            expressions will be evaluated for each row in the
    *                            table, and can reference existing columns in the table.

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { type Schema, Table as ArrowTable, tableFromIPC, type DataType } from 'apache-arrow'
+import { type Schema, Table as ArrowTable, tableFromIPC } from 'apache-arrow'
 import {
   createEmptyTable,
   fromRecordsToBuffer,
@@ -508,7 +508,7 @@ export interface Table<T = number[]> {
   /**
    * Add new columns with defined values.
    *
-   * @param newColumnTransforms a map of column name to a SQL expression to use
+   * @param newColumnTransforms pairs of column names and the SQL expression to use
    *                            to calculate the value of the new column. These
    *                            expressions will be evaluated for each row in the
    *                            table, and can reference existing columns in the table.
@@ -556,14 +556,6 @@ export interface ColumnAlteration {
    * Set the new nullability. Note that a nullable column cannot be made non-nullable.
    */
   nullable?: boolean
-  /**
-   * The new data type for the column. This can be either an upcast or downcast,
-   * though downcasts may error if the data cannot be converted to the new type.
-   *
-   * This can also convert between normal and large variants of string, binary,
-   * and list types.
-   */
-  data_type?: DataType
 }
 
 export interface UpdateArgs {
