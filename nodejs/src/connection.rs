@@ -42,9 +42,10 @@ impl Connection {
                 builder.read_consistency_interval(std::time::Duration::from_secs_f64(interval));
         }
         Ok(Self {
-            conn: lancedb::connect(&uri).execute().await.map_err(|e| {
-                napi::Error::from_reason(format!("Failed to connect to database: {}", e))
-            })?,
+            conn: builder
+                .execute()
+                .await
+                .map_err(|e| napi::Error::from_reason(format!("{}", e)))?,
         })
     }
 
