@@ -1277,7 +1277,12 @@ class LanceTable(Table):
             vector_column_name = inf_vector_column_query(self.schema)
         register_event("search_table")
         return LanceQueryBuilder.create(
-            self, query, query_type, vector_column_name=vector_column_name, vector=vector, text=text
+            self,
+            query,
+            query_type,
+            vector_column_name=vector_column_name,
+            vector=vector,
+            text=text,
         )
 
     @classmethod
