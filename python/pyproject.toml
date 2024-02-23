@@ -62,7 +62,7 @@ lancedb = "lancedb.cli.cli:cli"
 requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
 
-[tool.ruff]
+[tool.ruff.lint]
 select = ["F", "E", "W", "I", "G", "TCH", "PERF"]
 
 [tool.pytest.ini_options]

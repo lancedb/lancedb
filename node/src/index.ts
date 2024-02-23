@@ -516,7 +516,7 @@ export interface Table<T = number[]> {
   addColumns(newColumnTransforms: Array<{ name: string, valueSql: string }>): Promise<void>
 
   /**
-   * Alter the name, nullability, or data type of columns.
+   * Alter the name or nullability of columns.
    *
    * @param columnAlterations One or more alterations to apply to columns.
    */

@@ -165,7 +165,7 @@ export class Table {
   }
 
   /**
-   * Alter the name, nullability, or data type of columns.
+   * Alter the name or nullability of columns.
    *
    * @param columnAlterations One or more alterations to apply to columns.
    */

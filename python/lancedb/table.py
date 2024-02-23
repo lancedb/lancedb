@@ -660,6 +660,52 @@ class Table(ABC):
         For most cases, the default should be fine.
         """
 
+    @abstractmethod
+    def add_columns(self, transforms: Dict[str, str]):
+        """
+        Add new columns with defined values.
+
+        This is not yet available in LanceDB Cloud.
+
+        Parameters
+        ----------
+        transforms: Dict[str, str]
+            A map of column name to a SQL expression to use to calculate the
+            value of the new column. These expressions will be evaluated for
+            each row in the table, and can reference existing columns.
+        """
+
+    @abstractmethod
+    def alter_columns(self, alterations: Iterable[Dict[str, str]]):
+        """
+        Alter column names and nullability.
+
+        alterations : Iterable[Dict[str, Any]]
+            A sequence of dictionaries, each with the following keys:
+            - "path": str
+                The column path to alter. For a top-level column, this is the name.
+                For a nested column, this is the dot-separated path, e.g. "a.b.c".
+            - "name": str, optional
+                The new name of the column. If not specified, the column name is
+                not changed.
+            - "nullable": bool, optional
+                Whether the column should be nullable. If not specified, the column
+                nullability is not changed. Only non-nullable columns can be changed
+                to nullable. Currently, you cannot change a nullable column to
+                non-nullable.
+        """
+
+    @abstractmethod
+    def drop_columns(self, columns: Iterable[str]):
+        """
+        Drop columns from the table.
+
+        Parameters
+        ----------
+        columns : Iterable[str]
+            The names of the columns to drop.
+        """
+
 
 class _LanceDatasetRef(ABC):
     @property
@@ -1535,6 +1581,22 @@ class LanceTable(Table):
         should be fine.
         """
         return self.to_lance().optimize.compact_files(*args, **kwargs)
+
+    def add_columns(self, transforms: Dict[str, str]):
+        self._dataset_mut.add_columns(transforms)
+
+    def alter_columns(self, *alterations: Iterable[Dict[str, str]]):
+        modified = []
+        # I called this name in pylance, but I think I regret that now. So we
+        # allow both name and rename.
+        for alter in alterations:
+            if "rename" in alter:
+                alter["name"] = alter.pop("rename")
+            modified.append(alter)
+        self._dataset_mut.alter_columns(*modified)
+
+    def drop_columns(self, columns: Iterable[str]):
+        self._dataset_mut.drop_columns(columns)
 
 
 def _sanitize_schema(
