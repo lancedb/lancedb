@@ -233,6 +233,14 @@ def test_fixed_size_list_validation():
     TestModel(vec=range(8))
 
 
+def test_optional_vector():
+    class TestModel(pydantic.BaseModel):
+        vector: Optional[Vector(16)]
+
+    schema = pydantic_to_schema(TestModel)
+    assert schema == pa.schema([pa.field("vector", pa.list_(pa.float32(), 16), True)])
+
+
 def test_lance_model():
     class TestModel(LanceModel):
         vector: Vector(16) = Field(default=[0.0] * 16)
