@@ -164,7 +164,7 @@ pub trait Table: std::fmt::Display + Send + Sync {
     /// # use arrow_schema::{Schema, Field, DataType};
     /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
     /// let tmpdir = tempfile::tempdir().unwrap();
-    /// let db = vectordb::connect(tmpdir.path().to_str().unwrap())
+    /// let db = lancedb::connect(tmpdir.path().to_str().unwrap())
     ///     .execute()
     ///     .await
     ///     .unwrap();
@@ -212,7 +212,7 @@ pub trait Table: std::fmt::Display + Send + Sync {
     /// # use arrow_schema::{Schema, Field, DataType};
     /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
     /// let tmpdir = tempfile::tempdir().unwrap();
-    /// let db = vectordb::connect(tmpdir.path().to_str().unwrap())
+    /// let db = lancedb::connect(tmpdir.path().to_str().unwrap())
     ///     .execute()
     ///     .await
     ///     .unwrap();
@@ -266,7 +266,7 @@ pub trait Table: std::fmt::Display + Send + Sync {
     /// # use arrow_schema::{Schema, Field, DataType};
     /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
     /// let tmpdir = tempfile::tempdir().unwrap();
-    /// let db = vectordb::connect(tmpdir.path().to_str().unwrap())
+    /// let db = lancedb::connect(tmpdir.path().to_str().unwrap())
     ///     .execute()
     ///     .await
     ///     .unwrap();
@@ -324,8 +324,8 @@ pub trait Table: std::fmt::Display + Send + Sync {
     /// # use arrow_array::RecordBatch;
     /// # use futures::TryStreamExt;
     /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
-    /// # let tbl = vectordb::table::NativeTable::open("/tmp/tbl").await.unwrap();
-    /// use crate::vectordb::Table;
+    /// # let tbl = lancedb::table::NativeTable::open("/tmp/tbl").await.unwrap();
+    /// use crate::lancedb::Table;
     /// let stream = tbl
     ///     .query()
     ///     .nearest_to(&[1.0, 2.0, 3.0])
@@ -343,8 +343,8 @@ pub trait Table: std::fmt::Display + Send + Sync {
     /// # use arrow_array::RecordBatch;
     /// # use futures::TryStreamExt;
     /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
-    /// # let tbl = vectordb::table::NativeTable::open("/tmp/tbl").await.unwrap();
-    /// use crate::vectordb::Table;
+    /// # let tbl = lancedb::table::NativeTable::open("/tmp/tbl").await.unwrap();
+    /// use crate::lancedb::Table;
     /// let stream = tbl
     ///     .query()
     ///     .filter("id > 5")
@@ -361,8 +361,8 @@ pub trait Table: std::fmt::Display + Send + Sync {
     /// # use arrow_array::RecordBatch;
     /// # use futures::TryStreamExt;
     /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
-    /// # let tbl = vectordb::table::NativeTable::open("/tmp/tbl").await.unwrap();
-    /// use crate::vectordb::Table;
+    /// # let tbl = lancedb::table::NativeTable::open("/tmp/tbl").await.unwrap();
+    /// use crate::lancedb::Table;
     /// let stream = tbl.query().execute_stream().await.unwrap();
     /// let batches: Vec<RecordBatch> = stream.try_collect().await.unwrap();
     /// # });

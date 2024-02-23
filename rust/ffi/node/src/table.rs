@@ -18,12 +18,12 @@ use arrow_array::{RecordBatch, RecordBatchIterator};
 use lance::dataset::optimize::CompactionOptions;
 use lance::dataset::{WriteMode, WriteParams};
 use lance::io::ObjectStoreParams;
-use vectordb::table::{AddDataOptions, OptimizeAction, WriteOptions};
+use lancedb::table::{AddDataOptions, OptimizeAction, WriteOptions};
 
 use crate::arrow::{arrow_buffer_to_record_batch, record_batch_to_buffer};
+use lancedb::TableRef;
 use neon::prelude::*;
 use neon::types::buffer::TypedArray;
-use vectordb::TableRef;
 
 use crate::error::ResultExt;
 use crate::{convert, get_aws_credential_provider, get_aws_region, runtime, JsDatabase};

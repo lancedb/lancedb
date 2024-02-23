@@ -1,3 +1,3 @@
-# `vectordb-linux-arm64-gnu`
+# `lancedb-linux-arm64-gnu`
 
-This is the **aarch64-unknown-linux-gnu** binary for `vectordb`
+This is the **aarch64-unknown-linux-gnu** binary for `lancedb`

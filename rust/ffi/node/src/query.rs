@@ -93,7 +93,7 @@ impl JsQuery {
                 .and_then(|stream| {
                     stream
                         .try_collect::<Vec<_>>()
-                        .map_err(vectordb::error::Error::from)
+                        .map_err(lancedb::error::Error::from)
                 })
                 .await;
 

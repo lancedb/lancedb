@@ -13,10 +13,10 @@
 // limitations under the License.
 
 use lance_linalg::distance::MetricType;
+use lancedb::index::IndexBuilder;
 use neon::context::FunctionContext;
 use neon::prelude::*;
 use std::convert::TryFrom;
-use vectordb::index::IndexBuilder;
 
 use crate::error::Error::InvalidIndexType;
 use crate::error::ResultExt;
