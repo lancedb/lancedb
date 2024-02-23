@@ -13,8 +13,11 @@
 // limitations under the License.
 
 use arrow_ipc::writer::FileWriter;
-use lancedb::{ipc::ipc_file_to_batches, table::{TableRef, AddDataOptions}};
 use lance::dataset::ColumnAlteration as LanceColumnAlteration;
+use lancedb::{
+    ipc::ipc_file_to_batches,
+    table::{AddDataOptions, TableRef},
+};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 

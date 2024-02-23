@@ -595,7 +595,7 @@ impl JsTable {
                     .get_opt::<JsBoolean, _, _>(&mut cx, "nullable")?
                     .map(|val| val.value(&mut cx));
                 // TODO: support data type here. Will need to do some serialization/deserialization
-                
+
                 if rename.is_none() && nullable.is_none() {
                     return cx.throw_error("At least one of 'name' or 'nullable' must be provided");
                 }
