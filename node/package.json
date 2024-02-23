@@ -61,10 +61,12 @@
     "uuid": "^9.0.0"
   },
   "dependencies": {
-    "@apache-arrow/ts": "^14.0.2",
     "@neon-rs/load": "^0.0.74",
-    "apache-arrow": "^14.0.2",
     "axios": "^1.4.0"
+  },
+  "peerDependencies": {
+    "@apache-arrow/ts": "^14.0.2",
+    "apache-arrow": "^14.0.2"
   },
   "os": [
     "darwin",
