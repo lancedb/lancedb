@@ -387,7 +387,7 @@ pub trait Table: std::fmt::Display + Send + Sync {
         read_columns: Option<Vec<String>>,
     ) -> Result<()>;
 
-    /// Change a column's data type, nullability, or name.
+    /// Change a column's name or nullability.
     async fn alter_columns(&self, alterations: &[ColumnAlteration]) -> Result<()>;
 
     /// Remove columns from the table.

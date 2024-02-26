@@ -157,8 +157,8 @@ impl Table {
 
 ///  A definition of a column alteration. The alteration changes the column at
 /// `path` to have the new name `name`, to be nullable if `nullable` is true,
-/// and to have the data type `data_type`. At least one of `name`, `nullable`,
-/// or `data_type` must be provided.
+/// and to have the data type `data_type`. At least one of `rename` or `nullable`
+/// must be provided.
 #[napi(object)]
 pub struct ColumnAlteration {
     /// The path to the column to alter. This is a dot-separated path to the column.
@@ -188,8 +188,12 @@ impl From<ColumnAlteration> for LanceColumnAlteration {
     }
 }
 
+/// A definition of a new column to add to a table.
 #[napi(object)]
 pub struct AddColumnsSql {
+    /// The name of the new column.
     pub name: String,
+    /// The values to populate the new column with, as a SQL expression.
+    /// The expression can reference other columns in the table.
     pub value_sql: String,
 }

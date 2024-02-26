@@ -540,8 +540,8 @@ export interface Table<T = number[]> {
 /**
  * A definition of a column alteration. The alteration changes the column at
  * `path` to have the new name `name`, to be nullable if `nullable` is true,
- * and to have the data type `data_type`. At least one of `name`, `nullable`,
- * or `data_type` must be provided.
+ * and to have the data type `data_type`. At least one of `rename` or `nullable`
+ * must be provided.
  */
 export interface ColumnAlteration {
   /**

@@ -15,8 +15,8 @@ export const enum MetricType {
 /**
  *  A definition of a column alteration. The alteration changes the column at
  * `path` to have the new name `name`, to be nullable if `nullable` is true,
- * and to have the data type `data_type`. At least one of `name`, `nullable`,
- * or `data_type` must be provided.
+ * and to have the data type `data_type`. At least one of `rename` or `nullable`
+ * must be provided.
  */
 export interface ColumnAlteration {
   /**
@@ -34,8 +34,14 @@ export interface ColumnAlteration {
   /** Set the new nullability. Note that a nullable column cannot be made non-nullable. */
   nullable?: boolean
 }
+/** A definition of a new column to add to a table. */
 export interface AddColumnsSql {
+  /** The name of the new column. */
   name: string
+  /**
+   * The values to populate the new column with, as a SQL expression.
+   * The expression can reference other columns in the table.
+   */
   valueSql: string
 }
 export interface ConnectionOptions {
