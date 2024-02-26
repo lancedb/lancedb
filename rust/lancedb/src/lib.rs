@@ -188,6 +188,8 @@ pub mod index;
 pub mod io;
 pub mod ipc;
 pub mod query;
+#[cfg(feature = "remote")]
+pub(crate) mod remote;
 pub mod table;
 pub mod utils;
 
