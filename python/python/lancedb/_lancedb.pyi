@@ -1,9 +1,9 @@
 from typing import Optional
 
 class Connection(object):
-    pass
+    async def table_names(self) -> list[str]: ...
 
-def connect(
+async def connect(
     uri: str,
     api_key: Optional[str],
     region: Optional[str],
