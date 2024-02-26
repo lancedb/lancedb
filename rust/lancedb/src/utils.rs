@@ -21,8 +21,9 @@ impl PatchStoreParam for Option<ObjectStoreParams> {
     ) -> Result<Option<ObjectStoreParams>> {
         let mut params = self.unwrap_or_default();
         if params.object_store_wrapper.is_some() {
-            return Err(Error::Lance {
+            return Err(Error::Other {
                 message: "can not patch param because object store is already set".into(),
+                source: None,
             });
         }
         params.object_store_wrapper = Some(wrapper);
@@ -80,11 +81,11 @@ pub(crate) fn default_vector_column(schema: &Schema, dim: Option<i32>) -> Result
         })
         .collect::<Vec<_>>();
     if candidates.is_empty() {
-        Err(Error::Store {
+        Err(Error::Schema {
             message: "No vector column found to create index".to_string(),
         })
     } else if candidates.len() != 1 {
-        Err(Error::Store {
+        Err(Error::Schema {
             message: format!(
                 "More than one vector columns found, \
                     please specify which column to create index: {:?}",

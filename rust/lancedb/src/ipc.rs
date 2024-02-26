@@ -32,8 +32,9 @@ pub fn ipc_file_to_batches(buf: Vec<u8>) -> Result<impl RecordBatchReader> {
 /// Convert record batches to Arrow IPC file
 pub fn batches_to_ipc_file(batches: &[RecordBatch]) -> Result<Vec<u8>> {
     if batches.is_empty() {
-        return Err(Error::Store {
+        return Err(Error::Other {
             message: "No batches to write".to_string(),
+            source: None,
         });
     }
     let schema = batches[0].schema();
