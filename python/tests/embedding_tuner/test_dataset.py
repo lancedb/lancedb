@@ -9,12 +9,17 @@ def download_test_files():
     
     url1 =  'https://raw.githubusercontent.com/run-llama/llama_index/main/docs/examples/data/10k/uber_2021.pdf'
 
-    if not os.path.exists('data/10k/uber_2021.pdf'):
-        os.makedirs('data/10k', exist_ok=True)
-        with open('data/10k/uber_2021.pdf', 'wb') as f:
-            f.write(requests.get(url1).content)
-
-    return 'data/10k/uber_2021.pdf'
+    # download to cwd
+    files = []
+    for url in [url1]:
+        filename = os.path.basename(url)
+        if not os.path.exists(filename):
+            print(f"Downloading {url} to {filename}")
+            r = requests.get(url)
+            with open(filename, 'wb') as f:
+                f.write(r.content)
+        files.append(filename)
+    return files
 
 @pytest.mark.slow
 def test_qa_dataset():
@@ -22,7 +27,6 @@ def test_qa_dataset():
     from llama_index.core import SimpleDirectoryReader
     from llama_index.core.node_parser import SentenceSplitter
     from llama_index.core.schema import MetadataMode
-
     reader = SimpleDirectoryReader(input_files=download_test_files())
     docs = reader.load_data()
 
