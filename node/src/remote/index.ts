@@ -25,7 +25,8 @@ import {
   type UpdateArgs,
   type UpdateSqlArgs,
   makeArrowTable,
-  type MergeInsertArgs
+  type MergeInsertArgs,
+  type ColumnAlteration
 } from '../index'
 import { Query } from '../query'
 
@@ -473,5 +474,17 @@ export class RemoteTable<T = number[]> implements Table<T> {
       numIndexedRows: results.data.num_indexed_rows,
       numUnindexedRows: results.data.num_unindexed_rows
     }
+  }
+
+  async addColumns (newColumnTransforms: Array<{ name: string, valueSql: string }>): Promise<void> {
+    throw new Error('Add columns is not yet supported in LanceDB Cloud.')
+  }
+
+  async alterColumns (columnAlterations: ColumnAlteration[]): Promise<void> {
+    throw new Error('Alter columns is not yet supported in LanceDB Cloud.')
+  }
+
+  async dropColumns (columnNames: string[]): Promise<void> {
+    throw new Error('Drop columns is not yet supported in LanceDB Cloud.')
   }
 }

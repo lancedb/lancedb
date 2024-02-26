@@ -15,7 +15,7 @@ import logging
 import uuid
 from concurrent.futures import Future
 from functools import cached_property
-from typing import Dict, Optional, Union
+from typing import Dict, Iterable, Optional, Union
 
 import pyarrow as pa
 from lance import json_to_schema
@@ -471,6 +471,21 @@ class RemoteTable(Table):
         # self._conn._client.post(f"/v1/table/{self._name}/count_rows/", data=payload)
         return NotImplementedError(
             "count_rows() is not yet supported on the LanceDB cloud"
+        )
+
+    def add_columns(self, transforms: Dict[str, str]):
+        raise NotImplementedError(
+            "add_columns() is not yet supported on the LanceDB cloud"
+        )
+
+    def alter_columns(self, alterations: Iterable[Dict[str, str]]):
+        raise NotImplementedError(
+            "alter_columns() is not yet supported on the LanceDB cloud"
+        )
+
+    def drop_columns(self, columns: Iterable[str]):
+        raise NotImplementedError(
+            "drop_columns() is not yet supported on the LanceDB cloud"
         )
 
 

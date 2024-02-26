@@ -42,7 +42,10 @@ const {
   tableCompactFiles,
   tableListIndices,
   tableIndexStats,
-  tableSchema
+  tableSchema,
+  tableAddColumns,
+  tableAlterColumns,
+  tableDropColumns
   // eslint-disable-next-line @typescript-eslint/no-var-requires
 } = require('../native.js')
 
@@ -500,6 +503,59 @@ export interface Table<T = number[]> {
   filter(value: string): Query<T>
 
   schema: Promise<Schema>
+
+  // TODO: Support BatchUDF
+  /**
+   * Add new columns with defined values.
+   *
+   * @param newColumnTransforms pairs of column names and the SQL expression to use
+   *                            to calculate the value of the new column. These
+   *                            expressions will be evaluated for each row in the
+   *                            table, and can reference existing columns in the table.
+   */
+  addColumns(newColumnTransforms: Array<{ name: string, valueSql: string }>): Promise<void>
+
+  /**
+   * Alter the name or nullability of columns.
+   *
+   * @param columnAlterations One or more alterations to apply to columns.
+   */
+  alterColumns(columnAlterations: ColumnAlteration[]): Promise<void>
+
+  /**
+   * Drop one or more columns from the dataset
+   *
+   * This is a metadata-only operation and does not remove the data from the
+   * underlying storage. In order to remove the data, you must subsequently
+   * call ``compact_files`` to rewrite the data without the removed columns and
+   * then call ``cleanup_files`` to remove the old files.
+   *
+   * @param columnNames The names of the columns to drop. These can be nested
+   *                    column references (e.g. "a.b.c") or top-level column
+   *                    names (e.g. "a").
+   */
+  dropColumns(columnNames: string[]): Promise<void>
+}
+
+/**
+ * A definition of a column alteration. The alteration changes the column at
+ * `path` to have the new name `name`, to be nullable if `nullable` is true,
+ * and to have the data type `data_type`. At least one of `rename` or `nullable`
+ * must be provided.
+ */
+export interface ColumnAlteration {
+  /**
+   * The path to the column to alter. This is a dot-separated path to the column.
+   * If it is a top-level column then it is just the name of the column. If it is
+   * a nested column then it is the path to the column, e.g. "a.b.c" for a column
+   * `c` nested inside a column `b` nested inside a column `a`.
+   */
+  path: string
+  rename?: string
+  /**
+   * Set the new nullability. Note that a nullable column cannot be made non-nullable.
+   */
+  nullable?: boolean
 }
 
 export interface UpdateArgs {
@@ -1027,6 +1083,18 @@ export class LocalTable<T = number[]> implements Table<T> {
     } catch (e) {
       return false
     }
+  }
+
+  async addColumns (newColumnTransforms: Array<{ name: string, valueSql: string }>): Promise<void> {
+    return tableAddColumns.call(this._tbl, newColumnTransforms)
+  }
+
+  async alterColumns (columnAlterations: ColumnAlteration[]): Promise<void> {
+    return tableAlterColumns.call(this._tbl, columnAlterations)
+  }
+
+  async dropColumns (columnNames: string[]): Promise<void> {
+    return tableDropColumns.call(this._tbl, columnNames)
   }
 }
 
