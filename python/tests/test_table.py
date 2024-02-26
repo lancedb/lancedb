@@ -898,3 +898,29 @@ def test_restore_consistency(tmp_path):
     table.add([{"id": 2}])
     assert table_fixed.version == table.version - 1
     assert table_ref_latest.version == table.version
+
+
+# Schema evolution
+def test_add_columns(tmp_path):
+    db = lancedb.connect(tmp_path)
+    data = pa.table({"id": [0, 1]})
+    table = LanceTable.create(db, "my_table", data=data)
+    table.add_columns({"new_col": "id + 2"})
+    assert table.to_arrow().column_names == ["id", "new_col"]
+    assert table.to_arrow()["new_col"].to_pylist() == [2, 3]
+
+
+def test_alter_columns(tmp_path):
+    db = lancedb.connect(tmp_path)
+    data = pa.table({"id": [0, 1]})
+    table = LanceTable.create(db, "my_table", data=data)
+    table.alter_columns({"path": "id", "rename": "new_id"})
+    assert table.to_arrow().column_names == ["new_id"]
+
+
+def test_drop_columns(tmp_path):
+    db = lancedb.connect(tmp_path)
+    data = pa.table({"id": [0, 1], "category": ["a", "b"]})
+    table = LanceTable.create(db, "my_table", data=data)
+    table.drop_columns(["category"])
+    assert table.to_arrow().column_names == ["id"]

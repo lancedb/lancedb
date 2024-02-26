@@ -17,7 +17,7 @@ import * as path from "path";
 import * as fs from "fs";
 
 import { connect } from "../dist";
-import { Schema, Field, Float32, Int32, FixedSizeList } from "apache-arrow";
+import { Schema, Field, Float32, Int32, FixedSizeList, Int64, Float64 } from "apache-arrow";
 import { makeArrowTable } from "../dist/arrow";
 
 describe("Test creating index", () => {
@@ -213,5 +213,70 @@ describe("Read consistency interval", () => {
       await new Promise(r => setTimeout(r, 100));
       expect(await table2.countRows()).toEqual(2n);
     }
+  });
+});
+
+
+describe('schema evolution', function () {
+  let tmpDir: string;
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "schema-evolution-"));
+  });
+
+  // Create a new sample table
+  it('can add a new column to the schema', async function () {
+    const con = await connect(tmpDir)
+    const table = await con.createTable('vectors', [
+      { id: 1n, vector: [0.1, 0.2] }
+    ])
+
+    await table.addColumns([{ name: 'price', valueSql: 'cast(10.0 as float)' }])
+
+    const expectedSchema = new Schema([
+      new Field('id', new Int64(), true),
+      new Field('vector', new FixedSizeList(2, new Field('item', new Float32(), true)), true),
+      new Field('price', new Float32(), false)
+    ])
+    expect(await table.schema()).toEqual(expectedSchema)
+  });
+
+  it('can alter the columns in the schema', async function () {
+    const con = await connect(tmpDir)
+    const schema = new Schema([
+      new Field('id', new Int64(), true),
+      new Field('vector', new FixedSizeList(2, new Field('item', new Float32(), true)), true),
+      new Field('price', new Float64(), false)
+    ])
+    const table = await con.createTable('vectors', [
+      { id: 1n, vector: [0.1, 0.2] }
+    ])
+    // Can create a non-nullable column only through addColumns at the moment.
+    await table.addColumns([{ name: 'price', valueSql: 'cast(10.0 as double)' }])
+    expect(await table.schema()).toEqual(schema)
+
+    await table.alterColumns([
+      { path: 'id', rename: 'new_id' },
+      { path: 'price', nullable: true }
+    ])
+
+    const expectedSchema = new Schema([
+      new Field('new_id', new Int64(), true),
+      new Field('vector', new FixedSizeList(2, new Field('item', new Float32(), true)), true),
+      new Field('price', new Float64(), true)
+    ])
+    expect(await table.schema()).toEqual(expectedSchema)
+  });
+
+  it('can drop a column from the schema', async function () {
+    const con = await connect(tmpDir)
+    const table = await con.createTable('vectors', [
+      { id: 1n, vector: [0.1, 0.2] }
+    ])
+    await table.dropColumns(['vector'])
+
+    const expectedSchema = new Schema([
+      new Field('id', new Int64(), true)
+    ])
+    expect(await table.schema()).toEqual(expectedSchema)
   });
 });
