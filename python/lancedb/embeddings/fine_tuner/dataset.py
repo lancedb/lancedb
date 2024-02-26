@@ -1,10 +1,12 @@
 import json
 import uuid
 import re
+import lance
+import pyarrow as pa
+from pathlib import Path
 from tqdm import tqdm
 from pydantic import BaseModel
 from typing import Dict, List, Tuple
-
 from .llm import Openai, BaseLLM
 
 DEFAULT_PROMPT_TMPL = """\
@@ -35,9 +37,9 @@ class QADataset(BaseModel):
 
     """
 
-    queries: Dict[str, str]  # dict id -> query
-    corpus: Dict[str, str]  # dict id -> string
-    relevant_docs: Dict[str, List[str]]  # query id -> list of doc ids
+    queries: Dict[str, str]  # id -> query
+    corpus: Dict[str, str]  # id -> text
+    relevant_docs: Dict[str, List[str]]  # query id -> list of retrieved doc ids
     mode: str = "text"
 
     @property
@@ -48,14 +50,43 @@ class QADataset(BaseModel):
             for query_id, query in self.queries.items()
         ]
 
-    def save(self, path: str) -> None:
+    def save(self, path: str, mode: str = "overwrite") -> None:
         """Save to lance dataset"""
-        pass
+        save_dir = Path(path)
+        save_dir.mkdir(parents=True, exist_ok=True)
+
+        # convert to pydict {"id": []}
+        queries = {
+            "id": list(self.queries.keys()),
+            "query": list(self.queries.values()),
+        }
+        corpus = {
+            "id": list(self.corpus.keys()),
+            "text": list(self.corpus.values()),
+        }
+        relevant_docs = {
+            "query_id": list(self.relevant_docs.keys()),
+            "doc_id": list(self.relevant_docs.values()),
+        }
+
+        # write to lance
+        lance.write_dataset(pa.Table.from_pydict(queries), save_dir / "queries.lance", mode=mode)
+        lance.write_dataset(pa.Table.from_pydict(corpus), save_dir / "corpus.lance", mode=mode)
+        lance.write_dataset(pa.Table.from_pydict(relevant_docs), save_dir / "relevant_docs.lance", mode=mode)
 
     @classmethod
     def load(cls, path: str) -> "QADataset":
         """Load from .lance data"""
-        pass
+        load_dir = Path(path)
+        queries = lance.dataset(load_dir / "queries.lance").to_table().to_pydict()
+        corpus = lance.dataset(load_dir / "corpus.lance").to_table().to_pydict()
+        relevant_docs = lance.dataset(load_dir / "relevant_docs.lance").to_table().to_pydict()
+
+        return QADataset(
+            queries=dict(zip(queries["id"], queries["query"])),
+            corpus=dict(zip(corpus["id"], corpus["text"])),
+            relevant_docs=dict(zip(relevant_docs["query_id"], relevant_docs["doc_id"])),
+        )
     
     # generate queries as a convenience function
     @classmethod

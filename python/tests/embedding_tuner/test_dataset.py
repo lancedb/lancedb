@@ -22,7 +22,7 @@ def download_test_files():
     return files
 
 @pytest.mark.slow
-def test_qa_dataset():
+def test_qa_dataset(tmp_path):
     import json
     from llama_index.core import SimpleDirectoryReader
     from llama_index.core.node_parser import SentenceSplitter
@@ -38,3 +38,10 @@ def test_qa_dataset():
 
     assert len(ds.queries) > 0
     assert len(ds.relevant_docs) == len(ds.queries) 
+
+    ds.save(tmp_path / "qa_dataset")
+    ds2 = QADataset.load(tmp_path / "qa_dataset")
+
+    assert ds.queries == ds2.queries
+    assert ds.corpus == ds2.corpus
+    assert ds.relevant_docs == ds2.relevant_docs
