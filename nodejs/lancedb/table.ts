@@ -13,7 +13,7 @@
 // limitations under the License.
 
 import { Schema, tableFromIPC } from "apache-arrow";
-import { Table as _NativeTable } from "./native";
+import { AddColumnsSql, ColumnAlteration, Table as _NativeTable } from "./native";
 import { toBuffer, Data } from "./arrow";
 import { Query } from "./query";
 import { IndexBuilder } from "./indexer";
@@ -149,5 +149,43 @@ export class Table {
       q.column(column);
     }
     return q;
+  }
+
+  // TODO: Support BatchUDF
+  /**
+   * Add new columns with defined values.
+   *
+   * @param newColumnTransforms pairs of column names and the SQL expression to use
+   *                            to calculate the value of the new column. These
+   *                            expressions will be evaluated for each row in the
+   *                            table, and can reference existing columns in the table.
+   */
+  async addColumns(newColumnTransforms: AddColumnsSql[]): Promise<void> {
+    await this.inner.addColumns(newColumnTransforms);
+  }
+
+  /**
+   * Alter the name or nullability of columns.
+   *
+   * @param columnAlterations One or more alterations to apply to columns.
+   */
+  async alterColumns(columnAlterations: ColumnAlteration[]): Promise<void> {
+    await this.inner.alterColumns(columnAlterations);
+  }
+
+  /**
+   * Drop one or more columns from the dataset
+   *
+   * This is a metadata-only operation and does not remove the data from the
+   * underlying storage. In order to remove the data, you must subsequently
+   * call ``compact_files`` to rewrite the data without the removed columns and
+   * then call ``cleanup_files`` to remove the old files.
+   *
+   * @param columnNames The names of the columns to drop. These can be nested
+   *                    column references (e.g. "a.b.c") or top-level column
+   *                    names (e.g. "a").
+   */
+  async dropColumns(columnNames: string[]): Promise<void> {
+    await this.inner.dropColumns(columnNames);
   }
 }

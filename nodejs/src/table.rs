@@ -13,8 +13,11 @@
 // limitations under the License.
 
 use arrow_ipc::writer::FileWriter;
-use lancedb::table::AddDataOptions;
-use lancedb::{ipc::ipc_file_to_batches, table::TableRef};
+use lance::dataset::ColumnAlteration as LanceColumnAlteration;
+use lancedb::{
+    ipc::ipc_file_to_batches,
+    table::{AddDataOptions, TableRef},
+};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
@@ -93,4 +96,104 @@ impl Table {
     pub fn query(&self) -> Query {
         Query::new(self)
     }
+
+    #[napi]
+    pub async fn add_columns(&self, transforms: Vec<AddColumnsSql>) -> napi::Result<()> {
+        let transforms = transforms
+            .into_iter()
+            .map(|sql| (sql.name, sql.value_sql))
+            .collect::<Vec<_>>();
+        let transforms = lance::dataset::NewColumnTransform::SqlExpressions(transforms);
+        self.table
+            .add_columns(transforms, None)
+            .await
+            .map_err(|err| {
+                napi::Error::from_reason(format!(
+                    "Failed to add columns to table {}: {}",
+                    self.table, err
+                ))
+            })?;
+        Ok(())
+    }
+
+    #[napi]
+    pub async fn alter_columns(&self, alterations: Vec<ColumnAlteration>) -> napi::Result<()> {
+        for alteration in &alterations {
+            if alteration.rename.is_none() && alteration.nullable.is_none() {
+                return Err(napi::Error::from_reason(
+                    "Alteration must have a 'rename' or 'nullable' field.",
+                ));
+            }
+        }
+        let alterations = alterations
+            .into_iter()
+            .map(LanceColumnAlteration::from)
+            .collect::<Vec<_>>();
+
+        self.table
+            .alter_columns(&alterations)
+            .await
+            .map_err(|err| {
+                napi::Error::from_reason(format!(
+                    "Failed to alter columns in table {}: {}",
+                    self.table, err
+                ))
+            })?;
+        Ok(())
+    }
+
+    #[napi]
+    pub async fn drop_columns(&self, columns: Vec<String>) -> napi::Result<()> {
+        let col_refs = columns.iter().map(String::as_str).collect::<Vec<_>>();
+        self.table.drop_columns(&col_refs).await.map_err(|err| {
+            napi::Error::from_reason(format!(
+                "Failed to drop columns from table {}: {}",
+                self.table, err
+            ))
+        })?;
+        Ok(())
+    }
+}
+
+///  A definition of a column alteration. The alteration changes the column at
+/// `path` to have the new name `name`, to be nullable if `nullable` is true,
+/// and to have the data type `data_type`. At least one of `rename` or `nullable`
+/// must be provided.
+#[napi(object)]
+pub struct ColumnAlteration {
+    /// The path to the column to alter. This is a dot-separated path to the column.
+    /// If it is a top-level column then it is just the name of the column. If it is
+    /// a nested column then it is the path to the column, e.g. "a.b.c" for a column
+    /// `c` nested inside a column `b` nested inside a column `a`.
+    pub path: String,
+    /// The new name of the column. If not provided then the name will not be changed.
+    /// This must be distinct from the names of all other columns in the table.
+    pub rename: Option<String>,
+    /// Set the new nullability. Note that a nullable column cannot be made non-nullable.
+    pub nullable: Option<bool>,
+}
+
+impl From<ColumnAlteration> for LanceColumnAlteration {
+    fn from(js: ColumnAlteration) -> Self {
+        let ColumnAlteration {
+            path,
+            rename,
+            nullable,
+        } = js;
+        Self {
+            path,
+            rename,
+            nullable,
+        }
+    }
+}
+
+/// A definition of a new column to add to a table.
+#[napi(object)]
+pub struct AddColumnsSql {
+    /// The name of the new column.
+    pub name: String,
+    /// The values to populate the new column with, as a SQL expression.
+    /// The expression can reference other columns in the table.
+    pub value_sql: String,
 }
