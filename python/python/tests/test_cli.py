@@ -1,5 +1,4 @@
 from click.testing import CliRunner
-
 from lancedb.cli.cli import cli
 from lancedb.utils import CONFIG
 

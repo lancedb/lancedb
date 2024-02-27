@@ -11,9 +11,8 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
-import pyarrow as pa
-
 import lancedb
+import pyarrow as pa
 from lancedb.remote.client import VectorQuery, VectorQueryResult
 
 
