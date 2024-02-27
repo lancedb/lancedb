@@ -10,27 +10,17 @@
 #  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
-from pathlib import Path
-from typing import Iterable, List, Union
 
 import numpy as np
-import pyarrow as pa
+import pytest
+from lancedb import LanceDBConnection
 
-from .util import safe_import_pandas
-
-pd = safe_import_pandas()
-
-DATA = Union[List[dict], dict, "pd.DataFrame", pa.Table, Iterable[pa.RecordBatch]]
-VEC = Union[list, np.ndarray, pa.Array, pa.ChunkedArray]
-URI = Union[str, Path]
-VECTOR_COLUMN_NAME = "vector"
+# TODO: setup integ test mark and script
 
 
-class Credential(str):
-    """Credential field"""
-
-    def __repr__(self) -> str:
-        return "********"
-
-    def __str__(self) -> str:
-        return "********"
+@pytest.mark.skip(reason="Need to set up a local server")
+def test_against_local_server():
+    conn = LanceDBConnection("lancedb+http://localhost:10024")
+    table = conn.open_table("sift1m_ivf1024_pq16")
+    df = table.search(np.random.rand(128)).to_pandas()
+    assert len(df) == 10

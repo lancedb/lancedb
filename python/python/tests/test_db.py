@@ -11,12 +11,11 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
+import lancedb
 import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pytest
-
-import lancedb
 from lancedb.pydantic import LanceModel, Vector
 
 
@@ -164,6 +163,24 @@ def test_table_names(tmp_path):
     db.create_table("test1", data=data)
     db.create_table("test3", data=data)
     assert db.table_names() == ["test1", "test2", "test3"]
+
+
+@pytest.mark.asyncio
+async def test_table_names_async(tmp_path):
+    db = lancedb.connect(tmp_path)
+    data = pd.DataFrame(
+        {
+            "vector": [[3.1, 4.1], [5.9, 26.5]],
+            "item": ["foo", "bar"],
+            "price": [10.0, 20.0],
+        }
+    )
+    db.create_table("test2", data=data)
+    db.create_table("test1", data=data)
+    db.create_table("test3", data=data)
+
+    db = await lancedb.connect_async(tmp_path)
+    assert await db.table_names() == ["test1", "test2", "test3"]
 
 
 def test_create_mode(tmp_path):

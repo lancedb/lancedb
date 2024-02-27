@@ -20,9 +20,8 @@ from typing import List, Optional, Tuple
 import pyarrow as pa
 import pydantic
 import pytest
-from pydantic import Field
-
 from lancedb.pydantic import PYDANTIC_VERSION, LanceModel, Vector, pydantic_to_schema
+from pydantic import Field
 
 
 @pytest.mark.skipif(
