@@ -69,6 +69,7 @@ impl RestfulLanceDbClient {
         host_override: Option<String>,
     ) -> Result<Self> {
         let parsed_url = url::Url::parse(db_url)?;
+        debug_assert_eq!(parsed_url.scheme(), "db");
         if !parsed_url.has_host() {
             return Err(Error::Http {
                 message: format!("Invalid database URL (missing host) '{}'", db_url),
