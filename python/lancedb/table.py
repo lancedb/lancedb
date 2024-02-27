@@ -62,6 +62,9 @@ def _sanitize_data(
     on_bad_vectors: str,
     fill_value: Any,
 ):
+    if not any(data):
+        raise ValueError(f"Any empty value was passed as data: {data}")
+
     if isinstance(data, list):
         # convert to list of dict if data is a bunch of LanceModels
         if isinstance(data[0], LanceModel):
@@ -95,6 +98,7 @@ def _sanitize_data(
         )
     else:
         raise TypeError(f"Unsupported data type: {type(data)}")
+
     return data
 
 
