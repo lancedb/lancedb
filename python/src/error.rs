@@ -37,6 +37,7 @@ impl<T> PythonErrorExt<T> for std::result::Result<T, LanceError> {
             Err(err) => match err {
                 LanceError::InvalidInput { .. } => self.value_error(),
                 LanceError::InvalidTableName { .. } => self.value_error(),
+                LanceError::InvalidInput { .. } => self.value_error(),
                 LanceError::TableNotFound { .. } => self.value_error(),
                 LanceError::Schema { .. } => self.value_error(),
                 LanceError::CreateDir { .. } => self.os_error(),
@@ -45,6 +46,7 @@ impl<T> PythonErrorExt<T> for std::result::Result<T, LanceError> {
                 LanceError::Lance { .. } => self.runtime_error(),
                 LanceError::Runtime { .. } => self.runtime_error(),
                 LanceError::Http { .. } => self.runtime_error(),
+                LanceError::Arrow { .. } => self.runtime_error(),
             },
         }
     }

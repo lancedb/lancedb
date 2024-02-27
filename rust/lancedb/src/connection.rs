@@ -80,11 +80,11 @@ enum BadVectorHandling {
 /// A builder for configuring a [`Connection::create_table`] operation
 pub struct CreateTableBuilder<const HAS_DATA: bool> {
     parent: Arc<dyn ConnectionInternal>,
-    name: String,
-    data: Option<Box<dyn RecordBatchReader + Send>>,
-    schema: Option<SchemaRef>,
-    mode: CreateTableMode,
-    write_options: WriteOptions,
+    pub(crate) name: String,
+    pub(crate) data: Option<Box<dyn RecordBatchReader + Send>>,
+    pub(crate) schema: Option<SchemaRef>,
+    pub(crate) mode: CreateTableMode,
+    pub(crate) write_options: WriteOptions,
 }
 
 // Builder methods that only apply when we have initial data

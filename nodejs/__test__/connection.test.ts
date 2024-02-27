@@ -12,12 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! This module contains a remote client for a LanceDB server.  This is used
-//! to communicate with LanceDB cloud.  It can also serve as an example for
-//! building client/server applications with LanceDB or as a client for some
-//! other custom LanceDB service.
+import * as os from "os";
+import * as path from "path";
+import * as fs from "fs";
 
-pub mod client;
-pub mod db;
-pub mod table;
-pub mod util;
+import { connect } from "../dist/index.js";
+
+describe("when working with a connection", () => {
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "test-connection"));
+
+  it("should fail if creating table twice, unless overwrite is true", async() => {
+    const db = await connect(tmpDir);
+    const tbl = await db.createTable("test", [{ id: 1 }, { id: 2 }]);
+    const tbl2 = await db.createTable("test", [{ id: 1 }, { id: 2 }]);
+  })
+
+});

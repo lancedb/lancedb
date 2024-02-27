@@ -42,6 +42,7 @@ reqwest = { version = "0.11.24", features = ["gzip", "json"], optional = true }
 [dev-dependencies]
 tempfile = "3.5.0"
 rand = { version = "0.8.3", features = ["small_rng"] }
+uuid = { version = "1.7.0", features = ["v4"] }
 walkdir = "2"
 
 [features]
