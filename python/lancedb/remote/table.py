@@ -66,11 +66,31 @@ class RemoteTable(Table):
         """to_pandas() is not yet supported on LanceDB cloud."""
         return NotImplementedError("to_pandas() is not yet supported on LanceDB cloud.")
 
-    def create_scalar_index(self, *args, **kwargs):
-        """Creates a scalar index"""
-        return NotImplementedError(
-            "create_scalar_index() is not yet supported on LanceDB cloud."
+    def create_scalar_index(
+        self,
+        column: str,
+    ):
+        """Creates a scalar index
+        Parameters
+        ----------
+        column : str
+            The column to be indexed.  Must be a boolean, integer, float,
+            or string column.
+        replace : bool, default True
+            Replace the existing index if it exists.
+        """
+        index_type = "scalar"
+
+        data = {
+            "column": column,
+            "index_type": index_type,
+            "replace": True,
+        }
+        resp = self._conn._client.post(
+            f"/v1/table/{self._name}/create_scalar_index/", data=data
         )
+
+        return resp
 
     def create_index(
         self,
@@ -277,6 +297,7 @@ class RemoteTable(Table):
                     f = Future()
                     f.set_result(self._conn._client.query(name, q))
                     return f
+
             else:
 
                 def submit(name, q):
