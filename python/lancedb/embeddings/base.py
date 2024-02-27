@@ -10,15 +10,18 @@
 #  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
+import os
 from abc import ABC, abstractmethod
 from typing import List, Union
+from tqdm import tqdm
 
 import numpy as np
 import pyarrow as pa
 from pydantic import BaseModel, Field, PrivateAttr
 
 from .utils import TEXT, retry_with_exponential_backoff
-
+from .fine_tuner import QADataset
+import lancedb
 
 class EmbeddingFunction(BaseModel, ABC):
     """
@@ -125,6 +128,18 @@ class EmbeddingFunction(BaseModel, ABC):
 
     def __hash__(self) -> int:
         return hash(frozenset(vars(self).items()))
+    
+    def finetune(self, dataset: QADataset, *args, **kwargs):
+        """
+        Finetune the embedding function on a dataset
+        """
+        raise NotImplementedError("Finetuning is not supported for this embedding function")
+    
+    def evaluate(self, dataset: QADataset, path=None, *args, **kwargs):
+        """
+        Evaluate the embedding function on a dataset
+        """
+        raise NotImplementedError("Evaluation is not supported for this embedding function")
 
 
 class EmbeddingFunctionConfig(BaseModel):
@@ -159,3 +174,53 @@ class TextEmbeddingFunction(EmbeddingFunction):
         Generate the embeddings for the given texts
         """
         pass
+
+    def evaluate(self, dataset: QADataset, path=None, *args, **kwargs):
+        """
+        Evaluate the embedding function on a dataset. This calculates the hit-rate for the
+        top-k retrieved documents for each query in the dataset. Assumes that the first
+        relevant document is the expected document.
+        Pro - Should work for any embedding model
+        Con - Only returns simple hit-rate, does not return more detailed metrics
+        if possible, should be implemented in the downstream embedding model class if custom 
+        metrics are needed.
+        Parameters
+        ----------
+        dataset: QADataset
+            The dataset to evaluate on
+        
+        Returns
+        -------
+        dict
+            The evaluation results
+        """
+        corpus = dataset.corpus
+        queries = dataset.queries
+        relevant_docs = dataset.relevant_docs
+        path = path or os.path.join(os.getcwd(), "eval")
+        db = lancedb.connect(path)
+        class Schema(lancedb.pydantic.LanceModel):
+            id: str
+            text: str = self.SourceField()
+            vector: lancedb.pydantic.Vector(self.ndims()) = self.VectorField()
+        
+        retriever = db.create_table("eval", schema=Schema, mode="overwrite")
+        pylist = [{"id": str(k), "text": v} for k, v in corpus.items()]
+        retriever.add(pylist)
+
+        eval_results = []
+        for query_id, query in tqdm(queries.items()):
+            retrieved_nodes = retriever.search(query).to_list()
+            retrieved_ids = [node["id"]  for node in retrieved_nodes]
+            expected_id = relevant_docs[query_id][0]
+            is_hit = expected_id in retrieved_ids  # assume 1 relevant doc
+
+            eval_result = {
+                "is_hit": is_hit,
+                "retrieved": retrieved_ids,
+                "expected": expected_id,
+                "query": query_id,
+            }
+            eval_results.append(eval_result)
+
+        return eval_results
