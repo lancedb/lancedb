@@ -1,0 +1,33 @@
+# We create a composite action to be re-used both for testing and for releasing
+name: build_wheel
+description: "Build a lance wheel"
+inputs:
+  python-minor-version:
+    description: "8, 9, 10, 11"
+    required: true
+  args:
+    description: "--release"
+    required: false
+    default: ""
+runs:
+  using: "composite"
+  steps:
+    - name: Install Protoc v21.12
+      working-directory: C:\
+      run: |
+        New-Item -Path 'C:\protoc' -ItemType Directory
+        Set-Location C:\protoc
+        Invoke-WebRequest https://github.com/protocolbuffers/protobuf/releases/download/v21.12/protoc-21.12-win64.zip -OutFile C:\protoc\protoc.zip
+        7z x protoc.zip
+        Add-Content $env:GITHUB_PATH "C:\protoc\bin"
+      shell: powershell
+    - name: Build wheel
+      uses: PyO3/maturin-action@v1
+      with:
+        command: build
+        args: ${{ inputs.args }}
+        working-directory: python
+    - uses: actions/upload-artifact@v3
+      with:
+        name: windows-wheels
+        path: python\target\wheels

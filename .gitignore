@@ -22,6 +22,11 @@ python/dist
 
 **/.hypothesis
 
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+
 ## Javascript
 *.node
 **/node_modules
