@@ -24,8 +24,11 @@ describe("when working with a connection", () => {
 
   it("should fail if creating table twice, unless overwrite is true", async() => {
     const db = await connect(tmpDir);
-    const tbl = await db.createTable("test", [{ id: 1 }, { id: 2 }]);
-    const tbl2 = await db.createTable("test", [{ id: 1 }, { id: 2 }]);
+    let tbl = await db.createTable("test", [{ id: 1 }, { id: 2 }]);
+    await expect(tbl.countRows()).resolves.toBe(2);
+    await expect(db.createTable("test", [{ id: 1 }, { id: 2 }])).rejects.toThrow();
+    tbl = await db.createTable("test", [{ id: 3 }], { mode: "overwrite" });
+    await expect(tbl.countRows()).resolves.toBe(1);
   })
 
 });

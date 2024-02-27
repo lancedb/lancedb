@@ -17,6 +17,24 @@ import { Connection as _NativeConnection } from "./native";
 import { Table } from "./table";
 import { Table as ArrowTable } from "apache-arrow";
 
+export interface CreateTableOptions {
+  /**
+   * The mode to use when creating the table.
+   * 
+   * If this is set to "create" and the table already exists then either
+   * an error will be thrown or, if existOk is true, then nothing will
+   * happen.  Any provided data will be ignored.
+   * 
+   * If this is set to "overwrite" then any existing table will be replaced.
+   */
+  mode: "create" | "overwrite";
+  /**
+   * If this is true and the table already exists and the mode is "create"
+   * then no error will be raised.
+   */
+  existOk: boolean;
+}
+
 /**
  * A LanceDB Connection that allows you to open tables and create new ones.
  *
@@ -53,10 +71,14 @@ export class Connection {
    */
   async createTable(
     name: string,
-    data: Record<string, unknown>[] | ArrowTable
+    data: Record<string, unknown>[] | ArrowTable,
+    options?: Partial<CreateTableOptions>
   ): Promise<Table> {
+    const mode = options?.mode ?? "create";
+    const existOk = options?.existOk ?? false;
+
     const buf = toBuffer(data);
-    const innerTable = await this.inner.createTable(name, buf);
+    const innerTable = await this.inner.createTable(name, buf, mode, existOk);
     return new Table(innerTable);
   }
 

@@ -17,7 +17,7 @@ use napi_derive::*;
 
 use crate::table::Table;
 use crate::ConnectionOptions;
-use lancedb::connection::{ConnectBuilder, Connection as LanceDBConnection};
+use lancedb::connection::{ConnectBuilder, Connection as LanceDBConnection, CreateTableMode};
 use lancedb::ipc::ipc_file_to_batches;
 
 #[napi]
@@ -65,12 +65,28 @@ impl Connection {
     /// - buf: The buffer containing the IPC file.
     ///
     #[napi]
-    pub async fn create_table(&self, name: String, buf: Buffer) -> napi::Result<Table> {
+    pub async fn create_table(
+        &self,
+        name: String,
+        buf: Buffer,
+        mode: String,
+        exist_ok: bool,
+    ) -> napi::Result<Table> {
         let batches = ipc_file_to_batches(buf.to_vec())
             .map_err(|e| napi::Error::from_reason(format!("Failed to read IPC file: {}", e)))?;
-        let tbl = self
-            .conn
-            .create_table(&name, Box::new(batches))
+        let mut op_builder = self.conn.create_table(&name, Box::new(batches));
+        op_builder = if mode == "create" {
+            if exist_ok {
+                op_builder.mode(CreateTableMode::exist_ok(|builder| builder))
+            } else {
+                op_builder.mode(CreateTableMode::Create)
+            }
+        } else if mode == "overwrite" {
+            op_builder.mode(CreateTableMode::Overwrite)
+        } else {
+            return Err(napi::Error::from_reason(format!("Invalid mode: {}", mode)));
+        };
+        let tbl = op_builder
             .execute()
             .await
             .map_err(|e| napi::Error::from_reason(format!("{}", e)))?;
