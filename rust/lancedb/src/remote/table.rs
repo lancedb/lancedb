@@ -13,10 +13,11 @@ use crate::{
     Table,
 };
 
-use super::client::{self, RestfulLanceDbClient};
+use super::client::RestfulLanceDbClient;
 
 #[derive(Debug)]
 pub struct RemoteTable {
+    #[allow(dead_code)]
     client: RestfulLanceDbClient,
     name: String,
 }
@@ -47,42 +48,42 @@ impl Table for RemoteTable {
     async fn schema(&self) -> Result<SchemaRef> {
         todo!()
     }
-    async fn count_rows(&self, filter: Option<String>) -> Result<usize> {
+    async fn count_rows(&self, _filter: Option<String>) -> Result<usize> {
         todo!()
     }
     async fn add(
         &self,
-        batches: Box<dyn RecordBatchReader + Send>,
-        options: AddDataOptions,
+        _batches: Box<dyn RecordBatchReader + Send>,
+        _options: AddDataOptions,
     ) -> Result<()> {
         todo!()
     }
-    async fn delete(&self, predicate: &str) -> Result<()> {
+    async fn delete(&self, _predicate: &str) -> Result<()> {
         todo!()
     }
-    fn create_index(&self, column: &[&str]) -> IndexBuilder {
+    fn create_index(&self, _column: &[&str]) -> IndexBuilder {
         todo!()
     }
-    fn merge_insert(&self, on: &[&str]) -> MergeInsertBuilder {
+    fn merge_insert(&self, _on: &[&str]) -> MergeInsertBuilder {
         todo!()
     }
     fn query(&self) -> Query {
         todo!()
     }
-    async fn optimize(&self, action: OptimizeAction) -> Result<OptimizeStats> {
+    async fn optimize(&self, _action: OptimizeAction) -> Result<OptimizeStats> {
         todo!()
     }
     async fn add_columns(
         &self,
-        transforms: NewColumnTransform,
-        read_columns: Option<Vec<String>>,
+        _transforms: NewColumnTransform,
+        _read_columns: Option<Vec<String>>,
     ) -> Result<()> {
         todo!()
     }
-    async fn alter_columns(&self, alterations: &[ColumnAlteration]) -> Result<()> {
+    async fn alter_columns(&self, _alterations: &[ColumnAlteration]) -> Result<()> {
         todo!()
     }
-    async fn drop_columns(&self, columns: &[&str]) -> Result<()> {
+    async fn drop_columns(&self, _columns: &[&str]) -> Result<()> {
         todo!()
     }
 }

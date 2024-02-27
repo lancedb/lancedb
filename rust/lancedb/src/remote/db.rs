@@ -27,7 +27,7 @@ use super::client::RestfulLanceDbClient;
 use super::table::RemoteTable;
 use super::util::batches_to_ipc_bytes;
 
-const ARROW_STREAM_CONTENT_TYPE: &'static str = "application/vnd.apache.arrow.stream";
+const ARROW_STREAM_CONTENT_TYPE: &str = "application/vnd.apache.arrow.stream";
 
 #[derive(Deserialize)]
 struct ListTablesResponse {

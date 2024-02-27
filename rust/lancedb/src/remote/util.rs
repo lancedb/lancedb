@@ -4,14 +4,14 @@ use arrow_array::RecordBatchReader;
 
 use crate::Result;
 
-pub fn batches_to_ipc_bytes(mut batches: impl RecordBatchReader) -> Result<Vec<u8>> {
+pub fn batches_to_ipc_bytes(batches: impl RecordBatchReader) -> Result<Vec<u8>> {
     const WRITE_BUF_SIZE: usize = 4096;
     let buf = Vec::with_capacity(WRITE_BUF_SIZE);
     let mut buf = Cursor::new(buf);
     {
         let mut writer = arrow_ipc::writer::FileWriter::try_new(&mut buf, &batches.schema())?;
 
-        while let Some(batch) = batches.next() {
+        for batch in batches {
             let batch = batch?;
             writer.write(&batch)?;
         }
