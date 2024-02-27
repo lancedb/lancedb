@@ -20,19 +20,18 @@ from typing import List
 from unittest.mock import PropertyMock, patch
 
 import lance
+import lancedb
 import numpy as np
 import pandas as pd
 import polars as pl
 import pyarrow as pa
 import pytest
-from pydantic import BaseModel
-
-import lancedb
 from lancedb.conftest import MockTextEmbeddingFunction
 from lancedb.db import LanceDBConnection
 from lancedb.embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
 from lancedb.pydantic import LanceModel, Vector
 from lancedb.table import LanceTable
+from pydantic import BaseModel
 
 
 class MockDB:
@@ -804,6 +803,9 @@ def test_count_rows(db):
 
 
 def test_hybrid_search(db, tmp_path):
+    # This test uses an FTS index
+    pytest.importorskip("lancedb.fts")
+
     db = MockDB(str(tmp_path))
     # Create a LanceDB table schema with a vector and a text column
     emb = EmbeddingFunctionRegistry.get_instance().get("test")()
