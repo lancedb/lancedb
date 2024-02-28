@@ -24,4 +24,4 @@ RUN python --version && \
   rustc --version && \
   protoc --version
 
-RUN pip install tantivy@git+https://github.com/quickwit-oss/tantivy-py#164adc87e1a033117001cf70e38c82a53014d985 lancedb
+RUN pip install tantivy lancedb
