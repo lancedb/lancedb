@@ -184,6 +184,8 @@ impl From<ColumnAlteration> for LanceColumnAlteration {
             path,
             rename,
             nullable,
+            // TODO: wire up this field
+            data_type: None,
         }
     }
 }
