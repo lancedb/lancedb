@@ -198,7 +198,7 @@ describe('LanceDB client', function () {
       const table = await con.openTable('vectors')
       const results = await table
         .search([0.1, 0.1])
-        .select(['is_active'])
+        .select(['is_active', 'vector'])
         .execute()
       assert.equal(results.length, 2)
       // vector and _distance are always returned

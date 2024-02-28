@@ -87,7 +87,7 @@ def test_query_builder(table):
     rs = (
         LanceVectorQueryBuilder(table, [0, 0], "vector")
         .limit(1)
-        .select(["id"])
+        .select(["id", "vector"])
         .to_list()
     )
     assert rs[0]["id"] == 1
