@@ -29,7 +29,8 @@ use snafu::prelude::*;
 
 use crate::error::{CreateDirSnafu, Error, InvalidTableNameSnafu, Result};
 use crate::io::object_store::MirroringObjectStoreWrapper;
-use crate::table::{NativeTable, TableRef, WriteOptions};
+use crate::table::{NativeTable, WriteOptions};
+use crate::Table;
 
 pub const LANCE_FILE_EXTENSION: &str = "lance";
 
@@ -111,7 +112,7 @@ impl CreateTableBuilder<true> {
     }
 
     /// Execute the create table operation
-    pub async fn execute(self) -> Result<TableRef> {
+    pub async fn execute(self) -> Result<Table> {
         self.parent.clone().do_create_table(self).await
     }
 }
@@ -130,7 +131,7 @@ impl CreateTableBuilder<false> {
     }
 
     /// Execute the create table operation
-    pub async fn execute(self) -> Result<TableRef> {
+    pub async fn execute(self) -> Result<Table> {
         self.parent.clone().do_create_empty_table(self).await
     }
 }
@@ -188,7 +189,7 @@ impl OpenTableBuilder {
     }
 
     /// Open the table
-    pub async fn execute(self) -> Result<TableRef> {
+    pub async fn execute(self) -> Result<Table> {
         self.parent.clone().do_open_table(self).await
     }
 }
@@ -196,12 +197,12 @@ impl OpenTableBuilder {
 #[async_trait::async_trait]
 pub(crate) trait ConnectionInternal: Send + Sync + std::fmt::Debug + 'static {
     async fn table_names(&self) -> Result<Vec<String>>;
-    async fn do_create_table(&self, options: CreateTableBuilder<true>) -> Result<TableRef>;
-    async fn do_open_table(&self, options: OpenTableBuilder) -> Result<TableRef>;
+    async fn do_create_table(&self, options: CreateTableBuilder<true>) -> Result<Table>;
+    async fn do_open_table(&self, options: OpenTableBuilder) -> Result<Table>;
     async fn drop_table(&self, name: &str) -> Result<()>;
     async fn drop_db(&self) -> Result<()>;
 
-    async fn do_create_empty_table(&self, options: CreateTableBuilder<false>) -> Result<TableRef> {
+    async fn do_create_empty_table(&self, options: CreateTableBuilder<false>) -> Result<Table> {
         let batches = RecordBatchIterator::new(vec![], options.schema.unwrap());
         let opts = CreateTableBuilder::<true>::new(options.parent, options.name, Box::new(batches))
             .mode(options.mode)
@@ -606,7 +607,7 @@ impl ConnectionInternal for Database {
         Ok(f)
     }
 
-    async fn do_create_table(&self, options: CreateTableBuilder<true>) -> Result<TableRef> {
+    async fn do_create_table(&self, options: CreateTableBuilder<true>) -> Result<Table> {
         let table_uri = self.table_uri(&options.name)?;
 
         let mut write_params = options.write_options.lance_write_params.unwrap_or_default();
@@ -624,7 +625,7 @@ impl ConnectionInternal for Database {
         )
         .await
         {
-            Ok(table) => Ok(Arc::new(table)),
+            Ok(table) => Ok(Table::new(Arc::new(table))),
             Err(Error::TableAlreadyExists { name }) => match options.mode {
                 CreateTableMode::Create => Err(Error::TableAlreadyExists { name }),
                 CreateTableMode::ExistOk(callback) => {
@@ -638,9 +639,9 @@ impl ConnectionInternal for Database {
         }
     }
 
-    async fn do_open_table(&self, options: OpenTableBuilder) -> Result<TableRef> {
+    async fn do_open_table(&self, options: OpenTableBuilder) -> Result<Table> {
         let table_uri = self.table_uri(&options.name)?;
-        Ok(Arc::new(
+        let native_table = Arc::new(
             NativeTable::open_with_params(
                 &table_uri,
                 &options.name,
@@ -649,7 +650,8 @@ impl ConnectionInternal for Database {
                 self.read_consistency_interval,
             )
             .await?,
-        ))
+        );
+        Ok(Table::new(native_table))
     }
 
     async fn drop_table(&self, name: &str) -> Result<()> {

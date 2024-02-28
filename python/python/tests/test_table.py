@@ -26,8 +26,9 @@ import pandas as pd
 import polars as pl
 import pyarrow as pa
 import pytest
+import pytest_asyncio
 from lancedb.conftest import MockTextEmbeddingFunction
-from lancedb.db import LanceDBConnection
+from lancedb.db import AsyncConnection, LanceDBConnection
 from lancedb.embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
 from lancedb.pydantic import LanceModel, Vector
 from lancedb.table import LanceTable
@@ -47,6 +48,11 @@ class MockDB:
 @pytest.fixture
 def db(tmp_path) -> MockDB:
     return MockDB(tmp_path)
+
+
+@pytest_asyncio.fixture
+async def db_async(tmp_path) -> AsyncConnection:
+    return await lancedb.connect_async(tmp_path, read_consistency_interval=0)
 
 
 def test_basic(db):
@@ -184,6 +190,25 @@ def test_add_pydantic_model(db):
 
     really_flattened = tbl.search([0.0, 0.0]).limit(1).to_pandas(flatten=True)
     assert len(really_flattened.columns) == 7
+
+
+@pytest.mark.asyncio
+async def test_add_async(db_async: AsyncConnection):
+    table = await db_async.create_table(
+        "test",
+        data=[
+            {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+            {"vector": [5.9, 26.5], "item": "bar", "price": 20.0},
+        ],
+    )
+    assert await table.count_rows() == 2
+    await table.add(
+        data=[
+            {"vector": [10.0, 11.0], "item": "baz", "price": 30.0},
+        ],
+    )
+    table = await db_async.open_table("test")
+    assert await table.count_rows() == 3
 
 
 def test_polars(db):

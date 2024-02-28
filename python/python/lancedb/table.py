@@ -2388,7 +2388,7 @@ class AsyncLanceTable(AsyncTable):
 
     @override
     async def count_rows(self, filter: Optional[str] = None) -> int:
-        raise NotImplementedError
+        return await self._inner.count_rows(filter)
 
     async def to_pandas(self) -> "pd.DataFrame":
         return self.to_arrow().to_pandas()
@@ -2426,7 +2426,16 @@ class AsyncLanceTable(AsyncTable):
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
     ):
-        raise NotImplementedError
+        schema = await self.schema()
+        data = _sanitize_data(
+            data,
+            schema,
+            metadata=schema.metadata,
+            on_bad_vectors=on_bad_vectors,
+            fill_value=fill_value,
+        )
+        await self._inner.add(data, mode)
+        register_event("add")
 
     def merge_insert(self, on: Union[str, Iterable[str]]) -> LanceMergeInsertBuilder:
         on = [on] if isinstance(on, str) else list(on.iter())

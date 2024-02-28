@@ -726,7 +726,9 @@ class AsyncLanceDBConnection(AsyncConnection):
 
     @override
     async def open_table(self, name: str) -> LanceTable:
-        raise NotImplementedError
+        table = await self._inner.open_table(name)
+        register_event("open_table")
+        return AsyncLanceTable(table)
 
     @override
     async def drop_table(self, name: str, ignore_missing: bool = False):

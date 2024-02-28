@@ -14,10 +14,8 @@
 
 use arrow_ipc::writer::FileWriter;
 use lance::dataset::ColumnAlteration as LanceColumnAlteration;
-use lancedb::{
-    ipc::ipc_file_to_batches,
-    table::{AddDataOptions, TableRef},
-};
+use lancedb::ipc::ipc_file_to_batches;
+use lancedb::table::Table as LanceDbTable;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
@@ -26,12 +24,12 @@ use crate::query::Query;
 
 #[napi]
 pub struct Table {
-    pub(crate) table: TableRef,
+    pub(crate) table: LanceDbTable,
 }
 
 #[napi]
 impl Table {
-    pub(crate) fn new(table: TableRef) -> Self {
+    pub(crate) fn new(table: LanceDbTable) -> Self {
         Self { table }
     }
 
@@ -57,12 +55,14 @@ impl Table {
         let batches = ipc_file_to_batches(buf.to_vec())
             .map_err(|e| napi::Error::from_reason(format!("Failed to read IPC file: {}", e)))?;
         self.table
-            .add(Box::new(batches), AddDataOptions::default())
+            .add(Box::new(batches))
+            .execute()
             .await
             .map_err(|e| {
                 napi::Error::from_reason(format!(
                     "Failed to add batches to table {}: {}",
-                    self.table, e
+                    self.table.name(),
+                    e
                 ))
             })
     }
@@ -76,7 +76,8 @@ impl Table {
             .map_err(|e| {
                 napi::Error::from_reason(format!(
                     "Failed to count rows in table {}: {}",
-                    self.table, e
+                    self.table.name(),
+                    e
                 ))
             })
     }
@@ -86,14 +87,15 @@ impl Table {
         self.table.delete(&predicate).await.map_err(|e| {
             napi::Error::from_reason(format!(
                 "Failed to delete rows in table {}: predicate={}",
-                self.table, e
+                self.table.name(),
+                e
             ))
         })
     }
 
     #[napi]
     pub fn create_index(&self) -> IndexBuilder {
-        IndexBuilder::new(self.table.as_ref())
+        IndexBuilder::new(&self.table)
     }
 
     #[napi]
@@ -114,7 +116,8 @@ impl Table {
             .map_err(|err| {
                 napi::Error::from_reason(format!(
                     "Failed to add columns to table {}: {}",
-                    self.table, err
+                    self.table.name(),
+                    err
                 ))
             })?;
         Ok(())
@@ -140,7 +143,8 @@ impl Table {
             .map_err(|err| {
                 napi::Error::from_reason(format!(
                     "Failed to alter columns in table {}: {}",
-                    self.table, err
+                    self.table.name(),
+                    err
                 ))
             })?;
         Ok(())
@@ -152,7 +156,8 @@ impl Table {
         self.table.drop_columns(&col_refs).await.map_err(|err| {
             napi::Error::from_reason(format!(
                 "Failed to drop columns from table {}: {}",
-                self.table, err
+                self.table.name(),
+                err
             ))
         })?;
         Ok(())

@@ -21,7 +21,7 @@ use tokio::task::spawn_blocking;
 
 use crate::connection::{ConnectionInternal, CreateTableBuilder, OpenTableBuilder};
 use crate::error::Result;
-use crate::TableRef;
+use crate::Table;
 
 use super::client::RestfulLanceDbClient;
 use super::table::RemoteTable;
@@ -65,7 +65,7 @@ impl ConnectionInternal for RemoteDatabase {
         Ok(rsp.json::<ListTablesResponse>().await?.tables)
     }
 
-    async fn do_create_table(&self, options: CreateTableBuilder<true>) -> Result<TableRef> {
+    async fn do_create_table(&self, options: CreateTableBuilder<true>) -> Result<Table> {
         let data = options.data.unwrap();
         // TODO: https://github.com/lancedb/lancedb/issues/1026
         // We should accept data from an async source.  In the meantime, spawn this as blocking
@@ -82,13 +82,13 @@ impl ConnectionInternal for RemoteDatabase {
             .send()
             .await?;
 
-        Ok(Arc::new(RemoteTable::new(
+        Ok(Table::new(Arc::new(RemoteTable::new(
             self.client.clone(),
             options.name,
-        )))
+        ))))
     }
 
-    async fn do_open_table(&self, _options: OpenTableBuilder) -> Result<TableRef> {
+    async fn do_open_table(&self, _options: OpenTableBuilder) -> Result<Table> {
         todo!()
     }
 
