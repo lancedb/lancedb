@@ -207,6 +207,12 @@ def test_create_mode(tmp_path):
     tbl = db.create_table("test", data=new_data, mode="overwrite")
     assert tbl.to_pandas().item.tolist() == ["fizz", "buzz"]
 
+def test_create_table_with_dict_validation(tmp_path):
+    db = lancedb.connect(tmp_path)
+    data = {'vector': [1, 2, 3], 'item': 'test', 'price': 10.0}
+    with pytest.raises(ValueError) as exc_info:
+        db.create_table("test_table", data=data)
+    assert "data must be list of dictionaries." in str(exc_info.value)
 
 def test_create_exist_ok(tmp_path):
     db = lancedb.connect(tmp_path)

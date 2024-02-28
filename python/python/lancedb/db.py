@@ -366,6 +366,9 @@ class LanceDBConnection(DBConnection):
         ---
         DBConnection.create_table
         """
+        # Validation message to check for the correctness of the data
+        if isinstance(data, dict):
+            raise ValueError("data must be list of dictionaries.")
         if mode.lower() not in ["create", "overwrite"]:
             raise ValueError("mode must be either 'create' or 'overwrite'")
 
