@@ -916,8 +916,9 @@ export class LocalTable<T = number[]> implements Table<T> {
   }
 
   async createScalarIndex (column: string, replace?: boolean): Promise<void> {
-    if (replace === undefined) 
+    if (replace === undefined) {
       replace = true
+    }
     return tableCreateScalarIndex.call(this._tbl, column, replace)
   }
 

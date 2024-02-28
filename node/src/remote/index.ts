@@ -397,7 +397,7 @@ export class RemoteTable<T = number[]> implements Table<T> {
     }
 
     const column = indexParams.column ?? 'vector'
-    const indexType = 'vector' 
+    const indexType = 'vector'
     const metricType = indexParams.metric_type ?? 'L2'
     const indexCacheSize = indexParams.index_cache_size ?? null
 
@@ -421,7 +421,7 @@ export class RemoteTable<T = number[]> implements Table<T> {
   }
 
   async createScalarIndex (column: string): Promise<void> {
-    const indexType = 'scalar' 
+    const indexType = 'scalar'
 
     const data = {
       column,
