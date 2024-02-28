@@ -16,7 +16,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import TYPE_CHECKING, List, Literal, Optional, Tuple, Type, Union
+from typing import TYPE_CHECKING, Dict, List, Literal, Optional, Tuple, Type, Union
 
 import deprecation
 import numpy as np
@@ -93,7 +93,7 @@ class Query(pydantic.BaseModel):
     metric: str = "L2"
 
     # which columns to return in the results
-    columns: Optional[List[str]] = None
+    columns: Optional[Union[List[str], Dict[str, str]]] = None
 
     # optional query parameters for tuning the results,
     # e.g. `{"nprobes": "10", "refine_factor": "10"}`
@@ -321,20 +321,27 @@ class LanceQueryBuilder(ABC):
             self._limit = limit
         return self
 
-    def select(self, columns: list) -> LanceQueryBuilder:
+    def select(self, columns: Union[list[str], dict[str, str]]) -> LanceQueryBuilder:
         """Set the columns to return.
 
         Parameters
         ----------
-        columns: list
-            The columns to return.
+        columns: list of str, or dict of str to str default None
+            List of column names to be fetched.
+            Or a dictionary of column names to SQL expressions.
+            All columns are fetched if None or unspecified.
 
         Returns
         -------
         LanceQueryBuilder
             The LanceQueryBuilder object.
         """
-        self._columns = columns
+        if isinstance(columns, list):
+            self._columns = columns
+        elif isinstance(columns, dict):
+            self._columns = list(columns.items())
+        else:
+            raise ValueError("columns must be a list or a dictionary")
         return self
 
     def where(self, where: str, prefilter: bool = False) -> LanceQueryBuilder:
@@ -392,7 +399,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
     >>> (table.search([0.4, 0.4])
     ...       .metric("cosine")
     ...       .where("b < 10")
-    ...       .select(["b"])
+    ...       .select(["b", "vector"])
     ...       .limit(2)
     ...       .to_pandas())
        b      vector  _distance
