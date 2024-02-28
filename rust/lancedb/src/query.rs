@@ -24,6 +24,13 @@ use crate::Error;
 
 const DEFAULT_TOP_K: usize = 10;
 
+#[derive(Debug, Clone)]
+pub enum Select {
+    All,
+    Simple(Vec<String>),
+    Projection(Vec<(String, String)>),
+}
+
 /// A builder for nearest neighbor queries for LanceDB.
 #[derive(Clone)]
 pub struct Query {
@@ -44,7 +51,7 @@ pub struct Query {
     /// Apply filter to the returned rows.
     filter: Option<String>,
     /// Select column projection.
-    select: Option<Vec<String>>,
+    select: Select,
 
     /// Default is true. Set to false to enforce a brute force search.
     use_index: bool,
@@ -70,7 +77,7 @@ impl Query {
             metric_type: None,
             use_index: true,
             filter: None,
-            select: None,
+            select: Select::All,
             prefilter: false,
         }
     }
@@ -115,7 +122,16 @@ impl Query {
         scanner.use_index(self.use_index);
         scanner.prefilter(self.prefilter);
 
-        self.select.as_ref().map(|p| scanner.project(p.as_slice()));
+        match &self.select {
+            Select::Simple(select) => {
+                scanner.project(select.as_slice())?;
+            }
+            Select::Projection(select_with_transform) => {
+                scanner.project_with_transform(select_with_transform.as_slice())?;
+            }
+            Select::All => { /* Do nothing */ }
+        }
+
         self.filter.as_ref().map(|f| scanner.filter(f));
         self.refine_factor.map(|rf| scanner.refine(rf));
         self.metric_type.map(|mt| scanner.distance_metric(mt));
@@ -206,7 +222,23 @@ impl Query {
     ///
     /// Only select the specified columns. If not specified, all columns will be returned.
     pub fn select(mut self, columns: &[impl AsRef<str>]) -> Self {
-        self.select = Some(columns.iter().map(|c| c.as_ref().to_string()).collect());
+        self.select = Select::Simple(columns.iter().map(|c| c.as_ref().to_string()).collect());
+        self
+    }
+
+    /// Return only the specified columns.
+    ///
+    /// Only select the specified columns. If not specified, all columns will be returned.
+    pub fn select_with_projection(
+        mut self,
+        columns: &[(impl AsRef<str>, impl AsRef<str>)],
+    ) -> Self {
+        self.select = Select::Projection(
+            columns
+                .iter()
+                .map(|(c, t)| (c.as_ref().to_string(), t.as_ref().to_string()))
+                .collect(),
+        );
         self
     }
 
@@ -226,7 +258,7 @@ mod tests {
         RecordBatchReader,
     };
     use arrow_schema::{DataType, Field as ArrowField, Schema as ArrowSchema};
-    use futures::StreamExt;
+    use futures::{StreamExt, TryStreamExt};
     use lance::dataset::Dataset;
     use lance_testing::datagen::{BatchGenerator, IncrementingInt32, RandomVector};
     use tempfile::tempdir;
@@ -292,6 +324,38 @@ mod tests {
             // pre filter should return 10 rows
             assert!(batch.expect("should be Ok").num_rows() == 10);
         }
+    }
+
+    #[tokio::test]
+    async fn test_select_with_transform() {
+        let batches = make_non_empty_batches();
+        let ds = Dataset::write(batches, "memory://foo", None).await.unwrap();
+
+        let ds = DatasetConsistencyWrapper::new_latest(ds, None);
+
+        let query = Query::new(ds)
+            .limit(10)
+            .select_with_projection(&[("id2", "id * 2"), ("id", "id")]);
+        let result = query.execute_stream().await;
+        let mut batches = result
+            .expect("should have result")
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(batches.len(), 1);
+        let batch = batches.pop().unwrap();
+
+        // id, and id2
+        assert_eq!(batch.num_columns(), 2);
+
+        let id: &Int32Array = batch.column_by_name("id").unwrap().as_primitive();
+        let id2: &Int32Array = batch.column_by_name("id2").unwrap().as_primitive();
+
+        id.iter().zip(id2.iter()).for_each(|(id, id2)| {
+            let id = id.unwrap();
+            let id2 = id2.unwrap();
+            assert_eq!(id * 2, id2);
+        });
     }
 
     #[tokio::test]

@@ -604,6 +604,8 @@ impl JsTable {
                     path,
                     rename,
                     nullable,
+                    // TODO: wire up this field
+                    data_type: None,
                 })
             })
             .collect::<NeonResult<Vec<ColumnAlteration>>>()?;
