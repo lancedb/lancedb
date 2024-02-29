@@ -85,7 +85,7 @@ export class Connection {
    * - buf: The buffer containing the IPC file.
    *
    */
-  createTable(name: string, buf: Buffer): Promise<Table>
+  createTable(name: string, buf: Buffer, mode: string): Promise<Table>
   openTable(name: string): Promise<Table>
   /** Drop table with the name. Or raise an error if the table does not exist. */
   dropTable(name: string): Promise<void>
@@ -117,7 +117,7 @@ export class Table {
   /** Return Schema as empty Arrow IPC file. */
   schema(): Promise<Buffer>
   add(buf: Buffer): Promise<void>
-  countRows(filter?: string | undefined | null): Promise<bigint>
+  countRows(filter?: string | undefined | null): Promise<number>
   delete(predicate: string): Promise<void>
   createIndex(): IndexBuilder
   query(): Query

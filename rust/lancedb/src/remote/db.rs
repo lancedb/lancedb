@@ -12,14 +12,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
+use reqwest::header::CONTENT_TYPE;
 use serde::Deserialize;
+use tokio::task::spawn_blocking;
 
 use crate::connection::{ConnectionInternal, CreateTableBuilder, OpenTableBuilder};
 use crate::error::Result;
 use crate::TableRef;
 
 use super::client::RestfulLanceDbClient;
+use super::table::RemoteTable;
+use super::util::batches_to_ipc_bytes;
+
+const ARROW_STREAM_CONTENT_TYPE: &str = "application/vnd.apache.arrow.stream";
 
 #[derive(Deserialize)]
 struct ListTablesResponse {
@@ -57,8 +65,27 @@ impl ConnectionInternal for RemoteDatabase {
         Ok(rsp.json::<ListTablesResponse>().await?.tables)
     }
 
-    async fn do_create_table(&self, _options: CreateTableBuilder<true>) -> Result<TableRef> {
-        todo!()
+    async fn do_create_table(&self, options: CreateTableBuilder<true>) -> Result<TableRef> {
+        let data = options.data.unwrap();
+        // TODO: https://github.com/lancedb/lancedb/issues/1026
+        // We should accept data from an async source.  In the meantime, spawn this as blocking
+        // to make sure we don't block the tokio runtime if the source is slow.
+        let data_buffer = spawn_blocking(move || batches_to_ipc_bytes(data))
+            .await
+            .unwrap()?;
+
+        self.client
+            .post(&format!("/v1/table/{}/create", options.name))
+            .body(data_buffer)
+            .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE)
+            .header("x-request-id", "na")
+            .send()
+            .await?;
+
+        Ok(Arc::new(RemoteTable::new(
+            self.client.clone(),
+            options.name,
+        )))
     }
 
     async fn do_open_table(&self, _options: OpenTableBuilder) -> Result<TableRef> {

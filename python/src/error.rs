@@ -45,6 +45,7 @@ impl<T> PythonErrorExt<T> for std::result::Result<T, LanceError> {
                 LanceError::Lance { .. } => self.runtime_error(),
                 LanceError::Runtime { .. } => self.runtime_error(),
                 LanceError::Http { .. } => self.runtime_error(),
+                LanceError::Arrow { .. } => self.runtime_error(),
             },
         }
     }

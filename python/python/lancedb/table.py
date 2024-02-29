@@ -28,6 +28,7 @@ import pyarrow.compute as pc
 import pyarrow.fs as pa_fs
 from lance import LanceDataset
 from lance.vector import vec_to_table
+from overrides import override
 
 from .common import DATA, VEC, VECTOR_COLUMN_NAME
 from .embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
@@ -48,6 +49,7 @@ if TYPE_CHECKING:
     import PIL
     from lance.dataset import CleanupStats, ReaderLike
 
+    from ._lancedb import Table as LanceDBTable
     from .db import LanceDBConnection
 
 
@@ -1780,3 +1782,715 @@ def _sanitize_nans(data, fill_value, on_bad_vectors, vec_arr, vector_column_name
         is_full = np.any(~is_value_nan.reshape(-1, vec_arr.type.list_size), axis=1)
         data = data.filter(is_full)
     return data
+
+
+class AsyncTable(ABC):
+    """
+    A Table is a collection of Records in a LanceDB Database.
+
+    Examples
+    --------
+
+    Create using [DBConnection.create_table][lancedb.DBConnection.create_table]
+    (more examples in that method's documentation).
+
+    >>> import lancedb
+    >>> db = lancedb.connect("./.lancedb")
+    >>> table = db.create_table("my_table", data=[{"vector": [1.1, 1.2], "b": 2}])
+    >>> table.head()
+    pyarrow.Table
+    vector: fixed_size_list<item: float>[2]
+      child 0, item: float
+    b: int64
+    ----
+    vector: [[[1.1,1.2]]]
+    b: [[2]]
+
+    Can append new data with [Table.add()][lancedb.table.Table.add].
+
+    >>> table.add([{"vector": [0.5, 1.3], "b": 4}])
+
+    Can query the table with [Table.search][lancedb.table.Table.search].
+
+    >>> table.search([0.4, 0.4]).select(["b", "vector"]).to_pandas()
+       b      vector  _distance
+    0  4  [0.5, 1.3]       0.82
+    1  2  [1.1, 1.2]       1.13
+
+    Search queries are much faster when an index is created. See
+    [Table.create_index][lancedb.table.Table.create_index].
+    """
+
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        """The name of the table."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def schema(self) -> pa.Schema:
+        """The [Arrow Schema](https://arrow.apache.org/docs/python/api/datatypes.html#)
+        of this Table
+
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def count_rows(self, filter: Optional[str] = None) -> int:
+        """
+        Count the number of rows in the table.
+
+        Parameters
+        ----------
+        filter: str, optional
+            A SQL where clause to filter the rows to count.
+        """
+        raise NotImplementedError
+
+    async def to_pandas(self) -> "pd.DataFrame":
+        """Return the table as a pandas DataFrame.
+
+        Returns
+        -------
+        pd.DataFrame
+        """
+        return self.to_arrow().to_pandas()
+
+    @abstractmethod
+    async def to_arrow(self) -> pa.Table:
+        """Return the table as a pyarrow Table.
+
+        Returns
+        -------
+        pa.Table
+        """
+        raise NotImplementedError
+
+    async def create_index(
+        self,
+        metric="L2",
+        num_partitions=256,
+        num_sub_vectors=96,
+        vector_column_name: str = VECTOR_COLUMN_NAME,
+        replace: bool = True,
+        accelerator: Optional[str] = None,
+        index_cache_size: Optional[int] = None,
+    ):
+        """Create an index on the table.
+
+        Parameters
+        ----------
+        metric: str, default "L2"
+            The distance metric to use when creating the index.
+            Valid values are "L2", "cosine", or "dot".
+            L2 is euclidean distance.
+        num_partitions: int, default 256
+            The number of IVF partitions to use when creating the index.
+            Default is 256.
+        num_sub_vectors: int, default 96
+            The number of PQ sub-vectors to use when creating the index.
+            Default is 96.
+        vector_column_name: str, default "vector"
+            The vector column name to create the index.
+        replace: bool, default True
+            - If True, replace the existing index if it exists.
+
+            - If False, raise an error if duplicate index exists.
+        accelerator: str, default None
+            If set, use the given accelerator to create the index.
+            Only support "cuda" for now.
+        index_cache_size : int, optional
+            The size of the index cache in number of entries. Default value is 256.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def create_scalar_index(
+        self,
+        column: str,
+        *,
+        replace: bool = True,
+    ):
+        """Create a scalar index on a column.
+
+        Scalar indices, like vector indices, can be used to speed up scans.  A scalar
+        index can speed up scans that contain filter expressions on the indexed column.
+        For example, the following scan will be faster if the column ``my_col`` has
+        a scalar index:
+
+        .. code-block:: python
+
+            import lancedb
+
+            db = lancedb.connect("/data/lance")
+            img_table = db.open_table("images")
+            my_df = img_table.search().where("my_col = 7", prefilter=True).to_pandas()
+
+        Scalar indices can also speed up scans containing a vector search and a
+        prefilter:
+
+        .. code-block::python
+
+            import lancedb
+
+            db = lancedb.connect("/data/lance")
+            img_table = db.open_table("images")
+            img_table.search([1, 2, 3, 4], vector_column_name="vector")
+                .where("my_col != 7", prefilter=True)
+                .to_pandas()
+
+        Scalar indices can only speed up scans for basic filters using
+        equality, comparison, range (e.g. ``my_col BETWEEN 0 AND 100``), and set
+        membership (e.g. `my_col IN (0, 1, 2)`)
+
+        Scalar indices can be used if the filter contains multiple indexed columns and
+        the filter criteria are AND'd or OR'd together
+        (e.g. ``my_col < 0 AND other_col> 100``)
+
+        Scalar indices may be used if the filter contains non-indexed columns but,
+        depending on the structure of the filter, they may not be usable.  For example,
+        if the column ``not_indexed`` does not have a scalar index then the filter
+        ``my_col = 0 OR not_indexed = 1`` will not be able to use any scalar index on
+        ``my_col``.
+
+        **Experimental API**
+
+        Parameters
+        ----------
+        column : str
+            The column to be indexed.  Must be a boolean, integer, float,
+            or string column.
+        replace : bool, default True
+            Replace the existing index if it exists.
+
+        Examples
+        --------
+
+        .. code-block:: python
+
+            import lance
+
+            dataset = lance.dataset("./images.lance")
+            dataset.create_scalar_index("category")
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def add(
+        self,
+        data: DATA,
+        mode: str = "append",
+        on_bad_vectors: str = "error",
+        fill_value: float = 0.0,
+    ):
+        """Add more data to the [Table](Table).
+
+        Parameters
+        ----------
+        data: DATA
+            The data to insert into the table. Acceptable types are:
+
+            - dict or list-of-dict
+
+            - pandas.DataFrame
+
+            - pyarrow.Table or pyarrow.RecordBatch
+        mode: str
+            The mode to use when writing the data. Valid values are
+            "append" and "overwrite".
+        on_bad_vectors: str, default "error"
+            What to do if any of the vectors are not the same size or contains NaNs.
+            One of "error", "drop", "fill".
+        fill_value: float, default 0.
+            The value to use when filling vectors. Only used if on_bad_vectors="fill".
+
+        """
+        raise NotImplementedError
+
+    def merge_insert(self, on: Union[str, Iterable[str]]) -> LanceMergeInsertBuilder:
+        """
+        Returns a [`LanceMergeInsertBuilder`][lancedb.merge.LanceMergeInsertBuilder]
+        that can be used to create a "merge insert" operation
+
+        This operation can add rows, update rows, and remove rows all in a single
+        transaction. It is a very generic tool that can be used to create
+        behaviors like "insert if not exists", "update or insert (i.e. upsert)",
+        or even replace a portion of existing data with new data (e.g. replace
+        all data where month="january")
+
+        The merge insert operation works by combining new data from a
+        **source table** with existing data in a **target table** by using a
+        join.  There are three categories of records.
+
+        "Matched" records are records that exist in both the source table and
+        the target table. "Not matched" records exist only in the source table
+        (e.g. these are new data) "Not matched by source" records exist only
+        in the target table (this is old data)
+
+        The builder returned by this method can be used to customize what
+        should happen for each category of data.
+
+        Please note that the data may appear to be reordered as part of this
+        operation.  This is because updated rows will be deleted from the
+        dataset and then reinserted at the end with the new values.
+
+        Parameters
+        ----------
+
+        on: Union[str, Iterable[str]]
+            A column (or columns) to join on.  This is how records from the
+            source table and target table are matched.  Typically this is some
+            kind of key or id column.
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> data = pa.table({"a": [2, 1, 3], "b": ["a", "b", "c"]})
+        >>> db = lancedb.connect("./.lancedb")
+        >>> table = db.create_table("my_table", data)
+        >>> new_data = pa.table({"a": [2, 3, 4], "b": ["x", "y", "z"]})
+        >>> # Perform a "upsert" operation
+        >>> table.merge_insert("a")             \\
+        ...      .when_matched_update_all()     \\
+        ...      .when_not_matched_insert_all() \\
+        ...      .execute(new_data)
+        >>> # The order of new rows is non-deterministic since we use
+        >>> # a hash-join as part of this operation and so we sort here
+        >>> table.to_arrow().sort_by("a").to_pandas()
+           a  b
+        0  1  b
+        1  2  x
+        2  3  y
+        3  4  z
+        """
+        on = [on] if isinstance(on, str) else list(on.iter())
+
+        return LanceMergeInsertBuilder(self, on)
+
+    @abstractmethod
+    async def search(
+        self,
+        query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
+        vector_column_name: Optional[str] = None,
+        query_type: str = "auto",
+    ) -> LanceQueryBuilder:
+        """Create a search query to find the nearest neighbors
+        of the given query vector. We currently support [vector search][search]
+        and [full-text search][experimental-full-text-search].
+
+        All query options are defined in [Query][lancedb.query.Query].
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> db = lancedb.connect("./.lancedb")
+        >>> data = [
+        ...    {"original_width": 100, "caption": "bar", "vector": [0.1, 2.3, 4.5]},
+        ...    {"original_width": 2000, "caption": "foo",  "vector": [0.5, 3.4, 1.3]},
+        ...    {"original_width": 3000, "caption": "test", "vector": [0.3, 6.2, 2.6]}
+        ... ]
+        >>> table = db.create_table("my_table", data)
+        >>> query = [0.4, 1.4, 2.4]
+        >>> (table.search(query)
+        ...     .where("original_width > 1000", prefilter=True)
+        ...     .select(["caption", "original_width", "vector"])
+        ...     .limit(2)
+        ...     .to_pandas())
+          caption  original_width           vector  _distance
+        0     foo            2000  [0.5, 3.4, 1.3]   5.220000
+        1    test            3000  [0.3, 6.2, 2.6]  23.089996
+
+        Parameters
+        ----------
+        query: list/np.ndarray/str/PIL.Image.Image, default None
+            The targetted vector to search for.
+
+            - *default None*.
+            Acceptable types are: list, np.ndarray, PIL.Image.Image
+
+            - If None then the select/where/limit clauses are applied to filter
+            the table
+        vector_column_name: str, optional
+            The name of the vector column to search.
+
+            The vector column needs to be a pyarrow fixed size list type
+
+            - If not specified then the vector column is inferred from
+            the table schema
+
+            - If the table has multiple vector columns then the *vector_column_name*
+            needs to be specified. Otherwise, an error is raised.
+        query_type: str
+            *default "auto"*.
+            Acceptable types are: "vector", "fts", "hybrid", or "auto"
+
+            - If "auto" then the query type is inferred from the query;
+
+                - If `query` is a list/np.ndarray then the query type is
+                "vector";
+
+                - If `query` is a PIL.Image.Image then either do vector search,
+                or raise an error if no corresponding embedding function is found.
+
+            - If `query` is a string, then the query type is "vector" if the
+            table has embedding functions else the query type is "fts"
+
+        Returns
+        -------
+        LanceQueryBuilder
+            A query builder object representing the query.
+            Once executed, the query returns
+
+            - selected columns
+
+            - the vector
+
+            - and also the "_distance" column which is the distance between the query
+            vector and the returned vector.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def _execute_query(self, query: Query) -> pa.Table:
+        pass
+
+    @abstractmethod
+    async def _do_merge(
+        self,
+        merge: LanceMergeInsertBuilder,
+        new_data: DATA,
+        on_bad_vectors: str,
+        fill_value: float,
+    ):
+        pass
+
+    @abstractmethod
+    async def delete(self, where: str):
+        """Delete rows from the table.
+
+        This can be used to delete a single row, many rows, all rows, or
+        sometimes no rows (if your predicate matches nothing).
+
+        Parameters
+        ----------
+        where: str
+            The SQL where clause to use when deleting rows.
+
+            - For example, 'x = 2' or 'x IN (1, 2, 3)'.
+
+            The filter must not be empty, or it will error.
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> data = [
+        ...    {"x": 1, "vector": [1, 2]},
+        ...    {"x": 2, "vector": [3, 4]},
+        ...    {"x": 3, "vector": [5, 6]}
+        ... ]
+        >>> db = lancedb.connect("./.lancedb")
+        >>> table = db.create_table("my_table", data)
+        >>> table.to_pandas()
+           x      vector
+        0  1  [1.0, 2.0]
+        1  2  [3.0, 4.0]
+        2  3  [5.0, 6.0]
+        >>> table.delete("x = 2")
+        >>> table.to_pandas()
+           x      vector
+        0  1  [1.0, 2.0]
+        1  3  [5.0, 6.0]
+
+        If you have a list of values to delete, you can combine them into a
+        stringified list and use the `IN` operator:
+
+        >>> to_remove = [1, 5]
+        >>> to_remove = ", ".join([str(v) for v in to_remove])
+        >>> to_remove
+        '1, 5'
+        >>> table.delete(f"x IN ({to_remove})")
+        >>> table.to_pandas()
+           x      vector
+        0  3  [5.0, 6.0]
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def update(
+        self,
+        where: Optional[str] = None,
+        values: Optional[dict] = None,
+        *,
+        values_sql: Optional[Dict[str, str]] = None,
+    ):
+        """
+        This can be used to update zero to all rows depending on how many
+        rows match the where clause. If no where clause is provided, then
+        all rows will be updated.
+
+        Either `values` or `values_sql` must be provided. You cannot provide
+        both.
+
+        Parameters
+        ----------
+        where: str, optional
+            The SQL where clause to use when updating rows. For example, 'x = 2'
+            or 'x IN (1, 2, 3)'. The filter must not be empty, or it will error.
+        values: dict, optional
+            The values to update. The keys are the column names and the values
+            are the values to set.
+        values_sql: dict, optional
+            The values to update, expressed as SQL expression strings. These can
+            reference existing columns. For example, {"x": "x + 1"} will increment
+            the x column by 1.
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> import pandas as pd
+        >>> data = pd.DataFrame({"x": [1, 2, 3], "vector": [[1, 2], [3, 4], [5, 6]]})
+        >>> db = lancedb.connect("./.lancedb")
+        >>> table = db.create_table("my_table", data)
+        >>> table.to_pandas()
+           x      vector
+        0  1  [1.0, 2.0]
+        1  2  [3.0, 4.0]
+        2  3  [5.0, 6.0]
+        >>> table.update(where="x = 2", values={"vector": [10, 10]})
+        >>> table.to_pandas()
+           x        vector
+        0  1    [1.0, 2.0]
+        1  3    [5.0, 6.0]
+        2  2  [10.0, 10.0]
+        >>> table.update(values_sql={"x": "x + 1"})
+        >>> table.to_pandas()
+           x        vector
+        0  2    [1.0, 2.0]
+        1  4    [5.0, 6.0]
+        2  3  [10.0, 10.0]
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def cleanup_old_versions(
+        self,
+        older_than: Optional[timedelta] = None,
+        *,
+        delete_unverified: bool = False,
+    ) -> CleanupStats:
+        """
+        Clean up old versions of the table, freeing disk space.
+
+        Note: This function is not available in LanceDb Cloud (since LanceDb
+        Cloud manages cleanup for you automatically)
+
+        Parameters
+        ----------
+        older_than: timedelta, default None
+            The minimum age of the version to delete. If None, then this defaults
+            to two weeks.
+        delete_unverified: bool, default False
+            Because they may be part of an in-progress transaction, files newer
+            than 7 days old are not deleted by default. If you are sure that
+            there are no in-progress transactions, then you can set this to True
+            to delete all files older than `older_than`.
+
+        Returns
+        -------
+        CleanupStats
+            The stats of the cleanup operation, including how many bytes were
+            freed.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def compact_files(self, *args, **kwargs):
+        """
+        Run the compaction process on the table.
+
+        Note: This function is not available in LanceDb Cloud (since LanceDb
+        Cloud manages compaction for you automatically)
+
+        This can be run after making several small appends to optimize the table
+        for faster reads.
+
+        Arguments are passed onto :meth:`lance.dataset.DatasetOptimizer.compact_files`.
+        For most cases, the default should be fine.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def add_columns(self, transforms: Dict[str, str]):
+        """
+        Add new columns with defined values.
+
+        This is not yet available in LanceDB Cloud.
+
+        Parameters
+        ----------
+        transforms: Dict[str, str]
+            A map of column name to a SQL expression to use to calculate the
+            value of the new column. These expressions will be evaluated for
+            each row in the table, and can reference existing columns.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def alter_columns(self, alterations: Iterable[Dict[str, str]]):
+        """
+        Alter column names and nullability.
+
+        This is not yet available in LanceDB Cloud.
+
+        alterations : Iterable[Dict[str, Any]]
+            A sequence of dictionaries, each with the following keys:
+            - "path": str
+                The column path to alter. For a top-level column, this is the name.
+                For a nested column, this is the dot-separated path, e.g. "a.b.c".
+            - "name": str, optional
+                The new name of the column. If not specified, the column name is
+                not changed.
+            - "nullable": bool, optional
+                Whether the column should be nullable. If not specified, the column
+                nullability is not changed. Only non-nullable columns can be changed
+                to nullable. Currently, you cannot change a nullable column to
+                non-nullable.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def drop_columns(self, columns: Iterable[str]):
+        """
+        Drop columns from the table.
+
+        This is not yet available in LanceDB Cloud.
+
+        Parameters
+        ----------
+        columns : Iterable[str]
+            The names of the columns to drop.
+        """
+        raise NotImplementedError
+
+
+class AsyncLanceTable(AsyncTable):
+    def __init__(self, table: LanceDBTable):
+        self._inner = table
+
+    @property
+    @override
+    def name(self) -> str:
+        return self._inner.name()
+
+    @override
+    async def schema(self) -> pa.Schema:
+        return await self._inner.schema()
+
+    @override
+    async def count_rows(self, filter: Optional[str] = None) -> int:
+        raise NotImplementedError
+
+    async def to_pandas(self) -> "pd.DataFrame":
+        return self.to_arrow().to_pandas()
+
+    @override
+    async def to_arrow(self) -> pa.Table:
+        raise NotImplementedError
+
+    async def create_index(
+        self,
+        metric="L2",
+        num_partitions=256,
+        num_sub_vectors=96,
+        vector_column_name: str = VECTOR_COLUMN_NAME,
+        replace: bool = True,
+        accelerator: Optional[str] = None,
+        index_cache_size: Optional[int] = None,
+    ):
+        raise NotImplementedError
+
+    @override
+    async def create_scalar_index(
+        self,
+        column: str,
+        *,
+        replace: bool = True,
+    ):
+        raise NotImplementedError
+
+    @override
+    async def add(
+        self,
+        data: DATA,
+        mode: str = "append",
+        on_bad_vectors: str = "error",
+        fill_value: float = 0.0,
+    ):
+        raise NotImplementedError
+
+    def merge_insert(self, on: Union[str, Iterable[str]]) -> LanceMergeInsertBuilder:
+        on = [on] if isinstance(on, str) else list(on.iter())
+
+        return LanceMergeInsertBuilder(self, on)
+
+    @override
+    async def search(
+        self,
+        query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
+        vector_column_name: Optional[str] = None,
+        query_type: str = "auto",
+    ) -> LanceQueryBuilder:
+        raise NotImplementedError
+
+    @override
+    async def _execute_query(self, query: Query) -> pa.Table:
+        pass
+
+    @override
+    async def _do_merge(
+        self,
+        merge: LanceMergeInsertBuilder,
+        new_data: DATA,
+        on_bad_vectors: str,
+        fill_value: float,
+    ):
+        pass
+
+    @override
+    async def delete(self, where: str):
+        raise NotImplementedError
+
+    @override
+    async def update(
+        self,
+        where: Optional[str] = None,
+        values: Optional[dict] = None,
+        *,
+        values_sql: Optional[Dict[str, str]] = None,
+    ):
+        raise NotImplementedError
+
+    @override
+    async def cleanup_old_versions(
+        self,
+        older_than: Optional[timedelta] = None,
+        *,
+        delete_unverified: bool = False,
+    ) -> CleanupStats:
+        raise NotImplementedError
+
+    @override
+    async def compact_files(self, *args, **kwargs):
+        raise NotImplementedError
+
+    @override
+    async def add_columns(self, transforms: Dict[str, str]):
+        raise NotImplementedError
+
+    @override
+    async def alter_columns(self, alterations: Iterable[Dict[str, str]]):
+        raise NotImplementedError
+
+    @override
+    async def drop_columns(self, columns: Iterable[str]):
+        raise NotImplementedError

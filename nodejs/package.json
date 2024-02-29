@@ -51,8 +51,7 @@
     "docs": "typedoc --plugin typedoc-plugin-markdown lancedb/index.ts",
     "lint": "eslint lancedb --ext .js,.ts",
     "prepublishOnly": "napi prepublish -t npm",
-    "//": "maxWorkers=1 is workaround for bigint issue in jest: https://github.com/jestjs/jest/issues/11617#issuecomment-1068732414",
-    "test": "npm run build && jest --maxWorkers=1",
+    "test": "npm run build && jest --verbose",
     "universal": "napi universal",
     "version": "napi version"
   },

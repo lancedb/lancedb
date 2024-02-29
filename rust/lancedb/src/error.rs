@@ -20,36 +20,40 @@ use snafu::Snafu;
 #[derive(Debug, Snafu)]
 #[snafu(visibility(pub(crate)))]
 pub enum Error {
-    #[snafu(display("LanceDBError: Invalid table name: {name}"))]
+    #[snafu(display("Invalid table name: {name}"))]
     InvalidTableName { name: String },
-    #[snafu(display("LanceDBError: Invalid input, {message}"))]
+    #[snafu(display("Invalid input, {message}"))]
     InvalidInput { message: String },
-    #[snafu(display("LanceDBError: Table '{name}' was not found"))]
+    #[snafu(display("Table '{name}' was not found"))]
     TableNotFound { name: String },
-    #[snafu(display("LanceDBError: Table '{name}' already exists"))]
+    #[snafu(display("Table '{name}' already exists"))]
     TableAlreadyExists { name: String },
-    #[snafu(display("LanceDBError: Unable to created lance dataset at {path}: {source}"))]
+    #[snafu(display("Unable to created lance dataset at {path}: {source}"))]
     CreateDir {
         path: String,
         source: std::io::Error,
     },
-    #[snafu(display("LanceDBError: Http error: {message}"))]
-    Http { message: String },
-    #[snafu(display("LanceDBError: {message}"))]
-    Store { message: String },
-    #[snafu(display("LanceDBError: {message}"))]
-    Lance { message: String },
-    #[snafu(display("LanceDB Schema Error: {message}"))]
+    #[snafu(display("Schema Error: {message}"))]
     Schema { message: String },
     #[snafu(display("Runtime error: {message}"))]
     Runtime { message: String },
+
+    // 3rd party / external errors
+    #[snafu(display("object_store error: {message}"))]
+    Store { message: String },
+    #[snafu(display("lance error: {message}"))]
+    Lance { message: String },
+    #[snafu(display("Http error: {message}"))]
+    Http { message: String },
+    #[snafu(display("Arrow error: {message}"))]
+    Arrow { message: String },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
 
 impl From<ArrowError> for Error {
     fn from(e: ArrowError) -> Self {
-        Self::Lance {
+        Self::Arrow {
             message: e.to_string(),
         }
     }

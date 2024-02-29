@@ -17,7 +17,8 @@ use env_logger::Env;
 use pyo3::{pymodule, types::PyModule, wrap_pyfunction, PyResult, Python};
 
 pub mod connection;
-pub(crate) mod error;
+pub mod error;
+pub mod table;
 
 #[pymodule]
 pub fn _lancedb(_py: Python, m: &PyModule) -> PyResult<()> {
