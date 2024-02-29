@@ -707,8 +707,6 @@ mod tests {
         let db = connect(uri).execute().await.unwrap();
 
         assert_eq!(db.table_names().await.unwrap().len(), 0);
-
-        db.open_table("invalid_table").execute().await.unwrap();
         // open non-exist table
         assert!(matches!(
             db.open_table("invalid_table").execute().await,
@@ -735,11 +733,10 @@ mod tests {
         let db = connect(uri).execute().await.unwrap();
 
         // drop non-exist table
-        // TODO(BubbleCal): enable this after upgrading lance with https://github.com/lancedb/lance/pull/1995 merged
-        // assert!(matches!(
-        //     db.drop_table("invalid_table").await,
-        //     Err(crate::Error::TableNotFound { .. }),
-        // ));
+        assert!(matches!(
+            db.drop_table("invalid_table").await,
+            Err(crate::Error::TableNotFound { .. }),
+        ));
 
         create_dir_all(tmp_dir.path().join("table1.lance")).unwrap();
         db.drop_table("table1").await.unwrap();
