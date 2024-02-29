@@ -94,6 +94,17 @@ def test_query_builder(table):
     assert all(np.array(rs[0]["vector"]) == [1, 2])
 
 
+def test_dynamic_projection(table):
+    rs = (
+        LanceVectorQueryBuilder(table, [0, 0], "vector")
+        .limit(1)
+        .select({"id": "id", "id2": "id * 2"})
+        .to_list()
+    )
+    assert rs[0]["id"] == 1
+    assert rs[0]["id2"] == 2
+
+
 def test_query_builder_with_filter(table):
     rs = LanceVectorQueryBuilder(table, [0, 0], "vector").where("id = 2").to_list()
     assert rs[0]["id"] == 2
