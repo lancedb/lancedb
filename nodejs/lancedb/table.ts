@@ -87,7 +87,7 @@ export class Table {
    * @return The number of rows added to the table
    */
   async add(data: Data, options?: Partial<AddDataOptions>): Promise<void> {
-    let mode = options?.mode ?? "append";
+    const mode = options?.mode ?? "append";
 
     const buffer = await fromDataToBuffer(data);
     await this.inner.add(buffer, mode);

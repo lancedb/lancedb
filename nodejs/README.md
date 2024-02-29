@@ -11,8 +11,10 @@ npm t
 
 ### Running lint / format
 
-LanceDb uses eslint for linting. VSCode should be automatically configured to report eslint errors.
-To manually lint your code you can run:
+LanceDb uses eslint for linting. VSCode does not need any plugins to use eslint.  However, it
+may need some additional configuration.  Make sure that eslint.experimental.useFlatConfig is
+set to true.  Also, if your vscode root folder is the repo root then you will need to set
+the eslint.workingDirectories to ["nodejs"].  To manually lint your code you can run:
 
 ```sh
 npm run lint

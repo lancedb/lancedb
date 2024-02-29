@@ -25,14 +25,15 @@ class RecordBatchIterator implements AsyncIterator<RecordBatch> {
 
   constructor(
     inner?: NativeBatchIterator,
-    promise?: Promise<NativeBatchIterator>,
+    promise?: Promise<NativeBatchIterator>
   ) {
     // TODO: check promise reliably so we dont need to pass two arguments.
     this.inner = inner;
     this.promised_inner = promise;
   }
 
-  async next(): Promise<IteratorResult<RecordBatch<any>, any>> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async next(): Promise<IteratorResult<RecordBatch<any>>> {
     if (this.inner === undefined) {
       this.inner = await this.promised_inner;
     }
@@ -139,12 +140,13 @@ export class Query implements AsyncIterable<RecordBatch> {
   /** Returns a JSON Array of All results.
    *
    */
-  async toArray(): Promise<any[]> {
+  async toArray(): Promise<unknown[]> {
     const tbl = await this.toArrow();
     // eslint-disable-next-line @typescript-eslint/no-unsafe-return
     return tbl.toArray();
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   [Symbol.asyncIterator](): AsyncIterator<RecordBatch<any>> {
     const promise = this.inner.executeStream();
     return new RecordBatchIterator(undefined, promise);
