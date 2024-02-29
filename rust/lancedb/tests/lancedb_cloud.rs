@@ -12,6 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::sync::Arc;
+
+use arrow_array::RecordBatchIterator;
+
 #[tokio::test]
 #[ignore]
 async fn cloud_integration_test() {
@@ -36,5 +40,28 @@ async fn cloud_integration_test() {
     }
     let db = builder.execute().await.unwrap();
 
-    db.table_names().await.unwrap();
+    let schema = Arc::new(arrow_schema::Schema::new(vec![
+        arrow_schema::Field::new("id", arrow_schema::DataType::Int64, false),
+        arrow_schema::Field::new("name", arrow_schema::DataType::Utf8, false),
+    ]));
+    let initial_data = arrow::record_batch::RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(arrow_array::Int64Array::from(vec![1, 2, 3])),
+            Arc::new(arrow_array::StringArray::from(vec!["a", "b", "c"])),
+        ],
+    );
+    let rbr = RecordBatchIterator::new(vec![initial_data], schema);
+
+    let name = uuid::Uuid::new_v4().to_string();
+    let tbl = db
+        .create_table(name.clone(), Box::new(rbr))
+        .execute()
+        .await
+        .unwrap();
+
+    assert_eq!(tbl.name(), name);
+
+    let table_names = db.table_names().await.unwrap();
+    assert!(table_names.contains(&name));
 }

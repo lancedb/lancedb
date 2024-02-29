@@ -201,17 +201,17 @@ describe("Read consistency interval", () => {
     await table.add([{ id: 2 }]);
 
     if (interval === undefined) {
-      expect(await table2.countRows()).toEqual(1n);
+      expect(await table2.countRows()).toEqual(1);
       // TODO: once we implement time travel we can uncomment this part of the test.
       // await table2.checkout_latest();
       // expect(await table2.countRows()).toEqual(2);
     } else if (interval === 0) {
-      expect(await table2.countRows()).toEqual(2n);
+      expect(await table2.countRows()).toEqual(2);
     } else {
       // interval == 0.1
-      expect(await table2.countRows()).toEqual(1n);
+      expect(await table2.countRows()).toEqual(1);
       await new Promise(r => setTimeout(r, 100));
-      expect(await table2.countRows()).toEqual(2n);
+      expect(await table2.countRows()).toEqual(2);
     }
   });
 });
