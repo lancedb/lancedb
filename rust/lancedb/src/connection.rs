@@ -194,7 +194,7 @@ impl OpenTableBuilder {
 }
 
 #[async_trait::async_trait]
-trait ConnectionInternal: Send + Sync + std::fmt::Debug + 'static {
+pub(crate) trait ConnectionInternal: Send + Sync + std::fmt::Debug + 'static {
     async fn table_names(&self) -> Result<Vec<String>>;
     async fn do_create_table(&self, options: CreateTableBuilder<true>) -> Result<TableRef>;
     async fn do_open_table(&self, options: OpenTableBuilder) -> Result<TableRef>;
@@ -365,13 +365,45 @@ impl ConnectBuilder {
         self
     }
 
-    /// Establishes a connection to the database
-    pub async fn execute(self) -> Result<Connection> {
-        let internal = Arc::new(Database::connect_with_options(&self).await?);
+    #[cfg(feature = "remote")]
+    fn execute_remote(self) -> Result<Connection> {
+        let region = self.region.ok_or_else(|| Error::InvalidInput {
+            message: "A region is required when connecting to LanceDb Cloud".to_string(),
+        })?;
+        let api_key = self.api_key.ok_or_else(|| Error::InvalidInput {
+            message: "An api_key is required when connecting to LanceDb Cloud".to_string(),
+        })?;
+        let internal = Arc::new(crate::remote::db::RemoteDatabase::try_new(
+            &self.uri,
+            &api_key,
+            &region,
+            self.host_override,
+        )?);
         Ok(Connection {
             internal,
             uri: self.uri,
         })
+    }
+
+    #[cfg(not(feature = "remote"))]
+    fn execute_remote(self) -> Result<Connection> {
+        Err(Error::Runtime {
+            message: "cannot connect to LanceDb Cloud unless the 'remote' feature is enabled"
+                .to_string(),
+        })
+    }
+
+    /// Establishes a connection to the database
+    pub async fn execute(self) -> Result<Connection> {
+        if self.uri.starts_with("db") {
+            self.execute_remote()
+        } else {
+            let internal = Arc::new(Database::connect_with_options(&self).await?);
+            Ok(Connection {
+                internal,
+                uri: self.uri,
+            })
+        }
     }
 }
 

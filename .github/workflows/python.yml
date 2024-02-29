@@ -33,7 +33,7 @@ jobs:
           python-version: "3.11"
       - name: Install ruff
         run: |
-          pip install ruff
+          pip install ruff==0.2.2
       - name: Format check
         run: ruff format --check .
       - name: Lint
