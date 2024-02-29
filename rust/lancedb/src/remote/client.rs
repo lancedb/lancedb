@@ -21,7 +21,7 @@ use reqwest::{
 
 use crate::error::{Error, Result};
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct RestfulLanceDbClient {
     client: reqwest::Client,
     host: String,
@@ -95,6 +95,11 @@ impl RestfulLanceDbClient {
     pub fn get(&self, uri: &str) -> RequestBuilder {
         let full_uri = format!("{}{}", self.host, uri);
         self.client.get(full_uri)
+    }
+
+    pub fn post(&self, uri: &str) -> RequestBuilder {
+        let full_uri = format!("{}{}", self.host, uri);
+        self.client.post(full_uri)
     }
 
     async fn rsp_to_str(response: Response) -> String {

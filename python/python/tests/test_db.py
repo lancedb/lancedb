@@ -250,6 +250,78 @@ def test_create_exist_ok(tmp_path):
         db.create_table("test", schema=bad_schema, exist_ok=True)
 
 
+@pytest.mark.asyncio
+async def test_create_mode_async(tmp_path):
+    db = await lancedb.connect_async(tmp_path)
+    data = pd.DataFrame(
+        {
+            "vector": [[3.1, 4.1], [5.9, 26.5]],
+            "item": ["foo", "bar"],
+            "price": [10.0, 20.0],
+        }
+    )
+    await db.create_table("test", data=data)
+
+    with pytest.raises(RuntimeError):
+        await db.create_table("test", data=data)
+
+    new_data = pd.DataFrame(
+        {
+            "vector": [[3.1, 4.1], [5.9, 26.5]],
+            "item": ["fizz", "buzz"],
+            "price": [10.0, 20.0],
+        }
+    )
+    _tbl = await db.create_table("test", data=new_data, mode="overwrite")
+
+    # MIGRATION: to_pandas() is not available in async
+    # assert tbl.to_pandas().item.tolist() == ["fizz", "buzz"]
+
+
+@pytest.mark.asyncio
+async def test_create_exist_ok_async(tmp_path):
+    db = await lancedb.connect_async(tmp_path)
+    data = pd.DataFrame(
+        {
+            "vector": [[3.1, 4.1], [5.9, 26.5]],
+            "item": ["foo", "bar"],
+            "price": [10.0, 20.0],
+        }
+    )
+    tbl = await db.create_table("test", data=data)
+
+    with pytest.raises(RuntimeError):
+        await db.create_table("test", data=data)
+
+    # open the table but don't add more rows
+    tbl2 = await db.create_table("test", data=data, exist_ok=True)
+    assert tbl.name == tbl2.name
+    assert await tbl.schema() == await tbl2.schema()
+
+    schema = pa.schema(
+        [
+            pa.field("vector", pa.list_(pa.float32(), list_size=2)),
+            pa.field("item", pa.utf8()),
+            pa.field("price", pa.float64()),
+        ]
+    )
+    tbl3 = await db.create_table("test", schema=schema, exist_ok=True)
+    assert await tbl3.schema() == schema
+
+    # Migration: When creating a table, but the table already exists, but
+    # the schema is different, it should raise an error.
+    # bad_schema = pa.schema(
+    #     [
+    #         pa.field("vector", pa.list_(pa.float32(), list_size=2)),
+    #         pa.field("item", pa.utf8()),
+    #         pa.field("price", pa.float64()),
+    #         pa.field("extra", pa.float32()),
+    #     ]
+    # )
+    # with pytest.raises(ValueError):
+    #     await db.create_table("test", schema=bad_schema, exist_ok=True)
+
+
 def test_delete_table(tmp_path):
     db = lancedb.connect(tmp_path)
     data = pd.DataFrame(

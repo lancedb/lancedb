@@ -50,7 +50,7 @@ export class Table {
   }
 
   /** Count the total number of rows in the dataset. */
-  async countRows(filter?: string): Promise<bigint> {
+  async countRows(filter?: string): Promise<number> {
     return await this.inner.countRows(filter);
   }
 
