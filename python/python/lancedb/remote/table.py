@@ -19,7 +19,6 @@ from typing import Dict, Iterable, Optional, Union
 
 import pyarrow as pa
 from lance import json_to_schema
-
 from lancedb.common import DATA, VEC, VECTOR_COLUMN_NAME
 from lancedb.merge import LanceMergeInsertBuilder
 
@@ -277,6 +276,7 @@ class RemoteTable(Table):
                     f = Future()
                     f.set_result(self._conn._client.query(name, q))
                     return f
+
             else:
 
                 def submit(name, q):
