@@ -46,7 +46,7 @@ impl RestfulLanceDbClient {
             headers.insert(
                 "Host",
                 HeaderValue::from_str(&host).map_err(|_| Error::Http {
-                    message: format!("non-ascii table name '{}' provided", db_name),
+                    message: format!("non-ascii database name '{}' provided", db_name),
                 })?,
             );
         }
@@ -54,7 +54,7 @@ impl RestfulLanceDbClient {
             headers.insert(
                 "x-lancedb-database",
                 HeaderValue::from_str(db_name).map_err(|_| Error::Http {
-                    message: format!("non-ascii table name '{}' provided", db_name),
+                    message: format!("non-ascii database name '{}' provided", db_name),
                 })?,
             );
         }
