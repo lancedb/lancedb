@@ -1812,7 +1812,7 @@ class AsyncTable(ABC):
 
     Can query the table with [Table.search][lancedb.table.Table.search].
 
-    >>> table.search([0.4, 0.4]).select(["b"]).to_pandas()
+    >>> table.search([0.4, 0.4]).select(["b", "vector"]).to_pandas()
        b      vector  _distance
     0  4  [0.5, 1.3]       0.82
     1  2  [1.1, 1.2]       1.13
@@ -2093,7 +2093,7 @@ class AsyncTable(ABC):
         >>> query = [0.4, 1.4, 2.4]
         >>> (table.search(query)
         ...     .where("original_width > 1000", prefilter=True)
-        ...     .select(["caption", "original_width"])
+        ...     .select(["caption", "original_width", "vector"])
         ...     .limit(2)
         ...     .to_pandas())
           caption  original_width           vector  _distance
