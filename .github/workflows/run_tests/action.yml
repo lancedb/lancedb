@@ -11,7 +11,7 @@ runs:
     - name: Install lancedb
       shell: bash
       run: |
-        pip3 install $(ls target/wheels/lancedb-*.whl)[tests,dev,embeddings]
+        pip3 install $(ls target/wheels/lancedb-*.whl)[tests,dev]
     - name: pytest
       shell: bash
       run: pytest -m "not slow" -x -v --durations=30 python/python/tests
