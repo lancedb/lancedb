@@ -86,7 +86,7 @@ class SentenceTransformerEmbeddings(TextEmbeddingFunction):
         )
         return sentence_transformers.SentenceTransformer(self.name, device=self.device)
 
-    def finetune(self, dataset: QADataset, *args, **kwargs):
+    def finetune(self, trainset: QADataset, *args, **kwargs):
         """
         Finetune the Sentence Transformers model
 
@@ -97,7 +97,7 @@ class SentenceTransformerEmbeddings(TextEmbeddingFunction):
         """
         tuner = SentenceTransformersTuner(
             model=self.embedding_model,
-            trainset=dataset,
+            trainset=trainset,
             **kwargs
         )
         tuner.finetune()
@@ -211,5 +211,5 @@ class SentenceTransformersTuner(BaseEmbeddingTuner):
         LOGGER.info("Finetuning complete.")
         LOGGER.info(f"Model saved to {self.path}.")
         LOGGER.info("You can now use the model as follows:")
-        LOGGER.info(f"model = SentenceTransformer('{self.path}/model')")
+        LOGGER.info(f"model = get_registry().get('sentence-transformers').create(name='./{self.path}')")
         

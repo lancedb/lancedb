@@ -81,8 +81,7 @@ class QADataset(BaseModel):
         queries = lance.dataset(load_dir / "queries.lance").to_table().to_pydict()
         corpus = lance.dataset(load_dir / "corpus.lance").to_table().to_pydict()
         relevant_docs = lance.dataset(load_dir / "relevant_docs.lance").to_table().to_pydict()
-
-        return QADataset(
+        return cls(
             queries=dict(zip(queries["id"], queries["query"])),
             corpus=dict(zip(corpus["id"], corpus["text"])),
             relevant_docs=dict(zip(relevant_docs["query_id"], relevant_docs["doc_id"])),
@@ -127,3 +126,20 @@ class QADataset(BaseModel):
         )
     
 
+class SimpleTextChunk(BaseModel):
+    """Simple text chunk for generating questions."""
+
+    text: str
+    chunk_id: str
+    doc_id: str
+
+    @classmethod
+    def from_chunk(cls, chunk) -> "SimpleTextChunk":
+        """Create a SimpleTextChunk from a chunk."""
+        return cls(text=chunk.text, chunk_id=chunk.node_id, doc_id=chunk.doc_id)
+
+    def __str__(self) -> str:
+        return self.text
+
+    def __repr__(self) -> str:
+        return f"SimpleTextChunk(text={self.text}, chunk_id={self.chunk_id}, doc_id={self.doc_id})"
