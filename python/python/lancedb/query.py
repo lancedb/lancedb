@@ -588,6 +588,11 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         output_tbl = self._table.to_lance().take(row_ids, columns=self._columns)
         output_tbl = output_tbl.append_column("score", scores)
 
+        if self._with_row_id:
+            # Need to set this to uint explicitly as vector results are in uint64
+            row_ids = pa.array(row_ids, type=pa.uint64())
+            output_tbl = output_tbl.append_column("_rowid", row_ids)
+
         if self._where is not None:
             try:
                 # TODO would be great to have Substrait generate pyarrow compute
@@ -595,11 +600,15 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
                 # using Substrait
                 import duckdb
 
+                schema = output_tbl.schema
                 output_tbl = (
                     duckdb.sql("SELECT * FROM output_tbl")
                     .filter(self._where)
                     .to_arrow_table()
                 )
+                # output_tbl's fixed_size_list is now mutated to list
+                output_tbl = output_tbl.cast(schema)
+
             except ImportError:
                 import tempfile
 
@@ -607,13 +616,16 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
 
                 # TODO Use "memory://" instead once that's supported
                 with tempfile.TemporaryDirectory() as tmp:
+                    # Filtering panicks if row_id is already attached
+                    if self._with_row_id:
+                        raise ValueError(
+                            "Filtering without duckdb is not supported when\
+                            `with_row_id` is set. Please install duckdb:\
+                            ``pip install duckdb``."
+                        )
                     ds = lance.write_dataset(output_tbl, tmp)
-                    output_tbl = ds.to_table(filter=self._where)
 
-        if self._with_row_id:
-            # Need to set this to uint explicitly as vector results are in uint64
-            row_ids = pa.array(row_ids, type=pa.uint64())
-            output_tbl = output_tbl.append_column("_rowid", row_ids)
+                    output_tbl = ds.to_table(filter=self._where)
         return output_tbl
 
 
