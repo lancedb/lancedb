@@ -78,6 +78,7 @@ impl ConnectionInternal for RemoteDatabase {
             .post(&format!("/v1/table/{}/create", options.name))
             .body(data_buffer)
             .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE)
+            // This is currently expected by LanceDb cloud but will be removed soon.
             .header("x-request-id", "na")
             .send()
             .await?;
