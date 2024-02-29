@@ -45,6 +45,7 @@ jobs:
       run: |
         npm ci
         npm run lint
+        npm run chkformat
   linux:
     name: Linux (Node ${{ matrix.node-version }})
     timeout-minutes: 30
