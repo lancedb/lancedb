@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import inspect
 import os
 from abc import abstractmethod
 from pathlib import Path
@@ -22,7 +23,12 @@ import pyarrow as pa
 from overrides import EnforceOverrides, override
 from pyarrow import fs
 
-from .table import LanceTable, Table
+from lancedb.common import data_to_reader, validate_schema
+from lancedb.embeddings.registry import EmbeddingFunctionRegistry
+from lancedb.utils.events import register_event
+
+from .pydantic import LanceModel
+from .table import AsyncLanceTable, LanceTable, Table, _sanitize_data
 from .util import fs_from_uri, get_uri_location, get_uri_scheme, join_uri
 
 if TYPE_CHECKING:
@@ -31,7 +37,6 @@ if TYPE_CHECKING:
     from ._lancedb import Connection as LanceDbConnection
     from .common import DATA, URI
     from .embeddings import EmbeddingFunctionConfig
-    from .pydantic import LanceModel
 
 
 class DBConnection(EnforceOverrides):
@@ -644,6 +649,7 @@ class AsyncLanceDBConnection(AsyncConnection):
         page_token=None,
         limit=None,
     ) -> Iterable[str]:
+        # TODO: hook in page_token and limit
         return await self._inner.table_names()
 
     @override
@@ -657,8 +663,66 @@ class AsyncLanceDBConnection(AsyncConnection):
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
         embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
-    ) -> LanceTable:
-        raise NotImplementedError
+    ) -> Table:
+        if mode.lower() not in ["create", "overwrite"]:
+            raise ValueError("mode must be either 'create' or 'overwrite'")
+
+        if inspect.isclass(schema) and issubclass(schema, LanceModel):
+            # convert LanceModel to pyarrow schema
+            # note that it's possible this contains
+            # embedding function metadata already
+            schema = schema.to_arrow_schema()
+
+        metadata = None
+        if embedding_functions is not None:
+            # If we passed in embedding functions explicitly
+            # then we'll override any schema metadata that
+            # may was implicitly specified by the LanceModel schema
+            registry = EmbeddingFunctionRegistry.get_instance()
+            metadata = registry.get_table_metadata(embedding_functions)
+
+        if data is not None:
+            data = _sanitize_data(
+                data,
+                schema,
+                metadata=metadata,
+                on_bad_vectors=on_bad_vectors,
+                fill_value=fill_value,
+            )
+
+        if schema is None:
+            if data is None:
+                raise ValueError("Either data or schema must be provided")
+            elif hasattr(data, "schema"):
+                schema = data.schema
+            elif isinstance(data, Iterable):
+                if metadata:
+                    raise TypeError(
+                        (
+                            "Persistent embedding functions not yet "
+                            "supported for generator data input"
+                        )
+                    )
+
+        if metadata:
+            schema = schema.with_metadata(metadata)
+        validate_schema(schema)
+
+        if mode == "create" and exist_ok:
+            mode = "exist_ok"
+
+        if data is None:
+            new_table = await self._inner.create_empty_table(name, mode, schema)
+        else:
+            data = data_to_reader(data, schema)
+            new_table = await self._inner.create_table(
+                name,
+                mode,
+                data,
+            )
+
+        register_event("create_table")
+        return AsyncLanceTable(new_table)
 
     @override
     async def open_table(self, name: str) -> LanceTable:

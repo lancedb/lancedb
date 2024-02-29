@@ -1,0 +1,15 @@
+{
+    "extends": "../tsconfig.json",
+    "compilerOptions": {
+        "outDir": "./dist/spec",
+        "module": "commonjs",
+        "target": "es2022",
+        "types": [
+            "jest",
+            "node"
+        ]
+    },
+    "include": [
+        "**/*",
+    ]
+}
