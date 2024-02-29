@@ -25,6 +25,17 @@ pub struct Connection {
     conn: LanceDBConnection,
 }
 
+impl Connection {
+    fn parse_create_mode_str(mode: &str) -> napi::Result<CreateTableMode> {
+        match mode {
+            "create" => Ok(CreateTableMode::Create),
+            "overwrite" => Ok(CreateTableMode::Overwrite),
+            "exist_ok" => Ok(CreateTableMode::exist_ok(|builder| builder)),
+            _ => Err(napi::Error::from_reason(format!("Invalid mode {}", mode))),
+        }
+    }
+}
+
 #[napi]
 impl Connection {
     /// Create a new Connection instance from the given URI.
@@ -70,23 +81,14 @@ impl Connection {
         name: String,
         buf: Buffer,
         mode: String,
-        exist_ok: bool,
     ) -> napi::Result<Table> {
         let batches = ipc_file_to_batches(buf.to_vec())
             .map_err(|e| napi::Error::from_reason(format!("Failed to read IPC file: {}", e)))?;
-        let mut op_builder = self.conn.create_table(&name, Box::new(batches));
-        op_builder = if mode == "create" {
-            if exist_ok {
-                op_builder.mode(CreateTableMode::exist_ok(|builder| builder))
-            } else {
-                op_builder.mode(CreateTableMode::Create)
-            }
-        } else if mode == "overwrite" {
-            op_builder.mode(CreateTableMode::Overwrite)
-        } else {
-            return Err(napi::Error::from_reason(format!("Invalid mode: {}", mode)));
-        };
-        let tbl = op_builder
+        let mode = Self::parse_create_mode_str(&mode)?;
+        let tbl = self
+            .conn
+            .create_table(&name, Box::new(batches))
+            .mode(mode)
             .execute()
             .await
             .map_err(|e| napi::Error::from_reason(format!("{}", e)))?;

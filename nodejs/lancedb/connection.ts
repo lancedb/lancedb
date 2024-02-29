@@ -20,11 +20,11 @@ import { Table as ArrowTable } from "apache-arrow";
 export interface CreateTableOptions {
   /**
    * The mode to use when creating the table.
-   * 
+   *
    * If this is set to "create" and the table already exists then either
    * an error will be thrown or, if existOk is true, then nothing will
    * happen.  Any provided data will be ignored.
-   * 
+   *
    * If this is set to "overwrite" then any existing table will be replaced.
    */
   mode: "create" | "overwrite";
@@ -74,11 +74,15 @@ export class Connection {
     data: Record<string, unknown>[] | ArrowTable,
     options?: Partial<CreateTableOptions>
   ): Promise<Table> {
-    const mode = options?.mode ?? "create";
+    let mode: string = options?.mode ?? "create";
     const existOk = options?.existOk ?? false;
 
+    if (mode === "create" && existOk) {
+      mode = "exist_ok";
+    }
+
     const buf = toBuffer(data);
-    const innerTable = await this.inner.createTable(name, buf, mode, existOk);
+    const innerTable = await this.inner.createTable(name, buf, mode);
     return new Table(innerTable);
   }
 

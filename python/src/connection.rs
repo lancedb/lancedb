@@ -16,7 +16,7 @@ use std::{sync::Arc, time::Duration};
 
 use arrow::{datatypes::Schema, ffi_stream::ArrowArrayStreamReader, pyarrow::FromPyArrow};
 use lancedb::connection::{Connection as LanceConnection, CreateTableMode};
-use pyo3::{pyclass, pyfunction, pymethods, PyAny, PyRef, PyResult, Python};
+use pyo3::{pyclass, pyfunction, pymethods, PyAny, PyRef, PyResult, Python, exceptions::PyValueError};
 use pyo3_asyncio::tokio::future_into_py;
 
 use crate::{error::PythonErrorExt, table::Table};
@@ -24,6 +24,17 @@ use crate::{error::PythonErrorExt, table::Table};
 #[pyclass]
 pub struct Connection {
     inner: LanceConnection,
+}
+
+impl Connection {
+    fn parse_create_mode_str(mode: &str) -> PyResult<CreateTableMode> {
+        match mode {
+            "create" => Ok(CreateTableMode::Create),
+            "overwrite" => Ok(CreateTableMode::Overwrite),
+            "exist_ok" => Ok(CreateTableMode::exist_ok(|builder| builder)),
+            _ => Err(PyValueError::new_err(format!("Invalid mode {}", mode))),
+        }
+    }
 }
 
 #[pymethods]
@@ -43,14 +54,7 @@ impl Connection {
     ) -> PyResult<&'a PyAny> {
         let inner = self_.inner.clone();
 
-        let mode = if mode == "create" {
-            CreateTableMode::Create
-        } else if mode == "overwrite" {
-            CreateTableMode::Overwrite
-        } else {
-            // TODO: allow users to pass in open options
-            CreateTableMode::exist_ok(|builder| builder)
-        };
+        let mode = Self::parse_create_mode_str(mode)?;
 
         let batches = Box::new(ArrowArrayStreamReader::from_pyarrow(data)?);
         future_into_py(self_.py(), async move {
@@ -72,14 +76,7 @@ impl Connection {
     ) -> PyResult<&'a PyAny> {
         let inner = self_.inner.clone();
 
-        let mode = if mode == "create" {
-            CreateTableMode::Create
-        } else if mode == "overwrite" {
-            CreateTableMode::Overwrite
-        } else {
-            // TODO: allow users to pass in open options
-            CreateTableMode::exist_ok(|builder| builder)
-        };
+        let mode = Self::parse_create_mode_str(mode)?;
 
         let schema = Schema::from_pyarrow(schema)?;
 

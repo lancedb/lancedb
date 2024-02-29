@@ -85,7 +85,7 @@ export class Connection {
    * - buf: The buffer containing the IPC file.
    *
    */
-  createTable(name: string, buf: Buffer, mode: string, existOk: boolean): Promise<Table>
+  createTable(name: string, buf: Buffer, mode: string): Promise<Table>
   openTable(name: string): Promise<Table>
   /** Drop table with the name. Or raise an error if the table does not exist. */
   dropTable(name: string): Promise<void>
