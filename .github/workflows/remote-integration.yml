@@ -1,0 +1,37 @@
+name: LanceDb Cloud Integration Test
+
+on:
+  workflow_run:
+    workflows: [Rust]
+    types:
+      - completed
+
+env:
+  LANCEDB_PROJECT: ${{ secrets.LANCEDB_PROJECT }}
+  LANCEDB_API_KEY: ${{ secrets.LANCEDB_API_KEY }}
+  LANCEDB_REGION: ${{ secrets.LANCEDB_REGION }}
+
+jobs:
+  test:
+    timeout-minutes: 30
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        shell: bash
+        working-directory: rust
+    steps:
+    - uses: actions/checkout@v4
+      with:
+          fetch-depth: 0
+          lfs: true
+    - uses: Swatinem/rust-cache@v2
+      with:
+          workspaces: rust
+    - name: Install dependencies
+      run: |
+          sudo apt update
+          sudo apt install -y protobuf-compiler libssl-dev
+    - name: Build
+      run: cargo build --all-features
+    - name: Run Integration test
+      run: cargo test --tests -- --ignored

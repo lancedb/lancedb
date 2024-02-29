@@ -12,6 +12,7 @@
 #  limitations under the License.
 
 """Schema related utilities."""
+
 import pyarrow as pa
 
 

@@ -22,6 +22,8 @@ use snafu::Snafu;
 pub enum Error {
     #[snafu(display("LanceDBError: Invalid table name: {name}"))]
     InvalidTableName { name: String },
+    #[snafu(display("LanceDBError: Invalid input, {message}"))]
+    InvalidInput { message: String },
     #[snafu(display("LanceDBError: Table '{name}' was not found"))]
     TableNotFound { name: String },
     #[snafu(display("LanceDBError: Table '{name}' already exists"))]
@@ -31,6 +33,8 @@ pub enum Error {
         path: String,
         source: std::io::Error,
     },
+    #[snafu(display("LanceDBError: Http error: {message}"))]
+    Http { message: String },
     #[snafu(display("LanceDBError: {message}"))]
     Store { message: String },
     #[snafu(display("LanceDBError: {message}"))]
@@ -78,6 +82,24 @@ impl From<object_store::path::Error> for Error {
 impl<T> From<PoisonError<T>> for Error {
     fn from(e: PoisonError<T>) -> Self {
         Self::Runtime {
+            message: e.to_string(),
+        }
+    }
+}
+
+#[cfg(feature = "remote")]
+impl From<reqwest::Error> for Error {
+    fn from(e: reqwest::Error) -> Self {
+        Self::Http {
+            message: e.to_string(),
+        }
+    }
+}
+
+#[cfg(feature = "remote")]
+impl From<url::ParseError> for Error {
+    fn from(e: url::ParseError) -> Self {
+        Self::Http {
             message: e.to_string(),
         }
     }
