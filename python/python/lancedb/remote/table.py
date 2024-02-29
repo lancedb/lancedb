@@ -71,7 +71,7 @@ class RemoteTable(Table):
         print(self._name)
         resp = self._conn._client.post(f"/v1/table/{self._name}/index/list/")
         return resp
-    
+
     def create_scalar_index(
         self,
         column: str,
