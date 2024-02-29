@@ -195,7 +195,9 @@ impl OpenTableBuilder {
 }
 
 #[async_trait::async_trait]
-pub(crate) trait ConnectionInternal: Send + Sync + std::fmt::Debug + 'static {
+pub(crate) trait ConnectionInternal:
+    Send + Sync + std::fmt::Debug + std::fmt::Display + 'static
+{
     async fn table_names(&self) -> Result<Vec<String>>;
     async fn do_create_table(&self, options: CreateTableBuilder<true>) -> Result<Table>;
     async fn do_open_table(&self, options: OpenTableBuilder) -> Result<Table>;
@@ -216,6 +218,12 @@ pub(crate) trait ConnectionInternal: Send + Sync + std::fmt::Debug + 'static {
 pub struct Connection {
     uri: String,
     internal: Arc<dyn ConnectionInternal>,
+}
+
+impl std::fmt::Display for Connection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.internal)
+    }
 }
 
 impl Connection {
@@ -430,6 +438,24 @@ struct Database {
     pub(crate) store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
 
     read_consistency_interval: Option<std::time::Duration>,
+}
+
+impl std::fmt::Display for Database {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "NativeDatabase(uri={}, read_consistency_interval={})",
+            self.uri,
+            match self.read_consistency_interval {
+                None => {
+                    "None".to_string()
+                }
+                Some(duration) => {
+                    format!("{}s", duration.as_secs_f64())
+                }
+            }
+        )
+    }
 }
 
 const LANCE_EXTENSION: &str = "lance";

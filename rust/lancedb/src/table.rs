@@ -102,7 +102,7 @@ pub struct WriteOptions {
     // pub on_bad_vectors: BadVectorHandling,
     /// Advanced parameters that can be used to customize table creation
     ///
-    /// If set, these will take precedence over any overlapping `OpenTableOptions` options
+    /// If set, these will take precedence over any overlapping `OpenTableBuilder` options
     pub lance_write_params: Option<WriteParams>,
 }
 
@@ -185,6 +185,12 @@ pub(crate) trait TableInternal: std::fmt::Display + std::fmt::Debug + Send + Syn
 #[derive(Clone)]
 pub struct Table {
     inner: Arc<dyn TableInternal>,
+}
+
+impl std::fmt::Display for Table {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.inner)
+    }
 }
 
 impl Table {
@@ -514,7 +520,20 @@ pub struct NativeTable {
 
 impl std::fmt::Display for NativeTable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Table({})", self.name)
+        write!(
+            f,
+            "NativeTable({}, uri={}, read_consistency_interval={})",
+            self.name,
+            self.uri,
+            match self.read_consistency_interval {
+                None => {
+                    "None".to_string()
+                }
+                Some(duration) => {
+                    format!("{}s", duration.as_secs_f64())
+                }
+            }
+        )
     }
 }
 

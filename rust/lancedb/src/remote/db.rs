@@ -51,6 +51,12 @@ impl RemoteDatabase {
     }
 }
 
+impl std::fmt::Display for RemoteDatabase {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "RemoteDatabase(host={})", self.client.host())
+    }
+}
+
 #[async_trait]
 impl ConnectionInternal for RemoteDatabase {
     async fn table_names(&self) -> Result<Vec<String>> {

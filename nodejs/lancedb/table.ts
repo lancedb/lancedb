@@ -14,14 +14,32 @@
 
 import { Schema, tableFromIPC } from "apache-arrow";
 import { AddColumnsSql, ColumnAlteration, Table as _NativeTable } from "./native";
-import { toBuffer, Data } from "./arrow";
 import { Query } from "./query";
 import { IndexBuilder } from "./indexer";
+import { Data, fromDataToBuffer } from "./arrow";
 
 /**
- * A LanceDB Table is the collection of Records.
+ * Options for adding data to a table.
+ */
+export interface AddDataOptions {
+  /** If "append" (the default) then the new data will be added to the table
+   *
+   * If "overwrite" then the new data will replace the existing data in the table.
+   */
+  mode: "append" | "overwrite";
+}
+
+/**
+ * A Table is a collection of Records in a LanceDB Database.
  *
- * Each Record has one or more vector fields.
+ * A Table object is expected to be long lived and reused for multiple operations.
+ * Table objects will cache a certain amount of index data in memory.  This cache
+ * will be freed when the Table is garbage collected.  To eagerly free the cache you
+ * can call the `close` method.  Once the Table is closed, it cannot be used for any
+ * further operations.
+ *
+ * Closing a table is optional.  It not closed, it will be closed when it is garbage
+ * collected.
  */
 export class Table {
   private readonly inner: _NativeTable;
@@ -29,6 +47,27 @@ export class Table {
   /** Construct a Table. Internal use only. */
   constructor(inner: _NativeTable) {
     this.inner = inner;
+  }
+
+
+  /** Return true if the table has not been closed */
+  isOpen(): boolean {
+    return this.inner.isOpen();
+  }
+
+  /** Close the table, releasing any underlying resources.
+   *
+   * It is safe to call this method multiple times.
+   *
+   * Any attempt to use the table after it is closed will result in an error.
+   */
+  close(): void {
+    this.inner.close();
+  }
+
+  /** Return a brief description of the table */
+  display(): string {
+    return this.inner.display();
   }
 
   /** Get the schema of the table. */
@@ -44,9 +83,11 @@ export class Table {
    * @param {Data} data Records to be inserted into the Table
    * @return The number of rows added to the table
    */
-  async add(data: Data): Promise<void> {
-    const buffer = toBuffer(data);
-    await this.inner.add(buffer);
+  async add(data: Data, options?: Partial<AddDataOptions>): Promise<void> {
+    let mode = options?.mode ?? "append";
+
+    const buffer = await fromDataToBuffer(data);
+    await this.inner.add(buffer, mode);
   }
 
   /** Count the total number of rows in the dataset. */

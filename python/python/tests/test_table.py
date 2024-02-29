@@ -52,7 +52,9 @@ def db(tmp_path) -> MockDB:
 
 @pytest_asyncio.fixture
 async def db_async(tmp_path) -> AsyncConnection:
-    return await lancedb.connect_async(tmp_path, read_consistency_interval=0)
+    return await lancedb.connect_async(
+        tmp_path, read_consistency_interval=timedelta(seconds=0)
+    )
 
 
 def test_basic(db):
@@ -69,6 +71,18 @@ def test_basic(db):
     assert table.name == "test"
     assert table.schema == ds.schema
     assert table.to_lance().to_table() == ds.to_table()
+
+
+@pytest.mark.asyncio
+async def test_close(db_async: AsyncConnection):
+    table = await db_async.create_table("some_table", data=[{"id": 0}])
+    assert table.is_open()
+    table.close()
+    assert not table.is_open()
+
+    with pytest.raises(Exception, match="Table some_table is closed"):
+        await table.count_rows()
+    assert str(table) == "ClosedTable(some_table)"
 
 
 def test_create_table(db):
