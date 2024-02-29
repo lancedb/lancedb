@@ -12,6 +12,7 @@
 #  limitations under the License.
 
 """Full text search index using tantivy-py"""
+
 import os
 from typing import List, Tuple
 
