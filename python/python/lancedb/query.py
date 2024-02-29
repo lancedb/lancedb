@@ -336,10 +336,8 @@ class LanceQueryBuilder(ABC):
         LanceQueryBuilder
             The LanceQueryBuilder object.
         """
-        if isinstance(columns, list):
+        if isinstance(columns, list) or isinstance(columns, dict):
             self._columns = columns
-        elif isinstance(columns, dict):
-            self._columns = list(columns.items())
         else:
             raise ValueError("columns must be a list or a dictionary")
         return self
