@@ -16,7 +16,9 @@ use std::{sync::Arc, time::Duration};
 
 use arrow::{datatypes::Schema, ffi_stream::ArrowArrayStreamReader, pyarrow::FromPyArrow};
 use lancedb::connection::{Connection as LanceConnection, CreateTableMode};
-use pyo3::{pyclass, pyfunction, pymethods, PyAny, PyRef, PyResult, Python, exceptions::PyValueError};
+use pyo3::{
+    exceptions::PyValueError, pyclass, pyfunction, pymethods, PyAny, PyRef, PyResult, Python,
+};
 use pyo3_asyncio::tokio::future_into_py;
 
 use crate::{error::PythonErrorExt, table::Table};
