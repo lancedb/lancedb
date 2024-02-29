@@ -277,6 +277,7 @@ class RemoteTable(Table):
                     f = Future()
                     f.set_result(self._conn._client.query(name, q))
                     return f
+
             else:
 
                 def submit(name, q):

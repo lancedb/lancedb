@@ -35,14 +35,16 @@ impl<T> PythonErrorExt<T> for std::result::Result<T, LanceError> {
         match &self {
             Ok(_) => Ok(self.unwrap()),
             Err(err) => match err {
+                LanceError::InvalidInput { .. } => self.value_error(),
                 LanceError::InvalidTableName { .. } => self.value_error(),
                 LanceError::TableNotFound { .. } => self.value_error(),
-                LanceError::TableAlreadyExists { .. } => self.runtime_error(),
+                LanceError::Schema { .. } => self.value_error(),
                 LanceError::CreateDir { .. } => self.os_error(),
+                LanceError::TableAlreadyExists { .. } => self.runtime_error(),
                 LanceError::Store { .. } => self.runtime_error(),
                 LanceError::Lance { .. } => self.runtime_error(),
-                LanceError::Schema { .. } => self.value_error(),
                 LanceError::Runtime { .. } => self.runtime_error(),
+                LanceError::Http { .. } => self.runtime_error(),
             },
         }
     }

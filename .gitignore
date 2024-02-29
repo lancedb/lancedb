@@ -39,4 +39,6 @@ dist
 ## Rust
 target
 
+**/sccache.log
+
 Cargo.lock
