@@ -194,7 +194,7 @@ impl OpenTableBuilder {
 }
 
 #[async_trait::async_trait]
-trait ConnectionInternal: Send + Sync + std::fmt::Debug + 'static {
+pub(crate) trait ConnectionInternal: Send + Sync + std::fmt::Debug + 'static {
     async fn table_names(&self) -> Result<Vec<String>>;
     async fn do_create_table(&self, options: CreateTableBuilder<true>) -> Result<TableRef>;
     async fn do_open_table(&self, options: OpenTableBuilder) -> Result<TableRef>;
@@ -365,13 +365,45 @@ impl ConnectBuilder {
         self
     }
 
-    /// Establishes a connection to the database
-    pub async fn execute(self) -> Result<Connection> {
-        let internal = Arc::new(Database::connect_with_options(&self).await?);
+    #[cfg(feature = "remote")]
+    fn execute_remote(self) -> Result<Connection> {
+        let region = self.region.ok_or_else(|| Error::InvalidInput {
+            message: "A region is required when connecting to LanceDb Cloud".to_string(),
+        })?;
+        let api_key = self.api_key.ok_or_else(|| Error::InvalidInput {
+            message: "An api_key is required when connecting to LanceDb Cloud".to_string(),
+        })?;
+        let internal = Arc::new(crate::remote::db::RemoteDatabase::try_new(
+            &self.uri,
+            &api_key,
+            &region,
+            self.host_override,
+        )?);
         Ok(Connection {
             internal,
             uri: self.uri,
         })
+    }
+
+    #[cfg(not(feature = "remote"))]
+    fn execute_remote(self) -> Result<Connection> {
+        Err(Error::Runtime {
+            message: "cannot connect to LanceDb Cloud unless the 'remote' feature is enabled"
+                .to_string(),
+        })
+    }
+
+    /// Establishes a connection to the database
+    pub async fn execute(self) -> Result<Connection> {
+        if self.uri.starts_with("db") {
+            self.execute_remote()
+        } else {
+            let internal = Arc::new(Database::connect_with_options(&self).await?);
+            Ok(Connection {
+                internal,
+                uri: self.uri,
+            })
+        }
     }
 }
 
@@ -623,7 +655,17 @@ impl ConnectionInternal for Database {
     async fn drop_table(&self, name: &str) -> Result<()> {
         let dir_name = format!("{}.{}", name, LANCE_EXTENSION);
         let full_path = self.base_path.child(dir_name.clone());
-        self.object_store.remove_dir_all(full_path).await?;
+        self.object_store
+            .remove_dir_all(full_path)
+            .await
+            .map_err(|err| match err {
+                // this error is not lance::Error::DatasetNotFound,
+                // as the method `remove_dir_all` may be used to remove something not be a dataset
+                lance::Error::NotFound { .. } => Error::TableNotFound {
+                    name: name.to_owned(),
+                },
+                _ => Error::from(err),
+            })?;
         Ok(())
     }
 
@@ -634,8 +676,6 @@ impl ConnectionInternal for Database {
 
 #[cfg(test)]
 mod tests {
-    use std::fs::create_dir_all;
-
     use arrow_schema::{DataType, Field, Schema};
     use tempfile::tempdir;
 
@@ -692,12 +732,45 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "this can't pass due to https://github.com/lancedb/lancedb/issues/1019, enable it after the bug fixed"]
+    async fn test_open_table() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+        let db = connect(uri).execute().await.unwrap();
+
+        assert_eq!(db.table_names().await.unwrap().len(), 0);
+        // open non-exist table
+        assert!(matches!(
+            db.open_table("invalid_table").execute().await,
+            Err(crate::Error::TableNotFound { .. })
+        ));
+
+        assert_eq!(db.table_names().await.unwrap().len(), 0);
+
+        let schema = Arc::new(Schema::new(vec![Field::new("x", DataType::Int32, false)]));
+        db.create_empty_table("table1", schema)
+            .execute()
+            .await
+            .unwrap();
+        db.open_table("table1").execute().await.unwrap();
+        let tables = db.table_names().await.unwrap();
+        assert_eq!(tables, vec!["table1".to_owned()]);
+    }
+
+    #[tokio::test]
     async fn drop_table() {
         let tmp_dir = tempdir().unwrap();
-        create_dir_all(tmp_dir.path().join("table1.lance")).unwrap();
 
         let uri = tmp_dir.path().to_str().unwrap();
         let db = connect(uri).execute().await.unwrap();
+
+        // drop non-exist table
+        assert!(matches!(
+            db.drop_table("invalid_table").await,
+            Err(crate::Error::TableNotFound { .. }),
+        ));
+
+        create_dir_all(tmp_dir.path().join("table1.lance")).unwrap();
         db.drop_table("table1").await.unwrap();
 
         let tables = db.table_names().await.unwrap();
