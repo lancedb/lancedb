@@ -130,16 +130,17 @@
 //! # use arrow_array::{FixedSizeListArray, types::Float32Type, RecordBatch,
 //! #   RecordBatchIterator, Int32Array};
 //! # use arrow_schema::{Schema, Field, DataType};
+//! use lancedb::index::Index;
+//! use lancedb::index::vector::IvfPqIndexBuilder;
 //! # tokio::runtime::Runtime::new().unwrap().block_on(async {
 //! # let tmpdir = tempfile::tempdir().unwrap();
 //! # let db = lancedb::connect(tmpdir.path().to_str().unwrap()).execute().await.unwrap();
 //! # let tbl = db.open_table("idx_test").execute().await.unwrap();
-//! tbl.create_index(&["vector"])
-//!     .ivf_pq()
-//!     .num_partitions(256)
-//!     .build()
-//!     .await
-//!     .unwrap();
+//! tbl.create_index(Index::IvfPq(IvfPqIndexBuilder::default().num_partitions(256)))
+//!    .column("vector")
+//!    .execute()
+//!    .await
+//!    .unwrap();
 //! # });
 //! ```
 //!
@@ -181,6 +182,7 @@
 //! # });
 //! ```
 
+pub mod arrow;
 pub mod connection;
 pub mod data;
 pub mod error;
@@ -194,6 +196,7 @@ pub mod table;
 pub mod utils;
 
 pub use error::{Error, Result};
+pub use lance_linalg::distance::DistanceType;
 pub use table::Table;
 
 /// Connect to a database

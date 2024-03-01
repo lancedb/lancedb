@@ -19,7 +19,7 @@ import {
   Table as _NativeTable,
 } from "./native";
 import { Query } from "./query";
-import { IndexBuilder } from "./indexer";
+import { Index, IndexOptions } from "./indexer";
 import { Data, fromDataToBuffer } from "./arrow";
 
 /**
@@ -103,18 +103,23 @@ export class Table {
     await this.inner.delete(predicate);
   }
 
-  /** Create an index over the columns.
+  /** Create an index to speed up queries.
    *
-   * @param {string} column The column to create the index on. If not specified,
-   *                        it will create an index on vector field.
+   * Indices can be created on vector columns or scalar columns.
+   * Indices on vector columns will speed up vector searches.
+   * Indices on scalar columns will speed up filtering (in both
+   * vector and non-vector searches)
    *
    * @example
    *
-   * By default, it creates vector idnex on one vector column.
+   * By default, when creating a vector index, it will search
+   * for a vector column in the schema and create an index
+   * on that.  This works as long as you only have one vector
+   * column.
    *
    * ```typescript
    * const table = await conn.openTable("my_table");
-   * await table.createIndex().build();
+   * await table.createIndex().vector()..build();
    * ```
    *
    * You can specify `IVF_PQ` parameters via `ivf_pq({})` call.
@@ -131,12 +136,14 @@ export class Table {
    * await table.createIndex("my_float_col").build();
    * ```
    */
-  createIndex(column?: string): IndexBuilder {
-    let builder = new IndexBuilder(this.inner);
-    if (column !== undefined) {
-      builder = builder.column(column);
-    }
-    return builder;
+  async createIndex(index: Index, options?: Partial<IndexOptions>) {
+    await this.inner.createIndex(
+      // Bit of a hack to get around the fact that TS has no package-scope.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (index as any).inner,
+      options?.column,
+      options?.replace,
+    );
   }
 
   /**

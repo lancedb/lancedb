@@ -16,7 +16,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as tmp from "tmp";
 
-import { Table, connect } from "../dist";
+import { Index, Table, connect } from "../dist";
 import {
   Schema,
   Field,
@@ -95,7 +95,7 @@ describe("Test creating index", () => {
       },
     );
     const tbl = await db.createTable("test", data);
-    await tbl.createIndex().build();
+    await tbl.createIndex(Index.ivfPq());
 
     // check index directory
     const indexDir = path.join(tmpDir.name, "test.lance", "_indices");
@@ -122,11 +122,11 @@ describe("Test creating index", () => {
         { id: 2, val: 3 },
       ]),
     );
-    await expect(tbl.createIndex().build()).rejects.toThrow(
-      "No vector column found",
+    await expect(tbl.createIndex(Index.ivfPq())).rejects.toThrow(
+      "No vector columns found",
     );
 
-    await tbl.createIndex("val").build();
+    await tbl.createIndex(Index.btree(), { column: "val" });
     const indexDir = path.join(tmpDir.name, "no_vec.lance", "_indices");
     expect(fs.readdirSync(indexDir)).toHaveLength(1);
 
@@ -164,14 +164,12 @@ describe("Test creating index", () => {
     );
 
     // Only build index over v1
-    await expect(tbl.createIndex().build()).rejects.toThrow(
-      /.*More than one vector columns found.*/,
+    await expect(tbl.createIndex(Index.ivfPq())).rejects.toThrow(
+      "Multiple vector columns",
     );
-    tbl
-      .createIndex("vec")
-      // eslint-disable-next-line @typescript-eslint/naming-convention
-      .ivf_pq({ num_partitions: 2, num_sub_vectors: 2 })
-      .build();
+    tbl.createIndex(Index.ivfPq({ numPartitions: 2, numSubVectors: 2 }), {
+      column: "vec",
+    });
 
     const rst = await tbl
       .query()
@@ -222,7 +220,7 @@ describe("Test creating index", () => {
       },
     );
     const tbl = await db.createTable("test", data);
-    await tbl.createIndex("id").build();
+    await tbl.createIndex(Index.btree(), { column: "id" });
 
     // check index directory
     const indexDir = path.join(tmpDir.name, "test.lance", "_indices");

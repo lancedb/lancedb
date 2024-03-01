@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use lancedb::index::{scalar::BTreeIndexBuilder, Index};
 use neon::{
     context::{Context, FunctionContext},
     result::JsResult,
@@ -33,9 +34,10 @@ pub fn table_create_scalar_index(mut cx: FunctionContext) -> JsResult<JsPromise>
 
     rt.spawn(async move {
         let idx_result = table
-            .create_index(&[&column])
+            .create_index(Index::BTree(BTreeIndexBuilder::default()))
+            .column(column)
             .replace(replace)
-            .build()
+            .execute()
             .await;
 
         deferred.settle_with(&channel, move |mut cx| {

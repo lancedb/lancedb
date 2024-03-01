@@ -98,6 +98,6 @@ impl MergeInsertBuilder {
     ///
     /// Nothing is returned but the [`super::Table`] is updated
     pub async fn execute(self, new_data: Box<dyn RecordBatchReader + Send>) -> Result<()> {
-        self.table.clone().do_merge_insert(self, new_data).await
+        self.table.clone().merge_insert(self, new_data).await
     }
 }

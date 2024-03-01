@@ -295,12 +295,10 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { Connection, IndexType, MetricType, IndexBuilder, RecordBatchIterator, Query, Table, WriteMode, connect } = nativeBinding
+const { Connection, Index, RecordBatchIterator, Query, Table, WriteMode, connect } = nativeBinding
 
 module.exports.Connection = Connection
-module.exports.IndexType = IndexType
-module.exports.MetricType = MetricType
-module.exports.IndexBuilder = IndexBuilder
+module.exports.Index = Index
 module.exports.RecordBatchIterator = RecordBatchIterator
 module.exports.Query = Query
 module.exports.Table = Table

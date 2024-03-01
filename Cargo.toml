@@ -35,6 +35,7 @@ half = { "version" = "=2.3.1", default-features = false, features = [
 futures = "0"
 log = "0.4"
 object_store = "0.9.0"
+pin-project = "1.0.7"
 snafu = "0.7.4"
 url = "2"
 num-traits = "0.2"
