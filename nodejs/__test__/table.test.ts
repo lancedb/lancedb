@@ -17,7 +17,7 @@ import * as path from "path";
 import * as fs from "fs";
 
 import { connect } from "../dist";
-import { Schema, Field, Float32, Int32, FixedSizeList } from "apache-arrow";
+import { Schema, Field, Float32, Int32, FixedSizeList, Int64, Float64 } from "apache-arrow";
 import { makeArrowTable } from "../dist/arrow";
 
 describe("Test creating index", () => {
@@ -179,5 +179,104 @@ describe("Test creating index", () => {
     const indexDir = path.join(tmpDir, "test.lance", "_indices");
     expect(fs.readdirSync(indexDir)).toHaveLength(1);
     // TODO: check index type.
+  });
+});
+
+describe("Read consistency interval", () => {
+  let tmpDir: string;
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "read-consistency-"));
+  });
+
+  // const intervals = [undefined, 0, 0.1];
+  const intervals = [0];
+  test.each(intervals)("read consistency interval %p", async (interval) => {
+    const db = await connect({ uri: tmpDir });
+    const table = await db.createTable("my_table", [{ id: 1 }]);
+
+    const db2 = await connect({ uri: tmpDir, readConsistencyInterval: interval });
+    const table2 = await db2.openTable("my_table");
+    expect(await table2.countRows()).toEqual(await table.countRows());
+
+    await table.add([{ id: 2 }]);
+
+    if (interval === undefined) {
+      expect(await table2.countRows()).toEqual(1);
+      // TODO: once we implement time travel we can uncomment this part of the test.
+      // await table2.checkout_latest();
+      // expect(await table2.countRows()).toEqual(2);
+    } else if (interval === 0) {
+      expect(await table2.countRows()).toEqual(2);
+    } else {
+      // interval == 0.1
+      expect(await table2.countRows()).toEqual(1);
+      await new Promise(r => setTimeout(r, 100));
+      expect(await table2.countRows()).toEqual(2);
+    }
+  });
+});
+
+
+describe('schema evolution', function () {
+  let tmpDir: string;
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "schema-evolution-"));
+  });
+
+  // Create a new sample table
+  it('can add a new column to the schema', async function () {
+    const con = await connect(tmpDir)
+    const table = await con.createTable('vectors', [
+      { id: 1n, vector: [0.1, 0.2] }
+    ])
+
+    await table.addColumns([{ name: 'price', valueSql: 'cast(10.0 as float)' }])
+
+    const expectedSchema = new Schema([
+      new Field('id', new Int64(), true),
+      new Field('vector', new FixedSizeList(2, new Field('item', new Float32(), true)), true),
+      new Field('price', new Float32(), false)
+    ])
+    expect(await table.schema()).toEqual(expectedSchema)
+  });
+
+  it('can alter the columns in the schema', async function () {
+    const con = await connect(tmpDir)
+    const schema = new Schema([
+      new Field('id', new Int64(), true),
+      new Field('vector', new FixedSizeList(2, new Field('item', new Float32(), true)), true),
+      new Field('price', new Float64(), false)
+    ])
+    const table = await con.createTable('vectors', [
+      { id: 1n, vector: [0.1, 0.2] }
+    ])
+    // Can create a non-nullable column only through addColumns at the moment.
+    await table.addColumns([{ name: 'price', valueSql: 'cast(10.0 as double)' }])
+    expect(await table.schema()).toEqual(schema)
+
+    await table.alterColumns([
+      { path: 'id', rename: 'new_id' },
+      { path: 'price', nullable: true }
+    ])
+
+    const expectedSchema = new Schema([
+      new Field('new_id', new Int64(), true),
+      new Field('vector', new FixedSizeList(2, new Field('item', new Float32(), true)), true),
+      new Field('price', new Float64(), true)
+    ])
+    expect(await table.schema()).toEqual(expectedSchema)
+  });
+
+  it('can drop a column from the schema', async function () {
+    const con = await connect(tmpDir)
+    const table = await con.createTable('vectors', [
+      { id: 1n, vector: [0.1, 0.2] }
+    ])
+    await table.dropColumns(['vector'])
+
+    const expectedSchema = new Schema([
+      new Field('id', new Int64(), true)
+    ])
+    expect(await table.schema()).toEqual(expectedSchema)
   });
 });

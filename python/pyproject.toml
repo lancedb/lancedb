@@ -1,9 +1,9 @@
 [project]
 name = "lancedb"
-version = "0.5.5"
+version = "0.6.1"
 dependencies = [
     "deprecation",
-    "pylance==0.9.16",
+    "pylance==0.10.1",
     "ratelimiter~=1.0",
     "retry>=0.9.2",
     "tqdm>=4.27.0",
@@ -14,7 +14,7 @@ dependencies = [
     "pyyaml>=6.0",
     "click>=8.1.7",
     "requests>=2.31.0",
-    "overrides>=0.7"
+    "overrides>=0.7",
 ]
 description = "lancedb"
 authors = [{ name = "LanceDB Devs", email = "dev@lancedb.com" }]
@@ -26,7 +26,7 @@ keywords = [
     "data-science",
     "machine-learning",
     "arrow",
-    "data-analytics"
+    "data-analytics",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -48,21 +48,53 @@ classifiers = [
 repository = "https://github.com/lancedb/lancedb"
 
 [project.optional-dependencies]
-tests = ["aiohttp", "pandas>=1.4", "pytest", "pytest-mock", "pytest-asyncio", "duckdb", "pytz", "polars>=0.19"]
+tests = [
+    "aiohttp",
+    "pandas>=1.4",
+    "pytest",
+    "pytest-mock",
+    "pytest-asyncio",
+    "duckdb",
+    "pytz",
+    "polars>=0.19",
+]
 dev = ["ruff", "pre-commit"]
-docs = ["mkdocs", "mkdocs-jupyter", "mkdocs-material", "mkdocstrings[python]"]
+docs = [
+    "mkdocs",
+    "mkdocs-jupyter",
+    "mkdocs-material",
+    "mkdocstrings[python]",
+    "mkdocs-ultralytics-plugin==0.0.44",
+]
 clip = ["torch", "pillow", "open-clip"]
-embeddings = ["openai>=1.6.1", "sentence-transformers", "torch", "pillow", "open-clip-torch", "cohere", "huggingface_hub",
-                "InstructorEmbedding", "google.generativeai", "boto3>=1.28.57", "awscli>=1.29.57", "botocore>=1.31.57"]
+embeddings = [
+    "openai>=1.6.1",
+    "sentence-transformers",
+    "torch",
+    "pillow",
+    "open-clip-torch",
+    "cohere",
+    "huggingface_hub",
+    "InstructorEmbedding",
+    "google.generativeai",
+    "boto3>=1.28.57",
+    "awscli>=1.29.57",
+    "botocore>=1.31.57",
+]
+
+[tool.maturin]
+python-source = "python"
+module-name = "lancedb._lancedb"
 
 [project.scripts]
 lancedb = "lancedb.cli.cli:cli"
 
 [build-system]
-requires = ["setuptools", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["maturin>=1.4"]
+build-backend = "maturin"
 
-[tool.ruff]
+
+[tool.ruff.lint]
 select = ["F", "E", "W", "I", "G", "TCH", "PERF"]
 
 [tool.pytest.ini_options]
@@ -70,5 +102,5 @@ addopts = "--strict-markers --ignore-glob=lancedb/embeddings/*.py"
 
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
-    "asyncio"
+    "asyncio",
 ]

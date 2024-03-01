@@ -34,8 +34,8 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-impl From<vectordb::error::Error> for Error {
-    fn from(e: vectordb::error::Error) -> Self {
+impl From<lancedb::error::Error> for Error {
+    fn from(e: lancedb::error::Error) -> Self {
         Self::LanceDB {
             message: e.to_string(),
         }

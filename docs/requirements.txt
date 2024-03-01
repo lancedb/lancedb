@@ -3,3 +3,4 @@ mkdocs-jupyter==0.24.1
 mkdocs-material==9.5.3
 mkdocstrings[python]==0.20.0
 pydantic
+mkdocs-ultralytics-plugin==0.0.44

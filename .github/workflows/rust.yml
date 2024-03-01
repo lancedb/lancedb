@@ -119,3 +119,4 @@ jobs:
           $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
           cargo build
           cargo test
+  

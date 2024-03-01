@@ -14,49 +14,133 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  linux:
+  lint:
+    name: "Lint"
     timeout-minutes: 30
-    strategy:
-      matrix:
-        python-minor-version: [ "8", "11" ]
     runs-on: "ubuntu-22.04"
     defaults:
       run:
         shell: bash
         working-directory: python
     steps:
-    - uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
-        lfs: true
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: 3.${{ matrix.python-minor-version }}
-    - name: Install lancedb
-      run: |
-        pip install -e .[tests]
-        pip install tantivy@git+https://github.com/quickwit-oss/tantivy-py#164adc87e1a033117001cf70e38c82a53014d985
-        pip install pytest pytest-mock ruff
-    - name: Format check
-      run: ruff format --check .
-    - name: Lint
-      run: ruff .
-    - name: Run tests
-      run: pytest -m "not slow" -x -v --durations=30 tests
-    - name: doctest
-      run: pytest --doctest-modules lancedb
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: true
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install ruff
+        run: |
+          pip install ruff==0.2.2
+      - name: Format check
+        run: ruff format --check .
+      - name: Lint
+        run: ruff .
+  doctest:
+    name: "Doctest"
+    timeout-minutes: 30
+    runs-on: "ubuntu-22.04"
+    defaults:
+      run:
+        shell: bash
+        working-directory: python
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: true
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+      - name: Install protobuf
+        run: |
+          sudo apt update
+          sudo apt install -y protobuf-compiler
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: python
+      - name: Install
+        run: |
+          pip install -e .[tests,dev,embeddings]
+          pip install tantivy@git+https://github.com/quickwit-oss/tantivy-py#164adc87e1a033117001cf70e38c82a53014d985
+          pip install mlx
+      - name: Doctest
+        run: pytest --doctest-modules python/lancedb
+  linux:
+    name: "Linux: python-3.${{ matrix.python-minor-version }}"
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        python-minor-version: ["8", "11"]
+    runs-on: "ubuntu-22.04"
+    defaults:
+      run:
+        shell: bash
+        working-directory: python
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: true
+      - name: Install protobuf
+        run: |
+          sudo apt update
+          sudo apt install -y protobuf-compiler
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.${{ matrix.python-minor-version }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: python
+      - uses: ./.github/workflows/build_linux_wheel
+      - uses: ./.github/workflows/run_tests
+      # Make sure wheels are not included in the Rust cache
+      - name: Delete wheels
+        run: rm -rf target/wheels
   platform:
-    name: "Platform: ${{ matrix.config.name }}"
+    name: "Mac: ${{ matrix.config.name }}"
     timeout-minutes: 30
     strategy:
       matrix:
         config:
-          - name: x86 Mac
+          - name: x86
             runner: macos-13
-          - name: Arm Mac
+          - name: Arm
             runner: macos-14
-          - name: x86 Windows
+    runs-on: "${{ matrix.config.runner }}"
+    defaults:
+      run:
+        shell: bash
+        working-directory: python
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: true
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: python
+      - uses: ./.github/workflows/build_mac_wheel
+      - uses: ./.github/workflows/run_tests
+      # Make sure wheels are not included in the Rust cache
+      - name: Delete wheels
+        run: rm -rf target/wheels
+  windows:
+    name: "Windows: ${{ matrix.config.name }}"
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        config:
+          - name: x86
             runner: windows-latest
     runs-on: "${{ matrix.config.runner }}"
     defaults:
@@ -64,21 +148,22 @@ jobs:
         shell: bash
         working-directory: python
     steps:
-    - uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
-        lfs: true
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: "3.11"
-    - name: Install lancedb
-      run: |
-        pip install -e .[tests]
-        pip install tantivy@git+https://github.com/quickwit-oss/tantivy-py#164adc87e1a033117001cf70e38c82a53014d985
-        pip install pytest pytest-mock
-    - name: Run tests
-      run: pytest -m "not slow" -x -v --durations=30 tests
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: true
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: python
+      - uses: ./.github/workflows/build_windows_wheel
+      - uses: ./.github/workflows/run_tests
+      # Make sure wheels are not included in the Rust cache
+      - name: Delete wheels
+        run: rm -rf target/wheels
   pydantic1x:
     timeout-minutes: 30
     runs-on: "ubuntu-22.04"
@@ -87,21 +172,22 @@ jobs:
         shell: bash
         working-directory: python
     steps:
-    - uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
-        lfs: true
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: 3.9
-    - name: Install lancedb
-      run: |
-        pip install "pydantic<2"
-        pip install -e .[tests]
-        pip install tantivy@git+https://github.com/quickwit-oss/tantivy-py#164adc87e1a033117001cf70e38c82a53014d985
-        pip install pytest pytest-mock
-    - name: Run tests
-      run: pytest -m "not slow" -x -v --durations=30 tests
-    - name: doctest
-      run: pytest --doctest-modules lancedb
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: true
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y protobuf-compiler
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.9
+      - name: Install lancedb
+        run: |
+          pip install "pydantic<2"
+          pip install -e .[tests]
+          pip install tantivy@git+https://github.com/quickwit-oss/tantivy-py#164adc87e1a033117001cf70e38c82a53014d985
+      - name: Run tests
+        run: pytest -m "not slow" -x -v --durations=30 python/tests

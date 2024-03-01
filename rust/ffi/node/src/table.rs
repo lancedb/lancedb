@@ -16,14 +16,14 @@ use std::ops::Deref;
 
 use arrow_array::{RecordBatch, RecordBatchIterator};
 use lance::dataset::optimize::CompactionOptions;
-use lance::dataset::{WriteMode, WriteParams};
+use lance::dataset::{ColumnAlteration, NewColumnTransform, WriteMode, WriteParams};
 use lance::io::ObjectStoreParams;
-use vectordb::table::OptimizeAction;
+use lancedb::table::{AddDataOptions, OptimizeAction, WriteOptions};
 
 use crate::arrow::{arrow_buffer_to_record_batch, record_batch_to_buffer};
+use lancedb::TableRef;
 use neon::prelude::*;
 use neon::types::buffer::TypedArray;
-use vectordb::TableRef;
 
 use crate::error::ResultExt;
 use crate::{convert, get_aws_credential_provider, get_aws_region, runtime, JsDatabase};
@@ -80,7 +80,11 @@ impl JsTable {
         rt.spawn(async move {
             let batch_reader = RecordBatchIterator::new(batches.into_iter().map(Ok), schema);
             let table_rst = database
-                .create_table(&table_name, Box::new(batch_reader), Some(params))
+                .create_table(&table_name, Box::new(batch_reader))
+                .write_options(WriteOptions {
+                    lance_write_params: Some(params),
+                })
+                .execute()
                 .await;
 
             deferred.settle_with(&channel, move |mut cx| {
@@ -121,7 +125,13 @@ impl JsTable {
 
         rt.spawn(async move {
             let batch_reader = RecordBatchIterator::new(batches.into_iter().map(Ok), schema);
-            let add_result = table.add(Box::new(batch_reader), Some(params)).await;
+            let opts = AddDataOptions {
+                write_options: WriteOptions {
+                    lance_write_params: Some(params),
+                },
+                ..Default::default()
+            };
+            let add_result = table.add(Box::new(batch_reader), opts).await;
 
             deferred.settle_with(&channel, move |mut cx| {
                 add_result.or_throw(&mut cx)?;
@@ -524,13 +534,128 @@ impl JsTable {
             .value(&mut cx);
 
         rt.spawn(async move {
+            let schema = table.schema().await;
             deferred.settle_with(&channel, move |mut cx| {
-                let schema = table.schema();
+                let schema = schema.or_throw(&mut cx)?;
                 let batches = vec![RecordBatch::new_empty(schema)];
                 let buffer = record_batch_to_buffer(batches).or_throw(&mut cx)?;
                 convert::new_js_buffer(buffer, &mut cx, is_electron)
             })
         });
+        Ok(promise)
+    }
+
+    pub(crate) fn js_add_columns(mut cx: FunctionContext) -> JsResult<JsPromise> {
+        let expressions = cx
+            .argument::<JsArray>(0)?
+            .to_vec(&mut cx)?
+            .into_iter()
+            .map(|val| {
+                let obj = val.downcast_or_throw::<JsObject, _>(&mut cx)?;
+                let name = obj.get::<JsString, _, _>(&mut cx, "name")?.value(&mut cx);
+                let sql = obj
+                    .get::<JsString, _, _>(&mut cx, "valueSql")?
+                    .value(&mut cx);
+                Ok((name, sql))
+            })
+            .collect::<NeonResult<Vec<(String, String)>>>()?;
+
+        let transforms = NewColumnTransform::SqlExpressions(expressions);
+
+        let js_table = cx.this().downcast_or_throw::<JsBox<Self>, _>(&mut cx)?;
+        let rt = runtime(&mut cx)?;
+
+        let (deferred, promise) = cx.promise();
+        let channel = cx.channel();
+        let table = js_table.table.clone();
+
+        rt.spawn(async move {
+            let result = table.add_columns(transforms, None).await;
+            deferred.settle_with(&channel, move |mut cx| {
+                result.or_throw(&mut cx)?;
+                Ok(cx.undefined())
+            })
+        });
+
+        Ok(promise)
+    }
+
+    pub(crate) fn js_alter_columns(mut cx: FunctionContext) -> JsResult<JsPromise> {
+        let alterations = cx
+            .argument::<JsArray>(0)?
+            .to_vec(&mut cx)?
+            .into_iter()
+            .map(|val| {
+                let obj = val.downcast_or_throw::<JsObject, _>(&mut cx)?;
+                let path = obj.get::<JsString, _, _>(&mut cx, "path")?.value(&mut cx);
+                let rename = obj
+                    .get_opt::<JsString, _, _>(&mut cx, "rename")?
+                    .map(|val| val.value(&mut cx));
+                let nullable = obj
+                    .get_opt::<JsBoolean, _, _>(&mut cx, "nullable")?
+                    .map(|val| val.value(&mut cx));
+                // TODO: support data type here. Will need to do some serialization/deserialization
+
+                if rename.is_none() && nullable.is_none() {
+                    return cx.throw_error("At least one of 'name' or 'nullable' must be provided");
+                }
+
+                Ok(ColumnAlteration {
+                    path,
+                    rename,
+                    nullable,
+                    // TODO: wire up this field
+                    data_type: None,
+                })
+            })
+            .collect::<NeonResult<Vec<ColumnAlteration>>>()?;
+
+        let js_table = cx.this().downcast_or_throw::<JsBox<Self>, _>(&mut cx)?;
+        let rt = runtime(&mut cx)?;
+
+        let (deferred, promise) = cx.promise();
+        let channel = cx.channel();
+        let table = js_table.table.clone();
+
+        rt.spawn(async move {
+            let result = table.alter_columns(&alterations).await;
+            deferred.settle_with(&channel, move |mut cx| {
+                result.or_throw(&mut cx)?;
+                Ok(cx.undefined())
+            })
+        });
+
+        Ok(promise)
+    }
+
+    pub(crate) fn js_drop_columns(mut cx: FunctionContext) -> JsResult<JsPromise> {
+        let columns = cx
+            .argument::<JsArray>(0)?
+            .to_vec(&mut cx)?
+            .into_iter()
+            .map(|val| {
+                Ok(val
+                    .downcast_or_throw::<JsString, _>(&mut cx)?
+                    .value(&mut cx))
+            })
+            .collect::<NeonResult<Vec<String>>>()?;
+
+        let js_table = cx.this().downcast_or_throw::<JsBox<Self>, _>(&mut cx)?;
+        let rt = runtime(&mut cx)?;
+
+        let (deferred, promise) = cx.promise();
+        let channel = cx.channel();
+        let table = js_table.table.clone();
+
+        rt.spawn(async move {
+            let col_refs = columns.iter().map(|s| s.as_str()).collect::<Vec<_>>();
+            let result = table.drop_columns(&col_refs).await;
+            deferred.settle_with(&channel, move |mut cx| {
+                result.or_throw(&mut cx)?;
+                Ok(cx.undefined())
+            })
+        });
+
         Ok(promise)
     }
 }

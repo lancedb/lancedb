@@ -37,8 +37,10 @@ import {
   Utf8,
   Table as ArrowTable,
   vectorFromArray,
+  Float64,
   Float32,
-  Float16
+  Float16,
+  Int64
 } from 'apache-arrow'
 
 const expect = chai.expect
@@ -196,7 +198,7 @@ describe('LanceDB client', function () {
       const table = await con.openTable('vectors')
       const results = await table
         .search([0.1, 0.1])
-        .select(['is_active'])
+        .select(['is_active', 'vector'])
         .execute()
       assert.equal(results.length, 2)
       // vector and _distance are always returned
@@ -1055,5 +1057,65 @@ describe('Compact and cleanup', function () {
     assert.isAtLeast(cleanupMetrics.bytesRemoved, 1)
     assert.isAtLeast(cleanupMetrics.oldVersions, 1)
     assert.equal(await table.countRows(), 3)
+  })
+})
+
+describe('schema evolution', function () {
+  // Create a new sample table
+  it('can add a new column to the schema', async function () {
+    const dir = await track().mkdir('lancejs')
+    const con = await lancedb.connect(dir)
+    const table = await con.createTable('vectors', [
+      { id: 1n, vector: [0.1, 0.2] }
+    ])
+
+    await table.addColumns([{ name: 'price', valueSql: 'cast(10.0 as float)' }])
+
+    const expectedSchema = new Schema([
+      new Field('id', new Int64()),
+      new Field('vector', new FixedSizeList(2, new Field('item', new Float32(), true))),
+      new Field('price', new Float32())
+    ])
+    expect(await table.schema).to.deep.equal(expectedSchema)
+  })
+
+  it('can alter the columns in the schema', async function () {
+    const dir = await track().mkdir('lancejs')
+    const con = await lancedb.connect(dir)
+    const schema = new Schema([
+      new Field('id', new Int64(), false),
+      new Field('vector', new FixedSizeList(2, new Field('item', new Float32(), true))),
+      new Field('price', new Float64(), false)
+    ])
+    const table = await con.createTable('vectors', [
+      { id: 1n, vector: [0.1, 0.2], price: 10.0 }
+    ])
+    expect(await table.schema).to.deep.equal(schema)
+
+    await table.alterColumns([
+      { path: 'id', rename: 'new_id' },
+      { path: 'price', nullable: true }
+    ])
+
+    const expectedSchema = new Schema([
+      new Field('new_id', new Int64(), false),
+      new Field('vector', new FixedSizeList(2, new Field('item', new Float32(), true))),
+      new Field('price', new Float64(), true)
+    ])
+    expect(await table.schema).to.deep.equal(expectedSchema)
+  })
+
+  it('can drop a column from the schema', async function () {
+    const dir = await track().mkdir('lancejs')
+    const con = await lancedb.connect(dir)
+    const table = await con.createTable('vectors', [
+      { id: 1n, vector: [0.1, 0.2] }
+    ])
+    await table.dropColumns(['vector'])
+
+    const expectedSchema = new Schema([
+      new Field('id', new Int64(), false)
+    ])
+    expect(await table.schema).to.deep.equal(expectedSchema)
   })
 })

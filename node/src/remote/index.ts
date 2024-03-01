@@ -25,7 +25,8 @@ import {
   type UpdateArgs,
   type UpdateSqlArgs,
   makeArrowTable,
-  type MergeInsertArgs
+  type MergeInsertArgs,
+  type ColumnAlteration
 } from '../index'
 import { Query } from '../query'
 
@@ -396,7 +397,7 @@ export class RemoteTable<T = number[]> implements Table<T> {
     }
 
     const column = indexParams.column ?? 'vector'
-    const indexType = 'vector' // only vector index is supported for remote connections
+    const indexType = 'vector'
     const metricType = indexParams.metric_type ?? 'L2'
     const indexCacheSize = indexParams.index_cache_size ?? null
 
@@ -419,8 +420,25 @@ export class RemoteTable<T = number[]> implements Table<T> {
     }
   }
 
-  async createScalarIndex (column: string, replace: boolean): Promise<void> {
-    throw new Error('Not implemented')
+  async createScalarIndex (column: string): Promise<void> {
+    const indexType = 'scalar'
+
+    const data = {
+      column,
+      index_type: indexType,
+      replace: true
+    }
+    const res = await this._client.post(
+      `/v1/table/${this._name}/create_scalar_index/`,
+      data
+    )
+    if (res.status !== 200) {
+      throw new Error(
+        `Server Error, status: ${res.status}, ` +
+          // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
+          `message: ${res.statusText}: ${res.data}`
+      )
+    }
   }
 
   async countRows (): Promise<number> {
@@ -473,5 +491,17 @@ export class RemoteTable<T = number[]> implements Table<T> {
       numIndexedRows: results.data.num_indexed_rows,
       numUnindexedRows: results.data.num_unindexed_rows
     }
+  }
+
+  async addColumns (newColumnTransforms: Array<{ name: string, valueSql: string }>): Promise<void> {
+    throw new Error('Add columns is not yet supported in LanceDB Cloud.')
+  }
+
+  async alterColumns (columnAlterations: ColumnAlteration[]): Promise<void> {
+    throw new Error('Alter columns is not yet supported in LanceDB Cloud.')
+  }
+
+  async dropColumns (columnNames: string[]): Promise<void> {
+    throw new Error('Drop columns is not yet supported in LanceDB Cloud.')
   }
 }
