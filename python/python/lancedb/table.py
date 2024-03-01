@@ -2028,7 +2028,7 @@ class AsyncTable(object):
         self,
         data: DATA,
         *,
-        mode: Optional[Literal["append", "overwrite"]] = None,
+        mode: Optional[Literal["append", "overwrite"]] = "append",
         on_bad_vectors: Optional[str] = None,
         fill_value: Optional[float] = None,
     ):
