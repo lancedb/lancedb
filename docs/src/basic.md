@@ -278,7 +278,7 @@ LanceDB allows you to create an ANN index on a table as follows:
 
 !!! note "Why do I need to create an index manually?"
     LanceDB does not automatically create the ANN index, for two reasons. The first is that it's optimized
-    for really fast retrievals via an on-disk index, and the second is that data and query workloads can
+    for really fast retrievals via a disk-based index, and the second is that data and query workloads can
     be very diverse, so there's no one-size-fits-all index configuration. LanceDB provides many parameters
     to fine-tune index size, query latency and accuracy. See the section on
     [ANN indexes](ann_indexes.md) for more details.
