@@ -69,11 +69,11 @@
     ```rust
     #[tokio::main]
     async fn main() -> Result<()> {
-        --8<-- "rust/vectordb/examples/simple.rs:connect"
+        --8<-- "rust/lancedb/examples/simple.rs:connect"
     }
     ```
 
-    !!! info "See [examples/simple.rs](https://github.com/lancedb/lancedb/tree/main/rust/vectordb/examples/simple.rs) for a full working example."
+    !!! info "See [examples/simple.rs](https://github.com/lancedb/lancedb/tree/main/rust/lancedb/examples/simple.rs) for a full working example."
 
 LanceDB will create the directory if it doesn't exist (including parent directories).
 
@@ -118,12 +118,12 @@ If you need a reminder of the uri, you can call `db.uri()`.
     use arrow_schema::{DataType, Schema, Field};
     use arrow_array::{RecordBatch, RecordBatchIterator};
 
-    --8<-- "rust/vectordb/examples/simple.rs:create_table"
+    --8<-- "rust/lancedb/examples/simple.rs:create_table"
     ```
 
     If the table already exists, LanceDB will raise an error by default.
 
-!!! info "Under the hood, LanceDB is converting the input data into an Apache Arrow table and persisting it to disk in [Lance format](https://www.github.com/lancedb/lance)."
+!!! info "Under the hood, LanceDB converts the input data into an Apache Arrow table and persists it to disk using the [Lance format](https://www.github.com/lancedb/lance)."
 
 ### Creating an empty table
 
@@ -147,7 +147,7 @@ In this case, you can create an empty table and specify the schema.
 === "Rust"
 
     ```rust
-    --8<-- "rust/vectordb/examples/simple.rs:create_empty_table"
+    --8<-- "rust/lancedb/examples/simple.rs:create_empty_table"
     ```
 
 ## How to open an existing table
@@ -169,7 +169,7 @@ Once created, you can open a table using the following code:
 === "Rust"
 
     ```rust
-    --8<-- "rust/vectordb/examples/simple.rs:open_with_existing_file"
+    --8<-- "rust/lancedb/examples/simple.rs:open_with_existing_file"
     ```
 
 If you forget the name of your table, you can always get a listing of all table names:
@@ -189,7 +189,7 @@ If you forget the name of your table, you can always get a listing of all table 
 === "Rust"
 
     ```rust
-    --8<-- "rust/vectordb/examples/simple.rs:list_names"
+    --8<-- "rust/lancedb/examples/simple.rs:list_names"
     ```
 
 ## How to add data to a table
@@ -219,7 +219,7 @@ After a table has been created, you can always add more data to it using
 === "Rust"
 
     ```rust
-    --8<-- "rust/vectordb/examples/simple.rs:add"
+    --8<-- "rust/lancedb/examples/simple.rs:add"
     ```
 
 ## How to search for (approximate) nearest neighbors
@@ -245,7 +245,7 @@ Once you've embedded the query, you can find its nearest neighbors using the fol
     ```rust
     use futures::TryStreamExt;
 
-    --8<-- "rust/vectordb/examples/simple.rs:search"
+    --8<-- "rust/lancedb/examples/simple.rs:search"
     ```
 
 By default, LanceDB runs a brute-force scan over dataset to find the K nearest neighbours (KNN).
@@ -266,10 +266,10 @@ For tables with more than 50K vectors, creating an ANN index is recommended to s
 === "Rust"
 
     ```rust
-     --8<-- "rust/vectordb/examples/simple.rs:create_index"
+     --8<-- "rust/lancedb/examples/simple.rs:create_index"
     ```
 
-Check [Approximate Nearest Neighbor (ANN) Indexes](/ann_indices.md) section for more details.
+Check [Approximate Nearest Neighbor (ANN) Indexes](/ann_indexes.md) section for more details.
 
 ## How to delete rows from a table
 
@@ -292,7 +292,7 @@ This can delete any number of rows that match the filter.
 === "Rust"
 
     ```rust
-    --8<-- "rust/vectordb/examples/simple.rs:delete"
+    --8<-- "rust/lancedb/examples/simple.rs:delete"
     ```
 
 The deletion predicate is a SQL expression that supports the same expressions
@@ -333,7 +333,7 @@ Use the `drop_table()` method on the database to remove a table.
 === "Rust"
 
     ```rust
-    --8<-- "rust/vectordb/examples/simple.rs:drop_table"
+    --8<-- "rust/lancedb/examples/simple.rs:drop_table"
     ```
 
 !!! note "Bundling `vectordb` apps with Webpack"
