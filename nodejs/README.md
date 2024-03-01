@@ -11,16 +11,16 @@ npm t
 
 ### Running lint / format
 
-LanceDb uses eslint for linting.  VSCode should be automatically configured to report eslint errors.
+LanceDb uses eslint for linting. VSCode should be automatically configured to report eslint errors.
 To manually lint your code you can run:
 
 ```sh
 npm run lint
 ```
 
-LanceDb uses prettier for formatting.  If you are using VSCode you will need to install the
-"Prettier - Code formatter" extension.  You should then configure it to be the default formatter
-for typescript and you should enable format on save.  To manually check your code's format you
+LanceDb uses prettier for formatting. If you are using VSCode you will need to install the
+"Prettier - Code formatter" extension. You should then configure it to be the default formatter
+for typescript and you should enable format on save. To manually check your code's format you
 can run:
 
 ```sh

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { type Float } from 'apache-arrow'
+import { type Float } from "apache-arrow";
 
 /**
  * An embedding function that automatically creates vector representation for a given column.
@@ -21,7 +21,7 @@ export interface EmbeddingFunction<T> {
   /**
    * The name of the column that will be used as input for the Embedding Function.
    */
-  sourceColumn: string
+  sourceColumn: string;
 
   /**
    * The data type of the embedding
@@ -30,7 +30,7 @@ export interface EmbeddingFunction<T> {
    * an Arrow float array.  By default this will be Float32 but this property can
    * be used to control the conversion.
    */
-  embeddingDataType?: Float
+  embeddingDataType?: Float;
 
   /**
    * The dimension of the embedding
@@ -39,14 +39,14 @@ export interface EmbeddingFunction<T> {
    * `embed`.  If this is not specified, and there is an attempt to apply the embedding
    * to an empty table, then that process will fail.
    */
-  embeddingDimension?: number
+  embeddingDimension?: number;
 
   /**
    * The name of the column that will contain the embedding
    *
    * By default this is "vector"
    */
-  destColumn?: string
+  destColumn?: string;
 
   /**
    * Should the source column be excluded from the resulting table
@@ -54,15 +54,18 @@ export interface EmbeddingFunction<T> {
    * By default the source column is included.  Set this to true and
    * only the embedding will be stored.
    */
-  excludeSource?: boolean
+  excludeSource?: boolean;
 
   /**
    * Creates a vector representation for the given values.
    */
-  embed: (data: T[]) => Promise<number[][]>
+  embed: (data: T[]) => Promise<number[][]>;
 }
 
-export function isEmbeddingFunction<T> (value: any): value is EmbeddingFunction<T> {
-  return typeof value.sourceColumn === 'string' &&
-      typeof value.embed === 'function'
+export function isEmbeddingFunction<T>(
+  value: any,
+): value is EmbeddingFunction<T> {
+  return (
+    typeof value.sourceColumn === "string" && typeof value.embed === "function"
+  );
 }

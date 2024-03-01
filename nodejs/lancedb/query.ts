@@ -25,7 +25,7 @@ class RecordBatchIterator implements AsyncIterator<RecordBatch> {
 
   constructor(
     inner?: NativeBatchIterator,
-    promise?: Promise<NativeBatchIterator>
+    promise?: Promise<NativeBatchIterator>,
   ) {
     // TODO: check promise reliably so we dont need to pass two arguments.
     this.inner = inner;

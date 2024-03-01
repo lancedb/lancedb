@@ -13,7 +13,11 @@
 // limitations under the License.
 
 import { Schema, tableFromIPC } from "apache-arrow";
-import { AddColumnsSql, ColumnAlteration, Table as _NativeTable } from "./native";
+import {
+  AddColumnsSql,
+  ColumnAlteration,
+  Table as _NativeTable,
+} from "./native";
 import { Query } from "./query";
 import { IndexBuilder } from "./indexer";
 import { Data, fromDataToBuffer } from "./arrow";
@@ -48,7 +52,6 @@ export class Table {
   constructor(inner: _NativeTable) {
     this.inner = inner;
   }
-
 
   /** Return true if the table has not been closed */
   isOpen(): boolean {

@@ -17,15 +17,21 @@ import * as path from "path";
 import * as tmp from "tmp";
 
 import { Table, connect } from "../dist";
-import { Schema, Field, Float32, Int32, FixedSizeList, Int64, Float64 } from "apache-arrow";
+import {
+  Schema,
+  Field,
+  Float32,
+  Int32,
+  FixedSizeList,
+  Int64,
+  Float64,
+} from "apache-arrow";
 import { makeArrowTable } from "../dist/arrow";
 
 describe("Given a table", () => {
   let tmpDir: tmp.DirResult;
   let table: Table;
-  const schema = new Schema([
-    new Field("id", new Float64(), true),
-  ]);
+  const schema = new Schema([new Field("id", new Float64(), true)]);
   beforeEach(async () => {
     tmpDir = tmp.dirSync({ unsafeCleanup: true });
     const conn = await connect(tmpDir.name);
@@ -34,31 +40,32 @@ describe("Given a table", () => {
   afterEach(() => tmpDir.removeCallback());
 
   it("be displayable", async () => {
-    expect(table.display()).toMatch(/NativeTable\(some_table, uri=.*, read_consistency_interval=None\)/);
-    table.close()
-    expect(table.display()).toBe("ClosedTable(some_table)")
-  })
+    expect(table.display()).toMatch(
+      /NativeTable\(some_table, uri=.*, read_consistency_interval=None\)/,
+    );
+    table.close();
+    expect(table.display()).toBe("ClosedTable(some_table)");
+  });
 
   it("should let me add data", async () => {
     await table.add([{ id: 1 }, { id: 2 }]);
     await table.add([{ id: 1 }]);
     await expect(table.countRows()).resolves.toBe(3);
-  })
+  });
 
   it("should overwrite data if asked", async () => {
     await table.add([{ id: 1 }, { id: 2 }]);
     await table.add([{ id: 1 }], { mode: "overwrite" });
     await expect(table.countRows()).resolves.toBe(1);
-  })
+  });
 
   it("should let me close the table", async () => {
     expect(table.isOpen()).toBe(true);
     table.close();
     expect(table.isOpen()).toBe(false);
     expect(table.countRows()).rejects.toThrow("Table some_table is closed");
-  })
-
-})
+  });
+});
 
 describe("Test creating index", () => {
   let tmpDir: tmp.DirResult;
@@ -85,7 +92,7 @@ describe("Test creating index", () => {
         })),
       {
         schema,
-      }
+      },
     );
     const tbl = await db.createTable("test", data);
     await tbl.createIndex().build();
@@ -113,10 +120,10 @@ describe("Test creating index", () => {
       makeArrowTable([
         { id: 1, val: 2 },
         { id: 2, val: 3 },
-      ])
+      ]),
     );
     await expect(tbl.createIndex().build()).rejects.toThrow(
-      "No vector column found"
+      "No vector column found",
     );
 
     await tbl.createIndex("val").build();
@@ -135,7 +142,7 @@ describe("Test creating index", () => {
       new Field("vec", new FixedSizeList(32, new Field("item", new Float32()))),
       new Field(
         "vec2",
-        new FixedSizeList(64, new Field("item", new Float32()))
+        new FixedSizeList(64, new Field("item", new Float32())),
       ),
     ]);
     const tbl = await db.createTable(
@@ -152,13 +159,13 @@ describe("Test creating index", () => {
               .fill(1)
               .map(() => Math.random()),
           })),
-        { schema }
-      )
+        { schema },
+      ),
     );
 
     // Only build index over v1
     await expect(tbl.createIndex().build()).rejects.toThrow(
-      /.*More than one vector columns found.*/
+      /.*More than one vector columns found.*/,
     );
     tbl
       .createIndex("vec")
@@ -170,7 +177,7 @@ describe("Test creating index", () => {
       .nearestTo(
         Array(32)
           .fill(1)
-          .map(() => Math.random())
+          .map(() => Math.random()),
       )
       .limit(2)
       .toArrow();
@@ -183,10 +190,10 @@ describe("Test creating index", () => {
           Array(64)
             .fill(1)
             .map(() => Math.random()),
-          "vec"
+          "vec",
         )
         .limit(2)
-        .toArrow()
+        .toArrow(),
     ).rejects.toThrow(/.*does not match the dimension.*/);
 
     const query64 = Array(64)
@@ -211,7 +218,7 @@ describe("Test creating index", () => {
         })),
       {
         schema,
-      }
+      },
     );
     const tbl = await db.createTable("test", data);
     await tbl.createIndex("id").build();
@@ -224,7 +231,6 @@ describe("Test creating index", () => {
 });
 
 describe("Read consistency interval", () => {
-
   let tmpDir: tmp.DirResult;
   beforeEach(() => {
     tmpDir = tmp.dirSync({ unsafeCleanup: true });
@@ -237,7 +243,9 @@ describe("Read consistency interval", () => {
     const db = await connect(tmpDir.name);
     const table = await db.createTable("my_table", [{ id: 1 }]);
 
-    const db2 = await connect(tmpDir.name, { readConsistencyInterval: interval });
+    const db2 = await connect(tmpDir.name, {
+      readConsistencyInterval: interval,
+    });
     const table2 = await db2.openTable("my_table");
     expect(await table2.countRows()).toEqual(await table.countRows());
 
@@ -253,77 +261,89 @@ describe("Read consistency interval", () => {
     } else {
       // interval == 0.1
       expect(await table2.countRows()).toEqual(1);
-      await new Promise(r => setTimeout(r, 100));
+      await new Promise((r) => setTimeout(r, 100));
       expect(await table2.countRows()).toEqual(2);
     }
   });
 });
 
-
-describe('schema evolution', function () {
-
+describe("schema evolution", function () {
   let tmpDir: tmp.DirResult;
   beforeEach(() => {
     tmpDir = tmp.dirSync({ unsafeCleanup: true });
   });
   afterEach(() => {
     tmpDir.removeCallback();
-  })
+  });
 
   // Create a new sample table
-  it('can add a new column to the schema', async function () {
-    const con = await connect(tmpDir.name)
-    const table = await con.createTable('vectors', [
-      { id: 1n, vector: [0.1, 0.2] }
-    ])
+  it("can add a new column to the schema", async function () {
+    const con = await connect(tmpDir.name);
+    const table = await con.createTable("vectors", [
+      { id: 1n, vector: [0.1, 0.2] },
+    ]);
 
-    await table.addColumns([{ name: 'price', valueSql: 'cast(10.0 as float)' }])
+    await table.addColumns([
+      { name: "price", valueSql: "cast(10.0 as float)" },
+    ]);
 
     const expectedSchema = new Schema([
-      new Field('id', new Int64(), true),
-      new Field('vector', new FixedSizeList(2, new Field('item', new Float32(), true)), true),
-      new Field('price', new Float32(), false)
-    ])
-    expect(await table.schema()).toEqual(expectedSchema)
+      new Field("id", new Int64(), true),
+      new Field(
+        "vector",
+        new FixedSizeList(2, new Field("item", new Float32(), true)),
+        true,
+      ),
+      new Field("price", new Float32(), false),
+    ]);
+    expect(await table.schema()).toEqual(expectedSchema);
   });
 
-  it('can alter the columns in the schema', async function () {
-    const con = await connect(tmpDir.name)
+  it("can alter the columns in the schema", async function () {
+    const con = await connect(tmpDir.name);
     const schema = new Schema([
-      new Field('id', new Int64(), true),
-      new Field('vector', new FixedSizeList(2, new Field('item', new Float32(), true)), true),
-      new Field('price', new Float64(), false)
-    ])
-    const table = await con.createTable('vectors', [
-      { id: 1n, vector: [0.1, 0.2] }
-    ])
+      new Field("id", new Int64(), true),
+      new Field(
+        "vector",
+        new FixedSizeList(2, new Field("item", new Float32(), true)),
+        true,
+      ),
+      new Field("price", new Float64(), false),
+    ]);
+    const table = await con.createTable("vectors", [
+      { id: 1n, vector: [0.1, 0.2] },
+    ]);
     // Can create a non-nullable column only through addColumns at the moment.
-    await table.addColumns([{ name: 'price', valueSql: 'cast(10.0 as double)' }])
-    expect(await table.schema()).toEqual(schema)
+    await table.addColumns([
+      { name: "price", valueSql: "cast(10.0 as double)" },
+    ]);
+    expect(await table.schema()).toEqual(schema);
 
     await table.alterColumns([
-      { path: 'id', rename: 'new_id' },
-      { path: 'price', nullable: true }
-    ])
+      { path: "id", rename: "new_id" },
+      { path: "price", nullable: true },
+    ]);
 
     const expectedSchema = new Schema([
-      new Field('new_id', new Int64(), true),
-      new Field('vector', new FixedSizeList(2, new Field('item', new Float32(), true)), true),
-      new Field('price', new Float64(), true)
-    ])
-    expect(await table.schema()).toEqual(expectedSchema)
+      new Field("new_id", new Int64(), true),
+      new Field(
+        "vector",
+        new FixedSizeList(2, new Field("item", new Float32(), true)),
+        true,
+      ),
+      new Field("price", new Float64(), true),
+    ]);
+    expect(await table.schema()).toEqual(expectedSchema);
   });
 
-  it('can drop a column from the schema', async function () {
-    const con = await connect(tmpDir.name)
-    const table = await con.createTable('vectors', [
-      { id: 1n, vector: [0.1, 0.2] }
-    ])
-    await table.dropColumns(['vector'])
+  it("can drop a column from the schema", async function () {
+    const con = await connect(tmpDir.name);
+    const table = await con.createTable("vectors", [
+      { id: 1n, vector: [0.1, 0.2] },
+    ]);
+    await table.dropColumns(["vector"]);
 
-    const expectedSchema = new Schema([
-      new Field('id', new Int64(), true)
-    ])
-    expect(await table.schema()).toEqual(expectedSchema)
+    const expectedSchema = new Schema([new Field("id", new Int64(), true)]);
+    expect(await table.schema()).toEqual(expectedSchema);
   });
 });
