@@ -46,7 +46,7 @@
 
     !!! info "Please also make sure you're using the same version of Arrow as in the [vectordb crate](https://github.com/lancedb/lancedb/blob/main/Cargo.toml)"
 
-## How to connect to a database
+## Connect to a database
 
 === "Python"
 
@@ -79,7 +79,12 @@ LanceDB will create the directory if it doesn't exist (including parent director
 
 If you need a reminder of the uri, you can call `db.uri()`.
 
-## How to create a table
+## Create a table
+
+### Directly insert data to a new table
+
+If you have data to insert into the table at creation time, you can simultaneously create a 
+table and insert the data to it.
 
 === "Python"
 
@@ -125,10 +130,11 @@ If you need a reminder of the uri, you can call `db.uri()`.
 
 !!! info "Under the hood, LanceDB converts the input data into an Apache Arrow table and persists it to disk using the [Lance format](https://www.github.com/lancedb/lance)."
 
-### Creating an empty table
+### Create an empty table
 
 Sometimes you may not have the data to insert into the table at creation time.
-In this case, you can create an empty table and specify the schema.
+In this case, you can create an empty table and specify the schema, so that you can add
+data to the table at a later time (such that it conforms to the schema).
 
 === "Python"
 
@@ -150,9 +156,9 @@ In this case, you can create an empty table and specify the schema.
     --8<-- "rust/lancedb/examples/simple.rs:create_empty_table"
     ```
 
-## How to open an existing table
+## Open an existing table
 
-Once created, you can open a table using the following code:
+Once created, you can open a table as follows:
 
 === "Python"
 
@@ -192,9 +198,9 @@ If you forget the name of your table, you can always get a listing of all table 
     --8<-- "rust/lancedb/examples/simple.rs:list_names"
     ```
 
-## How to add data to a table
+## Add data to a table
 
-After a table has been created, you can always add more data to it using
+After a table has been created, you can always add more data to it as follows:
 
 === "Python"
 
@@ -222,9 +228,9 @@ After a table has been created, you can always add more data to it using
     --8<-- "rust/lancedb/examples/simple.rs:add"
     ```
 
-## How to search for (approximate) nearest neighbors
+## Search for nearest neighbors
 
-Once you've embedded the query, you can find its nearest neighbors using the following code:
+Once you've embedded the query, you can find its nearest neighbors as follows:
 
 === "Python"
 
@@ -250,6 +256,7 @@ Once you've embedded the query, you can find its nearest neighbors using the fol
 
 By default, LanceDB runs a brute-force scan over dataset to find the K nearest neighbours (KNN).
 For tables with more than 50K vectors, creating an ANN index is recommended to speed up search performance.
+LanceDB allows you to create an ANN index on a table as follows:
 
 === "Python"
 
@@ -269,9 +276,14 @@ For tables with more than 50K vectors, creating an ANN index is recommended to s
      --8<-- "rust/lancedb/examples/simple.rs:create_index"
     ```
 
-Check [Approximate Nearest Neighbor (ANN) Indexes](/ann_indexes.md) section for more details.
+!!! note "Why do I need to create an index manually?"
+    LanceDB does not automatically create the ANN index, for two reasons. The first is that it's optimized
+    for really fast retrievals via an on-disk index, and the second is that data and query workloads can
+    be very diverse, so there's no one-size-fits-all index configuration. LanceDB provides many parameters
+    to fine-tune index size, query latency and accuracy. See the section on
+    [ANN indexes](ann_indexes.md) for more details.
 
-## How to delete rows from a table
+## Delete rows from a table
 
 Use the `delete()` method on tables to delete rows from a table. To choose
 which rows to delete, provide a filter that matches on the metadata columns.
@@ -307,7 +319,7 @@ To see what expressions are supported, see the [SQL filters](sql.md) section.
 
       Read more: [vectordb.Table.delete](javascript/interfaces/Table.md#delete)
 
-## How to remove a table
+## Drop a table
 
 Use the `drop_table()` method on the database to remove a table.
 
