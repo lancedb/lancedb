@@ -98,7 +98,7 @@ def test_query_builder_batches(table):
     rs = (
         LanceVectorQueryBuilder(table, [0, 0], "vector")
         .limit(2)
-        .select(["id"])
+        .select(["id", "vector"])
         .to_batches(1)
     )
     assert len(rs) == 2
@@ -111,7 +111,7 @@ def test_query_builder_batches(table):
     rs = (
         LanceVectorQueryBuilder(table, [0, 0], "vector")
         .limit(2)
-        .select(["id"])
+        .select(["id", "vector"])
         .to_batches(2)
     )
     assert len(rs) == 1
