@@ -267,6 +267,16 @@ class LanceQueryBuilder(ABC):
         """
         return self.to_arrow().to_pylist()
 
+    def to_batches(self, max_chunksize) -> list:
+        """
+        Execute the query and return the results as a list of dictionaries.
+
+        Each list entry is a dictionary with the selected column names as keys,
+        or all table columns if `select` is not called. The vector and the "_distance"
+        fields are returned whether or not they're explicitly selected.
+        """
+        return self.to_arrow().to_batches(max_chunksize)
+
     def to_pydantic(self, model: Type[LanceModel]) -> List[LanceModel]:
         """Return the table as a list of pydantic models.
 

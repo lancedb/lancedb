@@ -93,6 +93,32 @@ def test_query_builder(table):
     assert rs[0]["id"] == 1
     assert all(np.array(rs[0]["vector"]) == [1, 2])
 
+def test_query_builder_batches(table):
+    rs = (
+        LanceVectorQueryBuilder(table, [0, 0], "vector")
+        .limit(2)
+        .select(["id"])
+        .to_batches(1)
+    )
+    assert len(rs) == 2
+    assert len(rs[0]["id"]) == 1
+    assert all(rs[0].to_pandas()["vector"][0] == [1.0, 2.0])
+    assert rs[0].to_pandas()["id"][0] == 1
+    assert all(rs[1].to_pandas()["vector"][0] == [3.0, 4.0])
+    assert rs[1].to_pandas()["id"][0] == 2
+
+    rs = (
+        LanceVectorQueryBuilder(table, [0, 0], "vector")
+        .limit(2)
+        .select(["id"])
+        .to_batches(2)
+    )
+    assert len(rs) == 1
+    assert len(rs[0]["id"]) == 2
+    assert all(rs[0].to_pandas()["vector"][0] == [1.0, 2.0])
+    assert rs[0].to_pandas()["id"][0] == 1
+    assert all(rs[0].to_pandas()["vector"][1] == [3.0, 4.0])
+    assert rs[0].to_pandas()["id"][1] == 2
 
 def test_dynamic_projection(table):
     rs = (
