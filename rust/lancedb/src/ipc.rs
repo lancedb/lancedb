@@ -47,7 +47,7 @@ pub fn batches_to_ipc_file(batches: &[RecordBatch]) -> Result<Vec<u8>> {
 
 /// Convert a schema to an Arrow IPC file with 0 batches
 pub fn schema_to_ipc_file(schema: &Schema) -> Result<Vec<u8>> {
-    let mut writer = FileWriter::try_new(vec![], &schema)?;
+    let mut writer = FileWriter::try_new(vec![], schema)?;
     writer.finish()?;
     Ok(writer.into_inner()?)
 }

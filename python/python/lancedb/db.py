@@ -450,9 +450,13 @@ class AsyncConnection(object):
     Examples
     --------
 
-    >>> with db.connect("/tmp/my_dataset") as conn:
-    >>>   # do something with the connection
-    >>>   ...
+    >>> import asyncio
+    >>> import lancedb
+    >>> async def my_connect():
+    ...   with await lancedb.connect("/tmp/my_dataset") as conn:
+    ...     # do something with the connection
+    ...     pass
+    ...   # conn is closed here
     """
 
     def __init__(self, connection: LanceDbConnection):
