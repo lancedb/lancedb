@@ -45,7 +45,7 @@ impl Table {
         self.inner.is_some()
     }
 
-    pub fn close(&mut self) -> () {
+    pub fn close(&mut self) {
         self.inner.take();
     }
 

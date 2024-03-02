@@ -65,7 +65,7 @@ impl Connection {
         self.inner.is_some()
     }
 
-    fn close(&mut self) -> () {
+    fn close(&mut self) {
         self.inner.take();
     }
 
