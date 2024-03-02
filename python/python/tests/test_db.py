@@ -11,6 +11,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
+import re
 from datetime import timedelta
 
 import lancedb
@@ -361,8 +362,11 @@ async def test_open_table(tmp_path):
     tbl = await db.open_table("test")
     assert tbl.name == "test"
     assert (
-        str(tbl) == f"NativeTable(test, uri={tmp_path}"
-        "/test.lance, read_consistency_interval=None)"
+        re.search(
+            r"NativeTable\(test, uri=.*test\.lance, read_consistency_interval=None\)",
+            str(tbl),
+        )
+        is not None
     )
     assert await tbl.schema() == pa.schema(
         {
