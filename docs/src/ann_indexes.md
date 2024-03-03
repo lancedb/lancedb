@@ -7,20 +7,11 @@ for brute-force scanning of the entire vector space.
 A vector index is faster but less accurate than exhaustive search (kNN or flat search).
 LanceDB provides many parameters to fine-tune the index's size, the speed of queries, and the accuracy of results.
 
-Currently, LanceDB does _not_ automatically create the ANN index.
-LanceDB has optimized code for kNN as well. For many use-cases, datasets under 100K vectors won't require index creation at all.
-If you can live with <100ms latency, skipping index creation is a simpler workflow while guaranteeing 100% recall.
+## Disk-based Index
 
-In the future we will look to automatically create and configure the ANN index as data comes in.
-
-## Types of Index
-
-Lance can support multiple index types, the most widely used one is `IVF_PQ`.
-
-- `IVF_PQ`: use **Inverted File Index (IVF)** to first divide the dataset into `N` partitions,
-  and then use **Product Quantization** to compress vectors in each partition.
-- `DiskANN` (**Experimental**): organize the vector as a on-disk graph, where the vertices approximately
-  represent the nearest neighbors of each vector.
+Lance provides an `IVF_PQ` disk-based index. It uses **Inverted File Index (IVF)** to first divide
+the dataset into `N` partitions, and then applies **Product Quantization** to compress vectors in each partition.
+See the [indexing](concepts/index_ivfpq.md) concepts guide for more information on how this works.
 
 ## Creating an IVF_PQ Index
 
@@ -88,7 +79,7 @@ You can specify the GPU device to train IVF partitions via
      )
      ```
 
-=== "Macos"
+=== "MacOS"
 
      <!-- skip-test -->
      ```python
@@ -100,7 +91,7 @@ You can specify the GPU device to train IVF partitions via
      )
      ```
 
-Trouble shootings:
+Troubleshooting:
 
 If you see `AssertionError: Torch not compiled with CUDA enabled`, you need to [install
 PyTorch with CUDA support](https://pytorch.org/get-started/locally/).
@@ -187,13 +178,21 @@ You can select the columns returned by the query using a select clause.
 
 ## FAQ
 
+### Why do I need to manually create an index?
+
+Currently, LanceDB does _not_ automatically create the ANN index.
+LanceDB is well-optimized for kNN (exhaustive search) via a disk-based  index. For many use-cases,
+datasets of the order of ~100K vectors don't require index creation. If you can live with up to
+100ms latency, skipping index creation is a simpler workflow while guaranteeing 100% recall.
+
 ### When is it necessary to create an ANN vector index?
 
-`LanceDB` has manually-tuned SIMD code for computing vector distances.
-In our benchmarks, computing 100K pairs of 1K dimension vectors takes **less than 20ms**.
-For small datasets (< 100K rows) or applications that can accept 100ms latency, vector indices are usually not necessary.
+`LanceDB` comes out-of-the-box with highly optimized SIMD code for computing vector similarity.
+In our benchmarks, computing distances for 100K pairs of 1K dimension vectors takes **less than 20ms**.
+We observe that for small datasets (~100K rows) or for applications that can accept 100ms latency,
+vector indices are usually not necessary.
 
-For large-scale or higher dimension vectors, it is beneficial to create vector index.
+For large-scale or higher dimension vectors, it can beneficial to create vector index for performance.
 
 ### How big is my index, and how many memory will it take?
 
