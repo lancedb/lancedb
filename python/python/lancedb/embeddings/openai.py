@@ -36,6 +36,14 @@ class OpenAIEmbeddings(TextEmbeddingFunction):
     def ndims(self):
         return self._ndims
 
+    @staticmethod
+    def model_names():
+        return [
+            "text-embedding-ada-002",
+            "text-embedding-3-large",
+            "text-embedding-3-small",
+        ]
+
     @cached_property
     def _ndims(self):
         if self.name == "text-embedding-ada-002":
