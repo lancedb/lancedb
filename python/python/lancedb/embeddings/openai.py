@@ -32,6 +32,10 @@ class OpenAIEmbeddings(TextEmbeddingFunction):
 
     name: str = "text-embedding-ada-002"
     dim: Optional[int] = None
+    base_url: Optional[str] = None
+    default_headers: Optional[dict] = None
+    organization: Optional[str] = None
+    api_key: Optional[str] = None
 
     def ndims(self):
         return self._ndims
@@ -79,6 +83,16 @@ class OpenAIEmbeddings(TextEmbeddingFunction):
     def _openai_client(self):
         openai = attempt_import_or_raise("openai")
 
-        if not os.environ.get("OPENAI_API_KEY"):
+        if self.api_key is None and not os.environ.get("OPENAI_API_KEY"):
             api_key_not_found_help("openai")
-        return openai.OpenAI()
+
+        kwargs = {}
+        if self.base_url:
+            kwargs["base_url"] = self.base_url
+        if self.default_headers:
+            kwargs["default_headers"] = self.default_headers
+        if self.organization:
+            kwargs["organization"] = self.organization
+        if self.api_key:
+            kwargs["api_key"] = self
+        return openai.OpenAI(**kwargs)
