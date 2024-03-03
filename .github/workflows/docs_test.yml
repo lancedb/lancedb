@@ -28,6 +28,9 @@ jobs:
     steps:
     - name: Checkout
       uses: actions/checkout@v4
+    - name: Install dependecies needed for ubuntu
+      run: |
+        sudo apt install -y protobuf-compiler libssl-dev
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
