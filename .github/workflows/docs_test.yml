@@ -24,7 +24,7 @@ env:
 jobs:
   test-python:
     name: Test doc python code
-    runs-on: "ubuntu-latest"
+    runs-on: "buildjet-8vcpu-ubuntu-2204"
     steps:
     - name: Checkout
       uses: actions/checkout@v4
@@ -51,8 +51,8 @@ jobs:
         for d in *; do cd "$d"; echo "$d".py; python "$d".py; cd ..; done
   test-node:
     name: Test doc nodejs code
-    runs-on: "ubuntu-latest"
-    timeout-minutes: 45
+    runs-on: "buildjet-8vcpu-ubuntu-2204"
+    timeout-minutes: 60
     strategy:
       fail-fast: false
     steps:
