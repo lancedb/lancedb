@@ -106,11 +106,6 @@ class OpenAIEmbeddings(TextEmbeddingFunction):
     @cached_property
     def _openai_client(self):
         openai = attempt_import_or_raise("openai")
-
-        if self.base_url is not None:
-            if self.api_key is None and not os.environ.get("OPENAI_API_KEY"):
-                api_key_not_found_help("openai")
-
         kwargs = {}
         if self.base_url:
             kwargs["base_url"] = self.base_url
