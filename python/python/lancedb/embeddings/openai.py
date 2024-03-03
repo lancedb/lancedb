@@ -10,16 +10,16 @@
 #  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
-import os
 from functools import cached_property
-from typing import List, Optional, Union
-
-import numpy as np
+from typing import List, Optional, Union, TYPE_CHECKING
 
 from ..util import attempt_import_or_raise
 from .base import TextEmbeddingFunction
 from .registry import register
-from .utils import api_key_not_found_help
+
+
+if TYPE_CHECKING:
+    import numpy as np
 
 
 @register("openai")
@@ -80,8 +80,8 @@ class OpenAIEmbeddings(TextEmbeddingFunction):
             raise ValueError(f"Unknown model name {self.name}")
 
     def generate_embeddings(
-        self, texts: Union[List[str], np.ndarray]
-    ) -> List[np.array]:
+        self, texts: Union[List[str], "np.ndarray"]
+    ) -> List["np.array"]:
         """
         Get the embeddings for the given texts
 
