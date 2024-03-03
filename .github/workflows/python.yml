@@ -66,7 +66,7 @@ jobs:
       - name: Install
         run: |
           pip install -e .[tests,dev,embeddings]
-          pip install tantivy@git+https://github.com/quickwit-oss/tantivy-py#164adc87e1a033117001cf70e38c82a53014d985
+          pip install tantivy
           pip install mlx
       - name: Doctest
         run: pytest --doctest-modules python/lancedb
@@ -188,6 +188,6 @@ jobs:
         run: |
           pip install "pydantic<2"
           pip install -e .[tests]
-          pip install tantivy@git+https://github.com/quickwit-oss/tantivy-py#164adc87e1a033117001cf70e38c82a53014d985
+          pip install tantivy
       - name: Run tests
         run: pytest -m "not slow" -x -v --durations=30 python/tests
