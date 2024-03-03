@@ -175,7 +175,8 @@ Supported Embedding modelIDs are:
 * `cohere.embed-english-v3`
 * `cohere.embed-multilingual-v3`
 
-Supported paramters (to be passed in `create` method) are:
+Supported parameters (to be passed in `create` method) are:
+
 | Parameter | Type | Default Value | Description |
 |---|---|---|---|
 | **name** | str | "amazon.titan-embed-text-v1" | The model ID of the bedrock model to use. Supported base models for Text Embeddings: amazon.titan-embed-text-v1, cohere.embed-english-v3, cohere.embed-multilingual-v3 |
