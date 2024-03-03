@@ -28,7 +28,7 @@ from pydantic import Field
 
 from lancedb.pydantic import (
     PYDANTIC_VERSION,
-    EncodedImage,
+    Image,
     ImageURI,
     LanceModel,
     Vector,
@@ -268,7 +268,7 @@ def test_lance_model_with_lance_types():
     default_encoded_images = default_image_uris.read_uris()
 
     class TestModel(LanceModel):
-        encoded_images: EncodedImage() = Field(default=default_encoded_images)
+        encoded_images: Image() = Field(default=default_encoded_images)
         image_uris: ImageURI() = Field(default=default_image_uris)
 
     schema = pydantic_to_schema(TestModel)
