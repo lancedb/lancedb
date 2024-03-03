@@ -11,12 +11,11 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 from functools import cached_property
-from typing import List, Optional, Union, TYPE_CHECKING
+from typing import TYPE_CHECKING, List, Optional, Union
 
 from ..util import attempt_import_or_raise
 from .base import TextEmbeddingFunction
 from .registry import register
-
 
 if TYPE_CHECKING:
     import numpy as np
