@@ -28,6 +28,26 @@ class OpenAIEmbeddings(TextEmbeddingFunction):
     An embedding function that uses the OpenAI API
 
     https://platform.openai.com/docs/guides/embeddings
+
+    This can also be used for open source models that
+    are compatible with the OpenAI API.
+
+    Notes
+    -----
+    If you're running an Ollama server locally,
+    you can just override the `base_url` parameter
+    and provide the Ollama embedding model you want
+    to use (https://ollama.com/library):
+
+    ```python
+    from lancedb.embeddings import get_registry
+    openai = get_registry().get("openai")
+    embedding_function = openai.create(
+        name="<ollama-embedding-model-name>",
+        base_url="http://localhost:11434",
+        )
+    ```
+
     """
 
     name: str = "text-embedding-ada-002"
@@ -74,17 +94,22 @@ class OpenAIEmbeddings(TextEmbeddingFunction):
         if self.name == "text-embedding-ada-002":
             rs = self._openai_client.embeddings.create(input=texts, model=self.name)
         else:
-            rs = self._openai_client.embeddings.create(
-                input=texts, model=self.name, dimensions=self.ndims()
-            )
+            kwargs = {
+                "input": texts,
+                "model": self.name,
+            }
+            if self.dim:
+                kwargs["dimensions"] = self.dim
+            rs = self._openai_client.embeddings.create(**kwargs)
         return [v.embedding for v in rs.data]
 
     @cached_property
     def _openai_client(self):
         openai = attempt_import_or_raise("openai")
 
-        if self.api_key is None and not os.environ.get("OPENAI_API_KEY"):
-            api_key_not_found_help("openai")
+        if self.base_url is not None:
+            if self.api_key is None and not os.environ.get("OPENAI_API_KEY"):
+                api_key_not_found_help("openai")
 
         kwargs = {}
         if self.base_url:
