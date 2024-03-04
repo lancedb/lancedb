@@ -63,7 +63,7 @@ export interface EmbeddingFunction<T> {
 }
 
 export function isEmbeddingFunction<T>(
-  value: unknown
+  value: unknown,
 ): value is EmbeddingFunction<T> {
   if (typeof value !== "object" || value === null) {
     return false;

@@ -198,7 +198,7 @@ export class MakeArrowTableOptions {
  */
 export function makeArrowTable(
   data: Array<Record<string, unknown>>,
-  options?: Partial<MakeArrowTableOptions>
+  options?: Partial<MakeArrowTableOptions>,
 ): ArrowTable {
   if (
     data.length === 0 &&
@@ -244,7 +244,7 @@ export function makeArrowTable(
             return BigInt(v);
           }
           throw new Error(
-            `Expected BigInt or number for column ${colName}, got ${typeof v}`
+            `Expected BigInt or number for column ${colName}, got ${typeof v}`,
           );
         });
       }
@@ -257,11 +257,11 @@ export function makeArrowTable(
         if (Array.isArray(firstNonNullValue)) {
           type = newVectorType(
             firstNonNullValue.length,
-            vectorColumnOptions.type
+            vectorColumnOptions.type,
           );
         } else {
           throw new Error(
-            `Column ${colName} is expected to be a vector column but first non-null value is not an array.  Could not determine size of vector column`
+            `Column ${colName} is expected to be a vector column but first non-null value is not an array.  Could not determine size of vector column`,
           );
         }
       }
@@ -290,7 +290,7 @@ export function makeArrowTable(
     const firstTable = new ArrowTable(columns);
     // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
     const batchesFixed = firstTable.batches.map(
-      (batch) => new RecordBatch(opt.schema!, batch.data)
+      (batch) => new RecordBatch(opt.schema!, batch.data),
     );
     return new ArrowTable(opt.schema, batchesFixed);
   } else {
@@ -335,7 +335,7 @@ function makeListVector(lists: unknown[][]): Vector<unknown> {
 function makeVector(
   values: unknown[],
   type?: DataType,
-  stringAsDictionary?: boolean
+  stringAsDictionary?: boolean,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): Vector<any> {
   if (type !== undefined) {
@@ -344,13 +344,13 @@ function makeVector(
   }
   if (values.length === 0) {
     throw Error(
-      "makeVector requires at least one value or the type must be specfied"
+      "makeVector requires at least one value or the type must be specfied",
     );
   }
   const sampleValue = values.find((val) => val !== null && val !== undefined);
   if (sampleValue === undefined) {
     throw Error(
-      "makeVector cannot infer the type if all values are null or undefined"
+      "makeVector cannot infer the type if all values are null or undefined",
     );
   }
   if (Array.isArray(sampleValue)) {
@@ -375,7 +375,7 @@ function makeVector(
 async function applyEmbeddings<T>(
   table: ArrowTable,
   embeddings?: EmbeddingFunction<T>,
-  schema?: Schema
+  schema?: Schema,
 ): Promise<ArrowTable> {
   if (embeddings == null) {
     return table;
@@ -395,7 +395,7 @@ async function applyEmbeddings<T>(
   const innerDestType = embeddings.embeddingDataType ?? new Float32();
   if (sourceColumn === undefined) {
     throw new Error(
-      `Cannot apply embedding function because the source column '${embeddings.sourceColumn}' was not present in the data`
+      `Cannot apply embedding function because the source column '${embeddings.sourceColumn}' was not present in the data`,
     );
   }
 
@@ -409,7 +409,7 @@ async function applyEmbeddings<T>(
     if (embeddings.embeddingDimension !== undefined) {
       const destType = newVectorType(
         embeddings.embeddingDimension,
-        innerDestType
+        innerDestType,
       );
       newColumns[destColumn] = makeVector([], destType);
     } else if (schema != null) {
@@ -418,30 +418,30 @@ async function applyEmbeddings<T>(
         newColumns[destColumn] = makeVector([], destField.type);
       } else {
         throw new Error(
-          `Attempt to apply embeddings to an empty table failed because schema was missing embedding column '${destColumn}'`
+          `Attempt to apply embeddings to an empty table failed because schema was missing embedding column '${destColumn}'`,
         );
       }
     } else {
       throw new Error(
-        "Attempt to apply embeddings to an empty table when the embeddings function does not specify `embeddingDimension`"
+        "Attempt to apply embeddings to an empty table when the embeddings function does not specify `embeddingDimension`",
       );
     }
   } else {
     if (Object.prototype.hasOwnProperty.call(newColumns, destColumn)) {
       throw new Error(
-        `Attempt to apply embeddings to table failed because column ${destColumn} already existed`
+        `Attempt to apply embeddings to table failed because column ${destColumn} already existed`,
       );
     }
     if (table.batches.length > 1) {
       throw new Error(
-        "Internal error: `makeArrowTable` unexpectedly created a table with more than one batch"
+        "Internal error: `makeArrowTable` unexpectedly created a table with more than one batch",
       );
     }
     const values = sourceColumn.toArray();
     const vectors = await embeddings.embed(values as T[]);
     if (vectors.length !== values.length) {
       throw new Error(
-        "Embedding function did not return an embedding for each input element"
+        "Embedding function did not return an embedding for each input element",
       );
     }
     const destType = newVectorType(vectors[0].length, innerDestType);
@@ -452,7 +452,7 @@ async function applyEmbeddings<T>(
   if (schema != null) {
     if (schema.fields.find((f) => f.name === destColumn) === undefined) {
       throw new Error(
-        `When using embedding functions and specifying a schema the schema should include the embedding column but the column ${destColumn} was missing`
+        `When using embedding functions and specifying a schema the schema should include the embedding column but the column ${destColumn} was missing`,
       );
     }
     return alignTable(newTable, schema);
@@ -481,7 +481,7 @@ async function applyEmbeddings<T>(
 export async function convertToTable<T>(
   data: Array<Record<string, unknown>>,
   embeddings?: EmbeddingFunction<T>,
-  makeTableOptions?: Partial<MakeArrowTableOptions>
+  makeTableOptions?: Partial<MakeArrowTableOptions>,
 ): Promise<ArrowTable> {
   const table = makeArrowTable(data, makeTableOptions);
   return await applyEmbeddings(table, embeddings, makeTableOptions?.schema);
@@ -490,7 +490,7 @@ export async function convertToTable<T>(
 // Creates the Arrow Type for a Vector column with dimension `dim`
 function newVectorType<T extends Float>(
   dim: number,
-  innerType: T
+  innerType: T,
 ): FixedSizeList<T> {
   // in Lance we always default to have the elements nullable, so we need to set it to true
   // otherwise we often get schema mismatches because the stored data always has schema with nullable elements
@@ -508,7 +508,7 @@ function newVectorType<T extends Float>(
 export async function fromRecordsToBuffer<T>(
   data: Array<Record<string, unknown>>,
   embeddings?: EmbeddingFunction<T>,
-  schema?: Schema
+  schema?: Schema,
 ): Promise<Buffer> {
   const table = await convertToTable(data, embeddings, { schema });
   const writer = RecordBatchFileWriter.writeAll(table);
@@ -525,7 +525,7 @@ export async function fromRecordsToBuffer<T>(
 export async function fromRecordsToStreamBuffer<T>(
   data: Array<Record<string, unknown>>,
   embeddings?: EmbeddingFunction<T>,
-  schema?: Schema
+  schema?: Schema,
 ): Promise<Buffer> {
   const table = await convertToTable(data, embeddings, { schema });
   const writer = RecordBatchStreamWriter.writeAll(table);
@@ -543,7 +543,7 @@ export async function fromRecordsToStreamBuffer<T>(
 export async function fromTableToBuffer<T>(
   table: ArrowTable,
   embeddings?: EmbeddingFunction<T>,
-  schema?: Schema
+  schema?: Schema,
 ): Promise<Buffer> {
   const tableWithEmbeddings = await applyEmbeddings(table, embeddings, schema);
   const writer = RecordBatchFileWriter.writeAll(tableWithEmbeddings);
@@ -553,7 +553,7 @@ export async function fromTableToBuffer<T>(
 export async function fromDataToBuffer<T>(
   data: Data,
   embeddings?: EmbeddingFunction<T>,
-  schema?: Schema
+  schema?: Schema,
 ): Promise<Buffer> {
   if (data instanceof ArrowTable) {
     return fromTableToBuffer(data, embeddings, schema);
@@ -574,7 +574,7 @@ export async function fromDataToBuffer<T>(
 export async function fromTableToStreamBuffer<T>(
   table: ArrowTable,
   embeddings?: EmbeddingFunction<T>,
-  schema?: Schema
+  schema?: Schema,
 ): Promise<Buffer> {
   const tableWithEmbeddings = await applyEmbeddings(table, embeddings, schema);
   const writer = RecordBatchStreamWriter.writeAll(tableWithEmbeddings);
@@ -585,11 +585,11 @@ function alignBatch(batch: RecordBatch, schema: Schema): RecordBatch {
   const alignedChildren = [];
   for (const field of schema.fields) {
     const indexInBatch = batch.schema.fields?.findIndex(
-      (f) => f.name === field.name
+      (f) => f.name === field.name,
     );
     if (indexInBatch < 0) {
       throw new Error(
-        `The column ${field.name} was not found in the Arrow Table`
+        `The column ${field.name} was not found in the Arrow Table`,
       );
     }
     alignedChildren.push(batch.data.children[indexInBatch]);
@@ -605,7 +605,7 @@ function alignBatch(batch: RecordBatch, schema: Schema): RecordBatch {
 
 function alignTable(table: ArrowTable, schema: Schema): ArrowTable {
   const alignedBatches = table.batches.map((batch) =>
-    alignBatch(batch, schema)
+    alignBatch(batch, schema),
   );
   return new ArrowTable(schema, alignedBatches);
 }
