@@ -117,22 +117,35 @@ class LanceQueryBuilder(ABC):
         query: Optional[Union[np.ndarray, str, "PIL.Image.Image", Tuple]],
         query_type: str,
         vector_column_name: str,
+        vector: Optional[VEC] = None,
+        text: Optional[str] = None,
     ) -> LanceQueryBuilder:
-        if query is None:
+        if query is None and vector is None and text is None:
             return LanceEmptyQueryBuilder(table)
 
         if query_type == "hybrid":
             # hybrid fts and vector query
-            return LanceHybridQueryBuilder(table, query, vector_column_name)
+            return LanceHybridQueryBuilder(
+                table, query, vector_column_name, vector, text
+            )
 
-        # convert "auto" query_type to "vector", "fts"
-        # or "hybrid" and convert the query to vector if needed
+        # Resolve hybrid query with explicit vector and text params here to avoid
+        # adding them as params in the BaseQueryBuilder class
+        if vector is not None or text is not None:
+            if query_type not in ["hybrid", "auto"]:
+                raise ValueError(
+                    "If `vector` and `text` are provided, then `query_type`\
+                    must be 'hybrid' or 'auto'"
+                )
+            return LanceHybridQueryBuilder(
+                table, query, vector_column_name, vector, text
+            )
+
+        # convert "auto" query_type to "vector" or "fts"
+        # and convert the query to vector if needed
         query, query_type = cls._resolve_query(
             table, query, query_type, vector_column_name
         )
-
-        if query_type == "hybrid":
-            return LanceHybridQueryBuilder(table, query, vector_column_name)
 
         if isinstance(query, str):
             # fts
@@ -161,8 +174,6 @@ class LanceQueryBuilder(ABC):
         elif query_type == "auto":
             if isinstance(query, (list, np.ndarray)):
                 return query, "vector"
-            if isinstance(query, tuple):
-                return query, "hybrid"
             else:
                 conf = table.embedding_functions.get(vector_column_name)
                 if conf is not None:
@@ -628,12 +639,20 @@ class LanceEmptyQueryBuilder(LanceQueryBuilder):
 
 
 class LanceHybridQueryBuilder(LanceQueryBuilder):
-    def __init__(self, table: "Table", query: str, vector_column: str):
+    def __init__(
+        self,
+        table: "Table",
+        query: str,
+        vector_column: str,
+        vector: Optional[VEC] = None,
+        text: Optional[str] = None,
+    ):
         super().__init__(table)
         self._validate_fts_index()
-        vector_query, fts_query = self._validate_query(query)
+        vector_query, fts_query = self._validate_query(
+            query, vector_column, vector, text
+        )
         self._fts_query = LanceFtsQueryBuilder(table, fts_query)
-        vector_query = self._query_to_vector(table, vector_query, vector_column)
         self._vector_query = LanceVectorQueryBuilder(table, vector_query, vector_column)
         self._norm = "score"
         self._reranker = LinearCombinationReranker(weight=0.7, fill=1.0)
@@ -644,23 +663,31 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
                 "Please create a full-text search index " "to perform hybrid search."
             )
 
-    def _validate_query(self, query):
-        # Temp hack to support vectorized queries for hybrid search
-        if isinstance(query, str):
-            return query, query
-        elif isinstance(query, tuple):
-            if len(query) != 2:
+    def _validate_query(self, query, vector_column, vector, text):
+        if query is not None:
+            if vector is not None or text is not None:
                 raise ValueError(
-                    "The query must be a tuple of (vector_query, fts_query)."
+                    "Either pass `query` or `vector` and `text` separately, not both."
                 )
-            if not isinstance(query[0], (list, np.ndarray, pa.Array, pa.ChunkedArray)):
+        else:
+            if vector is None or text is None:
+                raise ValueError(
+                    "Either pass `query` or `vector` and `text` separately, not both."
+                )
+
+        if vector is not None and text is not None:
+            if not isinstance(vector, (list, np.ndarray, pa.Array, pa.ChunkedArray)):
                 raise ValueError(f"The vector query must be one of {VEC}.")
-            if not isinstance(query[1], str):
+            if not isinstance(text, str):
                 raise ValueError("The fts query must be a string.")
-            return query[0], query[1]
+            return vector, text
+        if isinstance(query, str):
+            vector = self._query_to_vector(self._table, query, vector_column)
+            return vector, query
         else:
             raise ValueError(
-                "The query must be either a string or a tuple of (vector, string)."
+                f"For hybrid search `query` must be a string or `vector` and `text` \
+                must be provided explicitly of types {VEC} and str respectively."
             )
 
     def to_arrow(self) -> pa.Table:

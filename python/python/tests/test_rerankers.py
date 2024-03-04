@@ -104,7 +104,7 @@ def test_linear_combination(tmp_path):
     query = "Our father who art in heaven"
     query_vector = table.to_pandas()["vector"][0]
     result = (
-        table.search((query_vector, query))
+        table.search(vector=query_vector, text=query, query_type="hybrid")
         .limit(30)
         .rerank(normalize="score")
         .to_arrow()
@@ -117,6 +117,32 @@ def test_linear_combination(tmp_path):
         "represents the relevance of the result to the query & should "
         "be descending."
     )
+
+    # automatically deduce the query type
+    result = (
+        table.search(vector=query_vector, text=query)
+        .limit(30)
+        .rerank(normalize="score")
+        .to_arrow()
+    )
+
+    # wrong query type raises an error
+    with pytest.raises(ValueError):
+        table.search(vector=query_vector, text=query, query_type="vector").rerank(
+            normalize="score"
+        )
+
+    with pytest.raises(ValueError):
+        table.search(vector=query_vector, text=query, query_type="fts").rerank(
+            normalize="score"
+        )
+
+    # raise an error if only vector or text is provided
+    with pytest.raises(ValueError):
+        table.search(vector=query_vector).to_arrow()
+
+    with pytest.raises(ValueError):
+        table.search(text=query).to_arrow()
 
 
 @pytest.mark.skipif(
@@ -141,7 +167,7 @@ def test_cohere_reranker(tmp_path):
     query = "Our father who art in heaven"
     query_vector = table.to_pandas()["vector"][0]
     result = (
-        table.search((query_vector, query))
+        table.search(vector=query_vector, text=query)
         .limit(30)
         .rerank(reranker=CohereReranker())
         .to_arrow()
@@ -175,7 +201,7 @@ def test_cross_encoder_reranker(tmp_path):
     query = "Our father who art in heaven"
     query_vector = table.to_pandas()["vector"][0]
     result = (
-        table.search((query_vector, query), query_type="hybrid")
+        table.search(vector=query_vector, text=query, query_type="hybrid")
         .limit(30)
         .rerank(reranker=CrossEncoderReranker())
         .to_arrow()
@@ -209,7 +235,7 @@ def test_colbert_reranker(tmp_path):
     query = "Our father who art in heaven"
     query_vector = table.to_pandas()["vector"][0]
     result = (
-        table.search((query_vector, query))
+        table.search(vector=query_vector, text=query)
         .limit(30)
         .rerank(reranker=ColbertReranker())
         .to_arrow()
@@ -246,7 +272,7 @@ def test_openai_reranker(tmp_path):
     query = "Our father who art in heaven"
     query_vector = table.to_pandas()["vector"][0]
     result = (
-        table.search((query_vector, query))
+        table.search(vector=query_vector, text=query)
         .limit(30)
         .rerank(reranker=OpenaiReranker())
         .to_arrow()

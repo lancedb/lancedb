@@ -418,6 +418,8 @@ class Table(ABC):
         query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
         vector_column_name: Optional[str] = None,
         query_type: str = "auto",
+        vector: Optional[VEC] = None,
+        text: Optional[str] = None,
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support [vector search][search]
@@ -1253,6 +1255,8 @@ class LanceTable(Table):
         query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
         vector_column_name: Optional[str] = None,
         query_type: str = "auto",
+        vector: Optional[VEC] = None,
+        text: Optional[str] = None,
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support [vector search][search]
@@ -1307,6 +1311,10 @@ class LanceTable(Table):
             or raise an error if no corresponding embedding function is found.
             If the `query` is a string, then the query type is "vector" if the
             table has embedding functions, else the query type is "fts"
+        vector: list/np.ndarray, default None
+            vector query for hybrid search
+        text: str, default None
+            text query for hybrid search
 
         Returns
         -------
@@ -1316,11 +1324,17 @@ class LanceTable(Table):
             and also the "_distance" column which is the distance between the query
             vector and the returned vector.
         """
-        if vector_column_name is None and query is not None:
+        is_query_defined = query is not None or vector is not None or text is not None
+        if vector_column_name is None and is_query_defined:
             vector_column_name = inf_vector_column_query(self.schema)
         register_event("search_table")
         return LanceQueryBuilder.create(
-            self, query, query_type, vector_column_name=vector_column_name
+            self,
+            query,
+            query_type,
+            vector_column_name=vector_column_name,
+            vector=vector,
+            text=text,
         )
 
     @classmethod
