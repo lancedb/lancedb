@@ -38,9 +38,22 @@ import {
   Int64,
   Float,
   Precision,
+  MetadataVersion,
 } from "apache-arrow";
+import {
+  Dictionary as OldDictionary,
+  Field as OldField,
+  FixedSizeList as OldFixedSizeList,
+  Float32 as OldFloat32,
+  Int32 as OldInt32,
+  Struct as OldStruct,
+  Schema as OldSchema,
+  TimestampNanosecond as OldTimestampNanosecond,
+  Utf8 as OldUtf8,
+} from "apache-arrow-old";
 import { type EmbeddingFunction } from "../dist/embedding/embedding_function";
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function sampleRecords(): Array<Record<string, any>> {
   return [
     {
@@ -57,8 +70,8 @@ function sampleRecords(): Array<Record<string, any>> {
 // Helper method to verify various ways to create a table
 async function checkTableCreation(
   tableCreationMethod: (
-    records: any,
-    recordsReversed: any,
+    records: Record<string, unknown>[],
+    recordsReversed: Record<string, unknown>[],
     schema: Schema,
   ) => Promise<Table>,
   infersTypes: boolean,
@@ -400,5 +413,58 @@ describe("makeEmptyTable", function () {
       async (_, __, schema) => makeEmptyTable(schema),
       false,
     );
+  });
+});
+
+describe("when using two versions of arrow", function () {
+  it("can still import data", async function () {
+    const schema = new OldSchema([
+      new OldField("id", new OldInt32()),
+      new OldField(
+        "vector",
+        new OldFixedSizeList(
+          1024,
+          new OldField("item", new OldFloat32(), true),
+        ),
+      ),
+      new OldField(
+        "struct",
+        new OldStruct([
+          new OldField(
+            "nested",
+            new OldDictionary(new OldUtf8(), new OldInt32(), 1, true),
+          ),
+          new OldField("ts_with_tz", new OldTimestampNanosecond("some_tz")),
+          new OldField("ts_no_tz", new OldTimestampNanosecond(null)),
+        ]),
+      ),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ]) as any;
+    schema.metadataVersion = MetadataVersion.V5;
+    const table = makeArrowTable([], { schema });
+
+    const buf = await fromTableToBuffer(table);
+    expect(buf.byteLength).toBeGreaterThan(0);
+    const actual = tableFromIPC(buf);
+    const actualSchema = actual.schema;
+    expect(actualSchema.fields.length).toBe(3);
+
+    // Deep equality gets hung up on some very minor unimportant differences
+    // between arrow version 13 and 15 which isn't really what we're testing for
+    // and so we do our own comparison that just checks name/type/nullability
+    function compareFields(lhs: Field, rhs: Field) {
+      expect(lhs.name).toEqual(rhs.name);
+      expect(lhs.nullable).toEqual(rhs.nullable);
+      expect(lhs.typeId).toEqual(rhs.typeId);
+      if ("children" in lhs.type && lhs.type.children !== null) {
+        const lhs_children = lhs.type.children as Field[];
+        lhs_children.forEach((child: Field, idx) => {
+          compareFields(child, rhs.type.children[idx]);
+        });
+      }
+    }
+    actualSchema.fields.forEach((field, idx) => {
+      compareFields(field, actualSchema.fields[idx]);
+    });
   });
 });
