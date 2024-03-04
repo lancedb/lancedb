@@ -21,7 +21,7 @@ use tokio::task::spawn_blocking;
 
 use crate::connection::{ConnectionInternal, CreateTableBuilder, OpenTableBuilder};
 use crate::error::Result;
-use crate::TableRef;
+use crate::Table;
 
 use super::client::RestfulLanceDbClient;
 use super::table::RemoteTable;
@@ -51,6 +51,12 @@ impl RemoteDatabase {
     }
 }
 
+impl std::fmt::Display for RemoteDatabase {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "RemoteDatabase(host={})", self.client.host())
+    }
+}
+
 #[async_trait]
 impl ConnectionInternal for RemoteDatabase {
     async fn table_names(&self) -> Result<Vec<String>> {
@@ -65,7 +71,7 @@ impl ConnectionInternal for RemoteDatabase {
         Ok(rsp.json::<ListTablesResponse>().await?.tables)
     }
 
-    async fn do_create_table(&self, options: CreateTableBuilder<true>) -> Result<TableRef> {
+    async fn do_create_table(&self, options: CreateTableBuilder<true>) -> Result<Table> {
         let data = options.data.unwrap();
         // TODO: https://github.com/lancedb/lancedb/issues/1026
         // We should accept data from an async source.  In the meantime, spawn this as blocking
@@ -78,17 +84,18 @@ impl ConnectionInternal for RemoteDatabase {
             .post(&format!("/v1/table/{}/create", options.name))
             .body(data_buffer)
             .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE)
+            // This is currently expected by LanceDb cloud but will be removed soon.
             .header("x-request-id", "na")
             .send()
             .await?;
 
-        Ok(Arc::new(RemoteTable::new(
+        Ok(Table::new(Arc::new(RemoteTable::new(
             self.client.clone(),
             options.name,
-        )))
+        ))))
     }
 
-    async fn do_open_table(&self, _options: OpenTableBuilder) -> Result<TableRef> {
+    async fn do_open_table(&self, _options: OpenTableBuilder) -> Result<Table> {
         todo!()
     }
 

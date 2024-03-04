@@ -14,10 +14,8 @@
 
 use arrow_ipc::writer::FileWriter;
 use lance::dataset::ColumnAlteration as LanceColumnAlteration;
-use lancedb::{
-    ipc::ipc_file_to_batches,
-    table::{AddDataOptions, TableRef},
-};
+use lancedb::ipc::ipc_file_to_batches;
+use lancedb::table::{AddDataMode, Table as LanceDbTable};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
@@ -26,20 +24,52 @@ use crate::query::Query;
 
 #[napi]
 pub struct Table {
-    pub(crate) table: TableRef,
+    // We keep a duplicate of the table name so we can use it for error
+    // messages even if the table has been closed
+    name: String,
+    pub(crate) inner: Option<LanceDbTable>,
+}
+
+impl Table {
+    fn inner_ref(&self) -> napi::Result<&LanceDbTable> {
+        self.inner
+            .as_ref()
+            .ok_or_else(|| napi::Error::from_reason(format!("Table {} is closed", self.name)))
+    }
 }
 
 #[napi]
 impl Table {
-    pub(crate) fn new(table: TableRef) -> Self {
-        Self { table }
+    pub(crate) fn new(table: LanceDbTable) -> Self {
+        Self {
+            name: table.name().to_string(),
+            inner: Some(table),
+        }
+    }
+
+    #[napi]
+    pub fn display(&self) -> String {
+        match &self.inner {
+            None => format!("ClosedTable({})", self.name),
+            Some(inner) => inner.to_string(),
+        }
+    }
+
+    #[napi]
+    pub fn is_open(&self) -> bool {
+        self.inner.is_some()
+    }
+
+    #[napi]
+    pub fn close(&mut self) {
+        self.inner.take();
     }
 
     /// Return Schema as empty Arrow IPC file.
     #[napi]
     pub async fn schema(&self) -> napi::Result<Buffer> {
         let schema =
-            self.table.schema().await.map_err(|e| {
+            self.inner_ref()?.schema().await.map_err(|e| {
                 napi::Error::from_reason(format!("Failed to create IPC file: {}", e))
             })?;
         let mut writer = FileWriter::try_new(vec![], &schema)
@@ -53,52 +83,59 @@ impl Table {
     }
 
     #[napi]
-    pub async fn add(&self, buf: Buffer) -> napi::Result<()> {
+    pub async fn add(&self, buf: Buffer, mode: String) -> napi::Result<()> {
         let batches = ipc_file_to_batches(buf.to_vec())
             .map_err(|e| napi::Error::from_reason(format!("Failed to read IPC file: {}", e)))?;
-        self.table
-            .add(Box::new(batches), AddDataOptions::default())
-            .await
-            .map_err(|e| {
-                napi::Error::from_reason(format!(
-                    "Failed to add batches to table {}: {}",
-                    self.table, e
-                ))
-            })
+        let mut op = self.inner_ref()?.add(Box::new(batches));
+
+        op = if mode == "append" {
+            op.mode(AddDataMode::Append)
+        } else if mode == "overwrite" {
+            op.mode(AddDataMode::Overwrite)
+        } else {
+            return Err(napi::Error::from_reason(format!("Invalid mode: {}", mode)));
+        };
+
+        op.execute().await.map_err(|e| {
+            napi::Error::from_reason(format!(
+                "Failed to add batches to table {}: {}",
+                self.name, e
+            ))
+        })
     }
 
     #[napi]
     pub async fn count_rows(&self, filter: Option<String>) -> napi::Result<i64> {
-        self.table
+        self.inner_ref()?
             .count_rows(filter)
             .await
             .map(|val| val as i64)
             .map_err(|e| {
                 napi::Error::from_reason(format!(
                     "Failed to count rows in table {}: {}",
-                    self.table, e
+                    self.name, e
                 ))
             })
     }
 
     #[napi]
     pub async fn delete(&self, predicate: String) -> napi::Result<()> {
-        self.table.delete(&predicate).await.map_err(|e| {
+        self.inner_ref()?.delete(&predicate).await.map_err(|e| {
             napi::Error::from_reason(format!(
                 "Failed to delete rows in table {}: predicate={}",
-                self.table, e
+                self.name, e
             ))
         })
     }
 
     #[napi]
-    pub fn create_index(&self) -> IndexBuilder {
-        IndexBuilder::new(self.table.as_ref())
+    pub fn create_index(&self) -> napi::Result<IndexBuilder> {
+        Ok(IndexBuilder::new(self.inner_ref()?))
     }
 
     #[napi]
-    pub fn query(&self) -> Query {
-        Query::new(self)
+    pub fn query(&self) -> napi::Result<Query> {
+        Ok(Query::new(self.inner_ref()?.query()))
     }
 
     #[napi]
@@ -108,13 +145,13 @@ impl Table {
             .map(|sql| (sql.name, sql.value_sql))
             .collect::<Vec<_>>();
         let transforms = lance::dataset::NewColumnTransform::SqlExpressions(transforms);
-        self.table
+        self.inner_ref()?
             .add_columns(transforms, None)
             .await
             .map_err(|err| {
                 napi::Error::from_reason(format!(
                     "Failed to add columns to table {}: {}",
-                    self.table, err
+                    self.name, err
                 ))
             })?;
         Ok(())
@@ -134,13 +171,13 @@ impl Table {
             .map(LanceColumnAlteration::from)
             .collect::<Vec<_>>();
 
-        self.table
+        self.inner_ref()?
             .alter_columns(&alterations)
             .await
             .map_err(|err| {
                 napi::Error::from_reason(format!(
                     "Failed to alter columns in table {}: {}",
-                    self.table, err
+                    self.name, err
                 ))
             })?;
         Ok(())
@@ -149,12 +186,15 @@ impl Table {
     #[napi]
     pub async fn drop_columns(&self, columns: Vec<String>) -> napi::Result<()> {
         let col_refs = columns.iter().map(String::as_str).collect::<Vec<_>>();
-        self.table.drop_columns(&col_refs).await.map_err(|err| {
-            napi::Error::from_reason(format!(
-                "Failed to drop columns from table {}: {}",
-                self.table, err
-            ))
-        })?;
+        self.inner_ref()?
+            .drop_columns(&col_refs)
+            .await
+            .map_err(|err| {
+                napi::Error::from_reason(format!(
+                    "Failed to drop columns from table {}: {}",
+                    self.name, err
+                ))
+            })?;
         Ok(())
     }
 }
