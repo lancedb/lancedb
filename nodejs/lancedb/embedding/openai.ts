@@ -12,46 +12,50 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { type EmbeddingFunction } from './embedding_function'
-import type OpenAI from 'openai'
+import { type EmbeddingFunction } from "./embedding_function";
+import type OpenAI from "openai";
 
 export class OpenAIEmbeddingFunction implements EmbeddingFunction<string> {
-  private readonly _openai: OpenAI
-  private readonly _modelName: string
+  private readonly _openai: OpenAI;
+  private readonly _modelName: string;
 
-  constructor (sourceColumn: string, openAIKey: string, modelName: string = 'text-embedding-ada-002') {
+  constructor(
+    sourceColumn: string,
+    openAIKey: string,
+    modelName: string = "text-embedding-ada-002",
+  ) {
     /**
      * @type {import("openai").default}
      */
-    let Openai
+    let Openai;
     try {
       // eslint-disable-next-line @typescript-eslint/no-var-requires
-      Openai = require('openai')
+      Openai = require("openai");
     } catch {
-      throw new Error('please install openai@^4.24.1 using npm install openai')
+      throw new Error("please install openai@^4.24.1 using npm install openai");
     }
 
-    this.sourceColumn = sourceColumn
+    this.sourceColumn = sourceColumn;
     const configuration = {
-      apiKey: openAIKey
-    }
+      apiKey: openAIKey,
+    };
 
-    this._openai = new Openai(configuration)
-    this._modelName = modelName
+    this._openai = new Openai(configuration);
+    this._modelName = modelName;
   }
 
-  async embed (data: string[]): Promise<number[][]> {
+  async embed(data: string[]): Promise<number[][]> {
     const response = await this._openai.embeddings.create({
       model: this._modelName,
-      input: data
-    })
+      input: data,
+    });
 
-    const embeddings: number[][] = []
+    const embeddings: number[][] = [];
     for (let i = 0; i < response.data.length; i++) {
-      embeddings.push(response.data[i].embedding)
+      embeddings.push(response.data[i].embedding);
     }
-    return embeddings
+    return embeddings;
   }
 
-  sourceColumn: string
+  sourceColumn: string;
 }
