@@ -103,12 +103,12 @@ describe("Test creating index", () => {
     // TODO: check index type.
 
     // Search without specifying the column
-    let query_vector = data.toArray()[5].vec.toJSON();
-    let rst = await tbl.query().nearestTo(query_vector).limit(2).toArrow();
+    const query_vector = data.toArray()[5].vec.toJSON();
+    const rst = await tbl.query().nearestTo(query_vector).limit(2).toArrow();
     expect(rst.numRows).toBe(2);
 
     // Search with specifying the column
-    let rst2 = await tbl.search(query_vector, "vec").limit(2).toArrow();
+    const rst2 = await tbl.search(query_vector, "vec").limit(2).toArrow();
     expect(rst2.numRows).toBe(2);
     expect(rst.toString()).toEqual(rst2.toString());
   });
