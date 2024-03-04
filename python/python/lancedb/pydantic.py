@@ -36,16 +36,16 @@ from typing import (
 import numpy as np
 import pyarrow as pa
 import pydantic
-import semver
 from lance.arrow import (
     EncodedImageType,
 )
 from pydantic.fields import FieldInfo
 from pydantic_core import core_schema
 
-
 if TYPE_CHECKING:
+    import semver
     from pydantic.fields import FieldInfo
+
     from .embeddings import EmbeddingFunctionConfig
 
     PYDANTIC_VERSION = semver.Version.parse(pydantic.__version__)
