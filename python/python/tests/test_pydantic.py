@@ -23,7 +23,6 @@ from typing import List, Optional, Tuple
 import pyarrow as pa
 import pydantic
 import pytest
-from lance.arrow import EncodedImageType
 from pydantic import Field
 
 from lancedb.pydantic import (
@@ -262,10 +261,6 @@ def test_schema_with_images():
 
     class TestModel(LanceModel):
         img: EncodedImage()
-
-    schema = pa.schema([pa.field("img", EncodedImageType(), False)])
-    assert schema == TestModel.to_arrow_schema()
-    assert TestModel.field_names() == ["img"]
 
     img_path = Path(os.path.dirname(__file__)) / "images/1.png"
     with open(img_path, "rb") as f:

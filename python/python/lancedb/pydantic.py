@@ -36,19 +36,20 @@ from typing import (
 import numpy as np
 import pyarrow as pa
 import pydantic
+import semver
 from lance.arrow import (
     EncodedImageType,
 )
 from pydantic.fields import FieldInfo
 from pydantic_core import core_schema
 
+PYDANTIC_VERSION = semver.Version.parse(pydantic.__version__)
+
 if TYPE_CHECKING:
-    import semver
     from pydantic.fields import FieldInfo
 
     from .embeddings import EmbeddingFunctionConfig
 
-    PYDANTIC_VERSION = semver.Version.parse(pydantic.__version__)
     try:
         from pydantic import GetJsonSchemaHandler
         from pydantic.json_schema import JsonSchemaValue
