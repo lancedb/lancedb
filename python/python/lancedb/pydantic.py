@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import inspect
+import io
 import sys
 import types
 from abc import ABC, abstractmethod
@@ -38,11 +39,12 @@ import pydantic
 import semver
 from pydantic.fields import FieldInfo
 from lance.arrow import (
-    EncodedImageScalar,
-    ImageURIScalar,
-    ImageURIArray,
-    EncodedImageType,
     EncodedImageArray,
+    EncodedImageScalar,
+    EncodedImageType,
+    ImageURIArray,
+    ImageURIScalar,
+    ImageURIType,
 )
 
 PYDANTIC_VERSION = semver.Version.parse(pydantic.__version__)
@@ -203,165 +205,87 @@ class ImageMixin(ABC):
         raise NotImplementedError
 
 
-class Image(bytes, ImageMixin):
-    """Pydantic type for inlined images.
+def EncodedImage():
+    import PIL.Image
 
-    !!! warning
-        Experimental feature.
+    class EncodedImage(bytes, ImageMixin):
+        """Pydantic type for inlined images.
 
-    Examples
-    --------
+        !!! warning
+            Experimental feature.
 
-    >>> import pydantic
-    >>> from lancedb.pydantic import Image
-    ...
-    >>> class MyModel(pydantic.BaseModel):
-    ...     image: Image
-    >>> schema = pydantic_to_schema(MyModel)
-    >>> assert schema == pa.schema([
-    ...     pa.field("image", pa.binary(), False)
-    ... ])
-    """
+        Examples
+        --------
 
-    def __repr__(self):
-        return "Image()"
+        >>> import pydantic
+        >>> from lancedb.pydantic import EncodedImage
+        ...
+        >>> class MyModel(pydantic.BaseModel):
+        ...     image: EncodedImage()
+        >>> schema = pydantic_to_schema(MyModel)
+        >>> assert schema == pa.schema([
+        ...     pa.field("image", pa.binary(), False)
+        ... ])
+        """
 
-    @staticmethod
-    def value_arrow_type() -> pa.DataType:
-        return pa.binary()
+        def __repr__(self):
+            return "EncodedImage()"
 
-    @classmethod
-    def __get_pydantic_core_schema__(
-        cls, _source_type: Any, _handler: pydantic.GetCoreSchemaHandler
-    ) -> CoreSchema:
-        def validate_from_bytes(value: bytes) -> EncodedImageScalar:
-            return EncodedImageScalar(value)
-
-        from_bytes_schema = core_schema.chain_schema(
-            [
-                core_schema.bytes_schema(),
-                core_schema.no_info_plain_validator_function(validate_from_bytes),
-            ]
-        )
-
-        return core_schema.json_or_python_schema(
-            json_schema=from_bytes_schema,
-            python_schema=core_schema.union_schema(
-                [
-                    core_schema.is_instance_schema(EncodedImageArray),
-                    from_bytes_schema,
-                ]
-            ),
-            serialization=core_schema.plain_serializer_function_ser_schema(
-                lambda instance: instance.values
-            ),
-        )
-
-    @classmethod
-    def __get_pydantic_json_schema__(
-        cls, _core_schema: core_schema.CoreSchema, handler: GetJsonSchemaHandler
-    ) -> JsonSchemaValue:
-        return handler(core_schema.bytes_schema())
-
-    @classmethod
-    def __get_validators__(cls) -> Generator[Callable, None, None]:
-        yield cls.validate
-
-    # For pydantic v2
-    @classmethod
-    def validate(cls, v):
-        if isinstance(v, ImageURIArray):
-            v = v.read_uris()
-        if isinstance(v, pa.BinaryArray):
-            v = pa.ExtensionArray.from_storage(EncodedImageType(), v)
-        if not isinstance(v, EncodedImageArray):
-            raise TypeError("Invalid input array type", type(v))
-
-        return v
-
-    if PYDANTIC_VERSION < (2, 0):
+        @staticmethod
+        def value_arrow_type() -> pa.DataType:
+            return EncodedImageType()
 
         @classmethod
-        def __modify_schema__(cls, field_schema: Dict[str, Any]):
-            field_schema["type"] = "string"
-            field_schema["format"] = "binary"
+        def __get_pydantic_core_schema__(
+            cls, _source_type: Any, _handler: pydantic.GetCoreSchemaHandler
+        ) -> CoreSchema:
+            from_bytes_schema = core_schema.bytes_schema()
 
-
-class ImageURI(str, ImageMixin):
-    """Pydantic ImageUri Type.
-
-    !!! warning
-        Experimental feature.
-
-    Examples
-    --------
-
-    >>> import pydantic
-    >>> from lancedb.pydantic import ImageURI
-    ...
-    >>> class MyModel(pydantic.BaseModel):
-    ...     url: ImageURI()
-    >>> schema = pydantic_to_schema(MyModel)
-    >>> assert schema == pa.schema([
-    ...     pa.field("url", pa.utf8(), False),
-    ... ])
-    """        
-    def __repr__(self):
-        return "ImageURI()"
-
-    @staticmethod
-    def value_arrow_type() -> pa.DataType:
-        return pa.string()
-
-    @classmethod
-    def __get_pydantic_core_schema__(
-        cls, _source_type: Any, _handler: pydantic.GetCoreSchemaHandler
-    ) -> CoreSchema:
-        def validate_from_str(value: str) -> ImageURIScalar:
-            return ImageURIScalar(value)
-
-        from_str_schema = core_schema.chain_schema(
-            [
-                core_schema.str_schema(),
-                core_schema.no_info_plain_validator_function(validate_from_str),
-            ]
-        )
-
-        return core_schema.json_or_python_schema(
-            json_schema=from_str_schema,
-            python_schema=core_schema.union_schema(
-                [
-                    core_schema.is_instance_schema(ImageURIArray),
-                    from_str_schema,
-                ]
-            ),
-            serialization=core_schema.plain_serializer_function_ser_schema(
-                lambda instance: instance.values
-            ),
-        )
-
-    @classmethod
-    def __get_validators__(cls) -> Generator[Callable, None, None]:
-        yield cls.validate
-
-    # For pydantic v2
-    @classmethod
-    def validate(cls, v):
-        from lance.arrow import ImageURIArray, ImageURIType
-
-        if isinstance(v, (str, pa.StringArray)):
-            v = pa.ExtensionArray.from_storage(ImageURIType(), v)
-        if not isinstance(v, ImageURIArray):
-            raise TypeError("Invalid input array type", type(v))
-
-        return v
-
-    if PYDANTIC_VERSION < (2, 0):
+            return core_schema.json_or_python_schema(
+                json_schema=from_bytes_schema,
+                python_schema=core_schema.union_schema(
+                    [
+                        core_schema.is_instance_schema(PIL.Image.Image),
+                        from_bytes_schema,
+                    ]
+                ),
+                serialization=core_schema.plain_serializer_function_ser_schema(
+                    lambda instance: cls.validate(instance)
+                ),
+            )
 
         @classmethod
-        def __modify_schema__(cls, field_schema: Dict[str, Any]):
-            field_schema["type"] = "string"
-            field_schema["format"] = "string"
+        def __get_pydantic_json_schema__(
+            cls, _core_schema: core_schema.CoreSchema, handler: GetJsonSchemaHandler
+        ) -> JsonSchemaValue:
+            return handler(core_schema.bytes_schema())
+
+        @classmethod
+        def __get_validators__(cls) -> Generator[Callable, None, None]:
+            yield cls.validate
+
+        # For pydantic v2
+        @classmethod
+        def validate(cls, v):
+            if isinstance(v, bytes):
+                return v
+            if isinstance(v, PIL.Image.Image):
+                with io.BytesIO() as output:
+                    v.save(output, format=v.format)
+                    return output.getvalue()
+            raise TypeError(
+                "EncodedImage can take bytes or PIL.Image.Image "
+                f"as input but got {type(v)}"
+            )
+
+        if PYDANTIC_VERSION < (2, 0):
+
+            @classmethod
+            def __modify_schema__(cls, field_schema: Dict[str, Any]):
+                field_schema["type"] = "string"
+                field_schema["format"] = "binary"
+
+    return EncodedImage
 
 
 if PYDANTIC_VERSION.major < 2:

@@ -14,6 +14,8 @@
 import functools
 from copy import copy
 from datetime import date, datetime, timedelta
+import io
+import os
 from pathlib import Path
 from time import sleep
 from typing import List
@@ -30,7 +32,7 @@ import pytest_asyncio
 from lancedb.conftest import MockTextEmbeddingFunction
 from lancedb.db import AsyncConnection, LanceDBConnection
 from lancedb.embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
-from lancedb.pydantic import LanceModel, Vector
+from lancedb.pydantic import EncodedImage, LanceModel, Vector
 from lancedb.table import LanceTable
 from pydantic import BaseModel
 from lance.arrow import EncodedImageArray, EncodedImageType, ImageURIType
@@ -110,7 +112,6 @@ def test_create_table(db):
             pa.field("item", pa.string()),
             pa.field("price", pa.float32()),
             pa.field("encoded_image", EncodedImageType()),
-            pa.field("image_uris", ImageURIType()),
         ]
     )
     expected = pa.Table.from_arrays(
@@ -120,9 +121,6 @@ def test_create_table(db):
             pa.array([10.0, 20.0]),
             pa.ExtensionArray.from_storage(
                 EncodedImageType(), pa.array([b"foo", b"bar"], pa.binary())
-            ),
-            pa.ExtensionArray.from_storage(
-                ImageURIType(), pa.array(["/tmp/foo", "/tmp/bar"], pa.string())
             ),
         ],
         schema=schema,
@@ -134,14 +132,12 @@ def test_create_table(db):
                 "item": "foo",
                 "price": 10.0,
                 "encoded_image": b"foo",
-                "image_uris": "/tmp/foo",
             },
             {
                 "vector": [5.9, 26.5],
                 "item": "bar",
                 "price": 20.0,
                 "encoded_image": b"bar",
-                "image_uris": "/tmp/bar",
             },
         ]
     ]
@@ -1046,3 +1042,22 @@ async def test_time_travel(db_async: AsyncConnection):
     # Can't use restore if not checked out
     with pytest.raises(ValueError, match="checkout before running restore"):
         await table.restore()
+
+        
+def test_add_image(tmp_path):
+    pytest.importorskip("PIL")
+    import PIL.Image
+
+    db = lancedb.connect(tmp_path)
+
+    class TestModel(LanceModel):
+        img: EncodedImage()
+
+    img_path = Path(os.path.dirname(__file__)) / "images/1.png"
+    m1 = TestModel(img=PIL.Image.open(img_path))
+
+    def tobytes(m):
+        return PIL.Image.open(io.BytesIO(m.model_dump()["img"])).tobytes()
+
+    table = LanceTable.create(db, "my_table", schema=TestModel)
+    table.add([m1])

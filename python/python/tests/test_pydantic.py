@@ -12,6 +12,7 @@
 #  limitations under the License.
 
 
+import io
 import json
 import sys
 import os
@@ -23,13 +24,12 @@ import pyarrow as pa
 import pydantic
 import pytest
 import pytz
-from lance.arrow import ImageURIArray
 from pydantic import Field
+from lance.arrow import EncodedImageType
 
 from lancedb.pydantic import (
     PYDANTIC_VERSION,
-    Image,
-    ImageURI,
+    EncodedImage,
     LanceModel,
     Vector,
     pydantic_to_schema,
@@ -257,32 +257,25 @@ def test_lance_model():
     assert t == TestModel(vec=[0.0] * 16, li=[1, 2, 3])
 
 
-def test_lance_model_with_lance_types():
-    png_uris = [
-        "file://" + os.path.join(os.path.dirname(__file__), "images/1.png"),
-    ]
-    if os.name == "nt":
-        png_uris = [str(Path(x)) for x in png_uris]
-
-    default_image_uris = ImageURIArray.from_uris(png_uris)
-    default_encoded_images = default_image_uris.read_uris()
+def test_schema_with_images():
+    pytest.importorskip("PIL")
+    import PIL.Image
 
     class TestModel(LanceModel):
-        encoded_images: Image() = Field(default=default_encoded_images)
-        image_uris: ImageURI() = Field(default=default_image_uris)
+        img: EncodedImage()
 
-    schema = pydantic_to_schema(TestModel)
+    schema = pa.schema([pa.field("img", EncodedImageType(), False)])
     assert schema == TestModel.to_arrow_schema()
-    assert TestModel.field_names() == ["encoded_images", "image_uris"]
+    assert TestModel.field_names() == ["img"]
 
-    expected_model = TestModel()
+    img_path = Path(os.path.dirname(__file__)) / "images/1.png"
+    with open(img_path, "rb") as f:
+        img_bytes = f.read()
 
-    actual_model = TestModel(
-        encoded_images=default_encoded_images, image_uris=default_image_uris
-    )
-    assert expected_model == actual_model
+    m1 = TestModel(img=PIL.Image.open(img_path))
+    m2 = TestModel(img=img_bytes)
 
-    actual_model = TestModel(
-        encoded_images=default_encoded_images, image_uris=default_image_uris
-    )
-    assert expected_model == actual_model
+    def tobytes(m):
+        return PIL.Image.open(io.BytesIO(m.model_dump()["img"])).tobytes()
+
+    assert tobytes(m1) == tobytes(m2)
