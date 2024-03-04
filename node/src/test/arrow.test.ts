@@ -46,7 +46,7 @@ import {
   Struct as OldStruct,
   Schema as OldSchema,
   TimestampNanosecond as OldTimestampNanosecond,
-  Utf8 as OldUtf8,
+  Utf8 as OldUtf8
 } from 'apache-arrow-old'
 import { type EmbeddingFunction } from '../embedding/embedding_function'
 
@@ -348,13 +348,13 @@ describe('when using two versions of arrow', function () {
     schema.metadataVersion = MetadataVersion.V5
     const table = makeArrowTable(
       [],
-      { schema: schema as any }
+      { schema }
     )
 
     const buf = await fromTableToBuffer(table)
     assert.isAbove(buf.byteLength, 0)
     const actual = tableFromIPC(buf)
     const actualSchema = actual.schema
-    assert.deepEqual(actualSchema, schema as any)
+    assert.deepEqual(actualSchema, schema)
   })
 })

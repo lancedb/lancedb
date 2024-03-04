@@ -45,8 +45,8 @@ import {
   Type,
   Null,
   Int,
-  Precision,
-  DateUnit,
+  type Precision,
+  type DateUnit,
   Int8,
   Int16,
   Int32,
@@ -77,7 +77,7 @@ import {
   DurationSecond
 } from 'apache-arrow'
 import { type EmbeddingFunction } from './index'
-import { IntBitWidth, TimeBitWidth } from 'apache-arrow/type'
+import type { IntBitWidth, TimeBitWidth } from 'apache-arrow/type'
 
 /*
  * Options to control how a column should be converted to a vector array
@@ -246,7 +246,7 @@ export function makeArrowTable (
   }
 
   const opt = new MakeArrowTableOptions(options !== undefined ? options : {})
-  if (opt.schema) {
+  if (opt.schema !== undefined && opt.schema !== null) {
     opt.schema = sanitizeSchema(opt.schema)
   }
   const columns: Record<string, Vector> = {}
@@ -377,7 +377,7 @@ async function applyEmbeddings<T> (table: ArrowTable, embeddings?: EmbeddingFunc
   if (embeddings == null) {
     return table
   }
-  if (schema) {
+  if (schema !== undefined && schema !== null) {
     schema = sanitizeSchema(schema)
   }
 
@@ -490,7 +490,7 @@ export async function fromRecordsToBuffer<T> (
   embeddings?: EmbeddingFunction<T>,
   schema?: Schema
 ): Promise<Buffer> {
-  if (schema) {
+  if (schema !== undefined && schema !== null) {
     schema = sanitizeSchema(schema)
   }
   const table = await convertToTable(data, embeddings, { schema })
@@ -510,7 +510,7 @@ export async function fromRecordsToStreamBuffer<T> (
   embeddings?: EmbeddingFunction<T>,
   schema?: Schema
 ): Promise<Buffer> {
-  if (schema) {
+  if (schema !== null && schema !== undefined) {
     schema = sanitizeSchema(schema)
   }
   const table = await convertToTable(data, embeddings, { schema })
@@ -531,7 +531,7 @@ export async function fromTableToBuffer<T> (
   embeddings?: EmbeddingFunction<T>,
   schema?: Schema
 ): Promise<Buffer> {
-  if (schema) {
+  if (schema !== null && schema !== undefined) {
     schema = sanitizeSchema(schema)
   }
   const tableWithEmbeddings = await applyEmbeddings(table, embeddings, schema)
@@ -552,7 +552,7 @@ export async function fromTableToStreamBuffer<T> (
   embeddings?: EmbeddingFunction<T>,
   schema?: Schema
 ): Promise<Buffer> {
-  if (schema) {
+  if (schema !== null && schema !== undefined) {
     schema = sanitizeSchema(schema)
   }
   const tableWithEmbeddings = await applyEmbeddings(table, embeddings, schema)
@@ -684,7 +684,7 @@ function sanitizeTimestamp(typeLike: object) {
 
 function sanitizeTypedTimestamp(
   typeLike: object,
-  datatype:
+  Datatype:
     | typeof TimestampNanosecond
     | typeof TimestampMicrosecond
     | typeof TimestampMillisecond
@@ -694,7 +694,7 @@ function sanitizeTypedTimestamp(
   if ("timezone" in typeLike && typeof typeLike.timezone === "string") {
     timezone = typeLike.timezone
   }
-  return new datatype(timezone);
+  return new Datatype(timezone);
 }
 
 function sanitizeInterval(typeLike: object) {
@@ -750,7 +750,7 @@ function sanitizeUnion(typeLike: object) {
 
 function sanitizeTypedUnion(
   typeLike: object,
-  union_type: typeof DenseUnion | typeof SparseUnion
+  UnionType: typeof DenseUnion | typeof SparseUnion
 ) {
   if (!("typeIds" in typeLike)) {
     throw Error(
@@ -763,7 +763,7 @@ function sanitizeTypedUnion(
     );
   }
 
-  return new union_type(
+  return new UnionType(
     typeLike.typeIds as any,
     typeLike.children.map((child) => sanitizeField(child))
   );
@@ -973,12 +973,12 @@ function sanitizeField(fieldLike: unknown): Field {
       "The field passed in is missing a `type`/`name`/`nullable` property"
     );
   }
-  let type = sanitizeType(fieldLike.type);
-  let name = fieldLike.name;
+  const type = sanitizeType(fieldLike.type);
+  const name = fieldLike.name;
   if (!(typeof name === "string")) {
     throw Error("The field passed in had a non-string `name` property");
   }
-  let nullable = fieldLike.nullable;
+  const nullable = fieldLike.nullable;
   if (!(typeof nullable === "boolean")) {
     throw Error("The field passed in had a non-boolean `nullable` property");
   }
