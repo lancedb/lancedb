@@ -8,6 +8,7 @@ repository.workspace = true
 keywords.workspace = true
 categories.workspace = true
 exclude = ["index.node"]
+rust-version = "1.75"
 
 [lib]
 crate-type = ["cdylib"]
