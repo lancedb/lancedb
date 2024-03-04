@@ -6,7 +6,7 @@ import pyarrow as pa
 from pathlib import Path
 from tqdm import tqdm
 from pydantic import BaseModel
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Any
 from .llm import Openai, BaseLLM
 
 DEFAULT_PROMPT_TMPL = """\
@@ -62,7 +62,7 @@ class QADataset(BaseModel):
         }
         corpus = {
             "id": list(self.corpus.keys()),
-            "text": list(self.corpus.values()),
+            "text": [ val or " " for val in self.corpus.values()], # lance saves empty strings as null
         }
         relevant_docs = {
             "query_id": list(self.relevant_docs.keys()),
@@ -89,16 +89,16 @@ class QADataset(BaseModel):
     
     # generate queries as a convenience function
     @classmethod
-    def generate_qa_embedding_pairs(
+    def from_llm(
         cls,
-        nodes: 'List[TextNode]', # TODO: implement TextNode, currently using llama-index TextNode
+        nodes: 'List[TextChunk]' , # TODO: implement TextChunk, currently using llama-index TextNode
         llm: BaseLLM,
         qa_generate_prompt_tmpl: str = DEFAULT_PROMPT_TMPL,
         num_questions_per_chunk: int = 2,
     ) -> "QADataset":
         """Generate examples given a set of nodes."""
         node_dict = {
-            node.node_id: node.text
+            node.id: node.text
             for node in nodes
         }
 
@@ -124,22 +124,49 @@ class QADataset(BaseModel):
         return QADataset(
             queries=queries, corpus=node_dict, relevant_docs=relevant_docs
         )
-    
 
-class SimpleTextChunk(BaseModel):
+    @classmethod
+    def from_responses(cls, docs: List['TextChunk'], queries: Dict[str, str], relevant_docs: Dict[str, List[str]]):
+        """Create a QADataset from a list of TextChunks and a list of questions."""
+        node_dict = {
+            node.id: node.text
+            for node in docs
+        }
+        return cls(
+            queries=queries, corpus=node_dict, relevant_docs=relevant_docs
+        )
+
+
+class TextChunk(BaseModel):
     """Simple text chunk for generating questions."""
 
     text: str
-    chunk_id: str
-    doc_id: str
+    id: str
+    metadata: Dict[str, Any] = {}
 
     @classmethod
-    def from_chunk(cls, chunk) -> "SimpleTextChunk":
+    def from_chunk(cls, chunk: str, metadata: dict = {}) -> "TextChunk":
         """Create a SimpleTextChunk from a chunk."""
-        return cls(text=chunk.text, chunk_id=chunk.node_id, doc_id=chunk.doc_id)
+        # generate a unique id
+        return cls(text=chunk, id=str(uuid.uuid4()), metadata=metadata)
+    
+    @classmethod
+    def from_llama_index_node(cls, node):
+        """Convert a llama index node to a text chunk."""
+        return cls(text=node.text, id=node.node_id, metadata=node.metadata)
+    
+    @classmethod
+    def from_langchain_node(cls, node):
+        """Convert a langchaain node to a text chunk."""
+        raise NotImplementedError("Not implemented yet.")
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to a dictionary."""
+        return self.dict()
 
     def __str__(self) -> str:
         return self.text
 
     def __repr__(self) -> str:
-        return f"SimpleTextChunk(text={self.text}, chunk_id={self.chunk_id}, doc_id={self.doc_id})"
+        return f"SimpleTextChunk(text={self.text}, id={self.chunk_id}, metadata={self.metadata})"
+
