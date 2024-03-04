@@ -132,7 +132,7 @@ fn database_table_names(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let database = db.database.clone();
 
     rt.spawn(async move {
-        let tables_rst = database.table_names().await;
+        let tables_rst = database.table_names().execute().await;
 
         deferred.settle_with(&channel, move |mut cx| {
             let tables = tables_rst.or_throw(&mut cx)?;

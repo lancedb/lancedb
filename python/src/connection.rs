@@ -69,11 +69,20 @@ impl Connection {
         self.inner.take();
     }
 
-    pub fn table_names(self_: PyRef<'_, Self>) -> PyResult<&PyAny> {
-        let inner = self_.get_inner()?.clone();
-        future_into_py(self_.py(), async move {
-            inner.table_names().await.infer_error()
-        })
+    pub fn table_names(
+        self_: PyRef<'_, Self>,
+        page_token: Option<String>,
+        limit: Option<u32>,
+    ) -> PyResult<&PyAny> {
+        let inner = self_.inner.clone();
+        let mut op = inner.table_names();
+        if let Some(page_token) = page_token {
+            op = op.page_token(page_token);
+        }
+        if let Some(limit) = limit {
+            op = op.limit(limit);
+        }
+        future_into_py(self_.py(), async move { op.execute().await.infer_error() })
     }
 
     pub fn create_table<'a>(

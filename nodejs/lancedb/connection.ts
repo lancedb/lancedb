@@ -35,6 +35,18 @@ export interface CreateTableOptions {
   existOk: boolean;
 }
 
+export interface TableNamesOptions {
+  /**
+   * An optional token to page results.
+   *
+   * If set, then the results will start from the next table after the
+   * one with the given name.
+   */
+  page_token?: string;
+  /** An optional limit to the number of results to return. */
+  limit?: number;
+}
+
 /**
  * A LanceDB Connection that allows you to open tables and create new ones.
  *
@@ -80,9 +92,14 @@ export class Connection {
     return this.inner.display();
   }
 
-  /** List all the table names in this database. */
-  async tableNames(): Promise<string[]> {
-    return this.inner.tableNames();
+  /** List all the table names in this database.
+   *
+   * Tables will be returned in lexicographical order.
+   *
+   * @param options Optional parameters to control the listing.
+   */
+  async tableNames(options?: Partial<TableNamesOptions>): Promise<string[]> {
+    return this.inner.tableNames(options?.page_token, options?.limit);
   }
 
   /**
