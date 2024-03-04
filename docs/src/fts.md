@@ -82,7 +82,7 @@ or a **terms** search query like `"(Old AND Man) AND Sea"`. For more details on 
 query syntax, see Tantivy's [query parser rules](https://docs.rs/tantivy/latest/tantivy/query/struct.QueryParser.html).
 
 !!! tip "Note"
-    The query parser will raise an exception on queries that is ambiguous. For example, in the query `they could have been dogs OR cats`, `OR` is all caps so it is considered a keyword. But it's ambiguous how the left part should be treated. So if you search for that as is, you'll get `Syntax Error: they could have been dogs OR cats`
+    The query parser will raise an exception on queries that are ambiguous. For example, in the query `they could have been dogs OR cats`, `OR` is capitalized so it's considered a keyword query operator. But it's ambiguous how the left part should be treated. So if you submit this search query as is, you'll get `Syntax Error: they could have been dogs OR cats`.
 
     ```py
     # This raises a syntax error
