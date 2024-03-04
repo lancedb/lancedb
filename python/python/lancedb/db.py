@@ -435,7 +435,7 @@ class AsyncConnection(object):
     This could be a native connection (using lance) or a remote connection (e.g. for
     connecting to LanceDb Cloud)
 
-    Local connections do currently hold any open resources but they may do so in the
+    Local connections do not currently hold any open resources but they may do so in the
     future (for example, for shared cache or connections to catalog services) Remote
     connections represent an open connection to the remote server.  The [close] method
     can be used to release any underlying resources eagerly.  The connection can also

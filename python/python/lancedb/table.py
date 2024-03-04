@@ -1793,7 +1793,7 @@ def _sanitize_nans(data, fill_value, on_bad_vectors, vec_arr, vector_column_name
     return data
 
 
-class AsyncTable(object):
+class AsyncTable:
     """
     An AsyncTable is a collection of Records in a LanceDB Database.
 
