@@ -129,8 +129,9 @@ impl Connection {
         schema_buf: Buffer,
         mode: String,
     ) -> napi::Result<Table> {
-        let schema = ipc_file_to_schema(schema_buf.to_vec())
-            .map_err(|e| napi::Error::from_reason(format!("Failed to read IPC file: {}", e)))?;
+        let schema = ipc_file_to_schema(schema_buf.to_vec()).map_err(|e| {
+            napi::Error::from_reason(format!("Failed to marshal schema from JS to Rust: {}", e))
+        })?;
         let mode = Self::parse_create_mode_str(&mode)?;
         let tbl = self
             .get_inner()?
