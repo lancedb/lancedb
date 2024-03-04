@@ -22,7 +22,6 @@ env:
 
 jobs:
   lint:
-    if: false
     name: Lint
     runs-on: ubuntu-22.04
     defaults:
