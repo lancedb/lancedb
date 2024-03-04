@@ -145,10 +145,6 @@ def test_search_index_with_filter(table):
         for r in rs:
             assert r["id"] == 1
 
-        # test with row_id. should throw an error without duckdb
-        with pytest.raises(ValueError):
-            table.search("puppy").where("id=1").with_row_id(True).limit(10).to_arrow()
-
     # yes duckdb
     rs2 = table.search("puppy").where("id=1").limit(10).to_list()
     for r in rs2:

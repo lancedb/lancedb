@@ -857,7 +857,7 @@ def test_hybrid_search(db, tmp_path):
 
     assert result1 == result3
 
-    # with with filters
+    # with post filters
     result = (
         table.search("Arrrrggghhhhhhh", query_type="hybrid")
         .where("text='Arrrrggghhhhhhh'")
