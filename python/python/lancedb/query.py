@@ -559,7 +559,7 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
             import tantivy
         except ImportError:
             raise ImportError(
-                "Please install tantivy-py `pip install tantivy@git+https://github.com/quickwit-oss/tantivy-py#164adc87e1a033117001cf70e38c82a53014d985` to use the full text search feature."  # noqa: E501
+                "Please install tantivy-py `pip install tantivy` to use the full text search feature."  # noqa: E501
             )
 
         from .fts import search_index
