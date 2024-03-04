@@ -40,8 +40,9 @@ pub fn table_create_vector_index(mut cx: FunctionContext) -> JsResult<JsPromise>
         .unwrap_or("vector".to_string()); // Backward compatibility
 
     let tbl = table.clone();
-    let mut index_builder = tbl.create_index(&[&column_name]);
-    get_index_params_builder(&mut cx, index_params, &mut index_builder).or_throw(&mut cx)?;
+    let index_builder = tbl.create_index(&[&column_name]);
+    let index_builder =
+        get_index_params_builder(&mut cx, index_params, index_builder).or_throw(&mut cx)?;
 
     rt.spawn(async move {
         let idx_result = index_builder.build().await;
@@ -56,9 +57,9 @@ pub fn table_create_vector_index(mut cx: FunctionContext) -> JsResult<JsPromise>
 fn get_index_params_builder(
     cx: &mut FunctionContext,
     obj: Handle<JsObject>,
-    builder: &mut IndexBuilder,
-) -> crate::error::Result<()> {
-    match obj.get::<JsString, _, _>(cx, "type")?.value(cx).as_str() {
+    builder: IndexBuilder,
+) -> crate::error::Result<IndexBuilder> {
+    let mut builder = match obj.get::<JsString, _, _>(cx, "type")?.value(cx).as_str() {
         "ivf_pq" => builder.ivf_pq(),
         _ => {
             return Err(InvalidIndexType {
@@ -67,28 +68,29 @@ fn get_index_params_builder(
         }
     };
 
-    obj.get_opt::<JsString, _, _>(cx, "index_name")?
-        .map(|s| builder.name(s.value(cx).as_str()));
+    if let Some(index_name) = obj.get_opt::<JsString, _, _>(cx, "index_name")? {
+        builder = builder.name(index_name.value(cx).as_str());
+    }
 
     if let Some(metric_type) = obj.get_opt::<JsString, _, _>(cx, "metric_type")? {
         let metric_type = MetricType::try_from(metric_type.value(cx).as_str())?;
-        builder.metric_type(metric_type);
+        builder = builder.metric_type(metric_type);
     }
 
     if let Some(np) = obj.get_opt_u32(cx, "num_partitions")? {
-        builder.num_partitions(np);
+        builder = builder.num_partitions(np);
     }
     if let Some(ns) = obj.get_opt_u32(cx, "num_sub_vectors")? {
-        builder.num_sub_vectors(ns);
+        builder = builder.num_sub_vectors(ns);
     }
     if let Some(max_iters) = obj.get_opt_u32(cx, "max_iters")? {
-        builder.max_iterations(max_iters);
+        builder = builder.max_iterations(max_iters);
     }
     if let Some(num_bits) = obj.get_opt_u32(cx, "num_bits")? {
-        builder.num_bits(num_bits);
+        builder = builder.num_bits(num_bits);
     }
     if let Some(replace) = obj.get_opt::<JsBoolean, _, _>(cx, "replace")? {
-        builder.replace(replace.value(cx));
+        builder = builder.replace(replace.value(cx));
     }
-    Ok(())
+    Ok(builder)
 }

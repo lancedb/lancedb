@@ -45,7 +45,6 @@ export interface AddColumnsSql {
   valueSql: string
 }
 export interface ConnectionOptions {
-  uri: string
   apiKey?: string
   hostOverride?: string
   /**
@@ -71,10 +70,13 @@ export const enum WriteMode {
 export interface WriteOptions {
   mode?: WriteMode
 }
-export function connect(options: ConnectionOptions): Promise<Connection>
+export function connect(uri: string, options: ConnectionOptions): Promise<Connection>
 export class Connection {
   /** Create a new Connection instance from the given URI. */
-  static new(options: ConnectionOptions): Promise<Connection>
+  static new(uri: string, options: ConnectionOptions): Promise<Connection>
+  display(): string
+  isOpen(): boolean
+  close(): void
   /** List all tables in the dataset. */
   tableNames(): Promise<Array<string>>
   /**
@@ -86,6 +88,7 @@ export class Connection {
    *
    */
   createTable(name: string, buf: Buffer, mode: string): Promise<Table>
+  createEmptyTable(name: string, schemaBuf: Buffer, mode: string): Promise<Table>
   openTable(name: string): Promise<Table>
   /** Drop table with the name. Or raise an error if the table does not exist. */
   dropTable(name: string): Promise<void>
@@ -114,9 +117,12 @@ export class Query {
   executeStream(): Promise<RecordBatchIterator>
 }
 export class Table {
+  display(): string
+  isOpen(): boolean
+  close(): void
   /** Return Schema as empty Arrow IPC file. */
   schema(): Promise<Buffer>
-  add(buf: Buffer): Promise<void>
+  add(buf: Buffer, mode: string): Promise<void>
   countRows(filter?: string | undefined | null): Promise<number>
   delete(predicate: string): Promise<void>
   createIndex(): IndexBuilder

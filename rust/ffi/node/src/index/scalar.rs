@@ -19,7 +19,6 @@ use neon::{
 };
 
 use crate::{error::ResultExt, runtime, table::JsTable};
-use lancedb::Table;
 
 pub fn table_create_scalar_index(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let js_table = cx.this().downcast_or_throw::<JsBox<JsTable>, _>(&mut cx)?;
@@ -34,8 +33,6 @@ pub fn table_create_scalar_index(mut cx: FunctionContext) -> JsResult<JsPromise>
 
     rt.spawn(async move {
         let idx_result = table
-            .as_native()
-            .unwrap()
             .create_index(&[&column])
             .replace(replace)
             .build()
