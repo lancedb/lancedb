@@ -66,7 +66,7 @@ export class IndexBuilder {
       options?.num_sub_vectors,
       options?.num_bits,
       options?.max_iterations,
-      options?.sample_rate
+      options?.sample_rate,
     );
     return this;
   }
