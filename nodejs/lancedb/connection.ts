@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { toBuffer } from "./arrow";
-import { Connection as _NativeConnection } from "./native";
+import { fromTableToBuffer, makeArrowTable, makeEmptyTable } from "./arrow";
+import { Connection as LanceDbConnection } from "./native";
 import { Table } from "./table";
-import { Table as ArrowTable } from "apache-arrow";
+import { Table as ArrowTable, Schema } from "apache-arrow";
 
 export interface CreateTableOptions {
   /**
@@ -39,12 +39,45 @@ export interface CreateTableOptions {
  * A LanceDB Connection that allows you to open tables and create new ones.
  *
  * Connection could be local against filesystem or remote against a server.
+ *
+ * A Connection is intended to be a long lived object and may hold open
+ * resources such as HTTP connection pools.  This is generally fine and
+ * a single connection should be shared if it is going to be used many
+ * times. However, if you are finished with a connection, you may call
+ * close to eagerly free these resources.  Any call to a Connection
+ * method after it has been closed will result in an error.
+ *
+ * Closing a connection is optional.  Connections will automatically
+ * be closed when they are garbage collected.
+ *
+ * Any created tables are independent and will continue to work even if
+ * the underlying connection has been closed.
  */
 export class Connection {
-  readonly inner: _NativeConnection;
+  readonly inner: LanceDbConnection;
 
-  constructor(inner: _NativeConnection) {
+  constructor(inner: LanceDbConnection) {
     this.inner = inner;
+  }
+
+  /** Return true if the connection has not been closed */
+  isOpen(): boolean {
+    return this.inner.isOpen();
+  }
+
+  /** Close the connection, releasing any underlying resources.
+   *
+   * It is safe to call this method multiple times.
+   *
+   * Any attempt to use the connection after it is closed will result in an error.
+   */
+  close(): void {
+    this.inner.close();
+  }
+
+  /** Return a brief description of the connection */
+  display(): string {
+    return this.inner.display();
   }
 
   /** List all the table names in this database. */
@@ -81,8 +114,38 @@ export class Connection {
       mode = "exist_ok";
     }
 
-    const buf = toBuffer(data);
+    let table: ArrowTable;
+    if (data instanceof ArrowTable) {
+      table = data;
+    } else {
+      table = makeArrowTable(data);
+    }
+    const buf = await fromTableToBuffer(table);
     const innerTable = await this.inner.createTable(name, buf, mode);
+    return new Table(innerTable);
+  }
+
+  /**
+   * Creates a new empty Table
+   *
+   * @param {string} name - The name of the table.
+   * @param schema - The schema of the table
+   */
+  async createEmptyTable(
+    name: string,
+    schema: Schema,
+    options?: Partial<CreateTableOptions>
+  ): Promise<Table> {
+    let mode: string = options?.mode ?? "create";
+    const existOk = options?.existOk ?? false;
+
+    if (mode === "create" && existOk) {
+      mode = "exist_ok";
+    }
+
+    const table = makeEmptyTable(schema);
+    const buf = await fromTableToBuffer(table);
+    const innerTable = await this.inner.createEmptyTable(name, buf, mode);
     return new Table(innerTable);
   }
 

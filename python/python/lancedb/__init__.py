@@ -21,7 +21,7 @@ __version__ = importlib.metadata.version("lancedb")
 
 from ._lancedb import connect as lancedb_connect
 from .common import URI, sanitize_uri
-from .db import AsyncConnection, AsyncLanceDBConnection, DBConnection, LanceDBConnection
+from .db import AsyncConnection, DBConnection, LanceDBConnection
 from .remote.db import RemoteDBConnection
 from .schema import vector  # noqa: F401
 from .utils import sentry_log  # noqa: F401
@@ -168,8 +168,17 @@ async def connect_async(
     conn : DBConnection
         A connection to a LanceDB database.
     """
-    return AsyncLanceDBConnection(
+    if read_consistency_interval is not None:
+        read_consistency_interval_secs = read_consistency_interval.total_seconds()
+    else:
+        read_consistency_interval_secs = None
+
+    return AsyncConnection(
         await lancedb_connect(
-            sanitize_uri(uri), api_key, region, host_override, read_consistency_interval
+            sanitize_uri(uri),
+            api_key,
+            region,
+            host_override,
+            read_consistency_interval_secs,
         )
     )

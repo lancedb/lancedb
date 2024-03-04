@@ -28,6 +28,10 @@ pub struct RestfulLanceDbClient {
 }
 
 impl RestfulLanceDbClient {
+    pub fn host(&self) -> &str {
+        &self.host
+    }
+
     fn default_headers(
         api_key: &str,
         region: &str,
