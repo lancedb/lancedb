@@ -12,27 +12,68 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import * as os from "os";
-import * as path from "path";
 import * as fs from "fs";
+import * as path from "path";
+import * as tmp from "tmp";
 
-import { connect } from "../dist";
+import { Table, connect } from "../dist";
 import { Schema, Field, Float32, Int32, FixedSizeList, Int64, Float64 } from "apache-arrow";
 import { makeArrowTable } from "../dist/arrow";
 
+describe("Given a table", () => {
+  let tmpDir: tmp.DirResult;
+  let table: Table;
+  const schema = new Schema([
+    new Field("id", new Float64(), true),
+  ]);
+  beforeEach(async () => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+    const conn = await connect(tmpDir.name);
+    table = await conn.createEmptyTable("some_table", schema);
+  });
+  afterEach(() => tmpDir.removeCallback());
+
+  it("be displayable", async () => {
+    expect(table.display()).toMatch(/NativeTable\(some_table, uri=.*, read_consistency_interval=None\)/);
+    table.close()
+    expect(table.display()).toBe("ClosedTable(some_table)")
+  })
+
+  it("should let me add data", async () => {
+    await table.add([{ id: 1 }, { id: 2 }]);
+    await table.add([{ id: 1 }]);
+    await expect(table.countRows()).resolves.toBe(3);
+  })
+
+  it("should overwrite data if asked", async () => {
+    await table.add([{ id: 1 }, { id: 2 }]);
+    await table.add([{ id: 1 }], { mode: "overwrite" });
+    await expect(table.countRows()).resolves.toBe(1);
+  })
+
+  it("should let me close the table", async () => {
+    expect(table.isOpen()).toBe(true);
+    table.close();
+    expect(table.isOpen()).toBe(false);
+    expect(table.countRows()).rejects.toThrow("Table some_table is closed");
+  })
+
+})
+
 describe("Test creating index", () => {
-  let tmpDir: string;
+  let tmpDir: tmp.DirResult;
   const schema = new Schema([
     new Field("id", new Int32(), true),
     new Field("vec", new FixedSizeList(32, new Field("item", new Float32()))),
   ]);
 
   beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "index-"));
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
   });
+  afterEach(() => tmpDir.removeCallback());
 
   test("create vector index with no column", async () => {
-    const db = await connect(tmpDir);
+    const db = await connect(tmpDir.name);
     const data = makeArrowTable(
       Array(300)
         .fill(1)
@@ -50,7 +91,7 @@ describe("Test creating index", () => {
     await tbl.createIndex().build();
 
     // check index directory
-    const indexDir = path.join(tmpDir, "test.lance", "_indices");
+    const indexDir = path.join(tmpDir.name, "test.lance", "_indices");
     expect(fs.readdirSync(indexDir)).toHaveLength(1);
     // TODO: check index type.
 
@@ -66,7 +107,7 @@ describe("Test creating index", () => {
   });
 
   test("no vector column available", async () => {
-    const db = await connect(tmpDir);
+    const db = await connect(tmpDir.name);
     const tbl = await db.createTable(
       "no_vec",
       makeArrowTable([
@@ -79,7 +120,7 @@ describe("Test creating index", () => {
     );
 
     await tbl.createIndex("val").build();
-    const indexDir = path.join(tmpDir, "no_vec.lance", "_indices");
+    const indexDir = path.join(tmpDir.name, "no_vec.lance", "_indices");
     expect(fs.readdirSync(indexDir)).toHaveLength(1);
 
     for await (const r of tbl.query().filter("id > 1").select(["id"])) {
@@ -88,7 +129,7 @@ describe("Test creating index", () => {
   });
 
   test("two columns with different dimensions", async () => {
-    const db = await connect(tmpDir);
+    const db = await connect(tmpDir.name);
     const schema = new Schema([
       new Field("id", new Int32(), true),
       new Field("vec", new FixedSizeList(32, new Field("item", new Float32()))),
@@ -158,7 +199,7 @@ describe("Test creating index", () => {
   });
 
   test("create scalar index", async () => {
-    const db = await connect(tmpDir);
+    const db = await connect(tmpDir.name);
     const data = makeArrowTable(
       Array(300)
         .fill(1)
@@ -176,25 +217,27 @@ describe("Test creating index", () => {
     await tbl.createIndex("id").build();
 
     // check index directory
-    const indexDir = path.join(tmpDir, "test.lance", "_indices");
+    const indexDir = path.join(tmpDir.name, "test.lance", "_indices");
     expect(fs.readdirSync(indexDir)).toHaveLength(1);
     // TODO: check index type.
   });
 });
 
 describe("Read consistency interval", () => {
-  let tmpDir: string;
+
+  let tmpDir: tmp.DirResult;
   beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "read-consistency-"));
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
   });
+  afterEach(() => tmpDir.removeCallback());
 
   // const intervals = [undefined, 0, 0.1];
   const intervals = [0];
   test.each(intervals)("read consistency interval %p", async (interval) => {
-    const db = await connect({ uri: tmpDir });
+    const db = await connect(tmpDir.name);
     const table = await db.createTable("my_table", [{ id: 1 }]);
 
-    const db2 = await connect({ uri: tmpDir, readConsistencyInterval: interval });
+    const db2 = await connect(tmpDir.name, { readConsistencyInterval: interval });
     const table2 = await db2.openTable("my_table");
     expect(await table2.countRows()).toEqual(await table.countRows());
 
@@ -218,14 +261,18 @@ describe("Read consistency interval", () => {
 
 
 describe('schema evolution', function () {
-  let tmpDir: string;
+
+  let tmpDir: tmp.DirResult;
   beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "schema-evolution-"));
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
   });
+  afterEach(() => {
+    tmpDir.removeCallback();
+  })
 
   // Create a new sample table
   it('can add a new column to the schema', async function () {
-    const con = await connect(tmpDir)
+    const con = await connect(tmpDir.name)
     const table = await con.createTable('vectors', [
       { id: 1n, vector: [0.1, 0.2] }
     ])
@@ -241,7 +288,7 @@ describe('schema evolution', function () {
   });
 
   it('can alter the columns in the schema', async function () {
-    const con = await connect(tmpDir)
+    const con = await connect(tmpDir.name)
     const schema = new Schema([
       new Field('id', new Int64(), true),
       new Field('vector', new FixedSizeList(2, new Field('item', new Float32(), true)), true),
@@ -268,7 +315,7 @@ describe('schema evolution', function () {
   });
 
   it('can drop a column from the schema', async function () {
-    const con = await connect(tmpDir)
+    const con = await connect(tmpDir.name)
     const table = await con.createTable('vectors', [
       { id: 1n, vector: [0.1, 0.2] }
     ])

@@ -20,8 +20,7 @@ use arrow_schema::{DataType, Field, Schema};
 use futures::TryStreamExt;
 
 use lancedb::connection::Connection;
-use lancedb::table::AddDataOptions;
-use lancedb::{connect, Result, Table, TableRef};
+use lancedb::{connect, Result, Table as LanceDbTable};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -37,8 +36,8 @@ async fn main() -> Result<()> {
     println!("{:?}", db.table_names().await?);
     // --8<-- [end:list_names]
     let tbl = create_table(&db).await?;
-    create_index(tbl.as_ref()).await?;
-    let batches = search(tbl.as_ref()).await?;
+    create_index(&tbl).await?;
+    let batches = search(&tbl).await?;
     println!("{:?}", batches);
 
     create_empty_table(&db).await.unwrap();
@@ -63,7 +62,7 @@ async fn open_with_existing_tbl() -> Result<()> {
     Ok(())
 }
 
-async fn create_table(db: &Connection) -> Result<TableRef> {
+async fn create_table(db: &Connection) -> Result<LanceDbTable> {
     // --8<-- [start:create_table]
     const TOTAL: usize = 1000;
     const DIM: usize = 128;
@@ -125,15 +124,13 @@ async fn create_table(db: &Connection) -> Result<TableRef> {
         schema.clone(),
     );
     // --8<-- [start:add]
-    tbl.add(Box::new(new_batches), AddDataOptions::default())
-        .await
-        .unwrap();
+    tbl.add(Box::new(new_batches)).execute().await.unwrap();
     // --8<-- [end:add]
 
     Ok(tbl)
 }
 
-async fn create_empty_table(db: &Connection) -> Result<TableRef> {
+async fn create_empty_table(db: &Connection) -> Result<LanceDbTable> {
     // --8<-- [start:create_empty_table]
     let schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int32, false),
@@ -143,7 +140,7 @@ async fn create_empty_table(db: &Connection) -> Result<TableRef> {
     // --8<-- [end:create_empty_table]
 }
 
-async fn create_index(table: &dyn Table) -> Result<()> {
+async fn create_index(table: &LanceDbTable) -> Result<()> {
     // --8<-- [start:create_index]
     table
         .create_index(&["vector"])
@@ -154,7 +151,7 @@ async fn create_index(table: &dyn Table) -> Result<()> {
     // --8<-- [end:create_index]
 }
 
-async fn search(table: &dyn Table) -> Result<Vec<RecordBatch>> {
+async fn search(table: &LanceDbTable) -> Result<Vec<RecordBatch>> {
     // --8<-- [start:search]
     Ok(table
         .search(&[1.0; 128])

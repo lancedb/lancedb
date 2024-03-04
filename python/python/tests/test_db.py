@@ -11,6 +11,9 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
+import re
+from datetime import timedelta
+
 import lancedb
 import numpy as np
 import pandas as pd
@@ -251,6 +254,28 @@ def test_create_exist_ok(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_connect(tmp_path):
+    db = await lancedb.connect_async(tmp_path)
+    assert str(db) == f"NativeDatabase(uri={tmp_path}, read_consistency_interval=None)"
+
+    db = await lancedb.connect_async(
+        tmp_path, read_consistency_interval=timedelta(seconds=5)
+    )
+    assert str(db) == f"NativeDatabase(uri={tmp_path}, read_consistency_interval=5s)"
+
+
+@pytest.mark.asyncio
+async def test_close(tmp_path):
+    db = await lancedb.connect_async(tmp_path)
+    assert db.is_open()
+    db.close()
+    assert not db.is_open()
+
+    with pytest.raises(RuntimeError, match="is closed"):
+        await db.table_names()
+
+
+@pytest.mark.asyncio
 async def test_create_mode_async(tmp_path):
     db = await lancedb.connect_async(tmp_path)
     data = pd.DataFrame(
@@ -320,6 +345,39 @@ async def test_create_exist_ok_async(tmp_path):
     # )
     # with pytest.raises(ValueError):
     #     await db.create_table("test", schema=bad_schema, exist_ok=True)
+
+
+@pytest.mark.asyncio
+async def test_open_table(tmp_path):
+    db = await lancedb.connect_async(tmp_path)
+    data = pd.DataFrame(
+        {
+            "vector": [[3.1, 4.1], [5.9, 26.5]],
+            "item": ["foo", "bar"],
+            "price": [10.0, 20.0],
+        }
+    )
+    await db.create_table("test", data=data)
+
+    tbl = await db.open_table("test")
+    assert tbl.name == "test"
+    assert (
+        re.search(
+            r"NativeTable\(test, uri=.*test\.lance, read_consistency_interval=None\)",
+            str(tbl),
+        )
+        is not None
+    )
+    assert await tbl.schema() == pa.schema(
+        {
+            "vector": pa.list_(pa.float32(), list_size=2),
+            "item": pa.utf8(),
+            "price": pa.float64(),
+        }
+    )
+
+    with pytest.raises(ValueError, match="was not found"):
+        await db.open_table("does_not_exist")
 
 
 def test_delete_table(tmp_path):

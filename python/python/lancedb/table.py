@@ -19,7 +19,17 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import timedelta
 from functools import cached_property
-from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Tuple, Union
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Dict,
+    Iterable,
+    List,
+    Literal,
+    Optional,
+    Tuple,
+    Union,
+)
 
 import lance
 import numpy as np
@@ -28,7 +38,6 @@ import pyarrow.compute as pc
 import pyarrow.fs as pa_fs
 from lance import LanceDataset
 from lance.vector import vec_to_table
-from overrides import override
 
 from .common import DATA, VEC, VECTOR_COLUMN_NAME
 from .embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
@@ -1784,9 +1793,23 @@ def _sanitize_nans(data, fill_value, on_bad_vectors, vec_arr, vector_column_name
     return data
 
 
-class AsyncTable(ABC):
+class AsyncTable:
     """
-    A Table is a collection of Records in a LanceDB Database.
+    An AsyncTable is a collection of Records in a LanceDB Database.
+
+    An AsyncTable can be obtained from the
+    [AsyncConnection.create_table][lancedb.AsyncConnection.create_table] and
+    [AsyncConnection.open_table][lancedb.AsyncConnection.open_table] methods.
+
+    An AsyncTable object is expected to be long lived and reused for multiple
+    operations. AsyncTable objects will cache a certain amount of index data in memory.
+    This cache will be freed when the Table is garbage collected.  To eagerly free the
+    cache you can call the [close][AsyncTable.close] method.  Once the AsyncTable is
+    closed, it cannot be used for any further operations.
+
+    An AsyncTable can also be used as a context manager, and will automatically close
+    when the context is exited.  Closing a table is optional.  If you do not close the
+    table, it will be closed when the AsyncTable object is garbage collected.
 
     Examples
     --------
@@ -1821,21 +1844,49 @@ class AsyncTable(ABC):
     [Table.create_index][lancedb.table.Table.create_index].
     """
 
+    def __init__(self, table: LanceDBTable):
+        """Create a new Table object.
+
+        You should not create Table objects directly.
+
+        Use [AsyncConnection.create_table][lancedb.AsyncConnection.create_table] and
+        [AsyncConnection.open_table][lancedb.AsyncConnection.open_table] to obtain
+        Table objects."""
+        self._inner = table
+
+    def __repr__(self):
+        return self._inner.__repr__()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.close()
+
+    def is_open(self) -> bool:
+        """Return True if the table is closed."""
+        return self._inner.is_open()
+
+    def close(self):
+        """Close the table and free any resources associated with it.
+
+        It is safe to call this method multiple times.
+
+        Any attempt to use the table after it has been closed will raise an error."""
+        return self._inner.close()
+
     @property
-    @abstractmethod
     def name(self) -> str:
         """The name of the table."""
-        raise NotImplementedError
+        return self._inner.name()
 
-    @abstractmethod
     async def schema(self) -> pa.Schema:
         """The [Arrow Schema](https://arrow.apache.org/docs/python/api/datatypes.html#)
         of this Table
 
         """
-        raise NotImplementedError
+        return await self._inner.schema()
 
-    @abstractmethod
     async def count_rows(self, filter: Optional[str] = None) -> int:
         """
         Count the number of rows in the table.
@@ -1845,7 +1896,7 @@ class AsyncTable(ABC):
         filter: str, optional
             A SQL where clause to filter the rows to count.
         """
-        raise NotImplementedError
+        return await self._inner.count_rows(filter)
 
     async def to_pandas(self) -> "pd.DataFrame":
         """Return the table as a pandas DataFrame.
@@ -1856,7 +1907,6 @@ class AsyncTable(ABC):
         """
         return self.to_arrow().to_pandas()
 
-    @abstractmethod
     async def to_arrow(self) -> pa.Table:
         """Return the table as a pyarrow Table.
 
@@ -1904,7 +1954,6 @@ class AsyncTable(ABC):
         """
         raise NotImplementedError
 
-    @abstractmethod
     async def create_scalar_index(
         self,
         column: str,
@@ -1975,13 +2024,13 @@ class AsyncTable(ABC):
         """
         raise NotImplementedError
 
-    @abstractmethod
     async def add(
         self,
         data: DATA,
-        mode: str = "append",
-        on_bad_vectors: str = "error",
-        fill_value: float = 0.0,
+        *,
+        mode: Optional[Literal["append", "overwrite"]] = "append",
+        on_bad_vectors: Optional[str] = None,
+        fill_value: Optional[float] = None,
     ):
         """Add more data to the [Table](Table).
 
@@ -2005,7 +2054,20 @@ class AsyncTable(ABC):
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
 
         """
-        raise NotImplementedError
+        schema = await self.schema()
+        if on_bad_vectors is None:
+            on_bad_vectors = "error"
+        if fill_value is None:
+            fill_value = 0.0
+        data = _sanitize_data(
+            data,
+            schema,
+            metadata=schema.metadata,
+            on_bad_vectors=on_bad_vectors,
+            fill_value=fill_value,
+        )
+        await self._inner.add(data, mode)
+        register_event("add")
 
     def merge_insert(self, on: Union[str, Iterable[str]]) -> LanceMergeInsertBuilder:
         """
@@ -2067,7 +2129,6 @@ class AsyncTable(ABC):
 
         return LanceMergeInsertBuilder(self, on)
 
-    @abstractmethod
     async def search(
         self,
         query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
@@ -2150,11 +2211,9 @@ class AsyncTable(ABC):
         """
         raise NotImplementedError
 
-    @abstractmethod
     async def _execute_query(self, query: Query) -> pa.Table:
         pass
 
-    @abstractmethod
     async def _do_merge(
         self,
         merge: LanceMergeInsertBuilder,
@@ -2164,7 +2223,6 @@ class AsyncTable(ABC):
     ):
         pass
 
-    @abstractmethod
     async def delete(self, where: str):
         """Delete rows from the table.
 
@@ -2215,7 +2273,6 @@ class AsyncTable(ABC):
         """
         raise NotImplementedError
 
-    @abstractmethod
     async def update(
         self,
         where: Optional[str] = None,
@@ -2271,7 +2328,6 @@ class AsyncTable(ABC):
         """
         raise NotImplementedError
 
-    @abstractmethod
     async def cleanup_old_versions(
         self,
         older_than: Optional[timedelta] = None,
@@ -2303,7 +2359,6 @@ class AsyncTable(ABC):
         """
         raise NotImplementedError
 
-    @abstractmethod
     async def compact_files(self, *args, **kwargs):
         """
         Run the compaction process on the table.
@@ -2319,7 +2374,6 @@ class AsyncTable(ABC):
         """
         raise NotImplementedError
 
-    @abstractmethod
     async def add_columns(self, transforms: Dict[str, str]):
         """
         Add new columns with defined values.
@@ -2335,7 +2389,6 @@ class AsyncTable(ABC):
         """
         raise NotImplementedError
 
-    @abstractmethod
     async def alter_columns(self, alterations: Iterable[Dict[str, str]]):
         """
         Alter column names and nullability.
@@ -2358,7 +2411,6 @@ class AsyncTable(ABC):
         """
         raise NotImplementedError
 
-    @abstractmethod
     async def drop_columns(self, columns: Iterable[str]):
         """
         Drop columns from the table.
@@ -2370,127 +2422,4 @@ class AsyncTable(ABC):
         columns : Iterable[str]
             The names of the columns to drop.
         """
-        raise NotImplementedError
-
-
-class AsyncLanceTable(AsyncTable):
-    def __init__(self, table: LanceDBTable):
-        self._inner = table
-
-    @property
-    @override
-    def name(self) -> str:
-        return self._inner.name()
-
-    @override
-    async def schema(self) -> pa.Schema:
-        return await self._inner.schema()
-
-    @override
-    async def count_rows(self, filter: Optional[str] = None) -> int:
-        raise NotImplementedError
-
-    async def to_pandas(self) -> "pd.DataFrame":
-        return self.to_arrow().to_pandas()
-
-    @override
-    async def to_arrow(self) -> pa.Table:
-        raise NotImplementedError
-
-    async def create_index(
-        self,
-        metric="L2",
-        num_partitions=256,
-        num_sub_vectors=96,
-        vector_column_name: str = VECTOR_COLUMN_NAME,
-        replace: bool = True,
-        accelerator: Optional[str] = None,
-        index_cache_size: Optional[int] = None,
-    ):
-        raise NotImplementedError
-
-    @override
-    async def create_scalar_index(
-        self,
-        column: str,
-        *,
-        replace: bool = True,
-    ):
-        raise NotImplementedError
-
-    @override
-    async def add(
-        self,
-        data: DATA,
-        mode: str = "append",
-        on_bad_vectors: str = "error",
-        fill_value: float = 0.0,
-    ):
-        raise NotImplementedError
-
-    def merge_insert(self, on: Union[str, Iterable[str]]) -> LanceMergeInsertBuilder:
-        on = [on] if isinstance(on, str) else list(on.iter())
-
-        return LanceMergeInsertBuilder(self, on)
-
-    @override
-    async def search(
-        self,
-        query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
-        vector_column_name: Optional[str] = None,
-        query_type: str = "auto",
-    ) -> LanceQueryBuilder:
-        raise NotImplementedError
-
-    @override
-    async def _execute_query(self, query: Query) -> pa.Table:
-        pass
-
-    @override
-    async def _do_merge(
-        self,
-        merge: LanceMergeInsertBuilder,
-        new_data: DATA,
-        on_bad_vectors: str,
-        fill_value: float,
-    ):
-        pass
-
-    @override
-    async def delete(self, where: str):
-        raise NotImplementedError
-
-    @override
-    async def update(
-        self,
-        where: Optional[str] = None,
-        values: Optional[dict] = None,
-        *,
-        values_sql: Optional[Dict[str, str]] = None,
-    ):
-        raise NotImplementedError
-
-    @override
-    async def cleanup_old_versions(
-        self,
-        older_than: Optional[timedelta] = None,
-        *,
-        delete_unverified: bool = False,
-    ) -> CleanupStats:
-        raise NotImplementedError
-
-    @override
-    async def compact_files(self, *args, **kwargs):
-        raise NotImplementedError
-
-    @override
-    async def add_columns(self, transforms: Dict[str, str]):
-        raise NotImplementedError
-
-    @override
-    async def alter_columns(self, alterations: Iterable[Dict[str, str]]):
-        raise NotImplementedError
-
-    @override
-    async def drop_columns(self, columns: Iterable[str]):
         raise NotImplementedError

@@ -14,17 +14,18 @@
 
 //! IPC support
 
-use std::io::Cursor;
+use std::{io::Cursor, sync::Arc};
 
 use arrow_array::{RecordBatch, RecordBatchReader};
-use arrow_ipc::{reader::StreamReader, writer::FileWriter};
+use arrow_ipc::{reader::FileReader, writer::FileWriter};
+use arrow_schema::Schema;
 
 use crate::{Error, Result};
 
 /// Convert a Arrow IPC file to a batch reader
 pub fn ipc_file_to_batches(buf: Vec<u8>) -> Result<impl RecordBatchReader> {
     let buf_reader = Cursor::new(buf);
-    let reader = StreamReader::try_new(buf_reader, None)?;
+    let reader = FileReader::try_new(buf_reader, None)?;
     Ok(reader)
 }
 
@@ -42,6 +43,20 @@ pub fn batches_to_ipc_file(batches: &[RecordBatch]) -> Result<Vec<u8>> {
     }
     writer.finish()?;
     Ok(writer.into_inner()?)
+}
+
+/// Convert a schema to an Arrow IPC file with 0 batches
+pub fn schema_to_ipc_file(schema: &Schema) -> Result<Vec<u8>> {
+    let mut writer = FileWriter::try_new(vec![], schema)?;
+    writer.finish()?;
+    Ok(writer.into_inner()?)
+}
+
+/// Retrieve the schema from an Arrow IPC file
+pub fn ipc_file_to_schema(buf: Vec<u8>) -> Result<Arc<Schema>> {
+    let buf_reader = Cursor::new(buf);
+    let reader = FileReader::try_new(buf_reader, None)?;
+    Ok(reader.schema())
 }
 
 #[cfg(test)]
@@ -71,7 +86,7 @@ mod tests {
     fn test_ipc_file_to_batches() -> Result<()> {
         let batch = create_record_batch()?;
 
-        let mut writer = StreamWriter::try_new(vec![], &batch.schema())?;
+        let mut writer = FileWriter::try_new(vec![], &batch.schema())?;
         writer.write(&batch)?;
         writer.finish()?;
 

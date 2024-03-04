@@ -13,7 +13,7 @@
 // limitations under the License.
 
 import { Connection } from "./connection";
-import { Connection as NativeConnection, ConnectionOptions } from "./native.js";
+import { Connection as LanceDbConnection, ConnectionOptions } from "./native.js";
 
 export {
   ConnectionOptions,
@@ -23,7 +23,6 @@ export {
 } from "./native.js";
 export { Connection } from "./connection";
 export { Table } from "./table";
-export { Data } from "./arrow";
 export { IvfPQOptions, IndexBuilder } from "./indexer";
 
 /**
@@ -39,26 +38,9 @@ export { IvfPQOptions, IndexBuilder } from "./indexer";
  *
  * @see {@link ConnectionOptions} for more details on the URI format.
  */
-export async function connect(uri: string): Promise<Connection>;
-export async function connect(
-  opts: Partial<ConnectionOptions>
-): Promise<Connection>;
-export async function connect(
-  args: string | Partial<ConnectionOptions>
-): Promise<Connection> {
-  let opts: ConnectionOptions;
-  if (typeof args === "string") {
-    opts = { uri: args };
-  } else {
-    opts = Object.assign(
-      {
-        uri: "",
-        apiKey: undefined,
-        hostOverride: undefined,
-      },
-      args
-    );
-  }
-  const nativeConn = await NativeConnection.new(opts);
+export async function connect(uri: string, opts?: Partial<ConnectionOptions>): Promise<Connection>
+{
+  opts = opts ?? {};
+  const nativeConn = await LanceDbConnection.new(uri, opts);
   return new Connection(nativeConn);
 }

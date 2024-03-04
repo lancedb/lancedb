@@ -15,24 +15,16 @@
 use std::sync::Arc;
 
 use arrow_array::RecordBatchReader;
-use async_trait::async_trait;
 
 use crate::Result;
 
-#[async_trait]
-pub(super) trait MergeInsert: Send + Sync {
-    async fn do_merge_insert(
-        &self,
-        params: MergeInsertBuilder,
-        new_data: Box<dyn RecordBatchReader + Send>,
-    ) -> Result<()>;
-}
+use super::TableInternal;
 
 /// A builder used to create and run a merge insert operation
 ///
 /// See [`super::Table::merge_insert`] for more context
 pub struct MergeInsertBuilder {
-    table: Arc<dyn MergeInsert>,
+    table: Arc<dyn TableInternal>,
     pub(super) on: Vec<String>,
     pub(super) when_matched_update_all: bool,
     pub(super) when_matched_update_all_filt: Option<String>,
@@ -42,7 +34,7 @@ pub struct MergeInsertBuilder {
 }
 
 impl MergeInsertBuilder {
-    pub(super) fn new(table: Arc<dyn MergeInsert>, on: Vec<String>) -> Self {
+    pub(super) fn new(table: Arc<dyn TableInternal>, on: Vec<String>) -> Self {
         Self {
             table,
             on,
