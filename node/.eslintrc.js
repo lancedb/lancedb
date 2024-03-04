@@ -13,5 +13,10 @@ module.exports = {
   },
   rules: {
     "@typescript-eslint/method-signature-style": "off",
+    "@typescript-eslint/quotes": "off",
+    "@typescript-eslint/semi": "off",
+    "@typescript-eslint/explicit-function-return-type": "off",
+    "@typescript-eslint/space-before-function-paren": "off",
+    "@typescript-eslint/indent": "off",
   }
 }

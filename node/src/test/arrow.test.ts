@@ -34,8 +34,20 @@ import {
   List,
   DataType,
   Dictionary,
-  Int64
+  Int64,
+  MetadataVersion
 } from 'apache-arrow'
+import {
+  Dictionary as OldDictionary,
+  Field as OldField,
+  FixedSizeList as OldFixedSizeList,
+  Float32 as OldFloat32,
+  Int32 as OldInt32,
+  Struct as OldStruct,
+  Schema as OldSchema,
+  TimestampNanosecond as OldTimestampNanosecond,
+  Utf8 as OldUtf8
+} from 'apache-arrow-old'
 import { type EmbeddingFunction } from '../embedding/embedding_function'
 
 chaiUse(chaiAsPromised)
@@ -316,5 +328,33 @@ describe('convertToTable', function () {
 describe('makeEmptyTable', function () {
   it('will make an empty table', async function () {
     await checkTableCreation(async (_, __, schema) => makeEmptyTable(schema))
+  })
+})
+
+describe('when using two versions of arrow', function () {
+  it('can still import data', async function() {
+    const schema = new OldSchema([
+      new OldField('id', new OldInt32()),
+      new OldField('vector', new OldFixedSizeList(1024, new OldField("item", new OldFloat32(), true))),
+      new OldField('struct', new OldStruct([
+        new OldField('nested', new OldDictionary(new OldUtf8(), new OldInt32(), 1, true)),
+        new OldField('ts_with_tz', new OldTimestampNanosecond("some_tz")),
+        new OldField('ts_no_tz', new OldTimestampNanosecond(null))
+      ]))
+    ]) as any
+    // We use arrow version 13 to emulate a "foreign arrow" and this version doesn't have metadataVersion
+    // In theory, this wouldn't matter.  We don't rely on that property.  However, it causes deepEqual to
+    // fail so we patch it back in
+    schema.metadataVersion = MetadataVersion.V5
+    const table = makeArrowTable(
+      [],
+      { schema }
+    )
+
+    const buf = await fromTableToBuffer(table)
+    assert.isAbove(buf.byteLength, 0)
+    const actual = tableFromIPC(buf)
+    const actualSchema = actual.schema
+    assert.deepEqual(actualSchema, schema)
   })
 })
