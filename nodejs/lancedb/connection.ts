@@ -105,7 +105,7 @@ export class Connection {
   async createTable(
     name: string,
     data: Record<string, unknown>[] | ArrowTable,
-    options?: Partial<CreateTableOptions>
+    options?: Partial<CreateTableOptions>,
   ): Promise<Table> {
     let mode: string = options?.mode ?? "create";
     const existOk = options?.existOk ?? false;
@@ -134,7 +134,7 @@ export class Connection {
   async createEmptyTable(
     name: string,
     schema: Schema,
-    options?: Partial<CreateTableOptions>
+    options?: Partial<CreateTableOptions>,
   ): Promise<Table> {
     let mode: string = options?.mode ?? "create";
     const existOk = options?.existOk ?? false;

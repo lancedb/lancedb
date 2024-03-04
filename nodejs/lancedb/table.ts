@@ -13,7 +13,11 @@
 // limitations under the License.
 
 import { Schema, tableFromIPC } from "apache-arrow";
-import { AddColumnsSql, ColumnAlteration, Table as _NativeTable } from "./native";
+import {
+  AddColumnsSql,
+  ColumnAlteration,
+  Table as _NativeTable,
+} from "./native";
 import { Query } from "./query";
 import { IndexBuilder } from "./indexer";
 import { Data, fromDataToBuffer } from "./arrow";
@@ -49,7 +53,6 @@ export class Table {
     this.inner = inner;
   }
 
-
   /** Return true if the table has not been closed */
   isOpen(): boolean {
     return this.inner.isOpen();
@@ -84,7 +87,7 @@ export class Table {
    * @return The number of rows added to the table
    */
   async add(data: Data, options?: Partial<AddDataOptions>): Promise<void> {
-    let mode = options?.mode ?? "append";
+    const mode = options?.mode ?? "append";
 
     const buffer = await fromDataToBuffer(data);
     await this.inner.add(buffer, mode);
