@@ -1,8 +1,9 @@
 import os
 
-import lancedb
 import numpy as np
 import pytest
+
+import lancedb
 from lancedb.conftest import MockTextEmbeddingFunction  # noqa
 from lancedb.embeddings import EmbeddingFunctionRegistry
 from lancedb.pydantic import LanceModel, Vector

@@ -14,18 +14,17 @@
 
 import io
 import json
-import sys
 import os
+import sys
 from datetime import date, datetime
+from pathlib import Path
 from typing import List, Optional, Tuple
 
-from pathlib import Path
 import pyarrow as pa
 import pydantic
 import pytest
-import pytz
-from pydantic import Field
 from lance.arrow import EncodedImageType
+from pydantic import Field
 
 from lancedb.pydantic import (
     PYDANTIC_VERSION,

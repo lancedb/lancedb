@@ -13,10 +13,11 @@
 import sys
 
 import lance
-import lancedb
 import numpy as np
 import pyarrow as pa
 import pytest
+
+import lancedb
 from lancedb.conftest import MockTextEmbeddingFunction
 from lancedb.embeddings import (
     EmbeddingFunctionConfig,

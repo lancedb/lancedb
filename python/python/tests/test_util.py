@@ -15,6 +15,7 @@ import os
 import pathlib
 
 import pytest
+
 from lancedb.util import get_uri_scheme, join_uri
 
 

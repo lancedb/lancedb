@@ -14,11 +14,12 @@ import importlib
 import io
 import os
 
-import lancedb
 import numpy as np
 import pandas as pd
 import pytest
 import requests
+
+import lancedb
 from lancedb.embeddings import get_registry
 from lancedb.pydantic import LanceModel, Vector
 
@@ -184,9 +185,10 @@ def test_imagebind(tmp_path):
     import shutil
     import tempfile
 
-    import lancedb.embeddings.imagebind
     import pandas as pd
     import requests
+
+    import lancedb.embeddings.imagebind
     from lancedb.embeddings import get_registry
     from lancedb.pydantic import LanceModel, Vector
 

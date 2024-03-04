@@ -14,10 +14,11 @@ import os
 import random
 from unittest import mock
 
-import lancedb as ldb
 import numpy as np
 import pandas as pd
 import pytest
+
+import lancedb as ldb
 
 pytest.importorskip("lancedb.fts")
 tantivy = pytest.importorskip("tantivy")

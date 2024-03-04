@@ -13,8 +13,9 @@
 
 import os
 
-import lancedb
 import pytest
+
+import lancedb
 
 # You need to setup AWS credentials an a base path to run this test. Example
 #    AWS_PROFILE=default TEST_S3_BASE_URL=s3://my_bucket/dataset pytest tests/test_io.py

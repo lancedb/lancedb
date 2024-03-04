@@ -37,29 +37,25 @@ import numpy as np
 import pyarrow as pa
 import pydantic
 import semver
-from pydantic.fields import FieldInfo
 from lance.arrow import (
-    EncodedImageArray,
-    EncodedImageScalar,
     EncodedImageType,
-    ImageURIArray,
-    ImageURIScalar,
-    ImageURIType,
 )
+from pydantic.fields import FieldInfo
+from pydantic_core import core_schema
 
-PYDANTIC_VERSION = semver.Version.parse(pydantic.__version__)
-try:
-    from pydantic_core import CoreSchema, core_schema
-    from pydantic import GetJsonSchemaHandler
-    from pydantic.json_schema import JsonSchemaValue
-except ImportError:
-    if PYDANTIC_VERSION >= (2,):
-        raise
 
 if TYPE_CHECKING:
     from pydantic.fields import FieldInfo
-
     from .embeddings import EmbeddingFunctionConfig
+
+    PYDANTIC_VERSION = semver.Version.parse(pydantic.__version__)
+    try:
+        from pydantic import GetJsonSchemaHandler
+        from pydantic.json_schema import JsonSchemaValue
+        from pydantic_core import CoreSchema
+    except ImportError:
+        if PYDANTIC_VERSION >= (2,):
+            raise
 
 
 class FixedSizeListMixin(ABC):
@@ -135,7 +131,7 @@ def Vector(
         @classmethod
         def __get_pydantic_core_schema__(
             cls, _source_type: Any, _handler: pydantic.GetCoreSchemaHandler
-        ) -> CoreSchema:
+        ) -> "CoreSchema":
             return core_schema.no_info_after_validator_function(
                 cls,
                 core_schema.list_schema(
@@ -238,7 +234,7 @@ def EncodedImage():
         @classmethod
         def __get_pydantic_core_schema__(
             cls, _source_type: Any, _handler: pydantic.GetCoreSchemaHandler
-        ) -> CoreSchema:
+        ) -> "CoreSchema":
             from_bytes_schema = core_schema.bytes_schema()
 
             return core_schema.json_or_python_schema(
@@ -256,8 +252,8 @@ def EncodedImage():
 
         @classmethod
         def __get_pydantic_json_schema__(
-            cls, _core_schema: core_schema.CoreSchema, handler: GetJsonSchemaHandler
-        ) -> JsonSchemaValue:
+            cls, _core_schema: "CoreSchema", handler: "GetJsonSchemaHandler"
+        ) -> "JsonSchemaValue":
             return handler(core_schema.bytes_schema())
 
         @classmethod

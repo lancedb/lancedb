@@ -12,30 +12,31 @@
 #  limitations under the License.
 
 import functools
-from copy import copy
-from datetime import date, datetime, timedelta
 import io
 import os
+from copy import copy
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from time import sleep
 from typing import List
 from unittest.mock import PropertyMock, patch
 
 import lance
-import lancedb
 import numpy as np
 import pandas as pd
 import polars as pl
 import pyarrow as pa
 import pytest
 import pytest_asyncio
+from lance.arrow import EncodedImageType
+from pydantic import BaseModel
+
+import lancedb
 from lancedb.conftest import MockTextEmbeddingFunction
 from lancedb.db import AsyncConnection, LanceDBConnection
 from lancedb.embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
 from lancedb.pydantic import EncodedImage, LanceModel, Vector
 from lancedb.table import LanceTable
-from pydantic import BaseModel
-from lance.arrow import EncodedImageArray, EncodedImageType, ImageURIType
 
 
 class MockDB:
