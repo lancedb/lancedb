@@ -36,6 +36,7 @@ from typing import (
 import numpy as np
 import pyarrow as pa
 import pydantic
+from .util import attempt_import_or_raise
 import semver
 from lance.arrow import (
     EncodedImageType,
@@ -203,6 +204,7 @@ class ImageMixin(ABC):
 
 
 def EncodedImage():
+    attempt_import_or_raise("PIL", "PIL or pip install lancedb[embeddings]")
     import PIL.Image
 
     class EncodedImage(bytes, ImageMixin):
