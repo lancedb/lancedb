@@ -81,7 +81,7 @@ enum BadVectorHandling {
 /// A builder for configuring a [`Connection::table_names`] operation
 pub struct TableNamesBuilder {
     parent: Arc<dyn ConnectionInternal>,
-    pub(crate) page_token: Option<String>,
+    pub(crate) start_after: Option<String>,
     pub(crate) limit: Option<u32>,
 }
 
@@ -89,15 +89,18 @@ impl TableNamesBuilder {
     fn new(parent: Arc<dyn ConnectionInternal>) -> Self {
         Self {
             parent,
-            page_token: None,
+            start_after: None,
             limit: None,
         }
     }
 
-    /// If specified then any table names equal to or that come lexicographically before
-    /// the supplied token will be ignored.
-    pub fn page_token(mut self, page_token: String) -> Self {
-        self.page_token = Some(page_token);
+    /// If present, only return names that come lexicographically after the supplied
+    /// value.
+    ///
+    /// This can be combined with limit to implement pagination by setting this to
+    /// the last table name from the previous page.
+    pub fn start_after(mut self, start_after: String) -> Self {
+        self.start_after = Some(start_after);
         self
     }
 
@@ -669,10 +672,10 @@ impl ConnectionInternal for Database {
             .filter_map(|p| p.file_stem().and_then(|s| s.to_str().map(String::from)))
             .collect::<Vec<String>>();
         f.sort();
-        if let Some(page_token) = options.page_token {
+        if let Some(start_after) = options.start_after {
             let index = f
                 .iter()
-                .position(|name| name.as_str() > page_token.as_str())
+                .position(|name| name.as_str() > start_after.as_str())
                 .unwrap_or(f.len());
             f.drain(0..index);
         }
@@ -808,7 +811,7 @@ mod tests {
 
         let tables = db
             .table_names()
-            .page_token(names[30].clone())
+            .start_after(names[30].clone())
             .execute()
             .await
             .unwrap();
@@ -817,7 +820,7 @@ mod tests {
 
         let tables = db
             .table_names()
-            .page_token(names[30].clone())
+            .start_after(names[30].clone())
             .limit(7)
             .execute()
             .await

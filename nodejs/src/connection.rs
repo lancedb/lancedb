@@ -91,12 +91,12 @@ impl Connection {
     #[napi]
     pub async fn table_names(
         &self,
-        page_token: Option<String>,
+        start_after: Option<String>,
         limit: Option<u32>,
     ) -> napi::Result<Vec<String>> {
-        let mut op = self.conn.table_names();
-        if let Some(page_token) = page_token {
-            op = op.page_token(page_token);
+        let mut op = self.get_inner()?.table_names();
+        if let Some(start_after) = start_after {
+            op = op.start_after(start_after);
         }
         if let Some(limit) = limit {
             op = op.limit(limit);

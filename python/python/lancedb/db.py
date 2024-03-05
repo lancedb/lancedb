@@ -319,9 +319,9 @@ class LanceDBConnection(DBConnection):
     def uri(self) -> str:
         return self._uri
 
-    async def _async_get_table_names(self, page_token: Optional[str], limit: int):
+    async def _async_get_table_names(self, start_after: Optional[str], limit: int):
         conn = AsyncConnection(await lancedb_connect(self.uri))
-        return await conn.table_names(page_token=page_token, limit=limit)
+        return await conn.table_names(start_after=start_after, limit=limit)
 
     @override
     def table_names(
@@ -498,15 +498,18 @@ class AsyncConnection(object):
         self._inner.close()
 
     async def table_names(
-        self, *, page_token: Optional[str] = None, limit: Optional[int] = None
+        self, *, start_after: Optional[str] = None, limit: Optional[int] = None
     ) -> Iterable[str]:
         """List all tables in this database, in sorted order
 
         Parameters
         ----------
-        page_token: str, optional
-            The token to use for pagination. If not present, start from the beginning.
-            Typically, this token is last table name from the previous page.
+        start_after: str, optional
+            If present, only return names that come lexicographically after the supplied
+            value.
+
+            This can be combined with limit to implement pagination by setting this to
+            the last table name from the previous page.
         limit: int, default 10
             The number of results to return.
 
@@ -514,7 +517,7 @@ class AsyncConnection(object):
         -------
         Iterable of str
         """
-        return await self._inner.table_names(page_token=page_token, limit=limit)
+        return await self._inner.table_names(start_after=start_after, limit=limit)
 
     async def create_table(
         self,

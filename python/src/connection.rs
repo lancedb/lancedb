@@ -71,13 +71,13 @@ impl Connection {
 
     pub fn table_names(
         self_: PyRef<'_, Self>,
-        page_token: Option<String>,
+        start_after: Option<String>,
         limit: Option<u32>,
     ) -> PyResult<&PyAny> {
-        let inner = self_.inner.clone();
+        let inner = self_.get_inner()?.clone();
         let mut op = inner.table_names();
-        if let Some(page_token) = page_token {
-            op = op.page_token(page_token);
+        if let Some(start_after) = start_after {
+            op = op.start_after(start_after);
         }
         if let Some(limit) = limit {
             op = op.limit(limit);

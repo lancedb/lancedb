@@ -186,8 +186,8 @@ async def test_table_names_async(tmp_path):
     assert await db.table_names() == ["test1", "test2", "test3"]
 
     assert await db.table_names(limit=1) == ["test1"]
-    assert await db.table_names(page_token="test1", limit=1) == ["test2"]
-    assert await db.table_names(page_token="test1") == ["test2", "test3"]
+    assert await db.table_names(start_after="test1", limit=1) == ["test2"]
+    assert await db.table_names(start_after="test1") == ["test2", "test3"]
 
 
 def test_create_mode(tmp_path):

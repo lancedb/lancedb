@@ -82,7 +82,7 @@ export class Connection {
   close(): void;
   /** List all tables in the dataset. */
   tableNames(
-    pageToken?: string | undefined | null,
+    startAfter?: string | undefined | null,
     limit?: number | undefined | null,
   ): Promise<Array<string>>;
   /**

@@ -66,8 +66,8 @@ impl ConnectionInternal for RemoteDatabase {
         if let Some(limit) = options.limit {
             req = req.query(&[("limit", limit)]);
         }
-        if let Some(page_token) = options.page_token {
-            req = req.query(&[("page_token", page_token)]);
+        if let Some(start_after) = options.start_after {
+            req = req.query(&[("page_token", start_after)]);
         }
         let rsp = req.send().await?;
         let rsp = self.client.check_response(rsp).await?;

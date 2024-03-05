@@ -37,12 +37,13 @@ export interface CreateTableOptions {
 
 export interface TableNamesOptions {
   /**
-   * An optional token to page results.
+   * If present, only return names that come lexicographically after the
+   * supplied value.
    *
-   * If set, then the results will start from the next table after the
-   * one with the given name.
+   * This can be combined with limit to implement pagination by setting this to
+   * the last table name from the previous page.
    */
-  page_token?: string;
+  start_after?: string;
   /** An optional limit to the number of results to return. */
   limit?: number;
 }
@@ -99,7 +100,7 @@ export class Connection {
    * @param options Optional parameters to control the listing.
    */
   async tableNames(options?: Partial<TableNamesOptions>): Promise<string[]> {
-    return this.inner.tableNames(options?.page_token, options?.limit);
+    return this.inner.tableNames(options?.start_after, options?.limit);
   }
 
   /**
