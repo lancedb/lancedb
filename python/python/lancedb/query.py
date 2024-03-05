@@ -106,8 +106,8 @@ class Query(pydantic.BaseModel):
 
 
 class LanceQueryBuilder(ABC):
-    """Build LanceDB query based on specific query type:
-    vector or full text search.
+    """An abstract query builder. Subclasses are defined for vector search,
+    full text search, hybrid, and plain SQL filtering.
     """
 
     @classmethod
@@ -118,6 +118,22 @@ class LanceQueryBuilder(ABC):
         query_type: str,
         vector_column_name: str,
     ) -> LanceQueryBuilder:
+        """
+        Create a query builder based on the given query and query type.
+
+        Parameters
+        ----------
+        table: Table
+            The table to query.
+        query: Optional[Union[np.ndarray, str, "PIL.Image.Image", Tuple]]
+            The query to use. If None, an empty query builder is returned
+            which performs simple SQL filtering.
+        query_type: str
+            The type of query to perform. One of "vector", "fts", "hybrid", or "auto".
+            If "auto", the query type is inferred based on the query.
+        vector_column_name: str
+            The name of the vector column to use for vector search.
+        """
         if query is None:
             return LanceEmptyQueryBuilder(table)
 
@@ -636,6 +652,16 @@ class LanceEmptyQueryBuilder(LanceQueryBuilder):
 
 
 class LanceHybridQueryBuilder(LanceQueryBuilder):
+    """
+    A query builder that performs hybrid vector and full text search.
+    Results are combined and reranked based on the specified reranker.
+    By default, the results are reranked using the LinearCombinationReranker.
+
+    To make the vector and fts results comparable, the scores are normalized.
+    Instead of normalizing scores, the `normalize` parameter can be set to "rank"
+    in the `rerank` method to convert the scores to ranks and then normalize them.
+    """
+
     def __init__(self, table: "Table", query: str, vector_column: str):
         super().__init__(table)
         self._validate_fts_index()
