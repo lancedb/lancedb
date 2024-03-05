@@ -18,6 +18,7 @@ import numpy as np
 import pandas.testing as tm
 import pyarrow as pa
 import pytest
+
 from lancedb.db import LanceDBConnection
 from lancedb.pydantic import LanceModel, Vector
 from lancedb.query import LanceVectorQueryBuilder, Query
@@ -102,6 +103,7 @@ def test_query_builder_batches(table):
         .to_batches(1)
     )
     assert len(rs) == 2
+    assert all(isinstance(item, pa.RecordBatch) for item in rs)
     assert len(rs[0]["id"]) == 1
     assert all(rs[0].to_pandas()["vector"][0] == [1.0, 2.0])
     assert rs[0].to_pandas()["id"][0] == 1
@@ -115,6 +117,7 @@ def test_query_builder_batches(table):
         .to_batches(2)
     )
     assert len(rs) == 1
+    assert all(isinstance(item, pa.RecordBatch) for item in rs)
     assert len(rs[0]["id"]) == 2
     assert all(rs[0].to_pandas()["vector"][0] == [1.0, 2.0])
     assert rs[0].to_pandas()["id"][0] == 1

@@ -16,7 +16,17 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, List, Literal, Optional, Tuple, Type, Union
+from typing import (
+    TYPE_CHECKING,
+    Dict,
+    Iterable,
+    List,
+    Literal,
+    Optional,
+    Tuple,
+    Type,
+    Union,
+)
 
 import deprecation
 import numpy as np
@@ -267,13 +277,18 @@ class LanceQueryBuilder(ABC):
         """
         return self.to_arrow().to_pylist()
 
-    def to_batches(self, max_chunksize) -> list:
+    def to_batches(self, max_chunksize) -> Iterable[pa.RecordBatch]:
         """
-        Execute the query and return the results as a list of dictionaries.
+        Execute the query and return the result as an iterator of RecordBatch objects.
 
-        Each list entry is a dictionary with the selected column names as keys,
-        or all table columns if `select` is not called. The vector and the "_distance"
-        fields are returned whether or not they're explicitly selected.
+        Parameters
+        ----------
+        max_chunksize: int
+            The maximum number of selected records in a RecordBatch object.
+
+        Returns
+        -------
+        Iterable[pa.RecordBatch]
         """
         return self.to_arrow().to_batches(max_chunksize)
 
