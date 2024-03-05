@@ -89,9 +89,19 @@ impl Connection {
 
     /// List all tables in the dataset.
     #[napi]
-    pub async fn table_names(&self) -> napi::Result<Vec<String>> {
-        self.get_inner()?
-            .table_names()
+    pub async fn table_names(
+        &self,
+        start_after: Option<String>,
+        limit: Option<u32>,
+    ) -> napi::Result<Vec<String>> {
+        let mut op = self.get_inner()?.table_names();
+        if let Some(start_after) = start_after {
+            op = op.start_after(start_after);
+        }
+        if let Some(limit) = limit {
+            op = op.limit(limit);
+        }
+        op.execute()
             .await
             .map_err(|e| napi::Error::from_reason(format!("{}", e)))
     }

@@ -20,7 +20,7 @@ import {
 } from "./native";
 
 class RecordBatchIterator implements AsyncIterator<RecordBatch> {
-  private promised_inner?: Promise<NativeBatchIterator>;
+  private promisedInner?: Promise<NativeBatchIterator>;
   private inner?: NativeBatchIterator;
 
   constructor(
@@ -29,13 +29,13 @@ class RecordBatchIterator implements AsyncIterator<RecordBatch> {
   ) {
     // TODO: check promise reliably so we dont need to pass two arguments.
     this.inner = inner;
-    this.promised_inner = promise;
+    this.promisedInner = promise;
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async next(): Promise<IteratorResult<RecordBatch<any>>> {
     if (this.inner === undefined) {
-      this.inner = await this.promised_inner;
+      this.inner = await this.promisedInner;
     }
     if (this.inner === undefined) {
       throw new Error("Invalid iterator state state");
@@ -115,8 +115,8 @@ export class Query implements AsyncIterable<RecordBatch> {
   /**
    * Set the refine factor for the query.
    */
-  refineFactor(refine_factor: number): Query {
-    this.inner.refineFactor(refine_factor);
+  refineFactor(refineFactor: number): Query {
+    this.inner.refineFactor(refineFactor);
     return this;
   }
 

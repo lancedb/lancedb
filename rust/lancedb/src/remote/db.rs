@@ -19,7 +19,9 @@ use reqwest::header::CONTENT_TYPE;
 use serde::Deserialize;
 use tokio::task::spawn_blocking;
 
-use crate::connection::{ConnectionInternal, CreateTableBuilder, OpenTableBuilder};
+use crate::connection::{
+    ConnectionInternal, CreateTableBuilder, OpenTableBuilder, TableNamesBuilder,
+};
 use crate::error::Result;
 use crate::Table;
 
@@ -59,14 +61,15 @@ impl std::fmt::Display for RemoteDatabase {
 
 #[async_trait]
 impl ConnectionInternal for RemoteDatabase {
-    async fn table_names(&self) -> Result<Vec<String>> {
-        let rsp = self
-            .client
-            .get("/v1/table/")
-            .query(&[("limit", 10)])
-            .query(&[("page_token", "")])
-            .send()
-            .await?;
+    async fn table_names(&self, options: TableNamesBuilder) -> Result<Vec<String>> {
+        let mut req = self.client.get("/v1/table/");
+        if let Some(limit) = options.limit {
+            req = req.query(&[("limit", limit)]);
+        }
+        if let Some(start_after) = options.start_after {
+            req = req.query(&[("page_token", start_after)]);
+        }
+        let rsp = req.send().await?;
         let rsp = self.client.check_response(rsp).await?;
         Ok(rsp.json::<ListTablesResponse>().await?.tables)
     }
