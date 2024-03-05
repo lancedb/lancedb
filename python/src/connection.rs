@@ -69,11 +69,20 @@ impl Connection {
         self.inner.take();
     }
 
-    pub fn table_names(self_: PyRef<'_, Self>) -> PyResult<&PyAny> {
+    pub fn table_names(
+        self_: PyRef<'_, Self>,
+        start_after: Option<String>,
+        limit: Option<u32>,
+    ) -> PyResult<&PyAny> {
         let inner = self_.get_inner()?.clone();
-        future_into_py(self_.py(), async move {
-            inner.table_names().await.infer_error()
-        })
+        let mut op = inner.table_names();
+        if let Some(start_after) = start_after {
+            op = op.start_after(start_after);
+        }
+        if let Some(limit) = limit {
+            op = op.limit(limit);
+        }
+        future_into_py(self_.py(), async move { op.execute().await.infer_error() })
     }
 
     pub fn create_table<'a>(
