@@ -177,10 +177,18 @@ def test_syntax(table):
     table.create_fts_index("text")
     with pytest.raises(ValueError, match="Syntax Error"):
         table.search("they could have been dogs OR cats").limit(10).to_list()
+
+    # these should work
+
+    # terms queries
+    table.search('"they could have been dogs" OR cats').limit(10).to_list()
+    table.search("(they AND could) OR (have AND been AND dogs) OR cats").limit(
+        10
+    ).to_list()
+
+    # phrase queries
     table.search("they could have been dogs OR cats").phrase_query().limit(10).to_list()
-    # this should work
     table.search('"they could have been dogs OR cats"').limit(10).to_list()
-    # this should work too
     table.search('''"the cats OR dogs were not really 'pets' at all"''').limit(
         10
     ).to_list()

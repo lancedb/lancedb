@@ -24,6 +24,12 @@ pip install lancedb
 
 ::: lancedb.query.LanceQueryBuilder
 
+::: lancedb.query.LanceVectorQueryBuilder
+
+::: lancedb.query.LanceFtsQueryBuilder
+
+::: lancedb.query.LanceHybridQueryBuilder
+
 ## Embeddings
 
 ::: lancedb.embeddings.registry.EmbeddingFunctionRegistry
@@ -62,10 +68,22 @@ pip install lancedb
 
 ## Integrations
 
-### Pydantic
+## Pydantic
 
 ::: lancedb.pydantic.pydantic_to_schema
 
 ::: lancedb.pydantic.vector
 
 ::: lancedb.pydantic.LanceModel
+
+## Reranking
+
+::: lancedb.rerankers.linear_combination.LinearCombinationReranker
+
+::: lancedb.rerankers.cohere.CohereReranker
+
+::: lancedb.rerankers.colbert.ColbertReranker
+
+::: lancedb.rerankers.cross_encoder.CrossEncoderReranker
+
+::: lancedb.rerankers.openai.OpenaiReranker
