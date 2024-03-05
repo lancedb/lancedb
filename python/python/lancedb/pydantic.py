@@ -36,13 +36,14 @@ from typing import (
 import numpy as np
 import pyarrow as pa
 import pydantic
-from .util import attempt_import_or_raise
 import semver
 from lance.arrow import (
     EncodedImageType,
 )
 from pydantic.fields import FieldInfo
 from pydantic_core import core_schema
+
+from .util import attempt_import_or_raise
 
 PYDANTIC_VERSION = semver.Version.parse(pydantic.__version__)
 
@@ -204,7 +205,7 @@ class ImageMixin(ABC):
 
 
 def EncodedImage():
-    attempt_import_or_raise("PIL", "PIL or pip install lancedb[embeddings]")
+    attempt_import_or_raise("PIL", "pillow or pip install lancedb[embeddings]")
     import PIL.Image
 
     class EncodedImage(bytes, ImageMixin):

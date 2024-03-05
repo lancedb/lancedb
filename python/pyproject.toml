@@ -57,7 +57,7 @@ tests = [
     "duckdb",
     "pytz",
     "polars>=0.19",
-    "PIL"
+    "pillow",
 ]
 dev = ["ruff", "pre-commit"]
 docs = [
