@@ -587,19 +587,26 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         scores = pa.array(scores)
         output_tbl = self._table.to_lance().take(row_ids, columns=self._columns)
         output_tbl = output_tbl.append_column("score", scores)
+        # this needs to match vector search results which are uint64
+        row_ids = pa.array(row_ids, type=pa.uint64())
 
         if self._where is not None:
+            tmp_name = "__lancedb__duckdb__indexer__"
+            output_tbl = output_tbl.append_column(
+                tmp_name, pa.array(range(len(output_tbl)))
+            )
             try:
                 # TODO would be great to have Substrait generate pyarrow compute
                 # expressions or conversely have pyarrow support SQL expressions
                 # using Substrait
                 import duckdb
 
-                output_tbl = (
-                    duckdb.sql("SELECT * FROM output_tbl")
-                    .filter(self._where)
-                    .to_arrow_table()
-                )
+                indexer = duckdb.sql(
+                    f"SELECT {tmp_name} FROM output_tbl WHERE {self._where}"
+                ).to_arrow_table()[tmp_name]
+                output_tbl = output_tbl.take(indexer).drop([tmp_name])
+                row_ids = row_ids.take(indexer)
+
             except ImportError:
                 import tempfile
 
@@ -609,10 +616,11 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
                 with tempfile.TemporaryDirectory() as tmp:
                     ds = lance.write_dataset(output_tbl, tmp)
                     output_tbl = ds.to_table(filter=self._where)
+                    indexer = output_tbl[tmp_name]
+                    row_ids = row_ids.take(indexer)
+                    output_tbl = output_tbl.drop([tmp_name])
 
         if self._with_row_id:
-            # Need to set this to uint explicitly as vector results are in uint64
-            row_ids = pa.array(row_ids, type=pa.uint64())
             output_tbl = output_tbl.append_column("_rowid", row_ids)
         return output_tbl
 

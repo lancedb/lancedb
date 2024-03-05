@@ -893,7 +893,16 @@ def test_hybrid_search(db, tmp_path):
     result3 = table.search(
         "Our father who art in heaven", query_type="hybrid"
     ).to_pydantic(MyTable)
+
     assert result1 == result3
+
+    # with post filters
+    result = (
+        table.search("Arrrrggghhhhhhh", query_type="hybrid")
+        .where("text='Arrrrggghhhhhhh'")
+        .to_list()
+    )
+    len(result) == 1
 
 
 @pytest.mark.parametrize(
