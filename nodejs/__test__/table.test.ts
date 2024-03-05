@@ -103,12 +103,12 @@ describe("Test creating index", () => {
     // TODO: check index type.
 
     // Search without specifying the column
-    const query_vector = data.toArray()[5].vec.toJSON();
-    const rst = await tbl.query().nearestTo(query_vector).limit(2).toArrow();
+    const queryVector = data.toArray()[5].vec.toJSON();
+    const rst = await tbl.query().nearestTo(queryVector).limit(2).toArrow();
     expect(rst.numRows).toBe(2);
 
     // Search with specifying the column
-    const rst2 = await tbl.search(query_vector, "vec").limit(2).toArrow();
+    const rst2 = await tbl.search(queryVector, "vec").limit(2).toArrow();
     expect(rst2.numRows).toBe(2);
     expect(rst.toString()).toEqual(rst2.toString());
   });
@@ -169,6 +169,7 @@ describe("Test creating index", () => {
     );
     tbl
       .createIndex("vec")
+      // eslint-disable-next-line @typescript-eslint/naming-convention
       .ivf_pq({ num_partitions: 2, num_sub_vectors: 2 })
       .build();
 
@@ -199,10 +200,10 @@ describe("Test creating index", () => {
     const query64 = Array(64)
       .fill(1)
       .map(() => Math.random());
-    const rst64_1 = await tbl.query().nearestTo(query64).limit(2).toArrow();
-    const rst64_2 = await tbl.search(query64, "vec2").limit(2).toArrow();
-    expect(rst64_1.toString()).toEqual(rst64_2.toString());
-    expect(rst64_1.numRows).toBe(2);
+    const rst64Query = await tbl.query().nearestTo(query64).limit(2).toArrow();
+    const rst64Search = await tbl.search(query64, "vec2").limit(2).toArrow();
+    expect(rst64Query.toString()).toEqual(rst64Search.toString());
+    expect(rst64Query.numRows).toBe(2);
   });
 
   test("create scalar index", async () => {

@@ -62,6 +62,6 @@ async fn cloud_integration_test() {
 
     assert_eq!(tbl.name(), name);
 
-    let table_names = db.table_names().await.unwrap();
+    let table_names = db.table_names().execute().await.unwrap();
     assert!(table_names.contains(&name));
 }
