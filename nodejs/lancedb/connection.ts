@@ -43,7 +43,7 @@ export interface TableNamesOptions {
    * This can be combined with limit to implement pagination by setting this to
    * the last table name from the previous page.
    */
-  start_after?: string;
+  startAfter?: string;
   /** An optional limit to the number of results to return. */
   limit?: number;
 }
@@ -100,7 +100,7 @@ export class Connection {
    * @param options Optional parameters to control the listing.
    */
   async tableNames(options?: Partial<TableNamesOptions>): Promise<string[]> {
-    return this.inner.tableNames(options?.start_after, options?.limit);
+    return this.inner.tableNames(options?.startAfter, options?.limit);
   }
 
   /**

@@ -168,6 +168,7 @@ function sanitizeTimestamp(typeLike: object) {
 
 function sanitizeTypedTimestamp(
   typeLike: object,
+  // eslint-disable-next-line @typescript-eslint/naming-convention
   Datatype:
     | typeof TimestampNanosecond
     | typeof TimestampMicrosecond
@@ -235,6 +236,7 @@ function sanitizeUnion(typeLike: object) {
 
 function sanitizeTypedUnion(
   typeLike: object,
+  // eslint-disable-next-line @typescript-eslint/naming-convention
   UnionType: typeof DenseUnion | typeof SparseUnion,
 ) {
   if (!("typeIds" in typeLike)) {

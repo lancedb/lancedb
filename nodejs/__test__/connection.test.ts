@@ -79,10 +79,10 @@ describe("given a connection", () => {
     tables = await db.tableNames({ limit: 1 });
     expect(tables).toEqual(["a"]);
 
-    tables = await db.tableNames({ limit: 1, start_after: "a" });
+    tables = await db.tableNames({ limit: 1, startAfter: "a" });
     expect(tables).toEqual(["b"]);
 
-    tables = await db.tableNames({ start_after: "a" });
+    tables = await db.tableNames({ startAfter: "a" });
     expect(tables).toEqual(["b", "c"]);
   });
 });
