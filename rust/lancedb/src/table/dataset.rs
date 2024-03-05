@@ -156,7 +156,7 @@ impl DatasetConsistencyWrapper {
         self.0.write().await.set_latest(dataset);
     }
 
-    async fn reload(&self) -> Result<()> {
+    pub async fn reload(&self) -> Result<()> {
         self.0.write().await.reload().await
     }
 
