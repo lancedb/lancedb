@@ -486,7 +486,7 @@ impl Database {
                         engine = Some(value.to_string());
                     } else if key == MIRRORED_STORE {
                         if cfg!(windows) {
-                            return Err(Error::Lance {
+                            return Err(Error::NotSupported {
                                 message: "mirrored store is not supported on windows".into(),
                             });
                         }
