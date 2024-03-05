@@ -24,7 +24,6 @@ mod table;
 #[napi(object)]
 #[derive(Debug)]
 pub struct ConnectionOptions {
-    pub uri: String,
     pub api_key: Option<String>,
     pub host_override: Option<String>,
     /// (For LanceDB OSS only): The interval, in seconds, at which to check for
@@ -54,6 +53,6 @@ pub struct WriteOptions {
 }
 
 #[napi]
-pub async fn connect(options: ConnectionOptions) -> napi::Result<Connection> {
-    Connection::new(options).await
+pub async fn connect(uri: String, options: ConnectionOptions) -> napi::Result<Connection> {
+    Connection::new(uri, options).await
 }

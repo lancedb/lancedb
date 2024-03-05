@@ -1,16 +1,16 @@
 use arrow_array::RecordBatchReader;
 use arrow_schema::SchemaRef;
 use async_trait::async_trait;
-use lance::dataset::{ColumnAlteration, NewColumnTransform};
+use lance::dataset::{scanner::DatasetRecordBatchStream, ColumnAlteration, NewColumnTransform};
 
 use crate::{
     error::Result,
     index::IndexBuilder,
     query::Query,
     table::{
-        merge::MergeInsertBuilder, AddDataOptions, NativeTable, OptimizeAction, OptimizeStats,
+        merge::MergeInsertBuilder, AddDataBuilder, NativeTable, OptimizeAction, OptimizeStats,
+        TableInternal,
     },
-    Table,
 };
 
 use super::client::RestfulLanceDbClient;
@@ -35,7 +35,7 @@ impl std::fmt::Display for RemoteTable {
 }
 
 #[async_trait]
-impl Table for RemoteTable {
+impl TableInternal for RemoteTable {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
@@ -51,23 +51,23 @@ impl Table for RemoteTable {
     async fn count_rows(&self, _filter: Option<String>) -> Result<usize> {
         todo!()
     }
-    async fn add(
-        &self,
-        _batches: Box<dyn RecordBatchReader + Send>,
-        _options: AddDataOptions,
-    ) -> Result<()> {
+    async fn do_add(&self, _add: AddDataBuilder) -> Result<()> {
+        todo!()
+    }
+    async fn do_query(&self, _query: &Query) -> Result<DatasetRecordBatchStream> {
         todo!()
     }
     async fn delete(&self, _predicate: &str) -> Result<()> {
         todo!()
     }
-    fn create_index(&self, _column: &[&str]) -> IndexBuilder {
+    async fn do_create_index(&self, _index: IndexBuilder) -> Result<()> {
         todo!()
     }
-    fn merge_insert(&self, _on: &[&str]) -> MergeInsertBuilder {
-        todo!()
-    }
-    fn query(&self) -> Query {
+    async fn do_merge_insert(
+        &self,
+        _params: MergeInsertBuilder,
+        _new_data: Box<dyn RecordBatchReader + Send>,
+    ) -> Result<()> {
         todo!()
     }
     async fn optimize(&self, _action: OptimizeAction) -> Result<OptimizeStats> {

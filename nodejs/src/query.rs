@@ -16,7 +16,7 @@ use lancedb::query::Query as LanceDBQuery;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
-use crate::{iterator::RecordBatchIterator, table::Table};
+use crate::iterator::RecordBatchIterator;
 
 #[napi]
 pub struct Query {
@@ -25,10 +25,8 @@ pub struct Query {
 
 #[napi]
 impl Query {
-    pub fn new(table: &Table) -> Self {
-        Self {
-            inner: table.table.query(),
-        }
+    pub fn new(query: LanceDBQuery) -> Self {
+        Self { inner: query }
     }
 
     #[napi]

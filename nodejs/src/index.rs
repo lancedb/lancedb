@@ -12,7 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::sync::Mutex;
+
 use lance_linalg::distance::MetricType as LanceMetricType;
+use lancedb::index::IndexBuilder as LanceDbIndexBuilder;
+use lancedb::Table as LanceDbTable;
 use napi_derive::napi;
 
 #[napi]
@@ -40,58 +44,93 @@ impl From<MetricType> for LanceMetricType {
 
 #[napi]
 pub struct IndexBuilder {
-    inner: lancedb::index::IndexBuilder,
+    inner: Mutex<Option<LanceDbIndexBuilder>>,
+}
+
+impl IndexBuilder {
+    fn modify(
+        &self,
+        mod_fn: impl Fn(LanceDbIndexBuilder) -> LanceDbIndexBuilder,
+    ) -> napi::Result<()> {
+        let mut inner = self.inner.lock().unwrap();
+        let inner_builder = inner.take().ok_or_else(|| {
+            napi::Error::from_reason("IndexBuilder has already been consumed".to_string())
+        })?;
+        let inner_builder = mod_fn(inner_builder);
+        inner.replace(inner_builder);
+        Ok(())
+    }
 }
 
 #[napi]
 impl IndexBuilder {
-    pub fn new(tbl: &dyn lancedb::Table) -> Self {
+    pub fn new(tbl: &LanceDbTable) -> Self {
         let inner = tbl.create_index(&[]);
-        Self { inner }
+        Self {
+            inner: Mutex::new(Some(inner)),
+        }
     }
 
     #[napi]
-    pub unsafe fn replace(&mut self, v: bool) {
-        self.inner.replace(v);
+    pub fn replace(&self, v: bool) -> napi::Result<()> {
+        self.modify(|b| b.replace(v))
     }
 
     #[napi]
-    pub unsafe fn column(&mut self, c: String) {
-        self.inner.columns(&[c.as_str()]);
+    pub fn column(&self, c: String) -> napi::Result<()> {
+        self.modify(|b| b.columns(&[c.as_str()]))
     }
 
     #[napi]
-    pub unsafe fn name(&mut self, name: String) {
-        self.inner.name(name.as_str());
+    pub fn name(&self, name: String) -> napi::Result<()> {
+        self.modify(|b| b.name(name.as_str()))
     }
 
     #[napi]
-    pub unsafe fn ivf_pq(
-        &mut self,
+    pub fn ivf_pq(
+        &self,
         metric_type: Option<MetricType>,
         num_partitions: Option<u32>,
         num_sub_vectors: Option<u32>,
         num_bits: Option<u32>,
         max_iterations: Option<u32>,
         sample_rate: Option<u32>,
-    ) {
-        self.inner.ivf_pq();
-        metric_type.map(|m| self.inner.metric_type(m.into()));
-        num_partitions.map(|p| self.inner.num_partitions(p));
-        num_sub_vectors.map(|s| self.inner.num_sub_vectors(s));
-        num_bits.map(|b| self.inner.num_bits(b));
-        max_iterations.map(|i| self.inner.max_iterations(i));
-        sample_rate.map(|s| self.inner.sample_rate(s));
+    ) -> napi::Result<()> {
+        self.modify(|b| {
+            let mut b = b.ivf_pq();
+            if let Some(metric_type) = metric_type {
+                b = b.metric_type(metric_type.into());
+            }
+            if let Some(num_partitions) = num_partitions {
+                b = b.num_partitions(num_partitions);
+            }
+            if let Some(num_sub_vectors) = num_sub_vectors {
+                b = b.num_sub_vectors(num_sub_vectors);
+            }
+            if let Some(num_bits) = num_bits {
+                b = b.num_bits(num_bits);
+            }
+            if let Some(max_iterations) = max_iterations {
+                b = b.max_iterations(max_iterations);
+            }
+            if let Some(sample_rate) = sample_rate {
+                b = b.sample_rate(sample_rate);
+            }
+            b
+        })
     }
 
     #[napi]
-    pub unsafe fn scalar(&mut self) {
-        self.inner.scalar();
+    pub fn scalar(&self) -> napi::Result<()> {
+        self.modify(|b| b.scalar())
     }
 
     #[napi]
     pub async fn build(&self) -> napi::Result<()> {
-        self.inner
+        let inner = self.inner.lock().unwrap().take().ok_or_else(|| {
+            napi::Error::from_reason("IndexBuilder has already been consumed".to_string())
+        })?;
+        inner
             .build()
             .await
             .map_err(|e| napi::Error::from_reason(format!("Failed to build index: {}", e)))?;

@@ -194,7 +194,7 @@ pub mod table;
 pub mod utils;
 
 pub use error::{Error, Result};
-pub use table::{Table, TableRef};
+pub use table::Table;
 
 /// Connect to a database
 pub use connection::connect;

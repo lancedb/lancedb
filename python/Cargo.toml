@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 keywords.workspace = true
 categories.workspace = true
-
+rust-version = "1.75.0"
 
 [lib]
 name = "_lancedb"

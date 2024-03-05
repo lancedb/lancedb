@@ -49,6 +49,7 @@ jobs:
         cargo clippy --all --all-features -- -D warnings
         npm ci
         npm run lint
+        npm run chkformat
   linux:
     name: Linux (NodeJS ${{ matrix.node-version }})
     timeout-minutes: 30
@@ -111,4 +112,3 @@ jobs:
     - name: Test
       run: |
         npm run test
-

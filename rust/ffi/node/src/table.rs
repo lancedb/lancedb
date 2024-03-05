@@ -18,10 +18,10 @@ use arrow_array::{RecordBatch, RecordBatchIterator};
 use lance::dataset::optimize::CompactionOptions;
 use lance::dataset::{ColumnAlteration, NewColumnTransform, WriteMode, WriteParams};
 use lance::io::ObjectStoreParams;
-use lancedb::table::{AddDataOptions, OptimizeAction, WriteOptions};
+use lancedb::table::{OptimizeAction, WriteOptions};
 
 use crate::arrow::{arrow_buffer_to_record_batch, record_batch_to_buffer};
-use lancedb::TableRef;
+use lancedb::table::Table as LanceDbTable;
 use neon::prelude::*;
 use neon::types::buffer::TypedArray;
 
@@ -29,13 +29,13 @@ use crate::error::ResultExt;
 use crate::{convert, get_aws_credential_provider, get_aws_region, runtime, JsDatabase};
 
 pub struct JsTable {
-    pub table: TableRef,
+    pub table: LanceDbTable,
 }
 
 impl Finalize for JsTable {}
 
-impl From<TableRef> for JsTable {
-    fn from(table: TableRef) -> Self {
+impl From<LanceDbTable> for JsTable {
+    fn from(table: LanceDbTable) -> Self {
         Self { table }
     }
 }
@@ -125,13 +125,13 @@ impl JsTable {
 
         rt.spawn(async move {
             let batch_reader = RecordBatchIterator::new(batches.into_iter().map(Ok), schema);
-            let opts = AddDataOptions {
-                write_options: WriteOptions {
+            let add_result = table
+                .add(Box::new(batch_reader))
+                .write_options(WriteOptions {
                     lance_write_params: Some(params),
-                },
-                ..Default::default()
-            };
-            let add_result = table.add(Box::new(batch_reader), opts).await;
+                })
+                .execute()
+                .await;
 
             deferred.settle_with(&channel, move |mut cx| {
                 add_result.or_throw(&mut cx)?;

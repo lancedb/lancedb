@@ -116,8 +116,8 @@ class Query(pydantic.BaseModel):
 
 
 class LanceQueryBuilder(ABC):
-    """Build LanceDB query based on specific query type:
-    vector or full text search.
+    """An abstract query builder. Subclasses are defined for vector search,
+    full text search, hybrid, and plain SQL filtering.
     """
 
     @classmethod
@@ -128,6 +128,22 @@ class LanceQueryBuilder(ABC):
         query_type: str,
         vector_column_name: str,
     ) -> LanceQueryBuilder:
+        """
+        Create a query builder based on the given query and query type.
+
+        Parameters
+        ----------
+        table: Table
+            The table to query.
+        query: Optional[Union[np.ndarray, str, "PIL.Image.Image", Tuple]]
+            The query to use. If None, an empty query builder is returned
+            which performs simple SQL filtering.
+        query_type: str
+            The type of query to perform. One of "vector", "fts", "hybrid", or "auto".
+            If "auto", the query type is inferred based on the query.
+        vector_column_name: str
+            The name of the vector column to use for vector search.
+        """
         if query is None:
             return LanceEmptyQueryBuilder(table)
 
@@ -584,7 +600,7 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
             import tantivy
         except ImportError:
             raise ImportError(
-                "Please install tantivy-py `pip install tantivy@git+https://github.com/quickwit-oss/tantivy-py#164adc87e1a033117001cf70e38c82a53014d985` to use the full text search feature."  # noqa: E501
+                "Please install tantivy-py `pip install tantivy` to use the full text search feature."  # noqa: E501
             )
 
         from .fts import search_index
@@ -612,19 +628,26 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         scores = pa.array(scores)
         output_tbl = self._table.to_lance().take(row_ids, columns=self._columns)
         output_tbl = output_tbl.append_column("score", scores)
+        # this needs to match vector search results which are uint64
+        row_ids = pa.array(row_ids, type=pa.uint64())
 
         if self._where is not None:
+            tmp_name = "__lancedb__duckdb__indexer__"
+            output_tbl = output_tbl.append_column(
+                tmp_name, pa.array(range(len(output_tbl)))
+            )
             try:
                 # TODO would be great to have Substrait generate pyarrow compute
                 # expressions or conversely have pyarrow support SQL expressions
                 # using Substrait
                 import duckdb
 
-                output_tbl = (
-                    duckdb.sql("SELECT * FROM output_tbl")
-                    .filter(self._where)
-                    .to_arrow_table()
-                )
+                indexer = duckdb.sql(
+                    f"SELECT {tmp_name} FROM output_tbl WHERE {self._where}"
+                ).to_arrow_table()[tmp_name]
+                output_tbl = output_tbl.take(indexer).drop([tmp_name])
+                row_ids = row_ids.take(indexer)
+
             except ImportError:
                 import tempfile
 
@@ -634,10 +657,11 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
                 with tempfile.TemporaryDirectory() as tmp:
                     ds = lance.write_dataset(output_tbl, tmp)
                     output_tbl = ds.to_table(filter=self._where)
+                    indexer = output_tbl[tmp_name]
+                    row_ids = row_ids.take(indexer)
+                    output_tbl = output_tbl.drop([tmp_name])
 
         if self._with_row_id:
-            # Need to set this to uint explicitly as vector results are in uint64
-            row_ids = pa.array(row_ids, type=pa.uint64())
             output_tbl = output_tbl.append_column("_rowid", row_ids)
         return output_tbl
 
@@ -653,6 +677,16 @@ class LanceEmptyQueryBuilder(LanceQueryBuilder):
 
 
 class LanceHybridQueryBuilder(LanceQueryBuilder):
+    """
+    A query builder that performs hybrid vector and full text search.
+    Results are combined and reranked based on the specified reranker.
+    By default, the results are reranked using the LinearCombinationReranker.
+
+    To make the vector and fts results comparable, the scores are normalized.
+    Instead of normalizing scores, the `normalize` parameter can be set to "rank"
+    in the `rerank` method to convert the scores to ranks and then normalize them.
+    """
+
     def __init__(self, table: "Table", query: str, vector_column: str):
         super().__init__(table)
         self._validate_fts_index()
