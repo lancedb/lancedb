@@ -457,8 +457,8 @@ describe("when using two versions of arrow", function () {
       expect(lhs.nullable).toEqual(rhs.nullable);
       expect(lhs.typeId).toEqual(rhs.typeId);
       if ("children" in lhs.type && lhs.type.children !== null) {
-        const lhs_children = lhs.type.children as Field[];
-        lhs_children.forEach((child: Field, idx) => {
+        const lhsChildren = lhs.type.children as Field[];
+        lhsChildren.forEach((child: Field, idx) => {
           compareFields(child, rhs.type.children[idx]);
         });
       }

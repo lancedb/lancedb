@@ -78,6 +78,44 @@ enum BadVectorHandling {
     Fill(f32),
 }
 
+/// A builder for configuring a [`Connection::table_names`] operation
+pub struct TableNamesBuilder {
+    parent: Arc<dyn ConnectionInternal>,
+    pub(crate) start_after: Option<String>,
+    pub(crate) limit: Option<u32>,
+}
+
+impl TableNamesBuilder {
+    fn new(parent: Arc<dyn ConnectionInternal>) -> Self {
+        Self {
+            parent,
+            start_after: None,
+            limit: None,
+        }
+    }
+
+    /// If present, only return names that come lexicographically after the supplied
+    /// value.
+    ///
+    /// This can be combined with limit to implement pagination by setting this to
+    /// the last table name from the previous page.
+    pub fn start_after(mut self, start_after: String) -> Self {
+        self.start_after = Some(start_after);
+        self
+    }
+
+    /// The maximum number of table names to return
+    pub fn limit(mut self, limit: u32) -> Self {
+        self.limit = Some(limit);
+        self
+    }
+
+    /// Execute the table names operation
+    pub async fn execute(self) -> Result<Vec<String>> {
+        self.parent.clone().table_names(self).await
+    }
+}
+
 /// A builder for configuring a [`Connection::create_table`] operation
 pub struct CreateTableBuilder<const HAS_DATA: bool> {
     parent: Arc<dyn ConnectionInternal>,
@@ -198,7 +236,7 @@ impl OpenTableBuilder {
 pub(crate) trait ConnectionInternal:
     Send + Sync + std::fmt::Debug + std::fmt::Display + 'static
 {
-    async fn table_names(&self) -> Result<Vec<String>>;
+    async fn table_names(&self, options: TableNamesBuilder) -> Result<Vec<String>>;
     async fn do_create_table(&self, options: CreateTableBuilder<true>) -> Result<Table>;
     async fn do_open_table(&self, options: OpenTableBuilder) -> Result<Table>;
     async fn drop_table(&self, name: &str) -> Result<()>;
@@ -232,9 +270,13 @@ impl Connection {
         self.uri.as_str()
     }
 
-    /// Get the names of all tables in the database.
-    pub async fn table_names(&self) -> Result<Vec<String>> {
-        self.internal.table_names().await
+    /// Get the names of all tables in the database
+    ///
+    /// The names will be returned in lexicographical order (ascending)
+    ///
+    /// The parameters `page_token` and `limit` can be used to paginate the results
+    pub fn table_names(&self) -> TableNamesBuilder {
+        TableNamesBuilder::new(self.internal.clone())
     }
 
     /// Create a new table from data
@@ -613,7 +655,7 @@ impl Database {
 
 #[async_trait::async_trait]
 impl ConnectionInternal for Database {
-    async fn table_names(&self) -> Result<Vec<String>> {
+    async fn table_names(&self, options: TableNamesBuilder) -> Result<Vec<String>> {
         let mut f = self
             .object_store
             .read_dir(self.base_path.clone())
@@ -630,6 +672,16 @@ impl ConnectionInternal for Database {
             .filter_map(|p| p.file_stem().and_then(|s| s.to_str().map(String::from)))
             .collect::<Vec<String>>();
         f.sort();
+        if let Some(start_after) = options.start_after {
+            let index = f
+                .iter()
+                .position(|name| name.as_str() > start_after.as_str())
+                .unwrap_or(f.len());
+            f.drain(0..index);
+        }
+        if let Some(limit) = options.limit {
+            f.truncate(limit as usize);
+        }
         Ok(f)
     }
 
@@ -742,16 +794,43 @@ mod tests {
     #[tokio::test]
     async fn test_table_names() {
         let tmp_dir = tempdir().unwrap();
-        create_dir_all(tmp_dir.path().join("table1.lance")).unwrap();
-        create_dir_all(tmp_dir.path().join("table2.lance")).unwrap();
-        create_dir_all(tmp_dir.path().join("invalidlance")).unwrap();
+        let mut names = Vec::with_capacity(100);
+        for _ in 0..100 {
+            let name = uuid::Uuid::new_v4().to_string();
+            names.push(name.clone());
+            let table_name = name + ".lance";
+            create_dir_all(tmp_dir.path().join(&table_name)).unwrap();
+        }
+        names.sort();
 
         let uri = tmp_dir.path().to_str().unwrap();
         let db = connect(uri).execute().await.unwrap();
-        let tables = db.table_names().await.unwrap();
-        assert_eq!(tables.len(), 2);
-        assert!(tables[0].eq(&String::from("table1")));
-        assert!(tables[1].eq(&String::from("table2")));
+        let tables = db.table_names().execute().await.unwrap();
+
+        assert_eq!(tables, names);
+
+        let tables = db
+            .table_names()
+            .start_after(names[30].clone())
+            .execute()
+            .await
+            .unwrap();
+
+        assert_eq!(tables, names[31..]);
+
+        let tables = db
+            .table_names()
+            .start_after(names[30].clone())
+            .limit(7)
+            .execute()
+            .await
+            .unwrap();
+
+        assert_eq!(tables, names[31..38]);
+
+        let tables = db.table_names().limit(7).execute().await.unwrap();
+
+        assert_eq!(tables, names[..7]);
     }
 
     #[tokio::test]
@@ -766,14 +845,14 @@ mod tests {
         let uri = tmp_dir.path().to_str().unwrap();
         let db = connect(uri).execute().await.unwrap();
 
-        assert_eq!(db.table_names().await.unwrap().len(), 0);
+        assert_eq!(db.table_names().execute().await.unwrap().len(), 0);
         // open non-exist table
         assert!(matches!(
             db.open_table("invalid_table").execute().await,
             Err(crate::Error::TableNotFound { .. })
         ));
 
-        assert_eq!(db.table_names().await.unwrap().len(), 0);
+        assert_eq!(db.table_names().execute().await.unwrap().len(), 0);
 
         let schema = Arc::new(Schema::new(vec![Field::new("x", DataType::Int32, false)]));
         db.create_empty_table("table1", schema)
@@ -781,7 +860,7 @@ mod tests {
             .await
             .unwrap();
         db.open_table("table1").execute().await.unwrap();
-        let tables = db.table_names().await.unwrap();
+        let tables = db.table_names().execute().await.unwrap();
         assert_eq!(tables, vec!["table1".to_owned()]);
     }
 
@@ -801,7 +880,7 @@ mod tests {
         create_dir_all(tmp_dir.path().join("table1.lance")).unwrap();
         db.drop_table("table1").await.unwrap();
 
-        let tables = db.table_names().await.unwrap();
+        let tables = db.table_names().execute().await.unwrap();
         assert_eq!(tables.len(), 0);
     }
 

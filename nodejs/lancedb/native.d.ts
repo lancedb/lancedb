@@ -78,7 +78,7 @@ export class Connection {
   isOpen(): boolean
   close(): void
   /** List all tables in the dataset. */
-  tableNames(): Promise<Array<string>>
+  tableNames(startAfter?: string | undefined | null, limit?: number | undefined | null): Promise<Array<string>>
   /**
    * Create table from a Apache Arrow IPC (file) buffer.
    *

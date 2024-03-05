@@ -66,9 +66,23 @@ describe("given a connection", () => {
     await expect(tbl.countRows()).resolves.toBe(1);
   });
 
-  it("should list tables", async () => {
-    await db.createTable("test2", [{ id: 1 }, { id: 2 }]);
-    await db.createTable("test1", [{ id: 1 }, { id: 2 }]);
-    expect(await db.tableNames()).toEqual(["test1", "test2"]);
+  it("should respect limit and page token when listing tables", async () => {
+    const db = await connect(tmpDir.name);
+
+    await db.createTable("b", [{ id: 1 }]);
+    await db.createTable("a", [{ id: 1 }]);
+    await db.createTable("c", [{ id: 1 }]);
+
+    let tables = await db.tableNames();
+    expect(tables).toEqual(["a", "b", "c"]);
+
+    tables = await db.tableNames({ limit: 1 });
+    expect(tables).toEqual(["a"]);
+
+    tables = await db.tableNames({ limit: 1, startAfter: "a" });
+    expect(tables).toEqual(["b"]);
+
+    tables = await db.tableNames({ startAfter: "a" });
+    expect(tables).toEqual(["b", "c"]);
   });
 });
