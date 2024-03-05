@@ -636,9 +636,14 @@ impl NativeTable {
         })
     }
 
+    /// Checkout the latest version of this [NativeTable].
+    ///
+    /// This will force the table to be reloaded from disk, regardless of the
+    /// `read_consistency_interval` set.
     pub async fn checkout_latest(&self) -> Result<Self> {
         let mut dataset = self.dataset.duplicate().await;
         dataset.as_latest(self.read_consistency_interval).await?;
+        dataset.reload().await?;
         Ok(Self {
             dataset,
             ..self.clone()
@@ -1943,6 +1948,9 @@ mod tests {
             match interval {
                 None => {
                     assert_eq!(table2.count_rows(None).await.unwrap(), 0);
+                    let table2_native =
+                        table2.as_native().unwrap().checkout_latest().await.unwrap();
+                    assert_eq!(table2_native.count_rows(None).await.unwrap(), 1);
                 }
                 Some(0) => {
                     assert_eq!(table2.count_rows(None).await.unwrap(), 1);
