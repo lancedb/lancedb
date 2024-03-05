@@ -5,12 +5,12 @@
 
 export const enum IndexType {
   Scalar = 0,
-  IvfPq = 1,
+  IvfPq = 1
 }
 export const enum MetricType {
   L2 = 0,
   Cosine = 1,
-  Dot = 2,
+  Dot = 2
 }
 /**
  *  A definition of a column alteration. The alteration changes the column at
@@ -25,28 +25,28 @@ export interface ColumnAlteration {
    * a nested column then it is the path to the column, e.g. "a.b.c" for a column
    * `c` nested inside a column `b` nested inside a column `a`.
    */
-  path: string;
+  path: string
   /**
    * The new name of the column. If not provided then the name will not be changed.
    * This must be distinct from the names of all other columns in the table.
    */
-  rename?: string;
+  rename?: string
   /** Set the new nullability. Note that a nullable column cannot be made non-nullable. */
-  nullable?: boolean;
+  nullable?: boolean
 }
 /** A definition of a new column to add to a table. */
 export interface AddColumnsSql {
   /** The name of the new column. */
-  name: string;
+  name: string
   /**
    * The values to populate the new column with, as a SQL expression.
    * The expression can reference other columns in the table.
    */
-  valueSql: string;
+  valueSql: string
 }
 export interface ConnectionOptions {
-  apiKey?: string;
-  hostOverride?: string;
+  apiKey?: string
+  hostOverride?: string
   /**
    * (For LanceDB OSS only): The interval, in seconds, at which to check for
    * updates to the table from other processes. If None, then consistency is not
@@ -58,33 +58,27 @@ export interface ConnectionOptions {
    * Note: this consistency only applies to read operations. Write operations are
    * always consistent.
    */
-  readConsistencyInterval?: number;
+  readConsistencyInterval?: number
 }
 /** Write mode for writing a table. */
 export const enum WriteMode {
-  Create = "Create",
-  Append = "Append",
-  Overwrite = "Overwrite",
+  Create = 'Create',
+  Append = 'Append',
+  Overwrite = 'Overwrite'
 }
 /** Write options when creating a Table. */
 export interface WriteOptions {
-  mode?: WriteMode;
+  mode?: WriteMode
 }
-export function connect(
-  uri: string,
-  options: ConnectionOptions,
-): Promise<Connection>;
+export function connect(uri: string, options: ConnectionOptions): Promise<Connection>
 export class Connection {
   /** Create a new Connection instance from the given URI. */
-  static new(uri: string, options: ConnectionOptions): Promise<Connection>;
-  display(): string;
-  isOpen(): boolean;
-  close(): void;
+  static new(uri: string, options: ConnectionOptions): Promise<Connection>
+  display(): string
+  isOpen(): boolean
+  close(): void
   /** List all tables in the dataset. */
-  tableNames(
-    startAfter?: string | undefined | null,
-    limit?: number | undefined | null,
-  ): Promise<Array<string>>;
+  tableNames(startAfter?: string | undefined | null, limit?: number | undefined | null): Promise<Array<string>>
   /**
    * Create table from a Apache Arrow IPC (file) buffer.
    *
@@ -93,58 +87,47 @@ export class Connection {
    * - buf: The buffer containing the IPC file.
    *
    */
-  createTable(name: string, buf: Buffer, mode: string): Promise<Table>;
-  createEmptyTable(
-    name: string,
-    schemaBuf: Buffer,
-    mode: string,
-  ): Promise<Table>;
-  openTable(name: string): Promise<Table>;
+  createTable(name: string, buf: Buffer, mode: string): Promise<Table>
+  createEmptyTable(name: string, schemaBuf: Buffer, mode: string): Promise<Table>
+  openTable(name: string): Promise<Table>
   /** Drop table with the name. Or raise an error if the table does not exist. */
-  dropTable(name: string): Promise<void>;
+  dropTable(name: string): Promise<void>
 }
 export class IndexBuilder {
-  replace(v: boolean): void;
-  column(c: string): void;
-  name(name: string): void;
-  ivfPq(
-    metricType?: MetricType | undefined | null,
-    numPartitions?: number | undefined | null,
-    numSubVectors?: number | undefined | null,
-    numBits?: number | undefined | null,
-    maxIterations?: number | undefined | null,
-    sampleRate?: number | undefined | null,
-  ): void;
-  scalar(): void;
-  build(): Promise<void>;
+  replace(v: boolean): void
+  column(c: string): void
+  name(name: string): void
+  ivfPq(metricType?: MetricType | undefined | null, numPartitions?: number | undefined | null, numSubVectors?: number | undefined | null, numBits?: number | undefined | null, maxIterations?: number | undefined | null, sampleRate?: number | undefined | null): void
+  scalar(): void
+  build(): Promise<void>
 }
 /** Typescript-style Async Iterator over RecordBatches  */
 export class RecordBatchIterator {
-  next(): Promise<Buffer | null>;
+  next(): Promise<Buffer | null>
 }
 export class Query {
-  column(column: string): void;
-  filter(filter: string): void;
-  select(columns: Array<string>): void;
-  limit(limit: number): void;
-  prefilter(prefilter: boolean): void;
-  nearestTo(vector: Float32Array): void;
-  refineFactor(refineFactor: number): void;
-  nprobes(nprobe: number): void;
-  executeStream(): Promise<RecordBatchIterator>;
+  column(column: string): void
+  filter(filter: string): void
+  select(columns: Array<string>): void
+  limit(limit: number): void
+  prefilter(prefilter: boolean): void
+  nearestTo(vector: Float32Array): void
+  refineFactor(refineFactor: number): void
+  nprobes(nprobe: number): void
+  executeStream(): Promise<RecordBatchIterator>
 }
 export class Table {
-  display(): string;
-  isOpen(): boolean;
-  close(): void;
+  display(): string
+  isOpen(): boolean
+  close(): void
   /** Return Schema as empty Arrow IPC file. */
-  schema(): Promise<Buffer>;
-  add(buf: Buffer, mode: string): Promise<void>;
-  countRows(filter?: string | undefined | null): Promise<number>;
-  delete(predicate: string): Promise<void>;
-  createIndex(): IndexBuilder;
-  query(): Query;
-  addColumns(transforms: Array<AddColumnsSql>): Promise<void>;
-  alterColumns(alterations: Array<ColumnAlteration>): Promise<void>;
-  dropColumns(columns: Array<string>): Promise<void>;
+  schema(): Promise<Buffer>
+  add(buf: Buffer, mode: string): Promise<void>
+  countRows(filter?: string | undefined | null): Promise<number>
+  delete(predicate: string): Promise<void>
+  createIndex(): IndexBuilder
+  query(): Query
+  addColumns(transforms: Array<AddColumnsSql>): Promise<void>
+  alterColumns(alterations: Array<ColumnAlteration>): Promise<void>
+  dropColumns(columns: Array<string>): Promise<void>
 }
