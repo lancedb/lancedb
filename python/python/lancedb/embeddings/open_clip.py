@@ -126,6 +126,10 @@ class OpenClipEmbeddings(EmbeddingFunction):
         """
         Issue concurrent requests to retrieve the image data
         """
+        return [
+            self.generate_image_embedding(image) for image in tqdm(images)
+        ]
+
         with concurrent.futures.ThreadPoolExecutor() as executor:
             futures = [
                 executor.submit(self.generate_image_embedding, image)
@@ -145,6 +149,7 @@ class OpenClipEmbeddings(EmbeddingFunction):
             The image to embed. If the image is a str, it is treated as a uri.
             If the image is bytes, it is treated as the raw image bytes.
         """
+        import pdb; pdb.set_trace()
         torch = attempt_import_or_raise("torch")
         # TODO handle retry and errors for https
         image = self._to_pil(image)

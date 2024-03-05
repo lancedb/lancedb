@@ -37,6 +37,7 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.fs as pa_fs
 from lance import LanceDataset
+from lance.dependencies import _check_for_hugging_face
 from lance.vector import vec_to_table
 
 from .common import DATA, VEC, VECTOR_COLUMN_NAME
@@ -74,7 +75,16 @@ def _sanitize_data(
     on_bad_vectors: str,
     fill_value: Any,
 ):
-    if isinstance(data, list):
+    if _check_for_hugging_face(data):
+        # Huggingface datasets
+        import datasets
+
+        if isinstance(data, datasets.Dataset):
+            if schema is None:
+                schema = data.features.arrow_schema
+            data = data.data.to_batches()
+            import pdb; pdb.set_trace()
+    elif isinstance(data, list):
         # convert to list of dict if data is a bunch of LanceModels
         if isinstance(data[0], LanceModel):
             schema = data[0].__class__.to_arrow_schema()
@@ -136,11 +146,10 @@ def _to_record_batch_generator(
     data: Iterable, schema, metadata, on_bad_vectors, fill_value
 ):
     for batch in data:
-        if not isinstance(batch, pa.RecordBatch):
-            table = _sanitize_data(batch, schema, metadata, on_bad_vectors, fill_value)
-            for batch in table.to_batches():
-                yield batch
-        else:
+        if isinstance(batch, pa.RecordBatch):
+            batch = pa.Table.from_batches([batch])
+        table = _sanitize_data(batch, schema, metadata, on_bad_vectors, fill_value)
+        for batch in table.to_batches():
             yield batch
 
 
