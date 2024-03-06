@@ -504,6 +504,13 @@ impl Table {
     }
 }
 
+impl From<NativeTable> for Table {
+    fn from(table: NativeTable) -> Self {
+        Self {
+            inner: Arc::new(table),
+        }
+    }
+}
 /// A table in a LanceDB database.
 #[derive(Debug, Clone)]
 pub struct NativeTable {
