@@ -504,6 +504,13 @@ impl Table {
     }
 }
 
+impl From<NativeTable> for Table {
+    fn from(table: NativeTable) -> Self {
+        Self {
+            inner: Arc::new(table),
+        }
+    }
+}
 /// A table in a LanceDB database.
 #[derive(Debug, Clone)]
 pub struct NativeTable {
@@ -1141,7 +1148,7 @@ impl TableInternal for NativeTable {
                     .compaction;
                 stats.prune = self
                     .optimize(OptimizeAction::Prune {
-                        older_than: Duration::days(7),
+                        older_than: Duration::try_days(7).unwrap(),
                         delete_unverified: None,
                     })
                     .await?
