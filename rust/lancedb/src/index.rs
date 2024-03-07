@@ -61,3 +61,20 @@ impl IndexBuilder {
         self.parent.clone().create_index(self).await
     }
 }
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum IndexType {
+    IvfPq,
+    BTree,
+}
+
+/// A description of an index currently configured on a column
+pub struct IndexConfig {
+    /// The type of the index
+    pub index_type: IndexType,
+    /// The columns in the index
+    ///
+    /// Currently this is always a Vec of size 1.  In the future there may
+    /// be more columns to represent composite indices.
+    pub columns: Vec<String>,
+}

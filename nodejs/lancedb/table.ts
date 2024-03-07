@@ -16,12 +16,14 @@ import { Schema, tableFromIPC } from "apache-arrow";
 import {
   AddColumnsSql,
   ColumnAlteration,
+  IndexConfig,
   Table as _NativeTable,
 } from "./native";
 import { Query } from "./query";
 import { IndexOptions } from "./indices";
 import { Data, fromDataToBuffer } from "./arrow";
 
+export { IndexConfig } from "./native";
 /**
  * Options for adding data to a table.
  */
@@ -341,5 +343,12 @@ export class Table {
    */
   async restore(): Promise<void> {
     await this.inner.restore();
+  }
+
+  /**
+   * List all indices that have been created with Self::create_index
+   */
+  async listIndices(): Promise<IndexConfig[]> {
+    return await this.inner.listIndices();
   }
 }

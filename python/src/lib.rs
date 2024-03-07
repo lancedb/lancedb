@@ -14,7 +14,7 @@
 
 use connection::{connect, Connection};
 use env_logger::Env;
-use index::Index;
+use index::{Index, IndexConfig};
 use pyo3::{pymodule, types::PyModule, wrap_pyfunction, PyResult, Python};
 use table::Table;
 
@@ -33,6 +33,7 @@ pub fn _lancedb(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<Connection>()?;
     m.add_class::<Table>()?;
     m.add_class::<Index>()?;
+    m.add_class::<IndexConfig>()?;
     m.add_function(wrap_pyfunction!(connect, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
