@@ -19,7 +19,7 @@ import {
   IndexConfig,
   Table as _NativeTable,
 } from "./native";
-import { Query } from "./query";
+import { Query, VectorQuery } from "./query";
 import { IndexOptions } from "./indices";
 import { Data, fromDataToBuffer } from "./arrow";
 
@@ -28,7 +28,8 @@ export { IndexConfig } from "./native";
  * Options for adding data to a table.
  */
 export interface AddDataOptions {
-  /** If "append" (the default) then the new data will be added to the table
+  /**
+   * If "append" (the default) then the new data will be added to the table
    *
    * If "overwrite" then the new data will replace the existing data in the table.
    */
@@ -74,7 +75,8 @@ export class Table {
     return this.inner.isOpen();
   }
 
-  /** Close the table, releasing any underlying resources.
+  /**
+   * Close the table, releasing any underlying resources.
    *
    * It is safe to call this method multiple times.
    *
@@ -98,9 +100,7 @@ export class Table {
 
   /**
    * Insert records into this Table.
-   *
    * @param {Data} data Records to be inserted into the Table
-   * @return The number of rows added to the table
    */
   async add(data: Data, options?: Partial<AddDataOptions>): Promise<void> {
     const mode = options?.mode ?? "append";
@@ -124,15 +124,15 @@ export class Table {
    * you are updating many rows (with different ids) then you will get
    * better performance with a single [`merge_insert`] call instead of
    * repeatedly calilng this method.
-   *
-   * @param updates the columns to update
+   * @param {Map<string, string> | Record<string, string>} updates - the
+   * columns to update
    *
    * Keys in the map should specify the name of the column to update.
    * Values in the map provide the new value of the column.  These can
    * be SQL literal strings (e.g. "7" or "'foo'") or they can be expressions
    * based on the row being updated (e.g. "my_col + 1")
-   *
-   * @param options additional options to control the update behavior
+   * @param {Partial<UpdateOptions>} options - additional options to control
+   * the update behavior
    */
   async update(
     updates: Map<string, string> | Record<string, string>,
@@ -158,37 +158,28 @@ export class Table {
     await this.inner.delete(predicate);
   }
 
-  /** Create an index to speed up queries.
+  /**
+   * Create an index to speed up queries.
    *
    * Indices can be created on vector columns or scalar columns.
    * Indices on vector columns will speed up vector searches.
    * Indices on scalar columns will speed up filtering (in both
    * vector and non-vector searches)
-   *
    * @example
-   *
-   * If the column has a vector (fixed size list) data type then
-   * an IvfPq vector index will be created.
-   *
-   * ```typescript
+   * // If the column has a vector (fixed size list) data type then
+   * // an IvfPq vector index will be created.
    * const table = await conn.openTable("my_table");
    * await table.createIndex(["vector"]);
-   * ```
-   *
-   * For advanced control over vector index creation you can specify
-   * the index type and options.
-   * ```typescript
+   * @example
+   * // For advanced control over vector index creation you can specify
+   * // the index type and options.
    * const table = await conn.openTable("my_table");
    * await table.createIndex(["vector"], I)
    *   .ivf_pq({ num_partitions: 128, num_sub_vectors: 16 })
    *   .build();
-   * ```
-   *
-   * Or create a Scalar index
-   *
-   * ```typescript
+   * @example
+   * // Or create a Scalar index
    * await table.createIndex("my_float_col").build();
-   * ```
    */
   async createIndex(column: string, options?: Partial<IndexOptions>) {
     // Bit of a hack to get around the fact that TS has no package-scope.
@@ -198,69 +189,74 @@ export class Table {
   }
 
   /**
-   * Create a generic {@link Query} Builder.
+   * Create a {@link Query} Builder.
+   *
+   * Queries allow you to search your existing data.  By default the query will
+   * return all the data in the table in no particular order.  The builder
+   * returned by this method can be used to control the query using filtering,
+   * vector similarity, sorting, and more.
+   *
+   * Note: By default, all columns are returned.  For best performance, you should
+   * only fetch the columns you need.  See [`Query::select_with_projection`] for
+   * more details.
    *
    * When appropriate, various indices and statistics based pruning will be used to
    * accelerate the query.
-   *
    * @example
-   *
-   * ### Run a SQL-style query
-   * ```typescript
+   * // SQL-style filtering
+   * //
+   * // This query will return up to 1000 rows whose value in the `id` column
+   * // is greater than 5.  LanceDb supports a broad set of filtering functions.
    * for await (const batch of table.query()
    *                          .filter("id > 1").select(["id"]).limit(20)) {
    *  console.log(batch);
    * }
-   * ```
-   *
-   * ### Run Top-10 vector similarity search
-   * ```typescript
+   * @example
+   * // Vector Similarity Search
+   * //
+   * // This example will find the 10 rows whose value in the "vector" column are
+   * // closest to the query vector [1.0, 2.0, 3.0].  If an index has been created
+   * // on the "vector" column then this will perform an ANN search.
+   * //
+   * // The `refine_factor` and `nprobes` methods are used to control the recall /
+   * // latency tradeoff of the search.
    * for await (const batch of table.query()
    *                    .nearestTo([1, 2, 3])
    *                    .refineFactor(5).nprobe(10)
    *                    .limit(10)) {
    *  console.log(batch);
    * }
-   *```
-   *
-   * ### Scan the full dataset
-   * ```typescript
+   * @example
+   * // Scan the full dataset
+   * //
+   * // This query will return everything in the table in no particular order.
    * for await (const batch of table.query()) {
    *   console.log(batch);
    * }
-   *
-   * ### Return the full dataset as Arrow Table
-   * ```typescript
-   * let arrowTbl = await table.query().nearestTo([1.0, 2.0, 0.5, 6.7]).toArrow();
-   * ```
-   *
-   * @returns {@link Query}
+   * @returns {Query} A builder that can be used to parameterize the query
    */
   query(): Query {
     return new Query(this.inner);
   }
 
-  /** Search the table with a given query vector.
+  /**
+   * Search the table with a given query vector.
    *
-   * This is a convenience method for preparing an ANN {@link Query}.
+   * This is a convenience method for preparing a vector query and
+   * is the same thing as calling `nearestTo` on the builder returned
+   * by `query`.  @see {@link Query#nearestTo} for more details.
    */
-  search(vector: number[], column?: string): Query {
-    const q = this.query();
-    q.nearestTo(vector);
-    if (column !== undefined) {
-      q.column(column);
-    }
-    return q;
+  vectorSearch(vector: unknown): VectorQuery {
+    return this.query().nearestTo(vector);
   }
 
   // TODO: Support BatchUDF
   /**
    * Add new columns with defined values.
-   *
-   * @param newColumnTransforms pairs of column names and the SQL expression to use
-   *                            to calculate the value of the new column. These
-   *                            expressions will be evaluated for each row in the
-   *                            table, and can reference existing columns in the table.
+   * @param {AddColumnsSql[]} newColumnTransforms pairs of column names and
+   * the SQL expression to use to calculate the value of the new column. These
+   * expressions will be evaluated for each row in the table, and can
+   * reference existing columns in the table.
    */
   async addColumns(newColumnTransforms: AddColumnsSql[]): Promise<void> {
     await this.inner.addColumns(newColumnTransforms);
@@ -268,8 +264,8 @@ export class Table {
 
   /**
    * Alter the name or nullability of columns.
-   *
-   * @param columnAlterations One or more alterations to apply to columns.
+   * @param {ColumnAlteration[]} columnAlterations One or more alterations to
+   * apply to columns.
    */
   async alterColumns(columnAlterations: ColumnAlteration[]): Promise<void> {
     await this.inner.alterColumns(columnAlterations);
@@ -282,16 +278,16 @@ export class Table {
    * underlying storage. In order to remove the data, you must subsequently
    * call ``compact_files`` to rewrite the data without the removed columns and
    * then call ``cleanup_files`` to remove the old files.
-   *
-   * @param columnNames The names of the columns to drop. These can be nested
-   *                    column references (e.g. "a.b.c") or top-level column
-   *                    names (e.g. "a").
+   * @param {string[]} columnNames The names of the columns to drop. These can
+   * be nested column references (e.g. "a.b.c") or top-level column names
+   * (e.g. "a").
    */
   async dropColumns(columnNames: string[]): Promise<void> {
     await this.inner.dropColumns(columnNames);
   }
 
-  /** Retrieve the version of the table
+  /**
+   * Retrieve the version of the table
    *
    * LanceDb supports versioning.  Every operation that modifies the table increases
    * version.  As long as a version hasn't been deleted you can `[Self::checkout]` that
@@ -302,7 +298,8 @@ export class Table {
     return await this.inner.version();
   }
 
-  /** Checks out a specific version of the Table
+  /**
+   * Checks out a specific version of the Table
    *
    * Any read operation on the table will now access the data at the checked out version.
    * As a consequence, calling this method will disable any read consistency interval
@@ -321,7 +318,8 @@ export class Table {
     await this.inner.checkout(version);
   }
 
-  /** Ensures the table is pointing at the latest version
+  /**
+   * Ensures the table is pointing at the latest version
    *
    * This can be used to manually update a table when the read_consistency_interval is None
    * It can also be used to undo a `[Self::checkout]` operation
@@ -330,7 +328,8 @@ export class Table {
     await this.inner.checkoutLatest();
   }
 
-  /** Restore the table to the currently checked out version
+  /**
+   * Restore the table to the currently checked out version
    *
    * This operation will fail if checkout has not been called previously
    *

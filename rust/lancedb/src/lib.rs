@@ -170,8 +170,10 @@
 //! # db.create_table("my_table", Box::new(batches)).execute().await.unwrap();
 //! # let table = db.open_table("my_table").execute().await.unwrap();
 //! let results = table
-//!     .search(&[1.0; 128])
-//!     .execute_stream()
+//!     .query()
+//!     .nearest_to(&[1.0; 128])
+//!     .unwrap()
+//!     .execute()
 //!     .await
 //!     .unwrap()
 //!     .try_collect::<Vec<_>>()

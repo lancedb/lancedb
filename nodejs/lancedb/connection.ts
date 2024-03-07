@@ -78,7 +78,8 @@ export class Connection {
     return this.inner.isOpen();
   }
 
-  /** Close the connection, releasing any underlying resources.
+  /**
+   * Close the connection, releasing any underlying resources.
    *
    * It is safe to call this method multiple times.
    *
@@ -93,11 +94,12 @@ export class Connection {
     return this.inner.display();
   }
 
-  /** List all the table names in this database.
+  /**
+   * List all the table names in this database.
    *
    * Tables will be returned in lexicographical order.
-   *
-   * @param options Optional parameters to control the listing.
+   * @param {Partial<TableNamesOptions>} options - options to control the
+   * paging / start point
    */
   async tableNames(options?: Partial<TableNamesOptions>): Promise<string[]> {
     return this.inner.tableNames(options?.startAfter, options?.limit);
@@ -105,9 +107,7 @@ export class Connection {
 
   /**
    * Open a table in the database.
-   *
-   * @param name The name of the table.
-   * @param embeddings An embedding function to use on this table
+   * @param {string} name - The name of the table
    */
   async openTable(name: string): Promise<Table> {
     const innerTable = await this.inner.openTable(name);
@@ -116,9 +116,9 @@ export class Connection {
 
   /**
    * Creates a new Table and initialize it with new data.
-   *
    * @param {string} name - The name of the table.
-   * @param data - Non-empty Array of Records to be inserted into the table
+   * @param {Record<string, unknown>[] | ArrowTable} data - Non-empty Array of Records
+   * to be inserted into the table
    */
   async createTable(
     name: string,
@@ -145,9 +145,8 @@ export class Connection {
 
   /**
    * Creates a new empty Table
-   *
    * @param {string} name - The name of the table.
-   * @param schema - The schema of the table
+   * @param {Schema} schema - The schema of the table
    */
   async createEmptyTable(
     name: string,
@@ -169,7 +168,7 @@ export class Connection {
 
   /**
    * Drop an existing table.
-   * @param name The name of the table to drop.
+   * @param {string} name The name of the table to drop.
    */
   async dropTable(name: string): Promise<void> {
     return this.inner.dropTable(name);

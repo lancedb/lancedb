@@ -481,6 +481,13 @@ function sanitizeField(fieldLike: unknown): Field {
   return new Field(name, type, nullable, metadata);
 }
 
+/**
+ * Convert something schemaLike into a Schema instance
+ *
+ * This method is often needed even when the caller is using a Schema
+ * instance because they might be using a different instance of apache-arrow
+ * than lancedb is using.
+ */
 export function sanitizeSchema(schemaLike: unknown): Schema {
   if (schemaLike instanceof Schema) {
     return schemaLike;

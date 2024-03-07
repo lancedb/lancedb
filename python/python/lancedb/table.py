@@ -43,7 +43,7 @@ from .common import DATA, VEC, VECTOR_COLUMN_NAME
 from .embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
 from .merge import LanceMergeInsertBuilder
 from .pydantic import LanceModel, model_to_dict
-from .query import LanceQueryBuilder, Query
+from .query import AsyncQuery, AsyncVectorQuery, LanceQueryBuilder, Query
 from .util import (
     fs_from_uri,
     inf_vector_column_query,
@@ -1907,6 +1907,9 @@ class AsyncTable:
         """
         return await self._inner.count_rows(filter)
 
+    def query(self) -> AsyncQuery:
+        return AsyncQuery(self._inner.query())
+
     async def to_pandas(self) -> "pd.DataFrame":
         """Return the table as a pandas DataFrame.
 
@@ -1914,7 +1917,7 @@ class AsyncTable:
         -------
         pd.DataFrame
         """
-        return self.to_arrow().to_pandas()
+        return (await self.to_arrow()).to_pandas()
 
     async def to_arrow(self) -> pa.Table:
         """Return the table as a pyarrow Table.
@@ -1923,7 +1926,7 @@ class AsyncTable:
         -------
         pa.Table
         """
-        raise NotImplementedError
+        return await self.query().to_arrow()
 
     async def create_index(
         self,
@@ -2076,90 +2079,18 @@ class AsyncTable:
 
         return LanceMergeInsertBuilder(self, on)
 
-    async def search(
+    def vector_search(
         self,
-        query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
-        vector_column_name: Optional[str] = None,
-        query_type: str = "auto",
-    ) -> LanceQueryBuilder:
-        """Create a search query to find the nearest neighbors
-        of the given query vector. We currently support [vector search][search]
-        and [full-text search][experimental-full-text-search].
-
-        All query options are defined in [Query][lancedb.query.Query].
-
-        Examples
-        --------
-        >>> import lancedb
-        >>> db = lancedb.connect("./.lancedb")
-        >>> data = [
-        ...    {"original_width": 100, "caption": "bar", "vector": [0.1, 2.3, 4.5]},
-        ...    {"original_width": 2000, "caption": "foo",  "vector": [0.5, 3.4, 1.3]},
-        ...    {"original_width": 3000, "caption": "test", "vector": [0.3, 6.2, 2.6]}
-        ... ]
-        >>> table = db.create_table("my_table", data)
-        >>> query = [0.4, 1.4, 2.4]
-        >>> (table.search(query)
-        ...     .where("original_width > 1000", prefilter=True)
-        ...     .select(["caption", "original_width", "vector"])
-        ...     .limit(2)
-        ...     .to_pandas())
-          caption  original_width           vector  _distance
-        0     foo            2000  [0.5, 3.4, 1.3]   5.220000
-        1    test            3000  [0.3, 6.2, 2.6]  23.089996
-
-        Parameters
-        ----------
-        query: list/np.ndarray/str/PIL.Image.Image, default None
-            The targetted vector to search for.
-
-            - *default None*.
-            Acceptable types are: list, np.ndarray, PIL.Image.Image
-
-            - If None then the select/where/limit clauses are applied to filter
-            the table
-        vector_column_name: str, optional
-            The name of the vector column to search.
-
-            The vector column needs to be a pyarrow fixed size list type
-
-            - If not specified then the vector column is inferred from
-            the table schema
-
-            - If the table has multiple vector columns then the *vector_column_name*
-            needs to be specified. Otherwise, an error is raised.
-        query_type: str
-            *default "auto"*.
-            Acceptable types are: "vector", "fts", "hybrid", or "auto"
-
-            - If "auto" then the query type is inferred from the query;
-
-                - If `query` is a list/np.ndarray then the query type is
-                "vector";
-
-                - If `query` is a PIL.Image.Image then either do vector search,
-                or raise an error if no corresponding embedding function is found.
-
-            - If `query` is a string, then the query type is "vector" if the
-            table has embedding functions else the query type is "fts"
-
-        Returns
-        -------
-        LanceQueryBuilder
-            A query builder object representing the query.
-            Once executed, the query returns
-
-            - selected columns
-
-            - the vector
-
-            - and also the "_distance" column which is the distance between the query
-            vector and the returned vector.
+        query_vector: Optional[Union[VEC, Tuple]] = None,
+    ) -> AsyncVectorQuery:
         """
-        raise NotImplementedError
+        Search the table with a given query vector.
 
-    async def _execute_query(self, query: Query) -> pa.Table:
-        pass
+        This is a convenience method for preparing a vector query and
+        is the same thing as calling `nearestTo` on the builder returned
+        by `query`.  Seer [nearest_to][AsyncQuery.nearest_to] for more details.
+        """
+        return self.query().nearest_to(query_vector)
 
     async def _do_merge(
         self,
