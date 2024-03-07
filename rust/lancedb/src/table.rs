@@ -1148,7 +1148,7 @@ impl TableInternal for NativeTable {
                     .compaction;
                 stats.prune = self
                     .optimize(OptimizeAction::Prune {
-                        older_than: Duration::days(7),
+                        older_than: Duration::try_days(7).unwrap(),
                         delete_unverified: None,
                     })
                     .await?

@@ -796,10 +796,10 @@ mod tests {
         let tmp_dir = tempdir().unwrap();
         let mut names = Vec::with_capacity(100);
         for _ in 0..100 {
-            let name = uuid::Uuid::new_v4().to_string();
+            let mut name = uuid::Uuid::new_v4().to_string();
             names.push(name.clone());
-            let table_name = name + ".lance";
-            create_dir_all(tmp_dir.path().join(&table_name)).unwrap();
+            name.push_str(".lance");
+            create_dir_all(tmp_dir.path().join(&name)).unwrap();
         }
         names.sort();
 
