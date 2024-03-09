@@ -39,46 +39,50 @@ pub enum Error {
     Runtime { message: String },
 
     // 3rd party / external errors
-    #[snafu(display("object_store error: {message}"))]
-    Store { message: String },
-    #[snafu(display("lance error: {message}"))]
-    Lance { message: String },
+    #[snafu(display("object_store error: {source}"))]
+    ObjectStore { source: object_store::Error },
+    #[snafu(display("lance error: {source}"))]
+    Lance { source: lance::Error },
     #[snafu(display("Http error: {message}"))]
     Http { message: String },
-    #[snafu(display("Arrow error: {message}"))]
-    Arrow { message: String },
+    #[snafu(display("Arrow error: {source}"))]
+    Arrow { source: ArrowError },
+    #[snafu(display("LanceDBError: not supported: {message}"))]
+    NotSupported { message: String },
+    #[snafu(whatever, display("{message}"))]
+    Other {
+        message: String,
+        #[snafu(source(from(Box<dyn std::error::Error + Send + Sync>, Some)))]
+        source: Option<Box<dyn std::error::Error + Send + Sync>>,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
 
 impl From<ArrowError> for Error {
-    fn from(e: ArrowError) -> Self {
-        Self::Arrow {
-            message: e.to_string(),
-        }
+    fn from(source: ArrowError) -> Self {
+        Self::Arrow { source }
     }
 }
 
 impl From<lance::Error> for Error {
-    fn from(e: lance::Error) -> Self {
-        Self::Lance {
-            message: e.to_string(),
-        }
+    fn from(source: lance::Error) -> Self {
+        // TODO: Once Lance is changed to preserve ObjectStore, DataFusion, and Arrow errors, we can
+        // pass those variants through here as well.
+        Self::Lance { source }
     }
 }
 
 impl From<object_store::Error> for Error {
-    fn from(e: object_store::Error) -> Self {
-        Self::Store {
-            message: e.to_string(),
-        }
+    fn from(source: object_store::Error) -> Self {
+        Self::ObjectStore { source }
     }
 }
 
 impl From<object_store::path::Error> for Error {
-    fn from(e: object_store::path::Error) -> Self {
-        Self::Store {
-            message: e.to_string(),
+    fn from(source: object_store::path::Error) -> Self {
+        Self::ObjectStore {
+            source: object_store::Error::InvalidPath { source },
         }
     }
 }

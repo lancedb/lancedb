@@ -38,6 +38,7 @@ use lance::io::WrappingObjectStore;
 use lance_index::IndexType;
 use lance_index::{optimize::OptimizeOptions, DatasetIndexExt};
 use log::info;
+use snafu::whatever;
 
 use crate::error::{Error, Result};
 use crate::index::vector::{VectorIndex, VectorIndexStatistics};
@@ -503,6 +504,13 @@ impl Table {
     }
 }
 
+impl From<NativeTable> for Table {
+    fn from(table: NativeTable) -> Self {
+        Self {
+            inner: Arc::new(table),
+        }
+    }
+}
 /// A table in a LanceDB database.
 #[derive(Debug, Clone)]
 pub struct NativeTable {
@@ -586,9 +594,7 @@ impl NativeTable {
                 lance::Error::DatasetNotFound { .. } => Error::TableNotFound {
                     name: name.to_string(),
                 },
-                e => Error::Lance {
-                    message: e.to_string(),
-                },
+                source => Error::Lance { source },
             })?;
 
         let dataset = DatasetConsistencyWrapper::new_latest(dataset, read_consistency_interval);
@@ -637,9 +643,14 @@ impl NativeTable {
         })
     }
 
+    /// Checkout the latest version of this [NativeTable].
+    ///
+    /// This will force the table to be reloaded from disk, regardless of the
+    /// `read_consistency_interval` set.
     pub async fn checkout_latest(&self) -> Result<Self> {
         let mut dataset = self.dataset.duplicate().await;
         dataset.as_latest(self.read_consistency_interval).await?;
+        dataset.reload().await?;
         Ok(Self {
             dataset,
             ..self.clone()
@@ -693,9 +704,7 @@ impl NativeTable {
                 lance::Error::DatasetAlreadyExists { .. } => Error::TableAlreadyExists {
                     name: name.to_string(),
                 },
-                e => Error::Lance {
-                    message: e.to_string(),
-                },
+                source => Error::Lance { source },
             })?;
         Ok(Self {
             name: name.to_string(),
@@ -865,13 +874,10 @@ impl NativeTable {
         }
         let dataset = self.dataset.get().await?;
         let index_stats = dataset.index_statistics(&index.unwrap().index_name).await?;
-        let index_stats: VectorIndexStatistics =
-            serde_json::from_str(&index_stats).map_err(|e| Error::Lance {
-                message: format!(
-                    "error deserializing index statistics {}: {}",
-                    e, index_stats
-                ),
-            })?;
+        let index_stats: VectorIndexStatistics = whatever!(
+            serde_json::from_str(&index_stats),
+            "error deserializing index statistics {index_stats}",
+        );
 
         Ok(Some(index_stats))
     }
@@ -940,12 +946,12 @@ impl TableInternal for NativeTable {
                 let arrow_schema = Schema::from(ds_ref.schema());
                 default_vector_column(&arrow_schema, Some(query_vector.len() as i32))?
             };
-            let field = ds_ref.schema().field(&column).ok_or(Error::Store {
+            let field = ds_ref.schema().field(&column).ok_or(Error::Schema {
                 message: format!("Column {} not found in dataset schema", column),
             })?;
             if !matches!(field.data_type(), arrow_schema::DataType::FixedSizeList(f, dim) if f.data_type().is_floating() && dim == query_vector.len() as i32)
             {
-                return Err(Error::Store {
+                return Err(Error::Schema {
                     message: format!(
                         "Vector column '{}' does not match the dimension of the query vector: dim={}",
                         column,
@@ -1142,7 +1148,7 @@ impl TableInternal for NativeTable {
                     .compaction;
                 stats.prune = self
                     .optimize(OptimizeAction::Prune {
-                        older_than: Duration::days(7),
+                        older_than: Duration::try_days(7).unwrap(),
                         delete_unverified: None,
                     })
                     .await?
@@ -1949,6 +1955,9 @@ mod tests {
             match interval {
                 None => {
                     assert_eq!(table2.count_rows(None).await.unwrap(), 0);
+                    let table2_native =
+                        table2.as_native().unwrap().checkout_latest().await.unwrap();
+                    assert_eq!(table2_native.count_rows(None).await.unwrap(), 1);
                 }
                 Some(0) => {
                     assert_eq!(table2.count_rows(None).await.unwrap(), 1);

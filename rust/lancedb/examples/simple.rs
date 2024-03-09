@@ -33,7 +33,7 @@ async fn main() -> Result<()> {
     // --8<-- [end:connect]
 
     // --8<-- [start:list_names]
-    println!("{:?}", db.table_names().await?);
+    println!("{:?}", db.table_names().execute().await?);
     // --8<-- [end:list_names]
     let tbl = create_table(&db).await?;
     create_index(&tbl).await?;

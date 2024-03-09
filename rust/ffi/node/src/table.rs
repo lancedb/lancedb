@@ -323,7 +323,7 @@ impl JsTable {
             .and_then(|val| val.downcast::<JsNumber, _>(&mut cx).ok())
             .map(|val| val.value(&mut cx) as i64)
             .unwrap_or_else(|| 2 * 7 * 24 * 60); // 2 weeks
-        let older_than = chrono::Duration::minutes(older_than);
+        let older_than = chrono::Duration::try_minutes(older_than).unwrap();
         let delete_unverified: Option<bool> = Some(
             cx.argument_opt(1)
                 .and_then(|val| val.downcast::<JsBoolean, _>(&mut cx).ok())

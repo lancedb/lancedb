@@ -27,6 +27,7 @@ export class OpenAIEmbeddingFunction implements EmbeddingFunction<string> {
     /**
      * @type {import("openai").default}
      */
+    // eslint-disable-next-line @typescript-eslint/naming-convention
     let Openai;
     try {
       // eslint-disable-next-line @typescript-eslint/no-var-requires

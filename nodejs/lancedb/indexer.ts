@@ -12,6 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// TODO: Re-enable this as part of https://github.com/lancedb/lancedb/pull/1052
+/* eslint-disable @typescript-eslint/naming-convention */
+
 import {
   MetricType,
   IndexBuilder as NativeBuilder,
