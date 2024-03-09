@@ -505,7 +505,13 @@ class Table(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def _execute_query(self, query: Query) -> pa.Table:
+    def _execute_query(
+        self, query: Query, batch_size: Optional[int] = None
+    ) -> Iterable[pa.RecordBatch]:
+        pass
+
+    @abstractmethod
+    def _get_query_projected_schema(self, query: Query) -> pa.Schema:
         pass
 
     @abstractmethod
@@ -1511,10 +1517,9 @@ class LanceTable(Table):
         self._dataset_mut.update(values_sql, where)
         register_event("update")
 
-    def _execute_query(self, query: Query) -> pa.Table:
+    def _get_query_projected_schema(self, query: Query) -> pa.Schema:
         ds = self.to_lance()
-
-        return ds.to_table(
+        return ds.scanner(
             columns=query.columns,
             filter=query.filter,
             prefilter=query.prefilter,
@@ -1527,6 +1532,26 @@ class LanceTable(Table):
                 "refine_factor": query.refine_factor,
             },
             with_row_id=query.with_row_id,
+        ).projected_schema
+
+    def _execute_query(
+        self, query: Query, batch_size: Optional[int] = None
+    ) -> Iterable[pa.RecordBatch]:
+        ds = self.to_lance()
+        return ds.to_batches(
+            columns=query.columns,
+            filter=query.filter,
+            prefilter=query.prefilter,
+            nearest={
+                "column": query.vector_column,
+                "q": query.vector,
+                "k": query.k,
+                "metric": query.metric,
+                "nprobes": query.nprobes,
+                "refine_factor": query.refine_factor,
+            },
+            with_row_id=query.with_row_id,
+            batch_size=batch_size,
         )
 
     def _do_merge(
@@ -2211,7 +2236,9 @@ class AsyncTable:
         """
         raise NotImplementedError
 
-    async def _execute_query(self, query: Query) -> pa.Table:
+    async def _execute_query(
+        self, query: Query, batch_size: Optional[int] = None
+    ) -> Iterable[pa.RecordBatch]:
         pass
 
     async def _do_merge(

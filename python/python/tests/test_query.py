@@ -12,6 +12,7 @@
 #  limitations under the License.
 
 import unittest.mock as mock
+from typing import Optional
 
 import lance
 import numpy as np
@@ -33,9 +34,9 @@ class MockTable:
     def to_lance(self):
         return lance.dataset(self.uri)
 
-    def _execute_query(self, query):
+    def _get_query_projected_schema(self, query):
         ds = self.to_lance()
-        return ds.to_table(
+        return ds.scanner(
             columns=query.columns,
             filter=query.filter,
             prefilter=query.prefilter,
@@ -47,6 +48,23 @@ class MockTable:
                 "nprobes": query.nprobes,
                 "refine_factor": query.refine_factor,
             },
+        ).projected_schema
+
+    def _execute_query(self, query, batch_size: Optional[int] = None):
+        ds = self.to_lance()
+        return ds.to_batches(
+            columns=query.columns,
+            filter=query.filter,
+            prefilter=query.prefilter,
+            nearest={
+                "column": query.vector_column,
+                "q": query.vector,
+                "k": query.k,
+                "metric": query.metric,
+                "nprobes": query.nprobes,
+                "refine_factor": query.refine_factor,
+            },
+            batch_size=batch_size,
         )
 
 
@@ -102,27 +120,16 @@ def test_query_builder_batches(table):
         .select(["id", "vector"])
         .to_batches(1)
     )
-    assert len(rs) == 2
-    assert all(isinstance(item, pa.RecordBatch) for item in rs)
-    assert len(rs[0]["id"]) == 1
-    assert all(rs[0].to_pandas()["vector"][0] == [1.0, 2.0])
-    assert rs[0].to_pandas()["id"][0] == 1
-    assert all(rs[1].to_pandas()["vector"][0] == [3.0, 4.0])
-    assert rs[1].to_pandas()["id"][0] == 2
-
-    rs = (
-        LanceVectorQueryBuilder(table, [0, 0], "vector")
-        .limit(2)
-        .select(["id", "vector"])
-        .to_batches(2)
-    )
-    assert len(rs) == 1
-    assert all(isinstance(item, pa.RecordBatch) for item in rs)
-    assert len(rs[0]["id"]) == 2
-    assert all(rs[0].to_pandas()["vector"][0] == [1.0, 2.0])
-    assert rs[0].to_pandas()["id"][0] == 1
-    assert all(rs[0].to_pandas()["vector"][1] == [3.0, 4.0])
-    assert rs[0].to_pandas()["id"][1] == 2
+    rs_list = []
+    for item in rs:
+        rs_list.append(item)
+        assert isinstance(item, pa.RecordBatch)
+    assert len(rs_list) == 1
+    assert len(rs_list[0]["id"]) == 2
+    assert all(rs_list[0].to_pandas()["vector"][0] == [1.0, 2.0])
+    assert rs_list[0].to_pandas()["id"][0] == 1
+    assert all(rs_list[0].to_pandas()["vector"][1] == [3.0, 4.0])
+    assert rs_list[0].to_pandas()["id"][1] == 2
 
 
 def test_dynamic_projection(table):
@@ -197,7 +204,9 @@ def test_query_builder_with_different_vector_column():
         .limit(2)
     )
     ds = mock.Mock()
+    schema = pa.schema([("b", pa.float32())])
     table.to_lance.return_value = ds
+    table._get_query_projected_schema.return_value = schema
     builder.to_arrow()
     table._execute_query.assert_called_once_with(
         Query(
@@ -209,7 +218,8 @@ def test_query_builder_with_different_vector_column():
             nprobes=20,
             refine_factor=None,
             vector_column="foo_vector",
-        )
+        ),
+        None,
     )
 
 

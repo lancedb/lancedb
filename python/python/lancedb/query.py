@@ -293,21 +293,6 @@ class LanceQueryBuilder(ABC):
         """
         return self.to_arrow().to_pylist()
 
-    def to_batches(self, max_chunksize) -> Iterable[pa.RecordBatch]:
-        """
-        Execute the query and return the result as an iterator of RecordBatch objects.
-
-        Parameters
-        ----------
-        max_chunksize: int
-            The maximum number of selected records in a RecordBatch object.
-
-        Returns
-        -------
-        Iterable[pa.RecordBatch]
-        """
-        return self.to_arrow().to_batches(max_chunksize)
-
     def to_pydantic(self, model: Type[LanceModel]) -> List[LanceModel]:
         """Return the table as a list of pydantic models.
 
@@ -519,19 +504,11 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         self._refine_factor = refine_factor
         return self
 
-    def to_arrow(self) -> pa.Table:
-        """
-        Execute the query and return the results as an
-        [Apache Arrow Table](https://arrow.apache.org/docs/python/generated/pyarrow.Table.html#pyarrow.Table).
-
-        In addition to the selected columns, LanceDB also returns a vector
-        and also the "_distance" column which is the distance between the query
-        vector and the returned vectors.
-        """
+    def query(self) -> Query:
         vector = self._query if isinstance(self._query, list) else self._query.tolist()
         if isinstance(vector[0], np.ndarray):
             vector = [v.tolist() for v in vector]
-        query = Query(
+        return Query(
             vector=vector,
             filter=self._where,
             prefilter=self._prefilter,
@@ -543,7 +520,34 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             vector_column=self._vector_column,
             with_row_id=self._with_row_id,
         )
-        return self._table._execute_query(query)
+
+    def to_arrow(self) -> pa.Table:
+        """
+        Execute the query and return the results as an
+        [Apache Arrow Table](https://arrow.apache.org/docs/python/generated/pyarrow.Table.html#pyarrow.Table).
+
+        In addition to the selected columns, LanceDB also returns a vector
+        and also the "_distance" column which is the distance between the query
+        vector and the returned vectors.
+        """
+        return pa.Table.from_batches(
+            self.to_batches(), self._table._get_query_projected_schema(self.query())
+        )
+
+    def to_batches(self, batch_size: Optional[int] = None) -> Iterable[pa.RecordBatch]:
+        """
+        Execute the query and return the result as an iterator of RecordBatch objects.
+
+        Parameters
+        ----------
+        batch_size: int
+            The maximum number of selected records in a RecordBatch object.
+
+        Returns
+        -------
+        Iterable[pa.RecordBatch]
+        """
+        return self._table._execute_query(self.query(), batch_size)
 
     def where(self, where: str, prefilter: bool = False) -> LanceVectorQueryBuilder:
         """Set the where clause.
