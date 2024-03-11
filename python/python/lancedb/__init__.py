@@ -35,6 +35,7 @@ def connect(
     host_override: Optional[str] = None,
     read_consistency_interval: Optional[timedelta] = None,
     request_thread_pool: Optional[Union[int, ThreadPoolExecutor]] = None,
+    **kwargs,
 ) -> DBConnection:
     """Connect to a LanceDB database.
 
@@ -99,7 +100,12 @@ def connect(
         if isinstance(request_thread_pool, int):
             request_thread_pool = ThreadPoolExecutor(request_thread_pool)
         return RemoteDBConnection(
-            uri, api_key, region, host_override, request_thread_pool=request_thread_pool
+            uri,
+            api_key,
+            region,
+            host_override,
+            request_thread_pool=request_thread_pool,
+            **kwargs,
         )
     return LanceDBConnection(uri, read_consistency_interval=read_consistency_interval)
 

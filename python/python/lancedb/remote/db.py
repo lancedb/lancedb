@@ -41,6 +41,8 @@ class RemoteDBConnection(DBConnection):
         region: str,
         host_override: Optional[str] = None,
         request_thread_pool: Optional[ThreadPoolExecutor] = None,
+        connection_timeout: float = 120.0,
+        read_timeout: float = 300.0,
     ):
         """Connect to a remote LanceDB database."""
         parsed = urlparse(db_url)
@@ -49,7 +51,12 @@ class RemoteDBConnection(DBConnection):
         self.db_name = parsed.netloc
         self.api_key = api_key
         self._client = RestfulLanceDBClient(
-            self.db_name, region, api_key, host_override
+            self.db_name,
+            region,
+            api_key,
+            host_override,
+            connection_timeout=connection_timeout,
+            read_timeout=read_timeout,
         )
         self._request_thread_pool = request_thread_pool
 
