@@ -363,6 +363,10 @@ mod tests {
             let arr: &Int32Array = b["id"].as_primitive();
             assert!(arr.iter().all(|x| x.unwrap() % 2 == 0));
         }
+
+        // Reject bad filter
+        let result = table.query().filter("id = 0 AND").execute_stream().await;
+        assert!(result.is_err());
     }
 
     fn make_non_empty_batches() -> impl RecordBatchReader + Send + 'static {
