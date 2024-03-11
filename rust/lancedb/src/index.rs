@@ -22,6 +22,7 @@ pub mod scalar;
 pub mod vector;
 
 pub enum Index {
+    Auto,
     BTree(BTreeIndexBuilder),
     IvfPq(IvfPqIndexBuilder),
 }
@@ -32,31 +33,18 @@ pub enum Index {
 pub struct IndexBuilder {
     parent: Arc<dyn TableInternal>,
     pub(crate) index: Index,
-    pub(crate) columns: Option<Vec<String>>,
+    pub(crate) columns: Vec<String>,
     pub(crate) replace: bool,
 }
 
 impl IndexBuilder {
-    pub(crate) fn new(parent: Arc<dyn TableInternal>, index: Index) -> Self {
+    pub(crate) fn new(parent: Arc<dyn TableInternal>, columns: Vec<String>, index: Index) -> Self {
         Self {
             parent,
             index,
-            columns: None,
+            columns,
             replace: true,
         }
-    }
-
-    /// The column to index.
-    ///
-    /// When building a scalar index this must be set.
-    ///
-    /// When building a vector index, this is optional.  The default will look
-    /// for any columns of type fixed-size-list with floating point values.  If
-    /// there is only one column of this type then it will be used.  Otherwise
-    /// an error will be returned.
-    pub fn column(mut self, column: impl Into<String>) -> Self {
-        self.columns = Some(vec![column.into()]);
-        self
     }
 
     /// Whether to replace the existing index, the default is `true`.

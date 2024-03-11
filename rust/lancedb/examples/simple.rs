@@ -20,7 +20,6 @@ use arrow_schema::{DataType, Field, Schema};
 use futures::TryStreamExt;
 
 use lancedb::connection::Connection;
-use lancedb::index::vector::IvfPqIndexBuilder;
 use lancedb::index::Index;
 use lancedb::{connect, Result, Table as LanceDbTable};
 
@@ -144,11 +143,7 @@ async fn create_empty_table(db: &Connection) -> Result<LanceDbTable> {
 
 async fn create_index(table: &LanceDbTable) -> Result<()> {
     // --8<-- [start:create_index]
-    table
-        .create_index(Index::IvfPq(IvfPqIndexBuilder::default().num_partitions(8)))
-        .column("vector")
-        .execute()
-        .await
+    table.create_index(&["vector"], Index::Auto).execute().await
     // --8<-- [end:create_index]
 }
 

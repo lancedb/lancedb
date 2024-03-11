@@ -18,7 +18,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use arrow_array::{RecordBatchIterator, RecordBatchReader};
-use arrow_schema::{DataType, Schema, SchemaRef};
+use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use async_trait::async_trait;
 use chrono::Duration;
 use lance::dataset::builder::DatasetBuilder;
@@ -293,20 +293,22 @@ impl Table {
         self.inner.delete(predicate).await
     }
 
-    /// Create an index on the column name.
+    /// Create an index on the provided column(s).
     ///
-    /// Indices are used to speed up searches and are often needed when the size of the dataset
+    /// Indices are used to speed up searches and are often needed when the size of the table
     /// becomes large (the exact size depends on many factors but somewhere between 100K rows
     /// and 1M rows is a good rule of thumb)
     ///
-    /// There are two major kinds of indices, scalar indices, described more in
-    /// [IndexBuilder::scalar] and vector indices, described more in [IndexBuilder::vector].
+    /// There are a variety of indices available.  They are described more in
+    /// [`crate::index::Index`].  The simplest thing to do is to use `index::Index::Auto` which
+    /// will attempt to create the most useful index based on the column type and column
+    /// statistics.
     ///
-    /// Once an index is created it will remain until the dataset is overwritten (e.g. an
+    /// Once an index is created it will remain until the data is overwritten (e.g. an
     /// add operation with mode overwrite) or the indexed column is dropped.
     ///
     /// Indices are not automatically updated with new data.  If you add new data to the
-    /// dataset then the index will not include the new rows.  However, a table search will
+    /// table then the index will not include the new rows.  However, a table search will
     /// still consider the unindexed rows.  Searches will issue both an indexed search (on
     /// the data covered by the index) and a flat search (on the unindexed data) and the
     /// results will be combined.
@@ -315,6 +317,9 @@ impl Table {
     /// should be optimized.  Optimizing an index will add any unindexed data to the existing
     /// index without rerunning the full index creation process.  For more details see
     /// [Table::optimize].
+    ///
+    /// Note: Multi-column (composite) indices are not currently supported.  However, they will
+    /// be supported in the future and the API is designed to be compatible with them.
     ///
     /// # Examples
     ///
@@ -325,22 +330,27 @@ impl Table {
     /// # use arrow_schema::{Schema, Field, DataType};
     /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
     /// use lancedb::index::Index;
-    /// use lancedb::index::vector::IvfPqIndexBuilder;
     /// let tmpdir = tempfile::tempdir().unwrap();
     /// let db = lancedb::connect(tmpdir.path().to_str().unwrap())
     ///     .execute()
     ///     .await
     ///     .unwrap();
     /// # let tbl = db.open_table("idx_test").execute().await.unwrap();
-    /// tbl.create_index(Index::IvfPq(IvfPqIndexBuilder::default().num_partitions(256)))
-    ///    .column("vector")
+    /// tbl.create_index(&["vector"], Index::Auto)
     ///    .execute()
     ///    .await
     ///    .unwrap();
     /// # });
     /// ```
-    pub fn create_index(&self, index: Index) -> IndexBuilder {
-        IndexBuilder::new(self.inner.clone(), index)
+    pub fn create_index(&self, columns: &[impl AsRef<str>], index: Index) -> IndexBuilder {
+        IndexBuilder::new(
+            self.inner.clone(),
+            columns
+                .iter()
+                .map(|val| val.as_ref().to_string())
+                .collect::<Vec<_>>(),
+            index,
+        )
     }
 
     /// Create a builder for a merge insert operation
@@ -707,6 +717,13 @@ impl NativeTable {
             )
     }
 
+    fn supported_vector_data_type(dtype: &DataType) -> bool {
+        match dtype {
+            DataType::FixedSizeList(inner, _) => DataType::is_floating(inner.data_type()),
+            _ => false,
+        }
+    }
+
     /// Creates a new Table
     ///
     /// # Arguments
@@ -921,41 +938,18 @@ impl NativeTable {
     async fn create_ivf_pq_index(
         &self,
         index: IvfPqIndexBuilder,
-        columns: Option<Vec<String>>,
+        field: &Field,
         replace: bool,
     ) -> Result<()> {
-        let schema = self.schema().await?;
-
-        let field = if let Some(columns) = columns {
-            if columns.len() != 1 {
-                return Err(Error::Schema {
-                    message: "Only one column is supported for index".to_string(),
-                });
-            }
-            schema.field_with_name(&columns[0])?
-        } else {
-            let vector_fields = schema
-                .fields()
-                .iter()
-                .filter(|f| match f.data_type() {
-                    arrow_schema::DataType::FixedSizeList(inner_type, _) => {
-                        inner_type.data_type().is_floating()
-                    }
-                    _ => false,
-                })
-                .collect::<Vec<_>>();
-            if vector_fields.is_empty() {
-                return Err(Error::Schema {
-                    message: "No vector columns found in the schema".to_string(),
-                });
-            }
-            if vector_fields.len() > 1 {
-                return Err(Error::Schema {
-                    message: "Multiple vector columns found in the schema, please specify the column to index".to_string(),
-                });
-            }
-            vector_fields[0]
-        };
+        if !Self::supported_vector_data_type(field.data_type()) {
+            return Err(Error::InvalidInput {
+                message: format!(
+                    "An IVF PQ index cannot be created on the column `{}` which has data type {}",
+                    field.name(),
+                    field.data_type()
+                ),
+            });
+        }
 
         let num_partitions = if let Some(n) = index.num_partitions {
             n
@@ -995,26 +989,28 @@ impl NativeTable {
         Ok(())
     }
 
-    async fn create_btree_index(&self, opts: IndexBuilder) -> Result<()> {
-        let schema = self.schema().await?;
-
-        let field = if let Some(columns) = opts.columns {
-            if columns.len() != 1 {
-                return Err(Error::Schema {
-                    message: "Only one column is supported for index".to_string(),
-                });
-            }
-            Ok(schema.field_with_name(&columns[0])?)
+    async fn create_auto_index(&self, field: &Field, opts: IndexBuilder) -> Result<()> {
+        if Self::supported_vector_data_type(field.data_type()) {
+            self.create_ivf_pq_index(IvfPqIndexBuilder::default(), field, opts.replace)
+                .await
+        } else if Self::supported_btree_data_type(field.data_type()) {
+            self.create_btree_index(field, opts).await
         } else {
             Err(Error::InvalidInput {
-                message: "When building a btree index the column must be specified".to_string(),
+                message: format!(
+                    "there are no indices supported for the field `{}` with the data type {}",
+                    field.name(),
+                    field.data_type()
+                ),
             })
-        }?;
+        }
+    }
 
+    async fn create_btree_index(&self, field: &Field, opts: IndexBuilder) -> Result<()> {
         if !Self::supported_btree_data_type(field.data_type()) {
             return Err(Error::Schema {
                 message: format!(
-                    "Column '{}' has type {} which is not a supported type for BTree index",
+                    "A BTree index cannot be created on the field `{}` which has data type {}",
                     field.name(),
                     field.data_type()
                 ),
@@ -1086,13 +1082,20 @@ impl TableInternal for NativeTable {
         Ok(())
     }
 
-    async fn create_index(&self, index: IndexBuilder) -> Result<()> {
-        match index.index {
-            Index::BTree(_) => self.create_btree_index(index).await,
-            Index::IvfPq(ivf_pq) => {
-                self.create_ivf_pq_index(ivf_pq, index.columns, index.replace)
-                    .await
-            }
+    async fn create_index(&self, opts: IndexBuilder) -> Result<()> {
+        if opts.columns.len() != 1 {
+            return Err(Error::Schema {
+                message: "Multi-column (composite) indices are not yet supported".to_string(),
+            });
+        }
+        let schema = self.schema().await?;
+
+        let field = schema.field_with_name(&opts.columns[0])?;
+
+        match opts.index {
+            Index::Auto => self.create_auto_index(field, opts).await,
+            Index::BTree(_) => self.create_btree_index(field, opts).await,
+            Index::IvfPq(ivf_pq) => self.create_ivf_pq_index(ivf_pq, field, opts.replace).await,
         }
     }
 
@@ -1907,10 +1910,7 @@ mod tests {
         );
 
         table
-            .create_index(Index::IvfPq(
-                IvfPqIndexBuilder::default().num_partitions(256),
-            ))
-            .column("embeddings")
+            .create_index(&["embeddings"], Index::Auto)
             .execute()
             .await
             .unwrap();

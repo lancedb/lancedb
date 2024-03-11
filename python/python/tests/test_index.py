@@ -4,7 +4,7 @@ import pyarrow as pa
 import pytest
 import pytest_asyncio
 from lancedb import AsyncConnection, AsyncTable, connect_async
-from lancedb.index import Index
+from lancedb.index import BTree, IvfPq
 
 
 @pytest_asyncio.fixture
@@ -35,52 +35,27 @@ async def some_table(db_async):
     )
 
 
-@pytest_asyncio.fixture
-async def two_vec_columns_table(db_async):
-    data = pa.Table.from_pydict(
-        {
-            "id": list(range(256)),
-            "vector1": sample_fixed_size_list_array(NROWS, DIM),
-            "vector2": sample_fixed_size_list_array(NROWS, DIM),
-        }
-    )
-    return await db_async.create_table(
-        "some_table",
-        data,
-    )
-
-
 @pytest.mark.asyncio
 async def test_create_scalar_index(some_table: AsyncTable):
     # Can create
-    await some_table.create_index(Index.btree(), column="id")
+    await some_table.create_index("id")
     # Can recreate if replace=True
-    await some_table.create_index(Index.btree(), column="id", replace=True)
+    await some_table.create_index("id", replace=True)
     # Can't recreate if replace=False
     with pytest.raises(RuntimeError, match="already exists"):
-        await some_table.create_index(Index.btree(), column="id", replace=False)
-    # Can't create without column
-    with pytest.raises(ValueError, match="column must be specified"):
-        await some_table.create_index(Index.btree())
+        await some_table.create_index("id", replace=False)
+    # can also specify index type
+    await some_table.create_index("id", config=BTree())
 
 
 @pytest.mark.asyncio
 async def test_create_vector_index(some_table: AsyncTable):
     # Can create
-    await some_table.create_index(Index.ivf_pq())
+    await some_table.create_index("vector")
     # Can recreate if replace=True
-    await some_table.create_index(Index.ivf_pq(), replace=True)
+    await some_table.create_index("vector", replace=True)
     # Can't recreate if replace=False
     with pytest.raises(RuntimeError, match="already exists"):
-        await some_table.create_index(Index.ivf_pq(), replace=False)
-
-
-@pytest.mark.asyncio
-async def test_create_vector_index_two_vector_cols(
-    two_vec_columns_table: AsyncTable,
-):
-    # Cannot create if column not specified
-    with pytest.raises(ValueError, match="specify the column to index"):
-        await two_vec_columns_table.create_index(Index.ivf_pq())
-    # Can create if column is specified
-    await two_vec_columns_table.create_index(Index.ivf_pq(), column="vector1")
+        await some_table.create_index("vector", replace=False)
+    # Can also specify index type
+    await some_table.create_index("vector", config=IvfPq(num_partitions=100))

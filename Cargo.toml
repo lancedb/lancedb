@@ -28,7 +28,7 @@ arrow-schema = "50.0"
 arrow-arith = "50.0"
 arrow-cast = "50.0"
 async-trait = "0"
-chrono = "0.4.23"
+chrono = "0.4.35"
 half = { "version" = "=2.3.1", default-features = false, features = [
     "num-traits",
 ] }

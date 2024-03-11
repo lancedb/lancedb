@@ -175,16 +175,17 @@ export class Index {
 }
 
 export interface IndexOptions {
-  /** The column to index.
+  /** Advanced index configuration
    *
-   * When building a scalar index this must be set.
+   * This option allows you to specify a specfic index to create and also
+   * allows you to pass in configuration for training the index.
    *
-   * When building a vector index, this is optional.  The default will look
-   * for any columns of type fixed-size-list with floating point values.  If
-   * there is only one column of this type then it will be used.  Otherwise
-   * an error will be returned.
+   * See the static methods on Index for details on the various index types.
+   *
+   * If this is not supplied then column data type(s) and column statistics
+   * will be used to determine the most useful kind of index to create.
    */
-  column?: string;
+  config?: Index;
   /** Whether to replace the existing index
    *
    * If this is false, and another index already exists on the same columns

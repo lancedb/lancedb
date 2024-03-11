@@ -60,7 +60,7 @@ if TYPE_CHECKING:
 
     from ._lancedb import Table as LanceDBTable
     from .db import LanceDBConnection
-    from .index import Index
+    from .index import BTree, IvfPq
 
 
 pd = safe_import_pandas()
@@ -1919,10 +1919,10 @@ class AsyncTable:
 
     async def create_index(
         self,
-        index: Index,
+        column: str,
         *,
-        column: Optional[str] = None,
         replace: Optional[bool] = None,
+        config: Optional[Union[IvfPq, BTree]] = None,
     ):
         """Create an index to speed up queries
 
@@ -1956,7 +1956,10 @@ class AsyncTable:
 
             The default is True
         """
-        await self._inner.create_index(index._inner, column=column, replace=replace)
+        index = None
+        if config is not None:
+            index = config._inner
+        await self._inner.create_index(column, index=index, replace=replace)
 
     async def add(
         self,

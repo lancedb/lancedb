@@ -83,15 +83,16 @@ impl Table {
 
     pub fn create_index<'a>(
         self_: PyRef<'a, Self>,
-        index: &Index,
-        column: Option<&str>,
+        column: String,
+        index: Option<&Index>,
         replace: Option<bool>,
     ) -> PyResult<&'a PyAny> {
-        let index = index.consume()?;
-        let mut op = self_.inner_ref()?.create_index(index);
-        if let Some(column) = column {
-            op = op.column(column);
-        }
+        let index = if let Some(index) = index {
+            index.consume()?
+        } else {
+            lancedb::index::Index::Auto
+        };
+        let mut op = self_.inner_ref()?.create_index(&[column], index);
         if let Some(replace) = replace {
             op = op.replace(replace);
         }

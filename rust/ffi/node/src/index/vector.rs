@@ -46,9 +46,7 @@ pub fn table_create_vector_index(mut cx: FunctionContext) -> JsResult<JsPromise>
     let tbl = table.clone();
     let ivf_pq_builder = get_index_params_builder(&mut cx, index_params).or_throw(&mut cx)?;
 
-    let mut index_builder = tbl
-        .create_index(Index::IvfPq(ivf_pq_builder))
-        .column(column_name);
+    let mut index_builder = tbl.create_index(&[column_name], Index::IvfPq(ivf_pq_builder));
     if let Some(replace) = replace {
         index_builder = index_builder.replace(replace);
     }

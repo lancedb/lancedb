@@ -19,7 +19,7 @@ import {
   Table as _NativeTable,
 } from "./native";
 import { Query } from "./query";
-import { Index, IndexOptions } from "./indexer";
+import { Index, IndexOptions } from "./indices";
 import { Data, fromDataToBuffer } from "./arrow";
 
 /**
@@ -112,20 +112,19 @@ export class Table {
    *
    * @example
    *
-   * By default, when creating a vector index, it will search
-   * for a vector column in the schema and create an index
-   * on that.  This works as long as you only have one vector
-   * column.
+   * If the column has a vector (fixed size list) data type then
+   * an IvfPq vector index will be created.
    *
    * ```typescript
    * const table = await conn.openTable("my_table");
-   * await table.createIndex().vector()..build();
+   * await table.createIndex(["vector"]);
    * ```
    *
-   * You can specify `IVF_PQ` parameters via `ivf_pq({})` call.
+   * For advanced control over vector index creation you can specify
+   * the index type and options.
    * ```typescript
    * const table = await conn.openTable("my_table");
-   * await table.createIndex("my_vec_col")
+   * await table.createIndex(["vector"], I)
    *   .ivf_pq({ num_partitions: 128, num_sub_vectors: 16 })
    *   .build();
    * ```
@@ -136,14 +135,11 @@ export class Table {
    * await table.createIndex("my_float_col").build();
    * ```
    */
-  async createIndex(index: Index, options?: Partial<IndexOptions>) {
-    await this.inner.createIndex(
-      // Bit of a hack to get around the fact that TS has no package-scope.
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (index as any).inner,
-      options?.column,
-      options?.replace,
-    );
+  async createIndex(column: string, options?: Partial<IndexOptions>) {
+    // Bit of a hack to get around the fact that TS has no package-scope.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const nativeIndex = (options?.config as any)?.inner;
+    await this.inner.createIndex(nativeIndex, column, options?.replace);
   }
 
   /**

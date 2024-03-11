@@ -134,15 +134,16 @@ impl Table {
     #[napi]
     pub async fn create_index(
         &self,
-        index: &Index,
-        column: Option<&str>,
+        index: Option<&Index>,
+        column: String,
         replace: Option<bool>,
     ) -> napi::Result<()> {
-        let lancedb_index = index.consume()?;
-        let mut builder = self.inner_ref()?.create_index(lancedb_index);
-        if let Some(column) = column {
-            builder = builder.column(column);
-        }
+        let lancedb_index = if let Some(index) = index {
+            index.consume()?
+        } else {
+            lancedb::index::Index::Auto
+        };
+        let mut builder = self.inner_ref()?.create_index(&[column], lancedb_index);
         if let Some(replace) = replace {
             builder = builder.replace(replace);
         }

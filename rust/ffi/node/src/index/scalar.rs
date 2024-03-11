@@ -34,8 +34,7 @@ pub fn table_create_scalar_index(mut cx: FunctionContext) -> JsResult<JsPromise>
 
     rt.spawn(async move {
         let idx_result = table
-            .create_index(Index::BTree(BTreeIndexBuilder::default()))
-            .column(column)
+            .create_index(&[column], Index::BTree(BTreeIndexBuilder::default()))
             .replace(replace)
             .execute()
             .await;
