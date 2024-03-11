@@ -128,6 +128,11 @@ describe('LanceDB client', function () {
       assertResults(results)
       results = await table.where('id % 2 = 0').execute()
       assertResults(results)
+
+      // Should reject a bad filter
+      await expect(table.filter('id % 2 = 0 AND').execute()).to.be.rejectedWith(
+        /.*sql parser error: Expected an expression:, found: EOF.*/
+      )
     })
 
     it('uses a filter / where clause', async function () {

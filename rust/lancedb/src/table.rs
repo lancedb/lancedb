@@ -978,9 +978,17 @@ impl TableInternal for NativeTable {
             Select::All => { /* Do nothing */ }
         }
 
-        query.filter.as_ref().map(|f| scanner.filter(f));
-        query.refine_factor.map(|rf| scanner.refine(rf));
-        query.metric_type.map(|mt| scanner.distance_metric(mt));
+        if let Some(filter) = &query.filter {
+            scanner.filter(filter)?;
+        }
+
+        if let Some(refine_factor) = query.refine_factor {
+            scanner.refine(refine_factor);
+        }
+
+        if let Some(metric_type) = query.metric_type {
+            scanner.distance_metric(metric_type);
+        }
         Ok(scanner.try_into_stream().await?)
     }
 
