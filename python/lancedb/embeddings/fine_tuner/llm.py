@@ -29,7 +29,7 @@ class BaseLLM(BaseModel):
         raise NotImplementedError
 
 class Openai(BaseLLM):
-    model_name: str = "gpt-3.5-turbo-instruct"
+    model_name: str = "gpt-3.5-turbo"
     kwargs: dict = {}
     api_key: Optional[str] = None
 
@@ -50,13 +50,16 @@ class Openai(BaseLLM):
         """
 
         # TODO: this is legacy openai api replace with completions
-        response = self._client.completions.create(
-            prompt=prompt,
+        completion = self._client.chat.completions.create(
             model=self.model_name,
-            stream=False,
-            **self.kwargs,
-        )
-        text = response.choices[0].text
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": prompt},
+            ],
+            **self.kwargs
+            )
+
+        text = completion.choices[0].message.content
 
         return text
     

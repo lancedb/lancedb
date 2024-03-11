@@ -13,7 +13,7 @@
 from typing import List, Union
 
 import numpy as np
-from python.lancedb.embeddings.fine_tuner import QADataset
+from lancedb.embeddings.fine_tuner import QADataset
 
 from ..util import attempt_import_or_raise
 from .base import TextEmbeddingFunction
@@ -98,7 +98,7 @@ class SentenceTransformerEmbeddings(TextEmbeddingFunction):
         tuner = SentenceTransformersTuner(
             model=self.embedding_model,
             trainset=trainset,
-            **kwargs
+            **kwargs,
         )
         tuner.finetune()
 
@@ -117,7 +117,9 @@ class SentenceTransformersTuner(BaseEmbeddingTuner):
         eval_steps: int = 50,
         max_input_per_doc: int = -1,
         loss: Optional[Any] = None,
-        evaluator: Optional[Any] = None
+        evaluator: Optional[Any] = None,
+        run_name: Optional[str] = None,
+        log_wandb: bool = False,
     ) -> None:
         """
         Parameters
@@ -159,6 +161,8 @@ class SentenceTransformersTuner(BaseEmbeddingTuner):
         self.epochs = epochs
         self.show_progress = show_progress
         self.eval_steps = eval_steps
+        self.run_name = run_name
+        self.log_wandb = log_wandb
 
         if self.max_input_per_doc < -1:
             raise ValueError("max_input_per_doc must be -1 or greater than 0.")
@@ -191,7 +195,7 @@ class SentenceTransformersTuner(BaseEmbeddingTuner):
         self.loss = loss or losses.MultipleNegativesRankingLoss(self.model)
         self.warmup_steps = int(len(self.loader) * epochs * 0.1)
 
-    def finetune(self, **kwargs) -> None:
+    def finetune(self) -> None:
         """Finetune the Sentence Transformers model."""
         self.model.fit(
             train_objectives=[(self.loader, self.loss)],
@@ -201,7 +205,7 @@ class SentenceTransformersTuner(BaseEmbeddingTuner):
             show_progress_bar=self.show_progress,
             evaluator=self.evaluator,
             evaluation_steps=self.eval_steps,
-            **kwargs
+            callback=self._wandb_callback if self.log_wandb else None,
         )
 
         self.helper()
@@ -212,4 +216,12 @@ class SentenceTransformersTuner(BaseEmbeddingTuner):
         LOGGER.info(f"Model saved to {self.path}.")
         LOGGER.info("You can now use the model as follows:")
         LOGGER.info(f"model = get_registry().get('sentence-transformers').create(name='./{self.path}')")
-        
+
+    def _wandb_callback(self, score, epoch, steps):
+        try:
+            import wandb
+            from wandb import __version__ # Known issue: to prevent accidentally importing wandb log folder
+        except ImportError:
+            raise ImportError("wandb is not installed. Please install it using `pip install wandb`")
+        run = wandb.run or wandb.init(project="sbert_lancedb_finetune", name=self.run_name)
+        run.log({"epoch": epoch, "steps": steps, "score": score})

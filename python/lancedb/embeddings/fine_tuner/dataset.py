@@ -115,7 +115,6 @@ class QADataset(BaseModel):
                 re.sub(r"^\d+[\).\s]", "", question).strip() for question in result
             ]
             questions = [question for question in questions if len(question) > 0]
-
             for question in questions:
                 question_id = str(uuid.uuid4())
                 queries[question_id] = question
