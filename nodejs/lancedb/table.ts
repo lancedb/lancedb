@@ -19,7 +19,7 @@ import {
   Table as _NativeTable,
 } from "./native";
 import { Query } from "./query";
-import { Index, IndexOptions } from "./indices";
+import { IndexOptions } from "./indices";
 import { Data, fromDataToBuffer } from "./arrow";
 
 /**
