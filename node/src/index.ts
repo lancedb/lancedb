@@ -176,16 +176,21 @@ export async function connect (
     opts = { uri: arg }
   } else {
     // opts = { uri: arg.uri, awsCredentials = arg.awsCredentials }
-    opts = Object.assign(
-      {
-        uri: '',
-        awsCredentials: undefined,
-        awsRegion: defaultAwsRegion,
-        apiKey: undefined,
-        region: defaultAwsRegion
-      },
-      arg
-    )
+    const keys = Object.keys(arg)
+    if (keys.length === 1 && keys[0] === 'uri' && typeof arg.uri === 'string') {
+      opts = { uri: arg.uri }
+    } else {
+      opts = Object.assign(
+        {
+          uri: '',
+          awsCredentials: undefined,
+          awsRegion: defaultAwsRegion,
+          apiKey: undefined,
+          region: defaultAwsRegion
+        },
+        arg
+      )
+    }
   }
 
   if (opts.uri.startsWith('db://')) {
