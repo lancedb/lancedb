@@ -28,13 +28,14 @@ arrow-schema = "50.0"
 arrow-arith = "50.0"
 arrow-cast = "50.0"
 async-trait = "0"
-chrono = "0.4.23"
+chrono = "0.4.35"
 half = { "version" = "=2.3.1", default-features = false, features = [
     "num-traits",
 ] }
 futures = "0"
 log = "0.4"
 object_store = "0.9.0"
+pin-project = "1.0.7"
 snafu = "0.7.4"
 url = "2"
 num-traits = "0.2"

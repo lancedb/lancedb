@@ -9,7 +9,7 @@ use pyo3::{
 };
 use pyo3_asyncio::tokio::future_into_py;
 
-use crate::error::PythonErrorExt;
+use crate::{error::PythonErrorExt, index::Index};
 
 #[pyclass]
 pub struct Table {
@@ -78,6 +78,28 @@ impl Table {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             inner.count_rows(filter).await.infer_error()
+        })
+    }
+
+    pub fn create_index<'a>(
+        self_: PyRef<'a, Self>,
+        column: String,
+        index: Option<&Index>,
+        replace: Option<bool>,
+    ) -> PyResult<&'a PyAny> {
+        let index = if let Some(index) = index {
+            index.consume()?
+        } else {
+            lancedb::index::Index::Auto
+        };
+        let mut op = self_.inner_ref()?.create_index(&[column], index);
+        if let Some(replace) = replace {
+            op = op.replace(replace);
+        }
+
+        future_into_py(self_.py(), async move {
+            op.execute().await.infer_error()?;
+            Ok(())
         })
     }
 
