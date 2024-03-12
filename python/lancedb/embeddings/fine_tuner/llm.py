@@ -1,4 +1,5 @@
 import os
+import re
 from typing import Optional
 from pydantic import BaseModel
 from functools import cached_property
@@ -62,6 +63,18 @@ class Openai(BaseLLM):
         text = completion.choices[0].message.content
 
         return text
+    
+    def get_questions(self, prompt: str) -> str:
+        """
+        Get the chat completion for the given prompt
+        """
+        response = self.chat_completion(prompt)
+        result = str(response).strip().split("\n")
+        questions = [
+                    re.sub(r"^\d+[\).\s]", "", question).strip() for question in result
+                ]
+        questions = [question for question in questions if len(question) > 0]
+        return questions
     
 class Gemini(BaseLLM):
     pass
