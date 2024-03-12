@@ -974,3 +974,37 @@ def test_drop_columns(tmp_path):
     table = LanceTable.create(db, "my_table", data=data)
     table.drop_columns(["category"])
     assert table.to_arrow().column_names == ["id"]
+
+
+@pytest.mark.asyncio
+async def test_time_travel(db_async: AsyncConnection):
+    # Setup
+    table = await db_async.create_table("some_table", data=[{"id": 0}])
+    version = await table.version()
+    await table.add([{"id": 1}])
+    assert await table.count_rows() == 2
+    # Make sure we can rewind
+    await table.checkout(version)
+    assert await table.count_rows() == 1
+    # Can't add data in time travel mode
+    with pytest.raises(
+        ValueError,
+        match="table cannot be modified when a specific version is checked out",
+    ):
+        await table.add([{"id": 2}])
+    # Can go back to normal mode
+    await table.checkout_latest()
+    assert await table.count_rows() == 2
+    # Should be able to add data again
+    await table.add([{"id": 3}])
+    assert await table.count_rows() == 3
+    # Now checkout and restore
+    await table.checkout(version)
+    await table.restore()
+    assert await table.count_rows() == 1
+    # Should be able to add data
+    await table.add([{"id": 4}])
+    assert await table.count_rows() == 2
+    # Can't use restore if not checked out
+    with pytest.raises(ValueError, match="checkout before running restore"):
+        await table.restore()

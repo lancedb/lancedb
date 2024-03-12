@@ -109,4 +109,34 @@ impl Table {
             Some(inner) => inner.to_string(),
         }
     }
+
+    pub fn version(self_: PyRef<'_, Self>) -> PyResult<&PyAny> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(
+            self_.py(),
+            async move { inner.version().await.infer_error() },
+        )
+    }
+
+    pub fn checkout(self_: PyRef<'_, Self>, version: u64) -> PyResult<&PyAny> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            inner.checkout(version).await.infer_error()
+        })
+    }
+
+    pub fn checkout_latest(self_: PyRef<'_, Self>) -> PyResult<&PyAny> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            inner.checkout_latest().await.infer_error()
+        })
+    }
+
+    pub fn restore(self_: PyRef<'_, Self>) -> PyResult<&PyAny> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(
+            self_.py(),
+            async move { inner.restore().await.infer_error() },
+        )
+    }
 }

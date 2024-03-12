@@ -529,7 +529,7 @@ class AsyncConnection(object):
         on_bad_vectors: Optional[str] = None,
         fill_value: Optional[float] = None,
         embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
-    ) -> Table:
+    ) -> AsyncTable:
         """Create a [Table][lancedb.table.Table] in the database.
 
         Parameters

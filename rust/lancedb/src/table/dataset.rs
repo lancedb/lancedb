@@ -83,6 +83,33 @@ impl DatasetRef {
         }
     }
 
+    async fn as_time_travel(&mut self, target_version: u64) -> Result<()> {
+        match self {
+            Self::Latest { dataset, .. } => {
+                *self = Self::TimeTravel {
+                    dataset: dataset.checkout_version(target_version).await?,
+                    version: target_version,
+                };
+            }
+            Self::TimeTravel { dataset, version } => {
+                if *version != target_version {
+                    *self = Self::TimeTravel {
+                        dataset: dataset.checkout_version(target_version).await?,
+                        version: target_version,
+                    };
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn time_travel_version(&self) -> Option<u64> {
+        match self {
+            Self::Latest { .. } => None,
+            Self::TimeTravel { version, .. } => Some(*version),
+        }
+    }
+
     fn set_latest(&mut self, dataset: Dataset) {
         match self {
             Self::Latest {
@@ -106,23 +133,6 @@ impl DatasetConsistencyWrapper {
         })))
     }
 
-    /// Create a new wrapper in the time travel mode.
-    pub fn new_time_travel(dataset: Dataset, version: u64) -> Self {
-        Self(Arc::new(RwLock::new(DatasetRef::TimeTravel {
-            dataset,
-            version,
-        })))
-    }
-
-    /// Create an independent copy of self.
-    ///
-    /// Unlike Clone, this will track versions independently of the original wrapper and
-    /// will be tied to a different RwLock.
-    pub async fn duplicate(&self) -> Self {
-        let ds_ref = self.0.read().await;
-        Self(Arc::new(RwLock::new((*ds_ref).clone())))
-    }
-
     /// Get an immutable reference to the dataset.
     pub async fn get(&self) -> Result<DatasetReadGuard<'_>> {
         self.ensure_up_to_date().await?;
@@ -132,7 +142,19 @@ impl DatasetConsistencyWrapper {
     }
 
     /// Get a mutable reference to the dataset.
+    ///
+    /// If the dataset is in time travel mode this will fail
     pub async fn get_mut(&self) -> Result<DatasetWriteGuard<'_>> {
+        self.ensure_mutable().await?;
+        self.ensure_up_to_date().await?;
+        Ok(DatasetWriteGuard {
+            guard: self.0.write().await,
+        })
+    }
+
+    /// Get a mutable reference to the dataset without requiring the
+    /// dataset to be in a Latest mode.
+    pub async fn get_mut_unchecked(&self) -> Result<DatasetWriteGuard<'_>> {
         self.ensure_up_to_date().await?;
         Ok(DatasetWriteGuard {
             guard: self.0.write().await,
@@ -140,12 +162,16 @@ impl DatasetConsistencyWrapper {
     }
 
     /// Convert into a wrapper in latest version mode
-    pub async fn as_latest(&mut self, read_consistency_interval: Option<Duration>) -> Result<()> {
+    pub async fn as_latest(&self, read_consistency_interval: Option<Duration>) -> Result<()> {
         self.0
             .write()
             .await
             .as_latest(read_consistency_interval)
             .await
+    }
+
+    pub async fn as_time_travel(&self, target_version: u64) -> Result<()> {
+        self.0.write().await.as_time_travel(target_version).await
     }
 
     /// Provide a known latest version of the dataset.
@@ -158,6 +184,22 @@ impl DatasetConsistencyWrapper {
 
     pub async fn reload(&self) -> Result<()> {
         self.0.write().await.reload().await
+    }
+
+    /// Returns the version, if in time travel mode, or None otherwise
+    pub async fn time_travel_version(&self) -> Option<u64> {
+        self.0.read().await.time_travel_version()
+    }
+
+    pub async fn ensure_mutable(&self) -> Result<()> {
+        let dataset_ref = self.0.read().await;
+        match &*dataset_ref {
+            DatasetRef::Latest { .. } => Ok(()),
+            DatasetRef::TimeTravel { .. } => Err(crate::Error::InvalidInput {
+                message: "table cannot be modified when a specific version is checked out"
+                    .to_string(),
+            }),
+        }
     }
 
     async fn is_up_to_date(&self) -> Result<bool> {

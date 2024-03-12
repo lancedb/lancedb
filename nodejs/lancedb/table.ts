@@ -235,4 +235,58 @@ export class Table {
   async dropColumns(columnNames: string[]): Promise<void> {
     await this.inner.dropColumns(columnNames);
   }
+
+  /** Retrieve the version of the table
+   *
+   * LanceDb supports versioning.  Every operation that modifies the table increases
+   * version.  As long as a version hasn't been deleted you can `[Self::checkout]` that
+   * version to view the data at that point.  In addition, you can `[Self::restore]` the
+   * version to replace the current table with a previous version.
+   */
+  async version(): Promise<number> {
+    return await this.inner.version();
+  }
+
+  /** Checks out a specific version of the Table
+   *
+   * Any read operation on the table will now access the data at the checked out version.
+   * As a consequence, calling this method will disable any read consistency interval
+   * that was previously set.
+   *
+   * This is a read-only operation that turns the table into a sort of "view"
+   * or "detached head".  Other table instances will not be affected.  To make the change
+   * permanent you can use the `[Self::restore]` method.
+   *
+   * Any operation that modifies the table will fail while the table is in a checked
+   * out state.
+   *
+   * To return the table to a normal state use `[Self::checkout_latest]`
+   */
+  async checkout(version: number): Promise<void> {
+    await this.inner.checkout(version);
+  }
+
+  /** Ensures the table is pointing at the latest version
+   *
+   * This can be used to manually update a table when the read_consistency_interval is None
+   * It can also be used to undo a `[Self::checkout]` operation
+   */
+  async checkoutLatest(): Promise<void> {
+    await this.inner.checkoutLatest();
+  }
+
+  /** Restore the table to the currently checked out version
+   *
+   * This operation will fail if checkout has not been called previously
+   *
+   * This operation will overwrite the latest version of the table with a
+   * previous version.  Any changes made since the checked out version will
+   * no longer be visible.
+   *
+   * Once the operation concludes the table will no longer be in a checked
+   * out state and the read_consistency_interval, if any, will apply.
+   */
+  async restore(): Promise<void> {
+    await this.inner.restore();
+  }
 }
