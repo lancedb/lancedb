@@ -11,7 +11,10 @@ use pyo3::{
 };
 use pyo3_asyncio::tokio::future_into_py;
 
-use crate::{error::PythonErrorExt, index::Index};
+use crate::{
+    error::PythonErrorExt,
+    index::{Index, IndexConfig},
+};
 
 #[pyclass]
 pub struct Table {
@@ -124,6 +127,19 @@ impl Table {
         future_into_py(self_.py(), async move {
             op.execute().await.infer_error()?;
             Ok(())
+        })
+    }
+
+    pub fn list_indices(self_: PyRef<'_, Self>) -> PyResult<&PyAny> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            Ok(inner
+                .list_indices()
+                .await
+                .infer_error()?
+                .into_iter()
+                .map(IndexConfig::from)
+                .collect::<Vec<_>>())
         })
     }
 

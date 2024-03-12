@@ -85,3 +85,25 @@ impl Index {
         })
     }
 }
+
+#[pyclass(get_all)]
+/// A description of an index currently configured on a column
+pub struct IndexConfig {
+    /// The type of the index
+    pub index_type: String,
+    /// The columns in the index
+    ///
+    /// Currently this is always a list of size 1.  In the future there may
+    /// be more columns to represent composite indices.
+    pub columns: Vec<String>,
+}
+
+impl From<lancedb::index::IndexConfig> for IndexConfig {
+    fn from(value: lancedb::index::IndexConfig) -> Self {
+        let index_type = format!("{:?}", value.index_type);
+        Self {
+            index_type,
+            columns: value.columns,
+        }
+    }
+}

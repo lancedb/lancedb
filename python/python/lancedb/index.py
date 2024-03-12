@@ -3,6 +3,9 @@ from typing import Optional
 from ._lancedb import (
     Index as LanceDbIndex,
 )
+from ._lancedb import (
+    IndexConfig,
+)
 
 
 class BTree(object):
@@ -155,3 +158,6 @@ class IvfPq(object):
             max_iterations=max_iterations,
             sample_rate=sample_rate,
         )
+
+
+__all__ = ["BTree", "IvfPq", "IndexConfig"]

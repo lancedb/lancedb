@@ -5,7 +5,7 @@ use lance::dataset::{scanner::DatasetRecordBatchStream, ColumnAlteration, NewCol
 
 use crate::{
     error::Result,
-    index::IndexBuilder,
+    index::{IndexBuilder, IndexConfig},
     query::Query,
     table::{
         merge::MergeInsertBuilder, AddDataBuilder, NativeTable, OptimizeAction, OptimizeStats,
@@ -99,6 +99,9 @@ impl TableInternal for RemoteTable {
         todo!()
     }
     async fn drop_columns(&self, _columns: &[&str]) -> Result<()> {
+        todo!()
+    }
+    async fn list_indices(&self) -> Result<Vec<IndexConfig>> {
         todo!()
     }
 }
