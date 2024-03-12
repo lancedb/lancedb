@@ -85,6 +85,23 @@ async def test_close(db_async: AsyncConnection):
     assert str(table) == "ClosedTable(some_table)"
 
 
+@pytest.mark.asyncio
+async def test_update_async(db_async: AsyncConnection):
+    table = await db_async.create_table("some_table", data=[{"id": 0}])
+    assert await table.count_rows("id == 0") == 1
+    assert await table.count_rows("id == 7") == 0
+    await table.update({"id": 7})
+    assert await table.count_rows("id == 7") == 1
+    assert await table.count_rows("id == 0") == 0
+    await table.add([{"id": 2}])
+    await table.update(where="id % 2 == 0", updates_sql={"id": "5"})
+    assert await table.count_rows("id == 7") == 1
+    assert await table.count_rows("id == 2") == 0
+    assert await table.count_rows("id == 5") == 1
+    await table.update({"id": 10}, where="id == 5")
+    assert await table.count_rows("id == 10") == 1
+
+
 def test_create_table(db):
     schema = pa.schema(
         [
