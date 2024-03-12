@@ -23,7 +23,8 @@ from ._lancedb import connect as lancedb_connect
 from .common import URI, sanitize_uri
 from .db import AsyncConnection, DBConnection, LanceDBConnection
 from .remote.db import RemoteDBConnection
-from .schema import vector  # noqa: F401
+from .schema import vector
+from .table import AsyncTable
 
 
 def connect(
@@ -187,3 +188,19 @@ async def connect_async(
             read_consistency_interval_secs,
         )
     )
+
+
+__all__ = [
+    "connect",
+    "connect_async",
+    "AsyncConnection",
+    "AsyncTable",
+    "URI",
+    "sanitize_uri",
+    "sentry_log",
+    "vector",
+    "DBConnection",
+    "LanceDBConnection",
+    "RemoteDBConnection",
+    "__version__",
+]

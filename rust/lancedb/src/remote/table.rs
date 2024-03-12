@@ -51,19 +51,19 @@ impl TableInternal for RemoteTable {
     async fn count_rows(&self, _filter: Option<String>) -> Result<usize> {
         todo!()
     }
-    async fn do_add(&self, _add: AddDataBuilder) -> Result<()> {
+    async fn add(&self, _add: AddDataBuilder) -> Result<()> {
         todo!()
     }
-    async fn do_query(&self, _query: &Query) -> Result<DatasetRecordBatchStream> {
+    async fn query(&self, _query: &Query) -> Result<DatasetRecordBatchStream> {
         todo!()
     }
     async fn delete(&self, _predicate: &str) -> Result<()> {
         todo!()
     }
-    async fn do_create_index(&self, _index: IndexBuilder) -> Result<()> {
+    async fn create_index(&self, _index: IndexBuilder) -> Result<()> {
         todo!()
     }
-    async fn do_merge_insert(
+    async fn merge_insert(
         &self,
         _params: MergeInsertBuilder,
         _new_data: Box<dyn RecordBatchReader + Send>,

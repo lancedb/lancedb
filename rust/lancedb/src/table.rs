@@ -18,7 +18,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use arrow_array::{RecordBatchIterator, RecordBatchReader};
-use arrow_schema::{Schema, SchemaRef};
+use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use async_trait::async_trait;
 use chrono::Duration;
 use lance::dataset::builder::DatasetBuilder;
@@ -27,13 +27,11 @@ use lance::dataset::optimize::{
     compact_files, CompactionMetrics, CompactionOptions, IndexRemapperOptions,
 };
 use lance::dataset::scanner::{DatasetRecordBatchStream, Scanner};
+pub use lance::dataset::ColumnAlteration;
+pub use lance::dataset::NewColumnTransform;
 pub use lance::dataset::ReadParams;
-use lance::dataset::{
-    ColumnAlteration, Dataset, NewColumnTransform, UpdateBuilder, WhenMatched, WriteMode,
-    WriteParams,
-};
+use lance::dataset::{Dataset, UpdateBuilder, WhenMatched, WriteMode, WriteParams};
 use lance::dataset::{MergeInsertBuilder as LanceMergeInsertBuilder, WhenNotMatchedBySource};
-use lance::index::scalar::ScalarIndexParams;
 use lance::io::WrappingObjectStore;
 use lance_index::IndexType;
 use lance_index::{optimize::OptimizeOptions, DatasetIndexExt};
@@ -41,9 +39,10 @@ use log::info;
 use snafu::whatever;
 
 use crate::error::{Error, Result};
-use crate::index::vector::{VectorIndex, VectorIndexStatistics};
+use crate::index::vector::{IvfPqIndexBuilder, VectorIndex, VectorIndexStatistics};
 use crate::index::{
-    suggested_num_partitions, suggested_num_sub_vectors, IndexBuilder, IndexParams,
+    vector::{suggested_num_partitions, suggested_num_sub_vectors},
+    Index, IndexBuilder,
 };
 use crate::query::{Query, Select, DEFAULT_TOP_K};
 use crate::utils::{default_vector_column, PatchReadParam, PatchWriteParam};
@@ -146,7 +145,7 @@ impl AddDataBuilder {
     }
 
     pub async fn execute(self) -> Result<()> {
-        self.parent.clone().do_add(self).await
+        self.parent.clone().add(self).await
     }
 }
 
@@ -161,11 +160,11 @@ pub(crate) trait TableInternal: std::fmt::Display + std::fmt::Debug + Send + Syn
     async fn schema(&self) -> Result<SchemaRef>;
     /// Count the number of rows in this table.
     async fn count_rows(&self, filter: Option<String>) -> Result<usize>;
-    async fn do_add(&self, add: AddDataBuilder) -> Result<()>;
-    async fn do_query(&self, query: &Query) -> Result<DatasetRecordBatchStream>;
+    async fn add(&self, add: AddDataBuilder) -> Result<()>;
+    async fn query(&self, query: &Query) -> Result<DatasetRecordBatchStream>;
     async fn delete(&self, predicate: &str) -> Result<()>;
-    async fn do_create_index(&self, index: IndexBuilder) -> Result<()>;
-    async fn do_merge_insert(
+    async fn create_index(&self, index: IndexBuilder) -> Result<()>;
+    async fn merge_insert(
         &self,
         params: MergeInsertBuilder,
         new_data: Box<dyn RecordBatchReader + Send>,
@@ -294,7 +293,33 @@ impl Table {
         self.inner.delete(predicate).await
     }
 
-    /// Create an index on the column name.
+    /// Create an index on the provided column(s).
+    ///
+    /// Indices are used to speed up searches and are often needed when the size of the table
+    /// becomes large (the exact size depends on many factors but somewhere between 100K rows
+    /// and 1M rows is a good rule of thumb)
+    ///
+    /// There are a variety of indices available.  They are described more in
+    /// [`crate::index::Index`].  The simplest thing to do is to use `index::Index::Auto` which
+    /// will attempt to create the most useful index based on the column type and column
+    /// statistics.
+    ///
+    /// Once an index is created it will remain until the data is overwritten (e.g. an
+    /// add operation with mode overwrite) or the indexed column is dropped.
+    ///
+    /// Indices are not automatically updated with new data.  If you add new data to the
+    /// table then the index will not include the new rows.  However, a table search will
+    /// still consider the unindexed rows.  Searches will issue both an indexed search (on
+    /// the data covered by the index) and a flat search (on the unindexed data) and the
+    /// results will be combined.
+    ///
+    /// If there is enough unindexed data then the flat search will become slow and the index
+    /// should be optimized.  Optimizing an index will add any unindexed data to the existing
+    /// index without rerunning the full index creation process.  For more details see
+    /// [Table::optimize].
+    ///
+    /// Note: Multi-column (composite) indices are not currently supported.  However, they will
+    /// be supported in the future and the API is designed to be compatible with them.
     ///
     /// # Examples
     ///
@@ -304,22 +329,28 @@ impl Table {
     /// #   RecordBatchIterator, Int32Array};
     /// # use arrow_schema::{Schema, Field, DataType};
     /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+    /// use lancedb::index::Index;
     /// let tmpdir = tempfile::tempdir().unwrap();
     /// let db = lancedb::connect(tmpdir.path().to_str().unwrap())
     ///     .execute()
     ///     .await
     ///     .unwrap();
     /// # let tbl = db.open_table("idx_test").execute().await.unwrap();
-    /// tbl.create_index(&["vector"])
-    ///     .ivf_pq()
-    ///     .num_partitions(256)
-    ///     .build()
-    ///     .await
-    ///     .unwrap();
+    /// tbl.create_index(&["vector"], Index::Auto)
+    ///    .execute()
+    ///    .await
+    ///    .unwrap();
     /// # });
     /// ```
-    pub fn create_index(&self, column: &[&str]) -> IndexBuilder {
-        IndexBuilder::new(self.inner.clone(), column)
+    pub fn create_index(&self, columns: &[impl AsRef<str>], index: Index) -> IndexBuilder {
+        IndexBuilder::new(
+            self.inner.clone(),
+            columns
+                .iter()
+                .map(|val| val.as_ref().to_string())
+                .collect::<Vec<_>>(),
+            index,
+        )
     }
 
     /// Create a builder for a merge insert operation
@@ -671,6 +702,28 @@ impl NativeTable {
         Ok(name.to_string())
     }
 
+    fn supported_btree_data_type(dtype: &DataType) -> bool {
+        dtype.is_integer()
+            || dtype.is_floating()
+            || matches!(
+                dtype,
+                DataType::Boolean
+                    | DataType::Utf8
+                    | DataType::Time32(_)
+                    | DataType::Time64(_)
+                    | DataType::Date32
+                    | DataType::Date64
+                    | DataType::Timestamp(_, _)
+            )
+    }
+
+    fn supported_vector_data_type(dtype: &DataType) -> bool {
+        match dtype {
+            DataType::FixedSizeList(inner, _) => DataType::is_floating(inner.data_type()),
+            _ => false,
+        }
+    }
+
     /// Creates a new Table
     ///
     /// # Arguments
@@ -881,6 +934,102 @@ impl NativeTable {
 
         Ok(Some(index_stats))
     }
+
+    async fn create_ivf_pq_index(
+        &self,
+        index: IvfPqIndexBuilder,
+        field: &Field,
+        replace: bool,
+    ) -> Result<()> {
+        if !Self::supported_vector_data_type(field.data_type()) {
+            return Err(Error::InvalidInput {
+                message: format!(
+                    "An IVF PQ index cannot be created on the column `{}` which has data type {}",
+                    field.name(),
+                    field.data_type()
+                ),
+            });
+        }
+
+        let num_partitions = if let Some(n) = index.num_partitions {
+            n
+        } else {
+            suggested_num_partitions(self.count_rows(None).await?)
+        };
+        let num_sub_vectors: u32 = if let Some(n) = index.num_sub_vectors {
+            n
+        } else {
+            match field.data_type() {
+                arrow_schema::DataType::FixedSizeList(_, n) => {
+                    Ok::<u32, Error>(suggested_num_sub_vectors(*n as u32))
+                }
+                _ => Err(Error::Schema {
+                    message: format!("Column '{}' is not a FixedSizeList", field.name()),
+                }),
+            }?
+        };
+        let mut dataset = self.dataset.get_mut().await?;
+        let lance_idx_params = lance::index::vector::VectorIndexParams::ivf_pq(
+            num_partitions as usize,
+            /*num_bits=*/ 8,
+            num_sub_vectors as usize,
+            false,
+            index.distance_type,
+            index.max_iterations as usize,
+        );
+        dataset
+            .create_index(
+                &[field.name()],
+                IndexType::Vector,
+                None,
+                &lance_idx_params,
+                replace,
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn create_auto_index(&self, field: &Field, opts: IndexBuilder) -> Result<()> {
+        if Self::supported_vector_data_type(field.data_type()) {
+            self.create_ivf_pq_index(IvfPqIndexBuilder::default(), field, opts.replace)
+                .await
+        } else if Self::supported_btree_data_type(field.data_type()) {
+            self.create_btree_index(field, opts).await
+        } else {
+            Err(Error::InvalidInput {
+                message: format!(
+                    "there are no indices supported for the field `{}` with the data type {}",
+                    field.name(),
+                    field.data_type()
+                ),
+            })
+        }
+    }
+
+    async fn create_btree_index(&self, field: &Field, opts: IndexBuilder) -> Result<()> {
+        if !Self::supported_btree_data_type(field.data_type()) {
+            return Err(Error::Schema {
+                message: format!(
+                    "A BTree index cannot be created on the field `{}` which has data type {}",
+                    field.name(),
+                    field.data_type()
+                ),
+            });
+        }
+
+        let mut dataset = self.dataset.get_mut().await?;
+        let lance_idx_params = lance::index::scalar::ScalarIndexParams {};
+        dataset
+            .create_index(
+                &[field.name()],
+                IndexType::Scalar,
+                None,
+                &lance_idx_params,
+                opts.replace,
+            )
+            .await?;
+        Ok(())
+    }
 }
 
 #[async_trait::async_trait]
@@ -913,7 +1062,7 @@ impl TableInternal for NativeTable {
         }
     }
 
-    async fn do_add(&self, add: AddDataBuilder) -> Result<()> {
+    async fn add(&self, add: AddDataBuilder) -> Result<()> {
         let lance_params = add.write_options.lance_write_params.unwrap_or(WriteParams {
             mode: match add.mode {
                 AddDataMode::Append => WriteMode::Append,
@@ -933,7 +1082,24 @@ impl TableInternal for NativeTable {
         Ok(())
     }
 
-    async fn do_query(&self, query: &Query) -> Result<DatasetRecordBatchStream> {
+    async fn create_index(&self, opts: IndexBuilder) -> Result<()> {
+        if opts.columns.len() != 1 {
+            return Err(Error::Schema {
+                message: "Multi-column (composite) indices are not yet supported".to_string(),
+            });
+        }
+        let schema = self.schema().await?;
+
+        let field = schema.field_with_name(&opts.columns[0])?;
+
+        match opts.index {
+            Index::Auto => self.create_auto_index(field, opts).await,
+            Index::BTree(_) => self.create_btree_index(field, opts).await,
+            Index::IvfPq(ivf_pq) => self.create_ivf_pq_index(ivf_pq, field, opts.replace).await,
+        }
+    }
+
+    async fn query(&self, query: &Query) -> Result<DatasetRecordBatchStream> {
         let ds_ref = self.dataset.get().await?;
         let mut scanner: Scanner = ds_ref.scan();
 
@@ -992,7 +1158,7 @@ impl TableInternal for NativeTable {
         Ok(scanner.try_into_stream().await?)
     }
 
-    async fn do_merge_insert(
+    async fn merge_insert(
         &self,
         params: MergeInsertBuilder,
         new_data: Box<dyn RecordBatchReader + Send>,
@@ -1025,112 +1191,6 @@ impl TableInternal for NativeTable {
         let job = builder.try_build()?;
         let new_dataset = job.execute_reader(new_data).await?;
         self.dataset.set_latest(new_dataset.as_ref().clone()).await;
-        Ok(())
-    }
-
-    async fn do_create_index(&self, index: IndexBuilder) -> Result<()> {
-        let schema = self.schema().await?;
-
-        // TODO: simplify this after GH lance#1864.
-        let mut index_type = &index.index_type;
-        let columns = if index.columns.is_empty() {
-            // By default we create vector index.
-            index_type = &IndexType::Vector;
-            vec![default_vector_column(&schema, None)?]
-        } else {
-            index.columns.clone()
-        };
-
-        if columns.len() != 1 {
-            return Err(Error::Schema {
-                message: "Only one column is supported for index".to_string(),
-            });
-        }
-        let column = &columns[0];
-
-        let field = schema.field_with_name(column)?;
-
-        let params = match index_type {
-            IndexType::Scalar => IndexParams::Scalar {
-                replace: index.replace,
-            },
-            IndexType::Vector => {
-                let num_partitions = if let Some(n) = index.num_partitions {
-                    n
-                } else {
-                    suggested_num_partitions(self.count_rows(None).await?)
-                };
-                let num_sub_vectors: u32 = if let Some(n) = index.num_sub_vectors {
-                    n
-                } else {
-                    match field.data_type() {
-                        arrow_schema::DataType::FixedSizeList(_, n) => {
-                            Ok::<u32, Error>(suggested_num_sub_vectors(*n as u32))
-                        }
-                        _ => Err(Error::Schema {
-                            message: format!(
-                                "Column '{}' is not a FixedSizeList",
-                                &index.columns[0]
-                            ),
-                        }),
-                    }?
-                };
-                IndexParams::IvfPq {
-                    replace: index.replace,
-                    metric_type: index.metric_type,
-                    num_partitions: num_partitions as u64,
-                    num_sub_vectors,
-                    num_bits: index.num_bits,
-                    sample_rate: index.sample_rate,
-                    max_iterations: index.max_iterations,
-                }
-            }
-        };
-
-        let tbl = self
-            .as_native()
-            .expect("Only native table is supported here");
-        let mut dataset = tbl.dataset.get_mut().await?;
-        match params {
-            IndexParams::Scalar { replace } => {
-                dataset
-                    .create_index(
-                        &[&column],
-                        IndexType::Scalar,
-                        None,
-                        &ScalarIndexParams::default(),
-                        replace,
-                    )
-                    .await?
-            }
-            IndexParams::IvfPq {
-                replace,
-                metric_type,
-                num_partitions,
-                num_sub_vectors,
-                num_bits,
-                max_iterations,
-                ..
-            } => {
-                let lance_idx_params = lance::index::vector::VectorIndexParams::ivf_pq(
-                    num_partitions as usize,
-                    num_bits as u8,
-                    num_sub_vectors as usize,
-                    false,
-                    metric_type,
-                    max_iterations as usize,
-                );
-                dataset
-                    .create_index(
-                        &[column],
-                        IndexType::Vector,
-                        None,
-                        &lance_idx_params,
-                        replace,
-                    )
-                    .await?;
-            }
-        }
         Ok(())
     }
 
@@ -1858,11 +1918,8 @@ mod tests {
         );
 
         table
-            .create_index(&["embeddings"])
-            .ivf_pq()
-            .name("my_index")
-            .num_partitions(256)
-            .build()
+            .create_index(&["embeddings"], Index::Auto)
+            .execute()
             .await
             .unwrap();
 
