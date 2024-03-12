@@ -25,6 +25,30 @@ class Reranker(ABC):
         self.score = return_score
 
     @abstractmethod
+    def rerank_vector(
+        query: str,
+        vector_results: pa.Table,
+    ):
+        """
+        Rerank function receives the individual results from the vector search
+        results. You can choose to use any of the results to generate the final results,
+        allowing maximum flexibility. This is mandatory to implement
+
+        Parameters
+        ----------
+        query : str
+            The input query
+        vector_results : pa.Table
+            The results from the vector search
+        
+        Returns
+        -------
+        pa.Table
+            The reranked results
+        """
+        pass
+
+    @abstractmethod
     def rerank_hybrid(
         query: str,
         vector_results: pa.Table,
@@ -43,6 +67,11 @@ class Reranker(ABC):
             The results from the vector search
         fts_results : pa.Table
             The results from the FTS search
+        
+        Returns
+        -------
+        pa.Table
+            The reranked results
         """
         pass
 
