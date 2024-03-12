@@ -297,11 +297,14 @@ impl JsTable {
 
             let predicate = predicate.as_deref();
 
-            let update_result = table
-                .as_native()
-                .unwrap()
-                .update(predicate, updates_arg)
-                .await;
+            let mut update_op = table.update();
+            if let Some(predicate) = predicate {
+                update_op = update_op.only_if(predicate);
+            }
+            for (column, value) in updates_arg {
+                update_op = update_op.column(column, value);
+            }
+            let update_result = update_op.execute().await;
             deferred.settle_with(&channel, move |mut cx| {
                 update_result.or_throw(&mut cx)?;
                 Ok(cx.boxed(Self::from(table)))

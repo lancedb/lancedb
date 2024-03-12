@@ -30,7 +30,9 @@ use lance::dataset::scanner::{DatasetRecordBatchStream, Scanner};
 pub use lance::dataset::ColumnAlteration;
 pub use lance::dataset::NewColumnTransform;
 pub use lance::dataset::ReadParams;
-use lance::dataset::{Dataset, UpdateBuilder, WhenMatched, WriteMode, WriteParams};
+use lance::dataset::{
+    Dataset, UpdateBuilder as LanceUpdateBuilder, WhenMatched, WriteMode, WriteParams,
+};
 use lance::dataset::{MergeInsertBuilder as LanceMergeInsertBuilder, WhenNotMatchedBySource};
 use lance::io::WrappingObjectStore;
 use lance_index::IndexType;
@@ -115,7 +117,8 @@ pub enum AddDataMode {
     Overwrite,
 }
 
-/// A builder for configuring a [`Connection::create_table`] operation
+/// A builder for configuring a [`crate::connection::Connection::create_table`] or [`Table::add`]
+/// operation
 pub struct AddDataBuilder {
     parent: Arc<dyn TableInternal>,
     pub(crate) data: Box<dyn RecordBatchReader + Send>,
@@ -149,6 +152,71 @@ impl AddDataBuilder {
     }
 }
 
+/// A builder for configuring an [`Table::update`] operation
+#[derive(Debug, Clone)]
+pub struct UpdateBuilder {
+    parent: Arc<dyn TableInternal>,
+    pub(crate) filter: Option<String>,
+    pub(crate) columns: Vec<(String, String)>,
+}
+
+impl UpdateBuilder {
+    fn new(parent: Arc<dyn TableInternal>) -> Self {
+        Self {
+            parent,
+            filter: None,
+            columns: Vec::new(),
+        }
+    }
+
+    /// Limits the update operation to rows matching the given filter
+    ///
+    /// If a row does not match the filter then it will be left unchanged.
+    pub fn only_if(mut self, filter: impl Into<String>) -> Self {
+        self.filter = Some(filter.into());
+        self
+    }
+
+    /// Specifies a column to update
+    ///
+    /// This method may be called multiple times to update multiple columns
+    ///
+    /// The `update_expr` should be an SQL expression explaining how to calculate
+    /// the new value for the column.  The expression will be evaluated against the
+    /// previous row's value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use lancedb::Table;
+    /// # async fn doctest_helper(tbl: Table) {
+    ///   let mut operation = tbl.update();
+    ///   // Increments the `bird_count` value by 1
+    ///   operation = operation.column("bird_count", "bird_count + 1");
+    ///   operation.execute().await.unwrap();
+    /// # }
+    /// ```
+    pub fn column(
+        mut self,
+        column_name: impl Into<String>,
+        update_expr: impl Into<String>,
+    ) -> Self {
+        self.columns.push((column_name.into(), update_expr.into()));
+        self
+    }
+
+    /// Executes the update operation
+    pub async fn execute(self) -> Result<()> {
+        if self.columns.is_empty() {
+            Err(Error::InvalidInput {
+                message: "at least one column must be specified in an update operation".to_string(),
+            })
+        } else {
+            self.parent.clone().update(self).await
+        }
+    }
+}
+
 #[async_trait]
 pub(crate) trait TableInternal: std::fmt::Display + std::fmt::Debug + Send + Sync {
     fn as_any(&self) -> &dyn std::any::Any;
@@ -163,6 +231,7 @@ pub(crate) trait TableInternal: std::fmt::Display + std::fmt::Debug + Send + Syn
     async fn add(&self, add: AddDataBuilder) -> Result<()>;
     async fn query(&self, query: &Query) -> Result<DatasetRecordBatchStream>;
     async fn delete(&self, predicate: &str) -> Result<()>;
+    async fn update(&self, update: UpdateBuilder) -> Result<()>;
     async fn create_index(&self, index: IndexBuilder) -> Result<()>;
     async fn merge_insert(
         &self,
@@ -242,6 +311,24 @@ impl Table {
             mode: AddDataMode::Append,
             write_options: WriteOptions::default(),
         }
+    }
+
+    /// Update existing records in the Table
+    ///
+    /// An update operation can be used to adjust existing values.  Use the
+    /// returned builder to specify which columns to update.  The new value
+    /// can be a literal value (e.g. replacing nulls with some default value)
+    /// or an expression applied to the old value (e.g. incrementing a value)
+    ///
+    /// An optional condition can be specified (e.g. "only update if the old
+    /// value is 0")
+    ///
+    /// Note: if your condition is something like "some_id_column == 7" and
+    /// you are updating many rows (with different ids) then you will get
+    /// better performance with a single [`merge_insert`] call instead of
+    /// repeatedly calilng this method.
+    pub fn update(&self) -> UpdateBuilder {
+        UpdateBuilder::new(self.inner.clone())
     }
 
     /// Delete the rows from table that match the predicate.
@@ -818,23 +905,6 @@ impl NativeTable {
         Ok(())
     }
 
-    pub async fn update(&self, predicate: Option<&str>, updates: Vec<(&str, &str)>) -> Result<()> {
-        let dataset = self.dataset.get().await?.clone();
-        let mut builder = UpdateBuilder::new(Arc::new(dataset));
-        if let Some(predicate) = predicate {
-            builder = builder.update_where(predicate)?;
-        }
-
-        for (column, value) in updates {
-            builder = builder.set(column, value)?;
-        }
-
-        let operation = builder.build()?;
-        let ds = operation.execute().await?;
-        self.dataset.set_latest(ds.as_ref().clone()).await;
-        Ok(())
-    }
-
     /// Remove old versions of the dataset from disk.
     ///
     /// # Arguments
@@ -1136,6 +1206,23 @@ impl TableInternal for NativeTable {
             Index::BTree(_) => self.create_btree_index(field, opts).await,
             Index::IvfPq(ivf_pq) => self.create_ivf_pq_index(ivf_pq, field, opts.replace).await,
         }
+    }
+
+    async fn update(&self, update: UpdateBuilder) -> Result<()> {
+        let dataset = self.dataset.get().await?.clone();
+        let mut builder = LanceUpdateBuilder::new(Arc::new(dataset));
+        if let Some(predicate) = update.filter {
+            builder = builder.update_where(&predicate)?;
+        }
+
+        for (column, value) in update.columns {
+            builder = builder.set(column, &value)?;
+        }
+
+        let operation = builder.build()?;
+        let ds = operation.execute().await?;
+        self.dataset.set_latest(ds.as_ref().clone()).await;
+        Ok(())
     }
 
     async fn query(&self, query: &Query) -> Result<DatasetRecordBatchStream> {
@@ -1566,9 +1653,10 @@ mod tests {
             .unwrap();
 
         table
-            .as_native()
-            .unwrap()
-            .update(Some("id > 5"), vec![("name", "'foo'")])
+            .update()
+            .only_if("id > 5")
+            .column("name", "'foo'")
+            .execute()
             .await
             .unwrap();
 
@@ -1718,13 +1806,11 @@ mod tests {
             ("vec_f64", "[1.0, 1.0]"),
         ];
 
-        // for (column, value) in test_cases {
-        table
-            .as_native()
-            .unwrap()
-            .update(None, updates)
-            .await
-            .unwrap();
+        let mut update_op = table.update();
+        for (column, value) in updates {
+            update_op = update_op.column(column, value);
+        }
+        update_op.execute().await.unwrap();
 
         let mut batches = table
             .query()
@@ -1806,6 +1892,26 @@ mod tests {
                 assert_eq!(v, Some(1.0));
             }
         }
+    }
+
+    #[tokio::test]
+    async fn test_update_via_expr() {
+        let tmp_dir = tempdir().unwrap();
+        let dataset_path = tmp_dir.path().join("test.lance");
+        let uri = dataset_path.to_str().unwrap();
+        let conn = connect(uri)
+            .read_consistency_interval(Duration::from_secs(0))
+            .execute()
+            .await
+            .unwrap();
+        let tbl = conn
+            .create_table("my_table", Box::new(make_test_batches()))
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(1, tbl.count_rows(Some("i == 0".to_string())).await.unwrap());
+        tbl.update().column("i", "i+1").execute().await.unwrap();
+        assert_eq!(0, tbl.count_rows(Some("i == 0".to_string())).await.unwrap());
     }
 
     #[derive(Default, Debug)]

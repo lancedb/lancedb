@@ -66,6 +66,23 @@ describe("Given a table", () => {
     expect(table.isOpen()).toBe(false);
     expect(table.countRows()).rejects.toThrow("Table some_table is closed");
   });
+
+  it("should let me update values", async () => {
+    await table.add([{ id: 1 }]);
+    expect(await table.countRows("id == 1")).toBe(1);
+    expect(await table.countRows("id == 7")).toBe(0);
+    await table.update({ id: "7" });
+    expect(await table.countRows("id == 1")).toBe(0);
+    expect(await table.countRows("id == 7")).toBe(1);
+    await table.add([{ id: 2 }]);
+    // Test Map as input
+    await table.update(new Map(Object.entries({ id: "10" })), {
+      where: "id % 2 == 0",
+    });
+    expect(await table.countRows("id == 2")).toBe(0);
+    expect(await table.countRows("id == 7")).toBe(1);
+    expect(await table.countRows("id == 10")).toBe(1);
+  });
 });
 
 describe("When creating an index", () => {
