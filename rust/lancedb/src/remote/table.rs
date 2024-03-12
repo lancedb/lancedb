@@ -9,7 +9,7 @@ use crate::{
     query::Query,
     table::{
         merge::MergeInsertBuilder, AddDataBuilder, NativeTable, OptimizeAction, OptimizeStats,
-        TableInternal,
+        TableInternal, UpdateBuilder,
     },
 };
 
@@ -55,6 +55,9 @@ impl TableInternal for RemoteTable {
         todo!()
     }
     async fn query(&self, _query: &Query) -> Result<DatasetRecordBatchStream> {
+        todo!()
+    }
+    async fn update(&self, _update: UpdateBuilder) -> Result<()> {
         todo!()
     }
     async fn delete(&self, _predicate: &str) -> Result<()> {

@@ -151,6 +151,22 @@ impl Table {
     }
 
     #[napi]
+    pub async fn update(
+        &self,
+        only_if: Option<String>,
+        columns: Vec<(String, String)>,
+    ) -> napi::Result<()> {
+        let mut op = self.inner_ref()?.update();
+        if let Some(only_if) = only_if {
+            op = op.only_if(only_if);
+        }
+        for (column_name, value) in columns {
+            op = op.column(column_name, value);
+        }
+        op.execute().await.default_error()
+    }
+
+    #[napi]
     pub fn query(&self) -> napi::Result<Query> {
         Ok(Query::new(self.inner_ref()?.query()))
     }

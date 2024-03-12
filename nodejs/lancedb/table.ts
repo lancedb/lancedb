@@ -33,6 +33,20 @@ export interface AddDataOptions {
   mode: "append" | "overwrite";
 }
 
+export interface UpdateOptions {
+  /**
+   * A filter that limits the scope of the update.
+   *
+   * This should be an SQL filter expression.
+   *
+   * Only rows that satisfy the expression will be updated.
+   *
+   * For example, this could be 'my_col == 0' to replace all instances
+   * of 0 in a column with some other default value.
+   */
+  where: string;
+}
+
 /**
  * A Table is a collection of Records in a LanceDB Database.
  *
@@ -91,6 +105,45 @@ export class Table {
 
     const buffer = await fromDataToBuffer(data);
     await this.inner.add(buffer, mode);
+  }
+
+  /**
+   * Update existing records in the Table
+   *
+   * An update operation can be used to adjust existing values.  Use the
+   * returned builder to specify which columns to update.  The new value
+   * can be a literal value (e.g. replacing nulls with some default value)
+   * or an expression applied to the old value (e.g. incrementing a value)
+   *
+   * An optional condition can be specified (e.g. "only update if the old
+   * value is 0")
+   *
+   * Note: if your condition is something like "some_id_column == 7" and
+   * you are updating many rows (with different ids) then you will get
+   * better performance with a single [`merge_insert`] call instead of
+   * repeatedly calilng this method.
+   *
+   * @param updates the columns to update
+   *
+   * Keys in the map should specify the name of the column to update.
+   * Values in the map provide the new value of the column.  These can
+   * be SQL literal strings (e.g. "7" or "'foo'") or they can be expressions
+   * based on the row being updated (e.g. "my_col + 1")
+   *
+   * @param options additional options to control the update behavior
+   */
+  async update(
+    updates: Map<string, string> | Record<string, string>,
+    options?: Partial<UpdateOptions>,
+  ) {
+    const onlyIf = options?.where;
+    let columns: [string, string][];
+    if (updates instanceof Map) {
+      columns = Array.from(updates.entries());
+    } else {
+      columns = Object.entries(updates);
+    }
+    await this.inner.update(onlyIf, columns);
   }
 
   /** Count the total number of rows in the dataset. */

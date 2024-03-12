@@ -5,7 +5,9 @@ use arrow::{
 use lancedb::table::{AddDataMode, Table as LanceDbTable};
 use pyo3::{
     exceptions::{PyRuntimeError, PyValueError},
-    pyclass, pymethods, PyAny, PyRef, PyResult, Python,
+    pyclass, pymethods,
+    types::{PyDict, PyString},
+    PyAny, PyRef, PyResult, Python,
 };
 use pyo3_asyncio::tokio::future_into_py;
 
@@ -68,6 +70,28 @@ impl Table {
             return Err(PyValueError::new_err(format!("Invalid mode: {}", mode)));
         }
 
+        future_into_py(self_.py(), async move {
+            op.execute().await.infer_error()?;
+            Ok(())
+        })
+    }
+
+    pub fn update<'a>(
+        self_: PyRef<'a, Self>,
+        updates: &PyDict,
+        r#where: Option<String>,
+    ) -> PyResult<&'a PyAny> {
+        let mut op = self_.inner_ref()?.update();
+        if let Some(only_if) = r#where {
+            op = op.only_if(only_if);
+        }
+        for (column_name, value) in updates.into_iter() {
+            let column_name: &PyString = column_name.downcast()?;
+            let column_name = column_name.to_str()?.to_string();
+            let value: &PyString = value.downcast()?;
+            let value = value.to_str()?.to_string();
+            op = op.column(column_name, value);
+        }
         future_into_py(self_.py(), async move {
             op.execute().await.infer_error()?;
             Ok(())
