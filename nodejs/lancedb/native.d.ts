@@ -113,6 +113,7 @@ export class Table {
   countRows(filter?: string | undefined | null): Promise<number>
   delete(predicate: string): Promise<void>
   createIndex(index: Index | undefined | null, column: string, replace?: boolean | undefined | null): Promise<void>
+  update(onlyIf: string | undefined | null, columns: Array<[string, string]>): Promise<void>
   query(): Query
   addColumns(transforms: Array<AddColumnsSql>): Promise<void>
   alterColumns(alterations: Array<ColumnAlteration>): Promise<void>
