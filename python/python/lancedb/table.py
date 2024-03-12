@@ -60,7 +60,7 @@ if TYPE_CHECKING:
 
     from ._lancedb import Table as LanceDBTable
     from .db import LanceDBConnection
-    from .index import BTree, IvfPq
+    from .index import BTree, IndexConfig, IvfPq
 
 
 pd = safe_import_pandas()
@@ -2417,3 +2417,9 @@ class AsyncTable:
         out state and the read_consistency_interval, if any, will apply.
         """
         await self._inner.restore()
+
+    async def list_indices(self) -> IndexConfig:
+        """
+        List all indices that have been created with Self::create_index
+        """
+        return await self._inner.list_indices()
