@@ -24,9 +24,6 @@
 ///
 /// The btree index does not currently have any parameters though parameters such as the
 /// block size may be added in the future.
-///
-/// Note that building a btree index on a large dataset may require a large amount
-/// of RAM.
 #[derive(Default, Debug, Clone)]
 pub struct BTreeIndexBuilder {}
 

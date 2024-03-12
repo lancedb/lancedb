@@ -165,9 +165,6 @@ export class Index {
    *
    * The btree index does not currently have any parameters though parameters such as the
    * block size may be added in the future.
-   *
-   * Note that building a btree index on a large dataset may require a large amount
-   * of RAM.
    */
   static btree() {
     return new Index(LanceDbIndex.btree());
