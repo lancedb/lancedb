@@ -15,9 +15,9 @@
 use std::sync::Arc;
 
 use arrow_array::Float32Array;
-use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance_linalg::distance::MetricType;
 
+use crate::arrow::SendableRecordBatchStream;
 use crate::error::Result;
 use crate::table::TableInternal;
 
@@ -81,13 +81,15 @@ impl Query {
         }
     }
 
-    /// Convert the query plan to a [`DatasetRecordBatchStream`]
+    /// Convert the query plan to a [`SendableRecordBatchStream`]
     ///
     /// # Returns
     ///
-    /// * A [DatasetRecordBatchStream] with the query's results.
-    pub async fn execute_stream(&self) -> Result<DatasetRecordBatchStream> {
-        self.parent.clone().do_query(self).await
+    /// * A [SendableRecordBatchStream] with the query's results.
+    pub async fn execute_stream(&self) -> Result<SendableRecordBatchStream> {
+        Ok(SendableRecordBatchStream::from(
+            self.parent.clone().query(self).await?,
+        ))
     }
 
     /// Set the column to query

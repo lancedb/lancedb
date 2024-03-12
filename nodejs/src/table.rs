@@ -13,13 +13,16 @@
 // limitations under the License.
 
 use arrow_ipc::writer::FileWriter;
-use lance::dataset::ColumnAlteration as LanceColumnAlteration;
 use lancedb::ipc::ipc_file_to_batches;
-use lancedb::table::{AddDataMode, Table as LanceDbTable};
+use lancedb::table::{
+    AddDataMode, ColumnAlteration as LanceColumnAlteration, NewColumnTransform,
+    Table as LanceDbTable,
+};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
-use crate::index::IndexBuilder;
+use crate::error::NapiErrorExt;
+use crate::index::Index;
 use crate::query::Query;
 
 #[napi]
@@ -129,8 +132,22 @@ impl Table {
     }
 
     #[napi]
-    pub fn create_index(&self) -> napi::Result<IndexBuilder> {
-        Ok(IndexBuilder::new(self.inner_ref()?))
+    pub async fn create_index(
+        &self,
+        index: Option<&Index>,
+        column: String,
+        replace: Option<bool>,
+    ) -> napi::Result<()> {
+        let lancedb_index = if let Some(index) = index {
+            index.consume()?
+        } else {
+            lancedb::index::Index::Auto
+        };
+        let mut builder = self.inner_ref()?.create_index(&[column], lancedb_index);
+        if let Some(replace) = replace {
+            builder = builder.replace(replace);
+        }
+        builder.execute().await.default_error()
     }
 
     #[napi]
@@ -144,7 +161,7 @@ impl Table {
             .into_iter()
             .map(|sql| (sql.name, sql.value_sql))
             .collect::<Vec<_>>();
-        let transforms = lance::dataset::NewColumnTransform::SqlExpressions(transforms);
+        let transforms = NewColumnTransform::SqlExpressions(transforms);
         self.inner_ref()?
             .add_columns(transforms, None)
             .await

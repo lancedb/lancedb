@@ -20,6 +20,7 @@ use arrow_schema::{DataType, Field, Schema};
 use futures::TryStreamExt;
 
 use lancedb::connection::Connection;
+use lancedb::index::Index;
 use lancedb::{connect, Result, Table as LanceDbTable};
 
 #[tokio::main]
@@ -142,23 +143,18 @@ async fn create_empty_table(db: &Connection) -> Result<LanceDbTable> {
 
 async fn create_index(table: &LanceDbTable) -> Result<()> {
     // --8<-- [start:create_index]
-    table
-        .create_index(&["vector"])
-        .ivf_pq()
-        .num_partitions(8)
-        .build()
-        .await
+    table.create_index(&["vector"], Index::Auto).execute().await
     // --8<-- [end:create_index]
 }
 
 async fn search(table: &LanceDbTable) -> Result<Vec<RecordBatch>> {
     // --8<-- [start:search]
-    Ok(table
+    table
         .search(&[1.0; 128])
         .limit(2)
         .execute_stream()
         .await?
         .try_collect::<Vec<_>>()
-        .await?)
+        .await
     // --8<-- [end:search]
 }

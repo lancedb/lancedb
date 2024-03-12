@@ -750,11 +750,11 @@ describe('LanceDB client', function () {
         num_sub_vectors: 2
       })
       await expect(createIndex).to.be.rejectedWith(
-        /VectorIndex requires the column data type to be fixed size list of float32s/
+        "index cannot be created on the column `name` which has data type Utf8"
       )
     })
 
-    it('it should fail when the column is not a vector', async function () {
+    it('it should fail when num_partitions is invalid', async function () {
       const uri = await createTestDB(32, 300)
       const con = await lancedb.connect(uri)
       const table = await con.openTable('vectors')

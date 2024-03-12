@@ -14,12 +14,10 @@ crate-type = ["cdylib"]
 [dependencies]
 arrow-ipc.workspace = true
 futures.workspace = true
-lance-linalg.workspace = true
-lance.workspace = true
 lancedb = { path = "../rust/lancedb" }
 napi = { version = "2.15", default-features = false, features = [
     "napi7",
-    "async"
+    "async",
 ] }
 napi-derive = "2"
 

@@ -60,6 +60,7 @@ if TYPE_CHECKING:
 
     from ._lancedb import Table as LanceDBTable
     from .db import LanceDBConnection
+    from .index import BTree, IvfPq
 
 
 pd = safe_import_pandas()
@@ -1918,111 +1919,47 @@ class AsyncTable:
 
     async def create_index(
         self,
-        metric="L2",
-        num_partitions=256,
-        num_sub_vectors=96,
-        vector_column_name: str = VECTOR_COLUMN_NAME,
-        replace: bool = True,
-        accelerator: Optional[str] = None,
-        index_cache_size: Optional[int] = None,
-    ):
-        """Create an index on the table.
-
-        Parameters
-        ----------
-        metric: str, default "L2"
-            The distance metric to use when creating the index.
-            Valid values are "L2", "cosine", or "dot".
-            L2 is euclidean distance.
-        num_partitions: int, default 256
-            The number of IVF partitions to use when creating the index.
-            Default is 256.
-        num_sub_vectors: int, default 96
-            The number of PQ sub-vectors to use when creating the index.
-            Default is 96.
-        vector_column_name: str, default "vector"
-            The vector column name to create the index.
-        replace: bool, default True
-            - If True, replace the existing index if it exists.
-
-            - If False, raise an error if duplicate index exists.
-        accelerator: str, default None
-            If set, use the given accelerator to create the index.
-            Only support "cuda" for now.
-        index_cache_size : int, optional
-            The size of the index cache in number of entries. Default value is 256.
-        """
-        raise NotImplementedError
-
-    async def create_scalar_index(
-        self,
         column: str,
         *,
-        replace: bool = True,
+        replace: Optional[bool] = None,
+        config: Optional[Union[IvfPq, BTree]] = None,
     ):
-        """Create a scalar index on a column.
+        """Create an index to speed up queries
 
-        Scalar indices, like vector indices, can be used to speed up scans.  A scalar
-        index can speed up scans that contain filter expressions on the indexed column.
-        For example, the following scan will be faster if the column ``my_col`` has
-        a scalar index:
-
-        .. code-block:: python
-
-            import lancedb
-
-            db = lancedb.connect("/data/lance")
-            img_table = db.open_table("images")
-            my_df = img_table.search().where("my_col = 7", prefilter=True).to_pandas()
-
-        Scalar indices can also speed up scans containing a vector search and a
-        prefilter:
-
-        .. code-block::python
-
-            import lancedb
-
-            db = lancedb.connect("/data/lance")
-            img_table = db.open_table("images")
-            img_table.search([1, 2, 3, 4], vector_column_name="vector")
-                .where("my_col != 7", prefilter=True)
-                .to_pandas()
-
-        Scalar indices can only speed up scans for basic filters using
-        equality, comparison, range (e.g. ``my_col BETWEEN 0 AND 100``), and set
-        membership (e.g. `my_col IN (0, 1, 2)`)
-
-        Scalar indices can be used if the filter contains multiple indexed columns and
-        the filter criteria are AND'd or OR'd together
-        (e.g. ``my_col < 0 AND other_col> 100``)
-
-        Scalar indices may be used if the filter contains non-indexed columns but,
-        depending on the structure of the filter, they may not be usable.  For example,
-        if the column ``not_indexed`` does not have a scalar index then the filter
-        ``my_col = 0 OR not_indexed = 1`` will not be able to use any scalar index on
-        ``my_col``.
-
-        **Experimental API**
+        Indices can be created on vector columns or scalar columns.
+        Indices on vector columns will speed up vector searches.
+        Indices on scalar columns will speed up filtering (in both
+        vector and non-vector searches)
 
         Parameters
         ----------
-        column : str
-            The column to be indexed.  Must be a boolean, integer, float,
-            or string column.
-        replace : bool, default True
-            Replace the existing index if it exists.
+        index: Index
+            The index to create.
 
-        Examples
-        --------
+            LanceDb supports multiple types of indices.  See the static methods on
+            the Index class for more details.
+        column: str, default None
+            The column to index.
 
-        .. code-block:: python
+            When building a scalar index this must be set.
 
-            import lance
+            When building a vector index, this is optional.  The default will look
+            for any columns of type fixed-size-list with floating point values.  If
+            there is only one column of this type then it will be used.  Otherwise
+            an error will be returned.
+        replace: bool, default True
+            Whether to replace the existing index
 
-            dataset = lance.dataset("./images.lance")
-            dataset.create_scalar_index("category")
+            If this is false, and another index already exists on the same columns
+            and the same name, then an error will be returned.  This is true even if
+            that index is out of date.
+
+            The default is True
         """
-        raise NotImplementedError
+        index = None
+        if config is not None:
+            index = config._inner
+        await self._inner.create_index(column, index=index, replace=replace)
 
     async def add(
         self,
@@ -2066,6 +2003,8 @@ class AsyncTable:
             on_bad_vectors=on_bad_vectors,
             fill_value=fill_value,
         )
+        if isinstance(data, pa.Table):
+            data = pa.RecordBatchReader.from_batches(data.schema, data.to_batches())
         await self._inner.add(data, mode)
         register_event("add")
 
