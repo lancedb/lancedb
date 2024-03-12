@@ -117,4 +117,8 @@ export class Table {
   addColumns(transforms: Array<AddColumnsSql>): Promise<void>
   alterColumns(alterations: Array<ColumnAlteration>): Promise<void>
   dropColumns(columns: Array<string>): Promise<void>
+  version(): Promise<number>
+  checkout(version: number): Promise<void>
+  checkoutLatest(): Promise<void>
+  restore(): Promise<void>
 }
