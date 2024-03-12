@@ -74,6 +74,6 @@ impl Query {
         let inner_stream = self.inner.execute_stream().await.map_err(|e| {
             napi::Error::from_reason(format!("Failed to execute query stream: {}", e))
         })?;
-        Ok(RecordBatchIterator::new(Box::new(inner_stream)))
+        Ok(RecordBatchIterator::new(inner_stream))
     }
 }
