@@ -53,19 +53,19 @@ def get_dataset(url, name):
 trainset = get_dataset(test_url, "qa_dataset_1")
 valset = get_dataset(train_url, "valset")
 
-#model = get_registry().get("sentence-transformers").create()
-#model.finetune(trainset=trainset, valset=valset, path="model_finetuned_1", epochs=4)
+model = get_registry().get("sentence-transformers").create()
+model.finetune(trainset=trainset, valset=valset, path="model_finetuned_1", epochs=4)
 
 base = get_registry().get("sentence-transformers").create()
 tuned = get_registry().get("sentence-transformers").create(name="./model_finetuned_1")
-#openai = get_registry().get("openai").create(name="text-embedding-3-large")
+openai = get_registry().get("openai").create(name="text-embedding-3-large")
 
 
 rs1 = base.evaluate(valset, path="val_res")
 rs2 = tuned.evaluate(valset, path="val_res")
-#rs3 = openai.evaluate(valset)
+rs3 = openai.evaluate(valset)
 
-#print("openai-embedding-v3 hit-rate  - ", pd.DataFrame(rs3)["is_hit"].mean())
+print("openai-embedding-v3 hit-rate  - ", pd.DataFrame(rs3)["is_hit"].mean())
 print("fine-tuned hit-rate  - ", pd.DataFrame(rs2)["is_hit"].mean())
 print("Base model hite-rate - ", pd.DataFrame(rs1)["is_hit"].mean())
 

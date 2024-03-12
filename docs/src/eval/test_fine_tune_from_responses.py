@@ -75,26 +75,26 @@ retriever = db.create_table("fine-tuning", schema=Schema, mode="overwrite")
 pylist = [{"id": str(node.node_id), "text": node.text} for node in nodes]
 retriever.add(pylist)
 
-# Generate questions
-llm = Openai()
-text_chunks = [TextChunk.from_llama_index_node(node) for node in nodes]
-
-queries = {}
-relevant_docs = {}
-for chunk in tqdm(text_chunks):
-    text = chunk.text
-    questions = llm.get_questions(DEFAULT_PROMPT_TMPL.format(context_str=text, num_questions_per_chunk=2))
-
-    for question in questions:
-        question_id = str(uuid.uuid4())
-        queries[question_id] = question
-        relevant_docs[question_id] = [retriever.search(question).to_pandas()["id"].tolist()[0]]
 
 
 ds_name = "response_data"
 if os.path.exists(ds_name):
     ds = QADataset.load(ds_name)
 else:
+    # Generate questions
+    llm = Openai()
+    text_chunks = [TextChunk.from_llama_index_node(node) for node in nodes]
+
+    queries = {}
+    relevant_docs = {}
+    for chunk in tqdm(text_chunks):
+        text = chunk.text
+        questions = llm.get_questions(DEFAULT_PROMPT_TMPL.format(context_str=text, num_questions_per_chunk=2))
+
+        for question in questions:
+            question_id = str(uuid.uuid4())
+            queries[question_id] = question
+            relevant_docs[question_id] = [retriever.search(question).to_pandas()["id"].tolist()[0]]
     ds = QADataset.from_responses(text_chunks, queries, relevant_docs)
     ds.save(ds_name)
 
@@ -105,7 +105,7 @@ valset = get_dataset(train_url, "valset")
 model = get_registry().get("sentence-transformers").create()
 res_base = model.evaluate(valset)
 
-model.finetune(trainset=ds, valset=valset, path="model_finetuned", epochs=4, log_wandb=True)
+model.finetune(trainset=ds, path="model_finetuned", epochs=4, log_wandb=True)
 tuned = get_registry().get("sentence-transformers").create(name="./model_finetuned")
 res_tuned = tuned.evaluate(valset)
 
