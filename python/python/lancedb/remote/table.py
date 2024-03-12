@@ -68,13 +68,12 @@ class RemoteTable(Table):
 
     def list_indices(self):
         """List all the indices on the table"""
-        print(self._name)
         resp = self._conn._client.post(f"/v1/table/{self._name}/index/list/")
         return resp
     
     def index_stats(self, index_uuid: str):
         """List all the indices on the table"""
-        resp = self._conn._client.post(f"/v1/table/{index_uuid}/index/stats/")
+        resp = self._conn._client.post(f"/v1/table/{self._name}/index/{index_uuid}/stats/")
         return resp
 
     def create_scalar_index(
