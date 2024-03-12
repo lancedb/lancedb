@@ -214,6 +214,33 @@ impl Table {
             })?;
         Ok(())
     }
+
+    #[napi]
+    pub async fn version(&self) -> napi::Result<i64> {
+        self.inner_ref()?
+            .version()
+            .await
+            .map(|val| val as i64)
+            .default_error()
+    }
+
+    #[napi]
+    pub async fn checkout(&self, version: i64) -> napi::Result<()> {
+        self.inner_ref()?
+            .checkout(version as u64)
+            .await
+            .default_error()
+    }
+
+    #[napi]
+    pub async fn checkout_latest(&self) -> napi::Result<()> {
+        self.inner_ref()?.checkout_latest().await.default_error()
+    }
+
+    #[napi]
+    pub async fn restore(&self) -> napi::Result<()> {
+        self.inner_ref()?.restore().await.default_error()
+    }
 }
 
 ///  A definition of a column alteration. The alteration changes the column at
