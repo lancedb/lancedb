@@ -42,6 +42,7 @@ use snafu::whatever;
 
 use crate::error::{Error, Result};
 use crate::index::vector::{IvfPqIndexBuilder, VectorIndex, VectorIndexStatistics};
+use crate::index::IndexConfig;
 use crate::index::{
     vector::{suggested_num_partitions, suggested_num_sub_vectors},
     Index, IndexBuilder,
@@ -233,6 +234,7 @@ pub(crate) trait TableInternal: std::fmt::Display + std::fmt::Debug + Send + Syn
     async fn delete(&self, predicate: &str) -> Result<()>;
     async fn update(&self, update: UpdateBuilder) -> Result<()>;
     async fn create_index(&self, index: IndexBuilder) -> Result<()>;
+    async fn list_indices(&self) -> Result<Vec<IndexConfig>>;
     async fn merge_insert(
         &self,
         params: MergeInsertBuilder,
@@ -673,6 +675,11 @@ impl Table {
     /// out state and the read_consistency_interval, if any, will apply.
     pub async fn restore(&self) -> Result<()> {
         self.inner.restore().await
+    }
+
+    /// List all indices that have been created with [`Self::create_index`]
+    pub async fn list_indices(&self) -> Result<Vec<IndexConfig>> {
+        self.inner.list_indices().await
     }
 }
 
@@ -1398,6 +1405,25 @@ impl TableInternal for NativeTable {
         self.dataset.get_mut().await?.drop_columns(columns).await?;
         Ok(())
     }
+
+    async fn list_indices(&self) -> Result<Vec<IndexConfig>> {
+        let dataset = self.dataset.get().await?;
+        let indices = dataset.load_indices().await?;
+        indices.iter().map(|idx| {
+            let mut is_vector = false;
+            let mut columns = Vec::with_capacity(idx.fields.len());
+            for field_id in &idx.fields {
+                let field = dataset.schema().field_by_id(*field_id).ok_or_else(|| Error::Runtime { message: format!("The index with name {} and uuid {} referenced a field with id {} which does not exist in the schema", idx.name, idx.uuid, field_id) })?;
+                if field.data_type().is_nested() {
+                    // Temporary hack to determine if an index is scalar or vector
+                    // Should be removed in https://github.com/lancedb/lance/issues/2039
+                    is_vector = true;
+                }
+                columns.push(field.name.clone());
+            }
+            Ok(IndexConfig { index_type: if is_vector { crate::index::IndexType::IvfPq } else { crate::index::IndexType::BTree }, columns })
+        }).collect::<Result<Vec<_>>>()
+    }
 }
 
 #[cfg(test)]
@@ -1423,6 +1449,7 @@ mod tests {
 
     use crate::connect;
     use crate::connection::ConnectBuilder;
+    use crate::index::scalar::BTreeIndexBuilder;
 
     use super::*;
 
@@ -2068,16 +2095,11 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(
-            table
-                .as_native()
-                .unwrap()
-                .load_indices()
-                .await
-                .unwrap()
-                .len(),
-            1
-        );
+        let index_configs = table.list_indices().await.unwrap();
+        assert_eq!(index_configs.len(), 1);
+        let index = index_configs.into_iter().next().unwrap();
+        assert_eq!(index.index_type, crate::index::IndexType::IvfPq);
+        assert_eq!(index.columns, vec!["embeddings".to_string()]);
         assert_eq!(table.count_rows(None).await.unwrap(), 512);
         assert_eq!(table.name(), "test");
 
@@ -2127,6 +2149,56 @@ mod tests {
         let batch = Ok(batch);
 
         RecordBatchIterator::new(vec![batch], schema)
+    }
+
+    #[tokio::test]
+    async fn test_create_scalar_index() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("i", DataType::Int32, false)])),
+            vec![Arc::new(Int32Array::from(vec![1]))],
+        )
+        .unwrap();
+        let conn = ConnectBuilder::new(uri).execute().await.unwrap();
+        let table = conn
+            .create_table(
+                "my_table",
+                Box::new(RecordBatchIterator::new(
+                    vec![Ok(batch.clone())],
+                    batch.schema(),
+                )),
+            )
+            .execute()
+            .await
+            .unwrap();
+
+        // Can create an index on a scalar column (will default to btree)
+        table
+            .create_index(&["i"], Index::Auto)
+            .execute()
+            .await
+            .unwrap();
+
+        let index_configs = table.list_indices().await.unwrap();
+        assert_eq!(index_configs.len(), 1);
+        let index = index_configs.into_iter().next().unwrap();
+        assert_eq!(index.index_type, crate::index::IndexType::BTree);
+        assert_eq!(index.columns, vec!["i".to_string()]);
+
+        // Can also specify btree
+        table
+            .create_index(&["i"], Index::BTree(BTreeIndexBuilder::default()))
+            .execute()
+            .await
+            .unwrap();
+
+        let index_configs = table.list_indices().await.unwrap();
+        assert_eq!(index_configs.len(), 1);
+        let index = index_configs.into_iter().next().unwrap();
+        assert_eq!(index.index_type, crate::index::IndexType::BTree);
+        assert_eq!(index.columns, vec!["i".to_string()]);
     }
 
     #[tokio::test]
