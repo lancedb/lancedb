@@ -45,6 +45,18 @@ impl TableInternal for RemoteTable {
     fn name(&self) -> &str {
         &self.name
     }
+    async fn version(&self) -> Result<u64> {
+        todo!()
+    }
+    async fn checkout(&self, _version: u64) -> Result<()> {
+        todo!()
+    }
+    async fn checkout_latest(&self) -> Result<()> {
+        todo!()
+    }
+    async fn restore(&self) -> Result<()> {
+        todo!()
+    }
     async fn schema(&self) -> Result<SchemaRef> {
         todo!()
     }

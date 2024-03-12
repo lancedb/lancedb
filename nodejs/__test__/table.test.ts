@@ -332,3 +332,48 @@ describe("schema evolution", function () {
     expect(await table.schema()).toEqual(expectedSchema);
   });
 });
+
+describe("when dealing with versioning", () => {
+  let tmpDir: tmp.DirResult;
+  beforeEach(() => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+  });
+  afterEach(() => {
+    tmpDir.removeCallback();
+  });
+
+  it("can travel in time", async () => {
+    // Setup
+    const con = await connect(tmpDir.name);
+    const table = await con.createTable("vectors", [
+      { id: 1n, vector: [0.1, 0.2] },
+    ]);
+    const version = await table.version();
+    await table.add([{ id: 2n, vector: [0.1, 0.2] }]);
+    expect(await table.countRows()).toBe(2);
+    // Make sure we can rewind
+    await table.checkout(version);
+    expect(await table.countRows()).toBe(1);
+    // Can't add data in time travel mode
+    await expect(table.add([{ id: 3n, vector: [0.1, 0.2] }])).rejects.toThrow(
+      "table cannot be modified when a specific version is checked out",
+    );
+    // Can go back to normal mode
+    await table.checkoutLatest();
+    expect(await table.countRows()).toBe(2);
+    // Should be able to add data again
+    await table.add([{ id: 2n, vector: [0.1, 0.2] }]);
+    expect(await table.countRows()).toBe(3);
+    // Now checkout and restore
+    await table.checkout(version);
+    await table.restore();
+    expect(await table.countRows()).toBe(1);
+    // Should be able to add data
+    await table.add([{ id: 2n, vector: [0.1, 0.2] }]);
+    expect(await table.countRows()).toBe(2);
+    // Can't use restore if not checked out
+    await expect(table.restore()).rejects.toThrow(
+      "checkout before running restore",
+    );
+  });
+});
