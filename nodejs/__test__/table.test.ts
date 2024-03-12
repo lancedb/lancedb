@@ -27,6 +27,7 @@ import {
   Float64,
 } from "apache-arrow";
 import { makeArrowTable } from "../dist/arrow";
+import { Index } from "../dist/indices";
 
 describe("Given a table", () => {
   let tmpDir: tmp.DirResult;
@@ -67,19 +68,17 @@ describe("Given a table", () => {
   });
 });
 
-describe("Test creating index", () => {
+describe("When creating an index", () => {
   let tmpDir: tmp.DirResult;
   const schema = new Schema([
     new Field("id", new Int32(), true),
     new Field("vec", new FixedSizeList(32, new Field("item", new Float32()))),
   ]);
+  let tbl: Table;
+  let queryVec: number[];
 
-  beforeEach(() => {
+  beforeEach(async () => {
     tmpDir = tmp.dirSync({ unsafeCleanup: true });
-  });
-  afterEach(() => tmpDir.removeCallback());
-
-  test("create vector index with no column", async () => {
     const db = await connect(tmpDir.name);
     const data = makeArrowTable(
       Array(300)
@@ -94,8 +93,13 @@ describe("Test creating index", () => {
         schema,
       },
     );
-    const tbl = await db.createTable("test", data);
-    await tbl.createIndex().build();
+    queryVec = data.toArray()[5].vec.toJSON();
+    tbl = await db.createTable("test", data);
+  });
+  afterEach(() => tmpDir.removeCallback());
+
+  it("should create a vector index on vector columns", async () => {
+    await tbl.createIndex("vec");
 
     // check index directory
     const indexDir = path.join(tmpDir.name, "test.lance", "_indices");
@@ -103,38 +107,47 @@ describe("Test creating index", () => {
     // TODO: check index type.
 
     // Search without specifying the column
-    const queryVector = data.toArray()[5].vec.toJSON();
-    const rst = await tbl.query().nearestTo(queryVector).limit(2).toArrow();
+    const rst = await tbl.query().nearestTo(queryVec).limit(2).toArrow();
     expect(rst.numRows).toBe(2);
 
     // Search with specifying the column
-    const rst2 = await tbl.search(queryVector, "vec").limit(2).toArrow();
+    const rst2 = await tbl.search(queryVec, "vec").limit(2).toArrow();
     expect(rst2.numRows).toBe(2);
     expect(rst.toString()).toEqual(rst2.toString());
   });
 
-  test("no vector column available", async () => {
-    const db = await connect(tmpDir.name);
-    const tbl = await db.createTable(
-      "no_vec",
-      makeArrowTable([
-        { id: 1, val: 2 },
-        { id: 2, val: 3 },
-      ]),
-    );
-    await expect(tbl.createIndex().build()).rejects.toThrow(
-      "No vector column found",
-    );
+  it("should allow parameters to be specified", async () => {
+    await tbl.createIndex("vec", {
+      config: Index.ivfPq({
+        numPartitions: 10,
+      }),
+    });
 
-    await tbl.createIndex("val").build();
-    const indexDir = path.join(tmpDir.name, "no_vec.lance", "_indices");
+    // TODO: Verify parameters when we can load index config as part of list indices
+  });
+
+  it("should allow me to replace (or not) an existing index", async () => {
+    await tbl.createIndex("id");
+    // Default is replace=true
+    await tbl.createIndex("id");
+    await expect(tbl.createIndex("id", { replace: false })).rejects.toThrow(
+      "already exists",
+    );
+    await tbl.createIndex("id", { replace: true });
+  });
+
+  test("should create a scalar index on scalar columns", async () => {
+    await tbl.createIndex("id");
+    const indexDir = path.join(tmpDir.name, "test.lance", "_indices");
     expect(fs.readdirSync(indexDir)).toHaveLength(1);
 
     for await (const r of tbl.query().filter("id > 1").select(["id"])) {
-      expect(r.numRows).toBe(1);
+      expect(r.numRows).toBe(298);
     }
   });
 
+  // TODO: Move this test to the query API test (making sure we can reject queries
+  // when the dimension is incorrect)
   test("two columns with different dimensions", async () => {
     const db = await connect(tmpDir.name);
     const schema = new Schema([
@@ -164,14 +177,9 @@ describe("Test creating index", () => {
     );
 
     // Only build index over v1
-    await expect(tbl.createIndex().build()).rejects.toThrow(
-      /.*More than one vector columns found.*/,
-    );
-    tbl
-      .createIndex("vec")
-      // eslint-disable-next-line @typescript-eslint/naming-convention
-      .ivf_pq({ num_partitions: 2, num_sub_vectors: 2 })
-      .build();
+    await tbl.createIndex("vec", {
+      config: Index.ivfPq({ numPartitions: 2, numSubVectors: 2 }),
+    });
 
     const rst = await tbl
       .query()
@@ -204,30 +212,6 @@ describe("Test creating index", () => {
     const rst64Search = await tbl.search(query64, "vec2").limit(2).toArrow();
     expect(rst64Query.toString()).toEqual(rst64Search.toString());
     expect(rst64Query.numRows).toBe(2);
-  });
-
-  test("create scalar index", async () => {
-    const db = await connect(tmpDir.name);
-    const data = makeArrowTable(
-      Array(300)
-        .fill(1)
-        .map((_, i) => ({
-          id: i,
-          vec: Array(32)
-            .fill(1)
-            .map(() => Math.random()),
-        })),
-      {
-        schema,
-      },
-    );
-    const tbl = await db.createTable("test", data);
-    await tbl.createIndex("id").build();
-
-    // check index directory
-    const indexDir = path.join(tmpDir.name, "test.lance", "_indices");
-    expect(fs.readdirSync(indexDir)).toHaveLength(1);
-    // TODO: check index type.
   });
 });
 

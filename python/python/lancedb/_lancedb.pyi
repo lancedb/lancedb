@@ -2,6 +2,18 @@ from typing import Optional
 
 import pyarrow as pa
 
+class Index:
+    @staticmethod
+    def ivf_pq(
+        distance_type: Optional[str],
+        num_partitions: Optional[int],
+        num_sub_vectors: Optional[int],
+        max_iterations: Optional[int],
+        sample_rate: Optional[int],
+    ) -> Index: ...
+    @staticmethod
+    def btree() -> Index: ...
+
 class Connection(object):
     async def table_names(
         self, start_after: Optional[str], limit: Optional[int]
@@ -13,10 +25,15 @@ class Connection(object):
         self, name: str, mode: str, schema: pa.Schema
     ) -> Table: ...
 
-class Table(object):
+class Table:
     def name(self) -> str: ...
     def __repr__(self) -> str: ...
     async def schema(self) -> pa.Schema: ...
+    async def add(self, data: pa.RecordBatchReader, mode: str) -> None: ...
+    async def count_rows(self, filter: Optional[str]) -> int: ...
+    async def create_index(
+        self, column: str, config: Optional[Index], replace: Optional[bool]
+    ): ...
 
 async def connect(
     uri: str,
