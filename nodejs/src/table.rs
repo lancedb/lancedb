@@ -257,6 +257,40 @@ impl Table {
     pub async fn restore(&self) -> napi::Result<()> {
         self.inner_ref()?.restore().await.default_error()
     }
+
+    #[napi]
+    pub async fn list_indices(&self) -> napi::Result<Vec<IndexConfig>> {
+        Ok(self
+            .inner_ref()?
+            .list_indices()
+            .await
+            .default_error()?
+            .into_iter()
+            .map(IndexConfig::from)
+            .collect::<Vec<_>>())
+    }
+}
+
+#[napi(object)]
+/// A description of an index currently configured on a column
+pub struct IndexConfig {
+    /// The type of the index
+    pub index_type: String,
+    /// The columns in the index
+    ///
+    /// Currently this is always an array of size 1.  In the future there may
+    /// be more columns to represent composite indices.
+    pub columns: Vec<String>,
+}
+
+impl From<lancedb::index::IndexConfig> for IndexConfig {
+    fn from(value: lancedb::index::IndexConfig) -> Self {
+        let index_type = format!("{:?}", value.index_type);
+        Self {
+            index_type,
+            columns: value.columns,
+        }
+    }
 }
 
 ///  A definition of a column alteration. The alteration changes the column at

@@ -1,4 +1,4 @@
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 import pyarrow as pa
 
@@ -39,6 +39,11 @@ class Table:
     async def checkout(self, version): ...
     async def checkout_latest(self): ...
     async def restore(self): ...
+    async def list_indices(self) -> List[IndexConfig]: ...
+
+class IndexConfig:
+    index_type: str
+    columns: List[str]
 
 async def connect(
     uri: str,

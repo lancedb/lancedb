@@ -121,7 +121,12 @@ describe("When creating an index", () => {
     // check index directory
     const indexDir = path.join(tmpDir.name, "test.lance", "_indices");
     expect(fs.readdirSync(indexDir)).toHaveLength(1);
-    // TODO: check index type.
+    const indices = await tbl.listIndices();
+    expect(indices.length).toBe(1);
+    expect(indices[0]).toEqual({
+      indexType: "IvfPq",
+      columns: ["vec"],
+    });
 
     // Search without specifying the column
     const rst = await tbl.query().nearestTo(queryVec).limit(2).toArrow();
