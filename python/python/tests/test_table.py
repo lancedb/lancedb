@@ -98,6 +98,8 @@ async def test_update_async(db_async: AsyncConnection):
     assert await table.count_rows("id == 7") == 1
     assert await table.count_rows("id == 2") == 0
     assert await table.count_rows("id == 5") == 1
+    await table.update({"id": 10}, where="id == 5")
+    assert await table.count_rows("id == 10") == 1
 
 
 def test_create_table(db):

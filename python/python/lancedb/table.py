@@ -2242,28 +2242,19 @@ class AsyncTable:
 
         Examples
         --------
+        >>> import asyncio
         >>> import lancedb
         >>> import pandas as pd
-        >>> data = pd.DataFrame({"x": [1, 2, 3], "vector": [[1, 2], [3, 4], [5, 6]]})
-        >>> db = lancedb.connect("./.lancedb")
-        >>> table = db.create_table("my_table", data)
-        >>> table.to_pandas()
-           x      vector
-        0  1  [1.0, 2.0]
-        1  2  [3.0, 4.0]
-        2  3  [5.0, 6.0]
-        >>> table.update({"vector": [10, 10]}, where="x = 2")
-        >>> table.to_pandas()
-           x        vector
-        0  1    [1.0, 2.0]
-        1  3    [5.0, 6.0]
-        2  2  [10.0, 10.0]
-        >>> table.update(updates_sql={"x": "x + 1"})
-        >>> table.to_pandas()
-           x        vector
-        0  2    [1.0, 2.0]
-        1  4    [5.0, 6.0]
-        2  3  [10.0, 10.0]
+        >>> async def demo_update():
+        ...     data = pd.DataFrame({"x": [1, 2], "vector": [[1, 2], [3, 4]]})
+        ...     db = await lancedb.connect_async("./.lancedb")
+        ...     table = await db.create_table("my_table", data)
+        ...     # x is [1, 2], vector is [[1, 2], [3, 4]]
+        ...     await table.update({"vector": [10, 10]}, where="x = 2")
+        ...     # x is [1, 2], vector is [[1, 2], [10, 10]]
+        ...     await table.update(updates_sql={"x": "x + 1"})
+        ...     # x is [2, 3], vector is [[1, 2], [10, 10]]
+        >>> asyncio.run(demo_update())
         """
         if updates is not None and updates_sql is not None:
             raise ValueError("Only one of updates or updates_sql can be provided")
