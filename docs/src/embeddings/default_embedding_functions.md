@@ -222,8 +222,7 @@ We support CLIP model embeddings using the open source alternative, [open-clip](
 This embedding function supports ingesting images as both bytes and urls. You can query them using both test and other images.
 
 !!! info
-    LanceDB supports ingesting images,audio and video directly from accessible links.
-
+    LanceDB supports ingesting images directly from accessible links.
 
 ```python
 
@@ -291,7 +290,9 @@ print(actual.label)
 ```
 
 ### Imagebind embeddings
-We have support for [imagebind](https://github.com/facebookresearch/ImageBind) model embeddings. It is registered as `imagebind` and supports Audio, Video and Text modalities(extending to Thermal,Depth,IMU data):
+We have support for [imagebind](https://github.com/facebookresearch/ImageBind) model embeddings. You can download our version of the packaged model via - `pip install imagebind-packaged==0.1.2`.
+
+This function is registered as `imagebind` and supports Audio, Video and Text modalities(extending to Thermal,Depth,IMU data):
 
 | Parameter | Type | Default Value | Description |
 |---|---|---|---|
