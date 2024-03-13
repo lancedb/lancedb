@@ -82,19 +82,25 @@ class CrossEncoderReranker(Reranker):
         query: str,
         vector_results: pa.Table,
     ):
-        result_set =  self._rerank(vector_results, query)
+        vector_results =  self._rerank(vector_results, query)
         if self.score == "relevance":
-            result_set = result_set.drop_columns(["_distance"])
+            vector_results = vector_results.drop_columns(["_distance"])
         
-        return result_set
+        vector_results = vector_results.sort_by(
+            [("_relevance_score", "descending")]
+        )
+        return vector_results
     
     def rerank_fts(
         self,
         query: str,
         fts_results: pa.Table,
     ):
-        result_set =  self._rerank(fts_results, query)
+        fts_results =  self._rerank(fts_results, query)
         if self.score == "relevance":
-            result_set = result_set.drop_columns(["score"])
+            fts_results = fts_results.drop_columns(["score"])
         
-        return result_set
+        fts_results = fts_results.sort_by(
+            [("_relevance_score", "descending")]
+        )
+        return fts_results
