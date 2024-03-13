@@ -75,6 +75,7 @@ def _sanitize_data(
     on_bad_vectors: str,
     fill_value: Any,
 ):
+    import pdb; pdb.set_trace()
     if _check_for_hugging_face(data):
         # Huggingface datasets
         import datasets
@@ -83,7 +84,6 @@ def _sanitize_data(
             if schema is None:
                 schema = data.features.arrow_schema
             data = data.data.to_batches()
-            import pdb; pdb.set_trace()
     elif isinstance(data, list):
         # convert to list of dict if data is a bunch of LanceModels
         if isinstance(data[0], LanceModel):
