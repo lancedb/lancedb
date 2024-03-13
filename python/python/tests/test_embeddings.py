@@ -11,6 +11,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 import sys
+from typing import List, Union
 
 import lance
 import lancedb
@@ -23,6 +24,8 @@ from lancedb.embeddings import (
     EmbeddingFunctionRegistry,
     with_embeddings,
 )
+from lancedb.embeddings.base import TextEmbeddingFunction
+from lancedb.embeddings.registry import get_registry, register
 from lancedb.pydantic import LanceModel, Vector
 
 
@@ -112,3 +115,34 @@ def test_embedding_function_rate_limit(tmp_path):
     table.add([{"text": "hello world"}])
     table.add([{"text": "hello world"}])
     assert len(table) == 2
+
+
+def test_add_optional_vector(tmp_path):
+    @register("mock-embedding")
+    class MockEmbeddingFunction(TextEmbeddingFunction):
+        def ndims(self):
+            return 128
+
+        def generate_embeddings(
+            self, texts: Union[List[str], np.ndarray]
+        ) -> List[np.array]:
+            """
+            Generate the embeddings for the given texts
+            """
+            return [np.random.randn(self.ndims()).tolist() for _ in range(len(texts))]
+
+    registry = get_registry()
+    model = registry.get("mock-embedding").create()
+
+    class LanceSchema(LanceModel):
+        id: str
+        vector: Vector(model.ndims()) = model.VectorField(default=None)
+        text: str = model.SourceField()
+
+    db = lancedb.connect(tmp_path)
+    tbl = db.create_table("optional_vector", schema=LanceSchema)
+
+    # add works
+    expected = LanceSchema(id="id", text="text")
+    tbl.add([expected])
+    assert not (np.abs(tbl.to_pandas()["vector"][0]) < 1e-6).all()
