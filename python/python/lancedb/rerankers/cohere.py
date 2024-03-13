@@ -83,27 +83,25 @@ class CohereReranker(Reranker):
                 "return_score='all' not implemented for cohere reranker"
             )
         return combined_results
-    
+
     def rerank_vector(
         self,
         query: str,
         vector_results: pa.Table,
     ):
-        result_set =  self._rerank(vector_results, query)
+        result_set = self._rerank(vector_results, query)
         if self.score == "relevance":
             result_set = result_set.drop_columns(["_distance"])
-        
+
         return result_set
-    
+
     def rerank_fts(
         self,
         query: str,
         fts_results: pa.Table,
     ):
-        result_set =  self._rerank(fts_results, query)
+        result_set = self._rerank(fts_results, query)
         if self.score == "relevance":
             result_set = result_set.drop_columns(["score"])
-        
-        return result_set
 
-        
+        return result_set

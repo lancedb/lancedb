@@ -522,10 +522,8 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         )
         result_set = self._table._execute_query(query)
         if self._reranker is not None:
-            result_set = self._reranker.rerank_vector(
-                self._reranker_query, result_set
-            )
-        
+            result_set = self._reranker.rerank_vector(self._reranker_query, result_set)
+
         return result_set
 
     def where(self, where: str, prefilter: bool = False) -> LanceVectorQueryBuilder:
@@ -568,6 +566,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         self._reranker = reranker
         self._reranker_query = query
         return self
+
 
 class LanceFtsQueryBuilder(LanceQueryBuilder):
     """A builder for full text search for LanceDB."""
@@ -663,7 +662,7 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
 
         if self._with_row_id:
             output_tbl = output_tbl.append_column("_rowid", row_ids)
-        
+
         if self._reranker is not None:
             output_tbl = self._reranker.rerank_fts(self._query, output_tbl)
         return output_tbl

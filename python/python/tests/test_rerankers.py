@@ -119,7 +119,6 @@ def test_linear_combination(tmp_path):
     )
 
 
-
 @pytest.mark.skipif(
     os.environ.get("COHERE_API_KEY") is None, reason="COHERE_API_KEY not set"
 )
@@ -159,12 +158,19 @@ def test_cohere_reranker(tmp_path):
 
     # Vector search setting
     query = "Our father who art in heaven"
-    result = table.search(query).rerank(reranker=reranker, query=query).limit(30).to_arrow()
+    result = (
+        table.search(query).rerank(reranker=reranker, query=query).limit(30).to_arrow()
+    )
     assert len(result) == 30
     assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), err
 
     # FTS search setting
-    result = table.search(query, query_type="fts").rerank(reranker=reranker).limit(30).to_arrow()
+    result = (
+        table.search(query, query_type="fts")
+        .rerank(reranker=reranker)
+        .limit(30)
+        .to_arrow()
+    )
     assert len(result) > 0
     assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), err
 
@@ -204,14 +210,22 @@ def test_cross_encoder_reranker(tmp_path):
     assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), err
 
     # Vector search setting
-    result = table.search(query).rerank(reranker=reranker, query=query).limit(30).to_arrow()
+    result = (
+        table.search(query).rerank(reranker=reranker, query=query).limit(30).to_arrow()
+    )
     assert len(result) == 30
     assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), err
 
     # FTS search setting
-    result = table.search(query, query_type="fts").rerank(reranker=reranker).limit(30).to_arrow()
+    result = (
+        table.search(query, query_type="fts")
+        .rerank(reranker=reranker)
+        .limit(30)
+        .to_arrow()
+    )
     assert len(result) > 0
     assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), err
+
 
 def test_colbert_reranker(tmp_path):
     pytest.importorskip("transformers")
@@ -240,7 +254,7 @@ def test_colbert_reranker(tmp_path):
     )
 
     assert len(result) == 30
-    err =  (
+    err = (
         "The _relevance_score column of the results returned by the reranker "
         "represents the relevance of the result to the query & should "
         "be descending."
@@ -248,12 +262,19 @@ def test_colbert_reranker(tmp_path):
     assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), err
 
     # Vector search setting
-    result = table.search(query).rerank(reranker=reranker, query=query).limit(30).to_arrow()
+    result = (
+        table.search(query).rerank(reranker=reranker, query=query).limit(30).to_arrow()
+    )
     assert len(result) == 30
     assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), err
 
     # FTS search setting
-    result = table.search(query, query_type="fts").rerank(reranker=reranker).limit(30).to_arrow()
+    result = (
+        table.search(query, query_type="fts")
+        .rerank(reranker=reranker)
+        .limit(30)
+        .to_arrow()
+    )
     assert len(result) > 0
     assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), err
 
@@ -296,12 +317,21 @@ def test_openai_reranker(tmp_path):
     assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), err
 
     # Vector search setting
-    result = table.search(query).rerank(reranker=OpenaiReranker(), query=query).limit(30).to_arrow()
+    result = (
+        table.search(query)
+        .rerank(reranker=OpenaiReranker(), query=query)
+        .limit(30)
+        .to_arrow()
+    )
     assert len(result) == 30
     assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), err
 
     # FTS search setting
-    result = table.search(query, query_type="fts").rerank(reranker=OpenaiReranker()).limit(30).to_arrow()
+    result = (
+        table.search(query, query_type="fts")
+        .rerank(reranker=OpenaiReranker())
+        .limit(30)
+        .to_arrow()
+    )
     assert len(result) > 0
     assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), err
-
