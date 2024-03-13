@@ -24,10 +24,9 @@ from lancedb.embeddings import (
     EmbeddingFunctionRegistry,
     with_embeddings,
 )
+from lancedb.embeddings.base import TextEmbeddingFunction
 from lancedb.embeddings.registry import get_registry, register
 from lancedb.pydantic import LanceModel, Vector
-from lancedb.embeddings.base import TextEmbeddingFunction
-from lancedb.table import LanceTable
 
 
 def mock_embed_func(input_data):
@@ -119,19 +118,18 @@ def test_embedding_function_rate_limit(tmp_path):
 
 
 def test_add_optional_vector(tmp_path):
-
     @register("mock-embedding")
     class MockEmbeddingFunction(TextEmbeddingFunction):
         def ndims(self):
             return 128
 
         def generate_embeddings(
-                self, texts: Union[List[str], np.ndarray]
-            ) -> List[np.array]:
-                """
-                Generate the embeddings for the given texts
-                """
-                return [np.random.randn(self.ndims()).tolist() for _ in range(len(texts))]
+            self, texts: Union[List[str], np.ndarray]
+        ) -> List[np.array]:
+            """
+            Generate the embeddings for the given texts
+            """
+            return [np.random.randn(self.ndims()).tolist() for _ in range(len(texts))]
 
     registry = get_registry()
     model = registry.get("mock-embedding").create()
