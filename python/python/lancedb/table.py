@@ -118,7 +118,8 @@ def _append_vector_col(data: pa.Table, metadata: dict, schema: Optional[pa.Schem
     functions = EmbeddingFunctionRegistry.get_instance().parse_functions(metadata)
     for vector_column, conf in functions.items():
         func = conf.function
-        if vector_column not in data.column_names:
+        no_vector_column = vector_column not in data.column_names
+        if no_vector_column or pc.all(pc.is_null(data[vector_column])).as_py():
             col_data = func.compute_source_embeddings_with_retry(
                 data[conf.source_column]
             )
@@ -126,9 +127,16 @@ def _append_vector_col(data: pa.Table, metadata: dict, schema: Optional[pa.Schem
                 dtype = schema.field(vector_column).type
             else:
                 dtype = pa.list_(pa.float32(), len(col_data[0]))
-            data = data.append_column(
-                pa.field(vector_column, type=dtype), pa.array(col_data, type=dtype)
-            )
+            if no_vector_column:
+                data = data.append_column(
+                    pa.field(vector_column, type=dtype), pa.array(col_data, type=dtype)
+                )
+            else:
+                data = data.set_column(
+                    data.column_names.index(vector_column),
+                    pa.field(vector_column, type=dtype),
+                    pa.array(col_data, type=dtype),
+                )
     return data
 
 
