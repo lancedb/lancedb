@@ -66,6 +66,8 @@ class CohereReranker(Reranker):
             "_relevance_score", pa.array(scores, type=pa.float32())
         )
 
+        return result_set
+
     def rerank_hybrid(
         self,
         query: str,
@@ -90,6 +92,17 @@ class CohereReranker(Reranker):
         result_set =  self._rerank(vector_results, query)
         if self.score == "relevance":
             result_set = result_set.drop_columns(["_distance"])
+        
+        return result_set
+    
+    def rerank_fts(
+        self,
+        query: str,
+        fts_results: pa.Table,
+    ):
+        result_set =  self._rerank(fts_results, query)
+        if self.score == "relevance":
+            result_set = result_set.drop_columns(["score"])
         
         return result_set
 

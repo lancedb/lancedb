@@ -96,6 +96,17 @@ class ColbertReranker(Reranker):
         
         return result_set
 
+    def rerank_fts(
+        self,
+        query: str,
+        fts_results: pa.Table,
+    ):
+        result_set =  self._rerank(fts_results, query)
+        if self.score == "relevance":
+            result_set = result_set.drop_columns(["score"])
+        
+        return result_set
+
     @cached_property
     def _model(self):
         transformers = attempt_import_or_raise("transformers")

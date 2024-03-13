@@ -87,3 +87,14 @@ class CrossEncoderReranker(Reranker):
             result_set = result_set.drop_columns(["_distance"])
         
         return result_set
+    
+    def rerank_fts(
+        self,
+        query: str,
+        fts_results: pa.Table,
+    ):
+        result_set =  self._rerank(fts_results, query)
+        if self.score == "relevance":
+            result_set = result_set.drop_columns(["score"])
+        
+        return result_set

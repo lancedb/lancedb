@@ -433,6 +433,8 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         self._refine_factor = None
         self._vector_column = vector_column
         self._prefilter = False
+        self._reranker = None
+        self._reranker_query = None
 
     def metric(self, metric: Literal["L2", "cosine"]) -> LanceVectorQueryBuilder:
         """Set the distance metric to use.
@@ -518,7 +520,13 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             vector_column=self._vector_column,
             with_row_id=self._with_row_id,
         )
-        return self._table._execute_query(query)
+        result_set = self._table._execute_query(query)
+        if self._reranker is not None:
+            result_set = self._reranker.rerank_vector(
+                self._reranker_query, result_set
+            )
+        
+        return result_set
 
     def where(self, where: str, prefilter: bool = False) -> LanceVectorQueryBuilder:
         """Set the where clause.
@@ -544,6 +552,22 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         self._prefilter = prefilter
         return self
 
+    def rerank(self, reranker: Reranker, query: str) -> LanceVectorQueryBuilder:
+        """Rerank the results using the specified reranker.
+
+        Parameters
+        ----------
+        reranker: Reranker
+            The reranker to use.
+
+        Returns
+        -------
+        LanceVectorQueryBuilder
+            The LanceQueryBuilder object.
+        """
+        self._reranker = reranker
+        self._reranker_query = query
+        return self
 
 class LanceFtsQueryBuilder(LanceQueryBuilder):
     """A builder for full text search for LanceDB."""
@@ -552,6 +576,7 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         super().__init__(table)
         self._query = query
         self._phrase_query = False
+        self._reranker = None
 
     def phrase_query(self, phrase_query: bool = True) -> LanceFtsQueryBuilder:
         """Set whether to use phrase query.
@@ -638,7 +663,26 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
 
         if self._with_row_id:
             output_tbl = output_tbl.append_column("_rowid", row_ids)
+        
+        if self._reranker is not None:
+            output_tbl = self._reranker.rerank_fts(self._query, output_tbl)
         return output_tbl
+
+    def rerank(self, reranker: Reranker) -> LanceFtsQueryBuilder:
+        """Rerank the results using the specified reranker.
+
+        Parameters
+        ----------
+        reranker: Reranker
+            The reranker to use.
+
+        Returns
+        -------
+        LanceFtsQueryBuilder
+            The LanceQueryBuilder object.
+        """
+        self._reranker = reranker
+        return self
 
 
 class LanceEmptyQueryBuilder(LanceQueryBuilder):
