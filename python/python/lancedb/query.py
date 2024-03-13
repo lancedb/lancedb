@@ -557,6 +557,13 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         ----------
         reranker: Reranker
             The reranker to use.
+        
+        query: str
+            The query to use for reranking. This needs to be specified explicitly here
+            as the query used for vector search may already be vectorized and the reranker
+            requires a string query.
+            Note: This doesn't yet support the case where the query is multimodal or a list
+            of vectors.
 
         Returns
         -------
