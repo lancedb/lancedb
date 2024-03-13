@@ -94,6 +94,10 @@ class ColbertReranker(Reranker):
         if self.score == "relevance":
             result_set = result_set.drop_columns(["_distance"])
         
+        result_set = result_set.sort_by(
+            [("_relevance_score", "descending")]
+        )
+
         return result_set
 
     def rerank_fts(
@@ -105,6 +109,10 @@ class ColbertReranker(Reranker):
         if self.score == "relevance":
             result_set = result_set.drop_columns(["score"])
         
+        result_set = result_set.sort_by(
+            [("_relevance_score", "descending")]
+        )
+
         return result_set
 
     @cached_property
