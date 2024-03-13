@@ -30,7 +30,9 @@ use lance::dataset::scanner::{DatasetRecordBatchStream, Scanner};
 pub use lance::dataset::ColumnAlteration;
 pub use lance::dataset::NewColumnTransform;
 pub use lance::dataset::ReadParams;
-use lance::dataset::{Dataset, UpdateBuilder, WhenMatched, WriteMode, WriteParams};
+use lance::dataset::{
+    Dataset, UpdateBuilder as LanceUpdateBuilder, WhenMatched, WriteMode, WriteParams,
+};
 use lance::dataset::{MergeInsertBuilder as LanceMergeInsertBuilder, WhenNotMatchedBySource};
 use lance::io::WrappingObjectStore;
 use lance_index::IndexType;
@@ -40,6 +42,7 @@ use snafu::whatever;
 
 use crate::error::{Error, Result};
 use crate::index::vector::{IvfPqIndexBuilder, VectorIndex, VectorIndexStatistics};
+use crate::index::IndexConfig;
 use crate::index::{
     vector::{suggested_num_partitions, suggested_num_sub_vectors},
     Index, IndexBuilder,
@@ -115,7 +118,8 @@ pub enum AddDataMode {
     Overwrite,
 }
 
-/// A builder for configuring a [`Connection::create_table`] operation
+/// A builder for configuring a [`crate::connection::Connection::create_table`] or [`Table::add`]
+/// operation
 pub struct AddDataBuilder {
     parent: Arc<dyn TableInternal>,
     pub(crate) data: Box<dyn RecordBatchReader + Send>,
@@ -149,6 +153,71 @@ impl AddDataBuilder {
     }
 }
 
+/// A builder for configuring an [`Table::update`] operation
+#[derive(Debug, Clone)]
+pub struct UpdateBuilder {
+    parent: Arc<dyn TableInternal>,
+    pub(crate) filter: Option<String>,
+    pub(crate) columns: Vec<(String, String)>,
+}
+
+impl UpdateBuilder {
+    fn new(parent: Arc<dyn TableInternal>) -> Self {
+        Self {
+            parent,
+            filter: None,
+            columns: Vec::new(),
+        }
+    }
+
+    /// Limits the update operation to rows matching the given filter
+    ///
+    /// If a row does not match the filter then it will be left unchanged.
+    pub fn only_if(mut self, filter: impl Into<String>) -> Self {
+        self.filter = Some(filter.into());
+        self
+    }
+
+    /// Specifies a column to update
+    ///
+    /// This method may be called multiple times to update multiple columns
+    ///
+    /// The `update_expr` should be an SQL expression explaining how to calculate
+    /// the new value for the column.  The expression will be evaluated against the
+    /// previous row's value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use lancedb::Table;
+    /// # async fn doctest_helper(tbl: Table) {
+    ///   let mut operation = tbl.update();
+    ///   // Increments the `bird_count` value by 1
+    ///   operation = operation.column("bird_count", "bird_count + 1");
+    ///   operation.execute().await.unwrap();
+    /// # }
+    /// ```
+    pub fn column(
+        mut self,
+        column_name: impl Into<String>,
+        update_expr: impl Into<String>,
+    ) -> Self {
+        self.columns.push((column_name.into(), update_expr.into()));
+        self
+    }
+
+    /// Executes the update operation
+    pub async fn execute(self) -> Result<()> {
+        if self.columns.is_empty() {
+            Err(Error::InvalidInput {
+                message: "at least one column must be specified in an update operation".to_string(),
+            })
+        } else {
+            self.parent.clone().update(self).await
+        }
+    }
+}
+
 #[async_trait]
 pub(crate) trait TableInternal: std::fmt::Display + std::fmt::Debug + Send + Sync {
     fn as_any(&self) -> &dyn std::any::Any;
@@ -163,7 +232,9 @@ pub(crate) trait TableInternal: std::fmt::Display + std::fmt::Debug + Send + Syn
     async fn add(&self, add: AddDataBuilder) -> Result<()>;
     async fn query(&self, query: &Query) -> Result<DatasetRecordBatchStream>;
     async fn delete(&self, predicate: &str) -> Result<()>;
+    async fn update(&self, update: UpdateBuilder) -> Result<()>;
     async fn create_index(&self, index: IndexBuilder) -> Result<()>;
+    async fn list_indices(&self) -> Result<Vec<IndexConfig>>;
     async fn merge_insert(
         &self,
         params: MergeInsertBuilder,
@@ -177,6 +248,10 @@ pub(crate) trait TableInternal: std::fmt::Display + std::fmt::Debug + Send + Syn
     ) -> Result<()>;
     async fn alter_columns(&self, alterations: &[ColumnAlteration]) -> Result<()>;
     async fn drop_columns(&self, columns: &[&str]) -> Result<()>;
+    async fn version(&self) -> Result<u64>;
+    async fn checkout(&self, version: u64) -> Result<()>;
+    async fn checkout_latest(&self) -> Result<()>;
+    async fn restore(&self) -> Result<()>;
 }
 
 /// A Table is a collection of strong typed Rows.
@@ -238,6 +313,24 @@ impl Table {
             mode: AddDataMode::Append,
             write_options: WriteOptions::default(),
         }
+    }
+
+    /// Update existing records in the Table
+    ///
+    /// An update operation can be used to adjust existing values.  Use the
+    /// returned builder to specify which columns to update.  The new value
+    /// can be a literal value (e.g. replacing nulls with some default value)
+    /// or an expression applied to the old value (e.g. incrementing a value)
+    ///
+    /// An optional condition can be specified (e.g. "only update if the old
+    /// value is 0")
+    ///
+    /// Note: if your condition is something like "some_id_column == 7" and
+    /// you are updating many rows (with different ids) then you will get
+    /// better performance with a single [`merge_insert`] call instead of
+    /// repeatedly calilng this method.
+    pub fn update(&self) -> UpdateBuilder {
+        UpdateBuilder::new(self.inner.clone())
     }
 
     /// Delete the rows from table that match the predicate.
@@ -533,6 +626,61 @@ impl Table {
     pub async fn drop_columns(&self, columns: &[&str]) -> Result<()> {
         self.inner.drop_columns(columns).await
     }
+
+    /// Retrieve the version of the table
+    ///
+    /// LanceDb supports versioning.  Every operation that modifies the table increases
+    /// version.  As long as a version hasn't been deleted you can `[Self::checkout]` that
+    /// version to view the data at that point.  In addition, you can `[Self::restore]` the
+    /// version to replace the current table with a previous version.
+    pub async fn version(&self) -> Result<u64> {
+        self.inner.version().await
+    }
+
+    /// Checks out a specific version of the Table
+    ///
+    /// Any read operation on the table will now access the data at the checked out version.
+    /// As a consequence, calling this method will disable any read consistency interval
+    /// that was previously set.
+    ///
+    /// This is a read-only operation that turns the table into a sort of "view"
+    /// or "detached head".  Other table instances will not be affected.  To make the change
+    /// permanent you can use the `[Self::restore]` method.
+    ///
+    /// Any operation that modifies the table will fail while the table is in a checked
+    /// out state.
+    ///
+    /// To return the table to a normal state use `[Self::checkout_latest]`
+    pub async fn checkout(&self, version: u64) -> Result<()> {
+        self.inner.checkout(version).await
+    }
+
+    /// Ensures the table is pointing at the latest version
+    ///
+    /// This can be used to manually update a table when the read_consistency_interval is None
+    /// It can also be used to undo a `[Self::checkout]` operation
+    pub async fn checkout_latest(&self) -> Result<()> {
+        self.inner.checkout_latest().await
+    }
+
+    /// Restore the table to the currently checked out version
+    ///
+    /// This operation will fail if checkout has not been called previously
+    ///
+    /// This operation will overwrite the latest version of the table with a
+    /// previous version.  Any changes made since the checked out version will
+    /// no longer be visible.
+    ///
+    /// Once the operation concludes the table will no longer be in a checked
+    /// out state and the read_consistency_interval, if any, will apply.
+    pub async fn restore(&self) -> Result<()> {
+        self.inner.restore().await
+    }
+
+    /// List all indices that have been created with [`Self::create_index`]
+    pub async fn list_indices(&self) -> Result<Vec<IndexConfig>> {
+        self.inner.list_indices().await
+    }
 }
 
 impl From<NativeTable> for Table {
@@ -639,55 +787,6 @@ impl NativeTable {
         })
     }
 
-    /// Checkout a specific version of this [NativeTable]
-    pub async fn checkout(uri: &str, version: u64) -> Result<Self> {
-        let name = Self::get_table_name(uri)?;
-        Self::checkout_with_params(uri, &name, version, None, ReadParams::default(), None).await
-    }
-
-    pub async fn checkout_with_params(
-        uri: &str,
-        name: &str,
-        version: u64,
-        write_store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
-        params: ReadParams,
-        read_consistency_interval: Option<std::time::Duration>,
-    ) -> Result<Self> {
-        // patch the params if we have a write store wrapper
-        let params = match write_store_wrapper.clone() {
-            Some(wrapper) => params.patch_with_store_wrapper(wrapper)?,
-            None => params,
-        };
-        let dataset = DatasetBuilder::from_uri(uri)
-            .with_version(version)
-            .with_read_params(params)
-            .load()
-            .await?;
-        let dataset = DatasetConsistencyWrapper::new_time_travel(dataset, version);
-
-        Ok(Self {
-            name: name.to_string(),
-            uri: uri.to_string(),
-            dataset,
-            store_wrapper: write_store_wrapper,
-            read_consistency_interval,
-        })
-    }
-
-    /// Checkout the latest version of this [NativeTable].
-    ///
-    /// This will force the table to be reloaded from disk, regardless of the
-    /// `read_consistency_interval` set.
-    pub async fn checkout_latest(&self) -> Result<Self> {
-        let mut dataset = self.dataset.duplicate().await;
-        dataset.as_latest(self.read_consistency_interval).await?;
-        dataset.reload().await?;
-        Ok(Self {
-            dataset,
-            ..self.clone()
-        })
-    }
-
     fn get_table_name(uri: &str) -> Result<String> {
         let path = Path::new(uri);
         let name = path
@@ -788,11 +887,6 @@ impl NativeTable {
         .await
     }
 
-    /// Version of this Table
-    pub async fn version(&self) -> Result<u64> {
-        Ok(self.dataset.get().await?.version().version)
-    }
-
     async fn optimize_indices(&self, options: &OptimizeOptions) -> Result<()> {
         info!("LanceDB: optimizing indices: {:?}", options);
         self.dataset
@@ -815,23 +909,6 @@ impl NativeTable {
             .await?
             .merge(batches, left_on, right_on)
             .await?;
-        Ok(())
-    }
-
-    pub async fn update(&self, predicate: Option<&str>, updates: Vec<(&str, &str)>) -> Result<()> {
-        let dataset = self.dataset.get().await?.clone();
-        let mut builder = UpdateBuilder::new(Arc::new(dataset));
-        if let Some(predicate) = predicate {
-            builder = builder.update_where(predicate)?;
-        }
-
-        for (column, value) in updates {
-            builder = builder.set(column, value)?;
-        }
-
-        let operation = builder.build()?;
-        let ds = operation.execute().await?;
-        self.dataset.set_latest(ds.as_ref().clone()).await;
         Ok(())
     }
 
@@ -1046,6 +1123,43 @@ impl TableInternal for NativeTable {
         self.name.as_str()
     }
 
+    async fn version(&self) -> Result<u64> {
+        Ok(self.dataset.get().await?.version().version)
+    }
+
+    async fn checkout(&self, version: u64) -> Result<()> {
+        self.dataset.as_time_travel(version).await
+    }
+
+    async fn checkout_latest(&self) -> Result<()> {
+        self.dataset
+            .as_latest(self.read_consistency_interval)
+            .await?;
+        self.dataset.reload().await
+    }
+
+    async fn restore(&self) -> Result<()> {
+        let version =
+            self.dataset
+                .time_travel_version()
+                .await
+                .ok_or_else(|| Error::InvalidInput {
+                    message: "you must run checkout before running restore".to_string(),
+                })?;
+        {
+            // Use get_mut_unchecked as restore is the only "write" operation that is allowed
+            // when the table is in time travel mode.
+            // Also, drop the guard after .restore because as_latest will need it
+            let mut dataset = self.dataset.get_mut_unchecked().await?;
+            debug_assert_eq!(dataset.version().version, version);
+            dataset.restore().await?;
+        }
+        self.dataset
+            .as_latest(self.read_consistency_interval)
+            .await?;
+        Ok(())
+    }
+
     async fn schema(&self) -> Result<SchemaRef> {
         let lance_schema = self.dataset.get().await?.schema().clone();
         Ok(Arc::new(Schema::from(&lance_schema)))
@@ -1077,6 +1191,8 @@ impl TableInternal for NativeTable {
             None => lance_params,
         };
 
+        self.dataset.ensure_mutable().await?;
+
         let dataset = Dataset::write(add.data, &self.uri, Some(lance_params)).await?;
         self.dataset.set_latest(dataset).await;
         Ok(())
@@ -1097,6 +1213,23 @@ impl TableInternal for NativeTable {
             Index::BTree(_) => self.create_btree_index(field, opts).await,
             Index::IvfPq(ivf_pq) => self.create_ivf_pq_index(ivf_pq, field, opts.replace).await,
         }
+    }
+
+    async fn update(&self, update: UpdateBuilder) -> Result<()> {
+        let dataset = self.dataset.get().await?.clone();
+        let mut builder = LanceUpdateBuilder::new(Arc::new(dataset));
+        if let Some(predicate) = update.filter {
+            builder = builder.update_where(&predicate)?;
+        }
+
+        for (column, value) in update.columns {
+            builder = builder.set(column, &value)?;
+        }
+
+        let operation = builder.build()?;
+        let ds = operation.execute().await?;
+        self.dataset.set_latest(ds.as_ref().clone()).await;
+        Ok(())
     }
 
     async fn query(&self, query: &Query) -> Result<DatasetRecordBatchStream> {
@@ -1272,6 +1405,25 @@ impl TableInternal for NativeTable {
         self.dataset.get_mut().await?.drop_columns(columns).await?;
         Ok(())
     }
+
+    async fn list_indices(&self) -> Result<Vec<IndexConfig>> {
+        let dataset = self.dataset.get().await?;
+        let indices = dataset.load_indices().await?;
+        indices.iter().map(|idx| {
+            let mut is_vector = false;
+            let mut columns = Vec::with_capacity(idx.fields.len());
+            for field_id in &idx.fields {
+                let field = dataset.schema().field_by_id(*field_id).ok_or_else(|| Error::Runtime { message: format!("The index with name {} and uuid {} referenced a field with id {} which does not exist in the schema", idx.name, idx.uuid, field_id) })?;
+                if field.data_type().is_nested() {
+                    // Temporary hack to determine if an index is scalar or vector
+                    // Should be removed in https://github.com/lancedb/lance/issues/2039
+                    is_vector = true;
+                }
+                columns.push(field.name.clone());
+            }
+            Ok(IndexConfig { index_type: if is_vector { crate::index::IndexType::IvfPq } else { crate::index::IndexType::BTree }, columns })
+        }).collect::<Result<Vec<_>>>()
+    }
 }
 
 #[cfg(test)]
@@ -1297,6 +1449,7 @@ mod tests {
 
     use crate::connect;
     use crate::connection::ConnectBuilder;
+    use crate::index::scalar::BTreeIndexBuilder;
 
     use super::*;
 
@@ -1527,9 +1680,10 @@ mod tests {
             .unwrap();
 
         table
-            .as_native()
-            .unwrap()
-            .update(Some("id > 5"), vec![("name", "'foo'")])
+            .update()
+            .only_if("id > 5")
+            .column("name", "'foo'")
+            .execute()
             .await
             .unwrap();
 
@@ -1679,13 +1833,11 @@ mod tests {
             ("vec_f64", "[1.0, 1.0]"),
         ];
 
-        // for (column, value) in test_cases {
-        table
-            .as_native()
-            .unwrap()
-            .update(None, updates)
-            .await
-            .unwrap();
+        let mut update_op = table.update();
+        for (column, value) in updates {
+            update_op = update_op.column(column, value);
+        }
+        update_op.execute().await.unwrap();
 
         let mut batches = table
             .query()
@@ -1767,6 +1919,26 @@ mod tests {
                 assert_eq!(v, Some(1.0));
             }
         }
+    }
+
+    #[tokio::test]
+    async fn test_update_via_expr() {
+        let tmp_dir = tempdir().unwrap();
+        let dataset_path = tmp_dir.path().join("test.lance");
+        let uri = dataset_path.to_str().unwrap();
+        let conn = connect(uri)
+            .read_consistency_interval(Duration::from_secs(0))
+            .execute()
+            .await
+            .unwrap();
+        let tbl = conn
+            .create_table("my_table", Box::new(make_test_batches()))
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(1, tbl.count_rows(Some("i == 0".to_string())).await.unwrap());
+        tbl.update().column("i", "i+1").execute().await.unwrap();
+        assert_eq!(0, tbl.count_rows(Some("i == 0".to_string())).await.unwrap());
     }
 
     #[derive(Default, Debug)]
@@ -1923,16 +2095,11 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(
-            table
-                .as_native()
-                .unwrap()
-                .load_indices()
-                .await
-                .unwrap()
-                .len(),
-            1
-        );
+        let index_configs = table.list_indices().await.unwrap();
+        assert_eq!(index_configs.len(), 1);
+        let index = index_configs.into_iter().next().unwrap();
+        assert_eq!(index.index_type, crate::index::IndexType::IvfPq);
+        assert_eq!(index.columns, vec!["embeddings".to_string()]);
         assert_eq!(table.count_rows(None).await.unwrap(), 512);
         assert_eq!(table.name(), "test");
 
@@ -1972,14 +2139,70 @@ mod tests {
         Ok(FixedSizeListArray::from(data))
     }
 
-    #[tokio::test]
-    async fn test_read_consistency_interval() {
+    fn some_sample_data() -> impl RecordBatchReader {
         let batch = RecordBatch::try_new(
             Arc::new(Schema::new(vec![Field::new("i", DataType::Int32, false)])),
             vec![Arc::new(Int32Array::from(vec![1]))],
         )
         .unwrap();
+        let schema = batch.schema().clone();
+        let batch = Ok(batch);
 
+        RecordBatchIterator::new(vec![batch], schema)
+    }
+
+    #[tokio::test]
+    async fn test_create_scalar_index() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("i", DataType::Int32, false)])),
+            vec![Arc::new(Int32Array::from(vec![1]))],
+        )
+        .unwrap();
+        let conn = ConnectBuilder::new(uri).execute().await.unwrap();
+        let table = conn
+            .create_table(
+                "my_table",
+                Box::new(RecordBatchIterator::new(
+                    vec![Ok(batch.clone())],
+                    batch.schema(),
+                )),
+            )
+            .execute()
+            .await
+            .unwrap();
+
+        // Can create an index on a scalar column (will default to btree)
+        table
+            .create_index(&["i"], Index::Auto)
+            .execute()
+            .await
+            .unwrap();
+
+        let index_configs = table.list_indices().await.unwrap();
+        assert_eq!(index_configs.len(), 1);
+        let index = index_configs.into_iter().next().unwrap();
+        assert_eq!(index.index_type, crate::index::IndexType::BTree);
+        assert_eq!(index.columns, vec!["i".to_string()]);
+
+        // Can also specify btree
+        table
+            .create_index(&["i"], Index::BTree(BTreeIndexBuilder::default()))
+            .execute()
+            .await
+            .unwrap();
+
+        let index_configs = table.list_indices().await.unwrap();
+        assert_eq!(index_configs.len(), 1);
+        let index = index_configs.into_iter().next().unwrap();
+        assert_eq!(index.index_type, crate::index::IndexType::BTree);
+        assert_eq!(index.columns, vec!["i".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn test_read_consistency_interval() {
         let intervals = vec![
             None,
             Some(0),
@@ -1987,12 +2210,14 @@ mod tests {
         ];
 
         for interval in intervals {
+            let data = some_sample_data();
+
             let tmp_dir = tempdir().unwrap();
             let uri = tmp_dir.path().to_str().unwrap();
 
             let conn1 = ConnectBuilder::new(uri).execute().await.unwrap();
             let table1 = conn1
-                .create_empty_table("my_table", batch.schema())
+                .create_empty_table("my_table", data.schema())
                 .execute()
                 .await
                 .unwrap();
@@ -2007,22 +2232,14 @@ mod tests {
             assert_eq!(table1.count_rows(None).await.unwrap(), 0);
             assert_eq!(table2.count_rows(None).await.unwrap(), 0);
 
-            table1
-                .add(Box::new(RecordBatchIterator::new(
-                    vec![Ok(batch.clone())],
-                    batch.schema(),
-                )))
-                .execute()
-                .await
-                .unwrap();
+            table1.add(Box::new(data)).execute().await.unwrap();
             assert_eq!(table1.count_rows(None).await.unwrap(), 1);
 
             match interval {
                 None => {
                     assert_eq!(table2.count_rows(None).await.unwrap(), 0);
-                    let table2_native =
-                        table2.as_native().unwrap().checkout_latest().await.unwrap();
-                    assert_eq!(table2_native.count_rows(None).await.unwrap(), 1);
+                    table2.checkout_latest().await.unwrap();
+                    assert_eq!(table2.count_rows(None).await.unwrap(), 1);
                 }
                 Some(0) => {
                     assert_eq!(table2.count_rows(None).await.unwrap(), 1);
@@ -2035,5 +2252,34 @@ mod tests {
                 _ => unreachable!(),
             }
         }
+    }
+
+    #[tokio::test]
+    async fn test_time_travel_write() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        let conn = ConnectBuilder::new(uri)
+            .read_consistency_interval(Duration::from_secs(0))
+            .execute()
+            .await
+            .unwrap();
+        let table = conn
+            .create_table("my_table", Box::new(some_sample_data()))
+            .execute()
+            .await
+            .unwrap();
+        let version = table.version().await.unwrap();
+        table
+            .add(Box::new(some_sample_data()))
+            .execute()
+            .await
+            .unwrap();
+        table.checkout(version).await.unwrap();
+        assert!(table
+            .add(Box::new(some_sample_data()))
+            .execute()
+            .await
+            .is_err())
     }
 }

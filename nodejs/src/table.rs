@@ -151,6 +151,22 @@ impl Table {
     }
 
     #[napi]
+    pub async fn update(
+        &self,
+        only_if: Option<String>,
+        columns: Vec<(String, String)>,
+    ) -> napi::Result<()> {
+        let mut op = self.inner_ref()?.update();
+        if let Some(only_if) = only_if {
+            op = op.only_if(only_if);
+        }
+        for (column_name, value) in columns {
+            op = op.column(column_name, value);
+        }
+        op.execute().await.default_error()
+    }
+
+    #[napi]
     pub fn query(&self) -> napi::Result<Query> {
         Ok(Query::new(self.inner_ref()?.query()))
     }
@@ -213,6 +229,67 @@ impl Table {
                 ))
             })?;
         Ok(())
+    }
+
+    #[napi]
+    pub async fn version(&self) -> napi::Result<i64> {
+        self.inner_ref()?
+            .version()
+            .await
+            .map(|val| val as i64)
+            .default_error()
+    }
+
+    #[napi]
+    pub async fn checkout(&self, version: i64) -> napi::Result<()> {
+        self.inner_ref()?
+            .checkout(version as u64)
+            .await
+            .default_error()
+    }
+
+    #[napi]
+    pub async fn checkout_latest(&self) -> napi::Result<()> {
+        self.inner_ref()?.checkout_latest().await.default_error()
+    }
+
+    #[napi]
+    pub async fn restore(&self) -> napi::Result<()> {
+        self.inner_ref()?.restore().await.default_error()
+    }
+
+    #[napi]
+    pub async fn list_indices(&self) -> napi::Result<Vec<IndexConfig>> {
+        Ok(self
+            .inner_ref()?
+            .list_indices()
+            .await
+            .default_error()?
+            .into_iter()
+            .map(IndexConfig::from)
+            .collect::<Vec<_>>())
+    }
+}
+
+#[napi(object)]
+/// A description of an index currently configured on a column
+pub struct IndexConfig {
+    /// The type of the index
+    pub index_type: String,
+    /// The columns in the index
+    ///
+    /// Currently this is always an array of size 1.  In the future there may
+    /// be more columns to represent composite indices.
+    pub columns: Vec<String>,
+}
+
+impl From<lancedb::index::IndexConfig> for IndexConfig {
+    fn from(value: lancedb::index::IndexConfig) -> Self {
+        let index_type = format!("{:?}", value.index_type);
+        Self {
+            index_type,
+            columns: value.columns,
+        }
     }
 }
 

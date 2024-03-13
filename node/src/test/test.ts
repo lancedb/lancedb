@@ -288,7 +288,8 @@ describe('LanceDB client', function () {
 
     it('create a table from an Arrow Table', async function () {
       const dir = await track().mkdir('lancejs')
-      const con = await lancedb.connect(dir)
+      // Also test the connect function with an object
+      const con = await lancedb.connect({ uri: dir })
 
       const i32s = new Int32Array(new Array<number>(10))
       const i32 = makeVector(i32s)

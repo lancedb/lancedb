@@ -41,6 +41,10 @@ async def test_create_scalar_index(some_table: AsyncTable):
     await some_table.create_index("id")
     # Can recreate if replace=True
     await some_table.create_index("id", replace=True)
+    indices = await some_table.list_indices()
+    assert len(indices) == 1
+    assert indices[0].index_type == "BTree"
+    assert indices[0].columns == ["id"]
     # Can't recreate if replace=False
     with pytest.raises(RuntimeError, match="already exists"):
         await some_table.create_index("id", replace=False)
@@ -59,3 +63,7 @@ async def test_create_vector_index(some_table: AsyncTable):
         await some_table.create_index("vector", replace=False)
     # Can also specify index type
     await some_table.create_index("vector", config=IvfPq(num_partitions=100))
+    indices = await some_table.list_indices()
+    assert len(indices) == 1
+    assert indices[0].index_type == "IvfPq"
+    assert indices[0].columns == ["vector"]

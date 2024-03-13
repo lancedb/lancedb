@@ -66,6 +66,23 @@ describe("Given a table", () => {
     expect(table.isOpen()).toBe(false);
     expect(table.countRows()).rejects.toThrow("Table some_table is closed");
   });
+
+  it("should let me update values", async () => {
+    await table.add([{ id: 1 }]);
+    expect(await table.countRows("id == 1")).toBe(1);
+    expect(await table.countRows("id == 7")).toBe(0);
+    await table.update({ id: "7" });
+    expect(await table.countRows("id == 1")).toBe(0);
+    expect(await table.countRows("id == 7")).toBe(1);
+    await table.add([{ id: 2 }]);
+    // Test Map as input
+    await table.update(new Map(Object.entries({ id: "10" })), {
+      where: "id % 2 == 0",
+    });
+    expect(await table.countRows("id == 2")).toBe(0);
+    expect(await table.countRows("id == 7")).toBe(1);
+    expect(await table.countRows("id == 10")).toBe(1);
+  });
 });
 
 describe("When creating an index", () => {
@@ -104,7 +121,12 @@ describe("When creating an index", () => {
     // check index directory
     const indexDir = path.join(tmpDir.name, "test.lance", "_indices");
     expect(fs.readdirSync(indexDir)).toHaveLength(1);
-    // TODO: check index type.
+    const indices = await tbl.listIndices();
+    expect(indices.length).toBe(1);
+    expect(indices[0]).toEqual({
+      indexType: "IvfPq",
+      columns: ["vec"],
+    });
 
     // Search without specifying the column
     const rst = await tbl.query().nearestTo(queryVec).limit(2).toArrow();
@@ -330,5 +352,50 @@ describe("schema evolution", function () {
 
     const expectedSchema = new Schema([new Field("id", new Int64(), true)]);
     expect(await table.schema()).toEqual(expectedSchema);
+  });
+});
+
+describe("when dealing with versioning", () => {
+  let tmpDir: tmp.DirResult;
+  beforeEach(() => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+  });
+  afterEach(() => {
+    tmpDir.removeCallback();
+  });
+
+  it("can travel in time", async () => {
+    // Setup
+    const con = await connect(tmpDir.name);
+    const table = await con.createTable("vectors", [
+      { id: 1n, vector: [0.1, 0.2] },
+    ]);
+    const version = await table.version();
+    await table.add([{ id: 2n, vector: [0.1, 0.2] }]);
+    expect(await table.countRows()).toBe(2);
+    // Make sure we can rewind
+    await table.checkout(version);
+    expect(await table.countRows()).toBe(1);
+    // Can't add data in time travel mode
+    await expect(table.add([{ id: 3n, vector: [0.1, 0.2] }])).rejects.toThrow(
+      "table cannot be modified when a specific version is checked out",
+    );
+    // Can go back to normal mode
+    await table.checkoutLatest();
+    expect(await table.countRows()).toBe(2);
+    // Should be able to add data again
+    await table.add([{ id: 2n, vector: [0.1, 0.2] }]);
+    expect(await table.countRows()).toBe(3);
+    // Now checkout and restore
+    await table.checkout(version);
+    await table.restore();
+    expect(await table.countRows()).toBe(1);
+    // Should be able to add data
+    await table.add([{ id: 2n, vector: [0.1, 0.2] }]);
+    expect(await table.countRows()).toBe(2);
+    // Can't use restore if not checked out
+    await expect(table.restore()).rejects.toThrow(
+      "checkout before running restore",
+    );
   });
 });
