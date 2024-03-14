@@ -1522,7 +1522,7 @@ class LanceTable(Table):
 
     def _execute_query(self, query: Query) -> pa.Table:
         ds = self.to_lance()
-
+        print("metric:", query.metric)  
         return ds.to_table(
             columns=query.columns,
             filter=query.filter,

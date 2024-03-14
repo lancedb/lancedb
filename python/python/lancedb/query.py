@@ -271,7 +271,8 @@ class LanceQueryBuilder(ABC):
         and also the "_distance" column which is the distance between the query
         vector and the returned vectors.
         """
-        raise NotImplementedError
+        # raise NotImplementedError
+        self.to_arrow()
 
     def to_list(self) -> List[dict]:
         """
@@ -434,12 +435,12 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         self._vector_column = vector_column
         self._prefilter = False
 
-    def metric(self, metric: Literal["L2", "cosine"]) -> LanceVectorQueryBuilder:
+    def metric(self, metric: Literal["L2", "cosine", "dot"]) -> LanceVectorQueryBuilder:
         """Set the distance metric to use.
 
         Parameters
         ----------
-        metric: "L2" or "cosine"
+        metric: "L2" or "cosine" or "dot"
             The distance metric to use. By default "L2" is used.
 
         Returns
