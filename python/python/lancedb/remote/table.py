@@ -296,6 +296,7 @@ class RemoteTable(Table):
         return LanceVectorQueryBuilder(self, query, vector_column_name)
 
     def _execute_query(self, query: Query) -> pa.Table:
+        print("query metric", query.metric)
         if (
             query.vector is not None
             and len(query.vector) > 0
