@@ -60,6 +60,7 @@ if TYPE_CHECKING:
 
     from ._lancedb import Table as LanceDBTable
     from .db import LanceDBConnection
+    from .index import BTree, IndexConfig, IvfPq
 
 
 pd = safe_import_pandas()
@@ -117,7 +118,8 @@ def _append_vector_col(data: pa.Table, metadata: dict, schema: Optional[pa.Schem
     functions = EmbeddingFunctionRegistry.get_instance().parse_functions(metadata)
     for vector_column, conf in functions.items():
         func = conf.function
-        if vector_column not in data.column_names:
+        no_vector_column = vector_column not in data.column_names
+        if no_vector_column or pc.all(pc.is_null(data[vector_column])).as_py():
             col_data = func.compute_source_embeddings_with_retry(
                 data[conf.source_column]
             )
@@ -125,9 +127,16 @@ def _append_vector_col(data: pa.Table, metadata: dict, schema: Optional[pa.Schem
                 dtype = schema.field(vector_column).type
             else:
                 dtype = pa.list_(pa.float32(), len(col_data[0]))
-            data = data.append_column(
-                pa.field(vector_column, type=dtype), pa.array(col_data, type=dtype)
-            )
+            if no_vector_column:
+                data = data.append_column(
+                    pa.field(vector_column, type=dtype), pa.array(col_data, type=dtype)
+                )
+            else:
+                data = data.set_column(
+                    data.column_names.index(vector_column),
+                    pa.field(vector_column, type=dtype),
+                    pa.array(col_data, type=dtype),
+                )
     return data
 
 
@@ -1943,111 +1952,47 @@ class AsyncTable:
 
     async def create_index(
         self,
-        metric="L2",
-        num_partitions=256,
-        num_sub_vectors=96,
-        vector_column_name: str = VECTOR_COLUMN_NAME,
-        replace: bool = True,
-        accelerator: Optional[str] = None,
-        index_cache_size: Optional[int] = None,
-    ):
-        """Create an index on the table.
-
-        Parameters
-        ----------
-        metric: str, default "L2"
-            The distance metric to use when creating the index.
-            Valid values are "L2", "cosine", or "dot".
-            L2 is euclidean distance.
-        num_partitions: int, default 256
-            The number of IVF partitions to use when creating the index.
-            Default is 256.
-        num_sub_vectors: int, default 96
-            The number of PQ sub-vectors to use when creating the index.
-            Default is 96.
-        vector_column_name: str, default "vector"
-            The vector column name to create the index.
-        replace: bool, default True
-            - If True, replace the existing index if it exists.
-
-            - If False, raise an error if duplicate index exists.
-        accelerator: str, default None
-            If set, use the given accelerator to create the index.
-            Only support "cuda" for now.
-        index_cache_size : int, optional
-            The size of the index cache in number of entries. Default value is 256.
-        """
-        raise NotImplementedError
-
-    async def create_scalar_index(
-        self,
         column: str,
         *,
-        replace: bool = True,
+        replace: Optional[bool] = None,
+        config: Optional[Union[IvfPq, BTree]] = None,
     ):
-        """Create a scalar index on a column.
+        """Create an index to speed up queries
 
-        Scalar indices, like vector indices, can be used to speed up scans.  A scalar
-        index can speed up scans that contain filter expressions on the indexed column.
-        For example, the following scan will be faster if the column ``my_col`` has
-        a scalar index:
-
-        .. code-block:: python
-
-            import lancedb
-
-            db = lancedb.connect("/data/lance")
-            img_table = db.open_table("images")
-            my_df = img_table.search().where("my_col = 7", prefilter=True).to_pandas()
-
-        Scalar indices can also speed up scans containing a vector search and a
-        prefilter:
-
-        .. code-block::python
-
-            import lancedb
-
-            db = lancedb.connect("/data/lance")
-            img_table = db.open_table("images")
-            img_table.search([1, 2, 3, 4], vector_column_name="vector")
-                .where("my_col != 7", prefilter=True)
-                .to_pandas()
-
-        Scalar indices can only speed up scans for basic filters using
-        equality, comparison, range (e.g. ``my_col BETWEEN 0 AND 100``), and set
-        membership (e.g. `my_col IN (0, 1, 2)`)
-
-        Scalar indices can be used if the filter contains multiple indexed columns and
-        the filter criteria are AND'd or OR'd together
-        (e.g. ``my_col < 0 AND other_col> 100``)
-
-        Scalar indices may be used if the filter contains non-indexed columns but,
-        depending on the structure of the filter, they may not be usable.  For example,
-        if the column ``not_indexed`` does not have a scalar index then the filter
-        ``my_col = 0 OR not_indexed = 1`` will not be able to use any scalar index on
-        ``my_col``.
-
-        **Experimental API**
+        Indices can be created on vector columns or scalar columns.
+        Indices on vector columns will speed up vector searches.
+        Indices on scalar columns will speed up filtering (in both
+        vector and non-vector searches)
 
         Parameters
         ----------
-        column : str
-            The column to be indexed.  Must be a boolean, integer, float,
-            or string column.
-        replace : bool, default True
-            Replace the existing index if it exists.
+        index: Index
+            The index to create.
 
-        Examples
-        --------
+            LanceDb supports multiple types of indices.  See the static methods on
+            the Index class for more details.
+        column: str, default None
+            The column to index.
 
-        .. code-block:: python
+            When building a scalar index this must be set.
 
-            import lance
+            When building a vector index, this is optional.  The default will look
+            for any columns of type fixed-size-list with floating point values.  If
+            there is only one column of this type then it will be used.  Otherwise
+            an error will be returned.
+        replace: bool, default True
+            Whether to replace the existing index
 
-            dataset = lance.dataset("./images.lance")
-            dataset.create_scalar_index("category")
+            If this is false, and another index already exists on the same columns
+            and the same name, then an error will be returned.  This is true even if
+            that index is out of date.
+
+            The default is True
         """
-        raise NotImplementedError
+        index = None
+        if config is not None:
+            index = config._inner
+        await self._inner.create_index(column, index=index, replace=replace)
 
     async def add(
         self,
@@ -2091,6 +2036,8 @@ class AsyncTable:
             on_bad_vectors=on_bad_vectors,
             fill_value=fill_value,
         )
+        if isinstance(data, pa.Table):
+            data = pa.RecordBatchReader.from_batches(data.schema, data.to_batches())
         await self._inner.add(data, mode)
         register_event("add")
 
@@ -2302,58 +2249,57 @@ class AsyncTable:
 
     async def update(
         self,
-        where: Optional[str] = None,
-        values: Optional[dict] = None,
+        updates: Optional[Dict[str, Any]] = None,
         *,
-        values_sql: Optional[Dict[str, str]] = None,
+        where: Optional[str] = None,
+        updates_sql: Optional[Dict[str, str]] = None,
     ):
         """
-        This can be used to update zero to all rows depending on how many
-        rows match the where clause. If no where clause is provided, then
-        all rows will be updated.
+        This can be used to update zero to all rows in the table.
 
-        Either `values` or `values_sql` must be provided. You cannot provide
-        both.
+        If a filter is provided with `where` then only rows matching the
+        filter will be updated.  Otherwise all rows will be updated.
 
         Parameters
         ----------
+        updates: dict, optional
+            The updates to apply.  The keys should be the name of the column to
+            update.  The values should be the new values to assign.  This is
+            required unless updates_sql is supplied.
         where: str, optional
-            The SQL where clause to use when updating rows. For example, 'x = 2'
-            or 'x IN (1, 2, 3)'. The filter must not be empty, or it will error.
-        values: dict, optional
-            The values to update. The keys are the column names and the values
-            are the values to set.
-        values_sql: dict, optional
-            The values to update, expressed as SQL expression strings. These can
-            reference existing columns. For example, {"x": "x + 1"} will increment
-            the x column by 1.
+            An SQL filter that controls which rows are updated. For example, 'x = 2'
+            or 'x IN (1, 2, 3)'.  Only rows that satisfy this filter will be udpated.
+        updates_sql: dict, optional
+            The updates to apply, expressed as SQL expression strings.  The keys should
+            be column names. The values should be SQL expressions.  These can be SQL
+            literals (e.g. "7" or "'foo'") or they can be expressions based on the
+            previous value of the row (e.g. "x + 1" to increment the x column by 1)
 
         Examples
         --------
+        >>> import asyncio
         >>> import lancedb
         >>> import pandas as pd
-        >>> data = pd.DataFrame({"x": [1, 2, 3], "vector": [[1, 2], [3, 4], [5, 6]]})
-        >>> db = lancedb.connect("./.lancedb")
-        >>> table = db.create_table("my_table", data)
-        >>> table.to_pandas()
-           x      vector
-        0  1  [1.0, 2.0]
-        1  2  [3.0, 4.0]
-        2  3  [5.0, 6.0]
-        >>> table.update(where="x = 2", values={"vector": [10, 10]})
-        >>> table.to_pandas()
-           x        vector
-        0  1    [1.0, 2.0]
-        1  3    [5.0, 6.0]
-        2  2  [10.0, 10.0]
-        >>> table.update(values_sql={"x": "x + 1"})
-        >>> table.to_pandas()
-           x        vector
-        0  2    [1.0, 2.0]
-        1  4    [5.0, 6.0]
-        2  3  [10.0, 10.0]
+        >>> async def demo_update():
+        ...     data = pd.DataFrame({"x": [1, 2], "vector": [[1, 2], [3, 4]]})
+        ...     db = await lancedb.connect_async("./.lancedb")
+        ...     table = await db.create_table("my_table", data)
+        ...     # x is [1, 2], vector is [[1, 2], [3, 4]]
+        ...     await table.update({"vector": [10, 10]}, where="x = 2")
+        ...     # x is [1, 2], vector is [[1, 2], [10, 10]]
+        ...     await table.update(updates_sql={"x": "x + 1"})
+        ...     # x is [2, 3], vector is [[1, 2], [10, 10]]
+        >>> asyncio.run(demo_update())
         """
-        raise NotImplementedError
+        if updates is not None and updates_sql is not None:
+            raise ValueError("Only one of updates or updates_sql can be provided")
+        if updates is None and updates_sql is None:
+            raise ValueError("Either updates or updates_sql must be provided")
+
+        if updates is not None:
+            updates_sql = {k: value_to_sql(v) for k, v in updates.items()}
+
+        return await self._inner.update(updates_sql, where)
 
     async def cleanup_old_versions(
         self,
@@ -2450,3 +2396,65 @@ class AsyncTable:
             The names of the columns to drop.
         """
         raise NotImplementedError
+
+    async def version(self) -> int:
+        """
+        Retrieve the version of the table
+
+        LanceDb supports versioning.  Every operation that modifies the table increases
+        version.  As long as a version hasn't been deleted you can `[Self::checkout]`
+        that version to view the data at that point.  In addition, you can
+        `[Self::restore]` the version to replace the current table with a previous
+        version.
+        """
+        return await self._inner.version()
+
+    async def checkout(self, version):
+        """
+        Checks out a specific version of the Table
+
+        Any read operation on the table will now access the data at the checked out
+        version. As a consequence, calling this method will disable any read consistency
+        interval that was previously set.
+
+        This is a read-only operation that turns the table into a sort of "view"
+        or "detached head".  Other table instances will not be affected.  To make the
+        change permanent you can use the `[Self::restore]` method.
+
+        Any operation that modifies the table will fail while the table is in a checked
+        out state.
+
+        To return the table to a normal state use `[Self::checkout_latest]`
+        """
+        await self._inner.checkout(version)
+
+    async def checkout_latest(self):
+        """
+        Ensures the table is pointing at the latest version
+
+        This can be used to manually update a table when the read_consistency_interval
+        is None
+        It can also be used to undo a `[Self::checkout]` operation
+        """
+        await self._inner.checkout_latest()
+
+    async def restore(self):
+        """
+        Restore the table to the currently checked out version
+
+        This operation will fail if checkout has not been called previously
+
+        This operation will overwrite the latest version of the table with a
+        previous version.  Any changes made since the checked out version will
+        no longer be visible.
+
+        Once the operation concludes the table will no longer be in a checked
+        out state and the read_consistency_interval, if any, will apply.
+        """
+        await self._inner.restore()
+
+    async def list_indices(self) -> IndexConfig:
+        """
+        List all indices that have been created with Self::create_index
+        """
+        return await self._inner.list_indices()

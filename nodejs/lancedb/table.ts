@@ -16,12 +16,14 @@ import { Schema, tableFromIPC } from "apache-arrow";
 import {
   AddColumnsSql,
   ColumnAlteration,
+  IndexConfig,
   Table as _NativeTable,
 } from "./native";
 import { Query } from "./query";
-import { IndexBuilder } from "./indexer";
+import { IndexOptions } from "./indices";
 import { Data, fromDataToBuffer } from "./arrow";
 
+export { IndexConfig } from "./native";
 /**
  * Options for adding data to a table.
  */
@@ -31,6 +33,20 @@ export interface AddDataOptions {
    * If "overwrite" then the new data will replace the existing data in the table.
    */
   mode: "append" | "overwrite";
+}
+
+export interface UpdateOptions {
+  /**
+   * A filter that limits the scope of the update.
+   *
+   * This should be an SQL filter expression.
+   *
+   * Only rows that satisfy the expression will be updated.
+   *
+   * For example, this could be 'my_col == 0' to replace all instances
+   * of 0 in a column with some other default value.
+   */
+  where: string;
 }
 
 /**
@@ -93,6 +109,45 @@ export class Table {
     await this.inner.add(buffer, mode);
   }
 
+  /**
+   * Update existing records in the Table
+   *
+   * An update operation can be used to adjust existing values.  Use the
+   * returned builder to specify which columns to update.  The new value
+   * can be a literal value (e.g. replacing nulls with some default value)
+   * or an expression applied to the old value (e.g. incrementing a value)
+   *
+   * An optional condition can be specified (e.g. "only update if the old
+   * value is 0")
+   *
+   * Note: if your condition is something like "some_id_column == 7" and
+   * you are updating many rows (with different ids) then you will get
+   * better performance with a single [`merge_insert`] call instead of
+   * repeatedly calilng this method.
+   *
+   * @param updates the columns to update
+   *
+   * Keys in the map should specify the name of the column to update.
+   * Values in the map provide the new value of the column.  These can
+   * be SQL literal strings (e.g. "7" or "'foo'") or they can be expressions
+   * based on the row being updated (e.g. "my_col + 1")
+   *
+   * @param options additional options to control the update behavior
+   */
+  async update(
+    updates: Map<string, string> | Record<string, string>,
+    options?: Partial<UpdateOptions>,
+  ) {
+    const onlyIf = options?.where;
+    let columns: [string, string][];
+    if (updates instanceof Map) {
+      columns = Array.from(updates.entries());
+    } else {
+      columns = Object.entries(updates);
+    }
+    await this.inner.update(onlyIf, columns);
+  }
+
   /** Count the total number of rows in the dataset. */
   async countRows(filter?: string): Promise<number> {
     return await this.inner.countRows(filter);
@@ -103,24 +158,28 @@ export class Table {
     await this.inner.delete(predicate);
   }
 
-  /** Create an index over the columns.
+  /** Create an index to speed up queries.
    *
-   * @param {string} column The column to create the index on. If not specified,
-   *                        it will create an index on vector field.
+   * Indices can be created on vector columns or scalar columns.
+   * Indices on vector columns will speed up vector searches.
+   * Indices on scalar columns will speed up filtering (in both
+   * vector and non-vector searches)
    *
    * @example
    *
-   * By default, it creates vector idnex on one vector column.
+   * If the column has a vector (fixed size list) data type then
+   * an IvfPq vector index will be created.
    *
    * ```typescript
    * const table = await conn.openTable("my_table");
-   * await table.createIndex().build();
+   * await table.createIndex(["vector"]);
    * ```
    *
-   * You can specify `IVF_PQ` parameters via `ivf_pq({})` call.
+   * For advanced control over vector index creation you can specify
+   * the index type and options.
    * ```typescript
    * const table = await conn.openTable("my_table");
-   * await table.createIndex("my_vec_col")
+   * await table.createIndex(["vector"], I)
    *   .ivf_pq({ num_partitions: 128, num_sub_vectors: 16 })
    *   .build();
    * ```
@@ -131,12 +190,11 @@ export class Table {
    * await table.createIndex("my_float_col").build();
    * ```
    */
-  createIndex(column?: string): IndexBuilder {
-    let builder = new IndexBuilder(this.inner);
-    if (column !== undefined) {
-      builder = builder.column(column);
-    }
-    return builder;
+  async createIndex(column: string, options?: Partial<IndexOptions>) {
+    // Bit of a hack to get around the fact that TS has no package-scope.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const nativeIndex = (options?.config as any)?.inner;
+    await this.inner.createIndex(nativeIndex, column, options?.replace);
   }
 
   /**
@@ -231,5 +289,66 @@ export class Table {
    */
   async dropColumns(columnNames: string[]): Promise<void> {
     await this.inner.dropColumns(columnNames);
+  }
+
+  /** Retrieve the version of the table
+   *
+   * LanceDb supports versioning.  Every operation that modifies the table increases
+   * version.  As long as a version hasn't been deleted you can `[Self::checkout]` that
+   * version to view the data at that point.  In addition, you can `[Self::restore]` the
+   * version to replace the current table with a previous version.
+   */
+  async version(): Promise<number> {
+    return await this.inner.version();
+  }
+
+  /** Checks out a specific version of the Table
+   *
+   * Any read operation on the table will now access the data at the checked out version.
+   * As a consequence, calling this method will disable any read consistency interval
+   * that was previously set.
+   *
+   * This is a read-only operation that turns the table into a sort of "view"
+   * or "detached head".  Other table instances will not be affected.  To make the change
+   * permanent you can use the `[Self::restore]` method.
+   *
+   * Any operation that modifies the table will fail while the table is in a checked
+   * out state.
+   *
+   * To return the table to a normal state use `[Self::checkout_latest]`
+   */
+  async checkout(version: number): Promise<void> {
+    await this.inner.checkout(version);
+  }
+
+  /** Ensures the table is pointing at the latest version
+   *
+   * This can be used to manually update a table when the read_consistency_interval is None
+   * It can also be used to undo a `[Self::checkout]` operation
+   */
+  async checkoutLatest(): Promise<void> {
+    await this.inner.checkoutLatest();
+  }
+
+  /** Restore the table to the currently checked out version
+   *
+   * This operation will fail if checkout has not been called previously
+   *
+   * This operation will overwrite the latest version of the table with a
+   * previous version.  Any changes made since the checked out version will
+   * no longer be visible.
+   *
+   * Once the operation concludes the table will no longer be in a checked
+   * out state and the read_consistency_interval, if any, will apply.
+   */
+  async restore(): Promise<void> {
+    await this.inner.restore();
+  }
+
+  /**
+   * List all indices that have been created with Self::create_index
+   */
+  async listIndices(): Promise<IndexConfig[]> {
+    return await this.inner.listIndices();
   }
 }

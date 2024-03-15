@@ -58,6 +58,9 @@ class RestfulLanceDBClient:
 
     closed: bool = attrs.field(default=False, init=False)
 
+    connection_timeout: float = attrs.field(default=120.0, kw_only=True)
+    read_timeout: float = attrs.field(default=300.0, kw_only=True)
+
     @functools.cached_property
     def session(self) -> requests.Session:
         sess = requests.Session()
@@ -117,7 +120,7 @@ class RestfulLanceDBClient:
             urljoin(self.url, uri),
             params=params,
             headers=self.headers,
-            timeout=(120.0, 300.0),
+            timeout=(self.connection_timeout, self.read_timeout),
         ) as resp:
             self._check_status(resp)
             return resp.json()
@@ -159,7 +162,7 @@ class RestfulLanceDBClient:
             urljoin(self.url, uri),
             headers=headers,
             params=params,
-            timeout=(120.0, 300.0),
+            timeout=(self.connection_timeout, self.read_timeout),
             **req_kwargs,
         ) as resp:
             self._check_status(resp)

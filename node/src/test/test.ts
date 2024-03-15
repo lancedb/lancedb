@@ -128,6 +128,11 @@ describe('LanceDB client', function () {
       assertResults(results)
       results = await table.where('id % 2 = 0').execute()
       assertResults(results)
+
+      // Should reject a bad filter
+      await expect(table.filter('id % 2 = 0 AND').execute()).to.be.rejectedWith(
+        /.*sql parser error: Expected an expression:, found: EOF.*/
+      )
     })
 
     it('uses a filter / where clause', async function () {
@@ -283,7 +288,8 @@ describe('LanceDB client', function () {
 
     it('create a table from an Arrow Table', async function () {
       const dir = await track().mkdir('lancejs')
-      const con = await lancedb.connect(dir)
+      // Also test the connect function with an object
+      const con = await lancedb.connect({ uri: dir })
 
       const i32s = new Int32Array(new Array<number>(10))
       const i32 = makeVector(i32s)
@@ -745,11 +751,11 @@ describe('LanceDB client', function () {
         num_sub_vectors: 2
       })
       await expect(createIndex).to.be.rejectedWith(
-        /VectorIndex requires the column data type to be fixed size list of float32s/
+        "index cannot be created on the column `name` which has data type Utf8"
       )
     })
 
-    it('it should fail when the column is not a vector', async function () {
+    it('it should fail when num_partitions is invalid', async function () {
       const uri = await createTestDB(32, 300)
       const con = await lancedb.connect(uri)
       const table = await con.openTable('vectors')

@@ -13,13 +13,16 @@
 // limitations under the License.
 
 use arrow_ipc::writer::FileWriter;
-use lance::dataset::ColumnAlteration as LanceColumnAlteration;
 use lancedb::ipc::ipc_file_to_batches;
-use lancedb::table::{AddDataMode, Table as LanceDbTable};
+use lancedb::table::{
+    AddDataMode, ColumnAlteration as LanceColumnAlteration, NewColumnTransform,
+    Table as LanceDbTable,
+};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
-use crate::index::IndexBuilder;
+use crate::error::NapiErrorExt;
+use crate::index::Index;
 use crate::query::Query;
 
 #[napi]
@@ -129,8 +132,38 @@ impl Table {
     }
 
     #[napi]
-    pub fn create_index(&self) -> napi::Result<IndexBuilder> {
-        Ok(IndexBuilder::new(self.inner_ref()?))
+    pub async fn create_index(
+        &self,
+        index: Option<&Index>,
+        column: String,
+        replace: Option<bool>,
+    ) -> napi::Result<()> {
+        let lancedb_index = if let Some(index) = index {
+            index.consume()?
+        } else {
+            lancedb::index::Index::Auto
+        };
+        let mut builder = self.inner_ref()?.create_index(&[column], lancedb_index);
+        if let Some(replace) = replace {
+            builder = builder.replace(replace);
+        }
+        builder.execute().await.default_error()
+    }
+
+    #[napi]
+    pub async fn update(
+        &self,
+        only_if: Option<String>,
+        columns: Vec<(String, String)>,
+    ) -> napi::Result<()> {
+        let mut op = self.inner_ref()?.update();
+        if let Some(only_if) = only_if {
+            op = op.only_if(only_if);
+        }
+        for (column_name, value) in columns {
+            op = op.column(column_name, value);
+        }
+        op.execute().await.default_error()
     }
 
     #[napi]
@@ -144,7 +177,7 @@ impl Table {
             .into_iter()
             .map(|sql| (sql.name, sql.value_sql))
             .collect::<Vec<_>>();
-        let transforms = lance::dataset::NewColumnTransform::SqlExpressions(transforms);
+        let transforms = NewColumnTransform::SqlExpressions(transforms);
         self.inner_ref()?
             .add_columns(transforms, None)
             .await
@@ -196,6 +229,67 @@ impl Table {
                 ))
             })?;
         Ok(())
+    }
+
+    #[napi]
+    pub async fn version(&self) -> napi::Result<i64> {
+        self.inner_ref()?
+            .version()
+            .await
+            .map(|val| val as i64)
+            .default_error()
+    }
+
+    #[napi]
+    pub async fn checkout(&self, version: i64) -> napi::Result<()> {
+        self.inner_ref()?
+            .checkout(version as u64)
+            .await
+            .default_error()
+    }
+
+    #[napi]
+    pub async fn checkout_latest(&self) -> napi::Result<()> {
+        self.inner_ref()?.checkout_latest().await.default_error()
+    }
+
+    #[napi]
+    pub async fn restore(&self) -> napi::Result<()> {
+        self.inner_ref()?.restore().await.default_error()
+    }
+
+    #[napi]
+    pub async fn list_indices(&self) -> napi::Result<Vec<IndexConfig>> {
+        Ok(self
+            .inner_ref()?
+            .list_indices()
+            .await
+            .default_error()?
+            .into_iter()
+            .map(IndexConfig::from)
+            .collect::<Vec<_>>())
+    }
+}
+
+#[napi(object)]
+/// A description of an index currently configured on a column
+pub struct IndexConfig {
+    /// The type of the index
+    pub index_type: String,
+    /// The columns in the index
+    ///
+    /// Currently this is always an array of size 1.  In the future there may
+    /// be more columns to represent composite indices.
+    pub columns: Vec<String>,
+}
+
+impl From<lancedb::index::IndexConfig> for IndexConfig {
+    fn from(value: lancedb::index::IndexConfig) -> Self {
+        let index_type = format!("{:?}", value.index_type);
+        Self {
+            index_type,
+            columns: value.columns,
+        }
     }
 }
 

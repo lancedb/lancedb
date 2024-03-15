@@ -31,7 +31,7 @@ class ImageBindEmbeddings(EmbeddingFunction):
     six different modalities: images, text, audio, depth, thermal, and IMU data
 
     to download package, run :
-        `pip install imagebind@git+https://github.com/raghavdixit99/ImageBind`
+        `pip install imagebind-packaged==0.1.2`
     """
 
     name: str = "imagebind_huge"

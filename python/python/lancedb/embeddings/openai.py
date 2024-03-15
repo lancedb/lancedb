@@ -113,5 +113,5 @@ class OpenAIEmbeddings(TextEmbeddingFunction):
         if self.organization:
             kwargs["organization"] = self.organization
         if self.api_key:
-            kwargs["api_key"] = self
+            kwargs["api_key"] = self.api_key
         return openai.OpenAI(**kwargs)
