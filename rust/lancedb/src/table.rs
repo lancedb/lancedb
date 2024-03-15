@@ -1346,7 +1346,7 @@ impl TableInternal for NativeTable {
         query: &Query,
         options: QueryExecutionOptions,
     ) -> Result<DatasetRecordBatchStream> {
-        self.generic_query(&query.clone().as_vector(), options)
+        self.generic_query(&query.clone().into_vector(), options)
             .await
     }
 

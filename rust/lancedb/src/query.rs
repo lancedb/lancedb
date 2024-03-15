@@ -142,7 +142,7 @@ impl ToQueryVector for &[f16] {
     ) -> Result<Arc<dyn Array>> {
         match data_type {
             DataType::Float16 => {
-                let arr: Vec<f16> = self.iter().copied().collect();
+                let arr: Vec<f16> = self.to_vec();
                 Ok(Arc::new(Float16Array::from(arr)))
             }
             DataType::Float32 => {
@@ -176,7 +176,7 @@ impl ToQueryVector for &[f32] {
                 Ok(Arc::new(Float16Array::from(arr)))
             }
             DataType::Float32 => {
-                let arr: Vec<f32> = self.iter().copied().collect();
+                let arr: Vec<f32> = self.to_vec();
                 Ok(Arc::new(Float32Array::from(arr)))
             },
             DataType::Float64 => {
@@ -210,7 +210,7 @@ impl ToQueryVector for &[f64] {
                     Ok(Arc::new(Float32Array::from(arr)))
                 },
                 DataType::Float64 => {
-                    let arr: Vec<f64> = self.iter().copied().collect();
+                    let arr: Vec<f64> = self.to_vec();
                     Ok(Arc::new(Float64Array::from(arr)))
                 }
                 _ => Err(Error::InvalidInput {
@@ -476,7 +476,7 @@ impl Query {
     /// Helper method to convert the query to a VectorQuery with a `query_vector`
     /// of None.  This retrofits to some existing inner paths that work with a
     /// single query object for both vector and plain queries.
-    pub(crate) fn as_vector(self) -> VectorQuery {
+    pub(crate) fn into_vector(self) -> VectorQuery {
         VectorQuery::new(self)
     }
 
@@ -515,7 +515,7 @@ impl Query {
     ///
     /// * `vector` - The vector that will be used for search.
     pub fn nearest_to(self, vector: impl ToQueryVector) -> Result<VectorQuery> {
-        let mut vector_query = self.as_vector();
+        let mut vector_query = self.into_vector();
         let query_vector = vector.to_query_vector(&DataType::Float32, "default")?;
         vector_query.query_vector = Some(query_vector);
         Ok(vector_query)
