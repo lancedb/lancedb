@@ -155,9 +155,10 @@ def _to_batches_with_split(data):
     for key, dataset in data.items():
         for batch in dataset.data.to_batches():
             table = pa.Table.from_batches([batch])
-            table = table.append_column(
-                "split", pa.array([key] * batch.num_rows, pa.string())
-            )
+            if "split" not in table.column_names:
+                table = table.append_column(
+                    "split", pa.array([key] * batch.num_rows, pa.string())
+                )
             for b in table.to_batches():
                 yield b
 

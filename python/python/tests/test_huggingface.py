@@ -61,6 +61,25 @@ def mock_hf_dataset():
     return datasets.DatasetDict({"train": train, "test": test})
 
 
+@pytest.fixture
+def hf_dataset_with_split():
+    # Create pyarrow table with `text` and `label` columns
+    train = datasets.Dataset(
+        pa.table(
+            {"text": ["foo", "bar"], "label": [0, 1], "split": ["train", "train"]}
+        ),
+        split="train",
+    )
+
+    test = datasets.Dataset(
+        pa.table(
+            {"text": ["fizz", "buzz"], "label": [0, 1], "split": ["test", "test"]}
+        ),
+        split="test",
+    )
+    return datasets.DatasetDict({"train": train, "test": test})
+
+
 def test_write_hf_dataset(tmp_path: Path, mock_embedding_function, mock_hf_dataset):
     db = lancedb.connect(tmp_path)
     emb = get_registry().get("random").create()
@@ -89,3 +108,19 @@ def test_write_hf_dataset(tmp_path: Path, mock_embedding_function, mock_hf_datas
         columns=["text", "label"], filter="split='train'"
     )
     assert rt_train_table.to_pylist() == mock_hf_dataset["train"].data.to_pylist()
+
+
+def test_bad_hf_dataset(tmp_path: Path, mock_embedding_function, hf_dataset_with_split):
+    db = lancedb.connect(tmp_path)
+    emb = get_registry().get("random").create()
+
+    class Schema(LanceModel):
+        text: str = emb.SourceField()
+        label: int
+        vector: Vector(emb.ndims()) = emb.VectorField()
+        split: str
+
+    train_table = db.create_table("train", schema=Schema)
+    # this should still work because we don't add the split column
+    # if it already exists
+    train_table.add(hf_dataset_with_split)
