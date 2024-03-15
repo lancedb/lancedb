@@ -16,16 +16,35 @@ import os
 import lancedb
 import pytest
 
+# AWS:
 # You need to setup AWS credentials an a base path to run this test. Example
 #    AWS_PROFILE=default TEST_S3_BASE_URL=s3://my_bucket/dataset pytest tests/test_io.py
+#
+# Azure:
+# You need to setup Azure credentials an a base path to run this test. Example
+#   export AZURE_STORAGE_ACCOUNT_NAME="<account>"
+#   export AZURE_STORAGE_ACCOUNT_KEY="<key>"
+#   export REMOTE_BASE_URL=az://my_blob/dataset
+#   pytest tests/test_io.py
+
+
+@pytest.fixture(autouse=True, scope="module")
+def setup():
+    yield
+
+    if remote_url := os.environ.get("REMOTE_BASE_URL"):
+        db = lancedb.connect(remote_url)
+
+        for table in db.table_names():
+            db.drop_table(table)
 
 
 @pytest.mark.skipif(
-    (os.environ.get("TEST_S3_BASE_URL") is None),
-    reason="please setup s3 base url",
+    (os.environ.get("REMOTE_BASE_URL") is None),
+    reason="please setup remote base url",
 )
-def test_s3_io():
-    db = lancedb.connect(os.environ.get("TEST_S3_BASE_URL"))
+def test_remote_io():
+    db = lancedb.connect(os.environ.get("REMOTE_BASE_URL"))
     assert db.table_names() == []
 
     table = db.create_table(
