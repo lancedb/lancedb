@@ -150,6 +150,7 @@
 //! # use arrow_schema::{DataType, Schema, Field};
 //! # use arrow_array::{RecordBatch, RecordBatchIterator};
 //! # use arrow_array::{FixedSizeListArray, Float32Array, Int32Array, types::Float32Type};
+//! # use lancedb::query::{ExecutableQuery, QueryBase};
 //! # tokio::runtime::Runtime::new().unwrap().block_on(async {
 //! # let tmpdir = tempfile::tempdir().unwrap();
 //! # let db = lancedb::connect(tmpdir.path().to_str().unwrap()).execute().await.unwrap();

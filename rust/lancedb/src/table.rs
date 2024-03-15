@@ -573,6 +573,7 @@ impl Table {
     /// # let conn = lancedb::connect("/tmp").execute().await.unwrap();
     /// # let tbl = conn.open_table("tbl").execute().await.unwrap();
     /// use crate::lancedb::Table;
+    /// use crate::lancedb::query::ExecutableQuery;
     /// let stream = tbl
     ///     .query()
     ///     .nearest_to(&[1.0, 2.0, 3.0])
@@ -598,9 +599,10 @@ impl Table {
     /// # let conn = lancedb::connect("/tmp").execute().await.unwrap();
     /// # let tbl = conn.open_table("tbl").execute().await.unwrap();
     /// use crate::lancedb::Table;
+    /// use crate::lancedb::query::{ExecutableQuery, QueryBase};
     /// let stream = tbl
     ///     .query()
-    ///     .filter("id > 5")
+    ///     .only_if("id > 5")
     ///     .limit(1000)
     ///     .execute()
     ///     .await
@@ -621,6 +623,7 @@ impl Table {
     /// # let conn = lancedb::connect("/tmp").execute().await.unwrap();
     /// # let tbl = conn.open_table("tbl").execute().await.unwrap();
     /// use crate::lancedb::Table;
+    /// use crate::lancedb::query::ExecutableQuery;
     /// let stream = tbl.query().execute().await.unwrap();
     /// let batches: Vec<RecordBatch> = stream.try_collect().await.unwrap();
     /// # });
