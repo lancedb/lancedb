@@ -1032,8 +1032,14 @@ class AsyncQueryBase(object):
         Example
         -------
 
-        >>> async for batch in await query.to_batches():
-        ...     batch_df = batch.to_pandas()
+        >>> import asyncio
+        >>> from lancedb import connect_async
+        >>> async def doctest_example():
+        ...     conn = await connect_async("./.lancedb")
+        ...     table = await conn.create_table("my_table", data=[{"a": 1, "b": 2}])
+        ...     async for batch in await table.query().to_batches():
+        ...         batch_df = batch.to_pandas()
+        >>> asyncio.run(doctest_example())
         """
         return (await self.to_arrow()).to_pandas()
 
