@@ -141,6 +141,9 @@ class LanceQueryBuilder(ABC):
             # hybrid fts and vector query
             return LanceHybridQueryBuilder(table, query, vector_column_name)
 
+        # remember the string query for reranking purpose
+        str_query = query if isinstance(query, str) else None
+
         # convert "auto" query_type to "vector", "fts"
         # or "hybrid" and convert the query to vector if needed
         query, query_type = cls._resolve_query(
@@ -161,7 +164,7 @@ class LanceQueryBuilder(ABC):
         else:
             raise TypeError(f"Unsupported query type: {type(query)}")
 
-        return LanceVectorQueryBuilder(table, query, vector_column_name)
+        return LanceVectorQueryBuilder(table, query, vector_column_name, str_query)
 
     @classmethod
     def _resolve_query(cls, table, query, query_type, vector_column_name):
@@ -425,6 +428,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         table: "Table",
         query: Union[np.ndarray, list, "PIL.Image.Image"],
         vector_column: str,
+        str_query: Optional[str] = None,
     ):
         super().__init__(table)
         self._query = query
@@ -434,7 +438,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         self._vector_column = vector_column
         self._prefilter = False
         self._reranker = None
-        self._reranker_query = None
+        self._str_query = str_query
 
     def metric(self, metric: Literal["L2", "cosine"]) -> LanceVectorQueryBuilder:
         """Set the distance metric to use.
@@ -522,7 +526,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         )
         result_set = self._table._execute_query(query)
         if self._reranker is not None:
-            result_set = self._reranker.rerank_vector(self._reranker_query, result_set)
+            result_set = self._reranker.rerank_vector(self._str_query, result_set)
 
         return result_set
 
@@ -550,7 +554,9 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         self._prefilter = prefilter
         return self
 
-    def rerank(self, reranker: Reranker, query: str) -> LanceVectorQueryBuilder:
+    def rerank(
+        self, reranker: Reranker, query: Optional[str] = None
+    ) -> LanceVectorQueryBuilder:
         """Rerank the results using the specified reranker.
 
         Parameters
@@ -558,10 +564,11 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         reranker: Reranker
             The reranker to use.
 
-        query: str
+        query: Optional[str]
             The query to use for reranking. This needs to be specified explicitly here
             as the query used for vector search may already be vectorized and the
             reranker requires a string query.
+            This is only required if the query used for vector search is not a string.
             Note: This doesn't yet support the case where the query is multimodal or a
             list of vectors.
 
@@ -571,7 +578,14 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             The LanceQueryBuilder object.
         """
         self._reranker = reranker
-        self._reranker_query = query
+        if self._str_query is None and query is None:
+            raise ValueError(
+                """
+                The query used for vector search is not a string.
+                In this case, the reranker query needs to be specified explicitly.
+                """
+            )
+        self._str_query = query if query is not None else self._str_query
         return self
 
 

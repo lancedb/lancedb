@@ -159,10 +159,14 @@ def test_cohere_reranker(tmp_path):
     # Vector search setting
     query = "Our father who art in heaven"
     result = (
-        table.search(query).rerank(reranker=reranker, query=query).limit(30).to_arrow()
+        table.search(query).rerank(reranker=reranker).limit(30).to_arrow()
     )
     assert len(result) == 30
     assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), err
+    result_explicit = table.search(query_vector).rerank(reranker=reranker, query=query).limit(30).to_arrow()
+    assert len(result_explicit) == 30
+    with pytest.raises(ValueError): # This raises an error because vector query is provided without reanking query
+        table.search(query_vector).rerank(reranker=reranker).limit(30).to_arrow()
 
     # FTS search setting
     result = (
@@ -211,10 +215,15 @@ def test_cross_encoder_reranker(tmp_path):
 
     # Vector search setting
     result = (
-        table.search(query).rerank(reranker=reranker, query=query).limit(30).to_arrow()
+        table.search(query).rerank(reranker=reranker).limit(30).to_arrow()
     )
     assert len(result) == 30
     assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), err
+
+    result_explicit = table.search(query_vector).rerank(reranker=reranker, query=query).limit(30).to_arrow()
+    assert len(result_explicit) == 30
+    with pytest.raises(ValueError): # This raises an error because vector query is provided without reanking query
+        table.search(query_vector).rerank(reranker=reranker).limit(30).to_arrow()
 
     # FTS search setting
     result = (
@@ -263,10 +272,14 @@ def test_colbert_reranker(tmp_path):
 
     # Vector search setting
     result = (
-        table.search(query).rerank(reranker=reranker, query=query).limit(30).to_arrow()
+        table.search(query).rerank(reranker=reranker).limit(30).to_arrow()
     )
     assert len(result) == 30
     assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), err
+    result_explicit = table.search(query_vector).rerank(reranker=reranker, query=query).limit(30).to_arrow()
+    assert len(result_explicit) == 30
+    with pytest.raises(ValueError): # This raises an error because vector query is provided without reanking query
+        table.search(query_vector).rerank(reranker=reranker).limit(30).to_arrow()
 
     # FTS search setting
     result = (
@@ -285,9 +298,10 @@ def test_colbert_reranker(tmp_path):
 def test_openai_reranker(tmp_path):
     pytest.importorskip("openai")
     table, schema = get_test_table(tmp_path)
+    reranker = OpenaiReranker()
     result1 = (
         table.search("Our father who art in heaven", query_type="hybrid")
-        .rerank(normalize="score", reranker=OpenaiReranker())
+        .rerank(normalize="score", reranker=reranker)
         .to_pydantic(schema)
     )
     result2 = (
@@ -303,7 +317,7 @@ def test_openai_reranker(tmp_path):
     result = (
         table.search((query_vector, query))
         .limit(30)
-        .rerank(reranker=OpenaiReranker())
+        .rerank(reranker=reranker)
         .to_arrow()
     )
 
@@ -319,17 +333,20 @@ def test_openai_reranker(tmp_path):
     # Vector search setting
     result = (
         table.search(query)
-        .rerank(reranker=OpenaiReranker(), query=query)
+        .rerank(reranker=reranker)
         .limit(30)
         .to_arrow()
     )
     assert len(result) == 30
     assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), err
-
+    result_explicit = table.search(query_vector).rerank(reranker=reranker, query=query).limit(30).to_arrow()
+    assert len(result_explicit) == 30
+    with pytest.raises(ValueError): # This raises an error because vector query is provided without reanking query
+        table.search(query_vector).rerank(reranker=reranker).limit(30).to_arrow()
     # FTS search setting
     result = (
         table.search(query, query_type="fts")
-        .rerank(reranker=OpenaiReranker())
+        .rerank(reranker=reranker)
         .limit(30)
         .to_arrow()
     )
