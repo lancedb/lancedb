@@ -1,5 +1,5 @@
 {
-  "name": "lancedb-darwin-x64",
+  "name": "vectordb-darwin-x64",
   "version": "0.4.3",
   "os": [
     "darwin"
@@ -7,9 +7,9 @@
   "cpu": [
     "x64"
   ],
-  "main": "lancedb.darwin-x64.node",
+  "main": "vectordb.darwin-x64.node",
   "files": [
-    "lancedb.darwin-x64.node"
+    "vectordb.darwin-x64.node"
   ],
   "license": "MIT",
   "engines": {

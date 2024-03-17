@@ -42,10 +42,7 @@ const {
   tableCompactFiles,
   tableListIndices,
   tableIndexStats,
-  tableSchema,
-  tableAddColumns,
-  tableAlterColumns,
-  tableDropColumns
+  tableSchema
   // eslint-disable-next-line @typescript-eslint/no-var-requires
 } = require('../native.js')
 
@@ -99,19 +96,6 @@ export interface ConnectionOptions {
    * This is useful for local testing.
    */
   hostOverride?: string
-
-  /**
-   * (For LanceDB OSS only): The interval, in seconds, at which to check for
-   * updates to the table from other processes. If None, then consistency is not
-   * checked. For performance reasons, this is the default. For strong
-   * consistency, set this to zero seconds. Then every read will check for
-   * updates from other processes. As a compromise, you can set this to a
-   * non-zero value for eventual consistency. If more than that interval
-   * has passed since the last check, then the table will be checked for updates.
-   * Note: this consistency only applies to read operations. Write operations are
-   * always consistent.
-   */
-  readConsistencyInterval?: number
 }
 
 function getAwsArgs (opts: ConnectionOptions): any[] {
@@ -176,21 +160,16 @@ export async function connect (
     opts = { uri: arg }
   } else {
     // opts = { uri: arg.uri, awsCredentials = arg.awsCredentials }
-    const keys = Object.keys(arg)
-    if (keys.length === 1 && keys[0] === 'uri' && typeof arg.uri === 'string') {
-      opts = { uri: arg.uri }
-    } else {
-      opts = Object.assign(
-        {
-          uri: '',
-          awsCredentials: undefined,
-          awsRegion: defaultAwsRegion,
-          apiKey: undefined,
-          region: defaultAwsRegion
-        },
-        arg
-      )
-    }
+    opts = Object.assign(
+      {
+        uri: '',
+        awsCredentials: undefined,
+        awsRegion: defaultAwsRegion,
+        apiKey: undefined,
+        region: defaultAwsRegion
+      },
+      arg
+    )
   }
 
   if (opts.uri.startsWith('db://')) {
@@ -202,8 +181,7 @@ export async function connect (
     opts.awsCredentials?.accessKeyId,
     opts.awsCredentials?.secretKey,
     opts.awsCredentials?.sessionToken,
-    opts.awsRegion,
-    opts.readConsistencyInterval
+    opts.awsRegion
   )
   return new LocalConnection(db, opts)
 }
@@ -346,7 +324,6 @@ export interface Table<T = number[]> {
    *
    * @param column The column to index
    * @param replace If false, fail if an index already exists on the column
-   * it is always set to true for remote connections
    *
    * Scalar indices, like vector indices, can be used to speed up scans.  A scalar
    * index can speed up scans that contain filter expressions on the indexed column.
@@ -390,7 +367,7 @@ export interface Table<T = number[]> {
    * await table.createScalarIndex('my_col')
    * ```
    */
-  createScalarIndex: (column: string, replace?: boolean) => Promise<void>
+  createScalarIndex: (column: string, replace: boolean) => Promise<void>
 
   /**
    * Returns the number of rows in this table.
@@ -509,59 +486,6 @@ export interface Table<T = number[]> {
   filter(value: string): Query<T>
 
   schema: Promise<Schema>
-
-  // TODO: Support BatchUDF
-  /**
-   * Add new columns with defined values.
-   *
-   * @param newColumnTransforms pairs of column names and the SQL expression to use
-   *                            to calculate the value of the new column. These
-   *                            expressions will be evaluated for each row in the
-   *                            table, and can reference existing columns in the table.
-   */
-  addColumns(newColumnTransforms: Array<{ name: string, valueSql: string }>): Promise<void>
-
-  /**
-   * Alter the name or nullability of columns.
-   *
-   * @param columnAlterations One or more alterations to apply to columns.
-   */
-  alterColumns(columnAlterations: ColumnAlteration[]): Promise<void>
-
-  /**
-   * Drop one or more columns from the dataset
-   *
-   * This is a metadata-only operation and does not remove the data from the
-   * underlying storage. In order to remove the data, you must subsequently
-   * call ``compact_files`` to rewrite the data without the removed columns and
-   * then call ``cleanup_files`` to remove the old files.
-   *
-   * @param columnNames The names of the columns to drop. These can be nested
-   *                    column references (e.g. "a.b.c") or top-level column
-   *                    names (e.g. "a").
-   */
-  dropColumns(columnNames: string[]): Promise<void>
-}
-
-/**
- * A definition of a column alteration. The alteration changes the column at
- * `path` to have the new name `name`, to be nullable if `nullable` is true,
- * and to have the data type `data_type`. At least one of `rename` or `nullable`
- * must be provided.
- */
-export interface ColumnAlteration {
-  /**
-   * The path to the column to alter. This is a dot-separated path to the column.
-   * If it is a top-level column then it is just the name of the column. If it is
-   * a nested column then it is the path to the column, e.g. "a.b.c" for a column
-   * `c` nested inside a column `b` nested inside a column `a`.
-   */
-  path: string
-  rename?: string
-  /**
-   * Set the new nullability. Note that a nullable column cannot be made non-nullable.
-   */
-  nullable?: boolean
 }
 
 export interface UpdateArgs {
@@ -920,10 +844,7 @@ export class LocalTable<T = number[]> implements Table<T> {
       })
   }
 
-  async createScalarIndex (column: string, replace?: boolean): Promise<void> {
-    if (replace === undefined) {
-      replace = true
-    }
+  async createScalarIndex (column: string, replace: boolean): Promise<void> {
     return tableCreateScalarIndex.call(this._tbl, column, replace)
   }
 
@@ -1092,18 +1013,6 @@ export class LocalTable<T = number[]> implements Table<T> {
     } catch (e) {
       return false
     }
-  }
-
-  async addColumns (newColumnTransforms: Array<{ name: string, valueSql: string }>): Promise<void> {
-    return tableAddColumns.call(this._tbl, newColumnTransforms)
-  }
-
-  async alterColumns (columnAlterations: ColumnAlteration[]): Promise<void> {
-    return tableAlterColumns.call(this._tbl, columnAlterations)
-  }
-
-  async dropColumns (columnNames: string[]): Promise<void> {
-    return tableDropColumns.call(this._tbl, columnNames)
   }
 }
 

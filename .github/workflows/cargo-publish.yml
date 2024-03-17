@@ -26,4 +26,4 @@ jobs:
           sudo apt install -y protobuf-compiler libssl-dev
       - name: Publish the package
         run: |
-          cargo publish -p lancedb --all-features --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          cargo publish -p vectordb --all-features --token ${{ secrets.CARGO_REGISTRY_TOKEN }}

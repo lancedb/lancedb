@@ -1,3 +1,3 @@
-# `lancedb-darwin-arm64`
+# `vectordb-darwin-arm64`
 
-This is the **aarch64-apple-darwin** binary for `lancedb`
+This is the **aarch64-apple-darwin** binary for `vectordb`

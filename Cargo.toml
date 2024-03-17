@@ -1,5 +1,5 @@
 [workspace]
-members = ["rust/ffi/node", "rust/lancedb", "nodejs", "python"]
+members = ["rust/ffi/node", "rust/vectordb", "nodejs"]
 # Python package needs to be built by maturin.
 exclude = ["python"]
 resolver = "2"
@@ -14,10 +14,10 @@ keywords = ["lancedb", "lance", "database", "vector", "search"]
 categories = ["database-implementations"]
 
 [workspace.dependencies]
-lance = { "version" = "=0.10.4", "features" = ["dynamodb"] }
-lance-index = { "version" = "=0.10.4" }
-lance-linalg = { "version" = "=0.10.4" }
-lance-testing = { "version" = "=0.10.4" }
+lance = { "version" = "=0.9.15", "features" = ["dynamodb"] }
+lance-index = { "version" = "=0.9.15" }
+lance-linalg = { "version" = "=0.9.15" }
+lance-testing = { "version" = "=0.9.15" }
 # Note that this one does not include pyarrow
 arrow = { version = "50.0", optional = false }
 arrow-array = "50.0"
@@ -28,14 +28,13 @@ arrow-schema = "50.0"
 arrow-arith = "50.0"
 arrow-cast = "50.0"
 async-trait = "0"
-chrono = "0.4.35"
+chrono = "0.4.23"
 half = { "version" = "=2.3.1", default-features = false, features = [
     "num-traits",
 ] }
 futures = "0"
 log = "0.4"
 object_store = "0.9.0"
-pin-project = "1.0.7"
 snafu = "0.7.4"
 url = "2"
 num-traits = "0.2"

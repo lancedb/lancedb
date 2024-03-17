@@ -1,5 +1,5 @@
 [package]
-name = "lancedb-nodejs"
+name = "vectordb-nodejs"
 edition.workspace = true
 version = "0.0.0"
 license.workspace = true
@@ -14,10 +14,12 @@ crate-type = ["cdylib"]
 [dependencies]
 arrow-ipc.workspace = true
 futures.workspace = true
-lancedb = { path = "../rust/lancedb" }
+lance-linalg.workspace = true
+lance.workspace = true
+vectordb = { path = "../rust/vectordb" }
 napi = { version = "2.15", default-features = false, features = [
     "napi7",
-    "async",
+    "async"
 ] }
 napi-derive = "2"
 

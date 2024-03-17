@@ -1,5 +1,5 @@
 {
-  "name": "lancedb-linux-x64-gnu",
+  "name": "vectordb-linux-x64-gnu",
   "version": "0.4.3",
   "os": [
     "linux"
@@ -7,9 +7,9 @@
   "cpu": [
     "x64"
   ],
-  "main": "lancedb.linux-x64-gnu.node",
+  "main": "vectordb.linux-x64-gnu.node",
   "files": [
-    "lancedb.linux-x64-gnu.node"
+    "vectordb.linux-x64-gnu.node"
   ],
   "license": "MIT",
   "engines": {

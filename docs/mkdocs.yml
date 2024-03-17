@@ -57,16 +57,6 @@ plugins:
           - https://arrow.apache.org/docs/objects.inv
           - https://pandas.pydata.org/docs/objects.inv
 - mkdocs-jupyter
-- ultralytics:
-    verbose: True
-    enabled: True
-    default_image: "assets/lancedb_and_lance.png" # Default image for all pages
-    add_image: True # Automatically add meta image
-    add_keywords: True # Add page keywords in the header tag
-    add_share_buttons: True # Add social share buttons
-    add_authors: False # Display page authors 
-    add_desc: False
-    add_dates: False
 
 markdown_extensions:
 - admonition
@@ -102,16 +92,16 @@ nav:
     - Full-text search: fts.md
     - Hybrid search:
       - Overview: hybrid_search/hybrid_search.md
-      - Comparing Rerankers: hybrid_search/eval.md
       - Airbnb financial data example: notebooks/hybrid_search.ipynb
     - Filtering: sql.md
     - Versioning & Reproducibility: notebooks/reproducibility.ipynb
     - Configuring Storage: guides/storage.md
   - 🧬 Managing embeddings:
     - Overview: embeddings/index.md
-    - Embedding functions: embeddings/embedding_functions.md
-    - Available models: embeddings/default_embedding_functions.md
-    - User-defined embedding functions: embeddings/custom_embedding_function.md
+    - Explicit management: embeddings/embedding_explicit.md
+    - Implicit management: embeddings/embedding_functions.md
+    - Available Functions: embeddings/default_embedding_functions.md
+    - Custom Embedding Functions: embeddings/api.md
     - "Example: Multi-lingual semantic search": notebooks/multi_lingual_example.ipynb
     - "Example: MultiModal CLIP Embeddings": notebooks/DisappearingEmbeddingFunction.ipynb
   - 🔌 Integrations:
@@ -166,16 +156,16 @@ nav:
     - Full-text search: fts.md
     - Hybrid search:
       - Overview: hybrid_search/hybrid_search.md
-      - Comparing Rerankers: hybrid_search/eval.md
       - Airbnb financial data example: notebooks/hybrid_search.ipynb
     - Filtering: sql.md
     - Versioning & Reproducibility: notebooks/reproducibility.ipynb
     - Configuring Storage: guides/storage.md
 - Managing Embeddings:
   - Overview: embeddings/index.md
-  - Embedding functions: embeddings/embedding_functions.md
-  - Available models: embeddings/default_embedding_functions.md
-  - User-defined embedding functions: embeddings/custom_embedding_function.md
+  - Explicit management: embeddings/embedding_explicit.md
+  - Implicit management: embeddings/embedding_functions.md
+  - Available Functions: embeddings/default_embedding_functions.md
+  - Custom Embedding Functions: embeddings/api.md
   - "Example: Multi-lingual semantic search": notebooks/multi_lingual_example.ipynb
   - "Example: MultiModal CLIP Embeddings": notebooks/DisappearingEmbeddingFunction.ipynb
 - Integrations:

@@ -2,91 +2,30 @@ name: PyPI Publish
 
 on:
   release:
-    types: [published]
+    types: [ published ]
 
 jobs:
-  linux:
-    timeout-minutes: 60
-    strategy:
-      matrix:
-        python-minor-version: ["8"]
-        platform:
-          - x86_64
-          - aarch64
-    runs-on: "ubuntu-22.04"
+  publish:
+    runs-on: ubuntu-latest
+    # Only runs on tags that matches the python-make-release action
+    if: startsWith(github.ref, 'refs/tags/python-v')
+    defaults:
+      run:
+        shell: bash
+        working-directory: python
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          lfs: true
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: 3.${{ matrix.python-minor-version }}
-      - uses: ./.github/workflows/build_linux_wheel
+          python-version: "3.8"
+      - name: Build distribution
+        run: |
+          ls -la
+          pip install wheel setuptools --upgrade
+          python setup.py sdist bdist_wheel
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@v1.8.5
         with:
-          python-minor-version: ${{ matrix.python-minor-version }}
-          args: "--release --strip"
-          arm-build: ${{ matrix.platform == 'aarch64' }}
-      - uses: ./.github/workflows/upload_wheel
-        with:
-          token: ${{ secrets.LANCEDB_PYPI_API_TOKEN }}
-          repo: "pypi"
-  mac:
-    timeout-minutes: 60
-    runs-on: ${{ matrix.config.runner }}
-    strategy:
-      matrix:
-        python-minor-version: ["8"]
-        config:
-          - target: x86_64-apple-darwin
-            runner: macos-13
-          - target: aarch64-apple-darwin
-            runner: macos-14
-    env:
-      MACOSX_DEPLOYMENT_TARGET: 10.15
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.ref }}
-          fetch-depth: 0
-          lfs: true
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: 3.12
-      - uses: ./.github/workflows/build_mac_wheel
-        with:
-          python-minor-version: ${{ matrix.python-minor-version }}
-          args: "--release --strip --target ${{ matrix.config.target }}"
-      - uses: ./.github/workflows/upload_wheel
-        with:
-          python-minor-version: ${{ matrix.python-minor-version }}
-          token: ${{ secrets.LANCEDB_PYPI_API_TOKEN }}
-          repo: "pypi"
-  windows:
-    timeout-minutes: 60
-    runs-on: windows-latest
-    strategy:
-      matrix:
-        python-minor-version: ["8"]
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.ref }}
-          fetch-depth: 0
-          lfs: true
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: 3.${{ matrix.python-minor-version }}
-      - uses: ./.github/workflows/build_windows_wheel
-        with:
-          python-minor-version: ${{ matrix.python-minor-version }}
-          args: "--release --strip"
-          vcpkg_token: ${{ secrets.VCPKG_GITHUB_PACKAGES }}
-      - uses: ./.github/workflows/upload_wheel
-        with:
-          python-minor-version: ${{ matrix.python-minor-version }}
-          token: ${{ secrets.LANCEDB_PYPI_API_TOKEN }}
-          repo: "pypi"
+          password: ${{ secrets.LANCEDB_PYPI_API_TOKEN }}
+          packages-dir: python/dist

@@ -20,20 +20,19 @@ import {
   type Vector,
   FixedSizeList,
   vectorFromArray,
-  Schema,
+  type Schema,
   Table as ArrowTable,
   RecordBatchStreamWriter,
   List,
   RecordBatch,
   makeData,
   Struct,
-  Float,
+  type Float,
   DataType,
   Binary,
   Float32
 } from 'apache-arrow'
 import { type EmbeddingFunction } from './index'
-import { sanitizeSchema } from './sanitize'
 
 /*
  * Options to control how a column should be converted to a vector array
@@ -202,13 +201,10 @@ export function makeArrowTable (
   }
 
   const opt = new MakeArrowTableOptions(options !== undefined ? options : {})
-  if (opt.schema !== undefined && opt.schema !== null) {
-    opt.schema = sanitizeSchema(opt.schema)
-  }
   const columns: Record<string, Vector> = {}
   // TODO: sample dataset to find missing columns
   // Prefer the field ordering of the schema, if present
-  const columnNames = ((opt.schema) != null) ? (opt.schema.names as string[]) : Object.keys(data[0])
+  const columnNames = ((options?.schema) != null) ? (options?.schema?.names as string[]) : Object.keys(data[0])
   for (const colName of columnNames) {
     if (data.length !== 0 && !Object.prototype.hasOwnProperty.call(data[0], colName)) {
       // The field is present in the schema, but not in the data, skip it
@@ -333,9 +329,6 @@ async function applyEmbeddings<T> (table: ArrowTable, embeddings?: EmbeddingFunc
   if (embeddings == null) {
     return table
   }
-  if (schema !== undefined && schema !== null) {
-    schema = sanitizeSchema(schema)
-  }
 
   // Convert from ArrowTable to Record<String, Vector>
   const colEntries = [...Array(table.numCols).keys()].map((_, idx) => {
@@ -446,9 +439,6 @@ export async function fromRecordsToBuffer<T> (
   embeddings?: EmbeddingFunction<T>,
   schema?: Schema
 ): Promise<Buffer> {
-  if (schema !== undefined && schema !== null) {
-    schema = sanitizeSchema(schema)
-  }
   const table = await convertToTable(data, embeddings, { schema })
   const writer = RecordBatchFileWriter.writeAll(table)
   return Buffer.from(await writer.toUint8Array())
@@ -466,9 +456,6 @@ export async function fromRecordsToStreamBuffer<T> (
   embeddings?: EmbeddingFunction<T>,
   schema?: Schema
 ): Promise<Buffer> {
-  if (schema !== null && schema !== undefined) {
-    schema = sanitizeSchema(schema)
-  }
   const table = await convertToTable(data, embeddings, { schema })
   const writer = RecordBatchStreamWriter.writeAll(table)
   return Buffer.from(await writer.toUint8Array())
@@ -487,9 +474,6 @@ export async function fromTableToBuffer<T> (
   embeddings?: EmbeddingFunction<T>,
   schema?: Schema
 ): Promise<Buffer> {
-  if (schema !== null && schema !== undefined) {
-    schema = sanitizeSchema(schema)
-  }
   const tableWithEmbeddings = await applyEmbeddings(table, embeddings, schema)
   const writer = RecordBatchFileWriter.writeAll(tableWithEmbeddings)
   return Buffer.from(await writer.toUint8Array())
@@ -508,9 +492,6 @@ export async function fromTableToStreamBuffer<T> (
   embeddings?: EmbeddingFunction<T>,
   schema?: Schema
 ): Promise<Buffer> {
-  if (schema !== null && schema !== undefined) {
-    schema = sanitizeSchema(schema)
-  }
   const tableWithEmbeddings = await applyEmbeddings(table, embeddings, schema)
   const writer = RecordBatchStreamWriter.writeAll(tableWithEmbeddings)
   return Buffer.from(await writer.toUint8Array())
@@ -547,5 +528,5 @@ function alignTable (table: ArrowTable, schema: Schema): ArrowTable {
 
 // Creates an empty Arrow Table
 export function createEmptyTable (schema: Schema): ArrowTable {
-  return new ArrowTable(sanitizeSchema(schema))
+  return new ArrowTable(schema)
 }

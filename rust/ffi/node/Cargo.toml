@@ -1,6 +1,6 @@
 [package]
-name = "lancedb-node"
-version = "0.4.13"
+name = "vectordb-node"
+version = "0.4.9"
 description = "Serverless, low-latency vector database for AI applications"
 license.workspace = true
 edition.workspace = true
@@ -8,7 +8,6 @@ repository.workspace = true
 keywords.workspace = true
 categories.workspace = true
 exclude = ["index.node"]
-rust-version = "1.75"
 
 [lib]
 crate-type = ["cdylib"]
@@ -25,14 +24,9 @@ half = { workspace = true }
 lance = { workspace = true }
 lance-index = { workspace = true }
 lance-linalg = { workspace = true }
-lancedb = { path = "../../lancedb" }
+vectordb = { path = "../../vectordb" }
 tokio = { version = "1.23", features = ["rt-multi-thread"] }
-neon = { version = "0.10.1", default-features = false, features = [
-    "channel-api",
-    "napi-6",
-    "promise-api",
-    "task-api",
-] }
+neon = {version = "0.10.1", default-features = false, features = ["channel-api", "napi-6", "promise-api", "task-api"] }
 object_store = { workspace = true, features = ["aws"] }
 snafu = { workspace = true }
 async-trait = "0"

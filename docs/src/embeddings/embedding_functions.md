@@ -3,126 +3,61 @@ Representing multi-modal data as vector embeddings is becoming a standard practi
 For this purpose, LanceDB introduces an **embedding functions API**, that allow you simply set up once, during the configuration stage of your project. After this, the table remembers it, effectively making the embedding functions *disappear in the background* so you don't have to worry about manually passing callables, and instead, simply focus on the rest of your data engineering pipeline.
 
 !!! warning
-    Using the embedding function registry means that you don't have to explicitly generate the embeddings yourself. 
-    However, if your embedding function changes, you'll have to re-configure your table with the new embedding function 
-    and regenerate the embeddings. In the future, we plan to support the ability to change the embedding function via
-    table metadata and have LanceDB automatically take care of regenerating the embeddings.
-
+    Using the implicit embeddings management approach means that you can forget about the manually passing around embedding
+    functions in your code, as long as you don't intend to change it at a later time. If your embedding function changes,
+    you'll have to re-configure your table with the new embedding function and regenerate the embeddings.
 
 ## 1. Define the embedding function
+We have some pre-defined embedding functions in the global registry, with more coming soon. Here's let's an implementation of CLIP as example.
+```
+registry = EmbeddingFunctionRegistry.get_instance()
+clip = registry.get("open-clip").create()
 
-=== "Python"
-    In the LanceDB python SDK, we define a global embedding function registry with
-    many different embedding models and even more coming soon. 
-    Here's let's an implementation of CLIP as example.
-
-    ```python
-    from lancedb.embeddings import get_registry
-
-    registry = get_registry()
-    clip = registry.get("open-clip").create()
-    ```
-
-    You can also define your own embedding function by implementing the `EmbeddingFunction` 
-    abstract base interface. It subclasses Pydantic Model which can be utilized to write complex schemas simply as we'll see next!
-
-=== "JavaScript""
-    In the TypeScript SDK, the choices are more limited. For now, only the OpenAI
-    embedding function is available.
-
-    ```javascript
-    const lancedb = require("vectordb");
-
-    // You need to provide an OpenAI API key
-    const apiKey = "sk-..."
-    // The embedding function will create embeddings for the 'text' column
-    const embedding = new lancedb.OpenAIEmbeddingFunction('text', apiKey)
-    ```
+```
+You can also define your own embedding function by implementing the `EmbeddingFunction` abstract base interface. It subclasses Pydantic Model which can be utilized to write complex schemas simply as we'll see next!
 
 ## 2. Define the data model or schema
+The embedding function defined above abstracts away all the details about the models and dimensions required to define the schema. You can simply set a field as **source** or **vector** column. Here's how:
 
-=== "Python"
-    The embedding function defined above abstracts away all the details about the models and dimensions required to define the schema. You can simply set a field as **source** or **vector** column. Here's how:
+```python
+class Pets(LanceModel):
+    vector: Vector(clip.ndims) = clip.VectorField()
+    image_uri: str = clip.SourceField()
+```
 
-    ```python
-    class Pets(LanceModel):
-        vector: Vector(clip.ndims) = clip.VectorField()
-        image_uri: str = clip.SourceField()
-    ```
+`VectorField` tells LanceDB to use the clip embedding function to generate query embeddings for the `vector` column and `SourceField` ensures that when adding data, we automatically use the specified embedding function to encode `image_uri`.
 
-    `VectorField` tells LanceDB to use the clip embedding function to generate query embeddings for the `vector` column and `SourceField` ensures that when adding data, we automatically use the specified embedding function to encode `image_uri`.
+## 3. Create LanceDB table
+Now that we have chosen/defined our embedding function and the schema, we can create the table:
 
-=== "JavaScript"
+```python
+db = lancedb.connect("~/lancedb")
+table = db.create_table("pets", schema=Pets)
 
-    For the TypeScript SDK, a schema can be inferred from input data, or an explicit
-    Arrow schema can be provided.
+```
 
-## 3. Create table and add data
+That's it! We've provided all the information needed to embed the source and query inputs. We can now forget about the model and dimension details and start to build our VectorDB pipeline.
 
-Now that we have chosen/defined our embedding function and the schema, 
-we can create the table and ingest data without needing to explicitly generate
-the embeddings at all:
+## 4. Ingest lots of data and query your table
+Any new or incoming data can just be added and it'll be vectorized automatically.
 
-=== "Python"
-    ```python
-    db = lancedb.connect("~/lancedb")
-    table = db.create_table("pets", schema=Pets)
+```python
+table.add([{"image_uri": u} for u in uris])
+```
 
-    table.add([{"image_uri": u} for u in uris])
-    ```
+Our OpenCLIP query embedding function supports querying via both text and images:
 
-=== "JavaScript"
+```python
+result = table.search("dog")
+```
 
-    ```javascript
-    const db = await lancedb.connect("data/sample-lancedb");
-    const data = [
-    { text: "pepperoni"},
-    { text: "pineapple"}
-    ]
+Let's query an image:
 
-    const table = await db.createTable("vectors", data, embedding)
-    ```
-
-## 4. Querying your table
-Not only can you forget about the embeddings during ingestion, you also don't
-need to worry about it when you query the table:
-
-=== "Python"
-
-    Our OpenCLIP query embedding function supports querying via both text and images:
-
-    ```python
-    results = (
-        table.search("dog")
-        .limit(10)
-        .to_pandas()
-    )
-    ```
-
-    Or we can search using an image:
-
-    ```python
-    p = Path("path/to/images/samoyed_100.jpg")
-    query_image = Image.open(p)
-    results = (
-        table.search(query_image)
-        .limit(10)
-        .to_pandas()
-    )
-    ```
-
-    Both of the above snippet returns a pandas DataFrame with the 10 closest vectors to the query.
-
-=== "JavaScript"
-
-    ```javascript
-    const results = await table
-    .search("What's the best pizza topping?")
-    .limit(10)
-    .execute()
-    ```    
-    
-    The above snippet returns an array of records with the top 10 nearest neighbors to the query.
+```python
+p = Path("path/to/images/samoyed_100.jpg")
+query_image = Image.open(p)
+table.search(query_image)
+```
 
 ---
 
@@ -165,5 +100,4 @@ rs[2].image
 
 ![](../assets/dog_clip_output.png)
 
-Now that you have the basic idea about LanceDB embedding functions and the embedding function registry,
-let's dive deeper into defining your own [custom functions](./custom_embedding_function.md).
+Now that you have the basic idea about implicit management via embedding functions, let's dive deeper into a [custom API](./api.md) that you can use to implement your own embedding functions.

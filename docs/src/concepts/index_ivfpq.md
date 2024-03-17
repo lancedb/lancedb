@@ -31,7 +31,7 @@ As an example, consider starting with 128-dimensional vector consisting of 32-bi
 
 While PQ helps with reducing the size of the index, IVF primarily addresses search performance. The primary purpose of an inverted file index is to facilitate rapid and effective nearest neighbor search by narrowing down the search space.
 
-In IVF, the PQ vector space is divided into *Voronoi cells*, which are essentially partitions that consist of all the points in the space that are within a threshold distance of the given region's seed point. These seed points are initialized by running K-means over the stored vectors. The centroids of K-means turn into the seed points which then each define a region. These regions are then are used to create an inverted index that correlates each centroid with a list of vectors in the space, allowing a search to be restricted to just a subset of vectors in the index.
+In IVF, the PQ vector space is divided into *Voronoi cells*, which are essentially partitions that consist of all the points in the space that are within a threshold distance of the given region's seed point. These seed points are used to create an inverted index that correlates each centroid with a list of vectors in the space, allowing a search to be restricted to just a subset of vectors in the index.
 
 ![](../assets/ivfpq_ivf_desc.webp)
 
@@ -81,4 +81,24 @@ The above query will perform a search on the table `tbl` using the given query v
 * `to_pandas()`: Convert the results to a pandas DataFrame
 
 And there you have it! You now understand what an IVF-PQ index is, and how to create and query it in LanceDB.
-To see how to create an IVF-PQ index in LanceDB, take a look at the [ANN indexes](../ann_indexes.md) section.
+
+
+## FAQ
+
+### When is it necessary to create a vector index?
+
+LanceDB has manually-tuned SIMD code for computing vector distances. In our benchmarks, computing 100K pairs of 1K dimension vectors takes **<20ms**. For small datasets (<100K rows) or applications that can accept up to 100ms latency, vector indices are usually not necessary.
+
+For large-scale or higher dimension vectors, it is beneficial to create vector index.
+
+### How big is my index, and how much memory will it take?
+
+In LanceDB, all vector indices are disk-based, meaning that when responding to a vector query, only the relevant pages from the index file are loaded from disk and cached in memory. Additionally, each sub-vector is usually encoded into 1 byte PQ code.
+
+For example, with 1024-dimension vectors, if we choose `num_sub_vectors = 64`, each sub-vector has `1024 / 64 = 16` float32 numbers. Product quantization can lead to approximately `16 * sizeof(float32) / 1 = 64` times of space reduction.
+
+### How to choose `num_partitions` and `num_sub_vectors` for IVF_PQ index?
+
+`num_partitions` is used to decide how many partitions the first level IVF index uses. Higher number of partitions could lead to more efficient I/O during queries and better accuracy, but it takes much more time to train. On SIFT-1M dataset, our benchmark shows that keeping each partition 1K-4K rows lead to a good latency/recall.
+
+`num_sub_vectors` specifies how many PQ short codes to generate on each vector. Because PQ is a lossy compression of the original vector, a higher `num_sub_vectors` usually results in less space distortion, and thus yields better accuracy. However, a higher `num_sub_vectors` also causes heavier I/O and more PQ computation, and thus, higher latency. `dimension / num_sub_vectors` should be a multiple of 8 for optimum SIMD efficiency.

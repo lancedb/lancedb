@@ -43,7 +43,7 @@ pip install lancedb
 We also need to install a specific commit of `tantivy`, a dependency of the LanceDB full text search engine we will use later in this guide:
 
 ```
-pip install tantivy
+pip install tantivy@git+https://github.com/quickwit-oss/tantivy-py#164adc87e1a033117001cf70e38c82a53014d985
 ```
 
 Create a new Python file and add the following code:

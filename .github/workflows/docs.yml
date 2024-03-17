@@ -24,14 +24,10 @@ jobs:
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
-    runs-on: buildjet-8vcpu-ubuntu-2204
+    runs-on: ubuntu-22.04
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Install dependecies needed for ubuntu
-        run: |
-          sudo apt install -y protobuf-compiler libssl-dev
-          rustup update && rustup default        
       - name: Set up Python
         uses: actions/setup-python@v5
         with:

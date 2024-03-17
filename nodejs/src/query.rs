@@ -12,11 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use lancedb::query::Query as LanceDBQuery;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
+use vectordb::query::Query as LanceDBQuery;
 
-use crate::iterator::RecordBatchIterator;
+use crate::{iterator::RecordBatchIterator, table::Table};
 
 #[napi]
 pub struct Query {
@@ -25,8 +25,10 @@ pub struct Query {
 
 #[napi]
 impl Query {
-    pub fn new(query: LanceDBQuery) -> Self {
-        Self { inner: query }
+    pub fn new(table: &Table) -> Self {
+        Self {
+            inner: table.table.query(),
+        }
     }
 
     #[napi]
@@ -74,6 +76,6 @@ impl Query {
         let inner_stream = self.inner.execute_stream().await.map_err(|e| {
             napi::Error::from_reason(format!("Failed to execute query stream: {}", e))
         })?;
-        Ok(RecordBatchIterator::new(inner_stream))
+        Ok(RecordBatchIterator::new(Box::new(inner_stream)))
     }
 }

@@ -24,6 +24,27 @@ env:
   RUST_BACKTRACE: "1"
 
 jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        shell: bash
+        working-directory: node
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        lfs: true
+    - uses: actions/setup-node@v3
+      with:
+        node-version: 20
+        cache: 'npm'
+        cache-dependency-path: node/package-lock.json
+    - name: Lint
+      run: |
+        npm ci
+        npm run lint
   linux:
     name: Linux (Node ${{ matrix.node-version }})
     timeout-minutes: 30

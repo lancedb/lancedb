@@ -80,25 +80,10 @@ jobs:
           - arch: x86_64
             runner: ubuntu-latest
           - arch: aarch64
-            # For successful fat LTO builds, we need a large runner to avoid OOM errors.
-            runner: buildjet-16vcpu-ubuntu-2204-arm
+            runner: buildjet-8vcpu-ubuntu-2204-arm
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      # Buildjet aarch64 runners have only 1.5 GB RAM per core, vs 3.5 GB per core for
-      # x86_64 runners. To avoid OOM errors on ARM, we create a swap file.
-      - name: Configure aarch64 build
-        if: ${{ matrix.config.arch == 'aarch64' }}
-        run: |
-          free -h
-          sudo fallocate -l 16G /swapfile
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
-          echo "/swapfile swap swap defaults 0 0" >> sudo /etc/fstab
-          # print info
-          swapon --show
-          free -h
       - name: Build Linux Artifacts
         run: |
           bash ci/build_linux_artifacts.sh ${{ matrix.config.arch }}
