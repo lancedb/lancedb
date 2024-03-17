@@ -4,7 +4,7 @@ from tqdm import tqdm
 from lancedb.embeddings.fine_tuner import QADataset, TextChunk
 from lancedb.embeddings import get_registry
 
-
+@pytest.mark.slow
 def test_finetuning_sentence_transformers(tmp_path):
     queries = {}
     relevant_docs = {}
