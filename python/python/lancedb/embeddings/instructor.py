@@ -103,9 +103,9 @@ class InstructorEmbeddingFunction(TextEmbeddingFunction):
     # convert_to_numpy: bool = True # Hardcoding this as numpy can be ingested directly
 
     source_instruction: str = "represent the document for retrieval"
-    query_instruction: str = (
-        "represent the document for retrieving the most similar documents"
-    )
+    query_instruction: (
+        str
+    ) = "represent the document for retrieving the most similar documents"
 
     @weak_lru(maxsize=1)
     def ndims(self):
