@@ -1,11 +1,12 @@
 import pytest
-import lancedb
-from lancedb.embeddings.fine_tuner.llm import Openai
+
 from lancedb.embeddings.fine_tuner.dataset import QADataset
+from lancedb.embeddings.fine_tuner.llm import Openai
 
 
 def download_test_files():
     import os
+
     import requests
 
     url1 = "https://raw.githubusercontent.com/run-llama/llama_index/main/docs/examples/data/10k/uber_2021.pdf"
@@ -25,10 +26,8 @@ def download_test_files():
 
 @pytest.mark.slow
 def test_qa_dataset(tmp_path):
-    import json
     from llama_index.core import SimpleDirectoryReader
     from llama_index.core.node_parser import SentenceSplitter
-    from llama_index.core.schema import MetadataMode
 
     reader = SimpleDirectoryReader(input_files=download_test_files())
     docs = reader.load_data()

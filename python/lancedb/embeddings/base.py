@@ -13,15 +13,16 @@
 import os
 from abc import ABC, abstractmethod
 from typing import List, Union
-from tqdm import tqdm
 
 import numpy as np
 import pyarrow as pa
 from pydantic import BaseModel, Field, PrivateAttr
+from tqdm import tqdm
 
-from .utils import TEXT, retry_with_exponential_backoff
-from .fine_tuner import QADataset
 import lancedb
+
+from .fine_tuner import QADataset
+from .utils import TEXT, retry_with_exponential_backoff
 
 
 class EmbeddingFunction(BaseModel, ABC):

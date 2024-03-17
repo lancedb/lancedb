@@ -10,19 +10,18 @@
 #  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
-from typing import List, Union
+from typing import Any, List, Optional, Union
 
 import numpy as np
+
 from lancedb.embeddings.fine_tuner import QADataset
+from lancedb.utils.general import LOGGER
 
 from ..util import attempt_import_or_raise
 from .base import TextEmbeddingFunction
+from .fine_tuner.basetuner import BaseEmbeddingTuner
 from .registry import register
 from .utils import weak_lru
-from typing import Any, Optional
-from lancedb.utils.general import LOGGER
-from .fine_tuner.dataset import QADataset
-from .fine_tuner.basetuner import BaseEmbeddingTuner
 
 
 @register("sentence-transformers")
@@ -227,7 +226,7 @@ class SentenceTransformersTuner(BaseEmbeddingTuner):
             import wandb
             from wandb import (
                 __version__,
-            )  # Known issue: to prevent accidentally importing wandb log folder
+            )
         except ImportError:
             raise ImportError(
                 "wandb is not installed. Please install it using `pip install wandb`"

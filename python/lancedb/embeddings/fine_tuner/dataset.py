@@ -1,13 +1,14 @@
-import json
-import uuid
 import re
+import uuid
+from pathlib import Path
+from typing import Any, Dict, List, Tuple
+
 import lance
 import pyarrow as pa
-from pathlib import Path
-from tqdm import tqdm
 from pydantic import BaseModel
-from typing import Dict, List, Tuple, Any
-from .llm import Openai, BaseLLM
+from tqdm import tqdm
+
+from .llm import BaseLLM
 
 DEFAULT_PROMPT_TMPL = """\
 Context information is below.

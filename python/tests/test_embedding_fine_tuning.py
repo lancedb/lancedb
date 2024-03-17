@@ -1,8 +1,11 @@
-import pytest
 import uuid
+
+import pytest
 from tqdm import tqdm
-from lancedb.embeddings.fine_tuner import QADataset, TextChunk
+
 from lancedb.embeddings import get_registry
+from lancedb.embeddings.fine_tuner import QADataset, TextChunk
+
 
 @pytest.mark.slow
 def test_finetuning_sentence_transformers(tmp_path):
