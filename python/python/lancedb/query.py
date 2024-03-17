@@ -19,7 +19,6 @@ from pathlib import Path
 from typing import (
     TYPE_CHECKING,
     Dict,
-    Iterable,
     List,
     Literal,
     Optional,
