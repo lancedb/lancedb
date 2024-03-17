@@ -183,13 +183,11 @@ class TextEmbeddingFunction(EmbeddingFunction):
 
     def evaluate(self, dataset: QADataset, top_k=5, path=None, *args, **kwargs):
         """
-        Evaluate the embedding function on a dataset. This calculates the hit-rate for the
-        top-k retrieved documents for each query in the dataset. Assumes that the first
-        relevant document is the expected document.
+        Evaluate the embedding function on a dataset. This calculates the hit-rate for
+        the top-k retrieved documents for each query in the dataset. Assumes that the
+        first relevant document is the expected document.
         Pro - Should work for any embedding model
-        Con - Only returns simple hit-rate, does not return more detailed metrics
-        if possible, should be implemented in the downstream embedding model class if custom
-        metrics are needed.
+        Con - Returns every simple metric.
         Parameters
         ----------
         dataset: QADataset

@@ -218,15 +218,12 @@ class SentenceTransformersTuner(BaseEmbeddingTuner):
         LOGGER.info(f"Model saved to {self.path}.")
         LOGGER.info("You can now use the model as follows:")
         LOGGER.info(
-            f"model = get_registry().get('sentence-transformers').create(name='./{self.path}')"
+            f"model = get_registry().get('sentence-transformers').create(name='./{self.path}')"  # noqa
         )
 
     def _wandb_callback(self, score, epoch, steps):
         try:
             import wandb
-            from wandb import (
-                __version__,
-            )
         except ImportError:
             raise ImportError(
                 "wandb is not installed. Please install it using `pip install wandb`"

@@ -19,7 +19,6 @@ def test_finetuning_sentence_transformers(tmp_path):
     ]
     text_chunks = [TextChunk.from_chunk(chunk) for chunk in chunks]
     for chunk in tqdm(text_chunks):
-        text = chunk.text
         questions = [
             "What is this chunk about?",
             "What is the main topic of this chunk?",
@@ -39,6 +38,7 @@ def test_finetuning_sentence_transformers(tmp_path):
         get_registry().get("sentence-transformers").create(name=str(tmp_path / "model"))
     )
     res = model.evaluate(ds)
+    assert res is not None
 
 
 def test_text_chunk():

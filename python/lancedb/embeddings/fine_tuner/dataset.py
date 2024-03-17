@@ -104,7 +104,7 @@ class QADataset(BaseModel):
     @classmethod
     def from_llm(
         cls,
-        nodes: "List[TextChunk]",  # TODO: implement TextChunk, currently using llama-index TextNode
+        nodes: "List[TextChunk]",
         llm: BaseLLM,
         qa_generate_prompt_tmpl: str = DEFAULT_PROMPT_TMPL,
         num_questions_per_chunk: int = 2,
@@ -175,4 +175,5 @@ class TextChunk(BaseModel):
         return self.text
 
     def __repr__(self) -> str:
-        return f"SimpleTextChunk(text={self.text}, id={self.chunk_id}, metadata={self.metadata})"
+        return f"SimpleTextChunk(text={self.text}, id={self.chunk_id}, \
+        metadata={self.metadata})"
