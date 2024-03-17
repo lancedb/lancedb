@@ -175,7 +175,7 @@ class TextEmbeddingFunction(EmbeddingFunction):
         """
         pass
 
-    def evaluate(self, dataset: QADataset, path=None, *args, **kwargs):
+    def evaluate(self, dataset: QADataset, top_k=5, path=None, *args, **kwargs):
         """
         Evaluate the embedding function on a dataset. This calculates the hit-rate for the
         top-k retrieved documents for each query in the dataset. Assumes that the first
@@ -210,7 +210,7 @@ class TextEmbeddingFunction(EmbeddingFunction):
 
         eval_results = []
         for query_id, query in tqdm(queries.items()):
-            retrieved_nodes = retriever.search(query).to_list()
+            retrieved_nodes = retriever.search(query).limit(top_k).to_list()
             retrieved_ids = [node["id"]  for node in retrieved_nodes]
             expected_id = relevant_docs[query_id][0]
             is_hit = expected_id in retrieved_ids  # assume 1 relevant doc

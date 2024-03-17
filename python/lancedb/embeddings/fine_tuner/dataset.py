@@ -16,7 +16,7 @@ Context information is below.
 {context_str}
 ---------------------
 
-Given the context information and not prior knowledge.
+Given the context information and no prior knowledge.
 generate only questions based on the below query.
 
 You are a Teacher/ Professor. Your task is to setup \
@@ -125,7 +125,7 @@ class QADataset(BaseModel):
         )
 
     @classmethod
-    def from_responses(cls, docs: List['TextChunk'], queries: Dict[str, str], relevant_docs: Dict[str, List[str]]):
+    def from_responses(cls, docs: List['TextChunk'], queries: Dict[str, str], relevant_docs: Dict[str, List[str]])-> "QADataset":
         """Create a QADataset from a list of TextChunks and a list of questions."""
         node_dict = {
             node.id: node.text
