@@ -1,10 +1,10 @@
 {
-  "name": "vectordb",
+  "name": "lancedb",
   "version": "0.4.3",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "napi": {
-    "name": "vectordb-nodejs",
+    "name": "lancedb-nodejs",
     "triples": {
       "defaults": false,
       "additional": [
@@ -18,15 +18,21 @@
   "license": "Apache 2.0",
   "devDependencies": {
     "@napi-rs/cli": "^2.18.0",
-    "@types/jest": "^29.5.11",
+    "@types/jest": "^29.1.2",
+    "@types/tmp": "^0.2.6",
     "@typescript-eslint/eslint-plugin": "^6.19.0",
     "@typescript-eslint/parser": "^6.19.0",
-    "eslint": "^8.56.0",
+    "apache-arrow-old": "npm:apache-arrow@13.0.0",
+    "eslint": "^8.57.0",
+    "eslint-config-prettier": "^9.1.0",
     "jest": "^29.7.0",
+    "prettier": "^3.1.0",
+    "tmp": "^0.2.3",
     "ts-jest": "^29.1.2",
     "typedoc": "^0.25.7",
     "typedoc-plugin-markdown": "^3.17.1",
-    "typescript": "^5.3.3"
+    "typescript": "^5.3.3",
+    "typescript-eslint": "^7.1.0"
   },
   "ava": {
     "timeout": "3m"
@@ -45,23 +51,25 @@
   ],
   "scripts": {
     "artifacts": "napi artifacts",
-    "build:native": "napi build --platform --release --js vectordb/native.js --dts vectordb/native.d.ts dist/",
-    "build:debug": "napi build --platform --dts ../vectordb/native.d.ts --js ../vectordb/native.js dist/",
+    "build:native": "napi build --platform --release --js lancedb/native.js --dts lancedb/native.d.ts dist/",
+    "build:debug": "napi build --platform --dts ../lancedb/native.d.ts --js ../lancedb/native.js dist/",
     "build": "npm run build:debug && tsc -b",
-    "docs": "typedoc --plugin typedoc-plugin-markdown vectordb/index.ts",
-    "lint": "eslint vectordb --ext .js,.ts",
+    "chkformat": "prettier . --check",
+    "docs": "typedoc --plugin typedoc-plugin-markdown lancedb/index.ts",
+    "lint": "eslint lancedb && eslint __test__",
     "prepublishOnly": "napi prepublish -t npm",
-    "test": "npm run build && jest",
+    "test": "npm run build && jest --verbose",
     "universal": "napi universal",
     "version": "napi version"
   },
   "optionalDependencies": {
-    "vectordb-darwin-arm64": "0.4.3",
-    "vectordb-darwin-x64": "0.4.3",
-    "vectordb-linux-arm64-gnu": "0.4.3",
-    "vectordb-linux-x64-gnu": "0.4.3"
+    "lancedb-darwin-arm64": "0.4.3",
+    "lancedb-darwin-x64": "0.4.3",
+    "lancedb-linux-arm64-gnu": "0.4.3",
+    "lancedb-linux-x64-gnu": "0.4.3",
+    "openai": "^4.28.4"
   },
-  "dependencies": {
+  "peerDependencies": {
     "apache-arrow": "^15.0.0"
   }
 }

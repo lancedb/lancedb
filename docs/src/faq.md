@@ -40,7 +40,7 @@ LanceDB and its underlying data format, Lance, are built to scale to really larg
 
 No. LanceDB is blazing fast (due to its disk-based index) for even brute force kNN search, within reason. In our benchmarks, computing 100K pairs of 1000-dimension vectors takes less than 20ms. For small datasets of ~100K records or applications that can accept ~100ms latency, an ANN index is usually not necessary.
 
-For large-scale (>1M) or higher dimension vectors, it is beneficial to create an ANN index.
+For large-scale (>1M) or higher dimension vectors, it is beneficial to create an ANN index. See the [ANN indexes](ann_indexes.md) section for more details.
 
 ### Does LanceDB support full-text search?
 

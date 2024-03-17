@@ -12,89 +12,75 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use lance_linalg::distance::MetricType as LanceMetricType;
+use std::sync::Mutex;
+
+use lancedb::index::scalar::BTreeIndexBuilder;
+use lancedb::index::vector::IvfPqIndexBuilder;
+use lancedb::index::Index as LanceDbIndex;
+use lancedb::DistanceType;
 use napi_derive::napi;
 
 #[napi]
-pub enum IndexType {
-    Scalar,
-    IvfPq,
+pub struct Index {
+    inner: Mutex<Option<LanceDbIndex>>,
 }
 
-#[napi]
-pub enum MetricType {
-    L2,
-    Cosine,
-    Dot,
-}
-
-impl From<MetricType> for LanceMetricType {
-    fn from(metric: MetricType) -> Self {
-        match metric {
-            MetricType::L2 => Self::L2,
-            MetricType::Cosine => Self::Cosine,
-            MetricType::Dot => Self::Dot,
-        }
+impl Index {
+    pub fn consume(&self) -> napi::Result<LanceDbIndex> {
+        self.inner
+            .lock()
+            .unwrap()
+            .take()
+            .ok_or(napi::Error::from_reason(
+                "attempt to use an index more than once",
+            ))
     }
 }
 
 #[napi]
-pub struct IndexBuilder {
-    inner: vectordb::index::IndexBuilder,
-}
-
-#[napi]
-impl IndexBuilder {
-    pub fn new(tbl: &dyn vectordb::Table) -> Self {
-        let inner = tbl.create_index(&[]);
-        Self { inner }
-    }
-
-    #[napi]
-    pub unsafe fn replace(&mut self, v: bool) {
-        self.inner.replace(v);
-    }
-
-    #[napi]
-    pub unsafe fn column(&mut self, c: String) {
-        self.inner.columns(&[c.as_str()]);
-    }
-
-    #[napi]
-    pub unsafe fn name(&mut self, name: String) {
-        self.inner.name(name.as_str());
-    }
-
-    #[napi]
-    pub unsafe fn ivf_pq(
-        &mut self,
-        metric_type: Option<MetricType>,
+impl Index {
+    #[napi(factory)]
+    pub fn ivf_pq(
+        distance_type: Option<String>,
         num_partitions: Option<u32>,
         num_sub_vectors: Option<u32>,
-        num_bits: Option<u32>,
         max_iterations: Option<u32>,
         sample_rate: Option<u32>,
-    ) {
-        self.inner.ivf_pq();
-        metric_type.map(|m| self.inner.metric_type(m.into()));
-        num_partitions.map(|p| self.inner.num_partitions(p));
-        num_sub_vectors.map(|s| self.inner.num_sub_vectors(s));
-        num_bits.map(|b| self.inner.num_bits(b));
-        max_iterations.map(|i| self.inner.max_iterations(i));
-        sample_rate.map(|s| self.inner.sample_rate(s));
+    ) -> napi::Result<Self> {
+        let mut ivf_pq_builder = IvfPqIndexBuilder::default();
+        if let Some(distance_type) = distance_type {
+            let distance_type = match distance_type.as_str() {
+                "l2" => Ok(DistanceType::L2),
+                "cosine" => Ok(DistanceType::Cosine),
+                "dot" => Ok(DistanceType::Dot),
+                _ => Err(napi::Error::from_reason(format!(
+                    "Invalid distance type '{}'.  Must be one of l2, cosine, or dot",
+                    distance_type
+                ))),
+            }?;
+            ivf_pq_builder = ivf_pq_builder.distance_type(distance_type);
+        }
+        if let Some(num_partitions) = num_partitions {
+            ivf_pq_builder = ivf_pq_builder.num_partitions(num_partitions);
+        }
+        if let Some(num_sub_vectors) = num_sub_vectors {
+            ivf_pq_builder = ivf_pq_builder.num_sub_vectors(num_sub_vectors);
+        }
+        if let Some(max_iterations) = max_iterations {
+            ivf_pq_builder = ivf_pq_builder.max_iterations(max_iterations);
+        }
+        if let Some(sample_rate) = sample_rate {
+            ivf_pq_builder = ivf_pq_builder.sample_rate(sample_rate);
+        }
+        Ok(Self {
+            inner: Mutex::new(Some(LanceDbIndex::IvfPq(ivf_pq_builder))),
+        })
     }
 
-    #[napi]
-    pub unsafe fn scalar(&mut self) {
-        self.inner.scalar();
-    }
-
-    #[napi]
-    pub async fn build(&self) -> napi::Result<()> {
-        self.inner
-            .build()
-            .await
-            .map_err(|e| napi::Error::from_reason(format!("Failed to build index: {}", e)))?;
-        Ok(())
+    #[napi(factory)]
+    pub fn btree() -> Self {
+        Self {
+            inner: Mutex::new(Some(LanceDbIndex::BTree(BTreeIndexBuilder::default()))),
+        }
     }
 }

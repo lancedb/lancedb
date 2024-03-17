@@ -1,12 +1,12 @@
 {
   "name": "vectordb",
-  "version": "0.4.9",
+  "version": "0.4.13",
   "description": " Serverless, low-latency vector database for AI applications",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
     "tsc": "tsc -b",
-    "build": "npm run tsc && cargo-cp-artifact --artifact cdylib vectordb-node index.node -- cargo build --message-format=json",
+    "build": "npm run tsc && cargo-cp-artifact --artifact cdylib lancedb-node index.node -- cargo build --message-format=json",
     "build-release": "npm run build -- --release",
     "test": "npm run tsc && mocha -recursive dist/test",
     "integration-test": "npm run tsc && mocha -recursive dist/integration_test",
@@ -41,6 +41,7 @@
     "@types/temp": "^0.9.1",
     "@types/uuid": "^9.0.3",
     "@typescript-eslint/eslint-plugin": "^5.59.1",
+    "apache-arrow-old": "npm:apache-arrow@13.0.0",
     "cargo-cp-artifact": "^0.1",
     "chai": "^4.3.7",
     "chai-as-promised": "^7.1.1",
@@ -61,10 +62,12 @@
     "uuid": "^9.0.0"
   },
   "dependencies": {
-    "@apache-arrow/ts": "^14.0.2",
     "@neon-rs/load": "^0.0.74",
-    "apache-arrow": "^14.0.2",
     "axios": "^1.4.0"
+  },
+  "peerDependencies": {
+    "@apache-arrow/ts": "^14.0.2",
+    "apache-arrow": "^14.0.2"
   },
   "os": [
     "darwin",
@@ -85,10 +88,10 @@
     }
   },
   "optionalDependencies": {
-    "@lancedb/vectordb-darwin-arm64": "0.4.9",
-    "@lancedb/vectordb-darwin-x64": "0.4.9",
-    "@lancedb/vectordb-linux-arm64-gnu": "0.4.9",
-    "@lancedb/vectordb-linux-x64-gnu": "0.4.9",
-    "@lancedb/vectordb-win32-x64-msvc": "0.4.9"
+    "@lancedb/vectordb-darwin-arm64": "0.4.13",
+    "@lancedb/vectordb-darwin-x64": "0.4.13",
+    "@lancedb/vectordb-linux-arm64-gnu": "0.4.13",
+    "@lancedb/vectordb-linux-x64-gnu": "0.4.13",
+    "@lancedb/vectordb-win32-x64-msvc": "0.4.13"
   }
 }

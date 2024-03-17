@@ -1,9 +1,5 @@
 {
-  "include": [
-    "vectordb/*.ts",
-    "vectordb/**/*.ts",
-    "vectordb/*.js",
-  ],
+  "include": ["lancedb/*.ts", "lancedb/**/*.ts", "lancedb/*.js"],
   "compilerOptions": {
     "target": "es2022",
     "module": "commonjs",
@@ -11,21 +7,17 @@
     "outDir": "./dist",
     "strict": true,
     "allowJs": true,
-    "resolveJsonModule": true,
+    "resolveJsonModule": true
   },
-  "exclude": [
-    "./dist/*",
-  ],
+  "exclude": ["./dist/*"],
   "typedocOptions": {
-    "entryPoints": [
-      "vectordb/index.ts"
-    ],
+    "entryPoints": ["lancedb/index.ts"],
     "out": "../docs/src/javascript/",
     "visibilityFilters": {
       "protected": false,
       "private": false,
       "inherited": true,
-      "external": false,
+      "external": false
     }
   }
 }

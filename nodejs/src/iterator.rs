@@ -13,20 +13,20 @@
 // limitations under the License.
 
 use futures::StreamExt;
-use lance::io::RecordBatchStream;
+use lancedb::arrow::SendableRecordBatchStream;
+use lancedb::ipc::batches_to_ipc_file;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
-use vectordb::ipc::batches_to_ipc_file;
 
 /** Typescript-style Async Iterator over RecordBatches */
 #[napi]
 pub struct RecordBatchIterator {
-    inner: Box<dyn RecordBatchStream + Unpin>,
+    inner: SendableRecordBatchStream,
 }
 
 #[napi]
 impl RecordBatchIterator {
-    pub(crate) fn new(inner: Box<dyn RecordBatchStream + Unpin>) -> Self {
+    pub(crate) fn new(inner: SendableRecordBatchStream) -> Self {
         Self { inner }
     }
 

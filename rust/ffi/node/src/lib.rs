@@ -22,9 +22,9 @@ use object_store::CredentialProvider;
 use once_cell::sync::OnceCell;
 use tokio::runtime::Runtime;
 
-use vectordb::connection::Database;
-use vectordb::table::ReadParams;
-use vectordb::{ConnectOptions, Connection};
+use lancedb::connect;
+use lancedb::connection::Connection;
+use lancedb::table::ReadParams;
 
 use crate::error::ResultExt;
 use crate::query::JsQuery;
@@ -39,7 +39,7 @@ mod query;
 mod table;
 
 struct JsDatabase {
-    database: Arc<dyn Connection + 'static>,
+    database: Connection,
 }
 
 impl Finalize for JsDatabase {}
@@ -84,28 +84,36 @@ fn database_new(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let path = cx.argument::<JsString>(0)?.value(&mut cx);
     let aws_creds = get_aws_creds(&mut cx, 1)?;
     let region = get_aws_region(&mut cx, 4)?;
+    let read_consistency_interval = cx
+        .argument_opt(5)
+        .and_then(|arg| arg.downcast::<JsNumber, _>(&mut cx).ok())
+        .map(|v| v.value(&mut cx))
+        .map(std::time::Duration::from_secs_f64);
 
     let rt = runtime(&mut cx)?;
     let channel = cx.channel();
     let (deferred, promise) = cx.promise();
 
-    let mut conn_options = ConnectOptions::new(&path);
+    let mut conn_builder = connect(&path);
     if let Some(region) = region {
-        conn_options = conn_options.region(&region);
+        conn_builder = conn_builder.region(&region);
     }
     if let Some(aws_creds) = aws_creds {
-        conn_options = conn_options.aws_creds(AwsCredential {
+        conn_builder = conn_builder.aws_creds(AwsCredential {
             key_id: aws_creds.key_id,
             secret_key: aws_creds.secret_key,
             token: aws_creds.token,
         });
     }
+    if let Some(interval) = read_consistency_interval {
+        conn_builder = conn_builder.read_consistency_interval(interval);
+    }
     rt.spawn(async move {
-        let database = Database::connect_with_options(&conn_options).await;
+        let database = conn_builder.execute().await;
 
         deferred.settle_with(&channel, move |mut cx| {
             let db = JsDatabase {
-                database: Arc::new(database.or_throw(&mut cx)?),
+                database: database.or_throw(&mut cx)?,
             };
             Ok(cx.boxed(db))
         });
@@ -124,7 +132,7 @@ fn database_table_names(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let database = db.database.clone();
 
     rt.spawn(async move {
-        let tables_rst = database.table_names().await;
+        let tables_rst = database.table_names().execute().await;
 
         deferred.settle_with(&channel, move |mut cx| {
             let tables = tables_rst.or_throw(&mut cx)?;
@@ -217,7 +225,11 @@ fn database_open_table(mut cx: FunctionContext) -> JsResult<JsPromise> {
 
     let (deferred, promise) = cx.promise();
     rt.spawn(async move {
-        let table_rst = database.open_table_with_params(&table_name, params).await;
+        let table_rst = database
+            .open_table(&table_name)
+            .lance_read_params(params)
+            .execute()
+            .await;
 
         deferred.settle_with(&channel, move |mut cx| {
             let js_table = JsTable::from(table_rst.or_throw(&mut cx)?);
@@ -274,5 +286,8 @@ fn main(mut cx: ModuleContext) -> NeonResult<()> {
         index::vector::table_create_vector_index,
     )?;
     cx.export_function("tableSchema", JsTable::js_schema)?;
+    cx.export_function("tableAddColumns", JsTable::js_add_columns)?;
+    cx.export_function("tableAlterColumns", JsTable::js_alter_columns)?;
+    cx.export_function("tableDropColumns", JsTable::js_drop_columns)?;
     Ok(())
 }

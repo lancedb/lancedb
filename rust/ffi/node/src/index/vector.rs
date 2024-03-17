@@ -13,12 +13,12 @@
 // limitations under the License.
 
 use lance_linalg::distance::MetricType;
+use lancedb::index::vector::IvfPqIndexBuilder;
+use lancedb::index::Index;
 use neon::context::FunctionContext;
 use neon::prelude::*;
 use std::convert::TryFrom;
-use vectordb::index::IndexBuilder;
 
-use crate::error::Error::InvalidIndexType;
 use crate::error::ResultExt;
 use crate::neon_ext::js_object_ext::JsObjectExt;
 use crate::runtime;
@@ -39,12 +39,20 @@ pub fn table_create_vector_index(mut cx: FunctionContext) -> JsResult<JsPromise>
         .map(|s| s.value(&mut cx))
         .unwrap_or("vector".to_string()); // Backward compatibility
 
+    let replace = index_params
+        .get_opt::<JsBoolean, _, _>(&mut cx, "replace")?
+        .map(|r| r.value(&mut cx));
+
     let tbl = table.clone();
-    let mut index_builder = tbl.create_index(&[&column_name]);
-    get_index_params_builder(&mut cx, index_params, &mut index_builder).or_throw(&mut cx)?;
+    let ivf_pq_builder = get_index_params_builder(&mut cx, index_params).or_throw(&mut cx)?;
+
+    let mut index_builder = tbl.create_index(&[column_name], Index::IvfPq(ivf_pq_builder));
+    if let Some(replace) = replace {
+        index_builder = index_builder.replace(replace);
+    }
 
     rt.spawn(async move {
-        let idx_result = index_builder.build().await;
+        let idx_result = index_builder.execute().await;
         deferred.settle_with(&channel, move |mut cx| {
             idx_result.or_throw(&mut cx)?;
             Ok(cx.boxed(JsTable::from(table)))
@@ -56,39 +64,25 @@ pub fn table_create_vector_index(mut cx: FunctionContext) -> JsResult<JsPromise>
 fn get_index_params_builder(
     cx: &mut FunctionContext,
     obj: Handle<JsObject>,
-    builder: &mut IndexBuilder,
-) -> crate::error::Result<()> {
-    match obj.get::<JsString, _, _>(cx, "type")?.value(cx).as_str() {
-        "ivf_pq" => builder.ivf_pq(),
-        _ => {
-            return Err(InvalidIndexType {
-                index_type: "".into(),
-            })
-        }
-    };
-
-    obj.get_opt::<JsString, _, _>(cx, "index_name")?
-        .map(|s| builder.name(s.value(cx).as_str()));
-
+) -> crate::error::Result<IvfPqIndexBuilder> {
+    if obj.get_opt::<JsString, _, _>(cx, "index_name")?.is_some() {
+        return Err(crate::error::Error::LanceDB {
+            message: "Setting the index_name is no longer supported".to_string(),
+        });
+    }
+    let mut builder = IvfPqIndexBuilder::default();
     if let Some(metric_type) = obj.get_opt::<JsString, _, _>(cx, "metric_type")? {
         let metric_type = MetricType::try_from(metric_type.value(cx).as_str())?;
-        builder.metric_type(metric_type);
+        builder = builder.distance_type(metric_type);
     }
-
     if let Some(np) = obj.get_opt_u32(cx, "num_partitions")? {
-        builder.num_partitions(np);
+        builder = builder.num_partitions(np);
     }
     if let Some(ns) = obj.get_opt_u32(cx, "num_sub_vectors")? {
-        builder.num_sub_vectors(ns);
+        builder = builder.num_sub_vectors(ns);
     }
     if let Some(max_iters) = obj.get_opt_u32(cx, "max_iters")? {
-        builder.max_iterations(max_iters);
+        builder = builder.max_iterations(max_iters);
     }
-    if let Some(num_bits) = obj.get_opt_u32(cx, "num_bits")? {
-        builder.num_bits(num_bits);
-    }
-    if let Some(replace) = obj.get_opt::<JsBoolean, _, _>(cx, "replace")? {
-        builder.replace(replace.value(cx));
-    }
-    Ok(())
+    Ok(builder)
 }

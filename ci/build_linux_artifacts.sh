@@ -13,7 +13,9 @@ docker build \
     .
 popd
 
+# We turn on memory swap to avoid OOM killer
 docker run \
     -v $(pwd):/io -w /io \
+    --memory-swap=-1 \
     lancedb-node-manylinux \
     bash ci/manylinux_node/build.sh $ARCH
