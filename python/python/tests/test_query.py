@@ -34,7 +34,7 @@ class MockTable:
     def to_lance(self):
         return lance.dataset(self.uri)
 
-    def _get_query_projected_schema(self, query):
+    def _execute_query(self, query, batch_size: Optional[int] = None):
         ds = self.to_lance()
         return ds.scanner(
             columns=query.columns,
@@ -48,24 +48,8 @@ class MockTable:
                 "nprobes": query.nprobes,
                 "refine_factor": query.refine_factor,
             },
-        ).projected_schema
-
-    def _execute_query(self, query, batch_size: Optional[int] = None):
-        ds = self.to_lance()
-        return ds.to_batches(
-            columns=query.columns,
-            filter=query.filter,
-            prefilter=query.prefilter,
-            nearest={
-                "column": query.vector_column,
-                "q": query.vector,
-                "k": query.k,
-                "metric": query.metric,
-                "nprobes": query.nprobes,
-                "refine_factor": query.refine_factor,
-            },
             batch_size=batch_size,
-        )
+        ).to_reader()
 
 
 @pytest.fixture
@@ -204,9 +188,7 @@ def test_query_builder_with_different_vector_column():
         .limit(2)
     )
     ds = mock.Mock()
-    schema = pa.schema([("b", pa.float32())])
     table.to_lance.return_value = ds
-    table._get_query_projected_schema.return_value = schema
     builder.to_arrow()
     table._execute_query.assert_called_once_with(
         Query(

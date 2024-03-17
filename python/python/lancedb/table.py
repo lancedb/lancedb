@@ -516,11 +516,7 @@ class Table(ABC):
     @abstractmethod
     def _execute_query(
         self, query: Query, batch_size: Optional[int] = None
-    ) -> Iterable[pa.RecordBatch]:
-        pass
-
-    @abstractmethod
-    def _get_query_projected_schema(self, query: Query) -> pa.Schema:
+    ) -> pa.RecordBatchReader:
         pass
 
     @abstractmethod
@@ -1526,7 +1522,9 @@ class LanceTable(Table):
         self._dataset_mut.update(values_sql, where)
         register_event("update")
 
-    def _get_query_projected_schema(self, query: Query) -> pa.Schema:
+    def _execute_query(
+        self, query: Query, batch_size: Optional[int] = None
+    ) -> pa.RecordBatchReader:
         ds = self.to_lance()
         return ds.scanner(
             columns=query.columns,
@@ -1541,27 +1539,8 @@ class LanceTable(Table):
                 "refine_factor": query.refine_factor,
             },
             with_row_id=query.with_row_id,
-        ).projected_schema
-
-    def _execute_query(
-        self, query: Query, batch_size: Optional[int] = None
-    ) -> Iterable[pa.RecordBatch]:
-        ds = self.to_lance()
-        return ds.to_batches(
-            columns=query.columns,
-            filter=query.filter,
-            prefilter=query.prefilter,
-            nearest={
-                "column": query.vector_column,
-                "q": query.vector,
-                "k": query.k,
-                "metric": query.metric,
-                "nprobes": query.nprobes,
-                "refine_factor": query.refine_factor,
-            },
-            with_row_id=query.with_row_id,
             batch_size=batch_size,
-        )
+        ).to_reader()
 
     def _do_merge(
         self,
@@ -2185,7 +2164,7 @@ class AsyncTable:
 
     async def _execute_query(
         self, query: Query, batch_size: Optional[int] = None
-    ) -> Iterable[pa.RecordBatch]:
+    ) -> pa.RecordBatchReader:
         pass
 
     async def _do_merge(
