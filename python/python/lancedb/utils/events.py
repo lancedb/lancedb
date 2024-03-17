@@ -69,7 +69,7 @@ class _Events:
         self.throttled_event_names = ["search_table"]
         self.throttled_events = set()
         self.max_events = 5  # max events to store in memory
-        self.rate_limit = 60.0 * 5  # rate limit (seconds)
+        self.rate_limit = 60.0 * 60.0  # rate limit (seconds)
         self.time = 0.0
 
         if is_git_dir():
