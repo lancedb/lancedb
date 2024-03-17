@@ -138,7 +138,7 @@ class EmbeddingFunction(BaseModel, ABC):
             "Finetuning is not supported for this embedding function"
         )
 
-    def evaluate(self, dataset: QADataset, path=None, *args, **kwargs):
+    def evaluate(self, dataset: QADataset, top_k=5, path=None, *args, **kwargs):
         """
         Evaluate the embedding function on a dataset
         """
