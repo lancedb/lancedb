@@ -105,6 +105,7 @@ class SentenceTransformerEmbeddings(TextEmbeddingFunction):
 
 class SentenceTransformersTuner(BaseEmbeddingTuner):
     """Sentence Transformers Embedding Finetuning Engine."""
+
     def __init__(
         self,
         model: Any,
@@ -175,7 +176,9 @@ class SentenceTransformersTuner(BaseEmbeddingTuner):
                     example = InputExample(texts=[query, text])
                     examples.append(example)
             else:
-                node_id = self.trainset.relevant_docs[query_id][min(max_input_per_doc, len(self.trainset.relevant_docs[query_id]))]
+                node_id = self.trainset.relevant_docs[query_id][
+                    min(max_input_per_doc, len(self.trainset.relevant_docs[query_id]))
+                ]
                 text = self.trainset.corpus[node_id]
                 example = InputExample(texts=[query, text])
                 examples.append(example)
@@ -215,13 +218,21 @@ class SentenceTransformersTuner(BaseEmbeddingTuner):
         LOGGER.info("Finetuning complete.")
         LOGGER.info(f"Model saved to {self.path}.")
         LOGGER.info("You can now use the model as follows:")
-        LOGGER.info(f"model = get_registry().get('sentence-transformers').create(name='./{self.path}')")
+        LOGGER.info(
+            f"model = get_registry().get('sentence-transformers').create(name='./{self.path}')"
+        )
 
     def _wandb_callback(self, score, epoch, steps):
         try:
             import wandb
-            from wandb import __version__ # Known issue: to prevent accidentally importing wandb log folder
+            from wandb import (
+                __version__,
+            )  # Known issue: to prevent accidentally importing wandb log folder
         except ImportError:
-            raise ImportError("wandb is not installed. Please install it using `pip install wandb`")
-        run = wandb.run or wandb.init(project="sbert_lancedb_finetune", name=self.run_name)
+            raise ImportError(
+                "wandb is not installed. Please install it using `pip install wandb`"
+            )
+        run = wandb.run or wandb.init(
+            project="sbert_lancedb_finetune", name=self.run_name
+        )
         run.log({"epoch": epoch, "steps": steps, "score": score})

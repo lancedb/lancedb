@@ -10,9 +10,10 @@ from ..utils import api_key_not_found_help
 class BaseLLM(BaseModel):
     """
     TODO:
-    Base class for Language Model based Embedding Functions. This class is 
+    Base class for Language Model based Embedding Functions. This class is
     loosely desined rn, and will be updated as the usage gets clearer.
     """
+
     model_name: str
     model_kwargs: dict = {}
 
@@ -22,12 +23,13 @@ class BaseLLM(BaseModel):
         Get the client for the language model
         """
         raise NotImplementedError
-    
+
     def chat_completion(self, prompt: str, **kwargs):
         """
         Get the chat completion for the given prompt
         """
         raise NotImplementedError
+
 
 class Openai(BaseLLM):
     model_name: str = "gpt-3.5-turbo"
@@ -57,13 +59,13 @@ class Openai(BaseLLM):
                 {"role": "system", "content": "You are a helpful assistant."},
                 {"role": "user", "content": prompt},
             ],
-            **self.kwargs
-            )
+            **self.kwargs,
+        )
 
         text = completion.choices[0].message.content
 
         return text
-    
+
     def get_questions(self, prompt: str) -> str:
         """
         Get the chat completion for the given prompt
@@ -71,10 +73,11 @@ class Openai(BaseLLM):
         response = self.chat_completion(prompt)
         result = str(response).strip().split("\n")
         questions = [
-                    re.sub(r"^\d+[\).\s]", "", question).strip() for question in result
-                ]
+            re.sub(r"^\d+[\).\s]", "", question).strip() for question in result
+        ]
         questions = [question for question in questions if len(question) > 0]
         return questions
-    
+
+
 class Gemini(BaseLLM):
     pass

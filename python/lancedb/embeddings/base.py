@@ -23,6 +23,7 @@ from .utils import TEXT, retry_with_exponential_backoff
 from .fine_tuner import QADataset
 import lancedb
 
+
 class EmbeddingFunction(BaseModel, ABC):
     """
     An ABC for embedding functions.
@@ -128,18 +129,22 @@ class EmbeddingFunction(BaseModel, ABC):
 
     def __hash__(self) -> int:
         return hash(frozenset(vars(self).items()))
-    
+
     def finetune(self, dataset: QADataset, *args, **kwargs):
         """
         Finetune the embedding function on a dataset
         """
-        raise NotImplementedError("Finetuning is not supported for this embedding function")
-    
+        raise NotImplementedError(
+            "Finetuning is not supported for this embedding function"
+        )
+
     def evaluate(self, dataset: QADataset, path=None, *args, **kwargs):
         """
         Evaluate the embedding function on a dataset
         """
-        raise NotImplementedError("Evaluation is not supported for this embedding function")
+        raise NotImplementedError(
+            "Evaluation is not supported for this embedding function"
+        )
 
 
 class EmbeddingFunctionConfig(BaseModel):
@@ -182,13 +187,13 @@ class TextEmbeddingFunction(EmbeddingFunction):
         relevant document is the expected document.
         Pro - Should work for any embedding model
         Con - Only returns simple hit-rate, does not return more detailed metrics
-        if possible, should be implemented in the downstream embedding model class if custom 
+        if possible, should be implemented in the downstream embedding model class if custom
         metrics are needed.
         Parameters
         ----------
         dataset: QADataset
             The dataset to evaluate on
-        
+
         Returns
         -------
         dict
@@ -199,11 +204,12 @@ class TextEmbeddingFunction(EmbeddingFunction):
         relevant_docs = dataset.relevant_docs
         path = path or os.path.join(os.getcwd(), "eval")
         db = lancedb.connect(path)
+
         class Schema(lancedb.pydantic.LanceModel):
             id: str
             text: str = self.SourceField()
             vector: lancedb.pydantic.Vector(self.ndims()) = self.VectorField()
-        
+
         retriever = db.create_table("eval", schema=Schema, mode="overwrite")
         pylist = [{"id": str(k), "text": v} for k, v in corpus.items()]
         retriever.add(pylist)
@@ -211,7 +217,7 @@ class TextEmbeddingFunction(EmbeddingFunction):
         eval_results = []
         for query_id, query in tqdm(queries.items()):
             retrieved_nodes = retriever.search(query).limit(top_k).to_list()
-            retrieved_ids = [node["id"]  for node in retrieved_nodes]
+            retrieved_ids = [node["id"] for node in retrieved_nodes]
             expected_id = relevant_docs[query_id][0]
             is_hit = expected_id in retrieved_ids  # assume 1 relevant doc
 

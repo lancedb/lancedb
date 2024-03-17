@@ -1,2 +1,2 @@
-from .dataset import QADataset
+from .dataset import QADataset, TextChunk
 from .llm import Openai, Gemini

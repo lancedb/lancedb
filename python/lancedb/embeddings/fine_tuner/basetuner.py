@@ -1,6 +1,7 @@
 from pydantic import BaseModel
 from abc import ABC, abstractmethod
 
+
 class BaseEmbeddingTuner(ABC):
     """Base Embedding finetuning engine."""
 
