@@ -1019,8 +1019,9 @@ class AsyncQueryBase(object):
         you expect a large number of results, you may want to use [to_batches][]
         """
         batch_iter = await self.to_batches()
-        batches = [batch async for batch in batch_iter]
-        return pa.Table.from_batches(batches, schema=batch_iter.schema)
+        return pa.Table.from_batches(
+            await batch_iter.read_all(), schema=batch_iter.schema
+        )
 
     async def to_pandas(self) -> "pd.DataFrame":
         """

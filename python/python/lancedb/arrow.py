@@ -1,3 +1,5 @@
+from typing import List
+
 import pyarrow as pa
 
 from ._lancedb import RecordBatchStream
@@ -21,6 +23,16 @@ class AsyncRecordBatchReader:
         Accessing the schema does not consume any data from the stream
         """
         return self.inner_.schema()
+
+    async def read_all(self) -> List[pa.RecordBatch]:
+        """
+        Read all the record batches from the stream
+
+        This consumes the entire stream and returns a list of record batches
+
+        If there are a lot of results this may consume a lot of memory
+        """
+        return [batch async for batch in self]
 
     def __aiter__(self):
         return self
