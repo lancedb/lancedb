@@ -278,6 +278,9 @@ async def test_query_async(table_async: AsyncTable):
     # Also make sure `vector_search` works
     await check_query(table_async.vector_search([1, 2]).limit(1), expected_num_rows=1)
 
+    # Also check an empty query
+    await check_query(table_async.query().where("id < 0"), expected_num_rows=0)
+
 
 @pytest.mark.asyncio
 async def test_query_to_arrow_async(table_async: AsyncTable):
@@ -289,6 +292,10 @@ async def test_query_to_arrow_async(table_async: AsyncTable):
     assert table.num_rows == 2
     assert table.num_columns == 4
 
+    table = await table_async.query().where("id < 0").to_arrow()
+    assert table.num_rows == 0
+    assert table.num_columns == 4
+
 
 @pytest.mark.asyncio
 async def test_query_to_pandas_async(table_async: AsyncTable):
@@ -297,3 +304,6 @@ async def test_query_to_pandas_async(table_async: AsyncTable):
 
     df = await table_async.query().to_pandas()
     assert df.shape == (2, 4)
+
+    df = await table_async.query().where("id < 0").to_pandas()
+    assert df.shape == (0, 4)

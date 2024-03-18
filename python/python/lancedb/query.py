@@ -1018,8 +1018,9 @@ class AsyncQueryBase(object):
         This method will collect all results into memory before returning.  If
         you expect a large number of results, you may want to use [to_batches][]
         """
-        batches = [batch async for batch in await self.to_batches()]
-        return pa.Table.from_batches(batches)
+        batch_iter = await self.to_batches()
+        batches = [batch async for batch in batch_iter]
+        return pa.Table.from_batches(batches, schema=batch_iter.schema)
 
     async def to_pandas(self) -> "pd.DataFrame":
         """
