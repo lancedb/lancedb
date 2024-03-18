@@ -23,7 +23,7 @@ use napi_derive::napi;
 
 use crate::error::NapiErrorExt;
 use crate::index::Index;
-use crate::query::Query;
+use crate::query::{Query, VectorQuery};
 
 #[napi]
 pub struct Table {
@@ -169,6 +169,11 @@ impl Table {
     #[napi]
     pub fn query(&self) -> napi::Result<Query> {
         Ok(Query::new(self.inner_ref()?.query()))
+    }
+
+    #[napi]
+    pub fn vector_search(&self, vector: Float32Array) -> napi::Result<VectorQuery> {
+        self.query()?.nearest_to(vector)
     }
 
     #[napi]

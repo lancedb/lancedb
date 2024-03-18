@@ -342,7 +342,11 @@ mod test {
     use object_store::local::LocalFileSystem;
     use tempfile;
 
-    use crate::{connect, table::WriteOptions};
+    use crate::{
+        connect,
+        query::{ExecutableQuery, QueryBase},
+        table::WriteOptions,
+    };
 
     #[tokio::test]
     async fn test_e2e() {
@@ -381,9 +385,11 @@ mod test {
         assert_eq!(t.count_rows(None).await.unwrap(), 100);
 
         let q = t
-            .search(&[0.1, 0.1, 0.1, 0.1])
+            .query()
             .limit(10)
-            .execute_stream()
+            .nearest_to(&[0.1, 0.1, 0.1, 0.1])
+            .unwrap()
+            .execute()
             .await
             .unwrap();
 

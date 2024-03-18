@@ -24,6 +24,7 @@ import pyarrow as pa
 import pydantic
 
 from . import __version__
+from .arrow import AsyncRecordBatchReader
 from .common import VEC
 from .rerankers.base import Reranker
 from .rerankers.linear_combination import LinearCombinationReranker
@@ -33,6 +34,8 @@ if TYPE_CHECKING:
     import PIL
     import polars as pl
 
+    from ._lancedb import Query as LanceQuery
+    from ._lancedb import VectorQuery as LanceVectorQuery
     from .pydantic import LanceModel
     from .table import Table
 
@@ -920,4 +923,335 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             The LanceHybridQueryBuilder object.
         """
         self._vector_query.refine_factor(refine_factor)
+        return self
+
+
+class AsyncQueryBase(object):
+    def __init__(self, inner: Union[LanceQuery | LanceVectorQuery]):
+        """
+        Construct an AsyncQueryBase
+
+        This method is not intended to be called directly.  Instead, use the
+        [Table.query][] method to create a query.
+        """
+        self._inner = inner
+
+    def where(self, predicate: str) -> AsyncQuery:
+        """
+        Only return rows matching the given predicate
+
+        The predicate should be supplied as an SQL query string.  For example:
+
+        >>> predicate = "x > 10"
+        >>> predicate = "y > 0 AND y < 100"
+        >>> predicate = "x > 5 OR y = 'test'"
+
+        Filtering performance can often be improved by creating a scalar index
+        on the filter column(s).
+        """
+        self._inner.where(predicate)
+        return self
+
+    def select(self, columns: Union[List[str], dict[str, str]]) -> AsyncQuery:
+        """
+        Return only the specified columns.
+
+        By default a query will return all columns from the table.  However, this can
+        have a very significant impact on latency.  LanceDb stores data in a columnar
+        fashion.  This
+        means we can finely tune our I/O to select exactly the columns we need.
+
+        As a best practice you should always limit queries to the columns that you need.
+        If you pass in a list of column names then only those columns will be
+        returned.
+
+        You can also use this method to create new "dynamic" columns based on your
+        existing columns. For example, you may not care about "a" or "b" but instead
+        simply want "a + b".  This is often seen in the SELECT clause of an SQL query
+        (e.g. `SELECT a+b FROM my_table`).
+
+        To create dynamic columns you can pass in a dict[str, str].  A column will be
+        returned for each entry in the map.  The key provides the name of the column.
+        The value is an SQL string used to specify how the column is calculated.
+
+        For example, an SQL query might state `SELECT a + b AS combined, c`.  The
+        equivalent input to this method would be `{"combined": "a + b", "c": "c"}`.
+
+        Columns will always be returned in the order given, even if that order is
+        different than the order used when adding the data.
+        """
+        if isinstance(columns, dict):
+            column_tuples = list(columns.items())
+        else:
+            try:
+                column_tuples = [(c, c) for c in columns]
+            except TypeError:
+                raise TypeError("columns must be a list of column names or a dict")
+        self._inner.select(column_tuples)
+        return self
+
+    def limit(self, limit: int) -> AsyncQuery:
+        """
+        Set the maximum number of results to return.
+
+        By default, a plain search has no limit.  If this method is not
+        called then every valid row from the table will be returned.
+        """
+        self._inner.limit(limit)
+        return self
+
+    async def to_batches(self) -> AsyncRecordBatchReader:
+        """
+        Execute the query and return the results as an Apache Arrow RecordBatchReader.
+        """
+        return AsyncRecordBatchReader(await self._inner.execute())
+
+    async def to_arrow(self) -> pa.Table:
+        """
+        Execute the query and collect the results into an Apache Arrow Table.
+
+        This method will collect all results into memory before returning.  If
+        you expect a large number of results, you may want to use [to_batches][]
+        """
+        batch_iter = await self.to_batches()
+        return pa.Table.from_batches(
+            await batch_iter.read_all(), schema=batch_iter.schema
+        )
+
+    async def to_pandas(self) -> "pd.DataFrame":
+        """
+        Execute the query and collect the results into a pandas DataFrame.
+
+        This method will collect all results into memory before returning.  If
+        you expect a large number of results, you may want to use [to_batches][]
+        and convert each batch to pandas separately.
+
+        Example
+        -------
+
+        >>> import asyncio
+        >>> from lancedb import connect_async
+        >>> async def doctest_example():
+        ...     conn = await connect_async("./.lancedb")
+        ...     table = await conn.create_table("my_table", data=[{"a": 1, "b": 2}])
+        ...     async for batch in await table.query().to_batches():
+        ...         batch_df = batch.to_pandas()
+        >>> asyncio.run(doctest_example())
+        """
+        return (await self.to_arrow()).to_pandas()
+
+
+class AsyncQuery(AsyncQueryBase):
+    def __init__(self, inner: LanceQuery):
+        """
+        Construct an AsyncQuery
+
+        This method is not intended to be called directly.  Instead, use the
+        [Table.query][] method to create a query.
+        """
+        super().__init__(inner)
+        self._inner = inner
+
+    @classmethod
+    def _query_vec_to_array(self, vec: Union[VEC, Tuple]):
+        if isinstance(vec, list):
+            return pa.array(vec)
+        if isinstance(vec, np.ndarray):
+            return pa.array(vec)
+        if isinstance(vec, pa.Array):
+            return vec
+        if isinstance(vec, pa.ChunkedArray):
+            return vec.combine_chunks()
+        if isinstance(vec, tuple):
+            return pa.array(vec)
+        # We've checked everything we formally support in our typings
+        # but, as a fallback, let pyarrow try and convert it anyway.
+        # This can allow for some more exotic things like iterables
+        return pa.array(vec)
+
+    def nearest_to(
+        self, query_vector: Optional[Union[VEC, Tuple]] = None
+    ) -> AsyncVectorQuery:
+        """
+        Find the nearest vectors to the given query vector.
+
+        This converts the query from a plain query to a vector query.
+
+        This method will attempt to convert the input to the query vector
+        expected by the embedding model.  If the input cannot be converted
+        then an error will be thrown.
+
+        By default, there is no embedding model, and the input should be
+        something that can be converted to a pyarrow array of floats.  This
+        includes lists, numpy arrays, and tuples.
+
+        If there is only one vector column (a column whose data type is a
+        fixed size list of floats) then the column does not need to be specified.
+        If there is more than one vector column you must use
+        [AsyncVectorQuery::column][] to specify which column you would like to
+        compare with.
+
+        If no index has been created on the vector column then a vector query
+        will perform a distance comparison between the query vector and every
+        vector in the database and then sort the results.  This is sometimes
+        called a "flat search"
+
+        For small databases, with tens of thousands of vectors or less, this can
+        be reasonably fast.  In larger databases you should create a vector index
+        on the column.  If there is a vector index then an "approximate" nearest
+        neighbor search (frequently called an ANN search) will be performed.  This
+        search is much faster, but the results will be approximate.
+
+        The query can be further parameterized using the returned builder.  There
+        are various ANN search parameters that will let you fine tune your recall
+        accuracy vs search latency.
+
+        Vector searches always have a [limit][].  If `limit` has not been called then
+        a default `limit` of 10 will be used.
+        """
+        return AsyncVectorQuery(
+            self._inner.nearest_to(AsyncQuery._query_vec_to_array(query_vector))
+        )
+
+
+class AsyncVectorQuery(AsyncQueryBase):
+    def __init__(self, inner: LanceVectorQuery):
+        """
+        Construct an AsyncVectorQuery
+
+        This method is not intended to be called directly.  Instead, create
+        a query first with [Table.query][] and then use [AsyncQuery.nearest_to][]
+        to convert to a vector query.
+        """
+        super().__init__(inner)
+        self._inner = inner
+
+    def column(self, column: str) -> AsyncVectorQuery:
+        """
+        Set the vector column to query
+
+        This controls which column is compared to the query vector supplied in
+        the call to [Query.nearest_to][].
+
+        This parameter must be specified if the table has more than one column
+        whose data type is a fixed-size-list of floats.
+        """
+        self._inner.column(column)
+        return self
+
+    def nprobes(self, nprobes: int) -> AsyncVectorQuery:
+        """
+        Set the number of partitions to search (probe)
+
+        This argument is only used when the vector column has an IVF PQ index.
+        If there is no index then this value is ignored.
+
+        The IVF stage of IVF PQ divides the input into partitions (clusters) of
+        related values.
+
+        The partition whose centroids are closest to the query vector will be
+        exhaustiely searched to find matches.  This parameter controls how many
+        partitions should be searched.
+
+        Increasing this value will increase the recall of your query but will
+        also increase the latency of your query.  The default value is 20.  This
+        default is good for many cases but the best value to use will depend on
+        your data and the recall that you need to achieve.
+
+        For best results we recommend tuning this parameter with a benchmark against
+        your actual data to find the smallest possible value that will still give
+        you the desired recall.
+        """
+        self._inner.nprobes(nprobes)
+        return self
+
+    def refine_factor(self, refine_factor: int) -> AsyncVectorQuery:
+        """
+        A multiplier to control how many additional rows are taken during the refine
+        step
+
+        This argument is only used when the vector column has an IVF PQ index.
+        If there is no index then this value is ignored.
+
+        An IVF PQ index stores compressed (quantized) values.  They query vector is
+        compared against these values and, since they are compressed, the comparison is
+        inaccurate.
+
+        This parameter can be used to refine the results.  It can improve both improve
+        recall and correct the ordering of the nearest results.
+
+        To refine results LanceDb will first perform an ANN search to find the nearest
+        `limit` * `refine_factor` results.  In other words, if `refine_factor` is 3 and
+        `limit` is the default (10) then the first 30 results will be selected.  LanceDb
+        then fetches the full, uncompressed, values for these 30 results.  The results
+        are then reordered by the true distance and only the nearest 10 are kept.
+
+        Note: there is a difference between calling this method with a value of 1 and
+        never calling this method at all.  Calling this method with any value will have
+        an impact on your search latency.  When you call this method with a
+        `refine_factor` of 1 then LanceDb still needs to fetch the full, uncompressed,
+        values so that it can potentially reorder the results.
+
+        Note: if this method is NOT called then the distances returned in the _distance
+        column will be approximate distances based on the comparison of the quantized
+        query vector and the quantized result vectors.  This can be considerably
+        different than the true distance between the query vector and the actual
+        uncompressed vector.
+        """
+        self._inner.refine_factor(refine_factor)
+        return self
+
+    def distance_type(self, distance_type: str) -> AsyncVectorQuery:
+        """
+        Set the distance metric to use
+
+        When performing a vector search we try and find the "nearest" vectors according
+        to some kind of distance metric.  This parameter controls which distance metric
+        to use.  See @see {@link IvfPqOptions.distanceType} for more details on the
+        different distance metrics available.
+
+        Note: if there is a vector index then the distance type used MUST match the
+        distance type used to train the vector index.  If this is not done then the
+        results will be invalid.
+
+        By default "l2" is used.
+        """
+        self._inner.distance_type(distance_type)
+        return self
+
+    def postfilter(self) -> AsyncVectorQuery:
+        """
+        If this is called then filtering will happen after the vector search instead of
+        before.
+
+        By default filtering will be performed before the vector search.  This is how
+        filtering is typically understood to work.  This prefilter step does add some
+        additional latency.  Creating a scalar index on the filter column(s) can
+        often improve this latency.  However, sometimes a filter is too complex or
+        scalar indices cannot be applied to the column.  In these cases postfiltering
+        can be used instead of prefiltering to improve latency.
+
+        Post filtering applies the filter to the results of the vector search.  This
+        means we only run the filter on a much smaller set of data.  However, it can
+        cause the query to return fewer than `limit` results (or even no results) if
+        none of the nearest results match the filter.
+
+        Post filtering happens during the "refine stage" (described in more detail in
+        @see {@link VectorQuery#refineFactor}).  This means that setting a higher refine
+        factor can often help restore some of the results lost by post filtering.
+        """
+        self._inner.postfilter()
+        return self
+
+    def bypass_vector_index(self) -> AsyncVectorQuery:
+        """
+        If this is called then any vector index is skipped
+
+        An exhaustive (flat) search will be performed.  The query vector will
+        be compared to every vector in the table.  At high scales this can be
+        expensive.  However, this is often still useful.  For example, skipping
+        the vector index can give you ground truth results which you can use to
+        calculate your recall to select an appropriate value for nprobes.
+        """
+        self._inner.bypass_vector_index()
         return self

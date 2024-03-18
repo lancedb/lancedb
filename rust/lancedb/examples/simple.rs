@@ -21,6 +21,7 @@ use futures::TryStreamExt;
 
 use lancedb::connection::Connection;
 use lancedb::index::Index;
+use lancedb::query::{ExecutableQuery, QueryBase};
 use lancedb::{connect, Result, Table as LanceDbTable};
 
 #[tokio::main]
@@ -150,9 +151,10 @@ async fn create_index(table: &LanceDbTable) -> Result<()> {
 async fn search(table: &LanceDbTable) -> Result<Vec<RecordBatch>> {
     // --8<-- [start:search]
     table
-        .search(&[1.0; 128])
+        .query()
         .limit(2)
-        .execute_stream()
+        .nearest_to(&[1.0; 128])?
+        .execute()
         .await?
         .try_collect::<Vec<_>>()
         .await
