@@ -52,7 +52,7 @@ use crate::index::{
     Index, IndexBuilder,
 };
 use crate::query::{
-    Query, QueryExecutionOptions, Select, ToQueryVector, VectorQuery, DEFAULT_TOP_K,
+    IntoQueryVector, Query, QueryExecutionOptions, Select, VectorQuery, DEFAULT_TOP_K,
 };
 use crate::utils::{default_vector_column, PatchReadParam, PatchWriteParam};
 
@@ -651,7 +651,7 @@ impl Table {
     /// This is a convenience method for preparing a vector query and
     /// is the same thing as calling `nearest_to` on the builder returned
     /// by `query`.  See [`Query::nearest_to`] for more details.
-    pub fn vector_search(&self, query: impl ToQueryVector) -> Result<VectorQuery> {
+    pub fn vector_search(&self, query: impl IntoQueryVector) -> Result<VectorQuery> {
         self.query().nearest_to(query)
     }
 
