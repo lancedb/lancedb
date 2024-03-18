@@ -39,12 +39,13 @@ import {
   fromTableToStreamBuffer
 } from '../arrow'
 import { toSQL } from '../util'
+import { type ConnectionMiddleware, type MiddlewareContext } from '../middleware'
 
 /**
  * Remote connection.
  */
 export class RemoteConnection implements Connection {
-  private readonly _client: HttpLancedbClient
+  private _client: HttpLancedbClient
   private readonly _dbName: string
 
   constructor (opts: ConnectionOptions) {
@@ -87,7 +88,8 @@ export class RemoteConnection implements Connection {
       limit,
       page_token: pageToken
     })
-    return response.data.tables
+    const body = await response.body()
+    return body.tables
   }
 
   async openTable (name: string): Promise<Table>
@@ -176,6 +178,23 @@ export class RemoteConnection implements Connection {
 
   async dropTable (name: string): Promise<void> {
     await this._client.post(`/v1/table/${name}/drop/`)
+  }
+
+  withMiddleware (middleware: ConnectionMiddleware): Connection {
+    const wrapped = this.clone()
+    wrapped._client = wrapped._client.withMiddleware(middleware)
+    return wrapped
+  }
+
+  withMiddlewareContext (ctx: MiddlewareContext): Connection {
+    const wrapped = this.clone()
+    wrapped._client = wrapped._client.withMiddlewareContext(ctx)
+    return wrapped
+  }
+
+  private clone (): RemoteConnection {
+    const clone: RemoteConnection = Object.create(RemoteConnection.prototype)
+    return Object.assign(clone, this)
   }
 }
 

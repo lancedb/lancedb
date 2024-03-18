@@ -24,6 +24,7 @@ import { RemoteConnection } from './remote'
 import { Query } from './query'
 import { isEmbeddingFunction } from './embedding/embedding_function'
 import { type Literal, toSQL } from './util'
+import { type ConnectionMiddleware, type MiddlewareContext } from './middleware'
 
 const {
   databaseNew,
@@ -302,6 +303,27 @@ export interface Connection {
    * @param name The name of the table to drop.
    */
   dropTable(name: string): Promise<void>
+
+  /**
+   * Instrument the behavior of this connection with middleware.
+   *
+   * The middlewares will be added in a chain and their respective instrumentation
+   * callback implementations will be called in the order they are passed into
+   * invocations of this method.
+   *
+   * @param {ConnectionMiddleware} - Middleware which will instrument the connection.
+   * @returns - this connection instrumented by the passed middleware
+   */
+  withMiddleware(middleware: ConnectionMiddleware): Connection
+
+  /**
+   * Set the context that will be passed to any middlewares that instrument this
+   * connection
+   *
+   * @param {MiddlewareContext} - Context that will be passed to middlewares
+   * @returns - this connection configured to pass the context to its middlewares
+   */
+  withMiddlewareContext(ctx: MiddlewareContext): Connection
 }
 
 /**
@@ -541,6 +563,8 @@ export interface Table<T = number[]> {
    *                    names (e.g. "a").
    */
   dropColumns(columnNames: string[]): Promise<void>
+
+  // TODO add methods for middleware
 }
 
 /**
@@ -794,6 +818,16 @@ export class LocalConnection implements Connection {
    */
   async dropTable (name: string): Promise<void> {
     await databaseDropTable.call(this._db, name)
+  }
+
+  withMiddleware (middleware: ConnectionMiddleware): Connection {
+    // noop
+    return this
+  }
+
+  withMiddlewareContext (ctx: MiddlewareContext): Connection {
+    // noop
+    return this
   }
 }
 

@@ -16,9 +16,87 @@ import axios, { type AxiosResponse } from 'axios'
 
 import { tableFromIPC, type Table as ArrowTable } from 'apache-arrow'
 
+import {
+  type RemoteRes,
+  type RemoteRequest, Method,
+  type MiddlewareContext,
+  type onRemoteRequestNext,
+  SimpleMiddlewareContext
+} from '../middleware'
+
+interface HttpLancedbClientMiddleware {
+  onRemoteRequest(
+    req: RemoteRequest,
+    next: onRemoteRequestNext,
+    ctx: MiddlewareContext,
+  ): Promise<RemoteRes>
+}
+
+// TODO comments
+async function callWithMiddlewares (
+  req: RemoteRequest,
+  ctx: MiddlewareContext,
+  middlewares: HttpLancedbClientMiddleware[]
+): Promise<RemoteRes> {
+  async function call (
+    i: number,
+    req: RemoteRequest,
+    ctx: MiddlewareContext
+  ): Promise<RemoteRes> {
+    // if we have reached the end of the middleware chain, make the request
+    if (i > middlewares.length) {
+      if (req.method !== Method.GET) {
+        throw new Error('TODO unimplemented')
+      }
+
+      const res = await axios.get(
+        req.uri,
+        {
+          headers: { ...req.headers },
+          params: req.params,
+          timeout: 10000
+        }
+      )
+
+      return toLanceRes(res)
+    }
+
+    // call next middleware in chain
+    return await middlewares[i - 1].onRemoteRequest(
+      req,
+      async (req, ctx) => {
+        return await call(i + 1, req, ctx)
+      },
+      ctx
+    )
+  }
+
+  return await call(1, req, ctx)
+}
+
+/**
+ * Marshall the library response into a LanceDB response
+ */
+function toLanceRes (res: AxiosResponse): RemoteRes {
+  const headers: Record<string, string> = {}
+  for (const h in res.headers) {
+    headers[h] = res.headers[h]
+  }
+
+  return {
+    status: res.status,
+    headers,
+    body: async () => {
+      return res.data
+    }
+  }
+}
+
 export class HttpLancedbClient {
   private readonly _url: string
   private readonly _apiKey: () => string
+  private readonly _middlewares: HttpLancedbClientMiddleware[]
+  private _middlewareCtx: MiddlewareContext
 
   public constructor (
     url: string,
@@ -27,6 +105,8 @@ export class HttpLancedbClient {
   ) {
     this._url = url
     this._apiKey = () => apiKey
+    this._middlewares = []
+    this._middlewareCtx = new SimpleMiddlewareContext()
   }
 
   get uri (): string {
@@ -85,33 +165,30 @@ export class HttpLancedbClient {
   /**
    * Sent GET request.
    */
-  public async get (path: string, params?: Record<string, string | number>): Promise<AxiosResponse> {
-    const response = await axios.get(
-      `${this._url}${path}`,
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': this._apiKey(),
-          ...(this._dbName !== undefined ? { 'x-lancedb-database': this._dbName } : {})
-        },
-        params,
-        timeout: 10000
-      }
-    ).catch((err) => {
+  public async get (path: string, params?: Record<string, string | number>): Promise<RemoteRes> {
+    const req = {
+      uri: `${this._url}${path}`,
+      method: Method.GET,
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': this._apiKey(),
+        ...(this._dbName !== undefined ? { 'x-lancedb-database': this._dbName } : {})
+      },
+      params
+    }
+
+    try {
+      const response = await callWithMiddlewares(req, this._middlewareCtx, this._middlewares)
+      // TODO replace handling etc if it's not 200
+      return response
+    } catch (err: any) {
       console.error('error: ', err)
       if (err.response === undefined) {
         throw new Error(`Network Error: ${err.message as string}`)
       }
-      return err.response
-    })
-    if (response.status !== 200) {
-      const errorData = new TextDecoder().decode(response.data)
-      throw new Error(
-        `Server Error, status: ${response.status as number}, ` +
-        `message: ${response.statusText as string}: ${errorData}`
-      )
+
+      return toLanceRes(err.response)
     }
-    return response
   }
 
   /**
@@ -150,5 +227,33 @@ export class HttpLancedbClient {
       )
     }
     return response
+  }
+
+  /**
+   * Instrument this client with middleware
+   * @param mw - The middleware that instruments the client
+   * @returns - an instance of this client instrumented with the middleware
+   */
+  public withMiddleware (mw: HttpLancedbClientMiddleware): HttpLancedbClient {
+    const wrapped = this.clone()
+    wrapped._middlewares.push(mw)
+    return wrapped
+  }
+
+  public withMiddlewareContext (ctx: MiddlewareContext): HttpLancedbClient {
+    const wrapped = this.clone()
+    wrapped._middlewareCtx = ctx
+    return wrapped
+  }
+
+  /**
+   * Make a clone of this client
+   */
+  private clone (): HttpLancedbClient {
+    const clone = new HttpLancedbClient(this._url, this._apiKey(), this._dbName)
+    for (const mw of this._middlewares) {
+      clone._middlewares.push(mw)
+    }
+    return clone
   }
 }
