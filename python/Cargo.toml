@@ -22,6 +22,9 @@ pyo3-asyncio = { version = "0.20", features = ["attributes", "tokio-runtime"] }
 
 # Prevent dynamic linking of lzma, which comes from datafusion
 lzma-sys = { version = "*", features = ["static"] }
+pin-project = "1.1.5"
+futures.workspace = true
+tokio = { version = "1.36.0", features = ["sync"] }
 
 [build-dependencies]
 pyo3-build-config = { version = "0.20.3", features = [

@@ -79,7 +79,7 @@ import {
 import type { IntBitWidth, TimeBitWidth } from "apache-arrow/type";
 
 function sanitizeMetadata(
-  metadataLike?: unknown
+  metadataLike?: unknown,
 ): Map<string, string> | undefined {
   if (metadataLike === undefined || metadataLike === null) {
     return undefined;
@@ -90,7 +90,7 @@ function sanitizeMetadata(
   for (const item of metadataLike) {
     if (!(typeof item[0] === "string" || !(typeof item[1] === "string"))) {
       throw Error(
-        "Expected metadata, if present, to be a Map<string, string> but it had non-string keys or values"
+        "Expected metadata, if present, to be a Map<string, string> but it had non-string keys or values",
       );
     }
   }
@@ -105,7 +105,7 @@ function sanitizeInt(typeLike: object) {
     typeof typeLike.isSigned !== "boolean"
   ) {
     throw Error(
-      "Expected an Int Type to have a `bitWidth` and `isSigned` property"
+      "Expected an Int Type to have a `bitWidth` and `isSigned` property",
     );
   }
   return new Int(typeLike.isSigned, typeLike.bitWidth as IntBitWidth);
@@ -128,7 +128,7 @@ function sanitizeDecimal(typeLike: object) {
     typeof typeLike.bitWidth !== "number"
   ) {
     throw Error(
-      "Expected a Decimal Type to have `scale`, `precision`, and `bitWidth` properties"
+      "Expected a Decimal Type to have `scale`, `precision`, and `bitWidth` properties",
     );
   }
   return new Decimal(typeLike.scale, typeLike.precision, typeLike.bitWidth);
@@ -149,7 +149,7 @@ function sanitizeTime(typeLike: object) {
     typeof typeLike.bitWidth !== "number"
   ) {
     throw Error(
-      "Expected a Time type to have `unit` and `bitWidth` properties"
+      "Expected a Time type to have `unit` and `bitWidth` properties",
     );
   }
   return new Time(typeLike.unit, typeLike.bitWidth as TimeBitWidth);
@@ -172,7 +172,7 @@ function sanitizeTypedTimestamp(
     | typeof TimestampNanosecond
     | typeof TimestampMicrosecond
     | typeof TimestampMillisecond
-    | typeof TimestampSecond
+    | typeof TimestampSecond,
 ) {
   let timezone = null;
   if ("timezone" in typeLike && typeof typeLike.timezone === "string") {
@@ -191,7 +191,7 @@ function sanitizeInterval(typeLike: object) {
 function sanitizeList(typeLike: object) {
   if (!("children" in typeLike) || !Array.isArray(typeLike.children)) {
     throw Error(
-      "Expected a List type to have an array-like `children` property"
+      "Expected a List type to have an array-like `children` property",
     );
   }
   if (typeLike.children.length !== 1) {
@@ -203,7 +203,7 @@ function sanitizeList(typeLike: object) {
 function sanitizeStruct(typeLike: object) {
   if (!("children" in typeLike) || !Array.isArray(typeLike.children)) {
     throw Error(
-      "Expected a Struct type to have an array-like `children` property"
+      "Expected a Struct type to have an array-like `children` property",
     );
   }
   return new Struct(typeLike.children.map((child) => sanitizeField(child)));
@@ -216,47 +216,47 @@ function sanitizeUnion(typeLike: object) {
     typeof typeLike.mode !== "number"
   ) {
     throw Error(
-      "Expected a Union type to have `typeIds` and `mode` properties"
+      "Expected a Union type to have `typeIds` and `mode` properties",
     );
   }
   if (!("children" in typeLike) || !Array.isArray(typeLike.children)) {
     throw Error(
-      "Expected a Union type to have an array-like `children` property"
+      "Expected a Union type to have an array-like `children` property",
     );
   }
 
   return new Union(
     typeLike.mode,
     typeLike.typeIds as any,
-    typeLike.children.map((child) => sanitizeField(child))
+    typeLike.children.map((child) => sanitizeField(child)),
   );
 }
 
 function sanitizeTypedUnion(
   typeLike: object,
-  UnionType: typeof DenseUnion | typeof SparseUnion
+  UnionType: typeof DenseUnion | typeof SparseUnion,
 ) {
   if (!("typeIds" in typeLike)) {
     throw Error(
-      "Expected a DenseUnion/SparseUnion type to have a `typeIds` property"
+      "Expected a DenseUnion/SparseUnion type to have a `typeIds` property",
     );
   }
   if (!("children" in typeLike) || !Array.isArray(typeLike.children)) {
     throw Error(
-      "Expected a DenseUnion/SparseUnion type to have an array-like `children` property"
+      "Expected a DenseUnion/SparseUnion type to have an array-like `children` property",
     );
   }
 
   return new UnionType(
     typeLike.typeIds as any,
-    typeLike.children.map((child) => sanitizeField(child))
+    typeLike.children.map((child) => sanitizeField(child)),
   );
 }
 
 function sanitizeFixedSizeBinary(typeLike: object) {
   if (!("byteWidth" in typeLike) || typeof typeLike.byteWidth !== "number") {
     throw Error(
-      "Expected a FixedSizeBinary type to have a `byteWidth` property"
+      "Expected a FixedSizeBinary type to have a `byteWidth` property",
     );
   }
   return new FixedSizeBinary(typeLike.byteWidth);
@@ -268,7 +268,7 @@ function sanitizeFixedSizeList(typeLike: object) {
   }
   if (!("children" in typeLike) || !Array.isArray(typeLike.children)) {
     throw Error(
-      "Expected a FixedSizeList type to have an array-like `children` property"
+      "Expected a FixedSizeList type to have an array-like `children` property",
     );
   }
   if (typeLike.children.length !== 1) {
@@ -276,14 +276,14 @@ function sanitizeFixedSizeList(typeLike: object) {
   }
   return new FixedSizeList(
     typeLike.listSize,
-    sanitizeField(typeLike.children[0])
+    sanitizeField(typeLike.children[0]),
   );
 }
 
 function sanitizeMap(typeLike: object) {
   if (!("children" in typeLike) || !Array.isArray(typeLike.children)) {
     throw Error(
-      "Expected a Map type to have an array-like `children` property"
+      "Expected a Map type to have an array-like `children` property",
     );
   }
   if (!("keysSorted" in typeLike) || typeof typeLike.keysSorted !== "boolean") {
@@ -291,7 +291,7 @@ function sanitizeMap(typeLike: object) {
   }
   return new Map_(
     typeLike.children.map((field) => sanitizeField(field)) as any,
-    typeLike.keysSorted
+    typeLike.keysSorted,
   );
 }
 
@@ -319,7 +319,7 @@ function sanitizeDictionary(typeLike: object) {
     sanitizeType(typeLike.dictionary),
     sanitizeType(typeLike.indices) as any,
     typeLike.id,
-    typeLike.isOrdered
+    typeLike.isOrdered,
   );
 }
 
@@ -454,7 +454,7 @@ function sanitizeField(fieldLike: unknown): Field {
     !("nullable" in fieldLike)
   ) {
     throw Error(
-      "The field passed in is missing a `type`/`name`/`nullable` property"
+      "The field passed in is missing a `type`/`name`/`nullable` property",
     );
   }
   const type = sanitizeType(fieldLike.type);
@@ -473,6 +473,13 @@ function sanitizeField(fieldLike: unknown): Field {
   return new Field(name, type, nullable, metadata);
 }
 
+/**
+ * Convert something schemaLike into a Schema instance
+ *
+ * This method is often needed even when the caller is using a Schema
+ * instance because they might be using a different instance of apache-arrow
+ * than lancedb is using.
+ */
 export function sanitizeSchema(schemaLike: unknown): Schema {
   if (schemaLike instanceof Schema) {
     return schemaLike;
@@ -482,7 +489,7 @@ export function sanitizeSchema(schemaLike: unknown): Schema {
   }
   if (!("fields" in schemaLike)) {
     throw Error(
-      "The schema passed in does not appear to be a schema (no 'fields' property)"
+      "The schema passed in does not appear to be a schema (no 'fields' property)",
     );
   }
   let metadata;
@@ -491,11 +498,11 @@ export function sanitizeSchema(schemaLike: unknown): Schema {
   }
   if (!Array.isArray(schemaLike.fields)) {
     throw Error(
-      "The schema passed in had a 'fields' property but it was not an array"
+      "The schema passed in had a 'fields' property but it was not an array",
     );
   }
   const sanitizedFields = schemaLike.fields.map((field) =>
-    sanitizeField(field)
+    sanitizeField(field),
   );
   return new Schema(sanitizedFields, metadata);
 }

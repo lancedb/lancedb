@@ -129,11 +129,25 @@ describe("When creating an index", () => {
     });
 
     // Search without specifying the column
-    const rst = await tbl.query().nearestTo(queryVec).limit(2).toArrow();
+    let rst = await tbl
+      .query()
+      .limit(2)
+      .nearestTo(queryVec)
+      .distanceType("DoT")
+      .toArrow();
+    expect(rst.numRows).toBe(2);
+
+    // Search using `vectorSearch`
+    rst = await tbl.vectorSearch(queryVec).limit(2).toArrow();
     expect(rst.numRows).toBe(2);
 
     // Search with specifying the column
-    const rst2 = await tbl.search(queryVec, "vec").limit(2).toArrow();
+    const rst2 = await tbl
+      .query()
+      .limit(2)
+      .nearestTo(queryVec)
+      .column("vec")
+      .toArrow();
     expect(rst2.numRows).toBe(2);
     expect(rst.toString()).toEqual(rst2.toString());
   });
@@ -163,7 +177,7 @@ describe("When creating an index", () => {
     const indexDir = path.join(tmpDir.name, "test.lance", "_indices");
     expect(fs.readdirSync(indexDir)).toHaveLength(1);
 
-    for await (const r of tbl.query().filter("id > 1").select(["id"])) {
+    for await (const r of tbl.query().where("id > 1").select(["id"])) {
       expect(r.numRows).toBe(298);
     }
   });
@@ -205,33 +219,39 @@ describe("When creating an index", () => {
 
     const rst = await tbl
       .query()
+      .limit(2)
       .nearestTo(
         Array(32)
           .fill(1)
           .map(() => Math.random()),
       )
-      .limit(2)
       .toArrow();
     expect(rst.numRows).toBe(2);
 
     // Search with specifying the column
     await expect(
       tbl
-        .search(
+        .query()
+        .limit(2)
+        .nearestTo(
           Array(64)
             .fill(1)
             .map(() => Math.random()),
-          "vec",
         )
-        .limit(2)
+        .column("vec")
         .toArrow(),
     ).rejects.toThrow(/.*does not match the dimension.*/);
 
     const query64 = Array(64)
       .fill(1)
       .map(() => Math.random());
-    const rst64Query = await tbl.query().nearestTo(query64).limit(2).toArrow();
-    const rst64Search = await tbl.search(query64, "vec2").limit(2).toArrow();
+    const rst64Query = await tbl.query().limit(2).nearestTo(query64).toArrow();
+    const rst64Search = await tbl
+      .query()
+      .limit(2)
+      .nearestTo(query64)
+      .column("vec2")
+      .toArrow();
     expect(rst64Query.toString()).toEqual(rst64Search.toString());
     expect(rst64Query.numRows).toBe(2);
   });

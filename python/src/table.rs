@@ -14,6 +14,7 @@ use pyo3_asyncio::tokio::future_into_py;
 use crate::{
     error::PythonErrorExt,
     index::{Index, IndexConfig},
+    query::Query,
 };
 
 #[pyclass]
@@ -178,5 +179,9 @@ impl Table {
             self_.py(),
             async move { inner.restore().await.infer_error() },
         )
+    }
+
+    pub fn query(&self) -> Query {
+        Query::new(self.inner_ref().unwrap().query())
     }
 }
