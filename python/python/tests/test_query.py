@@ -232,7 +232,7 @@ async def test_query_async(table_async: AsyncTable):
         table_async.query().select(["id", "vector"]), expected_columns=["id", "vector"]
     )
     await check_query(
-        table_async.query().select_with_projection({"foo": "id", "bar": "id + 1"}),
+        table_async.query().select({"foo": "id", "bar": "id + 1"}),
         expected_columns=["foo", "bar"],
     )
     await check_query(table_async.query().limit(1), expected_num_rows=1)
@@ -271,6 +271,10 @@ async def test_query_async(table_async: AsyncTable):
     )
     await check_query(
         table_async.query().nearest_to(pa.array([1, 2])).distance_type("dot"),
+        expected_num_rows=2,
+    )
+    await check_query(
+        table_async.query().nearest_to(pa.array([1, 2])).distance_type("DoT"),
         expected_num_rows=2,
     )
 

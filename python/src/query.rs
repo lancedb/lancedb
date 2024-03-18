@@ -16,7 +16,7 @@ use arrow::array::make_array;
 use arrow::array::ArrayData;
 use arrow::pyarrow::FromPyArrow;
 use lancedb::query::{
-    ExecutableQuery, Query as LanceDbQuery, QueryBase, VectorQuery as LanceDbVectorQuery,
+    ExecutableQuery, Query as LanceDbQuery, QueryBase, Select, VectorQuery as LanceDbVectorQuery,
 };
 use pyo3::pyclass;
 use pyo3::pymethods;
@@ -46,12 +46,8 @@ impl Query {
         self.inner = self.inner.clone().only_if(predicate);
     }
 
-    pub fn select(&mut self, columns: Vec<String>) {
-        self.inner = self.inner.clone().select(&columns);
-    }
-
-    pub fn select_with_projection(&mut self, columns: Vec<(String, String)>) {
-        self.inner = self.inner.clone().select_with_projection(&columns);
+    pub fn select(&mut self, columns: Vec<(String, String)>) {
+        self.inner = self.inner.clone().select(Select::dynamic(&columns));
     }
 
     pub fn limit(&mut self, limit: u32) {
@@ -85,12 +81,8 @@ impl VectorQuery {
         self.inner = self.inner.clone().only_if(predicate);
     }
 
-    pub fn select(&mut self, columns: Vec<String>) {
-        self.inner = self.inner.clone().select(&columns);
-    }
-
-    pub fn select_with_projection(&mut self, columns: Vec<(String, String)>) {
-        self.inner = self.inner.clone().select_with_projection(&columns);
+    pub fn select(&mut self, columns: Vec<(String, String)>) {
+        self.inner = self.inner.clone().select(Select::dynamic(&columns));
     }
 
     pub fn limit(&mut self, limit: u32) {

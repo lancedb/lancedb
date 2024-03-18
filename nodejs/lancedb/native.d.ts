@@ -106,8 +106,7 @@ export class RecordBatchIterator {
 }
 export class Query {
   onlyIf(predicate: string): void
-  select(columns: Array<string>): void
-  selectWithProjection(columns: Array<[string, string]>): void
+  select(columns: Array<[string, string]>): void
   limit(limit: number): void
   nearestTo(vector: Float32Array): VectorQuery
   execute(): Promise<RecordBatchIterator>
@@ -120,8 +119,7 @@ export class VectorQuery {
   nprobes(nprobe: number): void
   bypassVectorIndex(): void
   onlyIf(predicate: string): void
-  select(columns: Array<string>): void
-  selectWithProjection(columns: Array<[string, string]>): void
+  select(columns: Array<[string, string]>): void
   limit(limit: number): void
   execute(): Promise<RecordBatchIterator>
 }

@@ -76,51 +76,47 @@ export class QueryBase<
   }
 
   /**
-   * Choose which columns to return
-   *
-   * This is a shortcut for @see {@link Query#selectWithProjection} when no
-   * dynamic columns need to be calculated.  See that method for more
-   * details on the performance impact of selecting the right columns.
-   */
-  select(columns: string[]): QueryType {
-    this.inner.select(columns);
-    return this as unknown as QueryType;
-  }
-
-  /**
    * Return only the specified columns.
    *
    * By default a query will return all columns from the table.  However, this can have
    * a very significant impact on latency.  LanceDb stores data in a columnar fashion.  This
    * means we can finely tune our I/O to select exactly the columns we need.
    *
-   * As a best practice you should always limit queries to the columns that you need.
+   * As a best practice you should always limit queries to the columns that you need.  If you
+   * pass in an array of column names then only those columns will be returned.
    *
-   * "projection" is the process of creating new "dynamic" columns based on your existing
-   * columns.  For example, you may not care about "a" or "b" but instead simply want
-   * "a + b".  Projections are often seen in the SELECT clause of an SQL query (e.g.
-   * `SELECT a+b FROM my_table`).
+   * You can also use this method to create new "dynamic" columns based on your existing columns.
+   * For example, you may not care about "a" or "b" but instead simply want "a + b".  This is often
+   * seen in the SELECT clause of an SQL query (e.g. `SELECT a+b FROM my_table`).
    *
-   * LanceDb supports column projection through this method.  A column will be returned for
-   * each tuple provided.  The first value in that tuple provides the name of the column.  The
-   * second value in the tuple is an SQL string used to specify how the column is calculated.
+   * To create dynamic columns you can pass in a Map<string, string>.  A column will be returned
+   * for each entry in the map.  The key provides the name of the column.  The value is
+   * an SQL string used to specify how the column is calculated.
    *
    * For example, an SQL query might state `SELECT a + b AS combined, c`.  The equivalent
-   * input to `select_with_projection` would be `&[("combined", "a + b"), ("c", "c")]`.
+   * input to this method would be:
+   * @example
+   * new Map([["combined", "a + b"], ["c", "c"]])
    *
    * Columns will always be returned in the order given, even if that order is different than
    * the order used when adding the data.
+   *
+   * Note that you can pass in a `Record<string, string>` (e.g. an object literal). This method
+   * uses `Object.entries` which should preserve the insertion order of the object.  However,
+   * object insertion order is easy to get wrong and `Map` is more foolproof.
    */
-  selectWithProjection(
-    columns: Map<string, string> | Record<string, string>,
+  select(
+    columns: string[] | Map<string, string> | Record<string, string>,
   ): QueryType {
     let columnTuples: [string, string][];
-    if (columns instanceof Map) {
+    if (Array.isArray(columns)) {
+      columnTuples = columns.map((c) => [c, c]);
+    } else if (columns instanceof Map) {
       columnTuples = Array.from(columns.entries());
     } else {
       columnTuples = Object.entries(columns);
     }
-    this.inner.selectWithProjection(columnTuples);
+    this.inner.select(columnTuples);
     return this as unknown as QueryType;
   }
 

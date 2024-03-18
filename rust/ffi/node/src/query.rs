@@ -3,7 +3,7 @@ use std::ops::Deref;
 
 use futures::{TryFutureExt, TryStreamExt};
 use lance_linalg::distance::MetricType;
-use lancedb::query::{ExecutableQuery, QueryBase};
+use lancedb::query::{ExecutableQuery, QueryBase, Select};
 use neon::context::FunctionContext;
 use neon::handle::Handle;
 use neon::prelude::*;
@@ -65,7 +65,7 @@ impl JsQuery {
             builder = builder.only_if(filter);
         }
         if let Some(select) = select {
-            builder = builder.select(select.as_slice());
+            builder = builder.select(Select::columns(select.as_slice()));
         }
         if let Some(limit) = limit {
             builder = builder.limit(limit as usize);

@@ -26,11 +26,49 @@ use crate::DistanceType;
 
 pub(crate) const DEFAULT_TOP_K: usize = 10;
 
+/// Which columns should be retrieved from the database
 #[derive(Debug, Clone)]
 pub enum Select {
+    /// Select all columns
+    ///
+    /// Warning: This will always be slower than selecting only the columns you need.
     All,
-    Simple(Vec<String>),
-    Projection(Vec<(String, String)>),
+    /// Select the provided columns
+    Columns(Vec<String>),
+    /// Advanced selection which allows for dynamic column calculations
+    ///
+    /// The first item in each tuple is a name to assign to the output column.
+    /// The second item in each tuple is an SQL expression to evaluate the result.
+    ///
+    /// See [`Query::select`] for more details and examples
+    Dynamic(Vec<(String, String)>),
+}
+
+impl Select {
+    /// Create a simple selection that only selects the given columns
+    ///
+    /// This method is a convenience method for creating a [`Select::Columns`] variant
+    /// from either Vec<&str> or Vec<String>
+    pub fn columns(columns: &[impl AsRef<str>]) -> Self {
+        Self::Columns(
+            columns
+                .into_iter()
+                .map(|c| c.as_ref().to_string())
+                .collect(),
+        )
+    }
+    /// Create a dynamic selection that allows for advanced column selection
+    ///
+    /// This method is a convenience method for creating a [`Select::Dynamic`] variant
+    /// from either &str or String tuples
+    pub fn dynamic(columns: &[(impl AsRef<str>, impl AsRef<str>)]) -> Self {
+        Self::Dynamic(
+            columns
+                .into_iter()
+                .map(|(name, value)| (name.as_ref().to_string(), value.as_ref().to_string()))
+                .collect(),
+        )
+    }
 }
 
 /// A trait for converting a type to a query vector
@@ -315,12 +353,6 @@ pub trait QueryBase {
     /// on the filter column(s).
     fn only_if(self, filter: impl AsRef<str>) -> Self;
 
-    /// Choose which columns to return
-    ///
-    /// This is a shortcut for [`Self::select_with_projection`] when no dynamic columns need to be calculated.
-    /// See that method for more details on the performance impact of selecting the right columns.
-    fn select(self, columns: &[impl AsRef<str>]) -> Self;
-
     /// Return only the specified columns.
     ///
     /// By default a query will return all columns from the table.  However, this can have
@@ -329,21 +361,21 @@ pub trait QueryBase {
     ///
     /// As a best practice you should always limit queries to the columns that you need.
     ///
-    /// "projection" is the process of creating new "dynamic" columns based on your existing
-    /// columns.  For example, you may not care about "a" or "b" but instead simply want
-    /// "a + b".  Projections are often seen in the SELECT clause of an SQL query (e.g.
-    /// `SELECT a+b FROM my_table`).
+    /// You can also use this method to create new "dynamic" columns based on your existing columns.
+    /// For example, you may not care about "a" or "b" but instead simply want "a + b".  This is often
+    /// seen in the SELECT clause of an SQL query (e.g. `SELECT a+b FROM my_table`).
     ///
-    /// LanceDb supports column projection through this method.  A column will be returned for
-    /// each tuple provided.  The first value in that tuple provides the name of the column.  The
-    /// second value in the tuple is an SQL string used to specify how the column is calculated.
+    /// To create dynamic columns use [`Select::Dynamic`] (it might be easier to create this with the
+    /// helper method [`Select::dynamic`]).  A column will be returned for each tuple provided.  The
+    /// first value in that tuple provides the name of the column.  The second value in the tuple is
+    /// an SQL string used to specify how the column is calculated.
     ///
     /// For example, an SQL query might state `SELECT a + b AS combined, c`.  The equivalent
-    /// input to `select_with_projection` would be `&[("combined", "a + b"), ("c", "c")]`.
+    /// input to [`Select::dynamic`] would be `&[("combined", "a + b"), ("c", "c")]`.
     ///
     /// Columns will always be returned in the order given, even if that order is different than
     /// the order used when adding the data.
-    fn select_with_projection(self, columns: &[(impl AsRef<str>, impl AsRef<str>)]) -> Self;
+    fn select(self, selection: Select) -> Self;
 }
 
 pub trait HasQuery {
@@ -361,19 +393,8 @@ impl<T: HasQuery> QueryBase for T {
         self
     }
 
-    fn select(mut self, columns: &[impl AsRef<str>]) -> Self {
-        self.mut_query().select =
-            Select::Simple(columns.iter().map(|c| c.as_ref().to_string()).collect());
-        self
-    }
-
-    fn select_with_projection(mut self, columns: &[(impl AsRef<str>, impl AsRef<str>)]) -> Self {
-        self.mut_query().select = Select::Projection(
-            columns
-                .iter()
-                .map(|(c, t)| (c.as_ref().to_string(), t.as_ref().to_string()))
-                .collect(),
-        );
+    fn select(mut self, select: Select) -> Self {
+        self.mut_query().select = select;
         self
     }
 }
@@ -842,7 +863,7 @@ mod tests {
         let query = table
             .query()
             .limit(10)
-            .select_with_projection(&[("id2", "id * 2"), ("id", "id")]);
+            .select(Select::dynamic(&[("id2", "id * 2"), ("id", "id")]));
         let result = query.execute().await;
         let mut batches = result
             .expect("should have result")

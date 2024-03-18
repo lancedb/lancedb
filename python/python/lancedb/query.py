@@ -952,47 +952,42 @@ class AsyncQueryBase(object):
         self._inner.where(predicate)
         return self
 
-    def select(self, columns: List[str]) -> AsyncQuery:
-        """
-        Choose which columns to return
-
-        This is a shortcut for [select_with_projection][] when no
-        dynamic columns need to be calculated.  See that method for more
-        details on the performance impact of selecting the right columns.
-        """
-        self._inner.select(columns)
-        return self
-
-    def select_with_projection(self, columns: dict[str, str]) -> AsyncQuery:
+    def select(self, columns: Union[List[str], dict[str, str]]) -> AsyncQuery:
         """
         Return only the specified columns.
 
         By default a query will return all columns from the table.  However, this can
         have a very significant impact on latency.  LanceDb stores data in a columnar
-        fashion.  This means we can finely tune our I/O to select exactly the columns
-        we need.
+        fashion.  This
+        means we can finely tune our I/O to select exactly the columns we need.
 
         As a best practice you should always limit queries to the columns that you need.
+        If you pass in a list of column names then only those columns will be
+        returned.
 
-        "projection" is the process of creating new "dynamic" columns based on your
-        existing columns.  For example, you may not care about "a" or "b" but instead
-        simply want "a + b".  Projections are often seen in the SELECT clause of an SQL
-        query (e.g. `SELECT a+b FROM my_table`).
+        You can also use this method to create new "dynamic" columns based on your
+        existing columns. For example, you may not care about "a" or "b" but instead
+        simply want "a + b".  This is often seen in the SELECT clause of an SQL query
+        (e.g. `SELECT a+b FROM my_table`).
 
-        LanceDb supports column projection through this method.  A column will be
-        returned for each tuple provided.  The first value in that tuple provides the
-        name of the column.  The second value in the tuple is an SQL string used to
-        specify how the column is calculated.
+        To create dynamic columns you can pass in a dict[str, str].  A column will be
+        returned for each entry in the map.  The key provides the name of the column.
+        The value is an SQL string used to specify how the column is calculated.
 
         For example, an SQL query might state `SELECT a + b AS combined, c`.  The
-        equivalent input to `select_with_projection` would be `&[("combined", "a + b"),
-        ("c", "c")]`.
+        equivalent input to this method would be `{"combined": "a + b", "c": "c"}`.
 
         Columns will always be returned in the order given, even if that order is
         different than the order used when adding the data.
         """
-        column_tuples = [(k, v) for k, v in columns.items()]
-        self._inner.select_with_projection(column_tuples)
+        if isinstance(columns, dict):
+            column_tuples = list(columns.items())
+        else:
+            try:
+                column_tuples = [(c, c) for c in columns]
+            except TypeError:
+                raise TypeError("columns must be a list of column names or a dict")
+        self._inner.select(column_tuples)
         return self
 
     def limit(self, limit: int) -> AsyncQuery:

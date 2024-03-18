@@ -129,7 +129,12 @@ describe("When creating an index", () => {
     });
 
     // Search without specifying the column
-    let rst = await tbl.query().limit(2).nearestTo(queryVec).toArrow();
+    let rst = await tbl
+      .query()
+      .limit(2)
+      .nearestTo(queryVec)
+      .distanceType("DoT")
+      .toArrow();
     expect(rst.numRows).toBe(2);
 
     // Search using `vectorSearch`

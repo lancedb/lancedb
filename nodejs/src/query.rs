@@ -15,6 +15,7 @@
 use lancedb::query::ExecutableQuery;
 use lancedb::query::Query as LanceDbQuery;
 use lancedb::query::QueryBase;
+use lancedb::query::Select;
 use lancedb::query::VectorQuery as LanceDbVectorQuery;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
@@ -41,13 +42,8 @@ impl Query {
     }
 
     #[napi]
-    pub fn select(&mut self, columns: Vec<String>) {
-        self.inner = self.inner.clone().select(&columns);
-    }
-
-    #[napi]
-    pub fn select_with_projection(&mut self, columns: Vec<(String, String)>) {
-        self.inner = self.inner.clone().select_with_projection(&columns);
+    pub fn select(&mut self, columns: Vec<(String, String)>) {
+        self.inner = self.inner.clone().select(Select::dynamic(&columns));
     }
 
     #[napi]
@@ -119,13 +115,8 @@ impl VectorQuery {
     }
 
     #[napi]
-    pub fn select(&mut self, columns: Vec<String>) {
-        self.inner = self.inner.clone().select(&columns);
-    }
-
-    #[napi]
-    pub fn select_with_projection(&mut self, columns: Vec<(String, String)>) {
-        self.inner = self.inner.clone().select_with_projection(&columns);
+    pub fn select(&mut self, columns: Vec<(String, String)>) {
+        self.inner = self.inner.clone().select(Select::dynamic(&columns));
     }
 
     #[napi]

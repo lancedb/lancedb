@@ -1197,10 +1197,10 @@ impl NativeTable {
         scanner.batch_size(options.max_batch_length as usize);
 
         match &query.base.select {
-            Select::Simple(select) => {
+            Select::Columns(select) => {
                 scanner.project(select.as_slice())?;
             }
-            Select::Projection(select_with_transform) => {
+            Select::Dynamic(select_with_transform) => {
                 scanner.project_with_transform(select_with_transform.as_slice())?;
             }
             Select::All => { /* Do nothing */ }
@@ -1760,7 +1760,7 @@ mod tests {
 
         let mut batches = table
             .query()
-            .select(&["id", "name"])
+            .select(Select::columns(&["id", "name"]))
             .execute()
             .await
             .unwrap()
@@ -1912,7 +1912,7 @@ mod tests {
 
         let mut batches = table
             .query()
-            .select(&[
+            .select(Select::columns(&[
                 "string",
                 "large_string",
                 "int32",
@@ -1926,7 +1926,7 @@ mod tests {
                 "timestamp_ms",
                 "vec_f32",
                 "vec_f64",
-            ])
+            ]))
             .execute()
             .await
             .unwrap()
