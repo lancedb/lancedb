@@ -62,6 +62,7 @@ export interface EmbeddingFunction<T> {
   embed: (data: T[]) => Promise<number[][]>;
 }
 
+/** Test if the input seems to be an embedding function */
 export function isEmbeddingFunction<T>(
   value: unknown,
 ): value is EmbeddingFunction<T> {
