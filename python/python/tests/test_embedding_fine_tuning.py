@@ -1,10 +1,9 @@
 import uuid
 
 import pytest
-from tqdm import tqdm
-
 from lancedb.embeddings import get_registry
 from lancedb.embeddings.fine_tuner import QADataset, TextChunk
+from tqdm import tqdm
 
 
 @pytest.mark.slow
