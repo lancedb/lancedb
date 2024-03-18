@@ -50,12 +50,7 @@ impl Select {
     /// This method is a convenience method for creating a [`Select::Columns`] variant
     /// from either Vec<&str> or Vec<String>
     pub fn columns(columns: &[impl AsRef<str>]) -> Self {
-        Self::Columns(
-            columns
-                .into_iter()
-                .map(|c| c.as_ref().to_string())
-                .collect(),
-        )
+        Self::Columns(columns.iter().map(|c| c.as_ref().to_string()).collect())
     }
     /// Create a dynamic selection that allows for advanced column selection
     ///
@@ -64,7 +59,7 @@ impl Select {
     pub fn dynamic(columns: &[(impl AsRef<str>, impl AsRef<str>)]) -> Self {
         Self::Dynamic(
             columns
-                .into_iter()
+                .iter()
                 .map(|(name, value)| (name.as_ref().to_string(), value.as_ref().to_string()))
                 .collect(),
         )
