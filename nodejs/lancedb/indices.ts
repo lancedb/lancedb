@@ -18,7 +18,8 @@ import { Index as LanceDbIndex } from "./native";
  * Options to create an `IVF_PQ` index
  */
 export interface IvfPqOptions {
-  /** The number of IVF partitions to create.
+  /**
+   * The number of IVF partitions to create.
    *
    * This value should generally scale with the number of rows in the dataset.
    * By default the number of partitions is the square root of the number of
@@ -30,7 +31,8 @@ export interface IvfPqOptions {
    */
   numPartitions?: number;
 
-  /** Number of sub-vectors of PQ.
+  /**
+   * Number of sub-vectors of PQ.
    *
    * This value controls how much the vector is compressed during the quantization step.
    * The more sub vectors there are the less the vector is compressed.  The default is
@@ -45,9 +47,10 @@ export interface IvfPqOptions {
    */
   numSubVectors?: number;
 
-  /** [DistanceType] to use to build the index.
+  /**
+   * Distance type to use to build the index.
    *
-   * Default value is [DistanceType::L2].
+   * Default value is "l2".
    *
    * This is used when training the index to calculate the IVF partitions
    * (vectors are grouped in partitions with similar vectors according to this
@@ -79,7 +82,8 @@ export interface IvfPqOptions {
    */
   distanceType?: "l2" | "cosine" | "dot";
 
-  /** Max iteration to train IVF kmeans.
+  /**
+   * Max iteration to train IVF kmeans.
    *
    * When training an IVF PQ index we use kmeans to calculate the partitions.  This parameter
    * controls how many iterations of kmeans to run.
@@ -91,7 +95,8 @@ export interface IvfPqOptions {
    */
   maxIterations?: number;
 
-  /** The number of vectors, per partition, to sample when training IVF kmeans.
+  /**
+   * The number of vectors, per partition, to sample when training IVF kmeans.
    *
    * When an IVF PQ index is trained, we need to calculate partitions.  These are groups
    * of vectors that are similar to each other.  To do this we use an algorithm called kmeans.
@@ -148,7 +153,8 @@ export class Index {
     );
   }
 
-  /** Create a btree index
+  /**
+   * Create a btree index
    *
    * A btree index is an index on a scalar columns.  The index stores a copy of the column
    * in sorted order.  A header entry is created for each block of rows (currently the
@@ -172,7 +178,8 @@ export class Index {
 }
 
 export interface IndexOptions {
-  /** Advanced index configuration
+  /**
+   * Advanced index configuration
    *
    * This option allows you to specify a specfic index to create and also
    * allows you to pass in configuration for training the index.
@@ -183,7 +190,8 @@ export interface IndexOptions {
    * will be used to determine the most useful kind of index to create.
    */
   config?: Index;
-  /** Whether to replace the existing index
+  /**
+   * Whether to replace the existing index
    *
    * If this is false, and another index already exists on the same columns
    * and the same name, then an error will be returned.  This is true even if
