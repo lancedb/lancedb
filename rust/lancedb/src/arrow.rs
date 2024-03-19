@@ -101,3 +101,21 @@ impl<S: Stream<Item = Result<arrow_array::RecordBatch>>> RecordBatchStream
         self.schema.clone()
     }
 }
+
+/// A trait for converting incoming data to Arrow
+///
+/// Integrations should implement this trait to allow data to be
+/// imported directly from the integration.  For example, implementing
+/// this trait for `Vec<Vec<...>>` would allow the `Vec` to be directly
+/// used in methods like [`crate::connection::Connection::create_table`]
+/// or [`crate::table::Table::add`]
+pub trait IntoArrow {
+    /// Convert the data into an Arrow array
+    fn into_arrow(self) -> Result<Box<dyn arrow_array::RecordBatchReader + Send>>;
+}
+
+impl<T: arrow_array::RecordBatchReader + Send + 'static> IntoArrow for Box<T> {
+    fn into_arrow(self) -> Result<Box<dyn arrow_array::RecordBatchReader + Send>> {
+        Ok(self)
+    }
+}

@@ -42,6 +42,8 @@ use lance_index::{optimize::OptimizeOptions, DatasetIndexExt};
 use log::info;
 use snafu::whatever;
 
+use crate::arrow::IntoArrow;
+use crate::connection::NoData;
 use crate::error::{Error, Result};
 use crate::index::vector::{IvfPqIndexBuilder, VectorIndex, VectorIndexStatistics};
 use crate::index::IndexConfig;
@@ -50,7 +52,7 @@ use crate::index::{
     Index, IndexBuilder,
 };
 use crate::query::{
-    Query, QueryExecutionOptions, Select, ToQueryVector, VectorQuery, DEFAULT_TOP_K,
+    IntoQueryVector, Query, QueryExecutionOptions, Select, VectorQuery, DEFAULT_TOP_K,
 };
 use crate::utils::{default_vector_column, PatchReadParam, PatchWriteParam};
 
@@ -124,14 +126,14 @@ pub enum AddDataMode {
 
 /// A builder for configuring a [`crate::connection::Connection::create_table`] or [`Table::add`]
 /// operation
-pub struct AddDataBuilder {
+pub struct AddDataBuilder<T: IntoArrow> {
     parent: Arc<dyn TableInternal>,
-    pub(crate) data: Box<dyn RecordBatchReader + Send>,
+    pub(crate) data: T,
     pub(crate) mode: AddDataMode,
     pub(crate) write_options: WriteOptions,
 }
 
-impl std::fmt::Debug for AddDataBuilder {
+impl<T: IntoArrow> std::fmt::Debug for AddDataBuilder<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AddDataBuilder")
             .field("parent", &self.parent)
@@ -141,7 +143,7 @@ impl std::fmt::Debug for AddDataBuilder {
     }
 }
 
-impl AddDataBuilder {
+impl<T: IntoArrow> AddDataBuilder<T> {
     pub fn mode(mut self, mode: AddDataMode) -> Self {
         self.mode = mode;
         self
@@ -153,7 +155,15 @@ impl AddDataBuilder {
     }
 
     pub async fn execute(self) -> Result<()> {
-        self.parent.clone().add(self).await
+        let parent = self.parent.clone();
+        let data = self.data.into_arrow()?;
+        let without_data = AddDataBuilder::<NoData> {
+            data: NoData {},
+            mode: self.mode,
+            parent: self.parent,
+            write_options: self.write_options,
+        };
+        parent.add(without_data, data).await
     }
 }
 
@@ -233,7 +243,6 @@ pub(crate) trait TableInternal: std::fmt::Display + std::fmt::Debug + Send + Syn
     async fn schema(&self) -> Result<SchemaRef>;
     /// Count the number of rows in this table.
     async fn count_rows(&self, filter: Option<String>) -> Result<usize>;
-    async fn add(&self, add: AddDataBuilder) -> Result<()>;
     async fn plain_query(
         &self,
         query: &Query,
@@ -244,6 +253,11 @@ pub(crate) trait TableInternal: std::fmt::Display + std::fmt::Debug + Send + Syn
         query: &VectorQuery,
         options: QueryExecutionOptions,
     ) -> Result<DatasetRecordBatchStream>;
+    async fn add(
+        &self,
+        add: AddDataBuilder<NoData>,
+        data: Box<dyn arrow_array::RecordBatchReader + Send>,
+    ) -> Result<()>;
     async fn delete(&self, predicate: &str) -> Result<()>;
     async fn update(&self, update: UpdateBuilder) -> Result<()>;
     async fn create_index(&self, index: IndexBuilder) -> Result<()>;
@@ -319,7 +333,7 @@ impl Table {
     ///
     /// * `batches` data to be added to the Table
     /// * `options` options to control how data is added
-    pub fn add(&self, batches: Box<dyn RecordBatchReader + Send>) -> AddDataBuilder {
+    pub fn add<T: IntoArrow>(&self, batches: T) -> AddDataBuilder<T> {
         AddDataBuilder {
             parent: self.inner.clone(),
             data: batches,
@@ -637,7 +651,7 @@ impl Table {
     /// This is a convenience method for preparing a vector query and
     /// is the same thing as calling `nearest_to` on the builder returned
     /// by `query`.  See [`Query::nearest_to`] for more details.
-    pub fn vector_search(&self, query: impl ToQueryVector) -> Result<VectorQuery> {
+    pub fn vector_search(&self, query: impl IntoQueryVector) -> Result<VectorQuery> {
         self.query().nearest_to(query)
     }
 
@@ -1288,7 +1302,11 @@ impl TableInternal for NativeTable {
         }
     }
 
-    async fn add(&self, add: AddDataBuilder) -> Result<()> {
+    async fn add(
+        &self,
+        add: AddDataBuilder<NoData>,
+        data: Box<dyn RecordBatchReader + Send>,
+    ) -> Result<()> {
         let lance_params = add.write_options.lance_write_params.unwrap_or(WriteParams {
             mode: match add.mode {
                 AddDataMode::Append => WriteMode::Append,
@@ -1305,7 +1323,7 @@ impl TableInternal for NativeTable {
 
         self.dataset.ensure_mutable().await?;
 
-        let dataset = Dataset::write(add.data, &self.uri, Some(lance_params)).await?;
+        let dataset = Dataset::write(data, &self.uri, Some(lance_params)).await?;
         self.dataset.set_latest(dataset).await;
         Ok(())
     }
