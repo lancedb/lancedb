@@ -2,8 +2,8 @@ use std::convert::TryFrom;
 use std::ops::Deref;
 
 use futures::{TryFutureExt, TryStreamExt};
-use lance_linalg::distance::MetricType;
 use lancedb::query::{ExecutableQuery, QueryBase, Select};
+use lancedb::DistanceType;
 use neon::context::FunctionContext;
 use neon::handle::Handle;
 use neon::prelude::*;
@@ -74,12 +74,12 @@ impl JsQuery {
         let query_vector = query_obj.get_opt::<JsArray, _, _>(&mut cx, "_queryVector")?;
         if let Some(query) = query_vector.map(|q| convert::js_array_to_vec(q.deref(), &mut cx)) {
             let mut vector_builder = builder.nearest_to(query).unwrap();
-            if let Some(metric_type) = query_obj
+            if let Some(distance_type) = query_obj
                 .get_opt::<JsString, _, _>(&mut cx, "_metricType")?
                 .map(|s| s.value(&mut cx))
-                .map(|s| MetricType::try_from(s.as_str()).unwrap())
+                .map(|s| DistanceType::try_from(s.as_str()).unwrap())
             {
-                vector_builder = vector_builder.distance_type(metric_type);
+                vector_builder = vector_builder.distance_type(distance_type);
             }
 
             let nprobes = query_obj.get_usize(&mut cx, "_nprobes").or_throw(&mut cx)?;
