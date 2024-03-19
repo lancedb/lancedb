@@ -19,10 +19,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-
-
 pytest.importorskip("lancedb.fts")
 tantivy = pytest.importorskip("tantivy")
+
 
 @pytest.fixture
 def table(tmp_path) -> ldb.table.LanceTable:
@@ -44,7 +43,7 @@ def table(tmp_path) -> ldb.table.LanceTable:
         )
         for _ in range(100)
     ]
-    count = [random.randint(0,10000) for _ in range(100)]
+    count = [random.randint(0, 10000) for _ in range(100)]
     table = db.create_table(
         "test",
         data=pd.DataFrame(
@@ -54,7 +53,7 @@ def table(tmp_path) -> ldb.table.LanceTable:
                 "text": text,
                 "text2": text,
                 "nested": [{"text": t} for t in text],
-                "count": count
+                "count": count,
             }
         ),
     )
@@ -83,19 +82,24 @@ def test_search_index(tmp_path, table):
 
 
 def test_search_ordering_field_index(tmp_path, table):
-    index = ldb.fts.create_index(str(tmp_path / "index"), ["text"], ordering_fields=["count"])
+    index = ldb.fts.create_index(
+        str(tmp_path / "index"), ["text"], ordering_fields=["count"]
+    )
 
-    ldb.fts.populate_index(index, table, ["text"], ordering_fields=["count"] )
+    ldb.fts.populate_index(index, table, ["text"], ordering_fields=["count"])
     index.reload()
-    results = ldb.fts.search_index(index, query="puppy", limit=10,ordering_field="count")
+    results = ldb.fts.search_index(
+        index, query="puppy", limit=10, ordering_field="count"
+    )
     assert len(results) == 2
     assert len(results[0]) == 10  # row_ids
     assert len(results[1]) == 10  # _distance
     rows = table.to_lance().take(results[0]).to_pylist()
-    
+
     for r in rows:
-        assert "puppy" in r['text']
-    assert sorted(rows, key =lambda x:x['count'], reverse=True) == rows
+        assert "puppy" in r["text"]
+    assert sorted(rows, key=lambda x: x["count"], reverse=True) == rows
+
 
 def test_create_index_from_table(tmp_path, table):
     table.create_fts_index("text")
@@ -112,7 +116,7 @@ def test_create_index_from_table(tmp_path, table):
                 "text": "gorilla",
                 "text2": "gorilla",
                 "nested": {"text": "gorilla"},
-                "count":10
+                "count": 10,
             }
         ]
     )
@@ -177,7 +181,7 @@ def test_null_input(table):
                 "text": None,
                 "text2": None,
                 "nested": {"text": None},
-                "count":7
+                "count": 7,
             }
         ]
     )

@@ -12,6 +12,7 @@
 #  limitations under the License.
 
 """Full text search index using tantivy-py"""
+
 import os
 from typing import List, Tuple
 
@@ -27,7 +28,9 @@ except ImportError:
 from .table import LanceTable
 
 
-def create_index(index_path: str, text_fields: List[str], ordering_fields: List[str]= None) -> tantivy.Index:
+def create_index(
+    index_path: str, text_fields: List[str], ordering_fields: List[str] = None
+) -> tantivy.Index:
     """
     Create a new Index (not populated)
 
@@ -39,7 +42,7 @@ def create_index(index_path: str, text_fields: List[str], ordering_fields: List[
         List of text fields to index
     ordering_fields: List[str]
         List of unsigned type fields to order by at search time
-    
+
     Returns
     -------
     index : tantivy.Index
@@ -62,12 +65,13 @@ def create_index(index_path: str, text_fields: List[str], ordering_fields: List[
     index = tantivy.Index(schema, path=index_path)
     return index
 
+
 def populate_index(
     index: tantivy.Index,
     table: LanceTable,
     fields: List[str],
     writer_heap_size: int = 1024 * 1024 * 1024,
-    ordering_fields: List[str]= []
+    ordering_fields: List[str] = [],
 ) -> int:
     """
     Populate an index with data from a LanceTable
@@ -92,7 +96,7 @@ def populate_index(
         ordering_fields = []
     # first check the fields exist and are string or large string type
     nested = []
-    
+
     for name in fields:
         try:
             f = table.schema.field(name)  # raises KeyError if not found
@@ -114,7 +118,7 @@ def populate_index(
     if len(nested) > 0:
         max_nested_level = max([len(name.split(".")) for name in nested])
 
-    for b in dataset.to_batches(columns=fields+ordering_fields):
+    for b in dataset.to_batches(columns=fields + ordering_fields):
         if max_nested_level > 0:
             b = pa.Table.from_batches([b])
             for _ in range(max_nested_level - 1):
@@ -187,7 +191,7 @@ def search_index(
     query = index.parse_query(query)
     # get top results
     if ordering_field:
-        results = searcher.search(query, limit,order_by_field=ordering_field)
+        results = searcher.search(query, limit, order_by_field=ordering_field)
     else:
         results = searcher.search(query, limit)
     if results.count == 0:
