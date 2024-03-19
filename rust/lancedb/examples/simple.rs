@@ -12,6 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! This example demonstrates basic usage of LanceDb.
+//!
+//! Snippets from this example are used in the quickstart documentation.
+
 use std::sync::Arc;
 
 use arrow_array::types::Float32Type;

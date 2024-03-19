@@ -5,7 +5,7 @@
 LanceDB provides language APIs, allowing you to embed a database in your language of choice.
 
 * 🐍 [Python](examples_python.md) examples
-* 👾 [JavaScript](exampled_js.md) examples
+* 👾 [JavaScript](examples_js.md) examples
 * 🦀 Rust examples (coming soon)
 
 ## Applications powered by LanceDB
