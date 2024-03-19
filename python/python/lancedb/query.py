@@ -555,7 +555,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         return self
 
     def rerank(
-        self, reranker: Reranker, query: Optional[str] = None
+        self, reranker: Reranker, query_string: Optional[str] = None
     ) -> LanceVectorQueryBuilder:
         """Rerank the results using the specified reranker.
 
@@ -564,7 +564,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         reranker: Reranker
             The reranker to use.
 
-        query: Optional[str]
+        query_string: Optional[str]
             The query to use for reranking. This needs to be specified explicitly here
             as the query used for vector search may already be vectorized and the
             reranker requires a string query.
@@ -578,14 +578,16 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             The LanceQueryBuilder object.
         """
         self._reranker = reranker
-        if self._str_query is None and query is None:
+        if self._str_query is None and query_string is None:
             raise ValueError(
                 """
                 The query used for vector search is not a string.
                 In this case, the reranker query needs to be specified explicitly.
                 """
             )
-        self._str_query = query if query is not None else self._str_query
+        if query_string is not None and not isinstance(query_string, str):
+            raise ValueError("Reranking currently only supports string queries")
+        self._str_query = query_string if query_string is not None else self._str_query
         return self
 
 
