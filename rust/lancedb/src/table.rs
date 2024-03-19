@@ -1108,7 +1108,7 @@ impl NativeTable {
             /*num_bits=*/ 8,
             num_sub_vectors as usize,
             false,
-            index.distance_type,
+            index.distance_type.into(),
             index.max_iterations as usize,
         );
         dataset
@@ -1229,7 +1229,7 @@ impl NativeTable {
         }
 
         if let Some(distance_type) = query.distance_type {
-            scanner.distance_metric(distance_type);
+            scanner.distance_metric(distance_type.into());
         }
         Ok(scanner.try_into_stream().await?)
     }
