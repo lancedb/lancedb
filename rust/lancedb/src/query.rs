@@ -77,7 +77,7 @@ impl Select {
 /// may be installed.  These models may accept something other than f32.  For example,
 /// sentence transformers typically expect the query to be a string.  This means that
 /// any kind of conversion library should expect to convert more than just f32.
-pub trait ToQueryVector {
+pub trait IntoQueryVector {
     /// Convert the user's query vector input to a query vector
     ///
     /// This trait exists to allow users to provide many different types as
@@ -112,7 +112,7 @@ pub trait ToQueryVector {
 }
 
 // TODO: perhaps support some casts like f32->f64 and maybe even f64->f32?
-impl ToQueryVector for Arc<dyn Array> {
+impl IntoQueryVector for Arc<dyn Array> {
     fn to_query_vector(
         self,
         data_type: &DataType,
@@ -147,7 +147,7 @@ impl ToQueryVector for Arc<dyn Array> {
     }
 }
 
-impl ToQueryVector for &dyn Array {
+impl IntoQueryVector for &dyn Array {
     fn to_query_vector(
         self,
         data_type: &DataType,
@@ -167,7 +167,7 @@ impl ToQueryVector for &dyn Array {
     }
 }
 
-impl ToQueryVector for &[f16] {
+impl IntoQueryVector for &[f16] {
     fn to_query_vector(
         self,
         data_type: &DataType,
@@ -197,7 +197,7 @@ impl ToQueryVector for &[f16] {
     }
 }
 
-impl ToQueryVector for &[f32] {
+impl IntoQueryVector for &[f32] {
     fn to_query_vector(
         self,
         data_type: &DataType,
@@ -227,7 +227,7 @@ impl ToQueryVector for &[f32] {
     }
 }
 
-impl ToQueryVector for &[f64] {
+impl IntoQueryVector for &[f64] {
     fn to_query_vector(
         self,
         data_type: &DataType,
@@ -257,7 +257,7 @@ impl ToQueryVector for &[f64] {
     }
 }
 
-impl<const N: usize> ToQueryVector for &[f16; N] {
+impl<const N: usize> IntoQueryVector for &[f16; N] {
     fn to_query_vector(
         self,
         data_type: &DataType,
@@ -268,7 +268,7 @@ impl<const N: usize> ToQueryVector for &[f16; N] {
     }
 }
 
-impl<const N: usize> ToQueryVector for &[f32; N] {
+impl<const N: usize> IntoQueryVector for &[f32; N] {
     fn to_query_vector(
         self,
         data_type: &DataType,
@@ -279,7 +279,7 @@ impl<const N: usize> ToQueryVector for &[f32; N] {
     }
 }
 
-impl<const N: usize> ToQueryVector for &[f64; N] {
+impl<const N: usize> IntoQueryVector for &[f64; N] {
     fn to_query_vector(
         self,
         data_type: &DataType,
@@ -290,7 +290,7 @@ impl<const N: usize> ToQueryVector for &[f64; N] {
     }
 }
 
-impl ToQueryVector for Vec<f16> {
+impl IntoQueryVector for Vec<f16> {
     fn to_query_vector(
         self,
         data_type: &DataType,
@@ -301,7 +301,7 @@ impl ToQueryVector for Vec<f16> {
     }
 }
 
-impl ToQueryVector for Vec<f32> {
+impl IntoQueryVector for Vec<f32> {
     fn to_query_vector(
         self,
         data_type: &DataType,
@@ -312,7 +312,7 @@ impl ToQueryVector for Vec<f32> {
     }
 }
 
-impl ToQueryVector for Vec<f64> {
+impl IntoQueryVector for Vec<f64> {
     fn to_query_vector(
         self,
         data_type: &DataType,
@@ -530,7 +530,7 @@ impl Query {
     /// # Arguments
     ///
     /// * `vector` - The vector that will be used for search.
-    pub fn nearest_to(self, vector: impl ToQueryVector) -> Result<VectorQuery> {
+    pub fn nearest_to(self, vector: impl IntoQueryVector) -> Result<VectorQuery> {
         let mut vector_query = self.into_vector();
         let query_vector = vector.to_query_vector(&DataType::Float32, "default")?;
         vector_query.query_vector = Some(query_vector);
