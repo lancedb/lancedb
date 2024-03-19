@@ -85,7 +85,7 @@ def test_search_ordering_field_index_table(tmp_path, table):
     table.create_fts_index("text", ordering_field_names="count")
     rows = (
         table.search("puppy", ordering_field_name="count")
-        .limit(10)
+        .limit(20)
         .select(["text", "count"])
         .to_list()
     )
