@@ -206,6 +206,7 @@ use lance_linalg::distance::DistanceType as LanceDistanceType;
 pub use table::Table;
 
 #[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum DistanceType {
     /// Euclidean distance. This is a very common distance metric that
     /// accounts for both magnitude and direction when determining the distance
