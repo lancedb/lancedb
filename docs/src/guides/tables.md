@@ -168,151 +168,151 @@ This guide will show how to create tables, insert data into them, and update the
     --8<-- "docs/src/basic_legacy.ts:create_f16_table"
     ```
 
-    ### From Pydantic Models
+### From Pydantic Models
 
-    When you create an empty table without data, you must specify the table schema.
-    LanceDB supports creating tables by specifying a PyArrow schema or a specialized
-    Pydantic model called `LanceModel`.
+When you create an empty table without data, you must specify the table schema.
+LanceDB supports creating tables by specifying a PyArrow schema or a specialized
+Pydantic model called `LanceModel`.
 
-    For example, the following Content model specifies a table with 5 columns:
-    `movie_id`, `vector`, `genres`, `title`, and `imdb_id`. When you create a table, you can
-    pass the class as the value of the `schema` parameter to `create_table`.
-    The `vector` column is a `Vector` type, which is a specialized Pydantic type that
-    can be configured with the vector dimensions. It is also important to note that
-    LanceDB only understands subclasses of `lancedb.pydantic.LanceModel`
-    (which itself derives from `pydantic.BaseModel`).
+For example, the following Content model specifies a table with 5 columns:
+`movie_id`, `vector`, `genres`, `title`, and `imdb_id`. When you create a table, you can
+pass the class as the value of the `schema` parameter to `create_table`.
+The `vector` column is a `Vector` type, which is a specialized Pydantic type that
+can be configured with the vector dimensions. It is also important to note that
+LanceDB only understands subclasses of `lancedb.pydantic.LanceModel`
+(which itself derives from `pydantic.BaseModel`).
 
-    ```python
-    from lancedb.pydantic import Vector, LanceModel
+```python
+from lancedb.pydantic import Vector, LanceModel
 
-    class Content(LanceModel):
-        movie_id: int
-        vector: Vector(128)
-        genres: str
-        title: str
-        imdb_id: int
+class Content(LanceModel):
+    movie_id: int
+    vector: Vector(128)
+    genres: str
+    title: str
+    imdb_id: int
 
-        @property
-        def imdb_url(self) -> str:
-            return f"https://www.imdb.com/title/tt{self.imdb_id}"
+    @property
+    def imdb_url(self) -> str:
+        return f"https://www.imdb.com/title/tt{self.imdb_id}"
 
-    import pyarrow as pa
-    db = lancedb.connect("~/.lancedb")
-    table_name = "movielens_small"
-    table = db.create_table(table_name, schema=Content)
-    ```
+import pyarrow as pa
+db = lancedb.connect("~/.lancedb")
+table_name = "movielens_small"
+table = db.create_table(table_name, schema=Content)
+```
 
-    #### Nested schemas
+#### Nested schemas
 
-    Sometimes your data model may contain nested objects.
-    For example, you may want to store the document string
-    and the document soure name as a nested Document object:
+Sometimes your data model may contain nested objects.
+For example, you may want to store the document string
+and the document soure name as a nested Document object:
 
-    ```python
-    class Document(BaseModel):
-        content: str
-        source: str
-    ```
+```python
+class Document(BaseModel):
+    content: str
+    source: str
+```
 
-    This can be used as the type of a LanceDB table column:
+This can be used as the type of a LanceDB table column:
 
-    ```python
-    class NestedSchema(LanceModel):
-        id: str
-        vector: Vector(1536)
-        document: Document
+```python
+class NestedSchema(LanceModel):
+    id: str
+    vector: Vector(1536)
+    document: Document
 
-    tbl = db.create_table("nested_table", schema=NestedSchema, mode="overwrite")
-    ```
+tbl = db.create_table("nested_table", schema=NestedSchema, mode="overwrite")
+```
 
-    This creates a struct column called "document" that has two subfields 
-    called "content" and "source":
+This creates a struct column called "document" that has two subfields 
+called "content" and "source":
 
-    ```
-    In [28]: tbl.schema
-    Out[28]:
-    id: string not null
-    vector: fixed_size_list<item: float>[1536] not null
-        child 0, item: float
-    document: struct<content: string not null, source: string not null> not null
-        child 0, content: string not null
-        child 1, source: string not null    
-    ```
+```
+In [28]: tbl.schema
+Out[28]:
+id: string not null
+vector: fixed_size_list<item: float>[1536] not null
+    child 0, item: float
+document: struct<content: string not null, source: string not null> not null
+    child 0, content: string not null
+    child 1, source: string not null    
+```
 
-    #### Validators
+#### Validators
 
-    Note that neither Pydantic nor PyArrow automatically validates that input data
-    is of the correct timezone, but this is easy to add as a custom field validator:
+Note that neither Pydantic nor PyArrow automatically validates that input data
+is of the correct timezone, but this is easy to add as a custom field validator:
 
-    ```python
-    from datetime import datetime
-    from zoneinfo import ZoneInfo
+```python
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
-    from lancedb.pydantic import LanceModel
-    from pydantic import Field, field_validator, ValidationError, ValidationInfo
+from lancedb.pydantic import LanceModel
+from pydantic import Field, field_validator, ValidationError, ValidationInfo
 
-    tzname = "America/New_York"
-    tz = ZoneInfo(tzname)
+tzname = "America/New_York"
+tz = ZoneInfo(tzname)
 
-    class TestModel(LanceModel):
-        dt_with_tz: datetime = Field(json_schema_extra={"tz": tzname})
+class TestModel(LanceModel):
+    dt_with_tz: datetime = Field(json_schema_extra={"tz": tzname})
 
-        @field_validator('dt_with_tz')
-        @classmethod
-        def tz_must_match(cls, dt: datetime) -> datetime:
-            assert dt.tzinfo == tz
-            return dt        
+    @field_validator('dt_with_tz')
+    @classmethod
+    def tz_must_match(cls, dt: datetime) -> datetime:
+        assert dt.tzinfo == tz
+        return dt        
 
-    ok = TestModel(dt_with_tz=datetime.now(tz))
+ok = TestModel(dt_with_tz=datetime.now(tz))
 
-    try:
-        TestModel(dt_with_tz=datetime.now(ZoneInfo("Asia/Shanghai")))
-        assert 0 == 1, "this should raise ValidationError"
-    except ValidationError:
-        print("A ValidationError was raised.")
-        pass
-    ```
+try:
+    TestModel(dt_with_tz=datetime.now(ZoneInfo("Asia/Shanghai")))
+    assert 0 == 1, "this should raise ValidationError"
+except ValidationError:
+    print("A ValidationError was raised.")
+    pass
+```
 
-    When you run this code it should print "A ValidationError was raised."
+When you run this code it should print "A ValidationError was raised."
 
-    #### Pydantic custom types
+#### Pydantic custom types
 
-    LanceDB does NOT yet support converting pydantic custom types. If this is something you need,
-    please file a feature request on the [LanceDB Github repo](https://github.com/lancedb/lancedb/issues/new).
+LanceDB does NOT yet support converting pydantic custom types. If this is something you need,
+please file a feature request on the [LanceDB Github repo](https://github.com/lancedb/lancedb/issues/new).
 
-    ### Using Iterators / Writing Large Datasets
+### Using Iterators / Writing Large Datasets
 
-    It is recommended to use iterators to add large datasets in batches when creating your table in one go. This does not create multiple versions of your dataset unlike manually adding batches using `table.add()`
+It is recommended to use iterators to add large datasets in batches when creating your table in one go. This does not create multiple versions of your dataset unlike manually adding batches using `table.add()`
 
-    LanceDB additionally supports PyArrow's `RecordBatch` Iterators or other generators producing supported data types.
+LanceDB additionally supports PyArrow's `RecordBatch` Iterators or other generators producing supported data types.
 
-    Here's an example using using `RecordBatch` iterator for creating tables.
+Here's an example using using `RecordBatch` iterator for creating tables.
 
-    ```python
-    import pyarrow as pa
+```python
+import pyarrow as pa
 
-    def make_batches():
-        for i in range(5):
-            yield pa.RecordBatch.from_arrays(
-                [
-                    pa.array([[3.1, 4.1, 5.1, 6.1], [5.9, 26.5, 4.7, 32.8]],
-                            pa.list_(pa.float32(), 4)),
-                    pa.array(["foo", "bar"]),
-                    pa.array([10.0, 20.0]),
-                ],
-                ["vector", "item", "price"],
-            )
+def make_batches():
+    for i in range(5):
+        yield pa.RecordBatch.from_arrays(
+            [
+                pa.array([[3.1, 4.1, 5.1, 6.1], [5.9, 26.5, 4.7, 32.8]],
+                        pa.list_(pa.float32(), 4)),
+                pa.array(["foo", "bar"]),
+                pa.array([10.0, 20.0]),
+            ],
+            ["vector", "item", "price"],
+        )
 
-    schema = pa.schema([
-        pa.field("vector", pa.list_(pa.float32(), 4)),
-        pa.field("item", pa.utf8()),
-        pa.field("price", pa.float32()),
-    ])
+schema = pa.schema([
+    pa.field("vector", pa.list_(pa.float32(), 4)),
+    pa.field("item", pa.utf8()),
+    pa.field("price", pa.float32()),
+])
 
-    db.create_table("batched_tale", make_batches(), schema=schema)
-    ```
+db.create_table("batched_tale", make_batches(), schema=schema)
+```
 
-    You can also use iterators of other types like Pandas DataFrame or Pylists directly in the above example.
+You can also use iterators of other types like Pandas DataFrame or Pylists directly in the above example.
 
 ## Open existing tables
 
