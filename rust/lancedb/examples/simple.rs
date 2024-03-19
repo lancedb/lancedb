@@ -19,12 +19,11 @@
 use std::sync::Arc;
 
 use arrow_array::types::Float32Type;
-use arrow_array::{
-    FixedSizeListArray, Int32Array, RecordBatch, RecordBatchIterator, RecordBatchReader,
-};
+use arrow_array::{FixedSizeListArray, Int32Array, RecordBatch, RecordBatchIterator};
 use arrow_schema::{DataType, Field, Schema};
 use futures::TryStreamExt;
 
+use lancedb::arrow::IntoArrow;
 use lancedb::connection::Connection;
 use lancedb::index::Index;
 use lancedb::query::{ExecutableQuery, QueryBase};
@@ -71,7 +70,7 @@ async fn open_with_existing_tbl() -> Result<()> {
     Ok(())
 }
 
-fn create_some_records() -> Result<Box<dyn RecordBatchReader + Send>> {
+fn create_some_records() -> Result<impl IntoArrow> {
     const TOTAL: usize = 1000;
     const DIM: usize = 128;
 
@@ -111,9 +110,9 @@ fn create_some_records() -> Result<Box<dyn RecordBatchReader + Send>> {
 
 async fn create_table(db: &Connection) -> Result<LanceDbTable> {
     // --8<-- [start:create_table]
-    let initial_data: Box<dyn RecordBatchReader + Send> = create_some_records()?;
+    let initial_data = create_some_records()?;
     let tbl = db
-        .create_table("my_table", Box::new(initial_data))
+        .create_table("my_table", initial_data)
         .execute()
         .await
         .unwrap();
