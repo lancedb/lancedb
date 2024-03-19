@@ -12,10 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! This example demonstrates basic usage of LanceDb.
+//!
+//! Snippets from this example are used in the quickstart documentation.
+
 use std::sync::Arc;
 
 use arrow_array::types::Float32Type;
-use arrow_array::{FixedSizeListArray, Int32Array, RecordBatch, RecordBatchIterator};
+use arrow_array::{
+    FixedSizeListArray, Int32Array, RecordBatch, RecordBatchIterator, RecordBatchReader,
+};
 use arrow_schema::{DataType, Field, Schema};
 use futures::TryStreamExt;
 
@@ -58,14 +64,14 @@ async fn main() -> Result<()> {
 async fn open_with_existing_tbl() -> Result<()> {
     let uri = "data/sample-lancedb";
     let db = connect(uri).execute().await?;
-    // --8<-- [start:open_with_existing_file]
-    let _ = db.open_table("my_table").execute().await.unwrap();
-    // --8<-- [end:open_with_existing_file]
+    #[allow(unused_variables)]
+    // --8<-- [start:open_existing_tbl]
+    let table = db.open_table("my_table").execute().await.unwrap();
+    // --8<-- [end:open_existing_tbl]
     Ok(())
 }
 
-async fn create_table(db: &Connection) -> Result<LanceDbTable> {
-    // --8<-- [start:create_table]
+fn create_some_records() -> Result<Box<dyn RecordBatchReader + Send>> {
     const TOTAL: usize = 1000;
     const DIM: usize = 128;
 
@@ -100,33 +106,22 @@ async fn create_table(db: &Connection) -> Result<LanceDbTable> {
         .map(Ok),
         schema.clone(),
     );
+    Ok(Box::new(batches))
+}
+
+async fn create_table(db: &Connection) -> Result<LanceDbTable> {
+    // --8<-- [start:create_table]
+    let initial_data: Box<dyn RecordBatchReader + Send> = create_some_records()?;
     let tbl = db
-        .create_table("my_table", Box::new(batches))
+        .create_table("my_table", Box::new(initial_data))
         .execute()
         .await
         .unwrap();
     // --8<-- [end:create_table]
 
-    let new_batches = RecordBatchIterator::new(
-        vec![RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(Int32Array::from_iter_values(0..TOTAL as i32)),
-                Arc::new(
-                    FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
-                        (0..TOTAL).map(|_| Some(vec![Some(1.0); DIM])),
-                        DIM as i32,
-                    ),
-                ),
-            ],
-        )
-        .unwrap()]
-        .into_iter()
-        .map(Ok),
-        schema.clone(),
-    );
     // --8<-- [start:add]
-    tbl.add(Box::new(new_batches)).execute().await.unwrap();
+    let new_data = create_some_records()?;
+    tbl.add(new_data).execute().await.unwrap();
     // --8<-- [end:add]
 
     Ok(tbl)
