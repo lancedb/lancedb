@@ -71,7 +71,7 @@ def populate_index(
     table: LanceTable,
     fields: List[str],
     writer_heap_size: int = 1024 * 1024 * 1024,
-    ordering_fields: List[str] = [],
+    ordering_fields: List[str] = None,
 ) -> int:
     """
     Populate an index with data from a LanceTable
