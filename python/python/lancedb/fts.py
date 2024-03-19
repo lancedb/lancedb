@@ -56,7 +56,6 @@ def create_index(index_path: str, text_fields: List[str], ordering_fields: List[
         schema_builder.add_text_field(name, stored=True)
     if ordering_fields:
         for name in ordering_fields:
-            print("ADD", name)
             schema_builder.add_unsigned_field(name, fast=True)
     schema = schema_builder.build()
     os.makedirs(index_path, exist_ok=True)
