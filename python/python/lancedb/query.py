@@ -144,6 +144,9 @@ class LanceQueryBuilder(ABC):
             # hybrid fts and vector query
             return LanceHybridQueryBuilder(table, query, vector_column_name)
 
+        # remember the string query for reranking purpose
+        str_query = query if isinstance(query, str) else None
+
         # convert "auto" query_type to "vector", "fts"
         # or "hybrid" and convert the query to vector if needed
         query, query_type = cls._resolve_query(
@@ -164,7 +167,7 @@ class LanceQueryBuilder(ABC):
         else:
             raise TypeError(f"Unsupported query type: {type(query)}")
 
-        return LanceVectorQueryBuilder(table, query, vector_column_name)
+        return LanceVectorQueryBuilder(table, query, vector_column_name, str_query)
 
     @classmethod
     def _resolve_query(cls, table, query, query_type, vector_column_name):
@@ -428,6 +431,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         table: "Table",
         query: Union[np.ndarray, list, "PIL.Image.Image"],
         vector_column: str,
+        str_query: Optional[str] = None,
     ):
         super().__init__(table)
         self._query = query
@@ -436,6 +440,8 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         self._refine_factor = None
         self._vector_column = vector_column
         self._prefilter = False
+        self._reranker = None
+        self._str_query = str_query
 
     def metric(self, metric: Literal["L2", "cosine"]) -> LanceVectorQueryBuilder:
         """Set the distance metric to use.
@@ -521,7 +527,11 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             vector_column=self._vector_column,
             with_row_id=self._with_row_id,
         )
-        return self._table._execute_query(query)
+        result_set = self._table._execute_query(query)
+        if self._reranker is not None:
+            result_set = self._reranker.rerank_vector(self._str_query, result_set)
+
+        return result_set
 
     def where(self, where: str, prefilter: bool = False) -> LanceVectorQueryBuilder:
         """Set the where clause.
@@ -547,6 +557,42 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         self._prefilter = prefilter
         return self
 
+    def rerank(
+        self, reranker: Reranker, query_string: Optional[str] = None
+    ) -> LanceVectorQueryBuilder:
+        """Rerank the results using the specified reranker.
+
+        Parameters
+        ----------
+        reranker: Reranker
+            The reranker to use.
+
+        query_string: Optional[str]
+            The query to use for reranking. This needs to be specified explicitly here
+            as the query used for vector search may already be vectorized and the
+            reranker requires a string query.
+            This is only required if the query used for vector search is not a string.
+            Note: This doesn't yet support the case where the query is multimodal or a
+            list of vectors.
+
+        Returns
+        -------
+        LanceVectorQueryBuilder
+            The LanceQueryBuilder object.
+        """
+        self._reranker = reranker
+        if self._str_query is None and query_string is None:
+            raise ValueError(
+                """
+                The query used for vector search is not a string.
+                In this case, the reranker query needs to be specified explicitly.
+                """
+            )
+        if query_string is not None and not isinstance(query_string, str):
+            raise ValueError("Reranking currently only supports string queries")
+        self._str_query = query_string if query_string is not None else self._str_query
+        return self
+
 
 class LanceFtsQueryBuilder(LanceQueryBuilder):
     """A builder for full text search for LanceDB."""
@@ -555,6 +601,7 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         super().__init__(table)
         self._query = query
         self._phrase_query = False
+        self._reranker = None
 
     def phrase_query(self, phrase_query: bool = True) -> LanceFtsQueryBuilder:
         """Set whether to use phrase query.
@@ -641,7 +688,26 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
 
         if self._with_row_id:
             output_tbl = output_tbl.append_column("_rowid", row_ids)
+
+        if self._reranker is not None:
+            output_tbl = self._reranker.rerank_fts(self._query, output_tbl)
         return output_tbl
+
+    def rerank(self, reranker: Reranker) -> LanceFtsQueryBuilder:
+        """Rerank the results using the specified reranker.
+
+        Parameters
+        ----------
+        reranker: Reranker
+            The reranker to use.
+
+        Returns
+        -------
+        LanceFtsQueryBuilder
+            The LanceQueryBuilder object.
+        """
+        self._reranker = reranker
+        return self
 
 
 class LanceEmptyQueryBuilder(LanceQueryBuilder):
