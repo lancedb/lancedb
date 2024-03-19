@@ -109,7 +109,6 @@ def populate_index(
 
     # create a tantivy writer
     writer = index.writer(heap_size=writer_heap_size)
-    help(writer)
     # write data into index
     dataset = table.to_lance()
     row_id = 0
