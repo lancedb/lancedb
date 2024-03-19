@@ -39,14 +39,8 @@ class OpenaiReranker(Reranker):
         self.column = column
         self.api_key = api_key
 
-    def rerank_hybrid(
-        self,
-        query: str,
-        vector_results: pa.Table,
-        fts_results: pa.Table,
-    ):
-        combined_results = self.merge_results(vector_results, fts_results)
-        docs = combined_results[self.column].to_pylist()
+    def _rerank(self, result_set: pa.Table, query: str):
+        docs = result_set[self.column].to_pylist()
         response = self._client.chat.completions.create(
             model=self.model_name,
             response_format={"type": "json_object"},
@@ -70,14 +64,25 @@ class OpenaiReranker(Reranker):
             zip(*[(result["content"], result["relevance_score"]) for result in results])
         )  # tuples
         # replace the self.column column with the docs
-        combined_results = combined_results.drop(self.column)
-        combined_results = combined_results.append_column(
+        result_set = result_set.drop(self.column)
+        result_set = result_set.append_column(
             self.column, pa.array(docs, type=pa.string())
         )
         # add the scores
-        combined_results = combined_results.append_column(
+        result_set = result_set.append_column(
             "_relevance_score", pa.array(scores, type=pa.float32())
         )
+
+        return result_set
+
+    def rerank_hybrid(
+        self,
+        query: str,
+        vector_results: pa.Table,
+        fts_results: pa.Table,
+    ):
+        combined_results = self.merge_results(vector_results, fts_results)
+        combined_results = self._rerank(combined_results, query)
         if self.score == "relevance":
             combined_results = combined_results.drop_columns(["score", "_distance"])
         elif self.score == "all":
@@ -90,6 +95,24 @@ class OpenaiReranker(Reranker):
         )
 
         return combined_results
+
+    def rerank_vector(self, query: str, vector_results: pa.Table):
+        vector_results = self._rerank(vector_results, query)
+        if self.score == "relevance":
+            vector_results = vector_results.drop_columns(["_distance"])
+
+        vector_results = vector_results.sort_by([("_relevance_score", "descending")])
+
+        return vector_results
+
+    def rerank_fts(self, query: str, fts_results: pa.Table):
+        fts_results = self._rerank(fts_results, query)
+        if self.score == "relevance":
+            fts_results = fts_results.drop_columns(["score"])
+
+        fts_results = fts_results.sort_by([("_relevance_score", "descending")])
+
+        return fts_results
 
     @cached_property
     def _client(self):
