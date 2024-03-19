@@ -14,7 +14,7 @@ class CrossEncoderReranker(Reranker):
 
     Parameters
     ----------
-    model : str, default "cross-encoder/ms-marco-TinyBERT-L-6"
+    model_name : str, default "cross-encoder/ms-marco-TinyBERT-L-6"
         The name of the cross encoder model to use. See the sentence transformers
         documentation for a list of available models.
     column : str, default "text"
