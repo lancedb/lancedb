@@ -117,6 +117,7 @@ class LanceQueryBuilder(ABC):
         query: Optional[Union[np.ndarray, str, "PIL.Image.Image", Tuple]],
         query_type: str,
         vector_column_name: str,
+        ordering_field_name: str = None,
     ) -> LanceQueryBuilder:
         if query is None:
             return LanceEmptyQueryBuilder(table)
@@ -136,7 +137,9 @@ class LanceQueryBuilder(ABC):
 
         if isinstance(query, str):
             # fts
-            return LanceFtsQueryBuilder(table, query)
+            return LanceFtsQueryBuilder(
+                table, query, ordering_field_name=ordering_field_name
+            )
 
         if isinstance(query, list):
             query = np.array(query, dtype=np.float32)
@@ -534,10 +537,11 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
 class LanceFtsQueryBuilder(LanceQueryBuilder):
     """A builder for full text search for LanceDB."""
 
-    def __init__(self, table: "Table", query: str):
+    def __init__(self, table: "Table", query: str, ordering_field_name: str = None):
         super().__init__(table)
         self._query = query
         self._phrase_query = False
+        self.ordering_field_name = ordering_field_name
 
     def phrase_query(self, phrase_query: bool = True) -> LanceFtsQueryBuilder:
         """Set whether to use phrase query.
@@ -582,7 +586,9 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         if self._phrase_query:
             query = query.replace('"', "'")
             query = f'"{query}"'
-        row_ids, scores = search_index(index, query, self._limit)
+        row_ids, scores = search_index(
+            index, query, self._limit, ordering_field=self.ordering_field_name
+        )
         if len(row_ids) == 0:
             empty_schema = pa.schema([pa.field("score", pa.float32())])
             return pa.Table.from_pylist([], schema=empty_schema)

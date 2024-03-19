@@ -1113,6 +1113,9 @@ class LanceTable(Table):
         if isinstance(field_names, str):
             field_names = [field_names]
 
+        if isinstance(ordering_field_names, str):
+            ordering_field_names = [ordering_field_names]
+
         fs, path = fs_from_uri(self._get_fts_index_path())
         index_exists = fs.get_file_info(path).type != pa_fs.FileType.NotFound
         if index_exists:
@@ -1265,6 +1268,7 @@ class LanceTable(Table):
         query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
         vector_column_name: Optional[str] = None,
         query_type: str = "auto",
+        ordering_field_name: Optional[str] = None,
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support [vector search][search]
@@ -1332,7 +1336,11 @@ class LanceTable(Table):
             vector_column_name = inf_vector_column_query(self.schema)
         register_event("search_table")
         return LanceQueryBuilder.create(
-            self, query, query_type, vector_column_name=vector_column_name
+            self,
+            query,
+            query_type,
+            vector_column_name=vector_column_name,
+            ordering_field_name=ordering_field_name,
         )
 
     @classmethod

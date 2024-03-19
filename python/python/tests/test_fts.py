@@ -81,6 +81,19 @@ def test_search_index(tmp_path, table):
     assert len(results[1]) == 10  # _distance
 
 
+def test_search_ordering_field_index_table(tmp_path, table):
+    table.create_fts_index("text", ordering_field_names="count")
+    rows = (
+        table.search("puppy", ordering_field_name="count")
+        .limit(10)
+        .select(["text", "count"])
+        .to_list()
+    )
+    for r in rows:
+        assert "puppy" in r["text"]
+    assert sorted(rows, key=lambda x: x["count"], reverse=True) == rows
+
+
 def test_search_ordering_field_index(tmp_path, table):
     index = ldb.fts.create_index(
         str(tmp_path / "index"), ["text"], ordering_fields=["count"]
