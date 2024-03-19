@@ -1081,10 +1081,10 @@ class LanceTable(Table):
         self._dataset_mut.create_scalar_index(
             column, index_type="BTREE", replace=replace
         )
-
     def create_fts_index(
         self,
         field_names: Union[str, List[str]],
+        ordering_field_names:Union[str, List[str]]=None,
         *,
         replace: bool = False,
         writer_heap_size: Optional[int] = 1024 * 1024 * 1024,
@@ -1103,6 +1103,7 @@ class LanceTable(Table):
             not yet an atomic operation; the index will be temporarily
             unavailable while the new index is being created.
         writer_heap_size: int, default 1GB
+        ordering_field_names: a list of unsigned type fields to index to optionally order results on at search time
         """
         from .fts import create_index, populate_index
 
@@ -1116,8 +1117,8 @@ class LanceTable(Table):
                 raise ValueError("Index already exists. Use replace=True to overwrite.")
             fs.delete_dir(path)
 
-        index = create_index(self._get_fts_index_path(), field_names)
-        populate_index(index, self, field_names, writer_heap_size=writer_heap_size)
+        index = create_index(self._get_fts_index_path(), field_names,ordering_fields=ordering_field_names)
+        populate_index(index, self, field_names,ordering_fields=ordering_field_names, writer_heap_size=writer_heap_size)
         register_event("create_fts_index")
 
     def _get_fts_index_path(self):
