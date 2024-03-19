@@ -24,8 +24,59 @@ class Reranker(ABC):
             raise ValueError("score must be either 'relevance' or 'all'")
         self.score = return_score
 
+    def rerank_vector(
+        self,
+        query: str,
+        vector_results: pa.Table,
+    ):
+        """
+        Rerank function receives the result from the vector search.
+        This isn't mandatory to implement
+
+        Parameters
+        ----------
+        query : str
+            The input query
+        vector_results : pa.Table
+            The results from the vector search
+
+        Returns
+        -------
+        pa.Table
+            The reranked results
+        """
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not implement rerank_vector"
+        )
+
+    def rerank_fts(
+        self,
+        query: str,
+        fts_results: pa.Table,
+    ):
+        """
+        Rerank function receives the result from the FTS search.
+        This isn't mandatory to implement
+
+        Parameters
+        ----------
+        query : str
+            The input query
+        fts_results : pa.Table
+            The results from the FTS search
+
+        Returns
+        -------
+        pa.Table
+            The reranked results
+        """
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not implement rerank_fts"
+        )
+
     @abstractmethod
     def rerank_hybrid(
+        self,
         query: str,
         vector_results: pa.Table,
         fts_results: pa.Table,
@@ -43,6 +94,11 @@ class Reranker(ABC):
             The results from the vector search
         fts_results : pa.Table
             The results from the FTS search
+
+        Returns
+        -------
+        pa.Table
+            The reranked results
         """
         pass
 
