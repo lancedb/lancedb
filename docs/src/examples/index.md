@@ -2,10 +2,11 @@
 
 ## Recipes and example code
 
-LanceDB provides language APIs, allowing you to embed a database in your language of choice. We currently provide Python and Javascript APIs, with the Rust API and examples actively being worked on and will be available soon.
+LanceDB provides language APIs, allowing you to embed a database in your language of choice.
 
 * 🐍 [Python](examples_python.md) examples
-* 👾 [JavaScript](exampled_js.md) examples
+* 👾 [JavaScript](examples_js.md) examples
+* 🦀 Rust examples (coming soon)
 
 ## Applications powered by LanceDB
 
