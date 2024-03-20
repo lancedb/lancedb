@@ -1601,11 +1601,7 @@ mod tests {
 
         let batches = make_test_batches();
         let schema = batches.schema().clone();
-        let table = conn
-            .create_table("test", Box::new(batches))
-            .execute()
-            .await
-            .unwrap();
+        let table = conn.create_table("test", batches).execute().await.unwrap();
         assert_eq!(table.count_rows(None).await.unwrap(), 10);
 
         let new_batches = RecordBatchIterator::new(
@@ -1619,7 +1615,7 @@ mod tests {
             schema.clone(),
         );
 
-        table.add(Box::new(new_batches)).execute().await.unwrap();
+        table.add(new_batches).execute().await.unwrap();
         assert_eq!(table.count_rows(None).await.unwrap(), 20);
         assert_eq!(table.name(), "test");
     }
@@ -1633,7 +1629,7 @@ mod tests {
         // Create a dataset with i=0..10
         let batches = merge_insert_test_batches(0, 0);
         let table = conn
-            .create_table("my_table", Box::new(batches))
+            .create_table("my_table", batches)
             .execute()
             .await
             .unwrap();
@@ -1681,11 +1677,7 @@ mod tests {
 
         let batches = make_test_batches();
         let schema = batches.schema().clone();
-        let table = conn
-            .create_table("test", Box::new(batches))
-            .execute()
-            .await
-            .unwrap();
+        let table = conn.create_table("test", batches).execute().await.unwrap();
         assert_eq!(table.count_rows(None).await.unwrap(), 10);
 
         let batches = vec![RecordBatch::try_new(
@@ -1700,7 +1692,7 @@ mod tests {
 
         // Can overwrite using AddDataOptions::mode
         table
-            .add(Box::new(new_batches))
+            .add(new_batches)
             .mode(AddDataMode::Overwrite)
             .execute()
             .await
@@ -1718,7 +1710,7 @@ mod tests {
 
         let new_batches = RecordBatchIterator::new(batches.clone(), schema.clone());
         table
-            .add(Box::new(new_batches))
+            .add(new_batches)
             .write_options(WriteOptions {
                 lance_write_params: Some(param),
             })
@@ -1763,7 +1755,7 @@ mod tests {
         );
 
         let table = conn
-            .create_table("my_table", Box::new(record_batch_iter))
+            .create_table("my_table", record_batch_iter)
             .execute()
             .await
             .unwrap();
@@ -1900,7 +1892,7 @@ mod tests {
         );
 
         let table = conn
-            .create_table("my_table", Box::new(record_batch_iter))
+            .create_table("my_table", record_batch_iter)
             .execute()
             .await
             .unwrap();
@@ -2021,7 +2013,7 @@ mod tests {
             .await
             .unwrap();
         let tbl = conn
-            .create_table("my_table", Box::new(make_test_batches()))
+            .create_table("my_table", make_test_batches())
             .execute()
             .await
             .unwrap();
@@ -2060,7 +2052,7 @@ mod tests {
 
         let batches = make_test_batches();
 
-        conn.create_table("my_table", Box::new(batches))
+        conn.create_table("my_table", batches)
             .execute()
             .await
             .unwrap();
@@ -2153,11 +2145,7 @@ mod tests {
             schema,
         );
 
-        let table = conn
-            .create_table("test", Box::new(batches))
-            .execute()
-            .await
-            .unwrap();
+        let table = conn.create_table("test", batches).execute().await.unwrap();
 
         assert_eq!(
             table
@@ -2228,7 +2216,7 @@ mod tests {
         Ok(FixedSizeListArray::from(data))
     }
 
-    fn some_sample_data() -> impl RecordBatchReader {
+    fn some_sample_data() -> Box<dyn RecordBatchReader + Send> {
         let batch = RecordBatch::try_new(
             Arc::new(Schema::new(vec![Field::new("i", DataType::Int32, false)])),
             vec![Arc::new(Int32Array::from(vec![1]))],
@@ -2237,7 +2225,7 @@ mod tests {
         let schema = batch.schema().clone();
         let batch = Ok(batch);
 
-        RecordBatchIterator::new(vec![batch], schema)
+        Box::new(RecordBatchIterator::new(vec![batch], schema))
     }
 
     #[tokio::test]
@@ -2254,10 +2242,7 @@ mod tests {
         let table = conn
             .create_table(
                 "my_table",
-                Box::new(RecordBatchIterator::new(
-                    vec![Ok(batch.clone())],
-                    batch.schema(),
-                )),
+                RecordBatchIterator::new(vec![Ok(batch.clone())], batch.schema()),
             )
             .execute()
             .await
@@ -2321,7 +2306,7 @@ mod tests {
             assert_eq!(table1.count_rows(None).await.unwrap(), 0);
             assert_eq!(table2.count_rows(None).await.unwrap(), 0);
 
-            table1.add(Box::new(data)).execute().await.unwrap();
+            table1.add(data).execute().await.unwrap();
             assert_eq!(table1.count_rows(None).await.unwrap(), 1);
 
             match interval {
@@ -2354,21 +2339,13 @@ mod tests {
             .await
             .unwrap();
         let table = conn
-            .create_table("my_table", Box::new(some_sample_data()))
+            .create_table("my_table", some_sample_data())
             .execute()
             .await
             .unwrap();
         let version = table.version().await.unwrap();
-        table
-            .add(Box::new(some_sample_data()))
-            .execute()
-            .await
-            .unwrap();
+        table.add(some_sample_data()).execute().await.unwrap();
         table.checkout(version).await.unwrap();
-        assert!(table
-            .add(Box::new(some_sample_data()))
-            .execute()
-            .await
-            .is_err())
+        assert!(table.add(some_sample_data()).execute().await.is_err())
     }
 }
