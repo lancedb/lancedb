@@ -567,7 +567,9 @@ class Table(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def _execute_query(self, query: Query) -> pa.Table:
+    def _execute_query(
+        self, query: Query, batch_size: Optional[int] = None
+    ) -> pa.RecordBatchReader:
         pass
 
     @abstractmethod
@@ -1588,10 +1590,11 @@ class LanceTable(Table):
 
         self._dataset_mut.update(values_sql, where)
 
-    def _execute_query(self, query: Query) -> pa.Table:
+    def _execute_query(
+        self, query: Query, batch_size: Optional[int] = None
+    ) -> pa.RecordBatchReader:
         ds = self.to_lance()
-
-        return ds.to_table(
+        return ds.scanner(
             columns=query.columns,
             filter=query.filter,
             prefilter=query.prefilter,
@@ -1604,7 +1607,8 @@ class LanceTable(Table):
                 "refine_factor": query.refine_factor,
             },
             with_row_id=query.with_row_id,
-        )
+            batch_size=batch_size,
+        ).to_reader()
 
     def _do_merge(
         self,
@@ -2153,12 +2157,16 @@ class AsyncTable:
     ) -> AsyncVectorQuery:
         """
         Search the table with a given query vector.
-
         This is a convenience method for preparing a vector query and
         is the same thing as calling `nearestTo` on the builder returned
         by `query`.  Seer [nearest_to][AsyncQuery.nearest_to] for more details.
         """
         return self.query().nearest_to(query_vector)
+
+    async def _execute_query(
+        self, query: Query, batch_size: Optional[int] = None
+    ) -> pa.RecordBatchReader:
+        pass
 
     async def _do_merge(
         self,
