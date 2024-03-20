@@ -114,8 +114,16 @@ pub trait IntoArrow {
     fn into_arrow(self) -> Result<Box<dyn arrow_array::RecordBatchReader + Send>>;
 }
 
-impl<T: arrow_array::RecordBatchReader + Send + 'static> IntoArrow for Box<T> {
+pub struct ArrowNative(pub Box<dyn arrow_array::RecordBatchReader + Send>);
+
+impl ArrowNative {
+    pub fn new(reader: impl arrow_array::RecordBatchReader + Send + 'static) -> Self {
+        Self(Box::new(reader))
+    }
+}
+
+impl IntoArrow for ArrowNative {
     fn into_arrow(self) -> Result<Box<dyn arrow_array::RecordBatchReader + Send>> {
-        Ok(self)
+        Ok(self.0)
     }
 }
