@@ -114,8 +114,8 @@ pub trait IntoArrow {
     fn into_arrow(self) -> Result<Box<dyn arrow_array::RecordBatchReader + Send>>;
 }
 
-impl<T: arrow_array::RecordBatchReader + Send + 'static> IntoArrow for Box<T> {
+impl<T: arrow_array::RecordBatchReader + Send + 'static> IntoArrow for T {
     fn into_arrow(self) -> Result<Box<dyn arrow_array::RecordBatchReader + Send>> {
-        Ok(self)
+        Ok(Box::new(self))
     }
 }
