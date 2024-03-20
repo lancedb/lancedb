@@ -105,15 +105,23 @@ export class RecordBatchIterator {
   next(): Promise<Buffer | null>
 }
 export class Query {
-  column(column: string): void
-  filter(filter: string): void
-  select(columns: Array<string>): void
+  onlyIf(predicate: string): void
+  select(columns: Array<[string, string]>): void
   limit(limit: number): void
-  prefilter(prefilter: boolean): void
-  nearestTo(vector: Float32Array): void
+  nearestTo(vector: Float32Array): VectorQuery
+  execute(): Promise<RecordBatchIterator>
+}
+export class VectorQuery {
+  column(column: string): void
+  distanceType(distanceType: string): void
+  postfilter(): void
   refineFactor(refineFactor: number): void
   nprobes(nprobe: number): void
-  executeStream(): Promise<RecordBatchIterator>
+  bypassVectorIndex(): void
+  onlyIf(predicate: string): void
+  select(columns: Array<[string, string]>): void
+  limit(limit: number): void
+  execute(): Promise<RecordBatchIterator>
 }
 export class Table {
   display(): string
@@ -127,6 +135,7 @@ export class Table {
   createIndex(index: Index | undefined | null, column: string, replace?: boolean | undefined | null): Promise<void>
   update(onlyIf: string | undefined | null, columns: Array<[string, string]>): Promise<void>
   query(): Query
+  vectorSearch(vector: Float32Array): VectorQuery
   addColumns(transforms: Array<AddColumnsSql>): Promise<void>
   alterColumns(alterations: Array<ColumnAlteration>): Promise<void>
   dropColumns(columns: Array<string>): Promise<void>

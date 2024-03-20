@@ -124,8 +124,9 @@ def test_linear_combination(tmp_path):
 )
 def test_cohere_reranker(tmp_path):
     pytest.importorskip("cohere")
+    reranker = CohereReranker()
     table, schema = get_test_table(tmp_path)
-    # The default reranker
+    # Hybrid search setting
     result1 = (
         table.search("Our father who art in heaven", query_type="hybrid")
         .rerank(normalize="score", reranker=CohereReranker())
@@ -133,7 +134,7 @@ def test_cohere_reranker(tmp_path):
     )
     result2 = (
         table.search("Our father who art in heaven", query_type="hybrid")
-        .rerank(reranker=CohereReranker())
+        .rerank(reranker=reranker)
         .to_pydantic(schema)
     )
     assert result1 == result2
@@ -143,64 +144,120 @@ def test_cohere_reranker(tmp_path):
     result = (
         table.search((query_vector, query))
         .limit(30)
-        .rerank(reranker=CohereReranker())
+        .rerank(reranker=reranker)
         .to_arrow()
     )
 
     assert len(result) == 30
-
-    assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), (
+    err = (
         "The _relevance_score column of the results returned by the reranker "
         "represents the relevance of the result to the query & should "
         "be descending."
     )
+    assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), err
+
+    # Vector search setting
+    query = "Our father who art in heaven"
+    result = table.search(query).rerank(reranker=reranker).limit(30).to_arrow()
+    assert len(result) == 30
+    assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), err
+    result_explicit = (
+        table.search(query_vector)
+        .rerank(reranker=reranker, query=query)
+        .limit(30)
+        .to_arrow()
+    )
+    assert len(result_explicit) == 30
+    with pytest.raises(
+        ValueError
+    ):  # This raises an error because vector query is provided without reanking query
+        table.search(query_vector).rerank(reranker=reranker).limit(30).to_arrow()
+
+    # FTS search setting
+    result = (
+        table.search(query, query_type="fts")
+        .rerank(reranker=reranker)
+        .limit(30)
+        .to_arrow()
+    )
+    assert len(result) > 0
+    assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), err
 
 
 def test_cross_encoder_reranker(tmp_path):
     pytest.importorskip("sentence_transformers")
+    reranker = CrossEncoderReranker()
     table, schema = get_test_table(tmp_path)
     result1 = (
         table.search("Our father who art in heaven", query_type="hybrid")
-        .rerank(normalize="score", reranker=CrossEncoderReranker())
+        .rerank(normalize="score", reranker=reranker)
         .to_pydantic(schema)
     )
     result2 = (
         table.search("Our father who art in heaven", query_type="hybrid")
-        .rerank(reranker=CrossEncoderReranker())
+        .rerank(reranker=reranker)
         .to_pydantic(schema)
     )
     assert result1 == result2
 
-    # test explicit hybrid query
     query = "Our father who art in heaven"
     query_vector = table.to_pandas()["vector"][0]
     result = (
         table.search((query_vector, query), query_type="hybrid")
         .limit(30)
-        .rerank(reranker=CrossEncoderReranker())
+        .rerank(reranker=reranker)
         .to_arrow()
     )
 
     assert len(result) == 30
 
-    assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), (
+    err = (
         "The _relevance_score column of the results returned by the reranker "
         "represents the relevance of the result to the query & should "
         "be descending."
     )
+    assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), err
+
+    # Vector search setting
+    result = table.search(query).rerank(reranker=reranker).limit(30).to_arrow()
+    assert len(result) == 30
+    assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), err
+
+    result_explicit = (
+        table.search(query_vector)
+        .rerank(reranker=reranker, query=query)
+        .limit(30)
+        .to_arrow()
+    )
+    assert len(result_explicit) == 30
+    with pytest.raises(
+        ValueError
+    ):  # This raises an error because vector query is provided without reanking query
+        table.search(query_vector).rerank(reranker=reranker).limit(30).to_arrow()
+
+    # FTS search setting
+    result = (
+        table.search(query, query_type="fts")
+        .rerank(reranker=reranker)
+        .limit(30)
+        .to_arrow()
+    )
+    assert len(result) > 0
+    assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), err
 
 
 def test_colbert_reranker(tmp_path):
     pytest.importorskip("transformers")
+    reranker = ColbertReranker()
     table, schema = get_test_table(tmp_path)
     result1 = (
         table.search("Our father who art in heaven", query_type="hybrid")
-        .rerank(normalize="score", reranker=ColbertReranker())
+        .rerank(normalize="score", reranker=reranker)
         .to_pydantic(schema)
     )
     result2 = (
         table.search("Our father who art in heaven", query_type="hybrid")
-        .rerank(reranker=ColbertReranker())
+        .rerank(reranker=reranker)
         .to_pydantic(schema)
     )
     assert result1 == result2
@@ -211,17 +268,43 @@ def test_colbert_reranker(tmp_path):
     result = (
         table.search((query_vector, query))
         .limit(30)
-        .rerank(reranker=ColbertReranker())
+        .rerank(reranker=reranker)
         .to_arrow()
     )
 
     assert len(result) == 30
-
-    assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), (
+    err = (
         "The _relevance_score column of the results returned by the reranker "
         "represents the relevance of the result to the query & should "
         "be descending."
     )
+    assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), err
+
+    # Vector search setting
+    result = table.search(query).rerank(reranker=reranker).limit(30).to_arrow()
+    assert len(result) == 30
+    assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), err
+    result_explicit = (
+        table.search(query_vector)
+        .rerank(reranker=reranker, query=query)
+        .limit(30)
+        .to_arrow()
+    )
+    assert len(result_explicit) == 30
+    with pytest.raises(
+        ValueError
+    ):  # This raises an error because vector query is provided without reanking query
+        table.search(query_vector).rerank(reranker=reranker).limit(30).to_arrow()
+
+    # FTS search setting
+    result = (
+        table.search(query, query_type="fts")
+        .rerank(reranker=reranker)
+        .limit(30)
+        .to_arrow()
+    )
+    assert len(result) > 0
+    assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), err
 
 
 @pytest.mark.skipif(
@@ -230,9 +313,10 @@ def test_colbert_reranker(tmp_path):
 def test_openai_reranker(tmp_path):
     pytest.importorskip("openai")
     table, schema = get_test_table(tmp_path)
+    reranker = OpenaiReranker()
     result1 = (
         table.search("Our father who art in heaven", query_type="hybrid")
-        .rerank(normalize="score", reranker=OpenaiReranker())
+        .rerank(normalize="score", reranker=reranker)
         .to_pydantic(schema)
     )
     result2 = (
@@ -248,14 +332,40 @@ def test_openai_reranker(tmp_path):
     result = (
         table.search((query_vector, query))
         .limit(30)
-        .rerank(reranker=OpenaiReranker())
+        .rerank(reranker=reranker)
         .to_arrow()
     )
 
     assert len(result) == 30
 
-    assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), (
+    err = (
         "The _relevance_score column of the results returned by the reranker "
         "represents the relevance of the result to the query & should "
         "be descending."
     )
+    assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), err
+
+    # Vector search setting
+    result = table.search(query).rerank(reranker=reranker).limit(30).to_arrow()
+    assert len(result) == 30
+    assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), err
+    result_explicit = (
+        table.search(query_vector)
+        .rerank(reranker=reranker, query=query)
+        .limit(30)
+        .to_arrow()
+    )
+    assert len(result_explicit) == 30
+    with pytest.raises(
+        ValueError
+    ):  # This raises an error because vector query is provided without reanking query
+        table.search(query_vector).rerank(reranker=reranker).limit(30).to_arrow()
+    # FTS search setting
+    result = (
+        table.search(query, query_type="fts")
+        .rerank(reranker=reranker)
+        .limit(30)
+        .to_arrow()
+    )
+    assert len(result) > 0
+    assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), err
