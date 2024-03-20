@@ -24,7 +24,7 @@ import { RemoteConnection } from './remote'
 import { Query } from './query'
 import { isEmbeddingFunction } from './embedding/embedding_function'
 import { type Literal, toSQL } from './util'
-import { type ConnectionMiddleware } from './middleware'
+import { type HttpMiddleware } from './middleware'
 
 const {
   databaseNew,
@@ -305,16 +305,14 @@ export interface Connection {
   dropTable(name: string): Promise<void>
 
   /**
-   * Instrument the behavior of this connection with middleware.
+   * Instrument the behavior of this Connection with middleware.
    *
-   * The middlewares will be added in a chain and their respective instrumentation
-   * callback implementations will be called in the order they are passed into
-   * invocations of this method.
+   * The middlewares callback implementations will be called in the order they are added.
    *
-   * @param {ConnectionMiddleware} - Middleware which will instrument the connection.
-   * @returns - this connection instrumented by the passed middleware
+   * @param {HttpMiddleware} - Middleware which will instrument the Connection.
+   * @returns - this Connection instrumented by the passed middleware
    */
-  withMiddleware(middleware: ConnectionMiddleware): Connection
+  withMiddleware(middleware: HttpMiddleware): Connection
 }
 
 /**
@@ -555,7 +553,15 @@ export interface Table<T = number[]> {
    */
   dropColumns(columnNames: string[]): Promise<void>
 
-  // TODO add methods for middleware
+  /**
+   * Instrument the behavior of this Table with middleware.
+   *
+   * The middlewares callback implementations will be called in the order they are added.
+   *
+   * @param {ConnectionMiddleware} - Middleware which will instrument the .
+   * @returns - this Table instrumented by the passed middleware
+   */
+  withMiddleware(middleware: HttpMiddleware): Table<T>
 }
 
 /**
@@ -811,8 +817,7 @@ export class LocalConnection implements Connection {
     await databaseDropTable.call(this._db, name)
   }
 
-  withMiddleware (middleware: ConnectionMiddleware): Connection {
-    // noop
+  withMiddleware (middleware: HttpMiddleware): Connection {
     return this
   }
 }
@@ -1124,6 +1129,10 @@ export class LocalTable<T = number[]> implements Table<T> {
 
   async dropColumns (columnNames: string[]): Promise<void> {
     return tableDropColumns.call(this._tbl, columnNames)
+  }
+
+  withMiddleware (middleware: HttpMiddleware): Table<T> {
+    return this
   }
 }
 

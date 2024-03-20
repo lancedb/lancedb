@@ -12,51 +12,55 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import axios, { type AxiosResponse } from 'axios'
+import axios, { type AxiosResponse, type ResponseType } from 'axios'
 
 import { tableFromIPC, type Table as ArrowTable } from 'apache-arrow'
 
-import {
-  type RemoteRes,
-  type RemoteRequest, Method,
-  type MiddlewareContext,
-  type onRemoteRequestNext,
-  SimpleMiddlewareContext
-} from '../middleware'
+import { type RemoteResponse, type RemoteRequest, Method } from '../middleware'
 
 interface HttpLancedbClientMiddleware {
   onRemoteRequest(
     req: RemoteRequest,
-    next: onRemoteRequestNext,
-    ctx: MiddlewareContext,
-  ): Promise<RemoteRes>
+    next: (req: RemoteRequest) => Promise<RemoteResponse>,
+  ): Promise<RemoteResponse>
 }
 
-// TODO comments
+/**
+ * Invoke the middleware chain and at the end call the remote endpoint
+ */
 async function callWithMiddlewares (
   req: RemoteRequest,
-  ctx: MiddlewareContext,
-  middlewares: HttpLancedbClientMiddleware[]
-): Promise<RemoteRes> {
+  middlewares: HttpLancedbClientMiddleware[],
+  opts?: MiddlewareInvocationOptions
+): Promise<RemoteResponse> {
   async function call (
     i: number,
-    req: RemoteRequest,
-    ctx: MiddlewareContext
-  ): Promise<RemoteRes> {
+    req: RemoteRequest
+  ): Promise<RemoteResponse> {
     // if we have reached the end of the middleware chain, make the request
     if (i > middlewares.length) {
-      if (req.method !== Method.GET) {
-        throw new Error('TODO unimplemented')
+      let res
+      if (req.method === Method.POST) {
+        res = await axios.post(
+          req.uri,
+          req.data,
+          {
+            headers: { ...req.headers },
+            params: req.params,
+            responseType: opts?.responseType,
+            timeout: 10000
+          }
+        )
+      } else {
+        res = await axios.get(
+          req.uri,
+          {
+            headers: { ...req.headers },
+            params: req.params,
+            timeout: 10000
+          }
+        )
       }
-
-      const res = await axios.get(
-        req.uri,
-        {
-          headers: { ...req.headers },
-          params: req.params,
-          timeout: 10000
-        }
-      )
 
       return toLanceRes(res)
     }
@@ -64,20 +68,23 @@ async function callWithMiddlewares (
     // call next middleware in chain
     return await middlewares[i - 1].onRemoteRequest(
       req,
-      async (req, ctx) => {
-        return await call(i + 1, req, ctx)
-      },
-      ctx
+      async (req) => {
+        return await call(i + 1, req)
+      }
     )
   }
 
-  return await call(1, req, ctx)
+  return await call(1, req)
+}
+
+interface MiddlewareInvocationOptions {
+  responseType?: ResponseType
 }
 
 /**
  * Marshall the library response into a LanceDB response
  */
-function toLanceRes (res: AxiosResponse): RemoteRes {
+function toLanceRes (res: AxiosResponse): RemoteResponse {
   const headers: Record<string, string> = {}
   for (const h in res.headers) {
     headers[h] = res.headers[h]
@@ -85,6 +92,7 @@ function toLanceRes (res: AxiosResponse): RemoteRes {
 
   return {
     status: res.status,
+    statusText: res.statusText,
     headers,
     body: async () => {
       return res.data
@@ -96,7 +104,6 @@ export class HttpLancedbClient {
   private readonly _url: string
   private readonly _apiKey: () => string
   private readonly _middlewares: HttpLancedbClientMiddleware[]
-  private _middlewareCtx: MiddlewareContext
 
   public constructor (
     url: string,
@@ -106,7 +113,6 @@ export class HttpLancedbClient {
     this._url = url
     this._apiKey = () => apiKey
     this._middlewares = []
-    this._middlewareCtx = new SimpleMiddlewareContext()
   }
 
   get uri (): string {
@@ -123,49 +129,29 @@ export class HttpLancedbClient {
     columns?: string[],
     filter?: string
   ): Promise<ArrowTable<any>> {
-    const response = await axios.post(
-              `${this._url}/v1/table/${tableName}/query/`,
-              {
-                vector,
-                k,
-                nprobes,
-                refineFactor,
-                columns,
-                filter,
-                prefilter
-              },
-              {
-                headers: {
-                  'Content-Type': 'application/json',
-                  'x-api-key': this._apiKey(),
-                  ...(this._dbName !== undefined ? { 'x-lancedb-database': this._dbName } : {})
-                },
-                responseType: 'arraybuffer',
-                timeout: 10000
-              }
-    ).catch((err) => {
-      console.error('error: ', err)
-      if (err.response === undefined) {
-        throw new Error(`Network Error: ${err.message as string}`)
-      }
-      return err.response
-    })
-    if (response.status !== 200) {
-      const errorData = new TextDecoder().decode(response.data)
-      throw new Error(
-        `Server Error, status: ${response.status as number}, ` +
-        `message: ${response.statusText as string}: ${errorData}`
-      )
-    }
-
-    const table = tableFromIPC(response.data)
+    const result = await this.post(
+      `/v1/table/${tableName}/query/`,
+      {
+        vector,
+        k,
+        nprobes,
+        refineFactor,
+        columns,
+        filter,
+        prefilter
+      },
+      undefined,
+      undefined,
+      'arraybuffer'
+    )
+    const table = tableFromIPC(await result.body())
     return table
   }
 
   /**
    * Sent GET request.
    */
-  public async get (path: string, params?: Record<string, string | number>): Promise<RemoteRes> {
+  public async get (path: string, params?: Record<string, string | number>): Promise<RemoteResponse> {
     const req = {
       uri: `${this._url}${path}`,
       method: Method.GET,
@@ -177,9 +163,9 @@ export class HttpLancedbClient {
       params
     }
 
+    let response
     try {
-      const response = await callWithMiddlewares(req, this._middlewareCtx, this._middlewares)
-      // TODO replace handling etc if it's not 200
+      response = await callWithMiddlewares(req, this._middlewares)
       return response
     } catch (err: any) {
       console.error('error: ', err)
@@ -187,8 +173,18 @@ export class HttpLancedbClient {
         throw new Error(`Network Error: ${err.message as string}`)
       }
 
-      return toLanceRes(err.response)
+      response = toLanceRes(err.response)
     }
+
+    if (response.status !== 200) {
+      const errorData = new TextDecoder().decode(await response.body())
+      throw new Error(
+        `Server Error, status: ${response.status}, ` +
+        `message: ${response.statusText}: ${errorData}`
+      )
+    }
+
+    return response
   }
 
   /**
@@ -198,34 +194,42 @@ export class HttpLancedbClient {
     path: string,
     data?: any,
     params?: Record<string, string | number>,
-    content?: string | undefined
-  ): Promise<AxiosResponse> {
-    const response = await axios.post(
-        `${this._url}${path}`,
-        data,
-        {
-          headers: {
-            'Content-Type': content ?? 'application/json',
-            'x-api-key': this._apiKey(),
-            ...(this._dbName !== undefined ? { 'x-lancedb-database': this._dbName } : {})
-          },
-          params,
-          timeout: 30000
-        }
-    ).catch((err) => {
+    content?: string | undefined,
+    responseType?: ResponseType | undefined
+  ): Promise<RemoteResponse> {
+    const req = {
+      uri: `${this._url}${path}`,
+      method: Method.POST,
+      headers: {
+        'Content-Type': content ?? 'application/json',
+        'x-api-key': this._apiKey(),
+        ...(this._dbName !== undefined ? { 'x-lancedb-database': this._dbName } : {})
+      },
+      params,
+      data
+    }
+
+    let response
+    try {
+      response = await callWithMiddlewares(req, this._middlewares, { responseType })
+
+      // return response
+    } catch (err: any) {
       console.error('error: ', err)
       if (err.response === undefined) {
         throw new Error(`Network Error: ${err.message as string}`)
       }
-      return err.response
-    })
+      response = toLanceRes(err.response)
+    }
+
     if (response.status !== 200) {
-      const errorData = new TextDecoder().decode(response.data)
+      const errorData = new TextDecoder().decode(await response.body())
       throw new Error(
-          `Server Error, status: ${response.status as number}, ` +
-          `message: ${response.statusText as string}: ${errorData}`
+        `Server Error, status: ${response.status}, ` +
+        `message: ${response.statusText}: ${errorData}`
       )
     }
+
     return response
   }
 
@@ -237,12 +241,6 @@ export class HttpLancedbClient {
   public withMiddleware (mw: HttpLancedbClientMiddleware): HttpLancedbClient {
     const wrapped = this.clone()
     wrapped._middlewares.push(mw)
-    return wrapped
-  }
-
-  public withMiddlewareContext (ctx: MiddlewareContext): HttpLancedbClient {
-    const wrapped = this.clone()
-    wrapped._middlewareCtx = ctx
     return wrapped
   }
 
