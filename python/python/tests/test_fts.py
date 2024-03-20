@@ -54,7 +54,6 @@ def table(tmp_path) -> ldb.table.LanceTable:
                 "text2": text,
                 "nested": [{"text": t} for t in text],
                 "count": count,
-                "count2": [10000 - c for c in count],
             }
         ),
     )
