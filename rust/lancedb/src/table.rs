@@ -1187,11 +1187,19 @@ impl NativeTable {
             })?;
             if !matches!(field.data_type(), arrow_schema::DataType::FixedSizeList(f, dim) if f.data_type().is_floating() && dim == query_vector.len() as i32)
             {
-                return Err(Error::Schema {
+                let schema_vec_dim =
+                    if let arrow_schema::DataType::FixedSizeList(_, dim) = field.data_type() {
+                        dim
+                    } else {
+                        unreachable!()
+                    };
+                return Err(Error::InvalidInput {
                     message: format!(
-                        "Vector column '{}' does not match the dimension of the query vector: dim={}",
+                        "The dimension of the query vector does not match with the dimension of the vector column '{}': 
+                            query dim={}, expected vector dim={}",
                         column,
                         query_vector.len(),
+                        schema_vec_dim,
                     ),
                 });
             }
