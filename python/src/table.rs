@@ -64,7 +64,7 @@ impl Table {
     }
 
     pub fn add<'a>(self_: PyRef<'a, Self>, data: &PyAny, mode: String) -> PyResult<&'a PyAny> {
-        let batches = Box::new(ArrowArrayStreamReader::from_pyarrow(data)?);
+        let batches = ArrowArrayStreamReader::from_pyarrow(data)?;
         let mut op = self_.inner_ref()?.add(batches);
         if mode == "append" {
             op = op.mode(AddDataMode::Append);
