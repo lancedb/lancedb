@@ -24,7 +24,7 @@ import { RemoteConnection } from './remote'
 import { Query } from './query'
 import { isEmbeddingFunction } from './embedding/embedding_function'
 import { type Literal, toSQL } from './util'
-import { type ConnectionMiddleware, type MiddlewareContext } from './middleware'
+import { type ConnectionMiddleware } from './middleware'
 
 const {
   databaseNew,
@@ -315,15 +315,6 @@ export interface Connection {
    * @returns - this connection instrumented by the passed middleware
    */
   withMiddleware(middleware: ConnectionMiddleware): Connection
-
-  /**
-   * Set the context that will be passed to any middlewares that instrument this
-   * connection
-   *
-   * @param {MiddlewareContext} - Context that will be passed to middlewares
-   * @returns - this connection configured to pass the context to its middlewares
-   */
-  withMiddlewareContext(ctx: MiddlewareContext): Connection
 }
 
 /**
@@ -821,11 +812,6 @@ export class LocalConnection implements Connection {
   }
 
   withMiddleware (middleware: ConnectionMiddleware): Connection {
-    // noop
-    return this
-  }
-
-  withMiddlewareContext (ctx: MiddlewareContext): Connection {
     // noop
     return this
   }
