@@ -12,8 +12,8 @@
 #  limitations under the License.
 
 import unittest.mock as mock
-from typing import Optional
 from datetime import timedelta
+from typing import Optional
 
 import lance
 import lancedb
