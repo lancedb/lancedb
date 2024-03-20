@@ -37,6 +37,7 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.fs as pa_fs
 from lance import LanceDataset
+from lance.dependencies import _check_for_hugging_face
 from lance.vector import vec_to_table
 
 from .common import DATA, VEC, VECTOR_COLUMN_NAME
@@ -74,6 +75,27 @@ def _sanitize_data(
     on_bad_vectors: str,
     fill_value: Any,
 ):
+    if _check_for_hugging_face(data):
+        # Huggingface datasets
+        from lance.dependencies import datasets
+
+        if isinstance(data, datasets.dataset_dict.DatasetDict):
+            if schema is None:
+                schema = _schema_from_hf(data, schema)
+            data = _to_record_batch_generator(
+                _to_batches_with_split(data),
+                schema,
+                metadata,
+                on_bad_vectors,
+                fill_value,
+            )
+        elif isinstance(data, datasets.Dataset):
+            if schema is None:
+                schema = data.features.arrow_schema
+            data = _to_record_batch_generator(
+                data.data.to_batches(), schema, metadata, on_bad_vectors, fill_value
+            )
+
     if isinstance(data, list):
         # convert to list of dict if data is a bunch of LanceModels
         if isinstance(data[0], LanceModel):
@@ -110,6 +132,37 @@ def _sanitize_data(
     return data
 
 
+def _schema_from_hf(data, schema):
+    """
+    Extract pyarrow schema from HuggingFace DatasetDict
+    and validate that they're all the same schema between
+    splits
+    """
+    for dataset in data.values():
+        if schema is None:
+            schema = dataset.features.arrow_schema
+        elif schema != dataset.features.arrow_schema:
+            msg = "All datasets in a HuggingFace DatasetDict must have the same schema"
+            raise TypeError(msg)
+    return schema
+
+
+def _to_batches_with_split(data):
+    """
+    Return a generator of RecordBatches from a HuggingFace DatasetDict
+    with an extra `split` column
+    """
+    for key, dataset in data.items():
+        for batch in dataset.data.to_batches():
+            table = pa.Table.from_batches([batch])
+            if "split" not in table.column_names:
+                table = table.append_column(
+                    "split", pa.array([key] * batch.num_rows, pa.string())
+                )
+            for b in table.to_batches():
+                yield b
+
+
 def _append_vector_col(data: pa.Table, metadata: dict, schema: Optional[pa.Schema]):
     """
     Use the embedding function to automatically embed the source column and add the
@@ -144,12 +197,13 @@ def _to_record_batch_generator(
     data: Iterable, schema, metadata, on_bad_vectors, fill_value
 ):
     for batch in data:
-        if not isinstance(batch, pa.RecordBatch):
-            table = _sanitize_data(batch, schema, metadata, on_bad_vectors, fill_value)
-            for batch in table.to_batches():
-                yield batch
-        else:
-            yield batch
+        # always convert to table because we need to sanitize the data
+        # and do things like add the vector column etc
+        if isinstance(batch, pa.RecordBatch):
+            batch = pa.Table.from_batches([batch])
+        batch = _sanitize_data(batch, schema, metadata, on_bad_vectors, fill_value)
+        for b in batch.to_batches():
+            yield b
 
 
 class Table(ABC):
