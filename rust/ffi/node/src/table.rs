@@ -80,7 +80,7 @@ impl JsTable {
         rt.spawn(async move {
             let batch_reader = RecordBatchIterator::new(batches.into_iter().map(Ok), schema);
             let table_rst = database
-                .create_table(&table_name, Box::new(batch_reader))
+                .create_table(&table_name, batch_reader)
                 .write_options(WriteOptions {
                     lance_write_params: Some(params),
                 })
@@ -126,7 +126,7 @@ impl JsTable {
         rt.spawn(async move {
             let batch_reader = RecordBatchIterator::new(batches.into_iter().map(Ok), schema);
             let add_result = table
-                .add(Box::new(batch_reader))
+                .add(batch_reader)
                 .write_options(WriteOptions {
                     lance_write_params: Some(params),
                 })

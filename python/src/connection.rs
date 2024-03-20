@@ -95,7 +95,7 @@ impl Connection {
 
         let mode = Self::parse_create_mode_str(mode)?;
 
-        let batches = Box::new(ArrowArrayStreamReader::from_pyarrow(data)?);
+        let batches = ArrowArrayStreamReader::from_pyarrow(data)?;
         future_into_py(self_.py(), async move {
             let table = inner
                 .create_table(name, batches)
