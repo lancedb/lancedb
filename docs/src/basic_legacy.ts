@@ -8,7 +8,6 @@ import { Table as ArrowTable, Utf8 } from "apache-arrow";
 const example = async () => {
   fs.rmSync("data/sample-lancedb", { recursive: true, force: true });
   // --8<-- [start:open_db]
-  const lancedb = require("vectordb");
   const uri = "data/sample-lancedb";
   const db = await lancedb.connect(uri);
   // --8<-- [end:open_db]
