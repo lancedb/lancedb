@@ -163,7 +163,7 @@ def test_cohere_reranker(tmp_path):
     assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), err
     result_explicit = (
         table.search(query_vector)
-        .rerank(reranker=reranker, query=query)
+        .rerank(reranker=reranker, query_string=query)
         .limit(30)
         .to_arrow()
     )
@@ -225,7 +225,7 @@ def test_cross_encoder_reranker(tmp_path):
 
     result_explicit = (
         table.search(query_vector)
-        .rerank(reranker=reranker, query=query)
+        .rerank(reranker=reranker, query_string=query)
         .limit(30)
         .to_arrow()
     )
@@ -286,7 +286,7 @@ def test_colbert_reranker(tmp_path):
     assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), err
     result_explicit = (
         table.search(query_vector)
-        .rerank(reranker=reranker, query=query)
+        .rerank(reranker=reranker, query_string=query)
         .limit(30)
         .to_arrow()
     )
@@ -351,7 +351,7 @@ def test_openai_reranker(tmp_path):
     assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), err
     result_explicit = (
         table.search(query_vector)
-        .rerank(reranker=reranker, query=query)
+        .rerank(reranker=reranker, query_string=query)
         .limit(30)
         .to_arrow()
     )

@@ -16,7 +16,16 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, List, Literal, Optional, Tuple, Type, Union
+from typing import (
+    TYPE_CHECKING,
+    Dict,
+    List,
+    Literal,
+    Optional,
+    Tuple,
+    Type,
+    Union,
+)
 
 import deprecation
 import numpy as np
@@ -515,6 +524,21 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         and also the "_distance" column which is the distance between the query
         vector and the returned vectors.
         """
+        return self.to_batches().read_all()
+
+    def to_batches(self, /, batch_size: Optional[int] = None) -> pa.RecordBatchReader:
+        """
+        Execute the query and return the result as a RecordBatchReader object.
+
+        Parameters
+        ----------
+        batch_size: int
+            The maximum number of selected records in a RecordBatch object.
+
+        Returns
+        -------
+        pa.RecordBatchReader
+        """
         vector = self._query if isinstance(self._query, list) else self._query.tolist()
         if isinstance(vector[0], np.ndarray):
             vector = [v.tolist() for v in vector]
@@ -530,9 +554,14 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             vector_column=self._vector_column,
             with_row_id=self._with_row_id,
         )
-        result_set = self._table._execute_query(query)
+        result_set = self._table._execute_query(query, batch_size)
         if self._reranker is not None:
-            result_set = self._reranker.rerank_vector(self._str_query, result_set)
+            rs_table = result_set.read_all()
+            result_set = self._reranker.rerank_vector(self._str_query, rs_table)
+            # convert result_set back to RecordBatchReader
+            result_set = pa.RecordBatchReader.from_batches(
+                result_set.schema, result_set.to_batches()
+            )
 
         return result_set
 
