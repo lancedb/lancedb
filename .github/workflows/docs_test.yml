@@ -24,16 +24,22 @@ env:
 jobs:
   test-python:
     name: Test doc python code
-    runs-on: "ubuntu-latest"
+    runs-on: "buildjet-8vcpu-ubuntu-2204"
     steps:
     - name: Checkout
       uses: actions/checkout@v4
+    - name: Install dependecies needed for ubuntu
+      run: |
+        sudo apt install -y protobuf-compiler libssl-dev
+        rustup update && rustup default
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
         python-version: 3.11
         cache: "pip"
         cache-dependency-path: "docs/test/requirements.txt"
+    - name: Rust cache
+      uses: swatinem/rust-cache@v2        
     - name: Build Python
       working-directory: docs/test
       run:
@@ -48,8 +54,8 @@ jobs:
         for d in *; do cd "$d"; echo "$d".py; python "$d".py; cd ..; done
   test-node:
     name: Test doc nodejs code
-    runs-on: "ubuntu-latest"
-    timeout-minutes: 45
+    runs-on: "buildjet-8vcpu-ubuntu-2204"
+    timeout-minutes: 60
     strategy:
       fail-fast: false
     steps:
@@ -65,6 +71,7 @@ jobs:
     - name: Install dependecies needed for ubuntu
       run: |
         sudo apt install -y protobuf-compiler libssl-dev
+        rustup update && rustup default
     - name: Rust cache
       uses: swatinem/rust-cache@v2
     - name: Install node dependencies

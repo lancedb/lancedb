@@ -13,18 +13,14 @@
 // limitations under the License.
 
 import { Connection } from "./connection";
-import { Connection as NativeConnection, ConnectionOptions } from "./native.js";
-
-export {
+import {
+  Connection as LanceDbConnection,
   ConnectionOptions,
-  WriteOptions,
-  Query,
-  MetricType,
 } from "./native.js";
-export { Connection } from "./connection";
-export { Table } from "./table";
-export { Data } from "./arrow";
-export { IvfPQOptions, IndexBuilder } from "./indexer";
+
+export { ConnectionOptions, WriteOptions, Query } from "./native.js";
+export { Connection, CreateTableOptions } from "./connection";
+export { Table, AddDataOptions } from "./table";
 
 /**
  * Connect to a LanceDB instance at the given URI.
@@ -34,31 +30,15 @@ export { IvfPQOptions, IndexBuilder } from "./indexer";
  * - `/path/to/database` - local database
  * - `s3://bucket/path/to/database` or `gs://bucket/path/to/database` - database on cloud storage
  * - `db://host:port` - remote database (LanceDB cloud)
- *
- * @param uri The uri of the database. If the database uri starts with `db://` then it connects to a remote database.
- *
+ * @param {string} uri - The uri of the database. If the database uri starts
+ * with `db://` then it connects to a remote database.
  * @see {@link ConnectionOptions} for more details on the URI format.
  */
-export async function connect(uri: string): Promise<Connection>;
 export async function connect(
-  opts: Partial<ConnectionOptions>
-): Promise<Connection>;
-export async function connect(
-  args: string | Partial<ConnectionOptions>
+  uri: string,
+  opts?: Partial<ConnectionOptions>,
 ): Promise<Connection> {
-  let opts: ConnectionOptions;
-  if (typeof args === "string") {
-    opts = { uri: args };
-  } else {
-    opts = Object.assign(
-      {
-        uri: "",
-        apiKey: undefined,
-        hostOverride: undefined,
-      },
-      args
-    );
-  }
-  const nativeConn = await NativeConnection.new(opts);
+  opts = opts ?? {};
+  const nativeConn = await LanceDbConnection.new(uri, opts);
   return new Connection(nativeConn);
 }

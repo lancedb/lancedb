@@ -12,12 +12,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use arrow::RecordBatchStream;
 use connection::{connect, Connection};
 use env_logger::Env;
+use index::{Index, IndexConfig};
 use pyo3::{pymodule, types::PyModule, wrap_pyfunction, PyResult, Python};
+use query::{Query, VectorQuery};
+use table::Table;
 
+pub mod arrow;
 pub mod connection;
-pub(crate) mod error;
+pub mod error;
+pub mod index;
+pub mod query;
+pub mod table;
+pub mod util;
 
 #[pymodule]
 pub fn _lancedb(_py: Python, m: &PyModule) -> PyResult<()> {
@@ -26,6 +35,12 @@ pub fn _lancedb(_py: Python, m: &PyModule) -> PyResult<()> {
         .write_style("LANCEDB_LOG_STYLE");
     env_logger::init_from_env(env);
     m.add_class::<Connection>()?;
+    m.add_class::<Table>()?;
+    m.add_class::<Index>()?;
+    m.add_class::<IndexConfig>()?;
+    m.add_class::<Query>()?;
+    m.add_class::<VectorQuery>()?;
+    m.add_class::<RecordBatchStream>()?;
     m.add_function(wrap_pyfunction!(connect, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())

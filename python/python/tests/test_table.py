@@ -26,8 +26,9 @@ import pandas as pd
 import polars as pl
 import pyarrow as pa
 import pytest
+import pytest_asyncio
 from lancedb.conftest import MockTextEmbeddingFunction
-from lancedb.db import LanceDBConnection
+from lancedb.db import AsyncConnection, LanceDBConnection
 from lancedb.embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
 from lancedb.pydantic import LanceModel, Vector
 from lancedb.table import LanceTable
@@ -49,6 +50,13 @@ def db(tmp_path) -> MockDB:
     return MockDB(tmp_path)
 
 
+@pytest_asyncio.fixture
+async def db_async(tmp_path) -> AsyncConnection:
+    return await lancedb.connect_async(
+        tmp_path, read_consistency_interval=timedelta(seconds=0)
+    )
+
+
 def test_basic(db):
     ds = LanceTable.create(
         db,
@@ -63,6 +71,35 @@ def test_basic(db):
     assert table.name == "test"
     assert table.schema == ds.schema
     assert table.to_lance().to_table() == ds.to_table()
+
+
+@pytest.mark.asyncio
+async def test_close(db_async: AsyncConnection):
+    table = await db_async.create_table("some_table", data=[{"id": 0}])
+    assert table.is_open()
+    table.close()
+    assert not table.is_open()
+
+    with pytest.raises(Exception, match="Table some_table is closed"):
+        await table.count_rows()
+    assert str(table) == "ClosedTable(some_table)"
+
+
+@pytest.mark.asyncio
+async def test_update_async(db_async: AsyncConnection):
+    table = await db_async.create_table("some_table", data=[{"id": 0}])
+    assert await table.count_rows("id == 0") == 1
+    assert await table.count_rows("id == 7") == 0
+    await table.update({"id": 7})
+    assert await table.count_rows("id == 7") == 1
+    assert await table.count_rows("id == 0") == 0
+    await table.add([{"id": 2}])
+    await table.update(where="id % 2 == 0", updates_sql={"id": "5"})
+    assert await table.count_rows("id == 7") == 1
+    assert await table.count_rows("id == 2") == 0
+    assert await table.count_rows("id == 5") == 1
+    await table.update({"id": 10}, where="id == 5")
+    assert await table.count_rows("id == 10") == 1
 
 
 def test_create_table(db):
@@ -184,6 +221,25 @@ def test_add_pydantic_model(db):
 
     really_flattened = tbl.search([0.0, 0.0]).limit(1).to_pandas(flatten=True)
     assert len(really_flattened.columns) == 7
+
+
+@pytest.mark.asyncio
+async def test_add_async(db_async: AsyncConnection):
+    table = await db_async.create_table(
+        "test",
+        data=[
+            {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+            {"vector": [5.9, 26.5], "item": "bar", "price": 20.0},
+        ],
+    )
+    assert await table.count_rows() == 2
+    await table.add(
+        data=[
+            {"vector": [10.0, 11.0], "item": "baz", "price": 30.0},
+        ],
+    )
+    table = await db_async.open_table("test")
+    assert await table.count_rows() == 3
 
 
 def test_polars(db):
@@ -854,7 +910,16 @@ def test_hybrid_search(db, tmp_path):
     result3 = table.search(
         "Our father who art in heaven", query_type="hybrid"
     ).to_pydantic(MyTable)
+
     assert result1 == result3
+
+    # with post filters
+    result = (
+        table.search("Arrrrggghhhhhhh", query_type="hybrid")
+        .where("text='Arrrrggghhhhhhh'")
+        .to_list()
+    )
+    len(result) == 1
 
 
 @pytest.mark.parametrize(
@@ -926,3 +991,37 @@ def test_drop_columns(tmp_path):
     table = LanceTable.create(db, "my_table", data=data)
     table.drop_columns(["category"])
     assert table.to_arrow().column_names == ["id"]
+
+
+@pytest.mark.asyncio
+async def test_time_travel(db_async: AsyncConnection):
+    # Setup
+    table = await db_async.create_table("some_table", data=[{"id": 0}])
+    version = await table.version()
+    await table.add([{"id": 1}])
+    assert await table.count_rows() == 2
+    # Make sure we can rewind
+    await table.checkout(version)
+    assert await table.count_rows() == 1
+    # Can't add data in time travel mode
+    with pytest.raises(
+        ValueError,
+        match="table cannot be modified when a specific version is checked out",
+    ):
+        await table.add([{"id": 2}])
+    # Can go back to normal mode
+    await table.checkout_latest()
+    assert await table.count_rows() == 2
+    # Should be able to add data again
+    await table.add([{"id": 3}])
+    assert await table.count_rows() == 3
+    # Now checkout and restore
+    await table.checkout(version)
+    await table.restore()
+    assert await table.count_rows() == 1
+    # Should be able to add data
+    await table.add([{"id": 4}])
+    assert await table.count_rows() == 2
+    # Can't use restore if not checked out
+    with pytest.raises(ValueError, match="checkout before running restore"):
+        await table.restore()

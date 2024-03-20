@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use pyo3::{
-    exceptions::{PyOSError, PyRuntimeError, PyValueError},
+    exceptions::{PyIOError, PyNotImplementedError, PyOSError, PyRuntimeError, PyValueError},
     PyResult,
 };
 
@@ -35,14 +35,21 @@ impl<T> PythonErrorExt<T> for std::result::Result<T, LanceError> {
         match &self {
             Ok(_) => Ok(self.unwrap()),
             Err(err) => match err {
+                LanceError::InvalidInput { .. } => self.value_error(),
                 LanceError::InvalidTableName { .. } => self.value_error(),
                 LanceError::TableNotFound { .. } => self.value_error(),
-                LanceError::TableAlreadyExists { .. } => self.runtime_error(),
-                LanceError::CreateDir { .. } => self.os_error(),
-                LanceError::Store { .. } => self.runtime_error(),
-                LanceError::Lance { .. } => self.runtime_error(),
                 LanceError::Schema { .. } => self.value_error(),
+                LanceError::CreateDir { .. } => self.os_error(),
+                LanceError::TableAlreadyExists { .. } => self.runtime_error(),
+                LanceError::ObjectStore { .. } => Err(PyIOError::new_err(err.to_string())),
+                LanceError::Lance { .. } => self.runtime_error(),
                 LanceError::Runtime { .. } => self.runtime_error(),
+                LanceError::Http { .. } => self.runtime_error(),
+                LanceError::Arrow { .. } => self.runtime_error(),
+                LanceError::NotSupported { .. } => {
+                    Err(PyNotImplementedError::new_err(err.to_string()))
+                }
+                LanceError::Other { .. } => self.runtime_error(),
             },
         }
     }

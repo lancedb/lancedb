@@ -21,10 +21,11 @@ __version__ = importlib.metadata.version("lancedb")
 
 from ._lancedb import connect as lancedb_connect
 from .common import URI, sanitize_uri
-from .db import AsyncConnection, AsyncLanceDBConnection, DBConnection, LanceDBConnection
+from .db import AsyncConnection, DBConnection, LanceDBConnection
 from .remote.db import RemoteDBConnection
-from .schema import vector  # noqa: F401
-from .utils import sentry_log  # noqa: F401
+from .schema import vector
+from .table import AsyncTable
+from .utils import sentry_log
 
 
 def connect(
@@ -35,6 +36,7 @@ def connect(
     host_override: Optional[str] = None,
     read_consistency_interval: Optional[timedelta] = None,
     request_thread_pool: Optional[Union[int, ThreadPoolExecutor]] = None,
+    **kwargs,
 ) -> DBConnection:
     """Connect to a LanceDB database.
 
@@ -99,7 +101,12 @@ def connect(
         if isinstance(request_thread_pool, int):
             request_thread_pool = ThreadPoolExecutor(request_thread_pool)
         return RemoteDBConnection(
-            uri, api_key, region, host_override, request_thread_pool=request_thread_pool
+            uri,
+            api_key,
+            region,
+            host_override,
+            request_thread_pool=request_thread_pool,
+            **kwargs,
         )
     return LanceDBConnection(uri, read_consistency_interval=read_consistency_interval)
 
@@ -168,8 +175,33 @@ async def connect_async(
     conn : DBConnection
         A connection to a LanceDB database.
     """
-    return AsyncLanceDBConnection(
+    if read_consistency_interval is not None:
+        read_consistency_interval_secs = read_consistency_interval.total_seconds()
+    else:
+        read_consistency_interval_secs = None
+
+    return AsyncConnection(
         await lancedb_connect(
-            sanitize_uri(uri), api_key, region, host_override, read_consistency_interval
+            sanitize_uri(uri),
+            api_key,
+            region,
+            host_override,
+            read_consistency_interval_secs,
         )
     )
+
+
+__all__ = [
+    "connect",
+    "connect_async",
+    "AsyncConnection",
+    "AsyncTable",
+    "URI",
+    "sanitize_uri",
+    "sentry_log",
+    "vector",
+    "DBConnection",
+    "LanceDBConnection",
+    "RemoteDBConnection",
+    "__version__",
+]

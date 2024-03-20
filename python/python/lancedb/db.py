@@ -13,16 +13,24 @@
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import os
 from abc import abstractmethod
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterable, List, Optional, Union
+from typing import TYPE_CHECKING, Iterable, List, Literal, Optional, Union
 
 import pyarrow as pa
 from overrides import EnforceOverrides, override
 from pyarrow import fs
 
-from .table import LanceTable, Table
+from lancedb.common import data_to_reader, validate_schema
+from lancedb.embeddings.registry import EmbeddingFunctionRegistry
+from lancedb.utils.events import register_event
+
+from ._lancedb import connect as lancedb_connect
+from .pydantic import LanceModel
+from .table import AsyncTable, LanceTable, Table, _sanitize_data
 from .util import fs_from_uri, get_uri_location, get_uri_scheme, join_uri
 
 if TYPE_CHECKING:
@@ -31,7 +39,6 @@ if TYPE_CHECKING:
     from ._lancedb import Connection as LanceDbConnection
     from .common import DATA, URI
     from .embeddings import EmbeddingFunctionConfig
-    from .pydantic import LanceModel
 
 
 class DBConnection(EnforceOverrides):
@@ -312,6 +319,10 @@ class LanceDBConnection(DBConnection):
     def uri(self) -> str:
         return self._uri
 
+    async def _async_get_table_names(self, start_after: Optional[str], limit: int):
+        conn = AsyncConnection(await lancedb_connect(self.uri))
+        return await conn.table_names(start_after=start_after, limit=limit)
+
     @override
     def table_names(
         self, page_token: Optional[str] = None, limit: int = 10
@@ -324,23 +335,31 @@ class LanceDBConnection(DBConnection):
             A list of table names.
         """
         try:
-            filesystem = fs_from_uri(self.uri)[0]
-        except pa.ArrowInvalid:
-            raise NotImplementedError("Unsupported scheme: " + self.uri)
+            asyncio.get_running_loop()
+            # User application is async.  Soon we will just tell them to use the
+            # async version.  Until then fallback to the old sync implementation.
+            try:
+                filesystem = fs_from_uri(self.uri)[0]
+            except pa.ArrowInvalid:
+                raise NotImplementedError("Unsupported scheme: " + self.uri)
 
-        try:
-            loc = get_uri_location(self.uri)
-            paths = filesystem.get_file_info(fs.FileSelector(loc))
-        except FileNotFoundError:
-            # It is ok if the file does not exist since it will be created
-            paths = []
-        tables = [
-            os.path.splitext(file_info.base_name)[0]
-            for file_info in paths
-            if file_info.extension == "lance"
-        ]
-        tables.sort()
-        return tables
+            try:
+                loc = get_uri_location(self.uri)
+                paths = filesystem.get_file_info(fs.FileSelector(loc))
+            except FileNotFoundError:
+                # It is ok if the file does not exist since it will be created
+                paths = []
+            tables = [
+                os.path.splitext(file_info.base_name)[0]
+                for file_info in paths
+                if file_info.extension == "lance"
+            ]
+            tables.sort()
+            return tables
+        except RuntimeError:
+            # User application is sync.  It is safe to use the async implementation
+            # under the hood.
+            return asyncio.run(self._async_get_table_names(page_token, limit))
 
     def __len__(self) -> int:
         return len(self.table_names())
@@ -422,43 +441,95 @@ class LanceDBConnection(DBConnection):
         filesystem.delete_dir(path)
 
 
-class AsyncConnection(EnforceOverrides):
-    """An active LanceDB connection interface."""
+class AsyncConnection(object):
+    """An active LanceDB connection
 
-    @abstractmethod
+    To obtain a connection you can use the [connect] function.
+
+    This could be a native connection (using lance) or a remote connection (e.g. for
+    connecting to LanceDb Cloud)
+
+    Local connections do not currently hold any open resources but they may do so in the
+    future (for example, for shared cache or connections to catalog services) Remote
+    connections represent an open connection to the remote server.  The [close] method
+    can be used to release any underlying resources eagerly.  The connection can also
+    be used as a context manager:
+
+    Connections can be shared on multiple threads and are expected to be long lived.
+    Connections can also be used as a context manager, however, in many cases a single
+    connection can be used for the lifetime of the application and so this is often
+    not needed.  Closing a connection is optional.  If it is not closed then it will
+    be automatically closed when the connection object is deleted.
+
+    Examples
+    --------
+
+    >>> import asyncio
+    >>> import lancedb
+    >>> async def my_connect():
+    ...   with await lancedb.connect("/tmp/my_dataset") as conn:
+    ...     # do something with the connection
+    ...     pass
+    ...   # conn is closed here
+    """
+
+    def __init__(self, connection: LanceDbConnection):
+        self._inner = connection
+
+    def __repr__(self):
+        return self._inner.__repr__()
+
+    def __enter__(self):
+        self
+
+    def __exit__(self, *_):
+        self.close()
+
+    def is_open(self):
+        """Return True if the connection is open."""
+        return self._inner.is_open()
+
+    def close(self):
+        """Close the connection, releasing any underlying resources.
+
+        It is safe to call this method multiple times.
+
+        Any attempt to use the connection after it is closed will result in an error."""
+        self._inner.close()
+
     async def table_names(
-        self, *, page_token: Optional[str] = None, limit: int = 10
+        self, *, start_after: Optional[str] = None, limit: Optional[int] = None
     ) -> Iterable[str]:
         """List all tables in this database, in sorted order
 
         Parameters
         ----------
-        page_token: str, optional
-            The token to use for pagination. If not present, start from the beginning.
-            Typically, this token is last table name from the previous page.
-            Only supported by LanceDb Cloud.
+        start_after: str, optional
+            If present, only return names that come lexicographically after the supplied
+            value.
+
+            This can be combined with limit to implement pagination by setting this to
+            the last table name from the previous page.
         limit: int, default 10
-            The size of the page to return.
-            Only supported by LanceDb Cloud.
+            The number of results to return.
 
         Returns
         -------
         Iterable of str
         """
-        pass
+        return await self._inner.table_names(start_after=start_after, limit=limit)
 
-    @abstractmethod
     async def create_table(
         self,
         name: str,
         data: Optional[DATA] = None,
         schema: Optional[Union[pa.Schema, LanceModel]] = None,
-        mode: str = "create",
-        exist_ok: bool = False,
-        on_bad_vectors: str = "error",
-        fill_value: float = 0.0,
+        mode: Optional[Literal["create", "overwrite"]] = None,
+        exist_ok: Optional[bool] = None,
+        on_bad_vectors: Optional[str] = None,
+        fill_value: Optional[float] = None,
         embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
-    ) -> Table:
+    ) -> AsyncTable:
         """Create a [Table][lancedb.table.Table] in the database.
 
         Parameters
@@ -480,7 +551,7 @@ class AsyncConnection(EnforceOverrides):
             - pyarrow.Schema
 
             - [LanceModel][lancedb.pydantic.LanceModel]
-        mode: str; default "create"
+        mode: Literal["create", "overwrite"]; default "create"
             The mode to use when creating the table.
             Can be either "create" or "overwrite".
             By default, if the table already exists, an exception is raised.
@@ -596,7 +667,74 @@ class AsyncConnection(EnforceOverrides):
         LanceTable(connection=..., name="table4")
 
         """
-        raise NotImplementedError
+        if inspect.isclass(schema) and issubclass(schema, LanceModel):
+            # convert LanceModel to pyarrow schema
+            # note that it's possible this contains
+            # embedding function metadata already
+            schema = schema.to_arrow_schema()
+
+        metadata = None
+        if embedding_functions is not None:
+            # If we passed in embedding functions explicitly
+            # then we'll override any schema metadata that
+            # may was implicitly specified by the LanceModel schema
+            registry = EmbeddingFunctionRegistry.get_instance()
+            metadata = registry.get_table_metadata(embedding_functions)
+
+        # Defining defaults here and not in function prototype.  In the future
+        # these defaults will move into rust so better to keep them as None.
+        if on_bad_vectors is None:
+            on_bad_vectors = "error"
+
+        if fill_value is None:
+            fill_value = 0.0
+
+        if data is not None:
+            data = _sanitize_data(
+                data,
+                schema,
+                metadata=metadata,
+                on_bad_vectors=on_bad_vectors,
+                fill_value=fill_value,
+            )
+
+        if schema is None:
+            if data is None:
+                raise ValueError("Either data or schema must be provided")
+            elif hasattr(data, "schema"):
+                schema = data.schema
+            elif isinstance(data, Iterable):
+                if metadata:
+                    raise TypeError(
+                        (
+                            "Persistent embedding functions not yet "
+                            "supported for generator data input"
+                        )
+                    )
+
+        if metadata:
+            schema = schema.with_metadata(metadata)
+        validate_schema(schema)
+
+        if exist_ok is None:
+            exist_ok = False
+        if mode is None:
+            mode = "create"
+        if mode == "create" and exist_ok:
+            mode = "exist_ok"
+
+        if data is None:
+            new_table = await self._inner.create_empty_table(name, mode, schema)
+        else:
+            data = data_to_reader(data, schema)
+            new_table = await self._inner.create_table(
+                name,
+                mode,
+                data,
+            )
+
+        register_event("create_table")
+        return AsyncTable(new_table)
 
     async def open_table(self, name: str) -> Table:
         """Open a Lance Table in the database.
@@ -610,7 +748,9 @@ class AsyncConnection(EnforceOverrides):
         -------
         A LanceTable object representing the table.
         """
-        raise NotImplementedError
+        table = await self._inner.open_table(name)
+        register_event("open_table")
+        return AsyncTable(table)
 
     async def drop_table(self, name: str):
         """Drop a table from the database.
@@ -627,47 +767,4 @@ class AsyncConnection(EnforceOverrides):
         Drop database
         This is the same thing as dropping all the tables
         """
-        raise NotImplementedError
-
-
-class AsyncLanceDBConnection(AsyncConnection):
-    def __init__(self, connection: LanceDbConnection):
-        self._inner = connection
-
-    async def __repr__(self) -> str:
-        pass
-
-    @override
-    async def table_names(
-        self,
-        *,
-        page_token=None,
-        limit=None,
-    ) -> Iterable[str]:
-        return await self._inner.table_names()
-
-    @override
-    async def create_table(
-        self,
-        name: str,
-        data: Optional[DATA] = None,
-        schema: Optional[Union[pa.Schema, LanceModel]] = None,
-        mode: str = "create",
-        exist_ok: bool = False,
-        on_bad_vectors: str = "error",
-        fill_value: float = 0.0,
-        embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
-    ) -> LanceTable:
-        raise NotImplementedError
-
-    @override
-    async def open_table(self, name: str) -> LanceTable:
-        raise NotImplementedError
-
-    @override
-    async def drop_table(self, name: str, ignore_missing: bool = False):
-        raise NotImplementedError
-
-    @override
-    async def drop_database(self):
         raise NotImplementedError

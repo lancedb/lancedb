@@ -176,16 +176,21 @@ export async function connect (
     opts = { uri: arg }
   } else {
     // opts = { uri: arg.uri, awsCredentials = arg.awsCredentials }
-    opts = Object.assign(
-      {
-        uri: '',
-        awsCredentials: undefined,
-        awsRegion: defaultAwsRegion,
-        apiKey: undefined,
-        region: defaultAwsRegion
-      },
-      arg
-    )
+    const keys = Object.keys(arg)
+    if (keys.length === 1 && keys[0] === 'uri' && typeof arg.uri === 'string') {
+      opts = { uri: arg.uri }
+    } else {
+      opts = Object.assign(
+        {
+          uri: '',
+          awsCredentials: undefined,
+          awsRegion: defaultAwsRegion,
+          apiKey: undefined,
+          region: defaultAwsRegion
+        },
+        arg
+      )
+    }
   }
 
   if (opts.uri.startsWith('db://')) {
@@ -341,6 +346,7 @@ export interface Table<T = number[]> {
    *
    * @param column The column to index
    * @param replace If false, fail if an index already exists on the column
+   * it is always set to true for remote connections
    *
    * Scalar indices, like vector indices, can be used to speed up scans.  A scalar
    * index can speed up scans that contain filter expressions on the indexed column.
@@ -384,7 +390,7 @@ export interface Table<T = number[]> {
    * await table.createScalarIndex('my_col')
    * ```
    */
-  createScalarIndex: (column: string, replace: boolean) => Promise<void>
+  createScalarIndex: (column: string, replace?: boolean) => Promise<void>
 
   /**
    * Returns the number of rows in this table.
@@ -914,7 +920,10 @@ export class LocalTable<T = number[]> implements Table<T> {
       })
   }
 
-  async createScalarIndex (column: string, replace: boolean): Promise<void> {
+  async createScalarIndex (column: string, replace?: boolean): Promise<void> {
+    if (replace === undefined) {
+      replace = true
+    }
     return tableCreateScalarIndex.call(this._tbl, column, replace)
   }
 

@@ -19,7 +19,17 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import timedelta
 from functools import cached_property
-from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Tuple, Union
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Dict,
+    Iterable,
+    List,
+    Literal,
+    Optional,
+    Tuple,
+    Union,
+)
 
 import lance
 import numpy as np
@@ -33,7 +43,7 @@ from .common import DATA, VEC, VECTOR_COLUMN_NAME
 from .embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
 from .merge import LanceMergeInsertBuilder
 from .pydantic import LanceModel, model_to_dict
-from .query import LanceQueryBuilder, Query
+from .query import AsyncQuery, AsyncVectorQuery, LanceQueryBuilder, Query
 from .util import (
     fs_from_uri,
     inf_vector_column_query,
@@ -48,7 +58,9 @@ if TYPE_CHECKING:
     import PIL
     from lance.dataset import CleanupStats, ReaderLike
 
+    from ._lancedb import Table as LanceDBTable
     from .db import LanceDBConnection
+    from .index import BTree, IndexConfig, IvfPq
 
 
 pd = safe_import_pandas()
@@ -106,7 +118,8 @@ def _append_vector_col(data: pa.Table, metadata: dict, schema: Optional[pa.Schem
     functions = EmbeddingFunctionRegistry.get_instance().parse_functions(metadata)
     for vector_column, conf in functions.items():
         func = conf.function
-        if vector_column not in data.column_names:
+        no_vector_column = vector_column not in data.column_names
+        if no_vector_column or pc.all(pc.is_null(data[vector_column])).as_py():
             col_data = func.compute_source_embeddings_with_retry(
                 data[conf.source_column]
             )
@@ -114,9 +127,16 @@ def _append_vector_col(data: pa.Table, metadata: dict, schema: Optional[pa.Schem
                 dtype = schema.field(vector_column).type
             else:
                 dtype = pa.list_(pa.float32(), len(col_data[0]))
-            data = data.append_column(
-                pa.field(vector_column, type=dtype), pa.array(col_data, type=dtype)
-            )
+            if no_vector_column:
+                data = data.append_column(
+                    pa.field(vector_column, type=dtype), pa.array(col_data, type=dtype)
+                )
+            else:
+                data = data.set_column(
+                    data.column_names.index(vector_column),
+                    pa.field(vector_column, type=dtype),
+                    pa.array(col_data, type=dtype),
+                )
     return data
 
 
@@ -1802,3 +1822,565 @@ def _sanitize_nans(data, fill_value, on_bad_vectors, vec_arr, vector_column_name
         is_full = np.any(~is_value_nan.reshape(-1, vec_arr.type.list_size), axis=1)
         data = data.filter(is_full)
     return data
+
+
+class AsyncTable:
+    """
+    An AsyncTable is a collection of Records in a LanceDB Database.
+
+    An AsyncTable can be obtained from the
+    [AsyncConnection.create_table][lancedb.AsyncConnection.create_table] and
+    [AsyncConnection.open_table][lancedb.AsyncConnection.open_table] methods.
+
+    An AsyncTable object is expected to be long lived and reused for multiple
+    operations. AsyncTable objects will cache a certain amount of index data in memory.
+    This cache will be freed when the Table is garbage collected.  To eagerly free the
+    cache you can call the [close][AsyncTable.close] method.  Once the AsyncTable is
+    closed, it cannot be used for any further operations.
+
+    An AsyncTable can also be used as a context manager, and will automatically close
+    when the context is exited.  Closing a table is optional.  If you do not close the
+    table, it will be closed when the AsyncTable object is garbage collected.
+
+    Examples
+    --------
+
+    Create using [DBConnection.create_table][lancedb.DBConnection.create_table]
+    (more examples in that method's documentation).
+
+    >>> import lancedb
+    >>> db = lancedb.connect("./.lancedb")
+    >>> table = db.create_table("my_table", data=[{"vector": [1.1, 1.2], "b": 2}])
+    >>> table.head()
+    pyarrow.Table
+    vector: fixed_size_list<item: float>[2]
+      child 0, item: float
+    b: int64
+    ----
+    vector: [[[1.1,1.2]]]
+    b: [[2]]
+
+    Can append new data with [Table.add()][lancedb.table.Table.add].
+
+    >>> table.add([{"vector": [0.5, 1.3], "b": 4}])
+
+    Can query the table with [Table.search][lancedb.table.Table.search].
+
+    >>> table.search([0.4, 0.4]).select(["b", "vector"]).to_pandas()
+       b      vector  _distance
+    0  4  [0.5, 1.3]       0.82
+    1  2  [1.1, 1.2]       1.13
+
+    Search queries are much faster when an index is created. See
+    [Table.create_index][lancedb.table.Table.create_index].
+    """
+
+    def __init__(self, table: LanceDBTable):
+        """Create a new Table object.
+
+        You should not create Table objects directly.
+
+        Use [AsyncConnection.create_table][lancedb.AsyncConnection.create_table] and
+        [AsyncConnection.open_table][lancedb.AsyncConnection.open_table] to obtain
+        Table objects."""
+        self._inner = table
+
+    def __repr__(self):
+        return self._inner.__repr__()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.close()
+
+    def is_open(self) -> bool:
+        """Return True if the table is closed."""
+        return self._inner.is_open()
+
+    def close(self):
+        """Close the table and free any resources associated with it.
+
+        It is safe to call this method multiple times.
+
+        Any attempt to use the table after it has been closed will raise an error."""
+        return self._inner.close()
+
+    @property
+    def name(self) -> str:
+        """The name of the table."""
+        return self._inner.name()
+
+    async def schema(self) -> pa.Schema:
+        """The [Arrow Schema](https://arrow.apache.org/docs/python/api/datatypes.html#)
+        of this Table
+
+        """
+        return await self._inner.schema()
+
+    async def count_rows(self, filter: Optional[str] = None) -> int:
+        """
+        Count the number of rows in the table.
+
+        Parameters
+        ----------
+        filter: str, optional
+            A SQL where clause to filter the rows to count.
+        """
+        return await self._inner.count_rows(filter)
+
+    def query(self) -> AsyncQuery:
+        return AsyncQuery(self._inner.query())
+
+    async def to_pandas(self) -> "pd.DataFrame":
+        """Return the table as a pandas DataFrame.
+
+        Returns
+        -------
+        pd.DataFrame
+        """
+        return (await self.to_arrow()).to_pandas()
+
+    async def to_arrow(self) -> pa.Table:
+        """Return the table as a pyarrow Table.
+
+        Returns
+        -------
+        pa.Table
+        """
+        return await self.query().to_arrow()
+
+    async def create_index(
+        self,
+        column: str,
+        *,
+        replace: Optional[bool] = None,
+        config: Optional[Union[IvfPq, BTree]] = None,
+    ):
+        """Create an index to speed up queries
+
+        Indices can be created on vector columns or scalar columns.
+        Indices on vector columns will speed up vector searches.
+        Indices on scalar columns will speed up filtering (in both
+        vector and non-vector searches)
+
+        Parameters
+        ----------
+        index: Index
+            The index to create.
+
+            LanceDb supports multiple types of indices.  See the static methods on
+            the Index class for more details.
+        column: str, default None
+            The column to index.
+
+            When building a scalar index this must be set.
+
+            When building a vector index, this is optional.  The default will look
+            for any columns of type fixed-size-list with floating point values.  If
+            there is only one column of this type then it will be used.  Otherwise
+            an error will be returned.
+        replace: bool, default True
+            Whether to replace the existing index
+
+            If this is false, and another index already exists on the same columns
+            and the same name, then an error will be returned.  This is true even if
+            that index is out of date.
+
+            The default is True
+        """
+        index = None
+        if config is not None:
+            index = config._inner
+        await self._inner.create_index(column, index=index, replace=replace)
+
+    async def add(
+        self,
+        data: DATA,
+        *,
+        mode: Optional[Literal["append", "overwrite"]] = "append",
+        on_bad_vectors: Optional[str] = None,
+        fill_value: Optional[float] = None,
+    ):
+        """Add more data to the [Table](Table).
+
+        Parameters
+        ----------
+        data: DATA
+            The data to insert into the table. Acceptable types are:
+
+            - dict or list-of-dict
+
+            - pandas.DataFrame
+
+            - pyarrow.Table or pyarrow.RecordBatch
+        mode: str
+            The mode to use when writing the data. Valid values are
+            "append" and "overwrite".
+        on_bad_vectors: str, default "error"
+            What to do if any of the vectors are not the same size or contains NaNs.
+            One of "error", "drop", "fill".
+        fill_value: float, default 0.
+            The value to use when filling vectors. Only used if on_bad_vectors="fill".
+
+        """
+        schema = await self.schema()
+        if on_bad_vectors is None:
+            on_bad_vectors = "error"
+        if fill_value is None:
+            fill_value = 0.0
+        data = _sanitize_data(
+            data,
+            schema,
+            metadata=schema.metadata,
+            on_bad_vectors=on_bad_vectors,
+            fill_value=fill_value,
+        )
+        if isinstance(data, pa.Table):
+            data = pa.RecordBatchReader.from_batches(data.schema, data.to_batches())
+        await self._inner.add(data, mode)
+        register_event("add")
+
+    def merge_insert(self, on: Union[str, Iterable[str]]) -> LanceMergeInsertBuilder:
+        """
+        Returns a [`LanceMergeInsertBuilder`][lancedb.merge.LanceMergeInsertBuilder]
+        that can be used to create a "merge insert" operation
+
+        This operation can add rows, update rows, and remove rows all in a single
+        transaction. It is a very generic tool that can be used to create
+        behaviors like "insert if not exists", "update or insert (i.e. upsert)",
+        or even replace a portion of existing data with new data (e.g. replace
+        all data where month="january")
+
+        The merge insert operation works by combining new data from a
+        **source table** with existing data in a **target table** by using a
+        join.  There are three categories of records.
+
+        "Matched" records are records that exist in both the source table and
+        the target table. "Not matched" records exist only in the source table
+        (e.g. these are new data) "Not matched by source" records exist only
+        in the target table (this is old data)
+
+        The builder returned by this method can be used to customize what
+        should happen for each category of data.
+
+        Please note that the data may appear to be reordered as part of this
+        operation.  This is because updated rows will be deleted from the
+        dataset and then reinserted at the end with the new values.
+
+        Parameters
+        ----------
+
+        on: Union[str, Iterable[str]]
+            A column (or columns) to join on.  This is how records from the
+            source table and target table are matched.  Typically this is some
+            kind of key or id column.
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> data = pa.table({"a": [2, 1, 3], "b": ["a", "b", "c"]})
+        >>> db = lancedb.connect("./.lancedb")
+        >>> table = db.create_table("my_table", data)
+        >>> new_data = pa.table({"a": [2, 3, 4], "b": ["x", "y", "z"]})
+        >>> # Perform a "upsert" operation
+        >>> table.merge_insert("a")             \\
+        ...      .when_matched_update_all()     \\
+        ...      .when_not_matched_insert_all() \\
+        ...      .execute(new_data)
+        >>> # The order of new rows is non-deterministic since we use
+        >>> # a hash-join as part of this operation and so we sort here
+        >>> table.to_arrow().sort_by("a").to_pandas()
+           a  b
+        0  1  b
+        1  2  x
+        2  3  y
+        3  4  z
+        """
+        on = [on] if isinstance(on, str) else list(on.iter())
+
+        return LanceMergeInsertBuilder(self, on)
+
+    def vector_search(
+        self,
+        query_vector: Optional[Union[VEC, Tuple]] = None,
+    ) -> AsyncVectorQuery:
+        """
+        Search the table with a given query vector.
+
+        This is a convenience method for preparing a vector query and
+        is the same thing as calling `nearestTo` on the builder returned
+        by `query`.  Seer [nearest_to][AsyncQuery.nearest_to] for more details.
+        """
+        return self.query().nearest_to(query_vector)
+
+    async def _do_merge(
+        self,
+        merge: LanceMergeInsertBuilder,
+        new_data: DATA,
+        on_bad_vectors: str,
+        fill_value: float,
+    ):
+        pass
+
+    async def delete(self, where: str):
+        """Delete rows from the table.
+
+        This can be used to delete a single row, many rows, all rows, or
+        sometimes no rows (if your predicate matches nothing).
+
+        Parameters
+        ----------
+        where: str
+            The SQL where clause to use when deleting rows.
+
+            - For example, 'x = 2' or 'x IN (1, 2, 3)'.
+
+            The filter must not be empty, or it will error.
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> data = [
+        ...    {"x": 1, "vector": [1, 2]},
+        ...    {"x": 2, "vector": [3, 4]},
+        ...    {"x": 3, "vector": [5, 6]}
+        ... ]
+        >>> db = lancedb.connect("./.lancedb")
+        >>> table = db.create_table("my_table", data)
+        >>> table.to_pandas()
+           x      vector
+        0  1  [1.0, 2.0]
+        1  2  [3.0, 4.0]
+        2  3  [5.0, 6.0]
+        >>> table.delete("x = 2")
+        >>> table.to_pandas()
+           x      vector
+        0  1  [1.0, 2.0]
+        1  3  [5.0, 6.0]
+
+        If you have a list of values to delete, you can combine them into a
+        stringified list and use the `IN` operator:
+
+        >>> to_remove = [1, 5]
+        >>> to_remove = ", ".join([str(v) for v in to_remove])
+        >>> to_remove
+        '1, 5'
+        >>> table.delete(f"x IN ({to_remove})")
+        >>> table.to_pandas()
+           x      vector
+        0  3  [5.0, 6.0]
+        """
+        raise NotImplementedError
+
+    async def update(
+        self,
+        updates: Optional[Dict[str, Any]] = None,
+        *,
+        where: Optional[str] = None,
+        updates_sql: Optional[Dict[str, str]] = None,
+    ):
+        """
+        This can be used to update zero to all rows in the table.
+
+        If a filter is provided with `where` then only rows matching the
+        filter will be updated.  Otherwise all rows will be updated.
+
+        Parameters
+        ----------
+        updates: dict, optional
+            The updates to apply.  The keys should be the name of the column to
+            update.  The values should be the new values to assign.  This is
+            required unless updates_sql is supplied.
+        where: str, optional
+            An SQL filter that controls which rows are updated. For example, 'x = 2'
+            or 'x IN (1, 2, 3)'.  Only rows that satisfy this filter will be udpated.
+        updates_sql: dict, optional
+            The updates to apply, expressed as SQL expression strings.  The keys should
+            be column names. The values should be SQL expressions.  These can be SQL
+            literals (e.g. "7" or "'foo'") or they can be expressions based on the
+            previous value of the row (e.g. "x + 1" to increment the x column by 1)
+
+        Examples
+        --------
+        >>> import asyncio
+        >>> import lancedb
+        >>> import pandas as pd
+        >>> async def demo_update():
+        ...     data = pd.DataFrame({"x": [1, 2], "vector": [[1, 2], [3, 4]]})
+        ...     db = await lancedb.connect_async("./.lancedb")
+        ...     table = await db.create_table("my_table", data)
+        ...     # x is [1, 2], vector is [[1, 2], [3, 4]]
+        ...     await table.update({"vector": [10, 10]}, where="x = 2")
+        ...     # x is [1, 2], vector is [[1, 2], [10, 10]]
+        ...     await table.update(updates_sql={"x": "x + 1"})
+        ...     # x is [2, 3], vector is [[1, 2], [10, 10]]
+        >>> asyncio.run(demo_update())
+        """
+        if updates is not None and updates_sql is not None:
+            raise ValueError("Only one of updates or updates_sql can be provided")
+        if updates is None and updates_sql is None:
+            raise ValueError("Either updates or updates_sql must be provided")
+
+        if updates is not None:
+            updates_sql = {k: value_to_sql(v) for k, v in updates.items()}
+
+        return await self._inner.update(updates_sql, where)
+
+    async def cleanup_old_versions(
+        self,
+        older_than: Optional[timedelta] = None,
+        *,
+        delete_unverified: bool = False,
+    ) -> CleanupStats:
+        """
+        Clean up old versions of the table, freeing disk space.
+
+        Note: This function is not available in LanceDb Cloud (since LanceDb
+        Cloud manages cleanup for you automatically)
+
+        Parameters
+        ----------
+        older_than: timedelta, default None
+            The minimum age of the version to delete. If None, then this defaults
+            to two weeks.
+        delete_unverified: bool, default False
+            Because they may be part of an in-progress transaction, files newer
+            than 7 days old are not deleted by default. If you are sure that
+            there are no in-progress transactions, then you can set this to True
+            to delete all files older than `older_than`.
+
+        Returns
+        -------
+        CleanupStats
+            The stats of the cleanup operation, including how many bytes were
+            freed.
+        """
+        raise NotImplementedError
+
+    async def compact_files(self, *args, **kwargs):
+        """
+        Run the compaction process on the table.
+
+        Note: This function is not available in LanceDb Cloud (since LanceDb
+        Cloud manages compaction for you automatically)
+
+        This can be run after making several small appends to optimize the table
+        for faster reads.
+
+        Arguments are passed onto :meth:`lance.dataset.DatasetOptimizer.compact_files`.
+        For most cases, the default should be fine.
+        """
+        raise NotImplementedError
+
+    async def add_columns(self, transforms: Dict[str, str]):
+        """
+        Add new columns with defined values.
+
+        This is not yet available in LanceDB Cloud.
+
+        Parameters
+        ----------
+        transforms: Dict[str, str]
+            A map of column name to a SQL expression to use to calculate the
+            value of the new column. These expressions will be evaluated for
+            each row in the table, and can reference existing columns.
+        """
+        raise NotImplementedError
+
+    async def alter_columns(self, alterations: Iterable[Dict[str, str]]):
+        """
+        Alter column names and nullability.
+
+        This is not yet available in LanceDB Cloud.
+
+        alterations : Iterable[Dict[str, Any]]
+            A sequence of dictionaries, each with the following keys:
+            - "path": str
+                The column path to alter. For a top-level column, this is the name.
+                For a nested column, this is the dot-separated path, e.g. "a.b.c".
+            - "name": str, optional
+                The new name of the column. If not specified, the column name is
+                not changed.
+            - "nullable": bool, optional
+                Whether the column should be nullable. If not specified, the column
+                nullability is not changed. Only non-nullable columns can be changed
+                to nullable. Currently, you cannot change a nullable column to
+                non-nullable.
+        """
+        raise NotImplementedError
+
+    async def drop_columns(self, columns: Iterable[str]):
+        """
+        Drop columns from the table.
+
+        This is not yet available in LanceDB Cloud.
+
+        Parameters
+        ----------
+        columns : Iterable[str]
+            The names of the columns to drop.
+        """
+        raise NotImplementedError
+
+    async def version(self) -> int:
+        """
+        Retrieve the version of the table
+
+        LanceDb supports versioning.  Every operation that modifies the table increases
+        version.  As long as a version hasn't been deleted you can `[Self::checkout]`
+        that version to view the data at that point.  In addition, you can
+        `[Self::restore]` the version to replace the current table with a previous
+        version.
+        """
+        return await self._inner.version()
+
+    async def checkout(self, version):
+        """
+        Checks out a specific version of the Table
+
+        Any read operation on the table will now access the data at the checked out
+        version. As a consequence, calling this method will disable any read consistency
+        interval that was previously set.
+
+        This is a read-only operation that turns the table into a sort of "view"
+        or "detached head".  Other table instances will not be affected.  To make the
+        change permanent you can use the `[Self::restore]` method.
+
+        Any operation that modifies the table will fail while the table is in a checked
+        out state.
+
+        To return the table to a normal state use `[Self::checkout_latest]`
+        """
+        await self._inner.checkout(version)
+
+    async def checkout_latest(self):
+        """
+        Ensures the table is pointing at the latest version
+
+        This can be used to manually update a table when the read_consistency_interval
+        is None
+        It can also be used to undo a `[Self::checkout]` operation
+        """
+        await self._inner.checkout_latest()
+
+    async def restore(self):
+        """
+        Restore the table to the currently checked out version
+
+        This operation will fail if checkout has not been called previously
+
+        This operation will overwrite the latest version of the table with a
+        previous version.  Any changes made since the checked out version will
+        no longer be visible.
+
+        Once the operation concludes the table will no longer be in a checked
+        out state and the read_consistency_interval, if any, will apply.
+        """
+        await self._inner.restore()
+
+    async def list_indices(self) -> IndexConfig:
+        """
+        List all indices that have been created with Self::create_index
+        """
+        return await self._inner.list_indices()

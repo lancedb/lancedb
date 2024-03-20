@@ -27,9 +27,11 @@ use object_store::{
 };
 use snafu::prelude::*;
 
+use crate::arrow::IntoArrow;
 use crate::error::{CreateDirSnafu, Error, InvalidTableNameSnafu, Result};
 use crate::io::object_store::MirroringObjectStoreWrapper;
-use crate::table::{NativeTable, TableRef, WriteOptions};
+use crate::table::{NativeTable, WriteOptions};
+use crate::Table;
 
 pub const LANCE_FILE_EXTENSION: &str = "lance";
 
@@ -77,23 +79,65 @@ enum BadVectorHandling {
     Fill(f32),
 }
 
-/// A builder for configuring a [`Connection::create_table`] operation
-pub struct CreateTableBuilder<const HAS_DATA: bool> {
+/// A builder for configuring a [`Connection::table_names`] operation
+pub struct TableNamesBuilder {
     parent: Arc<dyn ConnectionInternal>,
-    name: String,
-    data: Option<Box<dyn RecordBatchReader + Send>>,
-    schema: Option<SchemaRef>,
-    mode: CreateTableMode,
-    write_options: WriteOptions,
+    pub(crate) start_after: Option<String>,
+    pub(crate) limit: Option<u32>,
+}
+
+impl TableNamesBuilder {
+    fn new(parent: Arc<dyn ConnectionInternal>) -> Self {
+        Self {
+            parent,
+            start_after: None,
+            limit: None,
+        }
+    }
+
+    /// If present, only return names that come lexicographically after the supplied
+    /// value.
+    ///
+    /// This can be combined with limit to implement pagination by setting this to
+    /// the last table name from the previous page.
+    pub fn start_after(mut self, start_after: String) -> Self {
+        self.start_after = Some(start_after);
+        self
+    }
+
+    /// The maximum number of table names to return
+    pub fn limit(mut self, limit: u32) -> Self {
+        self.limit = Some(limit);
+        self
+    }
+
+    /// Execute the table names operation
+    pub async fn execute(self) -> Result<Vec<String>> {
+        self.parent.clone().table_names(self).await
+    }
+}
+
+pub struct NoData {}
+
+impl IntoArrow for NoData {
+    fn into_arrow(self) -> Result<Box<dyn arrow_array::RecordBatchReader + Send>> {
+        unreachable!("NoData should never be converted to Arrow")
+    }
+}
+
+/// A builder for configuring a [`Connection::create_table`] operation
+pub struct CreateTableBuilder<const HAS_DATA: bool, T: IntoArrow> {
+    parent: Arc<dyn ConnectionInternal>,
+    pub(crate) name: String,
+    pub(crate) data: Option<T>,
+    pub(crate) schema: Option<SchemaRef>,
+    pub(crate) mode: CreateTableMode,
+    pub(crate) write_options: WriteOptions,
 }
 
 // Builder methods that only apply when we have initial data
-impl CreateTableBuilder<true> {
-    fn new(
-        parent: Arc<dyn ConnectionInternal>,
-        name: String,
-        data: Box<dyn RecordBatchReader + Send>,
-    ) -> Self {
+impl<T: IntoArrow> CreateTableBuilder<true, T> {
+    fn new(parent: Arc<dyn ConnectionInternal>, name: String, data: T) -> Self {
         Self {
             parent,
             name,
@@ -111,13 +155,33 @@ impl CreateTableBuilder<true> {
     }
 
     /// Execute the create table operation
-    pub async fn execute(self) -> Result<TableRef> {
-        self.parent.clone().do_create_table(self).await
+    pub async fn execute(self) -> Result<Table> {
+        let parent = self.parent.clone();
+        let (data, builder) = self.extract_data()?;
+        parent.do_create_table(builder, data).await
+    }
+
+    fn extract_data(
+        mut self,
+    ) -> Result<(
+        Box<dyn RecordBatchReader + Send>,
+        CreateTableBuilder<false, NoData>,
+    )> {
+        let data = self.data.take().unwrap().into_arrow()?;
+        let builder = CreateTableBuilder::<false, NoData> {
+            parent: self.parent,
+            name: self.name,
+            data: None,
+            schema: self.schema,
+            mode: self.mode,
+            write_options: self.write_options,
+        };
+        Ok((data, builder))
     }
 }
 
 // Builder methods that only apply when we do not have initial data
-impl CreateTableBuilder<false> {
+impl CreateTableBuilder<false, NoData> {
     fn new(parent: Arc<dyn ConnectionInternal>, name: String, schema: SchemaRef) -> Self {
         Self {
             parent,
@@ -130,12 +194,12 @@ impl CreateTableBuilder<false> {
     }
 
     /// Execute the create table operation
-    pub async fn execute(self) -> Result<TableRef> {
+    pub async fn execute(self) -> Result<Table> {
         self.parent.clone().do_create_empty_table(self).await
     }
 }
 
-impl<const HAS_DATA: bool> CreateTableBuilder<HAS_DATA> {
+impl<const HAS_DATA: bool, T: IntoArrow> CreateTableBuilder<HAS_DATA, T> {
     /// Set the mode for creating the table
     ///
     /// This controls what happens if a table with the given name already exists
@@ -188,25 +252,34 @@ impl OpenTableBuilder {
     }
 
     /// Open the table
-    pub async fn execute(self) -> Result<TableRef> {
+    pub async fn execute(self) -> Result<Table> {
         self.parent.clone().do_open_table(self).await
     }
 }
 
 #[async_trait::async_trait]
-trait ConnectionInternal: Send + Sync + std::fmt::Debug + 'static {
-    async fn table_names(&self) -> Result<Vec<String>>;
-    async fn do_create_table(&self, options: CreateTableBuilder<true>) -> Result<TableRef>;
-    async fn do_open_table(&self, options: OpenTableBuilder) -> Result<TableRef>;
+pub(crate) trait ConnectionInternal:
+    Send + Sync + std::fmt::Debug + std::fmt::Display + 'static
+{
+    async fn table_names(&self, options: TableNamesBuilder) -> Result<Vec<String>>;
+    async fn do_create_table(
+        &self,
+        options: CreateTableBuilder<false, NoData>,
+        data: Box<dyn RecordBatchReader + Send>,
+    ) -> Result<Table>;
+    async fn do_open_table(&self, options: OpenTableBuilder) -> Result<Table>;
     async fn drop_table(&self, name: &str) -> Result<()>;
     async fn drop_db(&self) -> Result<()>;
 
-    async fn do_create_empty_table(&self, options: CreateTableBuilder<false>) -> Result<TableRef> {
-        let batches = RecordBatchIterator::new(vec![], options.schema.unwrap());
-        let opts = CreateTableBuilder::<true>::new(options.parent, options.name, Box::new(batches))
-            .mode(options.mode)
-            .write_options(options.write_options);
-        self.do_create_table(opts).await
+    async fn do_create_empty_table(
+        &self,
+        options: CreateTableBuilder<false, NoData>,
+    ) -> Result<Table> {
+        let batches = Box::new(RecordBatchIterator::new(
+            vec![],
+            options.schema.as_ref().unwrap().clone(),
+        ));
+        self.do_create_table(options, batches).await
     }
 }
 
@@ -217,15 +290,25 @@ pub struct Connection {
     internal: Arc<dyn ConnectionInternal>,
 }
 
+impl std::fmt::Display for Connection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.internal)
+    }
+}
+
 impl Connection {
     /// Get the URI of the connection
     pub fn uri(&self) -> &str {
         self.uri.as_str()
     }
 
-    /// Get the names of all tables in the database.
-    pub async fn table_names(&self) -> Result<Vec<String>> {
-        self.internal.table_names().await
+    /// Get the names of all tables in the database
+    ///
+    /// The names will be returned in lexicographical order (ascending)
+    ///
+    /// The parameters `page_token` and `limit` can be used to paginate the results
+    pub fn table_names(&self) -> TableNamesBuilder {
+        TableNamesBuilder::new(self.internal.clone())
     }
 
     /// Create a new table from data
@@ -234,12 +317,12 @@ impl Connection {
     ///
     /// * `name` - The name of the table
     /// * `initial_data` - The initial data to write to the table
-    pub fn create_table(
+    pub fn create_table<T: IntoArrow>(
         &self,
         name: impl Into<String>,
-        initial_data: Box<dyn RecordBatchReader + Send>,
-    ) -> CreateTableBuilder<true> {
-        CreateTableBuilder::<true>::new(self.internal.clone(), name.into(), initial_data)
+        initial_data: T,
+    ) -> CreateTableBuilder<true, T> {
+        CreateTableBuilder::<true, T>::new(self.internal.clone(), name.into(), initial_data)
     }
 
     /// Create an empty table with a given schema
@@ -252,8 +335,8 @@ impl Connection {
         &self,
         name: impl Into<String>,
         schema: SchemaRef,
-    ) -> CreateTableBuilder<false> {
-        CreateTableBuilder::<false>::new(self.internal.clone(), name.into(), schema)
+    ) -> CreateTableBuilder<false, NoData> {
+        CreateTableBuilder::<false, NoData>::new(self.internal.clone(), name.into(), schema)
     }
 
     /// Open an existing table in the database
@@ -305,6 +388,15 @@ pub struct ConnectBuilder {
     aws_creds: Option<AwsCredential>,
 
     /// The interval at which to check for updates from other processes.
+    ///
+    /// If None, then consistency is not checked. For performance
+    /// reasons, this is the default. For strong consistency, set this to
+    /// zero seconds. Then every read will check for updates from other
+    /// processes. As a compromise, you can set this to a non-zero timedelta
+    /// for eventual consistency. If more than that interval has passed since
+    /// the last check, then the table will be checked for updates. Note: this
+    /// consistency only applies to read operations. Write operations are
+    /// always consistent.
     read_consistency_interval: Option<std::time::Duration>,
 }
 
@@ -365,13 +457,45 @@ impl ConnectBuilder {
         self
     }
 
-    /// Establishes a connection to the database
-    pub async fn execute(self) -> Result<Connection> {
-        let internal = Arc::new(Database::connect_with_options(&self).await?);
+    #[cfg(feature = "remote")]
+    fn execute_remote(self) -> Result<Connection> {
+        let region = self.region.ok_or_else(|| Error::InvalidInput {
+            message: "A region is required when connecting to LanceDb Cloud".to_string(),
+        })?;
+        let api_key = self.api_key.ok_or_else(|| Error::InvalidInput {
+            message: "An api_key is required when connecting to LanceDb Cloud".to_string(),
+        })?;
+        let internal = Arc::new(crate::remote::db::RemoteDatabase::try_new(
+            &self.uri,
+            &api_key,
+            &region,
+            self.host_override,
+        )?);
         Ok(Connection {
             internal,
             uri: self.uri,
         })
+    }
+
+    #[cfg(not(feature = "remote"))]
+    fn execute_remote(self) -> Result<Connection> {
+        Err(Error::Runtime {
+            message: "cannot connect to LanceDb Cloud unless the 'remote' feature is enabled"
+                .to_string(),
+        })
+    }
+
+    /// Establishes a connection to the database
+    pub async fn execute(self) -> Result<Connection> {
+        if self.uri.starts_with("db") {
+            self.execute_remote()
+        } else {
+            let internal = Arc::new(Database::connect_with_options(&self).await?);
+            Ok(Connection {
+                internal,
+                uri: self.uri,
+            })
+        }
     }
 }
 
@@ -397,6 +521,24 @@ struct Database {
     pub(crate) store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
 
     read_consistency_interval: Option<std::time::Duration>,
+}
+
+impl std::fmt::Display for Database {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "NativeDatabase(uri={}, read_consistency_interval={})",
+            self.uri,
+            match self.read_consistency_interval {
+                None => {
+                    "None".to_string()
+                }
+                Some(duration) => {
+                    format!("{}s", duration.as_secs_f64())
+                }
+            }
+        )
+    }
 }
 
 const LANCE_EXTENSION: &str = "lance";
@@ -427,7 +569,7 @@ impl Database {
                         engine = Some(value.to_string());
                     } else if key == MIRRORED_STORE {
                         if cfg!(windows) {
-                            return Err(Error::Lance {
+                            return Err(Error::NotSupported {
                                 message: "mirrored store is not supported on windows".into(),
                             });
                         }
@@ -554,7 +696,7 @@ impl Database {
 
 #[async_trait::async_trait]
 impl ConnectionInternal for Database {
-    async fn table_names(&self) -> Result<Vec<String>> {
+    async fn table_names(&self, options: TableNamesBuilder) -> Result<Vec<String>> {
         let mut f = self
             .object_store
             .read_dir(self.base_path.clone())
@@ -571,10 +713,24 @@ impl ConnectionInternal for Database {
             .filter_map(|p| p.file_stem().and_then(|s| s.to_str().map(String::from)))
             .collect::<Vec<String>>();
         f.sort();
+        if let Some(start_after) = options.start_after {
+            let index = f
+                .iter()
+                .position(|name| name.as_str() > start_after.as_str())
+                .unwrap_or(f.len());
+            f.drain(0..index);
+        }
+        if let Some(limit) = options.limit {
+            f.truncate(limit as usize);
+        }
         Ok(f)
     }
 
-    async fn do_create_table(&self, options: CreateTableBuilder<true>) -> Result<TableRef> {
+    async fn do_create_table(
+        &self,
+        options: CreateTableBuilder<false, NoData>,
+        data: Box<dyn RecordBatchReader + Send>,
+    ) -> Result<Table> {
         let table_uri = self.table_uri(&options.name)?;
 
         let mut write_params = options.write_options.lance_write_params.unwrap_or_default();
@@ -585,14 +741,14 @@ impl ConnectionInternal for Database {
         match NativeTable::create(
             &table_uri,
             &options.name,
-            options.data.unwrap(),
+            data,
             self.store_wrapper.clone(),
             Some(write_params),
             self.read_consistency_interval,
         )
         .await
         {
-            Ok(table) => Ok(Arc::new(table)),
+            Ok(table) => Ok(Table::new(Arc::new(table))),
             Err(Error::TableAlreadyExists { name }) => match options.mode {
                 CreateTableMode::Create => Err(Error::TableAlreadyExists { name }),
                 CreateTableMode::ExistOk(callback) => {
@@ -606,9 +762,9 @@ impl ConnectionInternal for Database {
         }
     }
 
-    async fn do_open_table(&self, options: OpenTableBuilder) -> Result<TableRef> {
+    async fn do_open_table(&self, options: OpenTableBuilder) -> Result<Table> {
         let table_uri = self.table_uri(&options.name)?;
-        Ok(Arc::new(
+        let native_table = Arc::new(
             NativeTable::open_with_params(
                 &table_uri,
                 &options.name,
@@ -617,7 +773,8 @@ impl ConnectionInternal for Database {
                 self.read_consistency_interval,
             )
             .await?,
-        ))
+        );
+        Ok(Table::new(native_table))
     }
 
     async fn drop_table(&self, name: &str) -> Result<()> {
@@ -682,16 +839,43 @@ mod tests {
     #[tokio::test]
     async fn test_table_names() {
         let tmp_dir = tempdir().unwrap();
-        create_dir_all(tmp_dir.path().join("table1.lance")).unwrap();
-        create_dir_all(tmp_dir.path().join("table2.lance")).unwrap();
-        create_dir_all(tmp_dir.path().join("invalidlance")).unwrap();
+        let mut names = Vec::with_capacity(100);
+        for _ in 0..100 {
+            let mut name = uuid::Uuid::new_v4().to_string();
+            names.push(name.clone());
+            name.push_str(".lance");
+            create_dir_all(tmp_dir.path().join(&name)).unwrap();
+        }
+        names.sort();
 
         let uri = tmp_dir.path().to_str().unwrap();
         let db = connect(uri).execute().await.unwrap();
-        let tables = db.table_names().await.unwrap();
-        assert_eq!(tables.len(), 2);
-        assert!(tables[0].eq(&String::from("table1")));
-        assert!(tables[1].eq(&String::from("table2")));
+        let tables = db.table_names().execute().await.unwrap();
+
+        assert_eq!(tables, names);
+
+        let tables = db
+            .table_names()
+            .start_after(names[30].clone())
+            .execute()
+            .await
+            .unwrap();
+
+        assert_eq!(tables, names[31..]);
+
+        let tables = db
+            .table_names()
+            .start_after(names[30].clone())
+            .limit(7)
+            .execute()
+            .await
+            .unwrap();
+
+        assert_eq!(tables, names[31..38]);
+
+        let tables = db.table_names().limit(7).execute().await.unwrap();
+
+        assert_eq!(tables, names[..7]);
     }
 
     #[tokio::test]
@@ -706,16 +890,14 @@ mod tests {
         let uri = tmp_dir.path().to_str().unwrap();
         let db = connect(uri).execute().await.unwrap();
 
-        assert_eq!(db.table_names().await.unwrap().len(), 0);
-
-        db.open_table("invalid_table").execute().await.unwrap();
+        assert_eq!(db.table_names().execute().await.unwrap().len(), 0);
         // open non-exist table
         assert!(matches!(
             db.open_table("invalid_table").execute().await,
             Err(crate::Error::TableNotFound { .. })
         ));
 
-        assert_eq!(db.table_names().await.unwrap().len(), 0);
+        assert_eq!(db.table_names().execute().await.unwrap().len(), 0);
 
         let schema = Arc::new(Schema::new(vec![Field::new("x", DataType::Int32, false)]));
         db.create_empty_table("table1", schema)
@@ -723,7 +905,7 @@ mod tests {
             .await
             .unwrap();
         db.open_table("table1").execute().await.unwrap();
-        let tables = db.table_names().await.unwrap();
+        let tables = db.table_names().execute().await.unwrap();
         assert_eq!(tables, vec!["table1".to_owned()]);
     }
 
@@ -735,16 +917,15 @@ mod tests {
         let db = connect(uri).execute().await.unwrap();
 
         // drop non-exist table
-        // TODO(BubbleCal): enable this after upgrading lance with https://github.com/lancedb/lance/pull/1995 merged
-        // assert!(matches!(
-        //     db.drop_table("invalid_table").await,
-        //     Err(crate::Error::TableNotFound { .. }),
-        // ));
+        assert!(matches!(
+            db.drop_table("invalid_table").await,
+            Err(crate::Error::TableNotFound { .. }),
+        ));
 
         create_dir_all(tmp_dir.path().join("table1.lance")).unwrap();
         db.drop_table("table1").await.unwrap();
 
-        let tables = db.table_names().await.unwrap();
+        let tables = db.table_names().execute().await.unwrap();
         assert_eq!(tables.len(), 0);
     }
 

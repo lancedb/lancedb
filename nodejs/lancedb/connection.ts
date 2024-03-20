@@ -12,33 +12,102 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { toBuffer } from "./arrow";
-import { Connection as _NativeConnection } from "./native";
+import { fromTableToBuffer, makeArrowTable, makeEmptyTable } from "./arrow";
+import { Connection as LanceDbConnection } from "./native";
 import { Table } from "./table";
-import { Table as ArrowTable } from "apache-arrow";
+import { Table as ArrowTable, Schema } from "apache-arrow";
+
+export interface CreateTableOptions {
+  /**
+   * The mode to use when creating the table.
+   *
+   * If this is set to "create" and the table already exists then either
+   * an error will be thrown or, if existOk is true, then nothing will
+   * happen.  Any provided data will be ignored.
+   *
+   * If this is set to "overwrite" then any existing table will be replaced.
+   */
+  mode: "create" | "overwrite";
+  /**
+   * If this is true and the table already exists and the mode is "create"
+   * then no error will be raised.
+   */
+  existOk: boolean;
+}
+
+export interface TableNamesOptions {
+  /**
+   * If present, only return names that come lexicographically after the
+   * supplied value.
+   *
+   * This can be combined with limit to implement pagination by setting this to
+   * the last table name from the previous page.
+   */
+  startAfter?: string;
+  /** An optional limit to the number of results to return. */
+  limit?: number;
+}
 
 /**
  * A LanceDB Connection that allows you to open tables and create new ones.
  *
  * Connection could be local against filesystem or remote against a server.
+ *
+ * A Connection is intended to be a long lived object and may hold open
+ * resources such as HTTP connection pools.  This is generally fine and
+ * a single connection should be shared if it is going to be used many
+ * times. However, if you are finished with a connection, you may call
+ * close to eagerly free these resources.  Any call to a Connection
+ * method after it has been closed will result in an error.
+ *
+ * Closing a connection is optional.  Connections will automatically
+ * be closed when they are garbage collected.
+ *
+ * Any created tables are independent and will continue to work even if
+ * the underlying connection has been closed.
  */
 export class Connection {
-  readonly inner: _NativeConnection;
+  readonly inner: LanceDbConnection;
 
-  constructor(inner: _NativeConnection) {
+  constructor(inner: LanceDbConnection) {
     this.inner = inner;
   }
 
-  /** List all the table names in this database. */
-  async tableNames(): Promise<string[]> {
-    return this.inner.tableNames();
+  /** Return true if the connection has not been closed */
+  isOpen(): boolean {
+    return this.inner.isOpen();
+  }
+
+  /**
+   * Close the connection, releasing any underlying resources.
+   *
+   * It is safe to call this method multiple times.
+   *
+   * Any attempt to use the connection after it is closed will result in an error.
+   */
+  close(): void {
+    this.inner.close();
+  }
+
+  /** Return a brief description of the connection */
+  display(): string {
+    return this.inner.display();
+  }
+
+  /**
+   * List all the table names in this database.
+   *
+   * Tables will be returned in lexicographical order.
+   * @param {Partial<TableNamesOptions>} options - options to control the
+   * paging / start point
+   */
+  async tableNames(options?: Partial<TableNamesOptions>): Promise<string[]> {
+    return this.inner.tableNames(options?.startAfter, options?.limit);
   }
 
   /**
    * Open a table in the database.
-   *
-   * @param name The name of the table.
-   * @param embeddings An embedding function to use on this table
+   * @param {string} name - The name of the table
    */
   async openTable(name: string): Promise<Table> {
     const innerTable = await this.inner.openTable(name);
@@ -47,22 +116,59 @@ export class Connection {
 
   /**
    * Creates a new Table and initialize it with new data.
-   *
    * @param {string} name - The name of the table.
-   * @param data - Non-empty Array of Records to be inserted into the table
+   * @param {Record<string, unknown>[] | ArrowTable} data - Non-empty Array of Records
+   * to be inserted into the table
    */
   async createTable(
     name: string,
-    data: Record<string, unknown>[] | ArrowTable
+    data: Record<string, unknown>[] | ArrowTable,
+    options?: Partial<CreateTableOptions>,
   ): Promise<Table> {
-    const buf = toBuffer(data);
-    const innerTable = await this.inner.createTable(name, buf);
+    let mode: string = options?.mode ?? "create";
+    const existOk = options?.existOk ?? false;
+
+    if (mode === "create" && existOk) {
+      mode = "exist_ok";
+    }
+
+    let table: ArrowTable;
+    if (data instanceof ArrowTable) {
+      table = data;
+    } else {
+      table = makeArrowTable(data);
+    }
+    const buf = await fromTableToBuffer(table);
+    const innerTable = await this.inner.createTable(name, buf, mode);
+    return new Table(innerTable);
+  }
+
+  /**
+   * Creates a new empty Table
+   * @param {string} name - The name of the table.
+   * @param {Schema} schema - The schema of the table
+   */
+  async createEmptyTable(
+    name: string,
+    schema: Schema,
+    options?: Partial<CreateTableOptions>,
+  ): Promise<Table> {
+    let mode: string = options?.mode ?? "create";
+    const existOk = options?.existOk ?? false;
+
+    if (mode === "create" && existOk) {
+      mode = "exist_ok";
+    }
+
+    const table = makeEmptyTable(schema);
+    const buf = await fromTableToBuffer(table);
+    const innerTable = await this.inner.createEmptyTable(name, buf, mode);
     return new Table(innerTable);
   }
 
   /**
    * Drop an existing table.
-   * @param name The name of the table to drop.
+   * @param {string} name The name of the table to drop.
    */
   async dropTable(name: string): Promise<void> {
     return this.inner.dropTable(name);

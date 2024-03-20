@@ -26,6 +26,18 @@ import pyarrow as pa
 import pyarrow.fs as pa_fs
 
 
+def safe_import_adlfs():
+    try:
+        import adlfs
+
+        return adlfs
+    except ImportError:
+        return None
+
+
+adlfs = safe_import_adlfs()
+
+
 def get_uri_scheme(uri: str) -> str:
     """
     Get the scheme of a URI. If the URI does not have a scheme, assume it is a file URI.
@@ -89,6 +101,17 @@ def fs_from_uri(uri: str) -> Tuple[pa_fs.FileSystem, str]:
             request_timeout=30,
             connect_timeout=30,
         )
+        path = get_uri_location(uri)
+        return fs, path
+
+    elif get_uri_scheme(uri) == "az" and adlfs is not None:
+        az_blob_fs = adlfs.AzureBlobFileSystem(
+            account_name=os.environ.get("AZURE_STORAGE_ACCOUNT_NAME"),
+            account_key=os.environ.get("AZURE_STORAGE_ACCOUNT_KEY"),
+        )
+
+        fs = pa_fs.PyFileSystem(pa_fs.FSSpecHandler(az_blob_fs))
+
         path = get_uri_location(uri)
         return fs, path
 

@@ -17,8 +17,10 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use arrow::array::AsArray;
+use arrow::datatypes::Float32Type;
 use arrow_array::{RecordBatchIterator, RecordBatchReader};
-use arrow_schema::{Schema, SchemaRef};
+use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use async_trait::async_trait;
 use chrono::Duration;
 use lance::dataset::builder::DatasetBuilder;
@@ -26,24 +28,36 @@ use lance::dataset::cleanup::RemovalStats;
 use lance::dataset::optimize::{
     compact_files, CompactionMetrics, CompactionOptions, IndexRemapperOptions,
 };
+use lance::dataset::scanner::{DatasetRecordBatchStream, Scanner};
+pub use lance::dataset::ColumnAlteration;
+pub use lance::dataset::NewColumnTransform;
 pub use lance::dataset::ReadParams;
 use lance::dataset::{
-    ColumnAlteration, Dataset, NewColumnTransform, UpdateBuilder, WhenMatched, WriteMode,
-    WriteParams,
+    Dataset, UpdateBuilder as LanceUpdateBuilder, WhenMatched, WriteMode, WriteParams,
 };
 use lance::dataset::{MergeInsertBuilder as LanceMergeInsertBuilder, WhenNotMatchedBySource};
 use lance::io::WrappingObjectStore;
+use lance_index::IndexType;
 use lance_index::{optimize::OptimizeOptions, DatasetIndexExt};
 use log::info;
+use snafu::whatever;
 
+use crate::arrow::IntoArrow;
+use crate::connection::NoData;
 use crate::error::{Error, Result};
-use crate::index::vector::{VectorIndex, VectorIndexStatistics};
-use crate::index::IndexBuilder;
-use crate::query::Query;
-use crate::utils::{PatchReadParam, PatchWriteParam};
+use crate::index::vector::{IvfPqIndexBuilder, VectorIndex, VectorIndexStatistics};
+use crate::index::IndexConfig;
+use crate::index::{
+    vector::{suggested_num_partitions, suggested_num_sub_vectors},
+    Index, IndexBuilder,
+};
+use crate::query::{
+    IntoQueryVector, Query, QueryExecutionOptions, Select, VectorQuery, DEFAULT_TOP_K,
+};
+use crate::utils::{default_vector_column, PatchReadParam, PatchWriteParam};
 
 use self::dataset::DatasetConsistencyWrapper;
-use self::merge::{MergeInsert, MergeInsertBuilder};
+use self::merge::MergeInsertBuilder;
 
 pub(crate) mod dataset;
 pub mod merge;
@@ -97,7 +111,7 @@ pub struct WriteOptions {
     // pub on_bad_vectors: BadVectorHandling,
     /// Advanced parameters that can be used to customize table creation
     ///
-    /// If set, these will take precedence over any overlapping `OpenTableOptions` options
+    /// If set, these will take precedence over any overlapping `OpenTableBuilder` options
     pub lance_write_params: Option<WriteParams>,
 }
 
@@ -110,36 +124,208 @@ pub enum AddDataMode {
     Overwrite,
 }
 
-#[derive(Debug, Default, Clone)]
-pub struct AddDataOptions {
-    /// Whether to add new rows (the default) or replace the existing data
-    pub mode: AddDataMode,
-    /// Options to use when writing the data
-    pub write_options: WriteOptions,
+/// A builder for configuring a [`crate::connection::Connection::create_table`] or [`Table::add`]
+/// operation
+pub struct AddDataBuilder<T: IntoArrow> {
+    parent: Arc<dyn TableInternal>,
+    pub(crate) data: T,
+    pub(crate) mode: AddDataMode,
+    pub(crate) write_options: WriteOptions,
+}
+
+impl<T: IntoArrow> std::fmt::Debug for AddDataBuilder<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AddDataBuilder")
+            .field("parent", &self.parent)
+            .field("mode", &self.mode)
+            .field("write_options", &self.write_options)
+            .finish()
+    }
+}
+
+impl<T: IntoArrow> AddDataBuilder<T> {
+    pub fn mode(mut self, mode: AddDataMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    pub fn write_options(mut self, options: WriteOptions) -> Self {
+        self.write_options = options;
+        self
+    }
+
+    pub async fn execute(self) -> Result<()> {
+        let parent = self.parent.clone();
+        let data = self.data.into_arrow()?;
+        let without_data = AddDataBuilder::<NoData> {
+            data: NoData {},
+            mode: self.mode,
+            parent: self.parent,
+            write_options: self.write_options,
+        };
+        parent.add(without_data, data).await
+    }
+}
+
+/// A builder for configuring an [`Table::update`] operation
+#[derive(Debug, Clone)]
+pub struct UpdateBuilder {
+    parent: Arc<dyn TableInternal>,
+    pub(crate) filter: Option<String>,
+    pub(crate) columns: Vec<(String, String)>,
+}
+
+impl UpdateBuilder {
+    fn new(parent: Arc<dyn TableInternal>) -> Self {
+        Self {
+            parent,
+            filter: None,
+            columns: Vec::new(),
+        }
+    }
+
+    /// Limits the update operation to rows matching the given filter
+    ///
+    /// If a row does not match the filter then it will be left unchanged.
+    pub fn only_if(mut self, filter: impl Into<String>) -> Self {
+        self.filter = Some(filter.into());
+        self
+    }
+
+    /// Specifies a column to update
+    ///
+    /// This method may be called multiple times to update multiple columns
+    ///
+    /// The `update_expr` should be an SQL expression explaining how to calculate
+    /// the new value for the column.  The expression will be evaluated against the
+    /// previous row's value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use lancedb::Table;
+    /// # async fn doctest_helper(tbl: Table) {
+    ///   let mut operation = tbl.update();
+    ///   // Increments the `bird_count` value by 1
+    ///   operation = operation.column("bird_count", "bird_count + 1");
+    ///   operation.execute().await.unwrap();
+    /// # }
+    /// ```
+    pub fn column(
+        mut self,
+        column_name: impl Into<String>,
+        update_expr: impl Into<String>,
+    ) -> Self {
+        self.columns.push((column_name.into(), update_expr.into()));
+        self
+    }
+
+    /// Executes the update operation
+    pub async fn execute(self) -> Result<()> {
+        if self.columns.is_empty() {
+            Err(Error::InvalidInput {
+                message: "at least one column must be specified in an update operation".to_string(),
+            })
+        } else {
+            self.parent.clone().update(self).await
+        }
+    }
+}
+
+#[async_trait]
+pub(crate) trait TableInternal: std::fmt::Display + std::fmt::Debug + Send + Sync {
+    fn as_any(&self) -> &dyn std::any::Any;
+    /// Cast as [`NativeTable`], or return None it if is not a [`NativeTable`].
+    fn as_native(&self) -> Option<&NativeTable>;
+    /// Get the name of the table.
+    fn name(&self) -> &str;
+    /// Get the arrow [Schema] of the table.
+    async fn schema(&self) -> Result<SchemaRef>;
+    /// Count the number of rows in this table.
+    async fn count_rows(&self, filter: Option<String>) -> Result<usize>;
+    async fn plain_query(
+        &self,
+        query: &Query,
+        options: QueryExecutionOptions,
+    ) -> Result<DatasetRecordBatchStream>;
+    async fn vector_query(
+        &self,
+        query: &VectorQuery,
+        options: QueryExecutionOptions,
+    ) -> Result<DatasetRecordBatchStream>;
+    async fn add(
+        &self,
+        add: AddDataBuilder<NoData>,
+        data: Box<dyn arrow_array::RecordBatchReader + Send>,
+    ) -> Result<()>;
+    async fn delete(&self, predicate: &str) -> Result<()>;
+    async fn update(&self, update: UpdateBuilder) -> Result<()>;
+    async fn create_index(&self, index: IndexBuilder) -> Result<()>;
+    async fn list_indices(&self) -> Result<Vec<IndexConfig>>;
+    async fn merge_insert(
+        &self,
+        params: MergeInsertBuilder,
+        new_data: Box<dyn RecordBatchReader + Send>,
+    ) -> Result<()>;
+    async fn optimize(&self, action: OptimizeAction) -> Result<OptimizeStats>;
+    async fn add_columns(
+        &self,
+        transforms: NewColumnTransform,
+        read_columns: Option<Vec<String>>,
+    ) -> Result<()>;
+    async fn alter_columns(&self, alterations: &[ColumnAlteration]) -> Result<()>;
+    async fn drop_columns(&self, columns: &[&str]) -> Result<()>;
+    async fn version(&self) -> Result<u64>;
+    async fn checkout(&self, version: u64) -> Result<()>;
+    async fn checkout_latest(&self) -> Result<()>;
+    async fn restore(&self) -> Result<()>;
 }
 
 /// A Table is a collection of strong typed Rows.
 ///
 /// The type of the each row is defined in Apache Arrow [Schema].
-#[async_trait::async_trait]
-pub trait Table: std::fmt::Display + Send + Sync {
-    fn as_any(&self) -> &dyn std::any::Any;
+#[derive(Clone)]
+pub struct Table {
+    inner: Arc<dyn TableInternal>,
+}
+
+impl std::fmt::Display for Table {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.inner)
+    }
+}
+
+impl Table {
+    pub(crate) fn new(inner: Arc<dyn TableInternal>) -> Self {
+        Self { inner }
+    }
 
     /// Cast as [`NativeTable`], or return None it if is not a [`NativeTable`].
-    fn as_native(&self) -> Option<&NativeTable>;
+    ///
+    /// Warning: This function will be removed soon (features exclusive to NativeTable
+    ///          will be added to Table)
+    pub fn as_native(&self) -> Option<&NativeTable> {
+        self.inner.as_native()
+    }
 
     /// Get the name of the table.
-    fn name(&self) -> &str;
+    pub fn name(&self) -> &str {
+        self.inner.name()
+    }
 
     /// Get the arrow [Schema] of the table.
-    async fn schema(&self) -> Result<SchemaRef>;
+    pub async fn schema(&self) -> Result<SchemaRef> {
+        self.inner.schema().await
+    }
 
     /// Count the number of rows in this dataset.
     ///
     /// # Arguments
     ///
     /// * `filter` if present, only count rows matching the filter
-    async fn count_rows(&self, filter: Option<String>) -> Result<usize>;
+    pub async fn count_rows(&self, filter: Option<String>) -> Result<usize> {
+        self.inner.count_rows(filter).await
+    }
 
     /// Insert new records into this Table
     ///
@@ -147,11 +333,32 @@ pub trait Table: std::fmt::Display + Send + Sync {
     ///
     /// * `batches` data to be added to the Table
     /// * `options` options to control how data is added
-    async fn add(
-        &self,
-        batches: Box<dyn RecordBatchReader + Send>,
-        options: AddDataOptions,
-    ) -> Result<()>;
+    pub fn add<T: IntoArrow>(&self, batches: T) -> AddDataBuilder<T> {
+        AddDataBuilder {
+            parent: self.inner.clone(),
+            data: batches,
+            mode: AddDataMode::Append,
+            write_options: WriteOptions::default(),
+        }
+    }
+
+    /// Update existing records in the Table
+    ///
+    /// An update operation can be used to adjust existing values.  Use the
+    /// returned builder to specify which columns to update.  The new value
+    /// can be a literal value (e.g. replacing nulls with some default value)
+    /// or an expression applied to the old value (e.g. incrementing a value)
+    ///
+    /// An optional condition can be specified (e.g. "only update if the old
+    /// value is 0")
+    ///
+    /// Note: if your condition is something like "some_id_column == 7" and
+    /// you are updating many rows (with different ids) then you will get
+    /// better performance with a single [`merge_insert`] call instead of
+    /// repeatedly calilng this method.
+    pub fn update(&self) -> UpdateBuilder {
+        UpdateBuilder::new(self.inner.clone())
+    }
 
     /// Delete the rows from table that match the predicate.
     ///
@@ -202,9 +409,37 @@ pub trait Table: std::fmt::Display + Send + Sync {
     /// tbl.delete("id > 5").await.unwrap();
     /// # });
     /// ```
-    async fn delete(&self, predicate: &str) -> Result<()>;
+    pub async fn delete(&self, predicate: &str) -> Result<()> {
+        self.inner.delete(predicate).await
+    }
 
-    /// Create an index on the column name.
+    /// Create an index on the provided column(s).
+    ///
+    /// Indices are used to speed up searches and are often needed when the size of the table
+    /// becomes large (the exact size depends on many factors but somewhere between 100K rows
+    /// and 1M rows is a good rule of thumb)
+    ///
+    /// There are a variety of indices available.  They are described more in
+    /// [`crate::index::Index`].  The simplest thing to do is to use `index::Index::Auto` which
+    /// will attempt to create the most useful index based on the column type and column
+    /// statistics.
+    ///
+    /// Once an index is created it will remain until the data is overwritten (e.g. an
+    /// add operation with mode overwrite) or the indexed column is dropped.
+    ///
+    /// Indices are not automatically updated with new data.  If you add new data to the
+    /// table then the index will not include the new rows.  However, a table search will
+    /// still consider the unindexed rows.  Searches will issue both an indexed search (on
+    /// the data covered by the index) and a flat search (on the unindexed data) and the
+    /// results will be combined.
+    ///
+    /// If there is enough unindexed data then the flat search will become slow and the index
+    /// should be optimized.  Optimizing an index will add any unindexed data to the existing
+    /// index without rerunning the full index creation process.  For more details see
+    /// [Table::optimize].
+    ///
+    /// Note: Multi-column (composite) indices are not currently supported.  However, they will
+    /// be supported in the future and the API is designed to be compatible with them.
     ///
     /// # Examples
     ///
@@ -214,21 +449,29 @@ pub trait Table: std::fmt::Display + Send + Sync {
     /// #   RecordBatchIterator, Int32Array};
     /// # use arrow_schema::{Schema, Field, DataType};
     /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
+    /// use lancedb::index::Index;
     /// let tmpdir = tempfile::tempdir().unwrap();
     /// let db = lancedb::connect(tmpdir.path().to_str().unwrap())
     ///     .execute()
     ///     .await
     ///     .unwrap();
     /// # let tbl = db.open_table("idx_test").execute().await.unwrap();
-    /// tbl.create_index(&["vector"])
-    ///     .ivf_pq()
-    ///     .num_partitions(256)
-    ///     .build()
-    ///     .await
-    ///     .unwrap();
+    /// tbl.create_index(&["vector"], Index::Auto)
+    ///    .execute()
+    ///    .await
+    ///    .unwrap();
     /// # });
     /// ```
-    fn create_index(&self, column: &[&str]) -> IndexBuilder;
+    pub fn create_index(&self, columns: &[impl AsRef<str>], index: Index) -> IndexBuilder {
+        IndexBuilder::new(
+            self.inner.clone(),
+            columns
+                .iter()
+                .map(|val| val.as_ref().to_string())
+                .collect::<Vec<_>>(),
+            index,
+        )
+    }
 
     /// Create a builder for a merge insert operation
     ///
@@ -305,72 +548,112 @@ pub trait Table: std::fmt::Display + Send + Sync {
     /// merge_insert.execute(Box::new(new_data)).await.unwrap();
     /// # });
     /// ```
-    fn merge_insert(&self, on: &[&str]) -> MergeInsertBuilder;
-
-    /// Search the table with a given query vector.
-    ///
-    /// This is a convenience method for preparing an ANN query.
-    fn search(&self, query: &[f32]) -> Query {
-        self.query().nearest_to(query)
+    pub fn merge_insert(&self, on: &[&str]) -> MergeInsertBuilder {
+        MergeInsertBuilder::new(
+            self.inner.clone(),
+            on.iter().map(|s| s.to_string()).collect(),
+        )
     }
 
-    /// Create a generic [`Query`] Builder.
+    /// Create a [`Query`] Builder.
     ///
-    /// When appropriate, various indices and statistics based pruning will be used to
-    /// accelerate the query.
+    /// Queries allow you to search your existing data.  By default the query will
+    /// return all the data in the table in no particular order.  The builder
+    /// returned by this method can be used to control the query using filtering,
+    /// vector similarity, sorting, and more.
+    ///
+    /// Note: By default, all columns are returned.  For best performance, you should
+    /// only fetch the columns you need.  See [`Query::select_with_projection`] for
+    /// more details.
+    ///
+    /// When appropriate, various indices and statistics will be used to accelerate
+    /// the query.
     ///
     /// # Examples
     ///
-    /// ## Run a vector search (ANN) query.
+    /// ## Vector search
+    ///
+    /// This example will find the 10 rows whose value in the "vector" column are
+    /// closest to the query vector [1.0, 2.0, 3.0].  If an index has been created
+    /// on the "vector" column then this will perform an ANN search.
+    ///
+    /// The [`Query::refine_factor`] and [`Query::nprobes`] methods are used to
+    /// control the recall / latency tradeoff of the search.
     ///
     /// ```no_run
     /// # use arrow_array::RecordBatch;
     /// # use futures::TryStreamExt;
     /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
-    /// # let tbl = lancedb::table::NativeTable::open("/tmp/tbl").await.unwrap();
+    /// # let conn = lancedb::connect("/tmp").execute().await.unwrap();
+    /// # let tbl = conn.open_table("tbl").execute().await.unwrap();
     /// use crate::lancedb::Table;
+    /// use crate::lancedb::query::ExecutableQuery;
     /// let stream = tbl
     ///     .query()
     ///     .nearest_to(&[1.0, 2.0, 3.0])
+    ///     .unwrap()
     ///     .refine_factor(5)
     ///     .nprobes(10)
-    ///     .execute_stream()
+    ///     .execute()
     ///     .await
     ///     .unwrap();
     /// let batches: Vec<RecordBatch> = stream.try_collect().await.unwrap();
     /// # });
     /// ```
     ///
-    /// ## Run a SQL-style filter
+    /// ## SQL-style filter
+    ///
+    /// This query will return up to 1000 rows whose value in the `id` column
+    /// is greater than 5.  LanceDb supports a broad set of filtering functions.
+    ///
     /// ```no_run
     /// # use arrow_array::RecordBatch;
     /// # use futures::TryStreamExt;
     /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
-    /// # let tbl = lancedb::table::NativeTable::open("/tmp/tbl").await.unwrap();
+    /// # let conn = lancedb::connect("/tmp").execute().await.unwrap();
+    /// # let tbl = conn.open_table("tbl").execute().await.unwrap();
     /// use crate::lancedb::Table;
+    /// use crate::lancedb::query::{ExecutableQuery, QueryBase};
     /// let stream = tbl
     ///     .query()
-    ///     .filter("id > 5")
+    ///     .only_if("id > 5")
     ///     .limit(1000)
-    ///     .execute_stream()
+    ///     .execute()
     ///     .await
     ///     .unwrap();
     /// let batches: Vec<RecordBatch> = stream.try_collect().await.unwrap();
     /// # });
     /// ```
     ///
-    /// ## Run a full scan query.
+    /// ## Full scan
+    ///
+    /// This query will return everything in the table in no particular
+    /// order.
+    ///
     /// ```no_run
     /// # use arrow_array::RecordBatch;
     /// # use futures::TryStreamExt;
     /// # tokio::runtime::Runtime::new().unwrap().block_on(async {
-    /// # let tbl = lancedb::table::NativeTable::open("/tmp/tbl").await.unwrap();
+    /// # let conn = lancedb::connect("/tmp").execute().await.unwrap();
+    /// # let tbl = conn.open_table("tbl").execute().await.unwrap();
     /// use crate::lancedb::Table;
-    /// let stream = tbl.query().execute_stream().await.unwrap();
+    /// use crate::lancedb::query::ExecutableQuery;
+    /// let stream = tbl.query().execute().await.unwrap();
     /// let batches: Vec<RecordBatch> = stream.try_collect().await.unwrap();
     /// # });
     /// ```
-    fn query(&self) -> Query;
+    pub fn query(&self) -> Query {
+        Query::new(self.inner.clone())
+    }
+
+    /// Search the table with a given query vector.
+    ///
+    /// This is a convenience method for preparing a vector query and
+    /// is the same thing as calling `nearest_to` on the builder returned
+    /// by `query`.  See [`Query::nearest_to`] for more details.
+    pub fn vector_search(&self, query: impl IntoQueryVector) -> Result<VectorQuery> {
+        self.query().nearest_to(query)
+    }
 
     /// Optimize the on-disk data and indices for better performance.
     ///
@@ -378,25 +661,92 @@ pub trait Table: std::fmt::Display + Send + Sync {
     ///
     /// Modeled after ``VACUUM`` in PostgreSQL.
     /// Not all implementations support explicit optimization.
-    async fn optimize(&self, action: OptimizeAction) -> Result<OptimizeStats>;
+    pub async fn optimize(&self, action: OptimizeAction) -> Result<OptimizeStats> {
+        self.inner.optimize(action).await
+    }
 
     /// Add new columns to the table, providing values to fill in.
-    async fn add_columns(
+    pub async fn add_columns(
         &self,
         transforms: NewColumnTransform,
         read_columns: Option<Vec<String>>,
-    ) -> Result<()>;
+    ) -> Result<()> {
+        self.inner.add_columns(transforms, read_columns).await
+    }
 
     /// Change a column's name or nullability.
-    async fn alter_columns(&self, alterations: &[ColumnAlteration]) -> Result<()>;
+    pub async fn alter_columns(&self, alterations: &[ColumnAlteration]) -> Result<()> {
+        self.inner.alter_columns(alterations).await
+    }
 
     /// Remove columns from the table.
-    async fn drop_columns(&self, columns: &[&str]) -> Result<()>;
+    pub async fn drop_columns(&self, columns: &[&str]) -> Result<()> {
+        self.inner.drop_columns(columns).await
+    }
+
+    /// Retrieve the version of the table
+    ///
+    /// LanceDb supports versioning.  Every operation that modifies the table increases
+    /// version.  As long as a version hasn't been deleted you can `[Self::checkout]` that
+    /// version to view the data at that point.  In addition, you can `[Self::restore]` the
+    /// version to replace the current table with a previous version.
+    pub async fn version(&self) -> Result<u64> {
+        self.inner.version().await
+    }
+
+    /// Checks out a specific version of the Table
+    ///
+    /// Any read operation on the table will now access the data at the checked out version.
+    /// As a consequence, calling this method will disable any read consistency interval
+    /// that was previously set.
+    ///
+    /// This is a read-only operation that turns the table into a sort of "view"
+    /// or "detached head".  Other table instances will not be affected.  To make the change
+    /// permanent you can use the `[Self::restore]` method.
+    ///
+    /// Any operation that modifies the table will fail while the table is in a checked
+    /// out state.
+    ///
+    /// To return the table to a normal state use `[Self::checkout_latest]`
+    pub async fn checkout(&self, version: u64) -> Result<()> {
+        self.inner.checkout(version).await
+    }
+
+    /// Ensures the table is pointing at the latest version
+    ///
+    /// This can be used to manually update a table when the read_consistency_interval is None
+    /// It can also be used to undo a `[Self::checkout]` operation
+    pub async fn checkout_latest(&self) -> Result<()> {
+        self.inner.checkout_latest().await
+    }
+
+    /// Restore the table to the currently checked out version
+    ///
+    /// This operation will fail if checkout has not been called previously
+    ///
+    /// This operation will overwrite the latest version of the table with a
+    /// previous version.  Any changes made since the checked out version will
+    /// no longer be visible.
+    ///
+    /// Once the operation concludes the table will no longer be in a checked
+    /// out state and the read_consistency_interval, if any, will apply.
+    pub async fn restore(&self) -> Result<()> {
+        self.inner.restore().await
+    }
+
+    /// List all indices that have been created with [`Self::create_index`]
+    pub async fn list_indices(&self) -> Result<Vec<IndexConfig>> {
+        self.inner.list_indices().await
+    }
 }
 
-/// Reference to a Table pointer.
-pub type TableRef = Arc<dyn Table>;
-
+impl From<NativeTable> for Table {
+    fn from(table: NativeTable) -> Self {
+        Self {
+            inner: Arc::new(table),
+        }
+    }
+}
 /// A table in a LanceDB database.
 #[derive(Debug, Clone)]
 pub struct NativeTable {
@@ -414,7 +764,20 @@ pub struct NativeTable {
 
 impl std::fmt::Display for NativeTable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Table({})", self.name)
+        write!(
+            f,
+            "NativeTable({}, uri={}, read_consistency_interval={})",
+            self.name,
+            self.uri,
+            match self.read_consistency_interval {
+                None => {
+                    "None".to_string()
+                }
+                Some(duration) => {
+                    format!("{}s", duration.as_secs_f64())
+                }
+            }
+        )
     }
 }
 
@@ -467,9 +830,7 @@ impl NativeTable {
                 lance::Error::DatasetNotFound { .. } => Error::TableNotFound {
                     name: name.to_string(),
                 },
-                e => Error::Lance {
-                    message: e.to_string(),
-                },
+                source => Error::Lance { source },
             })?;
 
         let dataset = DatasetConsistencyWrapper::new_latest(dataset, read_consistency_interval);
@@ -480,50 +841,6 @@ impl NativeTable {
             dataset,
             store_wrapper: write_store_wrapper,
             read_consistency_interval,
-        })
-    }
-
-    /// Checkout a specific version of this [NativeTable]
-    pub async fn checkout(uri: &str, version: u64) -> Result<Self> {
-        let name = Self::get_table_name(uri)?;
-        Self::checkout_with_params(uri, &name, version, None, ReadParams::default(), None).await
-    }
-
-    pub async fn checkout_with_params(
-        uri: &str,
-        name: &str,
-        version: u64,
-        write_store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
-        params: ReadParams,
-        read_consistency_interval: Option<std::time::Duration>,
-    ) -> Result<Self> {
-        // patch the params if we have a write store wrapper
-        let params = match write_store_wrapper.clone() {
-            Some(wrapper) => params.patch_with_store_wrapper(wrapper)?,
-            None => params,
-        };
-        let dataset = DatasetBuilder::from_uri(uri)
-            .with_version(version)
-            .with_read_params(params)
-            .load()
-            .await?;
-        let dataset = DatasetConsistencyWrapper::new_time_travel(dataset, version);
-
-        Ok(Self {
-            name: name.to_string(),
-            uri: uri.to_string(),
-            dataset,
-            store_wrapper: write_store_wrapper,
-            read_consistency_interval,
-        })
-    }
-
-    pub async fn checkout_latest(&self) -> Result<Self> {
-        let mut dataset = self.dataset.duplicate().await;
-        dataset.as_latest(self.read_consistency_interval).await?;
-        Ok(Self {
-            dataset,
-            ..self.clone()
         })
     }
 
@@ -539,6 +856,28 @@ impl NativeTable {
                 name: uri.to_string(),
             })?;
         Ok(name.to_string())
+    }
+
+    fn supported_btree_data_type(dtype: &DataType) -> bool {
+        dtype.is_integer()
+            || dtype.is_floating()
+            || matches!(
+                dtype,
+                DataType::Boolean
+                    | DataType::Utf8
+                    | DataType::Time32(_)
+                    | DataType::Time64(_)
+                    | DataType::Date32
+                    | DataType::Date64
+                    | DataType::Timestamp(_, _)
+            )
+    }
+
+    fn supported_vector_data_type(dtype: &DataType) -> bool {
+        match dtype {
+            DataType::FixedSizeList(inner, _) => DataType::is_floating(inner.data_type()),
+            _ => false,
+        }
     }
 
     /// Creates a new Table
@@ -574,9 +913,7 @@ impl NativeTable {
                 lance::Error::DatasetAlreadyExists { .. } => Error::TableAlreadyExists {
                     name: name.to_string(),
                 },
-                e => Error::Lance {
-                    message: e.to_string(),
-                },
+                source => Error::Lance { source },
             })?;
         Ok(Self {
             name: name.to_string(),
@@ -607,11 +944,6 @@ impl NativeTable {
         .await
     }
 
-    /// Version of this Table
-    pub async fn version(&self) -> Result<u64> {
-        Ok(self.dataset.get().await?.version().version)
-    }
-
     async fn optimize_indices(&self, options: &OptimizeOptions) -> Result<()> {
         info!("LanceDB: optimizing indices: {:?}", options);
         self.dataset
@@ -634,23 +966,6 @@ impl NativeTable {
             .await?
             .merge(batches, left_on, right_on)
             .await?;
-        Ok(())
-    }
-
-    pub async fn update(&self, predicate: Option<&str>, updates: Vec<(&str, &str)>) -> Result<()> {
-        let dataset = self.dataset.get().await?.clone();
-        let mut builder = UpdateBuilder::new(Arc::new(dataset));
-        if let Some(predicate) = predicate {
-            builder = builder.update_where(predicate)?;
-        }
-
-        for (column, value) in updates {
-            builder = builder.set(column, value)?;
-        }
-
-        let operation = builder.build()?;
-        let ds = operation.execute().await?;
-        self.dataset.set_latest(ds.as_ref().clone()).await;
         Ok(())
     }
 
@@ -746,21 +1061,325 @@ impl NativeTable {
         }
         let dataset = self.dataset.get().await?;
         let index_stats = dataset.index_statistics(&index.unwrap().index_name).await?;
-        let index_stats: VectorIndexStatistics =
-            serde_json::from_str(&index_stats).map_err(|e| Error::Lance {
-                message: format!(
-                    "error deserializing index statistics {}: {}",
-                    e, index_stats
-                ),
-            })?;
+        let index_stats: VectorIndexStatistics = whatever!(
+            serde_json::from_str(&index_stats),
+            "error deserializing index statistics {index_stats}",
+        );
 
         Ok(Some(index_stats))
     }
+
+    async fn create_ivf_pq_index(
+        &self,
+        index: IvfPqIndexBuilder,
+        field: &Field,
+        replace: bool,
+    ) -> Result<()> {
+        if !Self::supported_vector_data_type(field.data_type()) {
+            return Err(Error::InvalidInput {
+                message: format!(
+                    "An IVF PQ index cannot be created on the column `{}` which has data type {}",
+                    field.name(),
+                    field.data_type()
+                ),
+            });
+        }
+
+        let num_partitions = if let Some(n) = index.num_partitions {
+            n
+        } else {
+            suggested_num_partitions(self.count_rows(None).await?)
+        };
+        let num_sub_vectors: u32 = if let Some(n) = index.num_sub_vectors {
+            n
+        } else {
+            match field.data_type() {
+                arrow_schema::DataType::FixedSizeList(_, n) => {
+                    Ok::<u32, Error>(suggested_num_sub_vectors(*n as u32))
+                }
+                _ => Err(Error::Schema {
+                    message: format!("Column '{}' is not a FixedSizeList", field.name()),
+                }),
+            }?
+        };
+        let mut dataset = self.dataset.get_mut().await?;
+        let lance_idx_params = lance::index::vector::VectorIndexParams::ivf_pq(
+            num_partitions as usize,
+            /*num_bits=*/ 8,
+            num_sub_vectors as usize,
+            false,
+            index.distance_type.into(),
+            index.max_iterations as usize,
+        );
+        dataset
+            .create_index(
+                &[field.name()],
+                IndexType::Vector,
+                None,
+                &lance_idx_params,
+                replace,
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn create_auto_index(&self, field: &Field, opts: IndexBuilder) -> Result<()> {
+        if Self::supported_vector_data_type(field.data_type()) {
+            self.create_ivf_pq_index(IvfPqIndexBuilder::default(), field, opts.replace)
+                .await
+        } else if Self::supported_btree_data_type(field.data_type()) {
+            self.create_btree_index(field, opts).await
+        } else {
+            Err(Error::InvalidInput {
+                message: format!(
+                    "there are no indices supported for the field `{}` with the data type {}",
+                    field.name(),
+                    field.data_type()
+                ),
+            })
+        }
+    }
+
+    async fn create_btree_index(&self, field: &Field, opts: IndexBuilder) -> Result<()> {
+        if !Self::supported_btree_data_type(field.data_type()) {
+            return Err(Error::Schema {
+                message: format!(
+                    "A BTree index cannot be created on the field `{}` which has data type {}",
+                    field.name(),
+                    field.data_type()
+                ),
+            });
+        }
+
+        let mut dataset = self.dataset.get_mut().await?;
+        let lance_idx_params = lance::index::scalar::ScalarIndexParams {};
+        dataset
+            .create_index(
+                &[field.name()],
+                IndexType::Scalar,
+                None,
+                &lance_idx_params,
+                opts.replace,
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn generic_query(
+        &self,
+        query: &VectorQuery,
+        options: QueryExecutionOptions,
+    ) -> Result<DatasetRecordBatchStream> {
+        let ds_ref = self.dataset.get().await?;
+        let mut scanner: Scanner = ds_ref.scan();
+
+        if let Some(query_vector) = query.query_vector.as_ref() {
+            // If there is a vector query, default to limit=10 if unspecified
+            let column = if let Some(col) = query.column.as_ref() {
+                col.clone()
+            } else {
+                // Infer a vector column with the same dimension of the query vector.
+                let arrow_schema = Schema::from(ds_ref.schema());
+                default_vector_column(&arrow_schema, Some(query_vector.len() as i32))?
+            };
+            let field = ds_ref.schema().field(&column).ok_or(Error::Schema {
+                message: format!("Column {} not found in dataset schema", column),
+            })?;
+            if !matches!(field.data_type(), arrow_schema::DataType::FixedSizeList(f, dim) if f.data_type().is_floating() && dim == query_vector.len() as i32)
+            {
+                return Err(Error::Schema {
+                    message: format!(
+                        "Vector column '{}' does not match the dimension of the query vector: dim={}",
+                        column,
+                        query_vector.len(),
+                    ),
+                });
+            }
+            let query_vector = query_vector.as_primitive::<Float32Type>();
+            scanner.nearest(
+                &column,
+                query_vector,
+                query.base.limit.unwrap_or(DEFAULT_TOP_K),
+            )?;
+        } else {
+            // If there is no vector query, it's ok to not have a limit
+            scanner.limit(query.base.limit.map(|limit| limit as i64), None)?;
+        }
+        scanner.nprobs(query.nprobes);
+        scanner.use_index(query.use_index);
+        scanner.prefilter(query.prefilter);
+        scanner.batch_size(options.max_batch_length as usize);
+
+        match &query.base.select {
+            Select::Columns(select) => {
+                scanner.project(select.as_slice())?;
+            }
+            Select::Dynamic(select_with_transform) => {
+                scanner.project_with_transform(select_with_transform.as_slice())?;
+            }
+            Select::All => { /* Do nothing */ }
+        }
+
+        if let Some(filter) = &query.base.filter {
+            scanner.filter(filter)?;
+        }
+
+        if let Some(refine_factor) = query.refine_factor {
+            scanner.refine(refine_factor);
+        }
+
+        if let Some(distance_type) = query.distance_type {
+            scanner.distance_metric(distance_type.into());
+        }
+        Ok(scanner.try_into_stream().await?)
+    }
 }
 
-#[async_trait]
-impl MergeInsert for NativeTable {
-    async fn do_merge_insert(
+#[async_trait::async_trait]
+impl TableInternal for NativeTable {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_native(&self) -> Option<&NativeTable> {
+        Some(self)
+    }
+
+    fn name(&self) -> &str {
+        self.name.as_str()
+    }
+
+    async fn version(&self) -> Result<u64> {
+        Ok(self.dataset.get().await?.version().version)
+    }
+
+    async fn checkout(&self, version: u64) -> Result<()> {
+        self.dataset.as_time_travel(version).await
+    }
+
+    async fn checkout_latest(&self) -> Result<()> {
+        self.dataset
+            .as_latest(self.read_consistency_interval)
+            .await?;
+        self.dataset.reload().await
+    }
+
+    async fn restore(&self) -> Result<()> {
+        let version =
+            self.dataset
+                .time_travel_version()
+                .await
+                .ok_or_else(|| Error::InvalidInput {
+                    message: "you must run checkout before running restore".to_string(),
+                })?;
+        {
+            // Use get_mut_unchecked as restore is the only "write" operation that is allowed
+            // when the table is in time travel mode.
+            // Also, drop the guard after .restore because as_latest will need it
+            let mut dataset = self.dataset.get_mut_unchecked().await?;
+            debug_assert_eq!(dataset.version().version, version);
+            dataset.restore().await?;
+        }
+        self.dataset
+            .as_latest(self.read_consistency_interval)
+            .await?;
+        Ok(())
+    }
+
+    async fn schema(&self) -> Result<SchemaRef> {
+        let lance_schema = self.dataset.get().await?.schema().clone();
+        Ok(Arc::new(Schema::from(&lance_schema)))
+    }
+
+    async fn count_rows(&self, filter: Option<String>) -> Result<usize> {
+        let dataset = self.dataset.get().await?;
+        if let Some(filter) = filter {
+            let mut scanner = dataset.scan();
+            scanner.filter(&filter)?;
+            Ok(scanner.count_rows().await? as usize)
+        } else {
+            Ok(dataset.count_rows().await?)
+        }
+    }
+
+    async fn add(
+        &self,
+        add: AddDataBuilder<NoData>,
+        data: Box<dyn RecordBatchReader + Send>,
+    ) -> Result<()> {
+        let lance_params = add.write_options.lance_write_params.unwrap_or(WriteParams {
+            mode: match add.mode {
+                AddDataMode::Append => WriteMode::Append,
+                AddDataMode::Overwrite => WriteMode::Overwrite,
+            },
+            ..Default::default()
+        });
+
+        // patch the params if we have a write store wrapper
+        let lance_params = match self.store_wrapper.clone() {
+            Some(wrapper) => lance_params.patch_with_store_wrapper(wrapper)?,
+            None => lance_params,
+        };
+
+        self.dataset.ensure_mutable().await?;
+
+        let dataset = Dataset::write(data, &self.uri, Some(lance_params)).await?;
+        self.dataset.set_latest(dataset).await;
+        Ok(())
+    }
+
+    async fn create_index(&self, opts: IndexBuilder) -> Result<()> {
+        if opts.columns.len() != 1 {
+            return Err(Error::Schema {
+                message: "Multi-column (composite) indices are not yet supported".to_string(),
+            });
+        }
+        let schema = self.schema().await?;
+
+        let field = schema.field_with_name(&opts.columns[0])?;
+
+        match opts.index {
+            Index::Auto => self.create_auto_index(field, opts).await,
+            Index::BTree(_) => self.create_btree_index(field, opts).await,
+            Index::IvfPq(ivf_pq) => self.create_ivf_pq_index(ivf_pq, field, opts.replace).await,
+        }
+    }
+
+    async fn update(&self, update: UpdateBuilder) -> Result<()> {
+        let dataset = self.dataset.get().await?.clone();
+        let mut builder = LanceUpdateBuilder::new(Arc::new(dataset));
+        if let Some(predicate) = update.filter {
+            builder = builder.update_where(&predicate)?;
+        }
+
+        for (column, value) in update.columns {
+            builder = builder.set(column, &value)?;
+        }
+
+        let operation = builder.build()?;
+        let ds = operation.execute().await?;
+        self.dataset.set_latest(ds.as_ref().clone()).await;
+        Ok(())
+    }
+
+    async fn plain_query(
+        &self,
+        query: &Query,
+        options: QueryExecutionOptions,
+    ) -> Result<DatasetRecordBatchStream> {
+        self.generic_query(&query.clone().into_vector(), options)
+            .await
+    }
+
+    async fn vector_query(
+        &self,
+        query: &VectorQuery,
+        options: QueryExecutionOptions,
+    ) -> Result<DatasetRecordBatchStream> {
+        self.generic_query(query, options).await
+    }
+
+    async fn merge_insert(
         &self,
         params: MergeInsertBuilder,
         new_data: Box<dyn RecordBatchReader + Send>,
@@ -795,77 +1414,6 @@ impl MergeInsert for NativeTable {
         self.dataset.set_latest(new_dataset.as_ref().clone()).await;
         Ok(())
     }
-}
-
-#[async_trait::async_trait]
-impl Table for NativeTable {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn as_native(&self) -> Option<&NativeTable> {
-        Some(self)
-    }
-
-    fn name(&self) -> &str {
-        self.name.as_str()
-    }
-
-    async fn schema(&self) -> Result<SchemaRef> {
-        let lance_schema = self.dataset.get().await?.schema().clone();
-        Ok(Arc::new(Schema::from(&lance_schema)))
-    }
-
-    async fn count_rows(&self, filter: Option<String>) -> Result<usize> {
-        let dataset = self.dataset.get().await?;
-        if let Some(filter) = filter {
-            let mut scanner = dataset.scan();
-            scanner.filter(&filter)?;
-            Ok(scanner.count_rows().await? as usize)
-        } else {
-            Ok(dataset.count_rows().await?)
-        }
-    }
-
-    async fn add(
-        &self,
-        batches: Box<dyn RecordBatchReader + Send>,
-        params: AddDataOptions,
-    ) -> Result<()> {
-        let lance_params = params
-            .write_options
-            .lance_write_params
-            .unwrap_or(WriteParams {
-                mode: match params.mode {
-                    AddDataMode::Append => WriteMode::Append,
-                    AddDataMode::Overwrite => WriteMode::Overwrite,
-                },
-                ..Default::default()
-            });
-
-        // patch the params if we have a write store wrapper
-        let lance_params = match self.store_wrapper.clone() {
-            Some(wrapper) => lance_params.patch_with_store_wrapper(wrapper)?,
-            None => lance_params,
-        };
-
-        let dataset = Dataset::write(batches, &self.uri, Some(lance_params)).await?;
-        self.dataset.set_latest(dataset).await;
-        Ok(())
-    }
-
-    fn merge_insert(&self, on: &[&str]) -> MergeInsertBuilder {
-        let on = Vec::from_iter(on.iter().map(|key| key.to_string()));
-        MergeInsertBuilder::new(Arc::new(self.clone()), on)
-    }
-
-    fn create_index(&self, columns: &[&str]) -> IndexBuilder {
-        IndexBuilder::new(Arc::new(self.clone()), columns)
-    }
-
-    fn query(&self) -> Query {
-        Query::new(self.dataset.clone())
-    }
 
     /// Delete rows from the table
     async fn delete(&self, predicate: &str) -> Result<()> {
@@ -889,7 +1437,7 @@ impl Table for NativeTable {
                     .compaction;
                 stats.prune = self
                     .optimize(OptimizeAction::Prune {
-                        older_than: Duration::days(7),
+                        older_than: Duration::try_days(7).unwrap(),
                         delete_unverified: None,
                     })
                     .await?
@@ -945,6 +1493,25 @@ impl Table for NativeTable {
         self.dataset.get_mut().await?.drop_columns(columns).await?;
         Ok(())
     }
+
+    async fn list_indices(&self) -> Result<Vec<IndexConfig>> {
+        let dataset = self.dataset.get().await?;
+        let indices = dataset.load_indices().await?;
+        indices.iter().map(|idx| {
+            let mut is_vector = false;
+            let mut columns = Vec::with_capacity(idx.fields.len());
+            for field_id in &idx.fields {
+                let field = dataset.schema().field_by_id(*field_id).ok_or_else(|| Error::Runtime { message: format!("The index with name {} and uuid {} referenced a field with id {} which does not exist in the schema", idx.name, idx.uuid, field_id) })?;
+                if field.data_type().is_nested() {
+                    // Temporary hack to determine if an index is scalar or vector
+                    // Should be removed in https://github.com/lancedb/lance/issues/2039
+                    is_vector = true;
+                }
+                columns.push(field.name.clone());
+            }
+            Ok(IndexConfig { index_type: if is_vector { crate::index::IndexType::IvfPq } else { crate::index::IndexType::BTree }, columns })
+        }).collect::<Result<Vec<_>>>()
+    }
 }
 
 #[cfg(test)]
@@ -968,7 +1535,10 @@ mod tests {
     use rand::Rng;
     use tempfile::tempdir;
 
+    use crate::connect;
     use crate::connection::ConnectBuilder;
+    use crate::index::scalar::BTreeIndexBuilder;
+    use crate::query::{ExecutableQuery, QueryBase};
 
     use super::*;
 
@@ -1027,10 +1597,13 @@ mod tests {
     async fn test_add() {
         let tmp_dir = tempdir().unwrap();
         let uri = tmp_dir.path().to_str().unwrap();
+        let conn = connect(uri).execute().await.unwrap();
 
         let batches = make_test_batches();
         let schema = batches.schema().clone();
-        let table = NativeTable::create(uri, "test", batches, None, None, None)
+        let table = conn
+            .create_table("test", Box::new(batches))
+            .execute()
             .await
             .unwrap();
         assert_eq!(table.count_rows(None).await.unwrap(), 10);
@@ -1046,22 +1619,22 @@ mod tests {
             schema.clone(),
         );
 
-        table
-            .add(Box::new(new_batches), AddDataOptions::default())
-            .await
-            .unwrap();
+        table.add(Box::new(new_batches)).execute().await.unwrap();
         assert_eq!(table.count_rows(None).await.unwrap(), 20);
-        assert_eq!(table.name, "test");
+        assert_eq!(table.name(), "test");
     }
 
     #[tokio::test]
     async fn test_merge_insert() {
         let tmp_dir = tempdir().unwrap();
         let uri = tmp_dir.path().to_str().unwrap();
+        let conn = connect(uri).execute().await.unwrap();
 
         // Create a dataset with i=0..10
         let batches = merge_insert_test_batches(0, 0);
-        let table = NativeTable::create(uri, "test", batches, None, None, None)
+        let table = conn
+            .create_table("my_table", Box::new(batches))
+            .execute()
             .await
             .unwrap();
         assert_eq!(table.count_rows(None).await.unwrap(), 10);
@@ -1104,10 +1677,13 @@ mod tests {
     async fn test_add_overwrite() {
         let tmp_dir = tempdir().unwrap();
         let uri = tmp_dir.path().to_str().unwrap();
+        let conn = connect(uri).execute().await.unwrap();
 
         let batches = make_test_batches();
         let schema = batches.schema().clone();
-        let table = NativeTable::create(uri, "test", batches, None, None, None)
+        let table = conn
+            .create_table("test", Box::new(batches))
+            .execute()
             .await
             .unwrap();
         assert_eq!(table.count_rows(None).await.unwrap(), 10);
@@ -1124,17 +1700,13 @@ mod tests {
 
         // Can overwrite using AddDataOptions::mode
         table
-            .add(
-                Box::new(new_batches),
-                AddDataOptions {
-                    mode: AddDataMode::Overwrite,
-                    ..Default::default()
-                },
-            )
+            .add(Box::new(new_batches))
+            .mode(AddDataMode::Overwrite)
+            .execute()
             .await
             .unwrap();
         assert_eq!(table.count_rows(None).await.unwrap(), 10);
-        assert_eq!(table.name, "test");
+        assert_eq!(table.name(), "test");
 
         // Can overwrite using underlying WriteParams (which
         // take precedence over AddDataOptions::mode)
@@ -1144,17 +1716,18 @@ mod tests {
             ..Default::default()
         };
 
-        let opts = AddDataOptions {
-            write_options: WriteOptions {
-                lance_write_params: Some(param),
-            },
-            mode: AddDataMode::Append,
-        };
-
         let new_batches = RecordBatchIterator::new(batches.clone(), schema.clone());
-        table.add(Box::new(new_batches), opts).await.unwrap();
+        table
+            .add(Box::new(new_batches))
+            .write_options(WriteOptions {
+                lance_write_params: Some(param),
+            })
+            .mode(AddDataMode::Append)
+            .execute()
+            .await
+            .unwrap();
         assert_eq!(table.count_rows(None).await.unwrap(), 10);
-        assert_eq!(table.name, "test");
+        assert_eq!(table.name(), "test");
     }
 
     #[tokio::test]
@@ -1162,6 +1735,11 @@ mod tests {
         let tmp_dir = tempdir().unwrap();
         let dataset_path = tmp_dir.path().join("test.lance");
         let uri = dataset_path.to_str().unwrap();
+        let conn = connect(uri)
+            .read_consistency_interval(Duration::from_secs(0))
+            .execute()
+            .await
+            .unwrap();
 
         let schema = Arc::new(Schema::new(vec![
             Field::new("id", DataType::Int32, false),
@@ -1184,20 +1762,24 @@ mod tests {
             schema.clone(),
         );
 
-        Dataset::write(record_batch_iter, uri, None).await.unwrap();
-        let table = NativeTable::open(uri).await.unwrap();
-
-        table
-            .update(Some("id > 5"), vec![("name", "'foo'")])
+        let table = conn
+            .create_table("my_table", Box::new(record_batch_iter))
+            .execute()
             .await
             .unwrap();
 
-        let ds_after = Dataset::open(uri).await.unwrap();
-        let mut batches = ds_after
-            .scan()
-            .project(&["id", "name"])
-            .unwrap()
-            .try_into_stream()
+        table
+            .update()
+            .only_if("id > 5")
+            .column("name", "'foo'")
+            .execute()
+            .await
+            .unwrap();
+
+        let mut batches = table
+            .query()
+            .select(Select::columns(&["id", "name"]))
+            .execute()
             .await
             .unwrap()
             .try_collect::<Vec<_>>()
@@ -1236,6 +1818,11 @@ mod tests {
         let tmp_dir = tempdir().unwrap();
         let dataset_path = tmp_dir.path().join("test.lance");
         let uri = dataset_path.to_str().unwrap();
+        let conn = connect(uri)
+            .read_consistency_interval(Duration::from_secs(0))
+            .execute()
+            .await
+            .unwrap();
 
         let schema = Arc::new(Schema::new(vec![
             Field::new("int32", DataType::Int32, false),
@@ -1312,8 +1899,11 @@ mod tests {
             schema.clone(),
         );
 
-        Dataset::write(record_batch_iter, uri, None).await.unwrap();
-        let table = NativeTable::open(uri).await.unwrap();
+        let table = conn
+            .create_table("my_table", Box::new(record_batch_iter))
+            .execute()
+            .await
+            .unwrap();
 
         // check it can do update for each type
         let updates: Vec<(&str, &str)> = vec![
@@ -1332,13 +1922,15 @@ mod tests {
             ("vec_f64", "[1.0, 1.0]"),
         ];
 
-        // for (column, value) in test_cases {
-        table.update(None, updates).await.unwrap();
+        let mut update_op = table.update();
+        for (column, value) in updates {
+            update_op = update_op.column(column, value);
+        }
+        update_op.execute().await.unwrap();
 
-        let ds_after = Dataset::open(uri).await.unwrap();
-        let mut batches = ds_after
-            .scan()
-            .project(&[
+        let mut batches = table
+            .query()
+            .select(Select::columns(&[
                 "string",
                 "large_string",
                 "int32",
@@ -1352,9 +1944,8 @@ mod tests {
                 "timestamp_ms",
                 "vec_f32",
                 "vec_f64",
-            ])
-            .unwrap()
-            .try_into_stream()
+            ]))
+            .execute()
             .await
             .unwrap()
             .try_collect::<Vec<_>>()
@@ -1419,6 +2010,26 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn test_update_via_expr() {
+        let tmp_dir = tempdir().unwrap();
+        let dataset_path = tmp_dir.path().join("test.lance");
+        let uri = dataset_path.to_str().unwrap();
+        let conn = connect(uri)
+            .read_consistency_interval(Duration::from_secs(0))
+            .execute()
+            .await
+            .unwrap();
+        let tbl = conn
+            .create_table("my_table", Box::new(make_test_batches()))
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(1, tbl.count_rows(Some("i == 0".to_string())).await.unwrap());
+        tbl.update().column("i", "i+1").execute().await.unwrap();
+        assert_eq!(0, tbl.count_rows(Some("i == 0".to_string())).await.unwrap());
+    }
+
     #[derive(Default, Debug)]
     struct NoOpCacheWrapper {
         called: AtomicBool,
@@ -1445,9 +2056,12 @@ mod tests {
         let tmp_dir = tempdir().unwrap();
         let dataset_path = tmp_dir.path().join("test.lance");
         let uri = dataset_path.to_str().unwrap();
+        let conn = connect(uri).execute().await.unwrap();
 
         let batches = make_test_batches();
-        Dataset::write(batches, dataset_path.to_str().unwrap(), None)
+
+        conn.create_table("my_table", Box::new(batches))
+            .execute()
             .await
             .unwrap();
 
@@ -1462,7 +2076,9 @@ mod tests {
             ..Default::default()
         };
         assert!(!wrapper.called());
-        let _ = NativeTable::open_with_params(uri, "test", None, Some(param), None)
+        conn.open_table("my_table")
+            .lance_read_params(param)
+            .execute()
             .await
             .unwrap();
         assert!(wrapper.called());
@@ -1510,6 +2126,7 @@ mod tests {
 
         let tmp_dir = tempdir().unwrap();
         let uri = tmp_dir.path().to_str().unwrap();
+        let conn = connect(uri).execute().await.unwrap();
 
         let dimension = 16;
         let schema = Arc::new(ArrowSchema::new(vec![Field::new(
@@ -1536,34 +2153,63 @@ mod tests {
             schema,
         );
 
-        let table = NativeTable::create(uri, "test", batches, None, None, None)
+        let table = conn
+            .create_table("test", Box::new(batches))
+            .execute()
             .await
             .unwrap();
 
-        assert_eq!(table.count_indexed_rows("my_index").await.unwrap(), None);
-        assert_eq!(table.count_unindexed_rows("my_index").await.unwrap(), None);
+        assert_eq!(
+            table
+                .as_native()
+                .unwrap()
+                .count_indexed_rows("my_index")
+                .await
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            table
+                .as_native()
+                .unwrap()
+                .count_unindexed_rows("my_index")
+                .await
+                .unwrap(),
+            None
+        );
 
         table
-            .create_index(&["embeddings"])
-            .ivf_pq()
-            .name("my_index")
-            .num_partitions(256)
-            .build()
+            .create_index(&["embeddings"], Index::Auto)
+            .execute()
             .await
             .unwrap();
 
-        assert_eq!(table.load_indices().await.unwrap().len(), 1);
+        let index_configs = table.list_indices().await.unwrap();
+        assert_eq!(index_configs.len(), 1);
+        let index = index_configs.into_iter().next().unwrap();
+        assert_eq!(index.index_type, crate::index::IndexType::IvfPq);
+        assert_eq!(index.columns, vec!["embeddings".to_string()]);
         assert_eq!(table.count_rows(None).await.unwrap(), 512);
-        assert_eq!(table.name, "test");
+        assert_eq!(table.name(), "test");
 
-        let indices = table.load_indices().await.unwrap();
+        let indices = table.as_native().unwrap().load_indices().await.unwrap();
         let index_uuid = &indices[0].index_uuid;
         assert_eq!(
-            table.count_indexed_rows(index_uuid).await.unwrap(),
+            table
+                .as_native()
+                .unwrap()
+                .count_indexed_rows(index_uuid)
+                .await
+                .unwrap(),
             Some(512)
         );
         assert_eq!(
-            table.count_unindexed_rows(index_uuid).await.unwrap(),
+            table
+                .as_native()
+                .unwrap()
+                .count_unindexed_rows(index_uuid)
+                .await
+                .unwrap(),
             Some(0)
         );
     }
@@ -1582,14 +2228,70 @@ mod tests {
         Ok(FixedSizeListArray::from(data))
     }
 
-    #[tokio::test]
-    async fn test_read_consistency_interval() {
+    fn some_sample_data() -> impl RecordBatchReader {
         let batch = RecordBatch::try_new(
             Arc::new(Schema::new(vec![Field::new("i", DataType::Int32, false)])),
             vec![Arc::new(Int32Array::from(vec![1]))],
         )
         .unwrap();
+        let schema = batch.schema().clone();
+        let batch = Ok(batch);
 
+        RecordBatchIterator::new(vec![batch], schema)
+    }
+
+    #[tokio::test]
+    async fn test_create_scalar_index() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("i", DataType::Int32, false)])),
+            vec![Arc::new(Int32Array::from(vec![1]))],
+        )
+        .unwrap();
+        let conn = ConnectBuilder::new(uri).execute().await.unwrap();
+        let table = conn
+            .create_table(
+                "my_table",
+                Box::new(RecordBatchIterator::new(
+                    vec![Ok(batch.clone())],
+                    batch.schema(),
+                )),
+            )
+            .execute()
+            .await
+            .unwrap();
+
+        // Can create an index on a scalar column (will default to btree)
+        table
+            .create_index(&["i"], Index::Auto)
+            .execute()
+            .await
+            .unwrap();
+
+        let index_configs = table.list_indices().await.unwrap();
+        assert_eq!(index_configs.len(), 1);
+        let index = index_configs.into_iter().next().unwrap();
+        assert_eq!(index.index_type, crate::index::IndexType::BTree);
+        assert_eq!(index.columns, vec!["i".to_string()]);
+
+        // Can also specify btree
+        table
+            .create_index(&["i"], Index::BTree(BTreeIndexBuilder::default()))
+            .execute()
+            .await
+            .unwrap();
+
+        let index_configs = table.list_indices().await.unwrap();
+        assert_eq!(index_configs.len(), 1);
+        let index = index_configs.into_iter().next().unwrap();
+        assert_eq!(index.index_type, crate::index::IndexType::BTree);
+        assert_eq!(index.columns, vec!["i".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn test_read_consistency_interval() {
         let intervals = vec![
             None,
             Some(0),
@@ -1597,12 +2299,14 @@ mod tests {
         ];
 
         for interval in intervals {
+            let data = some_sample_data();
+
             let tmp_dir = tempdir().unwrap();
             let uri = tmp_dir.path().to_str().unwrap();
 
             let conn1 = ConnectBuilder::new(uri).execute().await.unwrap();
             let table1 = conn1
-                .create_empty_table("my_table", batch.schema())
+                .create_empty_table("my_table", data.schema())
                 .execute()
                 .await
                 .unwrap();
@@ -1617,21 +2321,14 @@ mod tests {
             assert_eq!(table1.count_rows(None).await.unwrap(), 0);
             assert_eq!(table2.count_rows(None).await.unwrap(), 0);
 
-            table1
-                .add(
-                    Box::new(RecordBatchIterator::new(
-                        vec![Ok(batch.clone())],
-                        batch.schema(),
-                    )),
-                    AddDataOptions::default(),
-                )
-                .await
-                .unwrap();
+            table1.add(Box::new(data)).execute().await.unwrap();
             assert_eq!(table1.count_rows(None).await.unwrap(), 1);
 
             match interval {
                 None => {
                     assert_eq!(table2.count_rows(None).await.unwrap(), 0);
+                    table2.checkout_latest().await.unwrap();
+                    assert_eq!(table2.count_rows(None).await.unwrap(), 1);
                 }
                 Some(0) => {
                     assert_eq!(table2.count_rows(None).await.unwrap(), 1);
@@ -1644,5 +2341,34 @@ mod tests {
                 _ => unreachable!(),
             }
         }
+    }
+
+    #[tokio::test]
+    async fn test_time_travel_write() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        let conn = ConnectBuilder::new(uri)
+            .read_consistency_interval(Duration::from_secs(0))
+            .execute()
+            .await
+            .unwrap();
+        let table = conn
+            .create_table("my_table", Box::new(some_sample_data()))
+            .execute()
+            .await
+            .unwrap();
+        let version = table.version().await.unwrap();
+        table
+            .add(Box::new(some_sample_data()))
+            .execute()
+            .await
+            .unwrap();
+        table.checkout(version).await.unwrap();
+        assert!(table
+            .add(Box::new(some_sample_data()))
+            .execute()
+            .await
+            .is_err())
     }
 }

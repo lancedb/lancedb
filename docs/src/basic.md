@@ -3,7 +3,7 @@
 !!! info "LanceDB can be run in a number of ways:"
 
     * Embedded within an existing backend (like your Django, Flask, Node.js or FastAPI application)
-    * Connected to directly from a client application like a Jupyter notebook for analytical workloads
+    * Directly from a client application like a Jupyter notebook for analytical workloads
     * Deployed as a remote serverless database
 
 ![](assets/lancedb_embedded_explanation.png)
@@ -24,13 +24,11 @@
 
 === "Rust"
 
-    !!! warning "Rust SDK is experimental, might introduce breaking changes in the near future"
-
     ```shell
-    cargo add vectordb
+    cargo add lancedb
     ```
 
-    !!! info "To use the vectordb create, you first need to install protobuf."
+    !!! info "To use the lancedb create, you first need to install protobuf."
 
     === "macOS"
 
@@ -44,9 +42,9 @@
         sudo apt install -y protobuf-compiler libssl-dev
         ```
 
-    !!! info "Please also make sure you're using the same version of Arrow as in the [vectordb crate](https://github.com/lancedb/lancedb/blob/main/Cargo.toml)"
+    !!! info "Please also make sure you're using the same version of Arrow as in the [lancedb crate](https://github.com/lancedb/lancedb/blob/main/Cargo.toml)"
 
-## How to connect to a database
+## Connect to a database
 
 === "Python"
 
@@ -69,17 +67,23 @@
     ```rust
     #[tokio::main]
     async fn main() -> Result<()> {
-        --8<-- "rust/vectordb/examples/simple.rs:connect"
+        --8<-- "rust/lancedb/examples/simple.rs:connect"
     }
     ```
 
-    !!! info "See [examples/simple.rs](https://github.com/lancedb/lancedb/tree/main/rust/vectordb/examples/simple.rs) for a full working example."
+    !!! info "See [examples/simple.rs](https://github.com/lancedb/lancedb/tree/main/rust/lancedb/examples/simple.rs) for a full working example."
 
 LanceDB will create the directory if it doesn't exist (including parent directories).
 
 If you need a reminder of the uri, you can call `db.uri()`.
 
-## How to create a table
+## Create a table
+
+### Create a table from initial data
+
+If you have data to insert into the table at creation time, you can simultaneously create a
+table and insert the data into it.  The schema of the data will be used as the schema of the
+table.
 
 === "Python"
 
@@ -115,20 +119,27 @@ If you need a reminder of the uri, you can call `db.uri()`.
 === "Rust"
 
     ```rust
-    use arrow_schema::{DataType, Schema, Field};
-    use arrow_array::{RecordBatch, RecordBatchIterator};
-
-    --8<-- "rust/vectordb/examples/simple.rs:create_table"
+    --8<-- "rust/lancedb/examples/simple.rs:create_table"
     ```
 
-    If the table already exists, LanceDB will raise an error by default.
+    If the table already exists, LanceDB will raise an error by default.  See
+    [the mode option](https://docs.rs/lancedb/latest/lancedb/connection/struct.CreateTableBuilder.html#method.mode)
+    for details on how to overwrite (or open) existing tables instead.
 
-!!! info "Under the hood, LanceDB is converting the input data into an Apache Arrow table and persisting it to disk in [Lance format](https://www.github.com/lancedb/lance)."
+    !!! Providing table records in Rust
 
-### Creating an empty table
+        The Rust SDK currently expects data to be provided as an Arrow
+        [RecordBatchReader](https://docs.rs/arrow-array/latest/arrow_array/trait.RecordBatchReader.html)
+        Support for additional formats (such as serde or polars) is on the roadmap.
+
+!!! info "Under the hood, LanceDB reads in the Apache Arrow data and persists it to disk using the [Lance format](https://www.github.com/lancedb/lance)."
+
+### Create an empty table
 
 Sometimes you may not have the data to insert into the table at creation time.
-In this case, you can create an empty table and specify the schema.
+In this case, you can create an empty table and specify the schema, so that you can add
+data to the table at a later time (as long as it conforms to the schema).  This is
+similar to a `CREATE TABLE` statement in SQL.
 
 === "Python"
 
@@ -147,12 +158,12 @@ In this case, you can create an empty table and specify the schema.
 === "Rust"
 
     ```rust
-    --8<-- "rust/vectordb/examples/simple.rs:create_empty_table"
+    --8<-- "rust/lancedb/examples/simple.rs:create_empty_table"
     ```
 
-## How to open an existing table
+## Open an existing table
 
-Once created, you can open a table using the following code:
+Once created, you can open a table as follows:
 
 === "Python"
 
@@ -169,7 +180,7 @@ Once created, you can open a table using the following code:
 === "Rust"
 
     ```rust
-    --8<-- "rust/vectordb/examples/simple.rs:open_with_existing_file"
+    --8<-- "rust/lancedb/examples/simple.rs:open_existing_tbl"
     ```
 
 If you forget the name of your table, you can always get a listing of all table names:
@@ -189,12 +200,12 @@ If you forget the name of your table, you can always get a listing of all table 
 === "Rust"
 
     ```rust
-    --8<-- "rust/vectordb/examples/simple.rs:list_names"
+    --8<-- "rust/lancedb/examples/simple.rs:list_names"
     ```
 
-## How to add data to a table
+## Add data to a table
 
-After a table has been created, you can always add more data to it using
+After a table has been created, you can always add more data to it as follows:
 
 === "Python"
 
@@ -219,12 +230,12 @@ After a table has been created, you can always add more data to it using
 === "Rust"
 
     ```rust
-    --8<-- "rust/vectordb/examples/simple.rs:add"
+    --8<-- "rust/lancedb/examples/simple.rs:add"
     ```
 
-## How to search for (approximate) nearest neighbors
+## Search for nearest neighbors
 
-Once you've embedded the query, you can find its nearest neighbors using the following code:
+Once you've embedded the query, you can find its nearest neighbors as follows:
 
 === "Python"
 
@@ -245,11 +256,20 @@ Once you've embedded the query, you can find its nearest neighbors using the fol
     ```rust
     use futures::TryStreamExt;
 
-    --8<-- "rust/vectordb/examples/simple.rs:search"
+    --8<-- "rust/lancedb/examples/simple.rs:search"
     ```
+
+    !!! Query vectors in Rust
+        Rust does not yet support automatic execution of embedding functions.  You will need to
+        calculate embeddings yourself.  Support for this is on the roadmap and can be tracked at
+        https://github.com/lancedb/lancedb/issues/994
+
+        Query vectors can be provided as Arrow arrays or a Vec/slice of Rust floats.
+        Support for additional formats (e.g. `polars::series::Series`) is on the roadmap.
 
 By default, LanceDB runs a brute-force scan over dataset to find the K nearest neighbours (KNN).
 For tables with more than 50K vectors, creating an ANN index is recommended to speed up search performance.
+LanceDB allows you to create an ANN index on a table as follows:
 
 === "Python"
 
@@ -266,12 +286,17 @@ For tables with more than 50K vectors, creating an ANN index is recommended to s
 === "Rust"
 
     ```rust
-     --8<-- "rust/vectordb/examples/simple.rs:create_index"
+     --8<-- "rust/lancedb/examples/simple.rs:create_index"
     ```
 
-Check [Approximate Nearest Neighbor (ANN) Indexes](/ann_indices.md) section for more details.
+!!! note "Why do I need to create an index manually?"
+    LanceDB does not automatically create the ANN index for two reasons. The first is that it's optimized
+    for really fast retrievals via a disk-based index, and the second is that data and query workloads can
+    be very diverse, so there's no one-size-fits-all index configuration. LanceDB provides many parameters
+    to fine-tune index size, query latency and accuracy. See the section on
+    [ANN indexes](ann_indexes.md) for more details.
 
-## How to delete rows from a table
+## Delete rows from a table
 
 Use the `delete()` method on tables to delete rows from a table. To choose
 which rows to delete, provide a filter that matches on the metadata columns.
@@ -292,12 +317,13 @@ This can delete any number of rows that match the filter.
 === "Rust"
 
     ```rust
-    --8<-- "rust/vectordb/examples/simple.rs:delete"
+    --8<-- "rust/lancedb/examples/simple.rs:delete"
     ```
 
 The deletion predicate is a SQL expression that supports the same expressions
-as the `where()` clause on a search. They can be as simple or complex as needed.
-To see what expressions are supported, see the [SQL filters](sql.md) section.
+as the `where()` clause (`only_if()` in Rust) on a search. They can be as
+simple or complex as needed.  To see what expressions are supported, see the
+[SQL filters](sql.md) section.
 
 === "Python"
 
@@ -307,7 +333,11 @@ To see what expressions are supported, see the [SQL filters](sql.md) section.
 
       Read more: [vectordb.Table.delete](javascript/interfaces/Table.md#delete)
 
-## How to remove a table
+=== "Rust"
+
+      Read more: [lancedb::Table::delete](https://docs.rs/lancedb/latest/lancedb/table/struct.Table.html#method.delete)
+
+## Drop a table
 
 Use the `drop_table()` method on the database to remove a table.
 
@@ -333,7 +363,7 @@ Use the `drop_table()` method on the database to remove a table.
 === "Rust"
 
     ```rust
-    --8<-- "rust/vectordb/examples/simple.rs:drop_table"
+    --8<-- "rust/lancedb/examples/simple.rs:drop_table"
     ```
 
 !!! note "Bundling `vectordb` apps with Webpack"
