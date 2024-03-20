@@ -43,7 +43,7 @@ def table(tmp_path) -> ldb.table.LanceTable:
         )
         for _ in range(100)
     ]
-    count = [random.randint(0, 10000) for _ in range(100)]
+    count = [random.randint(1, 10000) for _ in range(100)]
     table = db.create_table(
         "test",
         data=pd.DataFrame(
@@ -54,6 +54,7 @@ def table(tmp_path) -> ldb.table.LanceTable:
                 "text2": text,
                 "nested": [{"text": t} for t in text],
                 "count": count,
+                "count2": [10000 - c for c in count],
             }
         ),
     )
@@ -82,7 +83,7 @@ def test_search_index(tmp_path, table):
 
 
 def test_search_ordering_field_index_table(tmp_path, table):
-    table.create_fts_index("text", ordering_field_names="count")
+    table.create_fts_index("text", ordering_field_names=["count"])
     rows = (
         table.search("puppy", ordering_field_name="count")
         .limit(20)
