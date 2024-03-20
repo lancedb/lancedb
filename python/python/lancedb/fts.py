@@ -28,7 +28,9 @@ except ImportError:
 from .table import LanceTable
 
 
-def create_index(index_path: str, text_fields: List[str]) -> tantivy.Index:
+def create_index(
+    index_path: str, text_fields: List[str], ordering_fields: List[str] = None
+) -> tantivy.Index:
     """
     Create a new Index (not populated)
 
@@ -38,12 +40,16 @@ def create_index(index_path: str, text_fields: List[str]) -> tantivy.Index:
         Path to the index directory
     text_fields : List[str]
         List of text fields to index
+    ordering_fields: List[str]
+        List of unsigned type fields to order by at search time
 
     Returns
     -------
     index : tantivy.Index
         The index object (not yet populated)
     """
+    if ordering_fields is None:
+        ordering_fields = []
     # Declaring our schema.
     schema_builder = tantivy.SchemaBuilder()
     # special field that we'll populate with row_id
@@ -51,6 +57,9 @@ def create_index(index_path: str, text_fields: List[str]) -> tantivy.Index:
     # data fields
     for name in text_fields:
         schema_builder.add_text_field(name, stored=True)
+    if ordering_fields:
+        for name in ordering_fields:
+            schema_builder.add_unsigned_field(name, fast=True)
     schema = schema_builder.build()
     os.makedirs(index_path, exist_ok=True)
     index = tantivy.Index(schema, path=index_path)
@@ -62,6 +71,7 @@ def populate_index(
     table: LanceTable,
     fields: List[str],
     writer_heap_size: int = 1024 * 1024 * 1024,
+    ordering_fields: List[str] = None,
 ) -> int:
     """
     Populate an index with data from a LanceTable
@@ -82,8 +92,11 @@ def populate_index(
     int
         The number of rows indexed
     """
+    if ordering_fields is None:
+        ordering_fields = []
     # first check the fields exist and are string or large string type
     nested = []
+
     for name in fields:
         try:
             f = table.schema.field(name)  # raises KeyError if not found
@@ -104,7 +117,7 @@ def populate_index(
     if len(nested) > 0:
         max_nested_level = max([len(name.split(".")) for name in nested])
 
-    for b in dataset.to_batches(columns=fields):
+    for b in dataset.to_batches(columns=fields + ordering_fields):
         if max_nested_level > 0:
             b = pa.Table.from_batches([b])
             for _ in range(max_nested_level - 1):
@@ -115,6 +128,10 @@ def populate_index(
                 value = b[name][i].as_py()
                 if value is not None:
                     doc.add_text(name, value)
+            for name in ordering_fields:
+                value = b[name][i].as_py()
+                if value is not None:
+                    doc.add_unsigned(name, value)
             if not doc.is_empty:
                 doc.add_integer("doc_id", row_id)
                 writer.add_document(doc)
@@ -149,7 +166,7 @@ def resolve_path(schema, field_name: str) -> pa.Field:
 
 
 def search_index(
-    index: tantivy.Index, query: str, limit: int = 10
+    index: tantivy.Index, query: str, limit: int = 10, ordering_field=None
 ) -> Tuple[Tuple[int], Tuple[float]]:
     """
     Search an index for a query
@@ -172,7 +189,10 @@ def search_index(
     searcher = index.searcher()
     query = index.parse_query(query)
     # get top results
-    results = searcher.search(query, limit)
+    if ordering_field:
+        results = searcher.search(query, limit, order_by_field=ordering_field)
+    else:
+        results = searcher.search(query, limit)
     if results.count == 0:
         return tuple(), tuple()
     return tuple(
