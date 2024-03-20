@@ -551,9 +551,14 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             vector_column=self._vector_column,
             with_row_id=self._with_row_id,
         )
-        result_set = self._table._execute_query(query)
+        result_set = self._table._execute_query(query, batch_size)
         if self._reranker is not None:
-            result_set = self._reranker.rerank_vector(self._str_query, result_set)
+            rs_table = result_set.read_all()
+            result_set = self._reranker.rerank_vector(self._str_query, rs_table)
+            # convert result_set back to RecordBatchReader
+            result_set = pa.RecordBatchReader.from_batches(
+                result_set.schema, result_set.to_batches()
+            )
 
         return result_set
 
