@@ -286,3 +286,19 @@ def deprecated(func):
         return func(*args, **kwargs)
 
     return new_func
+
+
+def verify_table_name(name: str):
+    """Verify the table name is valid.
+    """
+    if not name:
+        raise ValueError("Table name cannot be empty")
+    if not isinstance(name, str):
+        raise ValueError("Table name must be a string")
+    if len(name) > 255:
+        raise ValueError("Table name cannot be longer than 255 characters")
+    if name[0].isdigit():
+        raise ValueError("Table name cannot start with a digit")
+    if not name.isalnum():
+        raise ValueError("Table name can only contain alphanumeric characters")
+    return True
