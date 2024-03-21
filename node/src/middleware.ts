@@ -22,7 +22,7 @@ export interface HttpMiddleware {
    * the request and return a response without making the request to the remote endpoint.
    * It can also be used to modify the response from the remote endpoint.
    *
-   * @param {RemoteResponse} res - Request ot the remote endpoint
+   * @param {RemoteResponse} res - Request to the remote endpoint
    * @param {onRemoteRequestNext} next - Callback to advance the middleware chain
    * @param {MiddlewareContext} ctx - Local context for ths invocation of the middleware
    */
