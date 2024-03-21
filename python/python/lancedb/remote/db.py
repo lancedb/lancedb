@@ -26,6 +26,7 @@ from ..db import DBConnection
 from ..embeddings import EmbeddingFunctionConfig
 from ..pydantic import LanceModel
 from ..table import Table, _sanitize_data
+from ..util import validate_table_name
 from .arrow import to_ipc_binary
 from .client import ARROW_STREAM_CONTENT_TYPE, RestfulLanceDBClient
 from .errors import LanceDBClientError
@@ -223,6 +224,7 @@ class RemoteDBConnection(DBConnection):
         LanceTable(table4)
 
         """
+        validate_table_name(name)
         if data is None and schema is None:
             raise ValueError("Either data or schema must be provided.")
         if embedding_functions is not None:

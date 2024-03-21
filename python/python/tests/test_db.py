@@ -521,3 +521,15 @@ def test_prefilter_with_index(tmp_path):
         .to_arrow()
     )
     assert table.num_rows == 1
+
+
+def test_create_table_with_invalid_names(tmp_path):
+    db = lancedb.connect(uri=tmp_path)
+    data = [{"vector": np.random.rand(128), "item": "foo"} for i in range(10)]
+    with pytest.raises(ValueError):
+        db.create_table("foo/bar", data)
+    with pytest.raises(ValueError):
+        db.create_table("foo bar", data)
+    with pytest.raises(ValueError):
+        db.create_table("foo$$bar", data)
+    db.create_table("foo.bar", data)

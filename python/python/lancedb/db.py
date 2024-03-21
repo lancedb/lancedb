@@ -31,7 +31,13 @@ from lancedb.utils.events import register_event
 from ._lancedb import connect as lancedb_connect
 from .pydantic import LanceModel
 from .table import AsyncTable, LanceTable, Table, _sanitize_data
-from .util import fs_from_uri, get_uri_location, get_uri_scheme, join_uri
+from .util import (
+    fs_from_uri,
+    get_uri_location,
+    get_uri_scheme,
+    join_uri,
+    validate_table_name,
+)
 
 if TYPE_CHECKING:
     from datetime import timedelta
@@ -387,6 +393,7 @@ class LanceDBConnection(DBConnection):
         """
         if mode.lower() not in ["create", "overwrite"]:
             raise ValueError("mode must be either 'create' or 'overwrite'")
+        validate_table_name(name)
 
         tbl = LanceTable.create(
             self,
