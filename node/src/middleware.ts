@@ -45,7 +45,7 @@ export interface RemoteRequest {
   method: Method
   headers: Record<string, string>
   params?: Record<string, string | number>
-  data?: any
+  body?: any
 }
 
 /**

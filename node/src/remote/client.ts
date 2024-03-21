@@ -43,7 +43,7 @@ async function callWithMiddlewares (
       if (req.method === Method.POST) {
         res = await axios.post(
           req.uri,
-          req.data,
+          req.body,
           {
             headers: { ...req.headers },
             params: req.params,
@@ -69,7 +69,7 @@ async function callWithMiddlewares (
     return await middlewares[i - 1].onRemoteRequest(
       req,
       async (req) => {
-        return await call(i + 1, req)
+        return await call(i, req)
       }
     )
   }

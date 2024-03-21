@@ -309,6 +309,8 @@ export interface Connection {
    *
    * The middleware will be called in the order they are added.
    *
+   *  Currently this functionality is only supported for remote Connections.
+   *
    * @param {HttpMiddleware} - Middleware which will instrument the Connection.
    * @returns - this Connection instrumented by the passed middleware
    */
@@ -557,6 +559,8 @@ export interface Table<T = number[]> {
    * Instrument the behavior of this Table with middleware.
    *
    * The middleware will be called in the order they are added.
+   *
+   * Currently this functionality is only supported for remote tables.
    *
    * @param {ConnectionMiddleware} - Middleware which will instrument the .
    * @returns - this Table instrumented by the passed middleware
