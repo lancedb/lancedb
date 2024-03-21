@@ -15,7 +15,7 @@ from lancedb.pydantic import LanceModel, Vector
 from lancedb.rerankers import CohereReranker
 
 embedder = get_registry().get("sentence-transformers").create()
-db = lancedb.LanceDB("~/.lancedb")
+db = lancedb.connect("~/.lancedb")
 
 class Schema(LanceModel):
     text: str = embedder.SourceField()
