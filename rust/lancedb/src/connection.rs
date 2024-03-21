@@ -684,7 +684,10 @@ impl Database {
         let mut uri = table_uri
             .as_path()
             .to_str()
-            .context(InvalidTableNameSnafu { name })?
+            .context(InvalidTableNameSnafu {
+                name,
+                reason: "Name is not valid URL",
+            })?
             .to_string();
 
         // If there are query string set on the connection, propagate to lance
