@@ -556,7 +556,7 @@ export interface Table<T = number[]> {
   /**
    * Instrument the behavior of this Table with middleware.
    *
-   * The middlewares callback implementations will be called in the order they are added.
+   * The middleware will be called in the order they are added.
    *
    * @param {ConnectionMiddleware} - Middleware which will instrument the .
    * @returns - this Table instrumented by the passed middleware
