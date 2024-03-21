@@ -1185,23 +1185,26 @@ impl NativeTable {
             let field = ds_ref.schema().field(&column).ok_or(Error::Schema {
                 message: format!("Column {} not found in dataset schema", column),
             })?;
-            if !matches!(field.data_type(), arrow_schema::DataType::FixedSizeList(f, dim) if f.data_type().is_floating() && dim == query_vector.len() as i32)
-            {
-                let schema_vec_dim =
-                    if let arrow_schema::DataType::FixedSizeList(_, dim) = field.data_type() {
-                        dim
-                    } else {
-                        unreachable!()
-                    };
-                return Err(Error::InvalidInput {
-                    message: format!(
-                        "The dimension of the query vector does not match with the dimension of the vector column '{}': 
-                            query dim={}, expected vector dim={}",
-                        column,
-                        query_vector.len(),
-                        schema_vec_dim,
-                    ),
-                });
+            if let arrow_schema::DataType::FixedSizeList(f, dim) = field.data_type() {
+                if !f.data_type().is_floating() {
+                    return Err(Error::InvalidInput {
+                        message: format!(
+                            "The data type of the vector column '{}' is not a floating point type",
+                            column
+                        ),
+                    });
+                }
+                if dim != query_vector.len() as i32 {
+                    return Err(Error::InvalidInput {
+                        message: format!(
+                            "The dimension of the query vector does not match with the dimension of the vector column '{}': 
+                                query dim={}, expected vector dim={}",
+                            column,
+                            query_vector.len(),
+                            dim,
+                        ),
+                    });
+                }
             }
             let query_vector = query_vector.as_primitive::<Float32Type>();
             scanner.nearest(
