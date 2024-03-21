@@ -22,6 +22,7 @@ chrono = { workspace = true }
 object_store = { workspace = true }
 snafu = { workspace = true }
 half = { workspace = true }
+lazy_static.workspace = true
 lance = { workspace = true }
 lance-index = { workspace = true }
 lance-linalg = { workspace = true }
@@ -34,11 +35,10 @@ bytes = "1"
 futures.workspace = true
 num-traits.workspace = true
 url.workspace = true
+regex.workspace = true
 serde = { version = "^1" }
 serde_json = { version = "1" }
-
 # For remote feature
-
 reqwest = { version = "0.11.24", features = ["gzip", "json"], optional = true }
 
 [dev-dependencies]
