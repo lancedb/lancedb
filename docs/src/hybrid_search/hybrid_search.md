@@ -5,6 +5,9 @@ LanceDB supports both semantic and keyword-based search (also termed full-text s
 ## Hybrid search in LanceDB
 You can perform hybrid search in LanceDB by combining the results of semantic and full-text search via a reranking algorithm of your choice. LanceDB provides multiple rerankers out of the box. However, you can always write a custom reranker if your use case need more sophisticated logic .
 
+!!! note
+    You need to create a full-text search index before performing a hybrid search. You can create a full-text search index using the `create_fts_index()` method of the table object.
+
 ```python
 import os
 
