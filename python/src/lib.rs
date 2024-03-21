@@ -42,6 +42,7 @@ pub fn _lancedb(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_class::<VectorQuery>()?;
     m.add_class::<RecordBatchStream>()?;
     m.add_function(wrap_pyfunction!(connect, m)?)?;
+    m.add_function(wrap_pyfunction!(util::validate_table_name, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }
