@@ -85,7 +85,7 @@ export class RemoteConnection implements Connection {
     limit: number = 10
   ): Promise<string[]> {
     const response = await this._client.get('/v1/table/', {
-      limit,
+      limit: `${limit}`,
       page_token: pageToken
     })
     const body = await response.body()

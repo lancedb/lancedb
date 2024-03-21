@@ -43,8 +43,8 @@ export enum Method {
 export interface RemoteRequest {
   uri: string
   method: Method
-  headers: Record<string, string>
-  params?: Record<string, string | number>
+  headers: Map<string, string>
+  params?: Map<string, string>
   body?: any
 }
 
@@ -54,6 +54,6 @@ export interface RemoteRequest {
 export interface RemoteResponse {
   status: number
   statusText: string
-  headers: Record<string, string>
+  headers: Map<string, string>
   body: () => Promise<any>
 }

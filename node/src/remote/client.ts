@@ -39,25 +39,28 @@ async function callWithMiddlewares (
   ): Promise<RemoteResponse> {
     // if we have reached the end of the middleware chain, make the request
     if (i > middlewares.length) {
+      const headers = Object.fromEntries(req.headers.entries())
+      const params = Object.fromEntries(req.params?.entries() ?? [])
+      const timeout = 10000
       let res
       if (req.method === Method.POST) {
         res = await axios.post(
           req.uri,
           req.body,
           {
-            headers: { ...req.headers },
-            params: req.params,
-            responseType: opts?.responseType,
-            timeout: 10000
+            headers,
+            params,
+            timeout,
+            responseType: opts?.responseType
           }
         )
       } else {
         res = await axios.get(
           req.uri,
           {
-            headers: { ...req.headers },
-            params: req.params,
-            timeout: 10000
+            headers,
+            params,
+            timeout
           }
         )
       }
@@ -85,9 +88,9 @@ interface MiddlewareInvocationOptions {
  * Marshall the library response into a LanceDB response
  */
 function toLanceRes (res: AxiosResponse): RemoteResponse {
-  const headers: Record<string, string> = {}
+  const headers = new Map()
   for (const h in res.headers) {
-    headers[h] = res.headers[h]
+    headers.set(h, res.headers[h])
   }
 
   return {
@@ -151,16 +154,16 @@ export class HttpLancedbClient {
   /**
    * Sent GET request.
    */
-  public async get (path: string, params?: Record<string, string | number>): Promise<RemoteResponse> {
+  public async get (path: string, params?: Record<string, string>): Promise<RemoteResponse> {
     const req = {
       uri: `${this._url}${path}`,
       method: Method.GET,
-      headers: {
+      headers: new Map(Object.entries({
         'Content-Type': 'application/json',
         'x-api-key': this._apiKey(),
         ...(this._dbName !== undefined ? { 'x-lancedb-database': this._dbName } : {})
-      },
-      params
+      })),
+      params: new Map(Object.entries(params ?? {}))
     }
 
     let response
@@ -193,19 +196,19 @@ export class HttpLancedbClient {
   public async post (
     path: string,
     data?: any,
-    params?: Record<string, string | number>,
+    params?: Record<string, string>,
     content?: string | undefined,
     responseType?: ResponseType | undefined
   ): Promise<RemoteResponse> {
     const req = {
       uri: `${this._url}${path}`,
       method: Method.POST,
-      headers: {
+      headers: new Map(Object.entries({
         'Content-Type': content ?? 'application/json',
         'x-api-key': this._apiKey(),
         ...(this._dbName !== undefined ? { 'x-lancedb-database': this._dbName } : {})
-      },
-      params,
+      })),
+      params: new Map(Object.entries(params ?? {})),
       body: data
     }
 
