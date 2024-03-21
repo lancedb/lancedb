@@ -103,6 +103,14 @@ nav:
       - Overview: hybrid_search/hybrid_search.md
       - Comparing Rerankers: hybrid_search/eval.md
       - Airbnb financial data example: notebooks/hybrid_search.ipynb
+    - Reranking:
+      - Quickstart: reranking/index.md
+      - Cohere Reranker: reranking/cohere.md
+      - Linear Combination Reranker: reranking/linear_combination.md
+      - Cross Encoder Reranker: reranking/cross_encoder.md
+      - ColBERT Reranker: reranking/colbert.md
+      - OpenAI Reranker: reranking/openai.md
+      - Building Custom Rerankers: reranking/custom_reranker.md
     - Filtering: sql.md
     - Versioning & Reproducibility: notebooks/reproducibility.ipynb
     - Configuring Storage: guides/storage.md
@@ -169,6 +177,14 @@ nav:
       - Overview: hybrid_search/hybrid_search.md
       - Comparing Rerankers: hybrid_search/eval.md
       - Airbnb financial data example: notebooks/hybrid_search.ipynb
+    - Reranking:
+      - Quickstart: reranking/index.md
+      - Cohere Reranker: reranking/cohere.md
+      - Linear Combination Reranker: reranking/linear_combination.md
+      - Cross Encoder Reranker: reranking/cross_encoder.md
+      - ColBERT Reranker: reranking/colbert.md
+      - OpenAI Reranker: reranking/openai.md
+      - Building Custom Rerankers: reranking/custom_reranker.md
     - Filtering: sql.md
     - Versioning & Reproducibility: notebooks/reproducibility.ipynb
     - Configuring Storage: guides/storage.md
