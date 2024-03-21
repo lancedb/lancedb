@@ -69,7 +69,7 @@ async function callWithMiddlewares (
     return await middlewares[i - 1].onRemoteRequest(
       req,
       async (req) => {
-        return await call(i, req)
+        return await call(i + 1, req)
       }
     )
   }
@@ -206,7 +206,7 @@ export class HttpLancedbClient {
         ...(this._dbName !== undefined ? { 'x-lancedb-database': this._dbName } : {})
       },
       params,
-      data
+      body: data
     }
 
     let response
