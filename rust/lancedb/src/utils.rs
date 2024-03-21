@@ -22,7 +22,7 @@ use lazy_static::lazy_static;
 use crate::error::{Error, Result};
 
 lazy_static! {
-    static ref TABLE_NAME_REGEX: regex::Regex = regex::Regex::new(r"^[a-zA-Z0-9_\.]+$").unwrap();
+    static ref TABLE_NAME_REGEX: regex::Regex = regex::Regex::new(r"^[a-zA-Z0-9_-\.]+$").unwrap();
 }
 
 pub trait PatchStoreParam {
@@ -87,11 +87,15 @@ pub fn validate_table_name(name: &str) -> Result<()> {
     if name.is_empty() {
         return Err(Error::InvalidTableName {
             name: name.to_string(),
+            reason: "Table names cannot be empty strings".to_string(),
         });
     }
     if !TABLE_NAME_REGEX.is_match(name) {
         return Err(Error::InvalidTableName {
             name: name.to_string(),
+            reason:
+                "Table names can only contain alphanumeric characters, underscores, hyphens, and periods"
+                    .to_string(),
         });
     }
     Ok(())
