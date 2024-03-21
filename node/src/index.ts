@@ -307,7 +307,7 @@ export interface Connection {
   /**
    * Instrument the behavior of this Connection with middleware.
    *
-   * The middlewares callback implementations will be called in the order they are added.
+   * The middleware will be called in the order they are added.
    *
    * @param {HttpMiddleware} - Middleware which will instrument the Connection.
    * @returns - this Connection instrumented by the passed middleware
