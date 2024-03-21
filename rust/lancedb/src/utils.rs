@@ -22,7 +22,7 @@ use lazy_static::lazy_static;
 use crate::error::{Error, Result};
 
 lazy_static! {
-    static ref TABLE_NAME_REGEX: regex::Regex = regex::Regex::new(r"^[a-zA-Z0-9_-\.]+$").unwrap();
+    static ref TABLE_NAME_REGEX: regex::Regex = regex::Regex::new(r"^[a-zA-Z0-9_\-\.]+$").unwrap();
 }
 
 pub trait PatchStoreParam {
