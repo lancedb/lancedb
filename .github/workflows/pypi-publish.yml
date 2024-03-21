@@ -3,16 +3,29 @@ name: PyPI Publish
 on:
   release:
     types: [published]
+  pull_request:
+    paths:
+      - .github/workflows/pypi-publish.yml
 
 jobs:
   linux:
+    name: Python ${{ matrix.config.platform }} manylinux${{ matrix.config.manylinux }}
     timeout-minutes: 60
     strategy:
       matrix:
         python-minor-version: ["8"]
-        platform:
-          - x86_64
-          - aarch64
+        config:
+          - platform: x86_64
+            manylinux: "2_17"
+            extra_args: ""
+          - platform: x86_64
+            manylinux: "2_28"
+            extra_args: "--features fp16kernels"
+          - platform: aarch64
+            manylinux: "2_24"
+            extra_args: ""
+          # We don't build fp16 kernels for aarch64, because it uses 
+          # cross compilation image, which doesn't have a new enough compiler.
     runs-on: "ubuntu-22.04"
     steps:
       - uses: actions/checkout@v4
@@ -26,12 +39,13 @@ jobs:
       - uses: ./.github/workflows/build_linux_wheel
         with:
           python-minor-version: ${{ matrix.python-minor-version }}
-          args: "--release --strip"
-          arm-build: ${{ matrix.platform == 'aarch64' }}
-      - uses: ./.github/workflows/upload_wheel
-        with:
-          token: ${{ secrets.LANCEDB_PYPI_API_TOKEN }}
-          repo: "pypi"
+          args: "--release --strip ${{ matrix.config.extra_args }}"
+          arm-build: ${{ matrix.config.platform == 'aarch64' }}
+          manylinux: ${{ matrix.config.manylinux }}
+      # - uses: ./.github/workflows/upload_wheel
+      #   with:
+      #     token: ${{ secrets.LANCEDB_PYPI_API_TOKEN }}
+      #     repo: "pypi"
   mac:
     timeout-minutes: 60
     runs-on: ${{ matrix.config.runner }}
@@ -58,12 +72,12 @@ jobs:
       - uses: ./.github/workflows/build_mac_wheel
         with:
           python-minor-version: ${{ matrix.python-minor-version }}
-          args: "--release --strip --target ${{ matrix.config.target }}"
-      - uses: ./.github/workflows/upload_wheel
-        with:
-          python-minor-version: ${{ matrix.python-minor-version }}
-          token: ${{ secrets.LANCEDB_PYPI_API_TOKEN }}
-          repo: "pypi"
+          args: "--release --strip --target ${{ matrix.config.target }} --features fp16kernels"
+      # - uses: ./.github/workflows/upload_wheel
+      #   with:
+      #     python-minor-version: ${{ matrix.python-minor-version }}
+      #     token: ${{ secrets.LANCEDB_PYPI_API_TOKEN }}
+      #     repo: "pypi"
   windows:
     timeout-minutes: 60
     runs-on: windows-latest
@@ -85,8 +99,8 @@ jobs:
           python-minor-version: ${{ matrix.python-minor-version }}
           args: "--release --strip"
           vcpkg_token: ${{ secrets.VCPKG_GITHUB_PACKAGES }}
-      - uses: ./.github/workflows/upload_wheel
-        with:
-          python-minor-version: ${{ matrix.python-minor-version }}
-          token: ${{ secrets.LANCEDB_PYPI_API_TOKEN }}
-          repo: "pypi"
+      # - uses: ./.github/workflows/upload_wheel
+      #   with:
+      #     python-minor-version: ${{ matrix.python-minor-version }}
+      #     token: ${{ secrets.LANCEDB_PYPI_API_TOKEN }}
+      #     repo: "pypi"
