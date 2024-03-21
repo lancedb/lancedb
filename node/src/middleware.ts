@@ -24,7 +24,7 @@ export interface HttpMiddleware {
    *
    * @param {RemoteResponse} res - Request to the remote endpoint
    * @param {onRemoteRequestNext} next - Callback to advance the middleware chain
-   * @param {MiddlewareContext} ctx - Local context for ths invocation of the middleware
+   * @param {MiddlewareContext} ctx - Local context for this invocation of the middleware
    */
   onRemoteRequest(
     req: RemoteRequest,
