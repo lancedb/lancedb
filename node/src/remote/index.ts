@@ -39,12 +39,13 @@ import {
   fromTableToStreamBuffer
 } from '../arrow'
 import { toSQL } from '../util'
+import { type HttpMiddleware } from '../middleware'
 
 /**
  * Remote connection.
  */
 export class RemoteConnection implements Connection {
-  private readonly _client: HttpLancedbClient
+  private _client: HttpLancedbClient
   private readonly _dbName: string
 
   constructor (opts: ConnectionOptions) {
@@ -84,10 +85,11 @@ export class RemoteConnection implements Connection {
     limit: number = 10
   ): Promise<string[]> {
     const response = await this._client.get('/v1/table/', {
-      limit,
+      limit: `${limit}`,
       page_token: pageToken
     })
-    return response.data.tables
+    const body = await response.body()
+    return body.tables
   }
 
   async openTable (name: string): Promise<Table>
@@ -163,7 +165,7 @@ export class RemoteConnection implements Connection {
       throw new Error(
         `Server Error, status: ${res.status}, ` +
           // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
-          `message: ${res.statusText}: ${res.data}`
+          `message: ${res.statusText}: ${await res.body()}`
       )
     }
 
@@ -176,6 +178,17 @@ export class RemoteConnection implements Connection {
 
   async dropTable (name: string): Promise<void> {
     await this._client.post(`/v1/table/${name}/drop/`)
+  }
+
+  withMiddleware (middleware: HttpMiddleware): Connection {
+    const wrapped = this.clone()
+    wrapped._client = wrapped._client.withMiddleware(middleware)
+    return wrapped
+  }
+
+  private clone (): RemoteConnection {
+    const clone: RemoteConnection = Object.create(RemoteConnection.prototype)
+    return Object.assign(clone, this)
   }
 }
 
@@ -229,7 +242,7 @@ export class RemoteQuery<T = number[]> extends Query<T> {
 // we are using extend until we have next next version release
 // Table and Connection has both been refactored to interfaces
 export class RemoteTable<T = number[]> implements Table<T> {
-  private readonly _client: HttpLancedbClient
+  private _client: HttpLancedbClient
   private readonly _embeddings?: EmbeddingFunction<T>
   private readonly _name: string
 
@@ -256,15 +269,15 @@ export class RemoteTable<T = number[]> implements Table<T> {
   get schema (): Promise<any> {
     return this._client
       .post(`/v1/table/${this._name}/describe/`)
-      .then((res) => {
+      .then(async (res) => {
         if (res.status !== 200) {
           throw new Error(
             `Server Error, status: ${res.status}, ` +
               // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
-              `message: ${res.statusText}: ${res.data}`
+              `message: ${res.statusText}: ${await res.body()}`
           )
         }
-        return res.data?.schema
+        return (await res.body())?.schema
       })
   }
 
@@ -320,7 +333,7 @@ export class RemoteTable<T = number[]> implements Table<T> {
       throw new Error(
         `Server Error, status: ${res.status}, ` +
           // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
-          `message: ${res.statusText}: ${res.data}`
+          `message: ${res.statusText}: ${await res.body()}`
       )
     }
   }
@@ -346,7 +359,7 @@ export class RemoteTable<T = number[]> implements Table<T> {
       throw new Error(
         `Server Error, status: ${res.status}, ` +
           // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
-          `message: ${res.statusText}: ${res.data}`
+          `message: ${res.statusText}: ${await res.body()}`
       )
     }
     return tbl.numRows
@@ -372,7 +385,7 @@ export class RemoteTable<T = number[]> implements Table<T> {
       throw new Error(
         `Server Error, status: ${res.status}, ` +
           // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
-          `message: ${res.statusText}: ${res.data}`
+          `message: ${res.statusText}: ${await res.body()}`
       )
     }
     return tbl.numRows
@@ -415,7 +428,7 @@ export class RemoteTable<T = number[]> implements Table<T> {
       throw new Error(
         `Server Error, status: ${res.status}, ` +
           // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
-          `message: ${res.statusText}: ${res.data}`
+          `message: ${res.statusText}: ${await res.body()}`
       )
     }
   }
@@ -436,14 +449,14 @@ export class RemoteTable<T = number[]> implements Table<T> {
       throw new Error(
         `Server Error, status: ${res.status}, ` +
           // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
-          `message: ${res.statusText}: ${res.data}`
+          `message: ${res.statusText}: ${await res.body()}`
       )
     }
   }
 
   async countRows (): Promise<number> {
     const result = await this._client.post(`/v1/table/${this._name}/describe/`)
-    return result.data?.stats?.num_rows
+    return (await result.body())?.stats?.num_rows
   }
 
   async delete (filter: string): Promise<void> {
@@ -476,7 +489,7 @@ export class RemoteTable<T = number[]> implements Table<T> {
     const results = await this._client.post(
       `/v1/table/${this._name}/index/list/`
     )
-    return results.data.indexes?.map((index: any) => ({
+    return (await results.body()).indexes?.map((index: any) => ({
       columns: index.columns,
       name: index.index_name,
       uuid: index.index_uuid
@@ -487,9 +500,10 @@ export class RemoteTable<T = number[]> implements Table<T> {
     const results = await this._client.post(
       `/v1/table/${this._name}/index/${indexUuid}/stats/`
     )
+    const body = await results.body()
     return {
-      numIndexedRows: results.data.num_indexed_rows,
-      numUnindexedRows: results.data.num_unindexed_rows
+      numIndexedRows: body?.num_indexed_rows,
+      numUnindexedRows: body?.num_unindexed_rows
     }
   }
 
@@ -503,5 +517,16 @@ export class RemoteTable<T = number[]> implements Table<T> {
 
   async dropColumns (columnNames: string[]): Promise<void> {
     throw new Error('Drop columns is not yet supported in LanceDB Cloud.')
+  }
+
+  withMiddleware(middleware: HttpMiddleware): Table<T> {
+    const wrapped = this.clone()
+    wrapped._client = wrapped._client.withMiddleware(middleware)
+    return wrapped
+  }
+
+  private clone (): RemoteTable<T> {
+    const clone: RemoteTable<T> = Object.create(RemoteTable.prototype)
+    return Object.assign(clone, this)
   }
 }
