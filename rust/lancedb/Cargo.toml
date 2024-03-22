@@ -50,3 +50,4 @@ walkdir = "2"
 [features]
 default = ["remote"]
 remote = ["dep:reqwest"]
+fp16kernels = ["lance-linalg/fp16kernels"]
