@@ -118,7 +118,7 @@ class Reranker(ABC):
             The results from the vector search
         fts_results : pa.Table
             The results from the FTS search
-        
+
         Returns
         -------
         pa.Table
