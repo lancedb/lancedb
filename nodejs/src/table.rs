@@ -23,7 +23,7 @@ use napi_derive::napi;
 
 use crate::error::NapiErrorExt;
 use crate::index::Index;
-use crate::query::Query;
+use crate::query::{Query, VectorQuery};
 
 #[napi]
 pub struct Table {
@@ -89,7 +89,7 @@ impl Table {
     pub async fn add(&self, buf: Buffer, mode: String) -> napi::Result<()> {
         let batches = ipc_file_to_batches(buf.to_vec())
             .map_err(|e| napi::Error::from_reason(format!("Failed to read IPC file: {}", e)))?;
-        let mut op = self.inner_ref()?.add(Box::new(batches));
+        let mut op = self.inner_ref()?.add(batches);
 
         op = if mode == "append" {
             op.mode(AddDataMode::Append)
@@ -169,6 +169,11 @@ impl Table {
     #[napi]
     pub fn query(&self) -> napi::Result<Query> {
         Ok(Query::new(self.inner_ref()?.query()))
+    }
+
+    #[napi]
+    pub fn vector_search(&self, vector: Float32Array) -> napi::Result<VectorQuery> {
+        self.query()?.nearest_to(vector)
     }
 
     #[napi]

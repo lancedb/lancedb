@@ -1,11 +1,29 @@
+// Copyright 2024 LanceDB Developers.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 use std::sync::Arc;
 
 use arrow_schema::Schema;
-
 use lance::dataset::{ReadParams, WriteParams};
 use lance::io::{ObjectStoreParams, WrappingObjectStore};
+use lazy_static::lazy_static;
 
 use crate::error::{Error, Result};
+
+lazy_static! {
+    static ref TABLE_NAME_REGEX: regex::Regex = regex::Regex::new(r"^[a-zA-Z0-9_\-\.]+$").unwrap();
+}
 
 pub trait PatchStoreParam {
     fn patch_with_store_wrapper(
@@ -62,6 +80,25 @@ impl PatchReadParam for ReadParams {
         self.store_options = self.store_options.patch_with_store_wrapper(wrapper)?;
         Ok(self)
     }
+}
+
+/// Validate table name.
+pub fn validate_table_name(name: &str) -> Result<()> {
+    if name.is_empty() {
+        return Err(Error::InvalidTableName {
+            name: name.to_string(),
+            reason: "Table names cannot be empty strings".to_string(),
+        });
+    }
+    if !TABLE_NAME_REGEX.is_match(name) {
+        return Err(Error::InvalidTableName {
+            name: name.to_string(),
+            reason:
+                "Table names can only contain alphanumeric characters, underscores, hyphens, and periods"
+                    .to_string(),
+        });
+    }
+    Ok(())
 }
 
 /// Find one default column to create index.
@@ -144,5 +181,21 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("More than one"));
+    }
+
+    #[test]
+    fn test_validate_table_name() {
+        assert!(validate_table_name("my_table").is_ok());
+        assert!(validate_table_name("my_table_1").is_ok());
+        assert!(validate_table_name("123mytable").is_ok());
+        assert!(validate_table_name("_12345table").is_ok());
+        assert!(validate_table_name("table.12345").is_ok());
+        assert!(validate_table_name("table.._dot_..12345").is_ok());
+
+        assert!(validate_table_name("").is_err());
+        assert!(validate_table_name("my_table!").is_err());
+        assert!(validate_table_name("my/table").is_err());
+        assert!(validate_table_name("my@table").is_err());
+        assert!(validate_table_name("name with space").is_err());
     }
 }

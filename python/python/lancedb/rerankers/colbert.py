@@ -33,14 +33,8 @@ class ColbertReranker(Reranker):
             "torch"
         )  # import here for faster ops later
 
-    def rerank_hybrid(
-        self,
-        query: str,
-        vector_results: pa.Table,
-        fts_results: pa.Table,
-    ):
-        combined_results = self.merge_results(vector_results, fts_results)
-        docs = combined_results[self.column].to_pylist()
+    def _rerank(self, result_set: pa.Table, query: str):
+        docs = result_set[self.column].to_pylist()
 
         tokenizer, model = self._model
 
@@ -59,14 +53,25 @@ class ColbertReranker(Reranker):
             scores.append(score.item())
 
         # replace the self.column column with the docs
-        combined_results = combined_results.drop(self.column)
-        combined_results = combined_results.append_column(
+        result_set = result_set.drop(self.column)
+        result_set = result_set.append_column(
             self.column, pa.array(docs, type=pa.string())
         )
         # add the scores
-        combined_results = combined_results.append_column(
+        result_set = result_set.append_column(
             "_relevance_score", pa.array(scores, type=pa.float32())
         )
+
+        return result_set
+
+    def rerank_hybrid(
+        self,
+        query: str,
+        vector_results: pa.Table,
+        fts_results: pa.Table,
+    ):
+        combined_results = self.merge_results(vector_results, fts_results)
+        combined_results = self._rerank(combined_results, query)
         if self.score == "relevance":
             combined_results = combined_results.drop_columns(["score", "_distance"])
         elif self.score == "all":
@@ -79,6 +84,32 @@ class ColbertReranker(Reranker):
         )
 
         return combined_results
+
+    def rerank_vector(
+        self,
+        query: str,
+        vector_results: pa.Table,
+    ):
+        result_set = self._rerank(vector_results, query)
+        if self.score == "relevance":
+            result_set = result_set.drop_columns(["_distance"])
+
+        result_set = result_set.sort_by([("_relevance_score", "descending")])
+
+        return result_set
+
+    def rerank_fts(
+        self,
+        query: str,
+        fts_results: pa.Table,
+    ):
+        result_set = self._rerank(fts_results, query)
+        if self.score == "relevance":
+            result_set = result_set.drop_columns(["score"])
+
+        result_set = result_set.sort_by([("_relevance_score", "descending")])
+
+        return result_set
 
     @cached_property
     def _model(self):

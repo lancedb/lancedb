@@ -14,6 +14,7 @@ use pyo3_asyncio::tokio::future_into_py;
 use crate::{
     error::PythonErrorExt,
     index::{Index, IndexConfig},
+    query::Query,
 };
 
 #[pyclass]
@@ -63,7 +64,7 @@ impl Table {
     }
 
     pub fn add<'a>(self_: PyRef<'a, Self>, data: &PyAny, mode: String) -> PyResult<&'a PyAny> {
-        let batches = Box::new(ArrowArrayStreamReader::from_pyarrow(data)?);
+        let batches = ArrowArrayStreamReader::from_pyarrow(data)?;
         let mut op = self_.inner_ref()?.add(batches);
         if mode == "append" {
             op = op.mode(AddDataMode::Append);
@@ -178,5 +179,9 @@ impl Table {
             self_.py(),
             async move { inner.restore().await.infer_error() },
         )
+    }
+
+    pub fn query(&self) -> Query {
+        Query::new(self.inner_ref().unwrap().query())
     }
 }

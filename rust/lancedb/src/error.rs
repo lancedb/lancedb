@@ -20,8 +20,8 @@ use snafu::Snafu;
 #[derive(Debug, Snafu)]
 #[snafu(visibility(pub(crate)))]
 pub enum Error {
-    #[snafu(display("Invalid table name: {name}"))]
-    InvalidTableName { name: String },
+    #[snafu(display("Invalid table name (\"{name}\"): {reason}"))]
+    InvalidTableName { name: String, reason: String },
     #[snafu(display("Invalid input, {message}"))]
     InvalidInput { message: String },
     #[snafu(display("Table '{name}' was not found"))]

@@ -17,8 +17,9 @@ use std::sync::Mutex;
 use lancedb::index::scalar::BTreeIndexBuilder;
 use lancedb::index::vector::IvfPqIndexBuilder;
 use lancedb::index::Index as LanceDbIndex;
-use lancedb::DistanceType;
 use napi_derive::napi;
+
+use crate::util::parse_distance_type;
 
 #[napi]
 pub struct Index {
@@ -49,15 +50,7 @@ impl Index {
     ) -> napi::Result<Self> {
         let mut ivf_pq_builder = IvfPqIndexBuilder::default();
         if let Some(distance_type) = distance_type {
-            let distance_type = match distance_type.as_str() {
-                "l2" => Ok(DistanceType::L2),
-                "cosine" => Ok(DistanceType::Cosine),
-                "dot" => Ok(DistanceType::Dot),
-                _ => Err(napi::Error::from_reason(format!(
-                    "Invalid distance type '{}'.  Must be one of l2, cosine, or dot",
-                    distance_type
-                ))),
-            }?;
+            let distance_type = parse_distance_type(distance_type)?;
             ivf_pq_builder = ivf_pq_builder.distance_type(distance_type);
         }
         if let Some(num_partitions) = num_partitions {

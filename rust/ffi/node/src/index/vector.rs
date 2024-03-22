@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use lance_linalg::distance::MetricType;
 use lancedb::index::vector::IvfPqIndexBuilder;
 use lancedb::index::Index;
+use lancedb::DistanceType;
 use neon::context::FunctionContext;
 use neon::prelude::*;
 use std::convert::TryFrom;
@@ -72,8 +72,8 @@ fn get_index_params_builder(
     }
     let mut builder = IvfPqIndexBuilder::default();
     if let Some(metric_type) = obj.get_opt::<JsString, _, _>(cx, "metric_type")? {
-        let metric_type = MetricType::try_from(metric_type.value(cx).as_str())?;
-        builder = builder.distance_type(metric_type);
+        let distance_type = DistanceType::try_from(metric_type.value(cx).as_str())?;
+        builder = builder.distance_type(distance_type);
     }
     if let Some(np) = obj.get_opt_u32(cx, "num_partitions")? {
         builder = builder.num_partitions(np);

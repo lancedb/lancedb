@@ -43,6 +43,7 @@ def table(tmp_path) -> ldb.table.LanceTable:
         )
         for _ in range(100)
     ]
+    count = [random.randint(1, 10000) for _ in range(100)]
     table = db.create_table(
         "test",
         data=pd.DataFrame(
@@ -52,6 +53,7 @@ def table(tmp_path) -> ldb.table.LanceTable:
                 "text": text,
                 "text2": text,
                 "nested": [{"text": t} for t in text],
+                "count": count,
             }
         ),
     )
@@ -79,6 +81,39 @@ def test_search_index(tmp_path, table):
     assert len(results[1]) == 10  # _distance
 
 
+def test_search_ordering_field_index_table(tmp_path, table):
+    table.create_fts_index("text", ordering_field_names=["count"])
+    rows = (
+        table.search("puppy", ordering_field_name="count")
+        .limit(20)
+        .select(["text", "count"])
+        .to_list()
+    )
+    for r in rows:
+        assert "puppy" in r["text"]
+    assert sorted(rows, key=lambda x: x["count"], reverse=True) == rows
+
+
+def test_search_ordering_field_index(tmp_path, table):
+    index = ldb.fts.create_index(
+        str(tmp_path / "index"), ["text"], ordering_fields=["count"]
+    )
+
+    ldb.fts.populate_index(index, table, ["text"], ordering_fields=["count"])
+    index.reload()
+    results = ldb.fts.search_index(
+        index, query="puppy", limit=10, ordering_field="count"
+    )
+    assert len(results) == 2
+    assert len(results[0]) == 10  # row_ids
+    assert len(results[1]) == 10  # _distance
+    rows = table.to_lance().take(results[0]).to_pylist()
+
+    for r in rows:
+        assert "puppy" in r["text"]
+    assert sorted(rows, key=lambda x: x["count"], reverse=True) == rows
+
+
 def test_create_index_from_table(tmp_path, table):
     table.create_fts_index("text")
     df = table.search("puppy").limit(10).select(["text"]).to_pandas()
@@ -94,6 +129,7 @@ def test_create_index_from_table(tmp_path, table):
                 "text": "gorilla",
                 "text2": "gorilla",
                 "nested": {"text": "gorilla"},
+                "count": 10,
             }
         ]
     )
@@ -166,6 +202,7 @@ def test_null_input(table):
                 "text": None,
                 "text2": None,
                 "nested": {"text": None},
+                "count": 7,
             }
         ]
     )

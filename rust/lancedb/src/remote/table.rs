@@ -4,9 +4,10 @@ use async_trait::async_trait;
 use lance::dataset::{scanner::DatasetRecordBatchStream, ColumnAlteration, NewColumnTransform};
 
 use crate::{
+    connection::NoData,
     error::Result,
     index::{IndexBuilder, IndexConfig},
-    query::Query,
+    query::{Query, QueryExecutionOptions, VectorQuery},
     table::{
         merge::MergeInsertBuilder, AddDataBuilder, NativeTable, OptimizeAction, OptimizeStats,
         TableInternal, UpdateBuilder,
@@ -63,10 +64,25 @@ impl TableInternal for RemoteTable {
     async fn count_rows(&self, _filter: Option<String>) -> Result<usize> {
         todo!()
     }
-    async fn add(&self, _add: AddDataBuilder) -> Result<()> {
+    async fn add(
+        &self,
+        _add: AddDataBuilder<NoData>,
+        _data: Box<dyn RecordBatchReader + Send>,
+    ) -> Result<()> {
         todo!()
     }
-    async fn query(&self, _query: &Query) -> Result<DatasetRecordBatchStream> {
+    async fn plain_query(
+        &self,
+        _query: &Query,
+        _options: QueryExecutionOptions,
+    ) -> Result<DatasetRecordBatchStream> {
+        todo!()
+    }
+    async fn vector_query(
+        &self,
+        _query: &VectorQuery,
+        _options: QueryExecutionOptions,
+    ) -> Result<DatasetRecordBatchStream> {
         todo!()
     }
     async fn update(&self, _update: UpdateBuilder) -> Result<()> {

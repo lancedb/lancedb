@@ -1,6 +1,10 @@
 use std::sync::Mutex;
 
-use pyo3::{exceptions::PyRuntimeError, PyResult};
+use lancedb::DistanceType;
+use pyo3::{
+    exceptions::{PyRuntimeError, PyValueError},
+    pyfunction, PyResult,
+};
 
 /// A wrapper around a rust builder
 ///
@@ -32,4 +36,22 @@ impl<T> BuilderWrapper<T> {
         let result = mod_fn(inner_builder);
         Ok(result)
     }
+}
+
+pub fn parse_distance_type(distance_type: impl AsRef<str>) -> PyResult<DistanceType> {
+    match distance_type.as_ref().to_lowercase().as_str() {
+        "l2" => Ok(DistanceType::L2),
+        "cosine" => Ok(DistanceType::Cosine),
+        "dot" => Ok(DistanceType::Dot),
+        _ => Err(PyValueError::new_err(format!(
+            "Invalid distance type '{}'.  Must be one of l2, cosine, or dot",
+            distance_type.as_ref()
+        ))),
+    }
+}
+
+#[pyfunction]
+pub(crate) fn validate_table_name(table_name: &str) -> PyResult<()> {
+    lancedb::utils::validate_table_name(table_name)
+        .map_err(|e| PyValueError::new_err(e.to_string()))
 }

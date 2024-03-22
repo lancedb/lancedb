@@ -36,8 +36,6 @@
 //!
 //! ### Quick Start
 //!
-//! <div class="warning">Rust API is not stable yet, please expect breaking changes.</div>
-//!
 //! #### Connect to a database.
 //!
 //! ```rust
@@ -150,6 +148,7 @@
 //! # use arrow_schema::{DataType, Schema, Field};
 //! # use arrow_array::{RecordBatch, RecordBatchIterator};
 //! # use arrow_array::{FixedSizeListArray, Float32Array, Int32Array, types::Float32Type};
+//! # use lancedb::query::{ExecutableQuery, QueryBase};
 //! # tokio::runtime::Runtime::new().unwrap().block_on(async {
 //! # let tmpdir = tempfile::tempdir().unwrap();
 //! # let db = lancedb::connect(tmpdir.path().to_str().unwrap()).execute().await.unwrap();
@@ -170,8 +169,10 @@
 //! # db.create_table("my_table", Box::new(batches)).execute().await.unwrap();
 //! # let table = db.open_table("my_table").execute().await.unwrap();
 //! let results = table
-//!     .search(&[1.0; 128])
-//!     .execute_stream()
+//!     .query()
+//!     .nearest_to(&[1.0; 128])
+//!     .unwrap()
+//!     .execute()
 //!     .await
 //!     .unwrap()
 //!     .try_collect::<Vec<_>>()
@@ -193,9 +194,72 @@ pub(crate) mod remote;
 pub mod table;
 pub mod utils;
 
+use std::fmt::Display;
+
+use serde::{Deserialize, Serialize};
+
+pub use connection::Connection;
 pub use error::{Error, Result};
-pub use lance_linalg::distance::DistanceType;
+use lance_linalg::distance::DistanceType as LanceDistanceType;
 pub use table::Table;
+
+#[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum DistanceType {
+    /// Euclidean distance. This is a very common distance metric that
+    /// accounts for both magnitude and direction when determining the distance
+    /// between vectors. L2 distance has a range of [0, ∞).
+    L2,
+    /// Cosine distance.  Cosine distance is a distance metric
+    /// calculated from the cosine similarity between two vectors. Cosine
+    /// similarity is a measure of similarity between two non-zero vectors of an
+    /// inner product space. It is defined to equal the cosine of the angle
+    /// between them.  Unlike L2, the cosine distance is not affected by the
+    /// magnitude of the vectors.  Cosine distance has a range of [0, 2].
+    ///
+    /// Note: the cosine distance is undefined when one (or both) of the vectors
+    /// are all zeros (there is no direction).  These vectors are invalid and may
+    /// never be returned from a vector search.
+    Cosine,
+    /// Dot product. Dot distance is the dot product of two vectors. Dot
+    /// distance has a range of (-∞, ∞). If the vectors are normalized (i.e. their
+    /// L2 norm is 1), then dot distance is equivalent to the cosine distance.
+    Dot,
+}
+
+impl From<DistanceType> for LanceDistanceType {
+    fn from(value: DistanceType) -> Self {
+        match value {
+            DistanceType::L2 => Self::L2,
+            DistanceType::Cosine => Self::Cosine,
+            DistanceType::Dot => Self::Dot,
+        }
+    }
+}
+
+impl From<LanceDistanceType> for DistanceType {
+    fn from(value: LanceDistanceType) -> Self {
+        match value {
+            LanceDistanceType::L2 => Self::L2,
+            LanceDistanceType::Cosine => Self::Cosine,
+            LanceDistanceType::Dot => Self::Dot,
+        }
+    }
+}
+
+impl<'a> TryFrom<&'a str> for DistanceType {
+    type Error = <LanceDistanceType as TryFrom<&'a str>>::Error;
+
+    fn try_from(value: &str) -> std::prelude::v1::Result<Self, Self::Error> {
+        LanceDistanceType::try_from(value).map(Self::from)
+    }
+}
+
+impl Display for DistanceType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        LanceDistanceType::from(*self).fmt(f)
+    }
+}
 
 /// Connect to a database
 pub use connection::connect;
