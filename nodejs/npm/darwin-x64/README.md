@@ -1,3 +1,3 @@
-# `lancedb-darwin-x64`
+# `@lancedb/lancedb-darwin-x64`
 
-This is the **x86_64-apple-darwin** binary for `lancedb`
+This is the **x86_64-apple-darwin** binary for `@lancedb/lancedb`
