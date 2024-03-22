@@ -3,9 +3,6 @@ name: PyPI Publish
 on:
   release:
     types: [published]
-  pull_request:
-    paths:
-      - .github/workflows/pypi-publish.yml
 
 jobs:
   linux:
@@ -42,10 +39,10 @@ jobs:
           args: "--release --strip ${{ matrix.config.extra_args }}"
           arm-build: ${{ matrix.config.platform == 'aarch64' }}
           manylinux: ${{ matrix.config.manylinux }}
-      # - uses: ./.github/workflows/upload_wheel
-      #   with:
-      #     token: ${{ secrets.LANCEDB_PYPI_API_TOKEN }}
-      #     repo: "pypi"
+      - uses: ./.github/workflows/upload_wheel
+        with:
+          token: ${{ secrets.LANCEDB_PYPI_API_TOKEN }}
+          repo: "pypi"
   mac:
     timeout-minutes: 60
     runs-on: ${{ matrix.config.runner }}
@@ -73,11 +70,11 @@ jobs:
         with:
           python-minor-version: ${{ matrix.python-minor-version }}
           args: "--release --strip --target ${{ matrix.config.target }} --features fp16kernels"
-      # - uses: ./.github/workflows/upload_wheel
-      #   with:
-      #     python-minor-version: ${{ matrix.python-minor-version }}
-      #     token: ${{ secrets.LANCEDB_PYPI_API_TOKEN }}
-      #     repo: "pypi"
+      - uses: ./.github/workflows/upload_wheel
+        with:
+          python-minor-version: ${{ matrix.python-minor-version }}
+          token: ${{ secrets.LANCEDB_PYPI_API_TOKEN }}
+          repo: "pypi"
   windows:
     timeout-minutes: 60
     runs-on: windows-latest
@@ -99,8 +96,8 @@ jobs:
           python-minor-version: ${{ matrix.python-minor-version }}
           args: "--release --strip"
           vcpkg_token: ${{ secrets.VCPKG_GITHUB_PACKAGES }}
-      # - uses: ./.github/workflows/upload_wheel
-      #   with:
-      #     python-minor-version: ${{ matrix.python-minor-version }}
-      #     token: ${{ secrets.LANCEDB_PYPI_API_TOKEN }}
-      #     repo: "pypi"
+      - uses: ./.github/workflows/upload_wheel
+        with:
+          python-minor-version: ${{ matrix.python-minor-version }}
+          token: ${{ secrets.LANCEDB_PYPI_API_TOKEN }}
+          repo: "pypi"
