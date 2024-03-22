@@ -118,6 +118,11 @@ class Reranker(ABC):
             The results from the vector search
         fts_results : pa.Table
             The results from the FTS search
+        
+        Returns
+        -------
+        pa.Table
+            The merged results
         """
         combined = pa.concat_tables([vector_results, fts_results], promote=True)
         row_id = combined.column("_rowid")
