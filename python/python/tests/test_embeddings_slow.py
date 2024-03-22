@@ -43,11 +43,13 @@ try:
 except Exception:
     _imagebind = None
 
+
 def _invoke_func(embedding_func: str) -> None:
     """
     Helper function to register newly added embedding functions
     """
     from lancedb.util import attempt_import_or_raise
+
     attempt_import_or_raise("lancedb.embeddings." + embedding_func)
 
 
