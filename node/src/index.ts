@@ -562,7 +562,7 @@ export interface Table<T = number[]> {
    *
    * Currently this functionality is only supported for remote tables.
    *
-   * @param {ConnectionMiddleware} - Middleware which will instrument the .
+   * @param {HttpMiddleware} - Middleware which will instrument the Table.
    * @returns - this Table instrumented by the passed middleware
    */
   withMiddleware(middleware: HttpMiddleware): Table<T>
