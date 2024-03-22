@@ -14,18 +14,18 @@ import importlib
 import io
 import os
 
-import lancedb
 import numpy as np
 import pandas as pd
 import pytest
 import requests
+
+import lancedb
 from lancedb.embeddings import get_registry
 from lancedb.pydantic import LanceModel, Vector
 
 # These are integration tests for embedding functions.
 # They are slow because they require downloading models
 # or connection to external api
-
 
 try:
     if importlib.util.find_spec("mlx.core") is not None:
@@ -45,8 +45,11 @@ except Exception:
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize("alias", ["sentence-transformers", "openai"])
+@pytest.mark.parametrize("alias", ["sentence-transformers", "openai", "colbert"])
 def test_basic_text_embeddings(alias, tmp_path):
+    if alias == "colbert":
+        from lancedb.embeddings import colbert
+
     db = lancedb.connect(tmp_path)
     registry = get_registry()
     func = registry.get(alias).create(max_retries=0)
@@ -84,7 +87,7 @@ def test_basic_text_embeddings(alias, tmp_path):
         )
     )
 
-    query = "greetings"
+    query = "greeting"
     actual = (
         table.search(query, vector_column_name="vector").limit(1).to_pydantic(Words)[0]
     )
@@ -184,9 +187,10 @@ def test_imagebind(tmp_path):
     import shutil
     import tempfile
 
-    import lancedb.embeddings.imagebind
     import pandas as pd
     import requests
+
+    import lancedb.embeddings.imagebind
     from lancedb.embeddings import get_registry
     from lancedb.pydantic import LanceModel, Vector
 
