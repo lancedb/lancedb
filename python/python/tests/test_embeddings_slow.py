@@ -44,9 +44,21 @@ except Exception:
     _imagebind = None
 
 
+def _invoke_func(embedding_func: str) -> None:
+    """
+    Helper function to register newly added embedding functions
+    """
+    from lancedb.util import attempt_import_or_raise
+
+    attempt_import_or_raise("lancedb.embeddings." + embedding_func)
+
+
 @pytest.mark.slow
-@pytest.mark.parametrize("alias", ["sentence-transformers", "openai"])
+@pytest.mark.parametrize("alias", ["sentence-transformers", "openai", "transformers"])
 def test_basic_text_embeddings(alias, tmp_path):
+    if alias == "transformers":
+        _invoke_func("transformers")
+
     db = lancedb.connect(tmp_path)
     registry = get_registry()
     func = registry.get(alias).create(max_retries=0)
@@ -84,7 +96,7 @@ def test_basic_text_embeddings(alias, tmp_path):
         )
     )
 
-    query = "greetings"
+    query = "greeting"
     actual = (
         table.search(query, vector_column_name="vector").limit(1).to_pydantic(Words)[0]
     )
@@ -184,11 +196,13 @@ def test_imagebind(tmp_path):
     import shutil
     import tempfile
 
-    import lancedb.embeddings.imagebind
     import pandas as pd
     import requests
+
     from lancedb.embeddings import get_registry
     from lancedb.pydantic import LanceModel, Vector
+
+    _invoke_func("imagebind")
 
     with tempfile.TemporaryDirectory() as temp_dir:
         print(f"Created temporary directory {temp_dir}")
@@ -321,7 +335,7 @@ def test_gemini_embedding(tmp_path):
 )
 @pytest.mark.slow
 def test_gte_embedding(tmp_path):
-    import lancedb.embeddings.gte
+    _invoke_func("gte")
 
     model = get_registry().get("gte-text").create()
 
