@@ -3,7 +3,7 @@ use std::sync::Mutex;
 use lancedb::DistanceType;
 use pyo3::{
     exceptions::{PyRuntimeError, PyValueError},
-    PyResult,
+    pyfunction, PyResult,
 };
 
 /// A wrapper around a rust builder
@@ -48,4 +48,10 @@ pub fn parse_distance_type(distance_type: impl AsRef<str>) -> PyResult<DistanceT
             distance_type.as_ref()
         ))),
     }
+}
+
+#[pyfunction]
+pub(crate) fn validate_table_name(table_name: &str) -> PyResult<()> {
+    lancedb::utils::validate_table_name(table_name)
+        .map_err(|e| PyValueError::new_err(e.to_string()))
 }

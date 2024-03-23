@@ -230,9 +230,9 @@ pub enum DistanceType {
 impl From<DistanceType> for LanceDistanceType {
     fn from(value: DistanceType) -> Self {
         match value {
-            DistanceType::L2 => LanceDistanceType::L2,
-            DistanceType::Cosine => LanceDistanceType::Cosine,
-            DistanceType::Dot => LanceDistanceType::Dot,
+            DistanceType::L2 => Self::L2,
+            DistanceType::Cosine => Self::Cosine,
+            DistanceType::Dot => Self::Dot,
         }
     }
 }
@@ -240,9 +240,9 @@ impl From<DistanceType> for LanceDistanceType {
 impl From<LanceDistanceType> for DistanceType {
     fn from(value: LanceDistanceType) -> Self {
         match value {
-            LanceDistanceType::L2 => DistanceType::L2,
-            LanceDistanceType::Cosine => DistanceType::Cosine,
-            LanceDistanceType::Dot => DistanceType::Dot,
+            LanceDistanceType::L2 => Self::L2,
+            LanceDistanceType::Cosine => Self::Cosine,
+            LanceDistanceType::Dot => Self::Dot,
         }
     }
 }
@@ -251,7 +251,7 @@ impl<'a> TryFrom<&'a str> for DistanceType {
     type Error = <LanceDistanceType as TryFrom<&'a str>>::Error;
 
     fn try_from(value: &str) -> std::prelude::v1::Result<Self, Self::Error> {
-        LanceDistanceType::try_from(value).map(DistanceType::from)
+        LanceDistanceType::try_from(value).map(Self::from)
     }
 }
 
