@@ -13,6 +13,7 @@
 
 import numpy as np
 import pytest
+
 from lancedb import LanceDBConnection
 
 # TODO: setup integ test mark and script

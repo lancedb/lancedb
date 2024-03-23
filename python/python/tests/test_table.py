@@ -20,19 +20,20 @@ from typing import List
 from unittest.mock import PropertyMock, patch
 
 import lance
-import lancedb
 import numpy as np
 import pandas as pd
 import polars as pl
 import pyarrow as pa
 import pytest
 import pytest_asyncio
+from pydantic import BaseModel
+
+import lancedb
 from lancedb.conftest import MockTextEmbeddingFunction
 from lancedb.db import AsyncConnection, LanceDBConnection
 from lancedb.embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
 from lancedb.pydantic import LanceModel, Vector
 from lancedb.table import LanceTable
-from pydantic import BaseModel
 
 
 class MockDB:

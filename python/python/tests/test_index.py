@@ -3,6 +3,7 @@ from datetime import timedelta
 import pyarrow as pa
 import pytest
 import pytest_asyncio
+
 from lancedb import AsyncConnection, AsyncTable, connect_async
 from lancedb.index import BTree, IvfPq
 

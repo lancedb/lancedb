@@ -16,12 +16,13 @@ from datetime import timedelta
 from typing import Optional
 
 import lance
-import lancedb
 import numpy as np
 import pandas.testing as tm
 import pyarrow as pa
 import pytest
 import pytest_asyncio
+
+import lancedb
 from lancedb.db import LanceDBConnection
 from lancedb.pydantic import LanceModel, Vector
 from lancedb.query import AsyncQueryBase, LanceVectorQueryBuilder, Query

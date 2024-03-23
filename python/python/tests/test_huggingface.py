@@ -13,10 +13,11 @@
 
 from pathlib import Path
 
-import lancedb
 import numpy as np
 import pyarrow as pa
 import pytest
+
+import lancedb
 from lancedb.embeddings import get_registry
 from lancedb.embeddings.base import TextEmbeddingFunction
 from lancedb.embeddings.registry import register

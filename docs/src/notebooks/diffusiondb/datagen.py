@@ -13,8 +13,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
-"""Dataset hf://poloclub/diffusiondb
-"""
+"""Dataset hf://poloclub/diffusiondb"""
 
 import io
 from argparse import ArgumentParser

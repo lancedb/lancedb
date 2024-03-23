@@ -14,11 +14,12 @@
 import re
 from datetime import timedelta
 
-import lancedb
 import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pytest
+
+import lancedb
 from lancedb.pydantic import LanceModel, Vector
 
 

@@ -13,8 +13,9 @@
 
 import os
 
-import lancedb
 import pytest
+
+import lancedb
 
 # AWS:
 # You need to setup AWS credentials an a base path to run this test. Example
