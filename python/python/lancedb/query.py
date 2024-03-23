@@ -16,7 +16,16 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, List, Literal, Optional, Tuple, Type, Union
+from typing import (
+    TYPE_CHECKING,
+    Dict,
+    List,
+    Literal,
+    Optional,
+    Tuple,
+    Type,
+    Union,
+)
 
 import deprecation
 import numpy as np
@@ -120,6 +129,7 @@ class LanceQueryBuilder(ABC):
         query: Optional[Union[np.ndarray, str, "PIL.Image.Image", Tuple]],
         query_type: str,
         vector_column_name: str,
+        ordering_field_name: str = None,
     ) -> LanceQueryBuilder:
         """
         Create a query builder based on the given query and query type.
@@ -144,6 +154,9 @@ class LanceQueryBuilder(ABC):
             # hybrid fts and vector query
             return LanceHybridQueryBuilder(table, query, vector_column_name)
 
+        # remember the string query for reranking purpose
+        str_query = query if isinstance(query, str) else None
+
         # convert "auto" query_type to "vector", "fts"
         # or "hybrid" and convert the query to vector if needed
         query, query_type = cls._resolve_query(
@@ -155,7 +168,9 @@ class LanceQueryBuilder(ABC):
 
         if isinstance(query, str):
             # fts
-            return LanceFtsQueryBuilder(table, query)
+            return LanceFtsQueryBuilder(
+                table, query, ordering_field_name=ordering_field_name
+            )
 
         if isinstance(query, list):
             query = np.array(query, dtype=np.float32)
@@ -164,7 +179,7 @@ class LanceQueryBuilder(ABC):
         else:
             raise TypeError(f"Unsupported query type: {type(query)}")
 
-        return LanceVectorQueryBuilder(table, query, vector_column_name)
+        return LanceVectorQueryBuilder(table, query, vector_column_name, str_query)
 
     @classmethod
     def _resolve_query(cls, table, query, query_type, vector_column_name):
@@ -428,6 +443,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         table: "Table",
         query: Union[np.ndarray, list, "PIL.Image.Image"],
         vector_column: str,
+        str_query: Optional[str] = None,
     ):
         super().__init__(table)
         self._query = query
@@ -436,6 +452,8 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         self._refine_factor = None
         self._vector_column = vector_column
         self._prefilter = False
+        self._reranker = None
+        self._str_query = str_query
 
     def metric(self, metric: Literal["L2", "cosine"]) -> LanceVectorQueryBuilder:
         """Set the distance metric to use.
@@ -506,6 +524,21 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         and also the "_distance" column which is the distance between the query
         vector and the returned vectors.
         """
+        return self.to_batches().read_all()
+
+    def to_batches(self, /, batch_size: Optional[int] = None) -> pa.RecordBatchReader:
+        """
+        Execute the query and return the result as a RecordBatchReader object.
+
+        Parameters
+        ----------
+        batch_size: int
+            The maximum number of selected records in a RecordBatch object.
+
+        Returns
+        -------
+        pa.RecordBatchReader
+        """
         vector = self._query if isinstance(self._query, list) else self._query.tolist()
         if isinstance(vector[0], np.ndarray):
             vector = [v.tolist() for v in vector]
@@ -521,7 +554,16 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             vector_column=self._vector_column,
             with_row_id=self._with_row_id,
         )
-        return self._table._execute_query(query)
+        result_set = self._table._execute_query(query, batch_size)
+        if self._reranker is not None:
+            rs_table = result_set.read_all()
+            result_set = self._reranker.rerank_vector(self._str_query, rs_table)
+            # convert result_set back to RecordBatchReader
+            result_set = pa.RecordBatchReader.from_batches(
+                result_set.schema, result_set.to_batches()
+            )
+
+        return result_set
 
     def where(self, where: str, prefilter: bool = False) -> LanceVectorQueryBuilder:
         """Set the where clause.
@@ -547,14 +589,52 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         self._prefilter = prefilter
         return self
 
+    def rerank(
+        self, reranker: Reranker, query_string: Optional[str] = None
+    ) -> LanceVectorQueryBuilder:
+        """Rerank the results using the specified reranker.
+
+        Parameters
+        ----------
+        reranker: Reranker
+            The reranker to use.
+
+        query_string: Optional[str]
+            The query to use for reranking. This needs to be specified explicitly here
+            as the query used for vector search may already be vectorized and the
+            reranker requires a string query.
+            This is only required if the query used for vector search is not a string.
+            Note: This doesn't yet support the case where the query is multimodal or a
+            list of vectors.
+
+        Returns
+        -------
+        LanceVectorQueryBuilder
+            The LanceQueryBuilder object.
+        """
+        self._reranker = reranker
+        if self._str_query is None and query_string is None:
+            raise ValueError(
+                """
+                The query used for vector search is not a string.
+                In this case, the reranker query needs to be specified explicitly.
+                """
+            )
+        if query_string is not None and not isinstance(query_string, str):
+            raise ValueError("Reranking currently only supports string queries")
+        self._str_query = query_string if query_string is not None else self._str_query
+        return self
+
 
 class LanceFtsQueryBuilder(LanceQueryBuilder):
     """A builder for full text search for LanceDB."""
 
-    def __init__(self, table: "Table", query: str):
+    def __init__(self, table: "Table", query: str, ordering_field_name: str = None):
         super().__init__(table)
         self._query = query
         self._phrase_query = False
+        self.ordering_field_name = ordering_field_name
+        self._reranker = None
 
     def phrase_query(self, phrase_query: bool = True) -> LanceFtsQueryBuilder:
         """Set whether to use phrase query.
@@ -599,7 +679,9 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         if self._phrase_query:
             query = query.replace('"', "'")
             query = f'"{query}"'
-        row_ids, scores = search_index(index, query, self._limit)
+        row_ids, scores = search_index(
+            index, query, self._limit, ordering_field=self.ordering_field_name
+        )
         if len(row_ids) == 0:
             empty_schema = pa.schema([pa.field("score", pa.float32())])
             return pa.Table.from_pylist([], schema=empty_schema)
@@ -641,7 +723,26 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
 
         if self._with_row_id:
             output_tbl = output_tbl.append_column("_rowid", row_ids)
+
+        if self._reranker is not None:
+            output_tbl = self._reranker.rerank_fts(self._query, output_tbl)
         return output_tbl
+
+    def rerank(self, reranker: Reranker) -> LanceFtsQueryBuilder:
+        """Rerank the results using the specified reranker.
+
+        Parameters
+        ----------
+        reranker: Reranker
+            The reranker to use.
+
+        Returns
+        -------
+        LanceFtsQueryBuilder
+            The LanceQueryBuilder object.
+        """
+        self._reranker = reranker
+        return self
 
 
 class LanceEmptyQueryBuilder(LanceQueryBuilder):

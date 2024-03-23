@@ -31,6 +31,7 @@ use crate::arrow::IntoArrow;
 use crate::error::{CreateDirSnafu, Error, InvalidTableNameSnafu, Result};
 use crate::io::object_store::MirroringObjectStoreWrapper;
 use crate::table::{NativeTable, WriteOptions};
+use crate::utils::validate_table_name;
 use crate::Table;
 
 pub const LANCE_FILE_EXTENSION: &str = "lance";
@@ -675,13 +676,18 @@ impl Database {
 
     /// Get the URI of a table in the database.
     fn table_uri(&self, name: &str) -> Result<String> {
+        validate_table_name(name)?;
+
         let path = Path::new(&self.uri);
         let table_uri = path.join(format!("{}.{}", name, LANCE_FILE_EXTENSION));
 
         let mut uri = table_uri
             .as_path()
             .to_str()
-            .context(InvalidTableNameSnafu { name })?
+            .context(InvalidTableNameSnafu {
+                name,
+                reason: "Name is not valid URL",
+            })?
             .to_string();
 
         // If there are query string set on the connection, propagate to lance

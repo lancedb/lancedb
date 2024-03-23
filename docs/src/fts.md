@@ -75,6 +75,36 @@ applied on top of the full text search results. This can be invoked via the fami
 table.search("puppy").limit(10).where("meta='foo'").to_list()
 ```
 
+## Sorting
+
+You can pre-sort the documents by specifying `ordering_field_names` when
+creating the full-text search index. Once pre-sorted, you can then specify
+`ordering_field_name` while searching to return results sorted by the given
+field. For example, 
+
+```
+table.create_fts_index(["text_field"], ordering_field_names=["sort_by_field"])
+
+(table.search("terms", ordering_field_name="sort_by_field")
+ .limit(20)
+ .to_list())
+```
+
+!!! note
+    If you wish to specify an ordering field at query time, you must also
+    have specified it during indexing time. Otherwise at query time, an
+    error will be raised that looks like `ValueError: The field does not exist: xxx`
+
+!!! note
+    The fields to sort on must be of typed unsigned integer, or else you will see 
+    an error during indexing that looks like 
+    `TypeError: argument 'value': 'float' object cannot be interpreted as an integer`.
+
+!!! note
+    You can specify multiple fields for ordering at indexing time.
+    But at query time only one ordering field is supported.
+
+
 ## Phrase queries vs. terms queries
 
 For full-text search you can specify either a **phrase** query like `"the old man and the sea"`,

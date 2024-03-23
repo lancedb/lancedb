@@ -124,7 +124,7 @@ impl Connection {
         let mode = Self::parse_create_mode_str(&mode)?;
         let tbl = self
             .get_inner()?
-            .create_table(&name, Box::new(batches))
+            .create_table(&name, batches)
             .mode(mode)
             .execute()
             .await

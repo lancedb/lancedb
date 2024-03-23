@@ -295,7 +295,9 @@ class RemoteTable(Table):
             vector_column_name = inf_vector_column_query(self.schema)
         return LanceVectorQueryBuilder(self, query, vector_column_name)
 
-    def _execute_query(self, query: Query) -> pa.Table:
+    def _execute_query(
+        self, query: Query, batch_size: Optional[int] = None
+    ) -> pa.RecordBatchReader:
         if (
             query.vector is not None
             and len(query.vector) > 0
@@ -321,13 +323,12 @@ class RemoteTable(Table):
                 q = query.copy()
                 q.vector = v
                 results.append(submit(self._name, q))
-
             return pa.concat_tables(
                 [add_index(r.result().to_arrow(), i) for i, r in enumerate(results)]
-            )
+            ).to_reader()
         else:
             result = self._conn._client.query(self._name, query)
-            return result.to_arrow()
+            return result.to_arrow().to_reader()
 
     def _do_merge(
         self,

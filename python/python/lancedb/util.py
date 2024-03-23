@@ -25,6 +25,8 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.fs as pa_fs
 
+from ._lancedb import validate_table_name as native_validate_table_name
+
 
 def safe_import_adlfs():
     try:
@@ -286,3 +288,8 @@ def deprecated(func):
         return func(*args, **kwargs)
 
     return new_func
+
+
+def validate_table_name(name: str):
+    """Verify the table name is valid."""
+    native_validate_table_name(name)

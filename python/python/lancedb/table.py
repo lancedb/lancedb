@@ -37,6 +37,7 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.fs as pa_fs
 from lance import LanceDataset
+from lance.dependencies import _check_for_hugging_face
 from lance.vector import vec_to_table
 
 from .common import DATA, VEC, VECTOR_COLUMN_NAME
@@ -74,6 +75,27 @@ def _sanitize_data(
     on_bad_vectors: str,
     fill_value: Any,
 ):
+    if _check_for_hugging_face(data):
+        # Huggingface datasets
+        from lance.dependencies import datasets
+
+        if isinstance(data, datasets.dataset_dict.DatasetDict):
+            if schema is None:
+                schema = _schema_from_hf(data, schema)
+            data = _to_record_batch_generator(
+                _to_batches_with_split(data),
+                schema,
+                metadata,
+                on_bad_vectors,
+                fill_value,
+            )
+        elif isinstance(data, datasets.Dataset):
+            if schema is None:
+                schema = data.features.arrow_schema
+            data = _to_record_batch_generator(
+                data.data.to_batches(), schema, metadata, on_bad_vectors, fill_value
+            )
+
     if isinstance(data, list):
         # convert to list of dict if data is a bunch of LanceModels
         if isinstance(data[0], LanceModel):
@@ -110,6 +132,37 @@ def _sanitize_data(
     return data
 
 
+def _schema_from_hf(data, schema):
+    """
+    Extract pyarrow schema from HuggingFace DatasetDict
+    and validate that they're all the same schema between
+    splits
+    """
+    for dataset in data.values():
+        if schema is None:
+            schema = dataset.features.arrow_schema
+        elif schema != dataset.features.arrow_schema:
+            msg = "All datasets in a HuggingFace DatasetDict must have the same schema"
+            raise TypeError(msg)
+    return schema
+
+
+def _to_batches_with_split(data):
+    """
+    Return a generator of RecordBatches from a HuggingFace DatasetDict
+    with an extra `split` column
+    """
+    for key, dataset in data.items():
+        for batch in dataset.data.to_batches():
+            table = pa.Table.from_batches([batch])
+            if "split" not in table.column_names:
+                table = table.append_column(
+                    "split", pa.array([key] * batch.num_rows, pa.string())
+                )
+            for b in table.to_batches():
+                yield b
+
+
 def _append_vector_col(data: pa.Table, metadata: dict, schema: Optional[pa.Schema]):
     """
     Use the embedding function to automatically embed the source column and add the
@@ -144,12 +197,13 @@ def _to_record_batch_generator(
     data: Iterable, schema, metadata, on_bad_vectors, fill_value
 ):
     for batch in data:
-        if not isinstance(batch, pa.RecordBatch):
-            table = _sanitize_data(batch, schema, metadata, on_bad_vectors, fill_value)
-            for batch in table.to_batches():
-                yield batch
-        else:
-            yield batch
+        # always convert to table because we need to sanitize the data
+        # and do things like add the vector column etc
+        if isinstance(batch, pa.RecordBatch):
+            batch = pa.Table.from_batches([batch])
+        batch = _sanitize_data(batch, schema, metadata, on_bad_vectors, fill_value)
+        for b in batch.to_batches():
+            yield b
 
 
 class Table(ABC):
@@ -514,7 +568,9 @@ class Table(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def _execute_query(self, query: Query) -> pa.Table:
+    def _execute_query(
+        self, query: Query, batch_size: Optional[int] = None
+    ) -> pa.RecordBatchReader:
         pass
 
     @abstractmethod
@@ -1105,6 +1161,7 @@ class LanceTable(Table):
     def create_fts_index(
         self,
         field_names: Union[str, List[str]],
+        ordering_field_names: Union[str, List[str]] = None,
         *,
         replace: bool = False,
         writer_heap_size: Optional[int] = 1024 * 1024 * 1024,
@@ -1123,11 +1180,17 @@ class LanceTable(Table):
             not yet an atomic operation; the index will be temporarily
             unavailable while the new index is being created.
         writer_heap_size: int, default 1GB
+        ordering_field_names:
+            A list of unsigned type fields to index to optionally order
+            results on at search time
         """
         from .fts import create_index, populate_index
 
         if isinstance(field_names, str):
             field_names = [field_names]
+
+        if isinstance(ordering_field_names, str):
+            ordering_field_names = [ordering_field_names]
 
         fs, path = fs_from_uri(self._get_fts_index_path())
         index_exists = fs.get_file_info(path).type != pa_fs.FileType.NotFound
@@ -1136,8 +1199,18 @@ class LanceTable(Table):
                 raise ValueError("Index already exists. Use replace=True to overwrite.")
             fs.delete_dir(path)
 
-        index = create_index(self._get_fts_index_path(), field_names)
-        populate_index(index, self, field_names, writer_heap_size=writer_heap_size)
+        index = create_index(
+            self._get_fts_index_path(),
+            field_names,
+            ordering_fields=ordering_field_names,
+        )
+        populate_index(
+            index,
+            self,
+            field_names,
+            ordering_fields=ordering_field_names,
+            writer_heap_size=writer_heap_size,
+        )
         register_event("create_fts_index")
 
     def _get_fts_index_path(self):
@@ -1271,6 +1344,7 @@ class LanceTable(Table):
         query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
         vector_column_name: Optional[str] = None,
         query_type: str = "auto",
+        ordering_field_name: Optional[str] = None,
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support [vector search][search]
@@ -1338,7 +1412,11 @@ class LanceTable(Table):
             vector_column_name = inf_vector_column_query(self.schema)
         register_event("search_table")
         return LanceQueryBuilder.create(
-            self, query, query_type, vector_column_name=vector_column_name
+            self,
+            query,
+            query_type,
+            vector_column_name=vector_column_name,
+            ordering_field_name=ordering_field_name,
         )
 
     @classmethod
@@ -1520,10 +1598,11 @@ class LanceTable(Table):
         self._dataset_mut.update(values_sql, where)
         register_event("update")
 
-    def _execute_query(self, query: Query) -> pa.Table:
+    def _execute_query(
+        self, query: Query, batch_size: Optional[int] = None
+    ) -> pa.RecordBatchReader:
         ds = self.to_lance()
-
-        return ds.to_table(
+        return ds.scanner(
             columns=query.columns,
             filter=query.filter,
             prefilter=query.prefilter,
@@ -1536,7 +1615,8 @@ class LanceTable(Table):
                 "refine_factor": query.refine_factor,
             },
             with_row_id=query.with_row_id,
-        )
+            batch_size=batch_size,
+        ).to_reader()
 
     def _do_merge(
         self,
@@ -2085,12 +2165,16 @@ class AsyncTable:
     ) -> AsyncVectorQuery:
         """
         Search the table with a given query vector.
-
         This is a convenience method for preparing a vector query and
         is the same thing as calling `nearestTo` on the builder returned
         by `query`.  Seer [nearest_to][AsyncQuery.nearest_to] for more details.
         """
         return self.query().nearest_to(query_vector)
+
+    async def _execute_query(
+        self, query: Query, batch_size: Optional[int] = None
+    ) -> pa.RecordBatchReader:
+        pass
 
     async def _do_merge(
         self,
