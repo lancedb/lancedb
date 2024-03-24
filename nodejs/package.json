@@ -73,10 +73,8 @@
     "@lancedb/lancedb-linux-x64-gnu": "0.4.3",
     "@lancedb/lancedb-win32-x64-msvc": "0.4.3"
   },
-  "peerDependencies": {
-    "apache-arrow": "^15.0.0"
-  },
   "dependencies": {
-    "openai": "^4.29.2"
+    "openai": "^4.29.2",
+    "apache-arrow": "^15.0.0"
   }
 }
