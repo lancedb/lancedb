@@ -2,7 +2,7 @@ name: NPM Publish
 
 on:
   release:
-    types: [ published ]
+    types: [published]
 
 jobs:
   node:
@@ -19,7 +19,7 @@ jobs:
       - uses: actions/setup-node@v3
         with:
           node-version: 20
-          cache: 'npm'
+          cache: "npm"
           cache-dependency-path: node/package-lock.json
       - name: Install dependencies
         run: |
@@ -178,6 +178,16 @@ jobs:
           name: nodejs-native-linux-${{ matrix.config.arch }}
           path: |
             nodejs/dist/*.node
+      # The generic files are the same in all distros so we just pick
+      # one to do the upload.
+      - name: Upload Generic Artifacts
+        if: ${{ matrix.config.arch == 'x86_64' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: nodejs-dist
+          path: |
+            nodejs/dist/*
+            !nodejs/dist/*.node
 
   node-windows:
     runs-on: windows-2022
@@ -259,7 +269,7 @@ jobs:
       - uses: actions/setup-node@v3
         with:
           node-version: 20
-          registry-url: 'https://registry.npmjs.org'
+          registry-url: "https://registry.npmjs.org"
       - name: Publish to NPM
         env:
           NODE_AUTH_TOKEN: ${{ secrets.LANCEDB_NPM_REGISTRY_TOKEN }}
@@ -282,6 +292,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
+        with:
+          name: nodejs-dist
+          path: nodejs/dist
+      - uses: actions/download-artifact@v4
+        name: Download arch-specific binaries
         with:
           pattern: nodejs-*
           path: nodejs/nodejs-artifacts
