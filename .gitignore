@@ -34,6 +34,7 @@ python/dist
 node/dist
 node/examples/**/package-lock.json
 node/examples/**/dist
+nodejs/lancedb/native*
 dist
 
 ## Rust

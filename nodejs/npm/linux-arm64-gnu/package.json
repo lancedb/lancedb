@@ -1,5 +1,5 @@
 {
-  "name": "lancedb-linux-arm64-gnu",
+  "name": "@lancedb/lancedb-linux-arm64-gnu",
   "version": "0.4.3",
   "os": [
     "linux"
@@ -11,9 +11,9 @@
   "files": [
     "lancedb.linux-arm64-gnu.node"
   ],
-  "license": "MIT",
+  "license": "Apache 2.0",
   "engines": {
-    "node": ">= 10"
+    "node": ">= 18"
   },
   "libc": [
     "glibc"

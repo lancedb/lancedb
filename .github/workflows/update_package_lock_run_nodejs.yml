@@ -1,0 +1,19 @@
+name: Update NodeJs package-lock.json
+
+on:
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+          fetch-depth: 0
+          lfs: true
+      - uses: ./.github/workflows/update_package_lock_nodejs
+        with:
+          github_token: ${{ secrets.LANCEDB_RELEASE_TOKEN }}

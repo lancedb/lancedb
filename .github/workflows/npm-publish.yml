@@ -2,7 +2,7 @@ name: NPM Publish
 
 on:
   release:
-    types: [ published ]
+    types: [published]
 
 jobs:
   node:
@@ -19,7 +19,7 @@ jobs:
       - uses: actions/setup-node@v3
         with:
           node-version: 20
-          cache: 'npm'
+          cache: "npm"
           cache-dependency-path: node/package-lock.json
       - name: Install dependencies
         run: |
@@ -31,7 +31,7 @@ jobs:
           npm run tsc
           npm pack
       - name: Upload Linux Artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: node-package
           path: |
@@ -61,12 +61,41 @@ jobs:
       - name: Build MacOS native node modules
         run: bash ci/build_macos_artifacts.sh ${{ matrix.config.arch }}
       - name: Upload Darwin Artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
-          name: native-darwin
+          name: node-native-darwin
           path: |
             node/dist/lancedb-vectordb-darwin*.tgz
 
+  nodejs-macos:
+    strategy:
+      matrix:
+        config:
+          - arch: x86_64-apple-darwin
+            runner: macos-13
+          - arch: aarch64-apple-darwin
+            # xlarge is implicitly arm64.
+            runner: macos-14
+    runs-on: ${{ matrix.config.runner }}
+    # Only runs on tags that matches the make-release action
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install system dependencies
+        run: brew install protobuf
+      - name: Install npm dependencies
+        run: |
+          cd nodejs
+          npm ci
+      - name: Build MacOS native nodejs modules
+        run: bash ci/build_macos_artifacts_nodejs.sh ${{ matrix.config.arch }}
+      - name: Upload Darwin Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nodejs-native-darwin-${{ matrix.config.arch }}
+          path: |
+            nodejs/dist/*.node
 
   node-linux:
     name: node-linux (${{ matrix.config.arch}}-unknown-linux-gnu
@@ -103,11 +132,62 @@ jobs:
         run: |
           bash ci/build_linux_artifacts.sh ${{ matrix.config.arch }}
       - name: Upload Linux Artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
-          name: native-linux
+          name: node-native-linux
           path: |
             node/dist/lancedb-vectordb-linux*.tgz
+
+  nodejs-linux:
+    name: nodejs-linux (${{ matrix.config.arch}}-unknown-linux-gnu
+    runs-on: ${{ matrix.config.runner }}
+    # Only runs on tags that matches the make-release action
+    if: startsWith(github.ref, 'refs/tags/v')
+    strategy:
+      fail-fast: false
+      matrix:
+        config:
+          - arch: x86_64
+            runner: ubuntu-latest
+          - arch: aarch64
+            # For successful fat LTO builds, we need a large runner to avoid OOM errors.
+            runner: buildjet-16vcpu-ubuntu-2204-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      # Buildjet aarch64 runners have only 1.5 GB RAM per core, vs 3.5 GB per core for
+      # x86_64 runners. To avoid OOM errors on ARM, we create a swap file.
+      - name: Configure aarch64 build
+        if: ${{ matrix.config.arch == 'aarch64' }}
+        run: |
+          free -h
+          sudo fallocate -l 16G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          echo "/swapfile swap swap defaults 0 0" >> sudo /etc/fstab
+          # print info
+          swapon --show
+          free -h
+      - name: Build Linux Artifacts
+        run: |
+          bash ci/build_linux_artifacts_nodejs.sh ${{ matrix.config.arch }}
+      - name: Upload Linux Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nodejs-native-linux-${{ matrix.config.arch }}
+          path: |
+            nodejs/dist/*.node
+      # The generic files are the same in all distros so we just pick
+      # one to do the upload.
+      - name: Upload Generic Artifacts
+        if: ${{ matrix.config.arch == 'x86_64' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: nodejs-dist
+          path: |
+            nodejs/dist/*
+            !nodejs/dist/*.node
 
   node-windows:
     runs-on: windows-2022
@@ -136,11 +216,44 @@ jobs:
       - name: Build Windows native node modules
         run: .\ci\build_windows_artifacts.ps1 ${{ matrix.target }}
       - name: Upload Windows Artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
-          name: native-windows
+          name: node-native-windows
           path: |
             node/dist/lancedb-vectordb-win32*.tgz
+
+  nodejs-windows:
+    runs-on: windows-2022
+    # Only runs on tags that matches the make-release action
+    if: startsWith(github.ref, 'refs/tags/v')
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [x86_64-pc-windows-msvc]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install Protoc v21.12
+        working-directory: C:\
+        run: |
+          New-Item -Path 'C:\protoc' -ItemType Directory
+          Set-Location C:\protoc
+          Invoke-WebRequest https://github.com/protocolbuffers/protobuf/releases/download/v21.12/protoc-21.12-win64.zip -OutFile C:\protoc\protoc.zip
+          7z x protoc.zip
+          Add-Content $env:GITHUB_PATH "C:\protoc\bin"
+        shell: powershell
+      - name: Install npm dependencies
+        run: |
+          cd nodejs
+          npm ci
+      - name: Build Windows native node modules
+        run: .\ci\build_windows_artifacts_nodejs.ps1 ${{ matrix.target }}
+      - name: Upload Windows Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nodejs-native-windows
+          path: |
+            nodejs/dist/*.node
 
   release:
     needs: [node, node-macos, node-linux, node-windows]
@@ -148,13 +261,15 @@ jobs:
     # Only runs on tags that matches the make-release action
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
-      - uses: actions/download-artifact@v3
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: node-*
       - name: Display structure of downloaded files
         run: ls -R
       - uses: actions/setup-node@v3
         with:
           node-version: 20
-          registry-url: 'https://registry.npmjs.org'
+          registry-url: "https://registry.npmjs.org"
       - name: Publish to NPM
         env:
           NODE_AUTH_TOKEN: ${{ secrets.LANCEDB_NPM_REGISTRY_TOKEN }}
@@ -163,6 +278,45 @@ jobs:
           for filename in *.tgz; do
             npm publish $filename
           done
+
+  release-nodejs:
+    needs: [nodejs-macos, nodejs-linux, nodejs-windows]
+    runs-on: ubuntu-latest
+    # Only runs on tags that matches the make-release action
+    if: startsWith(github.ref, 'refs/tags/v')
+    defaults:
+      run:
+        shell: bash
+        working-directory: nodejs
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: nodejs-dist
+          path: nodejs/dist
+      - uses: actions/download-artifact@v4
+        name: Download arch-specific binaries
+        with:
+          pattern: nodejs-*
+          path: nodejs/nodejs-artifacts
+          merge-multiple: true
+      - name: Display structure of downloaded files
+        run: find .
+      - uses: actions/setup-node@v3
+        with:
+          node-version: 20
+          registry-url: "https://registry.npmjs.org"
+      - name: Install napi-rs
+        run: npm install -g @napi-rs/cli
+      - name: Prepare artifacts
+        run: npx napi artifacts -d nodejs-artifacts
+      - name: Display structure of staged files
+        run: find npm
+      - name: Publish to NPM
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.LANCEDB_NPM_REGISTRY_TOKEN }}
+        run: npm publish --access public
 
   update-package-lock:
     needs: [release]
@@ -176,5 +330,20 @@ jobs:
           fetch-depth: 0
           lfs: true
       - uses: ./.github/workflows/update_package_lock
+        with:
+          github_token: ${{ secrets.LANCEDB_RELEASE_TOKEN }}
+
+  update-package-lock-nodejs:
+    needs: [release-nodejs]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+          fetch-depth: 0
+          lfs: true
+      - uses: ./.github/workflows/update_package_lock_nodejs
         with:
           github_token: ${{ secrets.LANCEDB_RELEASE_TOKEN }}
