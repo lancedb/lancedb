@@ -1,3 +1,3 @@
-# `lancedb-linux-arm64-gnu`
+# `@lancedb/lancedb-linux-arm64-gnu`
 
-This is the **aarch64-unknown-linux-gnu** binary for `lancedb`
+This is the **aarch64-unknown-linux-gnu** binary for `@lancedb/lancedb`

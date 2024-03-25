@@ -1,0 +1,33 @@
+name: update_package_lock_nodejs
+description: "Update nodejs's package.lock"
+
+inputs:
+  github_token:
+    required: true
+    description: "github token for the repo"
+
+runs:
+  using: "composite"
+  steps:
+    - uses: actions/setup-node@v3
+      with:
+        node-version: 20
+    - name: Set git configs
+      shell: bash
+      run: |
+        git config user.name 'Lance Release'
+        git config user.email 'lance-dev@lancedb.com'
+    - name: Update package-lock.json file
+      working-directory: ./nodejs
+      run: |
+        npm install
+        git add package-lock.json
+        git commit -m "Updating package-lock.json"
+      shell: bash
+    - name: Push changes
+      if: ${{ inputs.dry_run }} == "false"
+      uses: ad-m/github-push-action@master
+      with:
+        github_token: ${{ inputs.github_token }}
+        branch: main
+        tags: true

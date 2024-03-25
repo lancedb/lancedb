@@ -20,7 +20,7 @@ import {
   VectorQuery as NativeVectorQuery,
 } from "./native";
 import { type IvfPqOptions } from "./indices";
-class RecordBatchIterator implements AsyncIterator<RecordBatch> {
+export class RecordBatchIterator implements AsyncIterator<RecordBatch> {
   private promisedInner?: Promise<NativeBatchIterator>;
   private inner?: NativeBatchIterator;
 
