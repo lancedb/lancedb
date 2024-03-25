@@ -1,6 +1,6 @@
 [package]
 name = "lancedb-node"
-version = "0.4.13"
+version = "0.4.14"
 description = "Serverless, low-latency vector database for AI applications"
 license.workspace = true
 edition.workspace = true
