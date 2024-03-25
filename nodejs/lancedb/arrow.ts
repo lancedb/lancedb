@@ -106,6 +106,9 @@ export class MakeArrowTableOptions {
  * An enhanced version of the {@link makeTable} function from Apache Arrow
  * that supports nested fields and embeddings columns.
  *
+ * (typically you do not need to call this function.  It will be called automatically
+ * when creating a table or adding data to it)
+ *
  * This function converts an array of Record<String, any> (row-major JS objects)
  * to an Arrow Table (a columnar structure)
  *
