@@ -19,7 +19,7 @@ Allows you to set parameters when registering a `sentence-transformers` object.
 | `normalize` | `bool` | `True` | Whether to normalize the input text before feeding it to the model |
 
 
-??? "Some available models sentence-transformers models"
+??? "Check out available sentence-transformer models here!"
     ```markdown
     - sentence-transformers/all-MiniLM-L12-v2
     - sentence-transformers/paraphrase-mpnet-base-v2
@@ -151,28 +151,31 @@ Allows you to set parameters when registering a `sentence-transformers` object.
     You can also load many other model architectures from the library. For example models from sources such as BAAI, nomic, salesforce research, etc.
     See this HF hub page for all [supported models](https://huggingface.co/models?library=sentence-transformers).
 
+!!! note "BAAI Embeddings example"
+    Here is an example that uses BAAI embedding model from the HuggingFace Hub [supported models](https://huggingface.co/models?library=sentence-transformers)
+    ```python
+    db = lancedb.connect("/tmp/db")
+    registry = EmbeddingFunctionRegistry.get_instance()
+    func = registry.get("sentence-transformers").create(name="BAAI/bge-small-en-v1.5", device="cpu")
+
+    class Words(LanceModel):
+        text: str = func.SourceField()
+        vector: Vector(func.ndims()) = func.VectorField()
+
+    table = db.create_table("words", schema=Words)
+    table.add(
+        [
+            {"text": "hello world"}
+            {"text": "goodbye world"}
+        ]
+    )
+
+    query = "greetings"
+    actual = table.search(query).limit(1).to_pydantic(Words)[0]
+    print(actual.text)
+    ```
 Visit sentence-transformers [HuggingFace HUB](https://huggingface.co/sentence-transformers) page for more information on the available models.
-```python
-db = lancedb.connect("/tmp/db")
-registry = EmbeddingFunctionRegistry.get_instance()
-func = registry.get("sentence-transformers").create(device="cpu")
 
-class Words(LanceModel):
-    text: str = func.SourceField()
-    vector: Vector(func.ndims()) = func.VectorField()
-
-table = db.create_table("words", schema=Words)
-table.add(
-    [
-        {"text": "hello world"}
-        {"text": "goodbye world"}
-    ]
-)
-
-query = "greetings"
-actual = table.search(query).limit(1).to_pydantic(Words)[0]
-print(actual.text)
-```
 
 ### OpenAI embeddings
 LanceDB registers the OpenAI embeddings function in the registry by default, as `openai`. Below are the parameters that you can customize when creating the instances:
