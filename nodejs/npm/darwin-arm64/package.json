@@ -1,5 +1,5 @@
 {
-  "name": "lancedb-darwin-arm64",
+  "name": "@lancedb/lancedb-darwin-arm64",
   "version": "0.4.3",
   "os": [
     "darwin"
@@ -11,7 +11,7 @@
   "files": [
     "lancedb.darwin-arm64.node"
   ],
-  "license": "MIT",
+  "license": "Apache 2.0",
   "engines": {
     "node": ">= 18"
   }
