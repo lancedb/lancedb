@@ -19,7 +19,7 @@ Allows you to set parameters when registering a `sentence-transformers` object.
 | `normalize` | `bool` | `True` | Whether to normalize the input text before feeding it to the model |
 
 
-??? "All available models"
+??? "Some available models sentence-transformers models"
     ```markdown
     - sentence-transformers/all-MiniLM-L12-v2
     - sentence-transformers/paraphrase-mpnet-base-v2
@@ -146,6 +146,11 @@ Allows you to set parameters when registering a `sentence-transformers` object.
     - sentence-transformers/use-cmlm-multilingual
     - sentence-transformers/all-MiniLM-L12-v1
     ```
+
+!!! info
+    You can also load many other model architectures from the library. For example models from sources such as BAAI, nomic, salesforce research, etc.
+    See this HF hub page for all [supported models](https://huggingface.co/models?library=sentence-transformers).
+
 Visit sentence-transformers [HuggingFace HUB](https://huggingface.co/sentence-transformers) page for more information on the available models.
 ```python
 db = lancedb.connect("/tmp/db")
