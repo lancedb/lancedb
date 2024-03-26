@@ -22,7 +22,7 @@ from .registry import register
 from .utils import TEXT
 
 
-@register("transformers")
+@register("huggingface")
 class TransformersEmbeddingFunction(EmbeddingFunction):
     """
     An embedding function that can use any model from the transformers library.
@@ -31,7 +31,7 @@ class TransformersEmbeddingFunction(EmbeddingFunction):
     ----------
     name : str
         The name of the model to use. This should be a model name that can be loaded
-        by transformers.AutoModel.from_pretrained.
+        by transformers.AutoModel.from_pretrained. For example, "bert-base-uncased".
         default: "colbert-ir/colbertv2.0""
 
     to download package, run :

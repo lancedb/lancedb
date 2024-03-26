@@ -54,9 +54,9 @@ def _invoke_func(embedding_func: str) -> None:
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize("alias", ["sentence-transformers", "openai", "transformers"])
+@pytest.mark.parametrize("alias", ["sentence-transformers", "openai", "huggingface"])
 def test_basic_text_embeddings(alias, tmp_path):
-    if alias == "transformers":
+    if alias == "huggingface":
         _invoke_func("transformers")
 
     db = lancedb.connect(tmp_path)
