@@ -25,7 +25,6 @@ from overrides import EnforceOverrides, override
 from pyarrow import fs
 
 from lancedb.common import data_to_reader, validate_schema
-from lancedb.embeddings.registry import EmbeddingFunctionRegistry
 from lancedb.utils.events import register_event
 
 from ._lancedb import connect as lancedb_connect
@@ -451,16 +450,17 @@ class LanceDBConnection(DBConnection):
 class AsyncConnection(object):
     """An active LanceDB connection
 
-    To obtain a connection you can use the [connect] function.
+    To obtain a connection you can use the [connect_async][lancedb.connect_async]
+    function.
 
     This could be a native connection (using lance) or a remote connection (e.g. for
     connecting to LanceDb Cloud)
 
     Local connections do not currently hold any open resources but they may do so in the
     future (for example, for shared cache or connections to catalog services) Remote
-    connections represent an open connection to the remote server.  The [close] method
-    can be used to release any underlying resources eagerly.  The connection can also
-    be used as a context manager:
+    connections represent an open connection to the remote server.  The
+    [close][lancedb.db.AsyncConnection.close] method can be used to release any
+    underlying resources eagerly.  The connection can also be used as a context manager.
 
     Connections can be shared on multiple threads and are expected to be long lived.
     Connections can also be used as a context manager, however, in many cases a single
@@ -471,10 +471,9 @@ class AsyncConnection(object):
     Examples
     --------
 
-    >>> import asyncio
     >>> import lancedb
-    >>> async def my_connect():
-    ...   with await lancedb.connect("/tmp/my_dataset") as conn:
+    >>> async def doctest_example():
+    ...   with await lancedb.connect_async("/tmp/my_dataset") as conn:
     ...     # do something with the connection
     ...     pass
     ...   # conn is closed here
@@ -535,9 +534,8 @@ class AsyncConnection(object):
         exist_ok: Optional[bool] = None,
         on_bad_vectors: Optional[str] = None,
         fill_value: Optional[float] = None,
-        embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
     ) -> AsyncTable:
-        """Create a [Table][lancedb.table.Table] in the database.
+        """Create an [AsyncTable][lancedb.table.AsyncTable] in the database.
 
         Parameters
         ----------
@@ -576,7 +574,7 @@ class AsyncConnection(object):
 
         Returns
         -------
-        LanceTable
+        AsyncTable
             A reference to the newly created table.
 
         !!! note
@@ -590,12 +588,14 @@ class AsyncConnection(object):
         Can create with list of tuples or dictionaries:
 
         >>> import lancedb
-        >>> db = lancedb.connect("./.lancedb")
-        >>> data = [{"vector": [1.1, 1.2], "lat": 45.5, "long": -122.7},
-        ...         {"vector": [0.2, 1.8], "lat": 40.1, "long":  -74.1}]
-        >>> db.create_table("my_table", data)
-        LanceTable(connection=..., name="my_table")
-        >>> db["my_table"].head()
+        >>> async def doctest_example():
+        ...     db = await lancedb.connect_async("./.lancedb")
+        ...     data = [{"vector": [1.1, 1.2], "lat": 45.5, "long": -122.7},
+        ...             {"vector": [0.2, 1.8], "lat": 40.1, "long":  -74.1}]
+        ...     my_table = await db.create_table("my_table", data)
+        ...     print(await my_table.query().limit(5).to_arrow())
+        >>> import asyncio
+        >>> asyncio.run(doctest_example())
         pyarrow.Table
         vector: fixed_size_list<item: float>[2]
           child 0, item: float
@@ -614,9 +614,11 @@ class AsyncConnection(object):
         ...    "lat": [45.5, 40.1],
         ...    "long": [-122.7, -74.1]
         ... })
-        >>> db.create_table("table2", data)
-        LanceTable(connection=..., name="table2")
-        >>> db["table2"].head()
+        >>> async def pandas_example():
+        ...     db = await lancedb.connect_async("./.lancedb")
+        ...     my_table = await db.create_table("table2", data)
+        ...     print(await my_table.query().limit(5).to_arrow())
+        >>> asyncio.run(pandas_example())
         pyarrow.Table
         vector: fixed_size_list<item: float>[2]
           child 0, item: float
@@ -636,9 +638,11 @@ class AsyncConnection(object):
         ...   pa.field("lat", pa.float32()),
         ...   pa.field("long", pa.float32())
         ... ])
-        >>> db.create_table("table3", data, schema = custom_schema)
-        LanceTable(connection=..., name="table3")
-        >>> db["table3"].head()
+        >>> async def with_schema():
+        ...     db = await lancedb.connect_async("./.lancedb")
+        ...     my_table = await db.create_table("table3", data, schema = custom_schema)
+        ...     print(await my_table.query().limit(5).to_arrow())
+        >>> asyncio.run(with_schema())
         pyarrow.Table
         vector: fixed_size_list<item: float>[2]
           child 0, item: float
@@ -670,9 +674,10 @@ class AsyncConnection(object):
         ...     pa.field("item", pa.utf8()),
         ...     pa.field("price", pa.float32()),
         ... ])
-        >>> db.create_table("table4", make_batches(), schema=schema)
-        LanceTable(connection=..., name="table4")
-
+        >>> async def iterable_example():
+        ...     db = await lancedb.connect_async("./.lancedb")
+        ...     await db.create_table("table4", make_batches(), schema=schema)
+        >>> asyncio.run(iterable_example())
         """
         if inspect.isclass(schema) and issubclass(schema, LanceModel):
             # convert LanceModel to pyarrow schema
@@ -681,12 +686,6 @@ class AsyncConnection(object):
             schema = schema.to_arrow_schema()
 
         metadata = None
-        if embedding_functions is not None:
-            # If we passed in embedding functions explicitly
-            # then we'll override any schema metadata that
-            # may was implicitly specified by the LanceModel schema
-            registry = EmbeddingFunctionRegistry.get_instance()
-            metadata = registry.get_table_metadata(embedding_functions)
 
         # Defining defaults here and not in function prototype.  In the future
         # these defaults will move into rust so better to keep them as None.
@@ -767,11 +766,11 @@ class AsyncConnection(object):
         name: str
             The name of the table.
         """
-        raise NotImplementedError
+        await self._inner.drop_table(name)
 
     async def drop_database(self):
         """
         Drop database
         This is the same thing as dropping all the tables
         """
-        raise NotImplementedError
+        await self._inner.drop_db()

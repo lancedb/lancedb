@@ -1893,8 +1893,8 @@ class AsyncTable:
     An AsyncTable object is expected to be long lived and reused for multiple
     operations. AsyncTable objects will cache a certain amount of index data in memory.
     This cache will be freed when the Table is garbage collected.  To eagerly free the
-    cache you can call the [close][AsyncTable.close] method.  Once the AsyncTable is
-    closed, it cannot be used for any further operations.
+    cache you can call the [close][lancedb.AsyncTable.close] method.  Once the
+    AsyncTable is closed, it cannot be used for any further operations.
 
     An AsyncTable can also be used as a context manager, and will automatically close
     when the context is exited.  Closing a table is optional.  If you do not close the
@@ -1903,13 +1903,17 @@ class AsyncTable:
     Examples
     --------
 
-    Create using [DBConnection.create_table][lancedb.DBConnection.create_table]
+    Create using [AsyncConnection.create_table][lancedb.AsyncConnection.create_table]
     (more examples in that method's documentation).
 
     >>> import lancedb
-    >>> db = lancedb.connect("./.lancedb")
-    >>> table = db.create_table("my_table", data=[{"vector": [1.1, 1.2], "b": 2}])
-    >>> table.head()
+    >>> async def create_a_table():
+    ...     db = await lancedb.connect_async("./.lancedb")
+    ...     data = [{"vector": [1.1, 1.2], "b": 2}]
+    ...     table = await db.create_table("my_table", data=data)
+    ...     print(await table.query().limit(5).to_arrow())
+    >>> import asyncio
+    >>> asyncio.run(create_a_table())
     pyarrow.Table
     vector: fixed_size_list<item: float>[2]
       child 0, item: float
@@ -1918,25 +1922,37 @@ class AsyncTable:
     vector: [[[1.1,1.2]]]
     b: [[2]]
 
-    Can append new data with [Table.add()][lancedb.table.Table.add].
+    Can append new data with [AsyncTable.add()][lancedb.table.AsyncTable.add].
 
-    >>> table.add([{"vector": [0.5, 1.3], "b": 4}])
+    >>> async def add_to_table():
+    ...     db = await lancedb.connect_async("./.lancedb")
+    ...     table = await db.open_table("my_table")
+    ...     await table.add([{"vector": [0.5, 1.3], "b": 4}])
+    >>> asyncio.run(add_to_table())
 
-    Can query the table with [Table.search][lancedb.table.Table.search].
+    Can query the table with
+    [AsyncTable.vector_search][lancedb.table.AsyncTable.vector_search].
 
-    >>> table.search([0.4, 0.4]).select(["b", "vector"]).to_pandas()
+    >>> async def search_table_for_vector():
+    ...     db = await lancedb.connect_async("./.lancedb")
+    ...     table = await db.open_table("my_table")
+    ...     results = (
+    ...       await table.vector_search([0.4, 0.4]).select(["b", "vector"]).to_pandas()
+    ...     )
+    ...     print(results)
+    >>> asyncio.run(search_table_for_vector())
        b      vector  _distance
     0  4  [0.5, 1.3]       0.82
     1  2  [1.1, 1.2]       1.13
 
     Search queries are much faster when an index is created. See
-    [Table.create_index][lancedb.table.Table.create_index].
+    [AsyncTable.create_index][lancedb.table.AsyncTable.create_index].
     """
 
     def __init__(self, table: LanceDBTable):
-        """Create a new Table object.
+        """Create a new AsyncTable object.
 
-        You should not create Table objects directly.
+        You should not create AsyncTable objects directly.
 
         Use [AsyncConnection.create_table][lancedb.AsyncConnection.create_table] and
         [AsyncConnection.open_table][lancedb.AsyncConnection.open_table] to obtain
@@ -1988,6 +2004,14 @@ class AsyncTable:
         return await self._inner.count_rows(filter)
 
     def query(self) -> AsyncQuery:
+        """
+        Returns an [AsyncQuery][lancedb.query.AsyncQuery] that can be used
+        to search the table.
+
+        Use methods on the returned query to control query behavior.  The query
+        can be executed with methods like [to_arrow][lancedb.query.AsyncQuery.to_arrow],
+        [to_pandas][lancedb.query.AsyncQuery.to_pandas] and more.
+        """
         return AsyncQuery(self._inner.query())
 
     async def to_pandas(self) -> "pd.DataFrame":
@@ -2024,20 +2048,8 @@ class AsyncTable:
 
         Parameters
         ----------
-        index: Index
-            The index to create.
-
-            LanceDb supports multiple types of indices.  See the static methods on
-            the Index class for more details.
-        column: str, default None
+        column: str
             The column to index.
-
-            When building a scalar index this must be set.
-
-            When building a vector index, this is optional.  The default will look
-            for any columns of type fixed-size-list with floating point values.  If
-            there is only one column of this type then it will be used.  Otherwise
-            an error will be returned.
         replace: bool, default True
             Whether to replace the existing index
 
@@ -2046,6 +2058,10 @@ class AsyncTable:
             that index is out of date.
 
             The default is True
+        config: Union[IvfPq, BTree], default None
+            For advanced configuration you can specify the type of index you would
+            like to create.   You can also specify index-specific parameters when
+            creating an index object.
         """
         index = None
         if config is not None:
@@ -2167,7 +2183,8 @@ class AsyncTable:
         Search the table with a given query vector.
         This is a convenience method for preparing a vector query and
         is the same thing as calling `nearestTo` on the builder returned
-        by `query`.  Seer [nearest_to][AsyncQuery.nearest_to] for more details.
+        by `query`.  Seer [nearest_to][lancedb.query.AsyncQuery.nearest_to] for more
+        details.
         """
         return self.query().nearest_to(query_vector)
 
@@ -2233,7 +2250,7 @@ class AsyncTable:
            x      vector
         0  3  [5.0, 6.0]
         """
-        raise NotImplementedError
+        return await self._inner.delete(where)
 
     async def update(
         self,
@@ -2288,102 +2305,6 @@ class AsyncTable:
             updates_sql = {k: value_to_sql(v) for k, v in updates.items()}
 
         return await self._inner.update(updates_sql, where)
-
-    async def cleanup_old_versions(
-        self,
-        older_than: Optional[timedelta] = None,
-        *,
-        delete_unverified: bool = False,
-    ) -> CleanupStats:
-        """
-        Clean up old versions of the table, freeing disk space.
-
-        Note: This function is not available in LanceDb Cloud (since LanceDb
-        Cloud manages cleanup for you automatically)
-
-        Parameters
-        ----------
-        older_than: timedelta, default None
-            The minimum age of the version to delete. If None, then this defaults
-            to two weeks.
-        delete_unverified: bool, default False
-            Because they may be part of an in-progress transaction, files newer
-            than 7 days old are not deleted by default. If you are sure that
-            there are no in-progress transactions, then you can set this to True
-            to delete all files older than `older_than`.
-
-        Returns
-        -------
-        CleanupStats
-            The stats of the cleanup operation, including how many bytes were
-            freed.
-        """
-        raise NotImplementedError
-
-    async def compact_files(self, *args, **kwargs):
-        """
-        Run the compaction process on the table.
-
-        Note: This function is not available in LanceDb Cloud (since LanceDb
-        Cloud manages compaction for you automatically)
-
-        This can be run after making several small appends to optimize the table
-        for faster reads.
-
-        Arguments are passed onto :meth:`lance.dataset.DatasetOptimizer.compact_files`.
-        For most cases, the default should be fine.
-        """
-        raise NotImplementedError
-
-    async def add_columns(self, transforms: Dict[str, str]):
-        """
-        Add new columns with defined values.
-
-        This is not yet available in LanceDB Cloud.
-
-        Parameters
-        ----------
-        transforms: Dict[str, str]
-            A map of column name to a SQL expression to use to calculate the
-            value of the new column. These expressions will be evaluated for
-            each row in the table, and can reference existing columns.
-        """
-        raise NotImplementedError
-
-    async def alter_columns(self, alterations: Iterable[Dict[str, str]]):
-        """
-        Alter column names and nullability.
-
-        This is not yet available in LanceDB Cloud.
-
-        alterations : Iterable[Dict[str, Any]]
-            A sequence of dictionaries, each with the following keys:
-            - "path": str
-                The column path to alter. For a top-level column, this is the name.
-                For a nested column, this is the dot-separated path, e.g. "a.b.c".
-            - "name": str, optional
-                The new name of the column. If not specified, the column name is
-                not changed.
-            - "nullable": bool, optional
-                Whether the column should be nullable. If not specified, the column
-                nullability is not changed. Only non-nullable columns can be changed
-                to nullable. Currently, you cannot change a nullable column to
-                non-nullable.
-        """
-        raise NotImplementedError
-
-    async def drop_columns(self, columns: Iterable[str]):
-        """
-        Drop columns from the table.
-
-        This is not yet available in LanceDB Cloud.
-
-        Parameters
-        ----------
-        columns : Iterable[str]
-            The names of the columns to drop.
-        """
-        raise NotImplementedError
 
     async def version(self) -> int:
         """
