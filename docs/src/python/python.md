@@ -8,17 +8,20 @@ This section contains the API reference for the OSS Python API.
 pip install lancedb
 ```
 
-## Connection
+The following methods describe the synchronous API client. There
+is also an [asynchronous API client](#connections-asynchronous).
+
+## Connections (Synchronous)
 
 ::: lancedb.connect
 
 ::: lancedb.db.DBConnection
 
-## Table
+## Tables (Synchronous)
 
 ::: lancedb.table.Table
 
-## Querying
+## Querying (Synchronous)
 
 ::: lancedb.query.Query
 
@@ -87,3 +90,41 @@ pip install lancedb
 ::: lancedb.rerankers.cross_encoder.CrossEncoderReranker
 
 ::: lancedb.rerankers.openai.OpenaiReranker
+
+## Connections (Asynchronous)
+
+Connections represent a connection to a LanceDb database and
+can be used to create, list, or open tables.
+
+::: lancedb.connect_async
+
+::: lancedb.db.AsyncConnection
+
+## Tables (Asynchronous)
+
+Table hold your actual data as a collection of records / rows.
+
+::: lancedb.table.AsyncTable
+
+## Indices (Asynchronous)
+
+Indices can be created on a table to speed up queries. This section
+lists the indices that LanceDb supports.
+
+::: lancedb.index.BTree
+
+::: lancedb.index.IvfPq
+
+## Querying (Asynchronous)
+
+Queries allow you to return data from your database. Basic queries can be
+created with the [AsyncTable.query][lancedb.table.AsyncTable.query] method
+to return the entire (typically filtered) table. Vector searches return the
+rows nearest to a query vector and can be created with the
+[AsyncTable.vector_search][lancedb.table.AsyncTable.vector_search] method.
+
+::: lancedb.query.AsyncQueryBase
+
+::: lancedb.query.AsyncQuery
+
+::: lancedb.query.AsyncVectorQuery

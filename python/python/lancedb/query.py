@@ -1033,7 +1033,7 @@ class AsyncQueryBase(object):
         Construct an AsyncQueryBase
 
         This method is not intended to be called directly.  Instead, use the
-        [Table.query][] method to create a query.
+        [AsyncTable.query][lancedb.table.AsyncTable.query] method to create a query.
         """
         self._inner = inner
 
@@ -1041,7 +1041,10 @@ class AsyncQueryBase(object):
         """
         Only return rows matching the given predicate
 
-        The predicate should be supplied as an SQL query string.  For example:
+        The predicate should be supplied as an SQL query string.
+
+        Examples
+        --------
 
         >>> predicate = "x > 10"
         >>> predicate = "y > 0 AND y < 100"
@@ -1112,7 +1115,8 @@ class AsyncQueryBase(object):
         Execute the query and collect the results into an Apache Arrow Table.
 
         This method will collect all results into memory before returning.  If
-        you expect a large number of results, you may want to use [to_batches][]
+        you expect a large number of results, you may want to use
+        [to_batches][lancedb.query.AsyncQueryBase.to_batches]
         """
         batch_iter = await self.to_batches()
         return pa.Table.from_batches(
@@ -1123,12 +1127,13 @@ class AsyncQueryBase(object):
         """
         Execute the query and collect the results into a pandas DataFrame.
 
-        This method will collect all results into memory before returning.  If
-        you expect a large number of results, you may want to use [to_batches][]
-        and convert each batch to pandas separately.
+        This method will collect all results into memory before returning.  If you
+        expect a large number of results, you may want to use
+        [to_batches][lancedb.query.AsyncQueryBase.to_batches] and convert each batch to
+        pandas separately.
 
-        Example
-        -------
+        Examples
+        --------
 
         >>> import asyncio
         >>> from lancedb import connect_async
@@ -1148,7 +1153,7 @@ class AsyncQuery(AsyncQueryBase):
         Construct an AsyncQuery
 
         This method is not intended to be called directly.  Instead, use the
-        [Table.query][] method to create a query.
+        [AsyncTable.query][lancedb.table.AsyncTable.query] method to create a query.
         """
         super().__init__(inner)
         self._inner = inner
@@ -1189,8 +1194,8 @@ class AsyncQuery(AsyncQueryBase):
         If there is only one vector column (a column whose data type is a
         fixed size list of floats) then the column does not need to be specified.
         If there is more than one vector column you must use
-        [AsyncVectorQuery::column][] to specify which column you would like to
-        compare with.
+        [AsyncVectorQuery.column][lancedb.query.AsyncVectorQuery.column] to specify
+        which column you would like to compare with.
 
         If no index has been created on the vector column then a vector query
         will perform a distance comparison between the query vector and every
@@ -1221,8 +1226,10 @@ class AsyncVectorQuery(AsyncQueryBase):
         Construct an AsyncVectorQuery
 
         This method is not intended to be called directly.  Instead, create
-        a query first with [Table.query][] and then use [AsyncQuery.nearest_to][]
-        to convert to a vector query.
+        a query first with [AsyncTable.query][lancedb.table.AsyncTable.query] and then
+        use [AsyncQuery.nearest_to][lancedb.query.AsyncQuery.nearest_to]] to convert to
+        a vector query.  Or you can use
+        [AsyncTable.vector_search][lancedb.table.AsyncTable.vector_search]
         """
         super().__init__(inner)
         self._inner = inner
@@ -1232,7 +1239,7 @@ class AsyncVectorQuery(AsyncQueryBase):
         Set the vector column to query
 
         This controls which column is compared to the query vector supplied in
-        the call to [Query.nearest_to][].
+        the call to [AsyncQuery.nearest_to][lancedb.query.AsyncQuery.nearest_to].
 
         This parameter must be specified if the table has more than one column
         whose data type is a fixed-size-list of floats.
