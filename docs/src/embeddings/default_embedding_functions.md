@@ -156,11 +156,11 @@ Allows you to set parameters when registering a `sentence-transformers` object.
     ```python
     db = lancedb.connect("/tmp/db")
     registry = EmbeddingFunctionRegistry.get_instance()
-    func = registry.get("sentence-transformers").create(name="BAAI/bge-small-en-v1.5", device="cpu")
+    model = registry.get("sentence-transformers").create(name="BAAI/bge-small-en-v1.5", device="cpu")
 
     class Words(LanceModel):
-        text: str = func.SourceField()
-        vector: Vector(func.ndims()) = func.VectorField()
+        text: str = model.SourceField()
+        vector: Vector(model.ndims()) = model.VectorField()
 
     table = db.create_table("words", schema=Words)
     table.add(
