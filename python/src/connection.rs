@@ -137,6 +137,21 @@ impl Connection {
             Ok(Table::new(table))
         })
     }
+
+    pub fn drop_table(self_: PyRef<'_, Self>, name: String) -> PyResult<&PyAny> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            inner.drop_table(name).await.infer_error()
+        })
+    }
+
+    pub fn drop_db(self_: PyRef<'_, Self>) -> PyResult<&PyAny> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(
+            self_.py(),
+            async move { inner.drop_db().await.infer_error() },
+        )
+    }
 }
 
 #[pyfunction]

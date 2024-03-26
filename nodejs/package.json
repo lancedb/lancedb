@@ -1,17 +1,18 @@
 {
-  "name": "lancedb",
+  "name": "@lancedb/lancedb",
   "version": "0.4.3",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "napi": {
-    "name": "lancedb-nodejs",
+    "name": "lancedb",
     "triples": {
       "defaults": false,
       "additional": [
         "aarch64-apple-darwin",
         "aarch64-unknown-linux-gnu",
         "x86_64-apple-darwin",
-        "x86_64-unknown-linux-gnu"
+        "x86_64-unknown-linux-gnu",
+        "x86_64-pc-windows-msvc"
       ]
     }
   },
@@ -28,6 +29,7 @@
     "eslint-plugin-jsdoc": "^48.2.1",
     "jest": "^29.7.0",
     "prettier": "^3.1.0",
+    "shx": "^0.3.4",
     "tmp": "^0.2.3",
     "ts-jest": "^29.1.2",
     "typedoc": "^0.25.7",
@@ -48,13 +50,14 @@
   "os": [
     "darwin",
     "linux",
-    "windows"
+    "win32"
   ],
   "scripts": {
     "artifacts": "napi artifacts",
-    "build:native": "napi build --platform --release --js lancedb/native.js --dts lancedb/native.d.ts dist/",
     "build:debug": "napi build --platform --dts ../lancedb/native.d.ts --js ../lancedb/native.js dist/",
-    "build": "npm run build:debug && tsc -b",
+    "build:release": "napi build --platform --release --dts ../lancedb/native.d.ts --js ../lancedb/native.js dist/",
+    "build": "npm run build:debug && tsc -b && shx cp lancedb/native.d.ts dist/native.d.ts",
+    "build-release": "npm run build:release && tsc -b && shx cp lancedb/native.d.ts dist/native.d.ts",
     "chkformat": "prettier . --check",
     "docs": "typedoc --plugin typedoc-plugin-markdown lancedb/index.ts",
     "lint": "eslint lancedb && eslint __test__",
@@ -64,13 +67,14 @@
     "version": "napi version"
   },
   "optionalDependencies": {
-    "lancedb-darwin-arm64": "0.4.3",
-    "lancedb-darwin-x64": "0.4.3",
-    "lancedb-linux-arm64-gnu": "0.4.3",
-    "lancedb-linux-x64-gnu": "0.4.3",
-    "openai": "^4.28.4"
+    "@lancedb/lancedb-darwin-arm64": "0.4.3",
+    "@lancedb/lancedb-darwin-x64": "0.4.3",
+    "@lancedb/lancedb-linux-arm64-gnu": "0.4.3",
+    "@lancedb/lancedb-linux-x64-gnu": "0.4.3",
+    "@lancedb/lancedb-win32-x64-msvc": "0.4.3"
   },
-  "peerDependencies": {
+  "dependencies": {
+    "openai": "^4.29.2",
     "apache-arrow": "^15.0.0"
   }
 }
