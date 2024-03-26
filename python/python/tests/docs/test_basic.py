@@ -9,7 +9,7 @@ import pyarrow as pa
 import pytest
 from numpy.random import randint, random
 
-shutil.rmtree("data/sample-lancedb")
+shutil.rmtree("data/sample-lancedb", ignore_errors=True)
 
 
 def test_quickstart():
