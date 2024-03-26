@@ -85,58 +85,131 @@ markdown_extensions:
       alternate_style: true
   - md_in_html
   - attr_list
-
+  
 nav:
-- Home:
-  - LanceDB: index.md
-  - 🏃🏼‍♂️ Quick start: basic.md
-  - 📚 Concepts:
-    - Vector search: concepts/vector_search.md
-    - Indexing: concepts/index_ivfpq.md
-    - Storage: concepts/storage.md
-    - Data management: concepts/data_management.md
-  - 🔨 Guides:
-    - Working with tables: guides/tables.md
-    - Building an ANN index: ann_indexes.md
-    - Vector Search: search.md
-    - Full-text search: fts.md
-    - Hybrid search:
-      - Overview: hybrid_search/hybrid_search.md
-      - Comparing Rerankers: hybrid_search/eval.md
-      - Airbnb financial data example: notebooks/hybrid_search.ipynb
-    - Reranking:
-      - Quickstart: reranking/index.md
-      - Cohere Reranker: reranking/cohere.md
-      - Linear Combination Reranker: reranking/linear_combination.md
-      - Cross Encoder Reranker: reranking/cross_encoder.md
-      - ColBERT Reranker: reranking/colbert.md
-      - OpenAI Reranker: reranking/openai.md
-      - Building Custom Rerankers: reranking/custom_reranker.md
-    - Filtering: sql.md
-    - Versioning & Reproducibility: notebooks/reproducibility.ipynb
-    - Configuring Storage: guides/storage.md
-  - 🧬 Managing embeddings:
-    - Overview: embeddings/index.md
-    - Embedding functions: embeddings/embedding_functions.md
-    - Available models: embeddings/default_embedding_functions.md
-    - User-defined embedding functions: embeddings/custom_embedding_function.md
-    - "Example: Multi-lingual semantic search": notebooks/multi_lingual_example.ipynb
-    - "Example: MultiModal CLIP Embeddings": notebooks/DisappearingEmbeddingFunction.ipynb
-  - 🔌 Integrations:
-    - Tools and data formats: integrations/index.md
-    - Pandas and PyArrow: python/pandas_and_pyarrow.md
-    - Polars: python/polars_arrow.md
-    - DuckDB: python/duckdb.md
-    - LangChain 🔗: https://python.langchain.com/en/latest/modules/indexes/vectorstores/examples/lancedb.html
-    - LangChain JS/TS 🔗: https://js.langchain.com/docs/modules/data_connection/vectorstores/integrations/lancedb
-    - LlamaIndex 🦙: https://gpt-index.readthedocs.io/en/latest/examples/vector_stores/LanceDBIndexDemo.html
-    - Pydantic: python/pydantic.md
-    - Voxel51: integrations/voxel51.md
-    - PromptTools: integrations/prompttools.md
-  - 🎯 Examples:
-    - Overview: examples/index.md
-    - 🐍 Python:
-      - Overview: examples/examples_python.md
+  - Home:
+      - LanceDB: index.md
+      - 🏃🏼‍♂️ Quick start: basic.md
+      - 📚 Concepts:
+          - Vector search: concepts/vector_search.md
+          - Indexing: concepts/index_ivfpq.md
+          - Storage: concepts/storage.md
+          - Data management: concepts/data_management.md
+      - 🔨 Guides:
+          - Working with tables: guides/tables.md
+          - Building an ANN index: ann_indexes.md
+          - Vector Search: search.md
+          - Full-text search: fts.md
+          - Hybrid search:
+              - Overview: hybrid_search/hybrid_search.md
+              - Comparing Rerankers: hybrid_search/eval.md
+              - Airbnb financial data example: notebooks/hybrid_search.ipynb
+          - Reranking:
+              - Quickstart: reranking/index.md
+              - Cohere Reranker: reranking/cohere.md
+              - Linear Combination Reranker: reranking/linear_combination.md
+              - Cross Encoder Reranker: reranking/cross_encoder.md
+              - ColBERT Reranker: reranking/colbert.md
+              - OpenAI Reranker: reranking/openai.md
+              - Building Custom Rerankers: reranking/custom_reranker.md
+          - Filtering: sql.md
+          - Versioning & Reproducibility: notebooks/reproducibility.ipynb
+          - Configuring Storage: guides/storage.md
+          - Sync -> Async Migration Guide: migration.md
+      - 🧬 Managing embeddings:
+          - Overview: embeddings/index.md
+          - Embedding functions: embeddings/embedding_functions.md
+          - Available models: embeddings/default_embedding_functions.md
+          - User-defined embedding functions: embeddings/custom_embedding_function.md
+          - "Example: Multi-lingual semantic search": notebooks/multi_lingual_example.ipynb
+          - "Example: MultiModal CLIP Embeddings": notebooks/DisappearingEmbeddingFunction.ipynb
+      - 🔌 Integrations:
+          - Tools and data formats: integrations/index.md
+          - Pandas and PyArrow: python/pandas_and_pyarrow.md
+          - Polars: python/polars_arrow.md
+          - DuckDB: python/duckdb.md
+          - LangChain 🔗: https://python.langchain.com/en/latest/modules/indexes/vectorstores/examples/lancedb.html
+          - LangChain JS/TS 🔗: https://js.langchain.com/docs/modules/data_connection/vectorstores/integrations/lancedb
+          - LlamaIndex 🦙: https://gpt-index.readthedocs.io/en/latest/examples/vector_stores/LanceDBIndexDemo.html
+          - Pydantic: python/pydantic.md
+          - Voxel51: integrations/voxel51.md
+          - PromptTools: integrations/prompttools.md
+      - 🎯 Examples:
+          - Overview: examples/index.md
+          - 🐍 Python:
+              - Overview: examples/examples_python.md
+              - YouTube Transcript Search: notebooks/youtube_transcript_search.ipynb
+              - Documentation QA Bot using LangChain: notebooks/code_qa_bot.ipynb
+              - Multimodal search using CLIP: notebooks/multimodal_search.ipynb
+              - Example - Calculate CLIP Embeddings with Roboflow Inference: examples/image_embeddings_roboflow.md
+              - Serverless QA Bot with S3 and Lambda: examples/serverless_lancedb_with_s3_and_lambda.md
+              - Serverless QA Bot with Modal: examples/serverless_qa_bot_with_modal_and_langchain.md
+          - 👾 JavaScript:
+              - Overview: examples/examples_js.md
+              - Serverless Website Chatbot: examples/serverless_website_chatbot.md
+              - YouTube Transcript Search: examples/youtube_transcript_bot_with_nodejs.md
+              - TransformersJS Embedding Search: examples/transformerjs_embedding_search_nodejs.md
+          - 🦀 Rust:
+              - Overview: examples/examples_rust.md
+      - 🔧 CLI & Config: cli_config.md
+      - 💭 FAQs: faq.md
+      - ⚙️ API reference:
+          - 🐍 Python: python/python.md
+          - 👾 JavaScript: javascript/modules.md
+          - 🦀 Rust: https://docs.rs/lancedb/latest/lancedb/
+      - ☁️ LanceDB Cloud:
+          - Overview: cloud/index.md
+          - API reference:
+              - 🐍 Python: python/saas-python.md
+              - 👾 JavaScript: javascript/saas-modules.md
+
+  - Quick start: basic.md
+  - Concepts:
+      - Vector search: concepts/vector_search.md
+      - Indexing: concepts/index_ivfpq.md
+      - Storage: concepts/storage.md
+      - Data management: concepts/data_management.md
+  - Guides:
+      - Working with tables: guides/tables.md
+      - Building an ANN index: ann_indexes.md
+      - Vector Search: search.md
+      - Full-text search: fts.md
+      - Hybrid search:
+          - Overview: hybrid_search/hybrid_search.md
+          - Comparing Rerankers: hybrid_search/eval.md
+          - Airbnb financial data example: notebooks/hybrid_search.ipynb
+      - Reranking:
+          - Quickstart: reranking/index.md
+          - Cohere Reranker: reranking/cohere.md
+          - Linear Combination Reranker: reranking/linear_combination.md
+          - Cross Encoder Reranker: reranking/cross_encoder.md
+          - ColBERT Reranker: reranking/colbert.md
+          - OpenAI Reranker: reranking/openai.md
+          - Building Custom Rerankers: reranking/custom_reranker.md
+      - Filtering: sql.md
+      - Versioning & Reproducibility: notebooks/reproducibility.ipynb
+      - Configuring Storage: guides/storage.md
+      - Sync -> Async Migration Guide: migration.md
+  - Managing Embeddings:
+      - Overview: embeddings/index.md
+      - Embedding functions: embeddings/embedding_functions.md
+      - Available models: embeddings/default_embedding_functions.md
+      - User-defined embedding functions: embeddings/custom_embedding_function.md
+      - "Example: Multi-lingual semantic search": notebooks/multi_lingual_example.ipynb
+      - "Example: MultiModal CLIP Embeddings": notebooks/DisappearingEmbeddingFunction.ipynb
+  - Integrations:
+      - Overview: integrations/index.md
+      - Pandas and PyArrow: python/pandas_and_pyarrow.md
+      - Polars: python/polars_arrow.md
+      - DuckDB: python/duckdb.md
+      - LangChain 🦜️🔗↗: https://python.langchain.com/en/latest/modules/indexes/vectorstores/examples/lancedb.html
+      - LangChain.js 🦜️🔗↗: https://js.langchain.com/docs/modules/data_connection/vectorstores/integrations/lancedb
+      - LlamaIndex 🦙↗: https://gpt-index.readthedocs.io/en/latest/examples/vector_stores/LanceDBIndexDemo.html
+      - Pydantic: python/pydantic.md
+      - Voxel51: integrations/voxel51.md
+      - PromptTools: integrations/prompttools.md
+  - Examples:
+      - examples/index.md
       - YouTube Transcript Search: notebooks/youtube_transcript_search.ipynb
       - Documentation QA Bot using LangChain: notebooks/code_qa_bot.ipynb
       - Multimodal search using CLIP: notebooks/multimodal_search.ipynb
@@ -145,85 +218,16 @@ nav:
       - YouTube Transcript Search (JS): examples/youtube_transcript_bot_with_nodejs.md
       - Serverless Chatbot from any website: examples/serverless_website_chatbot.md
       - TransformersJS Embedding Search: examples/transformerjs_embedding_search_nodejs.md
-    - 🦀 Rust:
-      - Overview: examples/examples_rust.md
-  - 🔧 CLI & Config: cli_config.md
-  - 💭 FAQs: faq.md
-  - ⚙️ API reference:
-    - 🐍 Python: python/python.md
-    - 👾 JavaScript: javascript/modules.md
-    - 🦀 Rust: https://docs.rs/lancedb/latest/lancedb/
-  - ☁️ LanceDB Cloud:
-    - Overview: cloud/index.md
-    - API reference:
-      - 🐍 Python: python/saas-python.md
-      - 👾 JavaScript: javascript/saas-modules.md
-
-
-- Quick start: basic.md
-- Concepts:
-    - Vector search: concepts/vector_search.md
-    - Indexing: concepts/index_ivfpq.md
-    - Storage: concepts/storage.md
-    - Data management: concepts/data_management.md
-- Guides:
-    - Working with tables: guides/tables.md
-    - Building an ANN index: ann_indexes.md
-    - Vector Search: search.md
-    - Full-text search: fts.md
-    - Hybrid search:
-      - Overview: hybrid_search/hybrid_search.md
-      - Comparing Rerankers: hybrid_search/eval.md
-      - Airbnb financial data example: notebooks/hybrid_search.ipynb
-    - Reranking:
-      - Quickstart: reranking/index.md
-      - Cohere Reranker: reranking/cohere.md
-      - Linear Combination Reranker: reranking/linear_combination.md
-      - Cross Encoder Reranker: reranking/cross_encoder.md
-      - ColBERT Reranker: reranking/colbert.md
-      - OpenAI Reranker: reranking/openai.md
-      - Building Custom Rerankers: reranking/custom_reranker.md
-    - Filtering: sql.md
-    - Versioning & Reproducibility: notebooks/reproducibility.ipynb
-    - Configuring Storage: guides/storage.md
-- Managing Embeddings:
-  - Overview: embeddings/index.md
-  - Embedding functions: embeddings/embedding_functions.md
-  - Available models: embeddings/default_embedding_functions.md
-  - User-defined embedding functions: embeddings/custom_embedding_function.md
-  - "Example: Multi-lingual semantic search": notebooks/multi_lingual_example.ipynb
-  - "Example: MultiModal CLIP Embeddings": notebooks/DisappearingEmbeddingFunction.ipynb
-- Integrations:
-  - Overview: integrations/index.md
-  - Pandas and PyArrow: python/pandas_and_pyarrow.md
-  - Polars: python/polars_arrow.md
-  - DuckDB : python/duckdb.md
-  - LangChain 🦜️🔗↗: https://python.langchain.com/en/latest/modules/indexes/vectorstores/examples/lancedb.html
-  - LangChain.js 🦜️🔗↗: https://js.langchain.com/docs/modules/data_connection/vectorstores/integrations/lancedb
-  - LlamaIndex 🦙↗: https://gpt-index.readthedocs.io/en/latest/examples/vector_stores/LanceDBIndexDemo.html
-  - Pydantic: python/pydantic.md
-  - Voxel51: integrations/voxel51.md
-  - PromptTools: integrations/prompttools.md
-- Examples:
-  - examples/index.md
-  - YouTube Transcript Search: notebooks/youtube_transcript_search.ipynb
-  - Documentation QA Bot using LangChain: notebooks/code_qa_bot.ipynb
-  - Multimodal search using CLIP: notebooks/multimodal_search.ipynb
-  - Serverless QA Bot with S3 and Lambda: examples/serverless_lancedb_with_s3_and_lambda.md
-  - Serverless QA Bot with Modal: examples/serverless_qa_bot_with_modal_and_langchain.md
-  - YouTube Transcript Search (JS): examples/youtube_transcript_bot_with_nodejs.md
-  - Serverless Chatbot from any website: examples/serverless_website_chatbot.md
-  - TransformersJS Embedding Search: examples/transformerjs_embedding_search_nodejs.md
-- API reference:
-  - Overview: api_reference.md
-  - Python: python/python.md
-  - Javascript: javascript/modules.md
-  - Rust: https://docs.rs/lancedb/latest/lancedb/index.html
-- LanceDB Cloud:
-    - Overview: cloud/index.md
-    - API reference:
-      - 🐍 Python: python/saas-python.md
-      - 👾 JavaScript: javascript/saas-modules.md
+  - API reference:
+      - Overview: api_reference.md
+      - Python: python/python.md
+      - Javascript: javascript/modules.md
+      - Rust: https://docs.rs/lancedb/latest/lancedb/index.html
+  - LanceDB Cloud:
+      - Overview: cloud/index.md
+      - API reference:
+          - 🐍 Python: python/saas-python.md
+          - 👾 JavaScript: javascript/saas-modules.md
 
 extra_css:
   - styles/global.css
