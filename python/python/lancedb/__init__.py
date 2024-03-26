@@ -150,11 +150,11 @@ async def connect_async(
     --------
 
     >>> import lancedb
-    >>> async def doctest_example()
-    >>>   # For a local directory, provide a path to the database
-    >>>   db = await lancedb.connect_async("~/.lancedb")
-    >>>   # For object storage, use a URI prefix
-    >>>   db = await lancedb.connect_async("s3://my-bucket/lancedb")
+    >>> async def doctest_example():
+    ...     # For a local directory, provide a path to the database
+    ...     db = await lancedb.connect_async("~/.lancedb")
+    ...     # For object storage, use a URI prefix
+    ...     db = await lancedb.connect_async("s3://my-bucket/lancedb")
 
     Returns
     -------
