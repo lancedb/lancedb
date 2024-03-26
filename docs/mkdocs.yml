@@ -38,52 +38,53 @@ theme:
   custom_dir: overrides
 
 plugins:
-- search
-- autorefs
-- mkdocstrings:
-    handlers:
-      python:
-        paths: [../python]
-        options:
-          docstring_style: numpy
-          heading_level: 4
-          show_source: true
-          show_symbol_type_in_heading: true
-          show_signature_annotations: true
-          members_order: source
-        import:
-          # for cross references
-          - https://arrow.apache.org/docs/objects.inv
-          - https://pandas.pydata.org/docs/objects.inv
-- mkdocs-jupyter
-- ultralytics:
-    verbose: True
-    enabled: True
-    default_image: "assets/lancedb_and_lance.png" # Default image for all pages
-    add_image: True # Automatically add meta image
-    add_keywords: True # Add page keywords in the header tag
-    add_share_buttons: True # Add social share buttons
-    add_authors: False # Display page authors
-    add_desc: False
-    add_dates: False
+  - search
+  - autorefs
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [../python]
+          options:
+            docstring_style: numpy
+            heading_level: 3
+            show_source: true
+            show_symbol_type_in_heading: true
+            show_signature_annotations: true
+            show_root_heading: true
+            members_order: source
+          import:
+            # for cross references
+            - https://arrow.apache.org/docs/objects.inv
+            - https://pandas.pydata.org/docs/objects.inv
+  - mkdocs-jupyter
+  - ultralytics:
+      verbose: True
+      enabled: True
+      default_image: "assets/lancedb_and_lance.png" # Default image for all pages
+      add_image: True # Automatically add meta image
+      add_keywords: True # Add page keywords in the header tag
+      add_share_buttons: True # Add social share buttons
+      add_authors: False # Display page authors
+      add_desc: False
+      add_dates: False
 
 markdown_extensions:
-- admonition
-- footnotes
-- pymdownx.details
-- pymdownx.highlight:
-    anchor_linenums: true
-    line_spans: __span
-    pygments_lang_class: true
-- pymdownx.inlinehilite
-- pymdownx.snippets:
-    base_path: ..
-    dedent_subsections: true
-- pymdownx.superfences
-- pymdownx.tabbed:
-    alternate_style: true
-- md_in_html
-- attr_list
+  - admonition
+  - footnotes
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets:
+      base_path: ..
+      dedent_subsections: true
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - md_in_html
+  - attr_list
 
 nav:
 - Home:
@@ -139,13 +140,10 @@ nav:
       - YouTube Transcript Search: notebooks/youtube_transcript_search.ipynb
       - Documentation QA Bot using LangChain: notebooks/code_qa_bot.ipynb
       - Multimodal search using CLIP: notebooks/multimodal_search.ipynb
-      - Example - Calculate CLIP Embeddings with Roboflow Inference: examples/image_embeddings_roboflow.md
       - Serverless QA Bot with S3 and Lambda: examples/serverless_lancedb_with_s3_and_lambda.md
       - Serverless QA Bot with Modal: examples/serverless_qa_bot_with_modal_and_langchain.md
-    - 👾 JavaScript:
-      - Overview: examples/examples_js.md
-      - Serverless Website Chatbot: examples/serverless_website_chatbot.md
-      - YouTube Transcript Search: examples/youtube_transcript_bot_with_nodejs.md
+      - YouTube Transcript Search (JS): examples/youtube_transcript_bot_with_nodejs.md
+      - Serverless Chatbot from any website: examples/serverless_website_chatbot.md
       - TransformersJS Embedding Search: examples/transformerjs_embedding_search_nodejs.md
     - 🦀 Rust:
       - Overview: examples/examples_rust.md

@@ -18,7 +18,7 @@ on:
 env:
   # Disable full debug symbol generation to speed up CI build and keep memory down
   # "1" means line tables only, which is useful for panic tracebacks.
-  RUSTFLAGS: "-C debuginfo=1 -C target-cpu=native -C target-feature=+f16c,+avx2,+fma"
+  RUSTFLAGS: "-C debuginfo=1 -C target-cpu=haswell -C target-feature=+f16c,+avx2,+fma"
   RUST_BACKTRACE: "1"
 
 jobs:
@@ -28,6 +28,8 @@ jobs:
     steps:
     - name: Checkout
       uses: actions/checkout@v4
+    - name: Print CPU capabilities
+      run: cat /proc/cpuinfo
     - name: Install dependecies needed for ubuntu
       run: |
         sudo apt install -y protobuf-compiler libssl-dev
@@ -39,7 +41,7 @@ jobs:
         cache: "pip"
         cache-dependency-path: "docs/test/requirements.txt"
     - name: Rust cache
-      uses: swatinem/rust-cache@v2        
+      uses: swatinem/rust-cache@v2
     - name: Build Python
       working-directory: docs/test
       run:
@@ -64,6 +66,8 @@ jobs:
       with:
         fetch-depth: 0
         lfs: true
+    - name: Print CPU capabilities
+      run: cat /proc/cpuinfo
     - name: Set up Node
       uses: actions/setup-node@v4
       with:
