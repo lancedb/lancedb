@@ -127,7 +127,7 @@ Allows you to set parameters when registering a `sentence-transformers` object.
     - sentence-transformers/paraphrase-albert-small-v2
     - sentence-transformers/paraphrase-distilroberta-base-v1
     - sentence-transformers/paraphrase-distilroberta-base-v2
-    -transformers/paraphrase-multilingual-MiniLM-L12-v2
+    - sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
     - sentence-transformers/paraphrase-multilingual-mpnet-base-v2
     - sentence-transformers/paraphrase-xlm-r-multilingual-v1
     - sentence-transformers/quora-distilbert-base
