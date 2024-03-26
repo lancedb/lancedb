@@ -145,34 +145,20 @@ async def connect_async(
         the last check, then the table will be checked for updates. Note: this
         consistency only applies to read operations. Write operations are
         always consistent.
-    request_thread_pool: int or ThreadPoolExecutor, optional
-        The thread pool to use for making batch requests to the LanceDB Cloud API.
-        If an integer, then a ThreadPoolExecutor will be created with that
-        number of threads. If None, then a ThreadPoolExecutor will be created
-        with the default number of threads. If a ThreadPoolExecutor, then that
-        executor will be used for making requests. This is for LanceDB Cloud
-        only and is only used when making batch requests (i.e., passing in
-        multiple queries to the search method at once).
 
     Examples
     --------
 
-    For a local directory, provide a path for the database:
-
     >>> import lancedb
-    >>> db = lancedb.connect("~/.lancedb")
-
-    For object storage, use a URI prefix:
-
-    >>> db = lancedb.connect("s3://my-bucket/lancedb")
-
-    Connect to LancdDB cloud:
-
-    >>> db = lancedb.connect("db://my_database", api_key="ldb_...")
+    >>> async def doctest_example():
+    ...     # For a local directory, provide a path to the database
+    ...     db = await lancedb.connect_async("~/.lancedb")
+    ...     # For object storage, use a URI prefix
+    ...     db = await lancedb.connect_async("s3://my-bucket/lancedb")
 
     Returns
     -------
-    conn : DBConnection
+    conn : AsyncConnection
         A connection to a LanceDB database.
     """
     if read_consistency_interval is not None:

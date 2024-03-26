@@ -48,11 +48,20 @@
 
 === "Python"
 
-      ```python
-      import lancedb
-      uri = "data/sample-lancedb"
-      db = lancedb.connect(uri)
-      ```
+    ```python
+    --8<-- "python/python/tests/docs/test_basic.py:imports"
+    --8<-- "python/python/tests/docs/test_basic.py:connect"
+
+    --8<-- "python/python/tests/docs/test_basic.py:connect_async"
+    ```
+
+    !!! note "Asynchronous Python API"
+
+        The asynchronous Python API is new and has some slight differences compared
+        to the synchronous API.  Feel free to start using the asynchronous version.
+        Once all features have migrated we will start to move the synchronous API to
+        use the same syntax as the asynchronous API.  To help with this migration we
+        have created a [migration guide](migration.md) detailing the differences.
 
 === "Typescript"
 
@@ -82,15 +91,14 @@ If you need a reminder of the uri, you can call `db.uri()`.
 ### Create a table from initial data
 
 If you have data to insert into the table at creation time, you can simultaneously create a
-table and insert the data into it.  The schema of the data will be used as the schema of the
+table and insert the data into it. The schema of the data will be used as the schema of the
 table.
 
 === "Python"
 
     ```python
-    tbl = db.create_table("my_table",
-                    data=[{"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
-                          {"vector": [5.9, 26.5], "item": "bar", "price": 20.0}])
+    --8<-- "python/python/tests/docs/test_basic.py:create_table"
+    --8<-- "python/python/tests/docs/test_basic.py:create_table_async"
     ```
 
     If the table already exists, LanceDB will raise an error by default.
@@ -100,10 +108,8 @@ table.
     You can also pass in a pandas DataFrame directly:
 
     ```python
-    import pandas as pd
-    df = pd.DataFrame([{"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
-                       {"vector": [5.9, 26.5], "item": "bar", "price": 20.0}])
-    tbl = db.create_table("table_from_df", data=df)
+    --8<-- "python/python/tests/docs/test_basic.py:create_table_pandas"
+    --8<-- "python/python/tests/docs/test_basic.py:create_table_async_pandas"
     ```
 
 === "Typescript"
@@ -138,15 +144,14 @@ table.
 
 Sometimes you may not have the data to insert into the table at creation time.
 In this case, you can create an empty table and specify the schema, so that you can add
-data to the table at a later time (as long as it conforms to the schema).  This is
+data to the table at a later time (as long as it conforms to the schema). This is
 similar to a `CREATE TABLE` statement in SQL.
 
 === "Python"
 
       ```python
-      import pyarrow as pa
-      schema = pa.schema([pa.field("vector", pa.list_(pa.float32(), list_size=2))])
-      tbl = db.create_table("empty_table", schema=schema)
+      --8<-- "python/python/tests/docs/test_basic.py:create_empty_table"
+      --8<-- "python/python/tests/docs/test_basic.py:create_empty_table_async"
       ```
 
 === "Typescript"
@@ -168,7 +173,8 @@ Once created, you can open a table as follows:
 === "Python"
 
     ```python
-    tbl = db.open_table("my_table")
+    --8<-- "python/python/tests/docs/test_basic.py:open_table"
+    --8<-- "python/python/tests/docs/test_basic.py:open_table_async"
     ```
 
 === "Typescript"
@@ -188,7 +194,8 @@ If you forget the name of your table, you can always get a listing of all table 
 === "Python"
 
     ```python
-    print(db.table_names())
+    --8<-- "python/python/tests/docs/test_basic.py:table_names"
+    --8<-- "python/python/tests/docs/test_basic.py:table_names_async"
     ```
 
 === "Javascript"
@@ -210,15 +217,8 @@ After a table has been created, you can always add more data to it as follows:
 === "Python"
 
     ```python
-
-    # Option 1: Add a list of dicts to a table
-    data = [{"vector": [1.3, 1.4], "item": "fizz", "price": 100.0},
-            {"vector": [9.5, 56.2], "item": "buzz", "price": 200.0}]
-    tbl.add(data)
-
-    # Option 2: Add a pandas DataFrame to a table
-    df = pd.DataFrame(data)
-    tbl.add(data)
+    --8<-- "python/python/tests/docs/test_basic.py:add_data"
+    --8<-- "python/python/tests/docs/test_basic.py:add_data_async"
     ```
 
 === "Typescript"
@@ -240,7 +240,8 @@ Once you've embedded the query, you can find its nearest neighbors as follows:
 === "Python"
 
     ```python
-    tbl.search([100, 100]).limit(2).to_pandas()
+    --8<-- "python/python/tests/docs/test_basic.py:vector_search"
+    --8<-- "python/python/tests/docs/test_basic.py:vector_search_async"
     ```
 
     This returns a pandas DataFrame with the results.
@@ -274,7 +275,8 @@ LanceDB allows you to create an ANN index on a table as follows:
 === "Python"
 
     ```py
-    tbl.create_index()
+    --8<-- "python/python/tests/docs/test_basic.py:create_index"
+    --8<-- "python/python/tests/docs/test_basic.py:create_index_async"
     ```
 
 === "Typescript"
@@ -286,15 +288,15 @@ LanceDB allows you to create an ANN index on a table as follows:
 === "Rust"
 
     ```rust
-     --8<-- "rust/lancedb/examples/simple.rs:create_index"
+    --8<-- "rust/lancedb/examples/simple.rs:create_index"
     ```
 
 !!! note "Why do I need to create an index manually?"
-    LanceDB does not automatically create the ANN index for two reasons. The first is that it's optimized
-    for really fast retrievals via a disk-based index, and the second is that data and query workloads can
-    be very diverse, so there's no one-size-fits-all index configuration. LanceDB provides many parameters
-    to fine-tune index size, query latency and accuracy. See the section on
-    [ANN indexes](ann_indexes.md) for more details.
+LanceDB does not automatically create the ANN index for two reasons. The first is that it's optimized
+for really fast retrievals via a disk-based index, and the second is that data and query workloads can
+be very diverse, so there's no one-size-fits-all index configuration. LanceDB provides many parameters
+to fine-tune index size, query latency and accuracy. See the section on
+[ANN indexes](ann_indexes.md) for more details.
 
 ## Delete rows from a table
 
@@ -305,7 +307,8 @@ This can delete any number of rows that match the filter.
 === "Python"
 
     ```python
-    tbl.delete('item = "fizz"')
+    --8<-- "python/python/tests/docs/test_basic.py:delete_rows"
+    --8<-- "python/python/tests/docs/test_basic.py:delete_rows_async"
     ```
 
 === "Typescript"
@@ -322,7 +325,7 @@ This can delete any number of rows that match the filter.
 
 The deletion predicate is a SQL expression that supports the same expressions
 as the `where()` clause (`only_if()` in Rust) on a search. They can be as
-simple or complex as needed.  To see what expressions are supported, see the
+simple or complex as needed. To see what expressions are supported, see the
 [SQL filters](sql.md) section.
 
 === "Python"
@@ -344,7 +347,8 @@ Use the `drop_table()` method on the database to remove a table.
 === "Python"
 
       ```python
-      db.drop_table("my_table")
+      --8<-- "python/python/tests/docs/test_basic.py:drop_table"
+      --8<-- "python/python/tests/docs/test_basic.py:drop_table_async"
       ```
 
       This permanently removes the table and is not recoverable, unlike deleting rows.
