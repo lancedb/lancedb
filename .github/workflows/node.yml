@@ -20,7 +20,7 @@ env:
   # "1" means line tables only, which is useful for panic tracebacks.
   #
   # Use native CPU to accelerate tests if possible, especially for f16
-  RUSTFLAGS: "-C debuginfo=1 -C target-cpu=native -C target-feature=+f16c,+avx2,+fma"
+  RUSTFLAGS: "-C debuginfo=1 -C target-cpu=haswell -C target-feature=+f16c,+avx2,+fma"
   RUST_BACKTRACE: "1"
 
 jobs:
