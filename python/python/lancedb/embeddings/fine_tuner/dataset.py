@@ -175,5 +175,5 @@ class TextChunk(BaseModel):
         return self.text
 
     def __repr__(self) -> str:
-        return f"SimpleTextChunk(text={self.text}, id={self.chunk_id}, \
+        return f"SimpleTextChunk(text={self.text}, id={self.id}, \
         metadata={self.metadata})"

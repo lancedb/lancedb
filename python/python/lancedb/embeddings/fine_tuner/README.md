@@ -66,7 +66,7 @@ class BaseEmbeddingTuner(ABC):
 ```
 
 ### Embedding API finetuning implementation
-Each embedding API needs to implement `finetune` method in order to support fine-tuning. A vinalla evaluation technique has been implemented in the `BaseEmbedding` class that calculates hit_rate @ `top_k`.
+Each embedding API needs to implement `finetune` method in order to support fine-tuning. A vanilla evaluation technique has been implemented in the `BaseEmbedding` class that calculates hit_rate @ `top_k`.
 
 ### Fine-tuning workflow
 The fine-tuning workflow is as follows:
