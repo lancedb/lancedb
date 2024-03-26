@@ -1,6 +1,6 @@
 # Full-text search
 
-LanceDB provides support for full-text search via [Tantivy](https://github.com/quickwit-oss/tantivy) (currently Python only), allowing you to incorporate keyword-based search (based on BM25) in your retrieval solutions. Our goal is to push the FTS integration down to the Rust level in the future, so that it's available for JavaScript users as well.
+LanceDB provides support for full-text search via [Tantivy](https://github.com/quickwit-oss/tantivy) (currently Python only), allowing you to incorporate keyword-based search (based on BM25) in your retrieval solutions. Our goal is to push the FTS integration down to the Rust level in the future, so that it's available for Rust and JavaScript users as well.  Follow along at [this Github issue](https://github.com/lancedb/lance/issues/1195)
 
 A hybrid search solution combining vector and full-text search is also on the way.
 
@@ -75,9 +75,39 @@ applied on top of the full text search results. This can be invoked via the fami
 table.search("puppy").limit(10).where("meta='foo'").to_list()
 ```
 
+## Sorting
+
+You can pre-sort the documents by specifying `ordering_field_names` when
+creating the full-text search index. Once pre-sorted, you can then specify
+`ordering_field_name` while searching to return results sorted by the given
+field. For example, 
+
+```
+table.create_fts_index(["text_field"], ordering_field_names=["sort_by_field"])
+
+(table.search("terms", ordering_field_name="sort_by_field")
+ .limit(20)
+ .to_list())
+```
+
+!!! note
+    If you wish to specify an ordering field at query time, you must also
+    have specified it during indexing time. Otherwise at query time, an
+    error will be raised that looks like `ValueError: The field does not exist: xxx`
+
+!!! note
+    The fields to sort on must be of typed unsigned integer, or else you will see 
+    an error during indexing that looks like 
+    `TypeError: argument 'value': 'float' object cannot be interpreted as an integer`.
+
+!!! note
+    You can specify multiple fields for ordering at indexing time.
+    But at query time only one ordering field is supported.
+
+
 ## Phrase queries vs. terms queries
 
-For full-text search you can specify either a **phrase** query like `"the old man and the sea"`, 
+For full-text search you can specify either a **phrase** query like `"the old man and the sea"`,
 or a **terms** search query like `"(Old AND Man) AND Sea"`. For more details on the terms
 query syntax, see Tantivy's [query parser rules](https://docs.rs/tantivy/latest/tantivy/query/struct.QueryParser.html).
 
@@ -112,7 +142,7 @@ double quotes replaced by single quotes.
 
 ## Configurations
 
-By default, LanceDB configures a 1GB heap size limit for creating the index. You can 
+By default, LanceDB configures a 1GB heap size limit for creating the index. You can
 reduce this if running on a smaller node, or increase this for faster performance while
 indexing a larger corpus.
 
@@ -128,7 +158,6 @@ table.create_fts_index(["text1", "text2"], writer_heap_size=heap, replace=True)
    If you add data after FTS index creation, it won't be reflected
    in search results until you do a full reindex.
 
-2. We currently only support local filesystem paths for the FTS index. 
+2. We currently only support local filesystem paths for the FTS index.
    This is a tantivy limitation. We've implemented an object store plugin
    but there's no way in tantivy-py to specify to use it.
-

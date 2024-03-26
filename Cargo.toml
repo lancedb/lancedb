@@ -14,10 +14,10 @@ keywords = ["lancedb", "lance", "database", "vector", "search"]
 categories = ["database-implementations"]
 
 [workspace.dependencies]
-lance = { "version" = "=0.10.4", "features" = ["dynamodb"] }
-lance-index = { "version" = "=0.10.4" }
-lance-linalg = { "version" = "=0.10.4" }
-lance-testing = { "version" = "=0.10.4" }
+lance = { "version" = "=0.10.5", "features" = ["dynamodb"] }
+lance-index = { "version" = "=0.10.5" }
+lance-linalg = { "version" = "=0.10.5" }
+lance-testing = { "version" = "=0.10.5" }
 # Note that this one does not include pyarrow
 arrow = { version = "50.0", optional = false }
 arrow-array = "50.0"
@@ -39,3 +39,5 @@ pin-project = "1.0.7"
 snafu = "0.7.4"
 url = "2"
 num-traits = "0.2"
+regex = "1.10"
+lazy_static = "1"

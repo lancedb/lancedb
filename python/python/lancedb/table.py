@@ -37,13 +37,14 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.fs as pa_fs
 from lance import LanceDataset
+from lance.dependencies import _check_for_hugging_face
 from lance.vector import vec_to_table
 
 from .common import DATA, VEC, VECTOR_COLUMN_NAME
 from .embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
 from .merge import LanceMergeInsertBuilder
 from .pydantic import LanceModel, model_to_dict
-from .query import LanceQueryBuilder, Query
+from .query import AsyncQuery, AsyncVectorQuery, LanceQueryBuilder, Query
 from .util import (
     fs_from_uri,
     inf_vector_column_query,
@@ -74,6 +75,27 @@ def _sanitize_data(
     on_bad_vectors: str,
     fill_value: Any,
 ):
+    if _check_for_hugging_face(data):
+        # Huggingface datasets
+        from lance.dependencies import datasets
+
+        if isinstance(data, datasets.dataset_dict.DatasetDict):
+            if schema is None:
+                schema = _schema_from_hf(data, schema)
+            data = _to_record_batch_generator(
+                _to_batches_with_split(data),
+                schema,
+                metadata,
+                on_bad_vectors,
+                fill_value,
+            )
+        elif isinstance(data, datasets.Dataset):
+            if schema is None:
+                schema = data.features.arrow_schema
+            data = _to_record_batch_generator(
+                data.data.to_batches(), schema, metadata, on_bad_vectors, fill_value
+            )
+
     if isinstance(data, list):
         # convert to list of dict if data is a bunch of LanceModels
         if isinstance(data[0], LanceModel):
@@ -110,6 +132,37 @@ def _sanitize_data(
     return data
 
 
+def _schema_from_hf(data, schema):
+    """
+    Extract pyarrow schema from HuggingFace DatasetDict
+    and validate that they're all the same schema between
+    splits
+    """
+    for dataset in data.values():
+        if schema is None:
+            schema = dataset.features.arrow_schema
+        elif schema != dataset.features.arrow_schema:
+            msg = "All datasets in a HuggingFace DatasetDict must have the same schema"
+            raise TypeError(msg)
+    return schema
+
+
+def _to_batches_with_split(data):
+    """
+    Return a generator of RecordBatches from a HuggingFace DatasetDict
+    with an extra `split` column
+    """
+    for key, dataset in data.items():
+        for batch in dataset.data.to_batches():
+            table = pa.Table.from_batches([batch])
+            if "split" not in table.column_names:
+                table = table.append_column(
+                    "split", pa.array([key] * batch.num_rows, pa.string())
+                )
+            for b in table.to_batches():
+                yield b
+
+
 def _append_vector_col(data: pa.Table, metadata: dict, schema: Optional[pa.Schema]):
     """
     Use the embedding function to automatically embed the source column and add the
@@ -144,12 +197,13 @@ def _to_record_batch_generator(
     data: Iterable, schema, metadata, on_bad_vectors, fill_value
 ):
     for batch in data:
-        if not isinstance(batch, pa.RecordBatch):
-            table = _sanitize_data(batch, schema, metadata, on_bad_vectors, fill_value)
-            for batch in table.to_batches():
-                yield batch
-        else:
-            yield batch
+        # always convert to table because we need to sanitize the data
+        # and do things like add the vector column etc
+        if isinstance(batch, pa.RecordBatch):
+            batch = pa.Table.from_batches([batch])
+        batch = _sanitize_data(batch, schema, metadata, on_bad_vectors, fill_value)
+        for b in batch.to_batches():
+            yield b
 
 
 class Table(ABC):
@@ -514,7 +568,9 @@ class Table(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def _execute_query(self, query: Query) -> pa.Table:
+    def _execute_query(
+        self, query: Query, batch_size: Optional[int] = None
+    ) -> pa.RecordBatchReader:
         pass
 
     @abstractmethod
@@ -1105,6 +1161,7 @@ class LanceTable(Table):
     def create_fts_index(
         self,
         field_names: Union[str, List[str]],
+        ordering_field_names: Union[str, List[str]] = None,
         *,
         replace: bool = False,
         writer_heap_size: Optional[int] = 1024 * 1024 * 1024,
@@ -1123,11 +1180,17 @@ class LanceTable(Table):
             not yet an atomic operation; the index will be temporarily
             unavailable while the new index is being created.
         writer_heap_size: int, default 1GB
+        ordering_field_names:
+            A list of unsigned type fields to index to optionally order
+            results on at search time
         """
         from .fts import create_index, populate_index
 
         if isinstance(field_names, str):
             field_names = [field_names]
+
+        if isinstance(ordering_field_names, str):
+            ordering_field_names = [ordering_field_names]
 
         fs, path = fs_from_uri(self._get_fts_index_path())
         index_exists = fs.get_file_info(path).type != pa_fs.FileType.NotFound
@@ -1136,8 +1199,18 @@ class LanceTable(Table):
                 raise ValueError("Index already exists. Use replace=True to overwrite.")
             fs.delete_dir(path)
 
-        index = create_index(self._get_fts_index_path(), field_names)
-        populate_index(index, self, field_names, writer_heap_size=writer_heap_size)
+        index = create_index(
+            self._get_fts_index_path(),
+            field_names,
+            ordering_fields=ordering_field_names,
+        )
+        populate_index(
+            index,
+            self,
+            field_names,
+            ordering_fields=ordering_field_names,
+            writer_heap_size=writer_heap_size,
+        )
         register_event("create_fts_index")
 
     def _get_fts_index_path(self):
@@ -1271,6 +1344,7 @@ class LanceTable(Table):
         query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
         vector_column_name: Optional[str] = None,
         query_type: str = "auto",
+        ordering_field_name: Optional[str] = None,
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support [vector search][search]
@@ -1338,7 +1412,11 @@ class LanceTable(Table):
             vector_column_name = inf_vector_column_query(self.schema)
         register_event("search_table")
         return LanceQueryBuilder.create(
-            self, query, query_type, vector_column_name=vector_column_name
+            self,
+            query,
+            query_type,
+            vector_column_name=vector_column_name,
+            ordering_field_name=ordering_field_name,
         )
 
     @classmethod
@@ -1520,10 +1598,11 @@ class LanceTable(Table):
         self._dataset_mut.update(values_sql, where)
         register_event("update")
 
-    def _execute_query(self, query: Query) -> pa.Table:
+    def _execute_query(
+        self, query: Query, batch_size: Optional[int] = None
+    ) -> pa.RecordBatchReader:
         ds = self.to_lance()
-
-        return ds.to_table(
+        return ds.scanner(
             columns=query.columns,
             filter=query.filter,
             prefilter=query.prefilter,
@@ -1536,7 +1615,8 @@ class LanceTable(Table):
                 "refine_factor": query.refine_factor,
             },
             with_row_id=query.with_row_id,
-        )
+            batch_size=batch_size,
+        ).to_reader()
 
     def _do_merge(
         self,
@@ -1813,8 +1893,8 @@ class AsyncTable:
     An AsyncTable object is expected to be long lived and reused for multiple
     operations. AsyncTable objects will cache a certain amount of index data in memory.
     This cache will be freed when the Table is garbage collected.  To eagerly free the
-    cache you can call the [close][AsyncTable.close] method.  Once the AsyncTable is
-    closed, it cannot be used for any further operations.
+    cache you can call the [close][lancedb.AsyncTable.close] method.  Once the
+    AsyncTable is closed, it cannot be used for any further operations.
 
     An AsyncTable can also be used as a context manager, and will automatically close
     when the context is exited.  Closing a table is optional.  If you do not close the
@@ -1823,13 +1903,17 @@ class AsyncTable:
     Examples
     --------
 
-    Create using [DBConnection.create_table][lancedb.DBConnection.create_table]
+    Create using [AsyncConnection.create_table][lancedb.AsyncConnection.create_table]
     (more examples in that method's documentation).
 
     >>> import lancedb
-    >>> db = lancedb.connect("./.lancedb")
-    >>> table = db.create_table("my_table", data=[{"vector": [1.1, 1.2], "b": 2}])
-    >>> table.head()
+    >>> async def create_a_table():
+    ...     db = await lancedb.connect_async("./.lancedb")
+    ...     data = [{"vector": [1.1, 1.2], "b": 2}]
+    ...     table = await db.create_table("my_table", data=data)
+    ...     print(await table.query().limit(5).to_arrow())
+    >>> import asyncio
+    >>> asyncio.run(create_a_table())
     pyarrow.Table
     vector: fixed_size_list<item: float>[2]
       child 0, item: float
@@ -1838,25 +1922,37 @@ class AsyncTable:
     vector: [[[1.1,1.2]]]
     b: [[2]]
 
-    Can append new data with [Table.add()][lancedb.table.Table.add].
+    Can append new data with [AsyncTable.add()][lancedb.table.AsyncTable.add].
 
-    >>> table.add([{"vector": [0.5, 1.3], "b": 4}])
+    >>> async def add_to_table():
+    ...     db = await lancedb.connect_async("./.lancedb")
+    ...     table = await db.open_table("my_table")
+    ...     await table.add([{"vector": [0.5, 1.3], "b": 4}])
+    >>> asyncio.run(add_to_table())
 
-    Can query the table with [Table.search][lancedb.table.Table.search].
+    Can query the table with
+    [AsyncTable.vector_search][lancedb.table.AsyncTable.vector_search].
 
-    >>> table.search([0.4, 0.4]).select(["b", "vector"]).to_pandas()
+    >>> async def search_table_for_vector():
+    ...     db = await lancedb.connect_async("./.lancedb")
+    ...     table = await db.open_table("my_table")
+    ...     results = (
+    ...       await table.vector_search([0.4, 0.4]).select(["b", "vector"]).to_pandas()
+    ...     )
+    ...     print(results)
+    >>> asyncio.run(search_table_for_vector())
        b      vector  _distance
     0  4  [0.5, 1.3]       0.82
     1  2  [1.1, 1.2]       1.13
 
     Search queries are much faster when an index is created. See
-    [Table.create_index][lancedb.table.Table.create_index].
+    [AsyncTable.create_index][lancedb.table.AsyncTable.create_index].
     """
 
     def __init__(self, table: LanceDBTable):
-        """Create a new Table object.
+        """Create a new AsyncTable object.
 
-        You should not create Table objects directly.
+        You should not create AsyncTable objects directly.
 
         Use [AsyncConnection.create_table][lancedb.AsyncConnection.create_table] and
         [AsyncConnection.open_table][lancedb.AsyncConnection.open_table] to obtain
@@ -1907,6 +2003,17 @@ class AsyncTable:
         """
         return await self._inner.count_rows(filter)
 
+    def query(self) -> AsyncQuery:
+        """
+        Returns an [AsyncQuery][lancedb.query.AsyncQuery] that can be used
+        to search the table.
+
+        Use methods on the returned query to control query behavior.  The query
+        can be executed with methods like [to_arrow][lancedb.query.AsyncQuery.to_arrow],
+        [to_pandas][lancedb.query.AsyncQuery.to_pandas] and more.
+        """
+        return AsyncQuery(self._inner.query())
+
     async def to_pandas(self) -> "pd.DataFrame":
         """Return the table as a pandas DataFrame.
 
@@ -1914,7 +2021,7 @@ class AsyncTable:
         -------
         pd.DataFrame
         """
-        return self.to_arrow().to_pandas()
+        return (await self.to_arrow()).to_pandas()
 
     async def to_arrow(self) -> pa.Table:
         """Return the table as a pyarrow Table.
@@ -1923,7 +2030,7 @@ class AsyncTable:
         -------
         pa.Table
         """
-        raise NotImplementedError
+        return await self.query().to_arrow()
 
     async def create_index(
         self,
@@ -1941,20 +2048,8 @@ class AsyncTable:
 
         Parameters
         ----------
-        index: Index
-            The index to create.
-
-            LanceDb supports multiple types of indices.  See the static methods on
-            the Index class for more details.
-        column: str, default None
+        column: str
             The column to index.
-
-            When building a scalar index this must be set.
-
-            When building a vector index, this is optional.  The default will look
-            for any columns of type fixed-size-list with floating point values.  If
-            there is only one column of this type then it will be used.  Otherwise
-            an error will be returned.
         replace: bool, default True
             Whether to replace the existing index
 
@@ -1963,6 +2058,10 @@ class AsyncTable:
             that index is out of date.
 
             The default is True
+        config: Union[IvfPq, BTree], default None
+            For advanced configuration you can specify the type of index you would
+            like to create.   You can also specify index-specific parameters when
+            creating an index object.
         """
         index = None
         if config is not None:
@@ -2076,89 +2175,22 @@ class AsyncTable:
 
         return LanceMergeInsertBuilder(self, on)
 
-    async def search(
+    def vector_search(
         self,
-        query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
-        vector_column_name: Optional[str] = None,
-        query_type: str = "auto",
-    ) -> LanceQueryBuilder:
-        """Create a search query to find the nearest neighbors
-        of the given query vector. We currently support [vector search][search]
-        and [full-text search][experimental-full-text-search].
-
-        All query options are defined in [Query][lancedb.query.Query].
-
-        Examples
-        --------
-        >>> import lancedb
-        >>> db = lancedb.connect("./.lancedb")
-        >>> data = [
-        ...    {"original_width": 100, "caption": "bar", "vector": [0.1, 2.3, 4.5]},
-        ...    {"original_width": 2000, "caption": "foo",  "vector": [0.5, 3.4, 1.3]},
-        ...    {"original_width": 3000, "caption": "test", "vector": [0.3, 6.2, 2.6]}
-        ... ]
-        >>> table = db.create_table("my_table", data)
-        >>> query = [0.4, 1.4, 2.4]
-        >>> (table.search(query)
-        ...     .where("original_width > 1000", prefilter=True)
-        ...     .select(["caption", "original_width", "vector"])
-        ...     .limit(2)
-        ...     .to_pandas())
-          caption  original_width           vector  _distance
-        0     foo            2000  [0.5, 3.4, 1.3]   5.220000
-        1    test            3000  [0.3, 6.2, 2.6]  23.089996
-
-        Parameters
-        ----------
-        query: list/np.ndarray/str/PIL.Image.Image, default None
-            The targetted vector to search for.
-
-            - *default None*.
-            Acceptable types are: list, np.ndarray, PIL.Image.Image
-
-            - If None then the select/where/limit clauses are applied to filter
-            the table
-        vector_column_name: str, optional
-            The name of the vector column to search.
-
-            The vector column needs to be a pyarrow fixed size list type
-
-            - If not specified then the vector column is inferred from
-            the table schema
-
-            - If the table has multiple vector columns then the *vector_column_name*
-            needs to be specified. Otherwise, an error is raised.
-        query_type: str
-            *default "auto"*.
-            Acceptable types are: "vector", "fts", "hybrid", or "auto"
-
-            - If "auto" then the query type is inferred from the query;
-
-                - If `query` is a list/np.ndarray then the query type is
-                "vector";
-
-                - If `query` is a PIL.Image.Image then either do vector search,
-                or raise an error if no corresponding embedding function is found.
-
-            - If `query` is a string, then the query type is "vector" if the
-            table has embedding functions else the query type is "fts"
-
-        Returns
-        -------
-        LanceQueryBuilder
-            A query builder object representing the query.
-            Once executed, the query returns
-
-            - selected columns
-
-            - the vector
-
-            - and also the "_distance" column which is the distance between the query
-            vector and the returned vector.
+        query_vector: Optional[Union[VEC, Tuple]] = None,
+    ) -> AsyncVectorQuery:
         """
-        raise NotImplementedError
+        Search the table with a given query vector.
+        This is a convenience method for preparing a vector query and
+        is the same thing as calling `nearestTo` on the builder returned
+        by `query`.  Seer [nearest_to][lancedb.query.AsyncQuery.nearest_to] for more
+        details.
+        """
+        return self.query().nearest_to(query_vector)
 
-    async def _execute_query(self, query: Query) -> pa.Table:
+    async def _execute_query(
+        self, query: Query, batch_size: Optional[int] = None
+    ) -> pa.RecordBatchReader:
         pass
 
     async def _do_merge(
@@ -2218,7 +2250,7 @@ class AsyncTable:
            x      vector
         0  3  [5.0, 6.0]
         """
-        raise NotImplementedError
+        return await self._inner.delete(where)
 
     async def update(
         self,
@@ -2273,102 +2305,6 @@ class AsyncTable:
             updates_sql = {k: value_to_sql(v) for k, v in updates.items()}
 
         return await self._inner.update(updates_sql, where)
-
-    async def cleanup_old_versions(
-        self,
-        older_than: Optional[timedelta] = None,
-        *,
-        delete_unverified: bool = False,
-    ) -> CleanupStats:
-        """
-        Clean up old versions of the table, freeing disk space.
-
-        Note: This function is not available in LanceDb Cloud (since LanceDb
-        Cloud manages cleanup for you automatically)
-
-        Parameters
-        ----------
-        older_than: timedelta, default None
-            The minimum age of the version to delete. If None, then this defaults
-            to two weeks.
-        delete_unverified: bool, default False
-            Because they may be part of an in-progress transaction, files newer
-            than 7 days old are not deleted by default. If you are sure that
-            there are no in-progress transactions, then you can set this to True
-            to delete all files older than `older_than`.
-
-        Returns
-        -------
-        CleanupStats
-            The stats of the cleanup operation, including how many bytes were
-            freed.
-        """
-        raise NotImplementedError
-
-    async def compact_files(self, *args, **kwargs):
-        """
-        Run the compaction process on the table.
-
-        Note: This function is not available in LanceDb Cloud (since LanceDb
-        Cloud manages compaction for you automatically)
-
-        This can be run after making several small appends to optimize the table
-        for faster reads.
-
-        Arguments are passed onto :meth:`lance.dataset.DatasetOptimizer.compact_files`.
-        For most cases, the default should be fine.
-        """
-        raise NotImplementedError
-
-    async def add_columns(self, transforms: Dict[str, str]):
-        """
-        Add new columns with defined values.
-
-        This is not yet available in LanceDB Cloud.
-
-        Parameters
-        ----------
-        transforms: Dict[str, str]
-            A map of column name to a SQL expression to use to calculate the
-            value of the new column. These expressions will be evaluated for
-            each row in the table, and can reference existing columns.
-        """
-        raise NotImplementedError
-
-    async def alter_columns(self, alterations: Iterable[Dict[str, str]]):
-        """
-        Alter column names and nullability.
-
-        This is not yet available in LanceDB Cloud.
-
-        alterations : Iterable[Dict[str, Any]]
-            A sequence of dictionaries, each with the following keys:
-            - "path": str
-                The column path to alter. For a top-level column, this is the name.
-                For a nested column, this is the dot-separated path, e.g. "a.b.c".
-            - "name": str, optional
-                The new name of the column. If not specified, the column name is
-                not changed.
-            - "nullable": bool, optional
-                Whether the column should be nullable. If not specified, the column
-                nullability is not changed. Only non-nullable columns can be changed
-                to nullable. Currently, you cannot change a nullable column to
-                non-nullable.
-        """
-        raise NotImplementedError
-
-    async def drop_columns(self, columns: Iterable[str]):
-        """
-        Drop columns from the table.
-
-        This is not yet available in LanceDB Cloud.
-
-        Parameters
-        ----------
-        columns : Iterable[str]
-            The names of the columns to drop.
-        """
-        raise NotImplementedError
 
     async def version(self) -> int:
         """

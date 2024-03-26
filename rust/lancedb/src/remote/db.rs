@@ -14,13 +14,14 @@
 
 use std::sync::Arc;
 
+use arrow_array::RecordBatchReader;
 use async_trait::async_trait;
 use reqwest::header::CONTENT_TYPE;
 use serde::Deserialize;
 use tokio::task::spawn_blocking;
 
 use crate::connection::{
-    ConnectionInternal, CreateTableBuilder, OpenTableBuilder, TableNamesBuilder,
+    ConnectionInternal, CreateTableBuilder, NoData, OpenTableBuilder, TableNamesBuilder,
 };
 use crate::error::Result;
 use crate::Table;
@@ -74,8 +75,11 @@ impl ConnectionInternal for RemoteDatabase {
         Ok(rsp.json::<ListTablesResponse>().await?.tables)
     }
 
-    async fn do_create_table(&self, options: CreateTableBuilder<true>) -> Result<Table> {
-        let data = options.data.unwrap();
+    async fn do_create_table(
+        &self,
+        options: CreateTableBuilder<false, NoData>,
+        data: Box<dyn RecordBatchReader + Send>,
+    ) -> Result<Table> {
         // TODO: https://github.com/lancedb/lancedb/issues/1026
         // We should accept data from an async source.  In the meantime, spawn this as blocking
         // to make sure we don't block the tokio runtime if the source is slow.

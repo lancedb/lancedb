@@ -95,7 +95,7 @@ impl Connection {
 
         let mode = Self::parse_create_mode_str(mode)?;
 
-        let batches = Box::new(ArrowArrayStreamReader::from_pyarrow(data)?);
+        let batches = ArrowArrayStreamReader::from_pyarrow(data)?;
         future_into_py(self_.py(), async move {
             let table = inner
                 .create_table(name, batches)
@@ -136,6 +136,21 @@ impl Connection {
             let table = inner.open_table(&name).execute().await.infer_error()?;
             Ok(Table::new(table))
         })
+    }
+
+    pub fn drop_table(self_: PyRef<'_, Self>, name: String) -> PyResult<&PyAny> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            inner.drop_table(name).await.infer_error()
+        })
+    }
+
+    pub fn drop_db(self_: PyRef<'_, Self>) -> PyResult<&PyAny> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(
+            self_.py(),
+            async move { inner.drop_db().await.infer_error() },
+        )
     }
 }
 

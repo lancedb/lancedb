@@ -12,36 +12,38 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use lancedb::query::Query as LanceDBQuery;
+use lancedb::query::ExecutableQuery;
+use lancedb::query::Query as LanceDbQuery;
+use lancedb::query::QueryBase;
+use lancedb::query::Select;
+use lancedb::query::VectorQuery as LanceDbVectorQuery;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
+use crate::error::NapiErrorExt;
 use crate::iterator::RecordBatchIterator;
+use crate::util::parse_distance_type;
 
 #[napi]
 pub struct Query {
-    inner: LanceDBQuery,
+    inner: LanceDbQuery,
 }
 
 #[napi]
 impl Query {
-    pub fn new(query: LanceDBQuery) -> Self {
+    pub fn new(query: LanceDbQuery) -> Self {
         Self { inner: query }
     }
 
+    // We cannot call this r#where because NAPI gets confused by the r#
     #[napi]
-    pub fn column(&mut self, column: String) {
-        self.inner = self.inner.clone().column(&column);
+    pub fn only_if(&mut self, predicate: String) {
+        self.inner = self.inner.clone().only_if(predicate);
     }
 
     #[napi]
-    pub fn filter(&mut self, filter: String) {
-        self.inner = self.inner.clone().filter(filter);
-    }
-
-    #[napi]
-    pub fn select(&mut self, columns: Vec<String>) {
-        self.inner = self.inner.clone().select(&columns);
+    pub fn select(&mut self, columns: Vec<(String, String)>) {
+        self.inner = self.inner.clone().select(Select::dynamic(&columns));
     }
 
     #[napi]
@@ -50,13 +52,46 @@ impl Query {
     }
 
     #[napi]
-    pub fn prefilter(&mut self, prefilter: bool) {
-        self.inner = self.inner.clone().prefilter(prefilter);
+    pub fn nearest_to(&mut self, vector: Float32Array) -> Result<VectorQuery> {
+        let inner = self
+            .inner
+            .clone()
+            .nearest_to(vector.as_ref())
+            .default_error()?;
+        Ok(VectorQuery { inner })
     }
 
     #[napi]
-    pub fn nearest_to(&mut self, vector: Float32Array) {
-        self.inner = self.inner.clone().nearest_to(&vector);
+    pub async fn execute(&self) -> napi::Result<RecordBatchIterator> {
+        let inner_stream = self.inner.execute().await.map_err(|e| {
+            napi::Error::from_reason(format!("Failed to execute query stream: {}", e))
+        })?;
+        Ok(RecordBatchIterator::new(inner_stream))
+    }
+}
+
+#[napi]
+pub struct VectorQuery {
+    inner: LanceDbVectorQuery,
+}
+
+#[napi]
+impl VectorQuery {
+    #[napi]
+    pub fn column(&mut self, column: String) {
+        self.inner = self.inner.clone().column(&column);
+    }
+
+    #[napi]
+    pub fn distance_type(&mut self, distance_type: String) -> napi::Result<()> {
+        let distance_type = parse_distance_type(distance_type)?;
+        self.inner = self.inner.clone().distance_type(distance_type);
+        Ok(())
+    }
+
+    #[napi]
+    pub fn postfilter(&mut self) {
+        self.inner = self.inner.clone().postfilter();
     }
 
     #[napi]
@@ -70,8 +105,28 @@ impl Query {
     }
 
     #[napi]
-    pub async fn execute_stream(&self) -> napi::Result<RecordBatchIterator> {
-        let inner_stream = self.inner.execute_stream().await.map_err(|e| {
+    pub fn bypass_vector_index(&mut self) {
+        self.inner = self.inner.clone().bypass_vector_index()
+    }
+
+    #[napi]
+    pub fn only_if(&mut self, predicate: String) {
+        self.inner = self.inner.clone().only_if(predicate);
+    }
+
+    #[napi]
+    pub fn select(&mut self, columns: Vec<(String, String)>) {
+        self.inner = self.inner.clone().select(Select::dynamic(&columns));
+    }
+
+    #[napi]
+    pub fn limit(&mut self, limit: u32) {
+        self.inner = self.inner.clone().limit(limit as usize);
+    }
+
+    #[napi]
+    pub async fn execute(&self) -> napi::Result<RecordBatchIterator> {
+        let inner_stream = self.inner.execute().await.map_err(|e| {
             napi::Error::from_reason(format!("Failed to execute query stream: {}", e))
         })?;
         Ok(RecordBatchIterator::new(inner_stream))

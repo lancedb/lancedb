@@ -21,6 +21,7 @@ mod index;
 mod iterator;
 mod query;
 mod table;
+mod util;
 
 #[napi(object)]
 #[derive(Debug)]

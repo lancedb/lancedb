@@ -27,9 +27,11 @@ use object_store::{
 };
 use snafu::prelude::*;
 
+use crate::arrow::IntoArrow;
 use crate::error::{CreateDirSnafu, Error, InvalidTableNameSnafu, Result};
 use crate::io::object_store::MirroringObjectStoreWrapper;
 use crate::table::{NativeTable, WriteOptions};
+use crate::utils::validate_table_name;
 use crate::Table;
 
 pub const LANCE_FILE_EXTENSION: &str = "lance";
@@ -116,23 +118,27 @@ impl TableNamesBuilder {
     }
 }
 
+pub struct NoData {}
+
+impl IntoArrow for NoData {
+    fn into_arrow(self) -> Result<Box<dyn arrow_array::RecordBatchReader + Send>> {
+        unreachable!("NoData should never be converted to Arrow")
+    }
+}
+
 /// A builder for configuring a [`Connection::create_table`] operation
-pub struct CreateTableBuilder<const HAS_DATA: bool> {
+pub struct CreateTableBuilder<const HAS_DATA: bool, T: IntoArrow> {
     parent: Arc<dyn ConnectionInternal>,
     pub(crate) name: String,
-    pub(crate) data: Option<Box<dyn RecordBatchReader + Send>>,
+    pub(crate) data: Option<T>,
     pub(crate) schema: Option<SchemaRef>,
     pub(crate) mode: CreateTableMode,
     pub(crate) write_options: WriteOptions,
 }
 
 // Builder methods that only apply when we have initial data
-impl CreateTableBuilder<true> {
-    fn new(
-        parent: Arc<dyn ConnectionInternal>,
-        name: String,
-        data: Box<dyn RecordBatchReader + Send>,
-    ) -> Self {
+impl<T: IntoArrow> CreateTableBuilder<true, T> {
+    fn new(parent: Arc<dyn ConnectionInternal>, name: String, data: T) -> Self {
         Self {
             parent,
             name,
@@ -151,12 +157,32 @@ impl CreateTableBuilder<true> {
 
     /// Execute the create table operation
     pub async fn execute(self) -> Result<Table> {
-        self.parent.clone().do_create_table(self).await
+        let parent = self.parent.clone();
+        let (data, builder) = self.extract_data()?;
+        parent.do_create_table(builder, data).await
+    }
+
+    fn extract_data(
+        mut self,
+    ) -> Result<(
+        Box<dyn RecordBatchReader + Send>,
+        CreateTableBuilder<false, NoData>,
+    )> {
+        let data = self.data.take().unwrap().into_arrow()?;
+        let builder = CreateTableBuilder::<false, NoData> {
+            parent: self.parent,
+            name: self.name,
+            data: None,
+            schema: self.schema,
+            mode: self.mode,
+            write_options: self.write_options,
+        };
+        Ok((data, builder))
     }
 }
 
 // Builder methods that only apply when we do not have initial data
-impl CreateTableBuilder<false> {
+impl CreateTableBuilder<false, NoData> {
     fn new(parent: Arc<dyn ConnectionInternal>, name: String, schema: SchemaRef) -> Self {
         Self {
             parent,
@@ -174,7 +200,7 @@ impl CreateTableBuilder<false> {
     }
 }
 
-impl<const HAS_DATA: bool> CreateTableBuilder<HAS_DATA> {
+impl<const HAS_DATA: bool, T: IntoArrow> CreateTableBuilder<HAS_DATA, T> {
     /// Set the mode for creating the table
     ///
     /// This controls what happens if a table with the given name already exists
@@ -237,17 +263,24 @@ pub(crate) trait ConnectionInternal:
     Send + Sync + std::fmt::Debug + std::fmt::Display + 'static
 {
     async fn table_names(&self, options: TableNamesBuilder) -> Result<Vec<String>>;
-    async fn do_create_table(&self, options: CreateTableBuilder<true>) -> Result<Table>;
+    async fn do_create_table(
+        &self,
+        options: CreateTableBuilder<false, NoData>,
+        data: Box<dyn RecordBatchReader + Send>,
+    ) -> Result<Table>;
     async fn do_open_table(&self, options: OpenTableBuilder) -> Result<Table>;
     async fn drop_table(&self, name: &str) -> Result<()>;
     async fn drop_db(&self) -> Result<()>;
 
-    async fn do_create_empty_table(&self, options: CreateTableBuilder<false>) -> Result<Table> {
-        let batches = RecordBatchIterator::new(vec![], options.schema.unwrap());
-        let opts = CreateTableBuilder::<true>::new(options.parent, options.name, Box::new(batches))
-            .mode(options.mode)
-            .write_options(options.write_options);
-        self.do_create_table(opts).await
+    async fn do_create_empty_table(
+        &self,
+        options: CreateTableBuilder<false, NoData>,
+    ) -> Result<Table> {
+        let batches = Box::new(RecordBatchIterator::new(
+            vec![],
+            options.schema.as_ref().unwrap().clone(),
+        ));
+        self.do_create_table(options, batches).await
     }
 }
 
@@ -285,12 +318,12 @@ impl Connection {
     ///
     /// * `name` - The name of the table
     /// * `initial_data` - The initial data to write to the table
-    pub fn create_table(
+    pub fn create_table<T: IntoArrow>(
         &self,
         name: impl Into<String>,
-        initial_data: Box<dyn RecordBatchReader + Send>,
-    ) -> CreateTableBuilder<true> {
-        CreateTableBuilder::<true>::new(self.internal.clone(), name.into(), initial_data)
+        initial_data: T,
+    ) -> CreateTableBuilder<true, T> {
+        CreateTableBuilder::<true, T>::new(self.internal.clone(), name.into(), initial_data)
     }
 
     /// Create an empty table with a given schema
@@ -303,8 +336,8 @@ impl Connection {
         &self,
         name: impl Into<String>,
         schema: SchemaRef,
-    ) -> CreateTableBuilder<false> {
-        CreateTableBuilder::<false>::new(self.internal.clone(), name.into(), schema)
+    ) -> CreateTableBuilder<false, NoData> {
+        CreateTableBuilder::<false, NoData>::new(self.internal.clone(), name.into(), schema)
     }
 
     /// Open an existing table in the database
@@ -643,13 +676,18 @@ impl Database {
 
     /// Get the URI of a table in the database.
     fn table_uri(&self, name: &str) -> Result<String> {
+        validate_table_name(name)?;
+
         let path = Path::new(&self.uri);
         let table_uri = path.join(format!("{}.{}", name, LANCE_FILE_EXTENSION));
 
         let mut uri = table_uri
             .as_path()
             .to_str()
-            .context(InvalidTableNameSnafu { name })?
+            .context(InvalidTableNameSnafu {
+                name,
+                reason: "Name is not valid URL",
+            })?
             .to_string();
 
         // If there are query string set on the connection, propagate to lance
@@ -694,7 +732,11 @@ impl ConnectionInternal for Database {
         Ok(f)
     }
 
-    async fn do_create_table(&self, options: CreateTableBuilder<true>) -> Result<Table> {
+    async fn do_create_table(
+        &self,
+        options: CreateTableBuilder<false, NoData>,
+        data: Box<dyn RecordBatchReader + Send>,
+    ) -> Result<Table> {
         let table_uri = self.table_uri(&options.name)?;
 
         let mut write_params = options.write_options.lance_write_params.unwrap_or_default();
@@ -705,7 +747,7 @@ impl ConnectionInternal for Database {
         match NativeTable::create(
             &table_uri,
             &options.name,
-            options.data.unwrap(),
+            data,
             self.store_wrapper.clone(),
             Some(write_params),
             self.read_consistency_interval,

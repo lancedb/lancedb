@@ -31,6 +31,7 @@ import {
   DataType,
   Binary,
   Float32,
+  type makeTable,
 } from "apache-arrow";
 import { type EmbeddingFunction } from "./embedding/embedding_function";
 import { sanitizeSchema } from "./sanitize";
@@ -105,6 +106,9 @@ export class MakeArrowTableOptions {
  * An enhanced version of the {@link makeTable} function from Apache Arrow
  * that supports nested fields and embeddings columns.
  *
+ * (typically you do not need to call this function.  It will be called automatically
+ * when creating a table or adding data to it)
+ *
  * This function converts an array of Record<String, any> (row-major JS objects)
  * to an Arrow Table (a columnar structure)
  *
@@ -128,14 +132,7 @@ export class MakeArrowTableOptions {
  *  - Buffer => Binary
  *  - Record<String, any> => Struct
  *  - Array<any> => List
- *
- * @param data input data
- * @param options options to control the makeArrowTable call.
- *
  * @example
- *
- * ```ts
- *
  * import { fromTableToBuffer, makeArrowTable } from "../arrow";
  * import { Field, FixedSizeList, Float16, Float32, Int32, Schema } from "apache-arrow";
  *
@@ -307,7 +304,9 @@ export function makeEmptyTable(schema: Schema): ArrowTable {
   return makeArrowTable([], { schema });
 }
 
-// Helper function to convert Array<Array<any>> to a variable sized list array
+/**
+ * Helper function to convert Array<Array<any>> to a variable sized list array
+ */
 // @ts-expect-error (Vector<unknown> is not assignable to Vector<any>)
 function makeListVector(lists: unknown[][]): Vector<unknown> {
   if (lists.length === 0 || lists[0].length === 0) {
@@ -333,7 +332,7 @@ function makeListVector(lists: unknown[][]): Vector<unknown> {
   return listBuilder.finish().toVector();
 }
 
-// Helper function to convert an Array of JS values to an Arrow Vector
+/** Helper function to convert an Array of JS values to an Arrow Vector */
 function makeVector(
   values: unknown[],
   type?: DataType,
@@ -374,6 +373,7 @@ function makeVector(
   }
 }
 
+/** Helper function to apply embeddings to an input table */
 async function applyEmbeddings<T>(
   table: ArrowTable,
   embeddings?: EmbeddingFunction<T>,
@@ -466,7 +466,7 @@ async function applyEmbeddings<T>(
   return newTable;
 }
 
-/*
+/**
  * Convert an Array of records into an Arrow Table, optionally applying an
  * embeddings function to it.
  *
@@ -493,7 +493,7 @@ export async function convertToTable<T>(
   return await applyEmbeddings(table, embeddings, makeTableOptions?.schema);
 }
 
-// Creates the Arrow Type for a Vector column with dimension `dim`
+/** Creates the Arrow Type for a Vector column with dimension `dim` */
 function newVectorType<T extends Float>(
   dim: number,
   innerType: T,
@@ -565,6 +565,14 @@ export async function fromTableToBuffer<T>(
   return Buffer.from(await writer.toUint8Array());
 }
 
+/**
+ * Serialize an Arrow Table into a buffer using the Arrow IPC File serialization
+ *
+ * This function will apply `embeddings` to the table in a manner similar to
+ * `convertToTable`.
+ *
+ * `schema` is required if the table is empty
+ */
 export async function fromDataToBuffer<T>(
   data: Data,
   embeddings?: EmbeddingFunction<T>,
@@ -599,6 +607,9 @@ export async function fromTableToStreamBuffer<T>(
   return Buffer.from(await writer.toUint8Array());
 }
 
+/**
+ * Reorder the columns in `batch` so that they agree with the field order in `schema`
+ */
 function alignBatch(batch: RecordBatch, schema: Schema): RecordBatch {
   const alignedChildren = [];
   for (const field of schema.fields) {
@@ -621,6 +632,9 @@ function alignBatch(batch: RecordBatch, schema: Schema): RecordBatch {
   return new RecordBatch(schema, newData);
 }
 
+/**
+ * Reorder the columns in `table` so that they agree with the field order in `schema`
+ */
 function alignTable(table: ArrowTable, schema: Schema): ArrowTable {
   const alignedBatches = table.batches.map((batch) =>
     alignBatch(batch, schema),
@@ -628,7 +642,9 @@ function alignTable(table: ArrowTable, schema: Schema): ArrowTable {
   return new ArrowTable(schema, alignedBatches);
 }
 
-// Creates an empty Arrow Table
+/**
+ * Create an empty table with the given schema
+ */
 export function createEmptyTable(schema: Schema): ArrowTable {
   return new ArrowTable(sanitizeSchema(schema));
 }

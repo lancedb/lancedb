@@ -24,6 +24,7 @@ import { RemoteConnection } from './remote'
 import { Query } from './query'
 import { isEmbeddingFunction } from './embedding/embedding_function'
 import { type Literal, toSQL } from './util'
+import { type HttpMiddleware } from './middleware'
 
 const {
   databaseNew,
@@ -302,6 +303,18 @@ export interface Connection {
    * @param name The name of the table to drop.
    */
   dropTable(name: string): Promise<void>
+
+  /**
+   * Instrument the behavior of this Connection with middleware.
+   *
+   * The middleware will be called in the order they are added.
+   *
+   * Currently this functionality is only supported for remote Connections.
+   *
+   * @param {HttpMiddleware} - Middleware which will instrument the Connection.
+   * @returns - this Connection instrumented by the passed middleware
+   */
+  withMiddleware(middleware: HttpMiddleware): Connection
 }
 
 /**
@@ -541,6 +554,18 @@ export interface Table<T = number[]> {
    *                    names (e.g. "a").
    */
   dropColumns(columnNames: string[]): Promise<void>
+
+  /**
+   * Instrument the behavior of this Table with middleware.
+   *
+   * The middleware will be called in the order they are added.
+   *
+   * Currently this functionality is only supported for remote tables.
+   *
+   * @param {HttpMiddleware} - Middleware which will instrument the Table.
+   * @returns - this Table instrumented by the passed middleware
+   */
+  withMiddleware(middleware: HttpMiddleware): Table<T>
 }
 
 /**
@@ -794,6 +819,10 @@ export class LocalConnection implements Connection {
    */
   async dropTable (name: string): Promise<void> {
     await databaseDropTable.call(this._db, name)
+  }
+
+  withMiddleware (middleware: HttpMiddleware): Connection {
+    return this
   }
 }
 
@@ -1104,6 +1133,10 @@ export class LocalTable<T = number[]> implements Table<T> {
 
   async dropColumns (columnNames: string[]): Promise<void> {
     return tableDropColumns.call(this._tbl, columnNames)
+  }
+
+  withMiddleware (middleware: HttpMiddleware): Table<T> {
+    return this
   }
 }
 

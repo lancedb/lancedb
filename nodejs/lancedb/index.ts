@@ -18,9 +18,34 @@ import {
   ConnectionOptions,
 } from "./native.js";
 
-export { ConnectionOptions, WriteOptions, Query } from "./native.js";
-export { Connection, CreateTableOptions } from "./connection";
-export { Table, AddDataOptions } from "./table";
+export {
+  WriteOptions,
+  WriteMode,
+  AddColumnsSql,
+  ColumnAlteration,
+  ConnectionOptions,
+} from "./native.js";
+export {
+  makeArrowTable,
+  MakeArrowTableOptions,
+  Data,
+  VectorColumnOptions,
+} from "./arrow";
+export {
+  Connection,
+  CreateTableOptions,
+  TableNamesOptions,
+} from "./connection";
+export {
+  ExecutableQuery,
+  Query,
+  QueryBase,
+  VectorQuery,
+  RecordBatchIterator,
+} from "./query";
+export { Index, IndexOptions, IvfPqOptions } from "./indices";
+export { Table, AddDataOptions, IndexConfig, UpdateOptions } from "./table";
+export * as embedding from "./embedding";
 
 /**
  * Connect to a LanceDB instance at the given URI.
@@ -30,9 +55,8 @@ export { Table, AddDataOptions } from "./table";
  * - `/path/to/database` - local database
  * - `s3://bucket/path/to/database` or `gs://bucket/path/to/database` - database on cloud storage
  * - `db://host:port` - remote database (LanceDB cloud)
- *
- * @param uri The uri of the database. If the database uri starts with `db://` then it connects to a remote database.
- *
+ * @param {string} uri - The uri of the database. If the database uri starts
+ * with `db://` then it connects to a remote database.
  * @see {@link ConnectionOptions} for more details on the URI format.
  */
 export async function connect(

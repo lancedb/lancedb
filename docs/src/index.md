@@ -28,7 +28,7 @@ LanceDB **Cloud** is a SaaS (software-as-a-service) solution that runs serverles
 
 * Fast production-scale vector similarity, full-text & hybrid search and a SQL query interface (via [DataFusion](https://github.com/apache/arrow-datafusion))
 
-* Native Python and Javascript/Typescript support
+* Python, Javascript/Typescript, and Rust support
 
 * Store, query & manage multi-modal data (text, images, videos, point clouds, etc.), not just the embeddings and metadata
 
@@ -54,3 +54,4 @@ The following pages go deeper into the internal of LanceDB and how to use it.
 * [Ecosystem Integrations](integrations/index.md): Integrate LanceDB with other tools in the data ecosystem
 * [Python API Reference](python/python.md): Python OSS and Cloud API references
 * [JavaScript API Reference](javascript/modules.md): JavaScript OSS and Cloud API references
+* [Rust API Reference](https://docs.rs/lancedb/latest/lancedb/index.html): Rust API reference

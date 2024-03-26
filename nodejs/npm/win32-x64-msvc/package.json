@@ -1,0 +1,18 @@
+{
+  "name": "@lancedb/lancedb-win32-x64-msvc",
+  "version": "0.4.3",
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "main": "lancedb.win32-x64-msvc.node",
+  "files": [
+    "lancedb.win32-x64-msvc.node"
+  ],
+  "license": "Apache 2.0",
+  "engines": {
+    "node": ">= 18"
+  }
+}
