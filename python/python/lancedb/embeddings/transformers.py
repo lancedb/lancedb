@@ -71,3 +71,27 @@ class TransformersEmbeddingFunction(EmbeddingFunction):
             embedding.append(emb.detach().numpy())
 
         return embedding
+
+
+@register("colbert")
+class ColbertEmbeddings(TransformersEmbeddingFunction):
+    """
+    An embedding function that uses the colbert model from the huggingface library.
+
+    Parameters:
+    ----------
+    name : str
+        The name of the model to use. This should be a model name that can be loaded
+        by transformers.AutoModel.from_pretrained. For example, "bert-base-uncased".
+        default: "colbert-ir/colbertv2.0""
+
+    to download package, run :
+        `pip install transformers`
+    you may need to install pytorch as well - `https://pytorch.org/get-started/locally/`
+
+    """
+
+    name: str = "colbert-ir/colbertv2.0"
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
