@@ -177,6 +177,32 @@ Allows you to set parameters when registering a `sentence-transformers` object.
 Visit sentence-transformers [HuggingFace HUB](https://huggingface.co/sentence-transformers) page for more information on the available models.
 
 
+### Huggingface embedding models
+We offer support for all huggingface models (which can be loaded via [transformers](https://huggingface.co/docs/transformers/en/index) library). The default model is `colbert-ir/colbertv2.0` which also has its own special callout - `registry.get("colbert")` 
+
+Example usage - 
+```python
+import lancedb
+import pandas as pd
+
+from lancedb.embeddings import get_registry
+from lancedb.pydantic import LanceModel, Vector
+
+model = get_registry().get("huggingface").create(name='facebook/bart-base')
+
+class TextModel(LanceModel):
+    text: str = model.SourceField()
+    vector: Vector(model.ndims()) = model.VectorField()
+
+df = pd.DataFrame({"text": ["hi hello sayonara", "goodbye world"]})
+table = db.create_table("greets", schema=Words)
+table.add()
+query = "old greeting"
+actual = table.search(query).limit(1).to_pydantic(Words)[0]
+print(actual.text)
+```
+
+
 ### OpenAI embeddings
 LanceDB registers the OpenAI embeddings function in the registry by default, as `openai`. Below are the parameters that you can customize when creating the instances:
 
