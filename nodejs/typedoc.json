@@ -1,0 +1,10 @@
+{
+  "intentionallyNotExported": [
+    "lancedb/native.d.ts:Connection",
+    "lancedb/native.d.ts:Index",
+    "lancedb/native.d.ts:Query",
+    "lancedb/native.d.ts:VectorQuery",
+    "lancedb/native.d.ts:RecordBatchIterator",
+    "lancedb/native.d.ts:Table"
+  ]
+}

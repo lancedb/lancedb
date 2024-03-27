@@ -147,7 +147,8 @@ nav:
       - 💭 FAQs: faq.md
       - ⚙️ API reference:
           - 🐍 Python: python/python.md
-          - 👾 JavaScript: javascript/modules.md
+          - 👾 JavaScript (vectordb): javascript/modules.md
+          - 👾 JavaScript (lancedb): javascript/modules.md
           - 🦀 Rust: https://docs.rs/lancedb/latest/lancedb/
       - ☁️ LanceDB Cloud:
           - Overview: cloud/index.md
@@ -205,7 +206,8 @@ nav:
   - API reference:
       - Overview: api_reference.md
       - Python: python/python.md
-      - Javascript: javascript/modules.md
+      - Javascript (vectordb): javascript/modules.md
+      - Javascript (lancedb): js/modules.md
       - Rust: https://docs.rs/lancedb/latest/lancedb/index.html
   - LanceDB Cloud:
       - Overview: cloud/index.md
