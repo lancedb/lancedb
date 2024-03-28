@@ -1,6 +1,6 @@
 {
   "name": "@lancedb/lancedb",
-  "version": "0.4.3",
+  "version": "0.4.14",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "napi": {
@@ -67,11 +67,11 @@
     "version": "napi version"
   },
   "optionalDependencies": {
-    "@lancedb/lancedb-darwin-arm64": "0.4.3",
-    "@lancedb/lancedb-darwin-x64": "0.4.3",
-    "@lancedb/lancedb-linux-arm64-gnu": "0.4.3",
-    "@lancedb/lancedb-linux-x64-gnu": "0.4.3",
-    "@lancedb/lancedb-win32-x64-msvc": "0.4.3"
+    "@lancedb/lancedb-darwin-arm64": "0.4.14",
+    "@lancedb/lancedb-darwin-x64": "0.4.14",
+    "@lancedb/lancedb-linux-arm64-gnu": "0.4.14",
+    "@lancedb/lancedb-linux-x64-gnu": "0.4.14",
+    "@lancedb/lancedb-win32-x64-msvc": "0.4.14"
   },
   "dependencies": {
     "openai": "^4.29.2",
