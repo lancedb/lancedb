@@ -80,7 +80,7 @@ impl Table {
         })
     }
 
-    pub fn delete<'a>(self_: PyRef<'a, Self>, condition: String) -> PyResult<&'a PyAny> {
+    pub fn delete(self_: PyRef<'_, Self>, condition: String) -> PyResult<&PyAny> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             inner.delete(&condition).await.infer_error()
