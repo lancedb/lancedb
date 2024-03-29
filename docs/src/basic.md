@@ -71,6 +71,16 @@
     --8<-- "docs/src/basic_legacy.ts:open_db"
     ```
 
+    !!! note "`@lancedb/lancedb` vs. `vectordb`"
+
+        The Javascript SDK was originally released as `vectordb`.  In an effort to
+        reduce maintenance we are aligning our SDKs.  The new, aligned, Javascript
+        API is being released as `lancedb`.  If you are starting new work we encourage
+        you to try out `lancedb`.  Once the new API is feature complete we will begin
+        slowly deprecating `vectordb` in favor of `lancedb`. There is a
+        [migration guide](migration.md) detailing the differences which will assist
+        you in this process.
+
 === "Rust"
 
     ```rust
