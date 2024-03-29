@@ -3,5 +3,6 @@
 The API reference for the LanceDB client SDKs are available at the following locations:
 
 - [Python](python/python.md)
-- [JavaScript](javascript/modules.md)
+- [JavaScript (legacy vectordb package)](javascript/modules.md)
+- [JavaScript (newer @lancedb/lancedb package)](js/modules.md)
 - [Rust](https://docs.rs/lancedb/latest/lancedb/index.html)

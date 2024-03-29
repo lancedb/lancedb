@@ -59,7 +59,7 @@
     "build": "npm run build:debug && tsc -b && shx cp lancedb/native.d.ts dist/native.d.ts",
     "build-release": "npm run build:release && tsc -b && shx cp lancedb/native.d.ts dist/native.d.ts",
     "chkformat": "prettier . --check",
-    "docs": "typedoc --plugin typedoc-plugin-markdown lancedb/index.ts",
+    "docs": "typedoc --plugin typedoc-plugin-markdown --out ../docs/src/js lancedb/index.ts",
     "lint": "eslint lancedb && eslint __test__",
     "prepublishOnly": "napi prepublish -t npm",
     "test": "npm run build && jest --verbose",
