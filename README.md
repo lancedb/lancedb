@@ -1,13 +1,13 @@
 <div align="center">
 <p align="center">
 
-<img width="275" alt="LanceDB Logo" src="https://user-images.githubusercontent.com/917119/226205734-6063d87a-1ecc-45fe-85be-1dea6383a3d8.png">
+<img width="275" alt="LanceDB Logo" src="https://github.com/lancedb/lancedb/assets/5846846/37d7c7ad-c2fd-4f56-9f16-fffb0d17c73a">
 
-**Developer-friendly, serverless vector database for AI applications**
+**Developer-friendly, database for multimodal AI**
 
 <a href='https://github.com/lancedb/vectordb-recipes/tree/main' target="_blank"><img alt='LanceDB' src='https://img.shields.io/badge/VectorDB_Recipes-100000?style=for-the-badge&logo=LanceDB&logoColor=white&labelColor=645cfb&color=645cfb'/></a>
 <a href='https://lancedb.github.io/lancedb/' target="_blank"><img alt='lancdb' src='https://img.shields.io/badge/DOCS-100000?style=for-the-badge&logo=lancdb&logoColor=white&labelColor=645cfb&color=645cfb'/></a>
-[![Medium](https://img.shields.io/badge/Medium-12100E?style=for-the-badge&logo=medium&logoColor=white)](https://blog.lancedb.com/) 
+[![Blog](https://img.shields.io/badge/Blog-12100E?style=for-the-badge&logoColor=white)](https://blog.lancedb.com/) 
 [![Discord](https://img.shields.io/badge/Discord-%235865F2.svg?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/zMM32dvNtd) 
 [![Twitter](https://img.shields.io/badge/Twitter-%231DA1F2.svg?style=for-the-badge&logo=Twitter&logoColor=white)](https://twitter.com/lancedb)
 
