@@ -454,8 +454,10 @@ export class RemoteTable<T = number[]> implements Table<T> {
     }
   }
 
-  async countRows (): Promise<number> {
-    const result = await this._client.post(`/v1/table/${this._name}/describe/`)
+  async countRows (filter?: string): Promise<number> {
+    const result = await this._client.post(`/v1/table/${this._name}/count_rows/`, {
+      predicate: filter
+    })
     return (await result.body())?.stats?.num_rows
   }
 
