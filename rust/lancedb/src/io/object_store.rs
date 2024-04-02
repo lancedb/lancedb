@@ -58,7 +58,10 @@ impl MirroringObjectStore {
 
 impl std::fmt::Display for MirroringObjectStore {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "MirroringObjectStore")?;
+        write!(f, "MirroringObjectStore(secondary_copy_behavior=")?;
+        self.secondary_copy_behavior.fmt(f)?;
+        writeln!(f, ")")?;
+
         writeln!(f, "primary:")?;
         self.primary.fmt(f)?;
         writeln!(f, "secondary:")?;
@@ -91,6 +94,17 @@ pub enum MirroringSecondaryCopy {
 impl Default for MirroringSecondaryCopy {
     fn default() -> Self {
         Self::Copy
+    }
+}
+
+impl std::fmt::Display for MirroringSecondaryCopy {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Copy => write!(f, "Copy"),
+            Self::SkipIfNotFound => write!(f, "SkipIfNotFound"),  
+        }?;
+
+        Ok(())
     }
 }
 
