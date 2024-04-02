@@ -101,8 +101,8 @@ impl TableNamesBuilder {
     ///
     /// This can be combined with limit to implement pagination by setting this to
     /// the last table name from the previous page.
-    pub fn start_after(mut self, start_after: String) -> Self {
-        self.start_after = Some(start_after);
+    pub fn start_after(mut self, start_after: impl Into<String>) -> Self {
+        self.start_after = Some(start_after.into());
         self
     }
 
@@ -862,7 +862,7 @@ mod tests {
 
         let tables = db
             .table_names()
-            .start_after(names[30].clone())
+            .start_after(&names[30])
             .execute()
             .await
             .unwrap();
@@ -871,7 +871,7 @@ mod tests {
 
         let tables = db
             .table_names()
-            .start_after(names[30].clone())
+            .start_after(&names[30])
             .limit(7)
             .execute()
             .await
