@@ -77,7 +77,7 @@ impl Connection {
         let inner = self_.get_inner()?.clone();
         let mut op = inner.table_names();
         if let Some(start_after) = start_after {
-            op = op.start_after(&start_after);
+            op = op.start_after(start_after);
         }
         if let Some(limit) = limit {
             op = op.limit(limit);
