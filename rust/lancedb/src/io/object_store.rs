@@ -101,7 +101,7 @@ impl std::fmt::Display for MirroringSecondaryCopy {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Copy => write!(f, "Copy"),
-            Self::SkipIfNotFound => write!(f, "SkipIfNotFound"),  
+            Self::SkipIfNotFound => write!(f, "SkipIfNotFound"),
         }?;
 
         Ok(())
