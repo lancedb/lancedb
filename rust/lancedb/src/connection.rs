@@ -101,8 +101,8 @@ impl TableNamesBuilder {
     ///
     /// This can be combined with limit to implement pagination by setting this to
     /// the last table name from the previous page.
-    pub fn start_after(mut self, start_after: &str) -> Self {
-        self.start_after = Some(start_after.to_string());
+    pub fn start_after(mut self, start_after: impl Into<String>) -> Self {
+        self.start_after = Some(start_after.into());
         self
     }
 
