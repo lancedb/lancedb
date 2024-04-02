@@ -96,7 +96,7 @@ impl Connection {
     ) -> napi::Result<Vec<String>> {
         let mut op = self.get_inner()?.table_names();
         if let Some(start_after) = start_after {
-            op = op.start_after(start_after);
+            op = op.start_after(&start_after);
         }
         if let Some(limit) = limit {
             op = op.limit(limit);
