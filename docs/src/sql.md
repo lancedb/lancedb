@@ -66,6 +66,7 @@ Currently, Lance supports a growing list of SQL expressions.
 - `LIKE`, `NOT LIKE`
 - `CAST`
 - `regexp_match(column, pattern)`
+- [DataFusion Functions](https://arrow.apache.org/datafusion/user-guide/sql/scalar_functions.html)
 
 For example, the following filter string is acceptable:
 
