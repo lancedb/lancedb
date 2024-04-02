@@ -226,3 +226,10 @@ extra:
   analytics:
     provider: google
     property: G-B7NFM40W74
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/lancedb/lancedb
+    - icon: fontawesome/brands/x-twitter
+      link: https://twitter.com/lancedb
+    - icon: fontawesome/brands/linkedin
+      link: https://www.linkedin.com/company/lancedb
