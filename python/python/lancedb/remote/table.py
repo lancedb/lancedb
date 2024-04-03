@@ -499,11 +499,11 @@ class RemoteTable(Table):
         )
 
     def count_rows(self, filter: Optional[str] = None) -> int:
-        # payload = {"filter": filter}
-        # self._conn._client.post(f"/v1/table/{self._name}/count_rows/", data=payload)
-        return NotImplementedError(
-            "count_rows() is not yet supported on the LanceDB cloud"
+        payload = {"predicate": filter}
+        resp = self._conn._client.post(
+            f"/v1/table/{self._name}/count_rows/", data=payload
         )
+        return resp
 
     def add_columns(self, transforms: Dict[str, str]):
         raise NotImplementedError(

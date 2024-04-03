@@ -63,7 +63,7 @@ jobs:
       - name: Upload Darwin Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: node-native-darwin
+          name: node-native-darwin-${{ matrix.config.arch }}
           path: |
             node/dist/lancedb-vectordb-darwin*.tgz
 
@@ -134,7 +134,7 @@ jobs:
       - name: Upload Linux Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: node-native-linux
+          name: node-native-linux-${{ matrix.config.arch }}
           path: |
             node/dist/lancedb-vectordb-linux*.tgz
 

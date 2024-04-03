@@ -1,3 +1,5 @@
+@lancedb/lancedb / [Exports](modules.md)
+
 # LanceDB JavaScript SDK
 
 A JavaScript library for [LanceDB](https://github.com/lancedb/lancedb).
