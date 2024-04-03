@@ -103,6 +103,18 @@ function toLanceRes (res: AxiosResponse): RemoteResponse {
   }
 }
 
+async function decodeErrorData(
+  res: RemoteResponse,
+  responseType?: ResponseType
+): Promise<string> {
+  const errorData = await res.body()
+  if (responseType === 'arraybuffer') {
+      return new TextDecoder().decode(errorData)
+  } else {
+      return errorData
+  }
+}
+
 export class HttpLancedbClient {
   private readonly _url: string
   private readonly _apiKey: () => string
@@ -180,7 +192,7 @@ export class HttpLancedbClient {
     }
 
     if (response.status !== 200) {
-      const errorData = new TextDecoder().decode(await response.body())
+      const errorData = await decodeErrorData(response)
       throw new Error(
         `Server Error, status: ${response.status}, ` +
         `message: ${response.statusText}: ${errorData}`
@@ -226,7 +238,7 @@ export class HttpLancedbClient {
     }
 
     if (response.status !== 200) {
-      const errorData = new TextDecoder().decode(await response.body())
+      const errorData = await decodeErrorData(response, responseType)
       throw new Error(
         `Server Error, status: ${response.status}, ` +
         `message: ${response.statusText}: ${errorData}`
