@@ -458,7 +458,7 @@ export class RemoteTable<T = number[]> implements Table<T> {
     const result = await this._client.post(`/v1/table/${this._name}/count_rows/`, {
       predicate: filter
     })
-    return (await result.body())?.stats?.num_rows
+    return (await result.body())
   }
 
   async delete (filter: string): Promise<void> {
