@@ -50,6 +50,7 @@ export class Query<T = number[]> {
 
   /***
      * Sets the number of results that will be returned
+     * default value is 10
      * @param value number of results
      */
   limit (value: number): Query<T> {
