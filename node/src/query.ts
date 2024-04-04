@@ -38,7 +38,7 @@ export class Query<T = number[]> {
   constructor (query?: T, tbl?: any, embeddings?: EmbeddingFunction<T>) {
     this._tbl = tbl
     this._query = query
-    this._limit = undefined
+    this._limit = 10
     this._nprobes = 20
     this._refineFactor = undefined
     this._select = undefined
@@ -50,6 +50,7 @@ export class Query<T = number[]> {
 
   /***
      * Sets the number of results that will be returned
+     * default value is 10
      * @param value number of results
      */
   limit (value: number): Query<T> {
