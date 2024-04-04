@@ -156,7 +156,7 @@ export class RemoteConnection implements Connection {
     }
 
     const res = await this._client.post(
-      `/v1/table/${tableName}/create/`,
+      `/v1/table/${encodeURIComponent(tableName)}/create/`,
       buffer,
       undefined,
       'application/vnd.apache.arrow.stream'
@@ -177,7 +177,7 @@ export class RemoteConnection implements Connection {
   }
 
   async dropTable (name: string): Promise<void> {
-    await this._client.post(`/v1/table/${name}/drop/`)
+    await this._client.post(`/v1/table/${encodeURIComponent(name)}/drop/`)
   }
 
   withMiddleware (middleware: HttpMiddleware): Connection {
@@ -268,7 +268,7 @@ export class RemoteTable<T = number[]> implements Table<T> {
 
   get schema (): Promise<any> {
     return this._client
-      .post(`/v1/table/${this._name}/describe/`)
+      .post(`/v1/table/${encodeURIComponent(this._name)}/describe/`)
       .then(async (res) => {
         if (res.status !== 200) {
           throw new Error(
@@ -282,7 +282,7 @@ export class RemoteTable<T = number[]> implements Table<T> {
   }
 
   search (query: T): Query<T> {
-    return new RemoteQuery(query, this._client, this._name) //, this._embeddings_new)
+    return new RemoteQuery(query, this._client, encodeURIComponent(this._name)) //, this._embeddings_new)
   }
 
   filter (where: string): Query<T> {
@@ -324,7 +324,7 @@ export class RemoteTable<T = number[]> implements Table<T> {
 
     const buffer = await fromTableToStreamBuffer(tbl, this._embeddings)
     const res = await this._client.post(
-      `/v1/table/${this._name}/merge_insert/`,
+      `/v1/table/${encodeURIComponent(this._name)}/merge_insert/`,
       buffer,
       queryParams,
       'application/vnd.apache.arrow.stream'
@@ -348,7 +348,7 @@ export class RemoteTable<T = number[]> implements Table<T> {
 
     const buffer = await fromTableToStreamBuffer(tbl, this._embeddings)
     const res = await this._client.post(
-      `/v1/table/${this._name}/insert/`,
+      `/v1/table/${encodeURIComponent(this._name)}/insert/`,
       buffer,
       {
         mode: 'append'
@@ -374,7 +374,7 @@ export class RemoteTable<T = number[]> implements Table<T> {
     }
     const buffer = await fromTableToStreamBuffer(tbl, this._embeddings)
     const res = await this._client.post(
-      `/v1/table/${this._name}/insert/`,
+      `/v1/table/${encodeURIComponent(this._name)}/insert/`,
       buffer,
       {
         mode: 'overwrite'
@@ -421,7 +421,7 @@ export class RemoteTable<T = number[]> implements Table<T> {
       index_cache_size: indexCacheSize
     }
     const res = await this._client.post(
-      `/v1/table/${this._name}/create_index/`,
+      `/v1/table/${encodeURIComponent(this._name)}/create_index/`,
       data
     )
     if (res.status !== 200) {
@@ -442,7 +442,7 @@ export class RemoteTable<T = number[]> implements Table<T> {
       replace: true
     }
     const res = await this._client.post(
-      `/v1/table/${this._name}/create_scalar_index/`,
+      `/v1/table/${encodeURIComponent(this._name)}/create_scalar_index/`,
       data
     )
     if (res.status !== 200) {
@@ -455,14 +455,14 @@ export class RemoteTable<T = number[]> implements Table<T> {
   }
 
   async countRows (filter?: string): Promise<number> {
-    const result = await this._client.post(`/v1/table/${this._name}/count_rows/`, {
+    const result = await this._client.post(`/v1/table/${encodeURIComponent(this._name)}/count_rows/`, {
       predicate: filter
     })
     return (await result.body())
   }
 
   async delete (filter: string): Promise<void> {
-    await this._client.post(`/v1/table/${this._name}/delete/`, {
+    await this._client.post(`/v1/table/${encodeURIComponent(this._name)}/delete/`, {
       predicate: filter
     })
   }
@@ -481,7 +481,7 @@ export class RemoteTable<T = number[]> implements Table<T> {
         updates[key] = toSQL(value)
       }
     }
-    await this._client.post(`/v1/table/${this._name}/update/`, {
+    await this._client.post(`/v1/table/${encodeURIComponent(this._name)}/update/`, {
       predicate: filter,
       updates: Object.entries(updates).map(([key, value]) => [key, value])
     })
@@ -489,7 +489,7 @@ export class RemoteTable<T = number[]> implements Table<T> {
 
   async listIndices (): Promise<VectorIndex[]> {
     const results = await this._client.post(
-      `/v1/table/${this._name}/index/list/`
+      `/v1/table/${encodeURIComponent(this._name)}/index/list/`
     )
     return (await results.body()).indexes?.map((index: any) => ({
       columns: index.columns,
@@ -500,7 +500,7 @@ export class RemoteTable<T = number[]> implements Table<T> {
 
   async indexStats (indexUuid: string): Promise<IndexStats> {
     const results = await this._client.post(
-      `/v1/table/${this._name}/index/${indexUuid}/stats/`
+      `/v1/table/${encodeURIComponent(this._name)}/index/${indexUuid}/stats/`
     )
     const body = await results.body()
     return {
