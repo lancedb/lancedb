@@ -1,6 +1,6 @@
 {
   "name": "@lancedb/lancedb-darwin-x64",
-  "version": "0.4.15",
+  "version": "0.4.16",
   "os": [
     "darwin"
   ],
