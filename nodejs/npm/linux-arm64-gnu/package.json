@@ -1,6 +1,6 @@
 {
   "name": "@lancedb/lancedb-linux-arm64-gnu",
-  "version": "0.4.15",
+  "version": "0.4.16",
   "os": [
     "linux"
   ],

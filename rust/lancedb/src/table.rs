@@ -1304,14 +1304,7 @@ impl TableInternal for NativeTable {
     }
 
     async fn count_rows(&self, filter: Option<String>) -> Result<usize> {
-        let dataset = self.dataset.get().await?;
-        if let Some(filter) = filter {
-            let mut scanner = dataset.scan();
-            scanner.filter(&filter)?;
-            Ok(scanner.count_rows().await? as usize)
-        } else {
-            Ok(dataset.count_rows().await?)
-        }
+        Ok(self.dataset.get().await?.count_rows(filter).await?)
     }
 
     async fn add(
