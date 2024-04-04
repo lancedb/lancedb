@@ -142,6 +142,7 @@ rules are as follows:
 
 **`Example`**
 
+```ts
 import { fromTableToBuffer, makeArrowTable } from "../arrow";
 import { Field, FixedSizeList, Float16, Float32, Int32, Schema } from "apache-arrow";
 
