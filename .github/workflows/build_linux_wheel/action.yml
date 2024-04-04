@@ -14,6 +14,10 @@ inputs:
     # Note: this does *not* mean the host is arm64, since we might be cross-compiling.
     required: false
     default: "false"
+  manylinux:
+    description: "The manylinux version to build for"
+    required: false
+    default: "2_17"
 runs:
   using: "composite"
   steps:
@@ -28,7 +32,7 @@ runs:
         command: build
         working-directory: python
         target: x86_64-unknown-linux-gnu
-        manylinux: "2_17"
+        manylinux: ${{ inputs.manylinux }}
         args: ${{ inputs.args }}
         before-script-linux: |
           set -e
@@ -43,7 +47,7 @@ runs:
         command: build
         working-directory: python
         target: aarch64-unknown-linux-gnu
-        manylinux: "2_24"
+        manylinux: ${{ inputs.manylinux }}
         args: ${{ inputs.args }}
         before-script-linux: |
           set -e

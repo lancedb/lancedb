@@ -31,3 +31,6 @@ pyo3-build-config = { version = "0.20.3", features = [
     "extension-module",
     "abi3-py38",
 ] }
+
+[features]
+fp16kernels = ["lancedb/fp16kernels"]
