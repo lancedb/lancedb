@@ -124,9 +124,9 @@ describe('LanceDB client', function () {
       const uri = await createTestDB(2, 100)
       const con = await lancedb.connect(uri)
       const table = (await con.openTable('vectors')) as LocalTable
-      let results = await table.filter('id % 2 = 0').execute()
+      let results = await table.filter('id % 2 = 0').limit(100).execute()
       assertResults(results)
-      results = await table.where('id % 2 = 0').execute()
+      results = await table.where('id % 2 = 0').limit(100).execute()
       assertResults(results)
 
       // Should reject a bad filter
