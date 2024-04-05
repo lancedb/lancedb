@@ -12,9 +12,11 @@
 #  limitations under the License.
 
 from functools import cached_property
-from typing import List
+from typing import List, Any
 
 import numpy as np
+
+from pydantic import PrivateAttr
 
 from ..util import attempt_import_or_raise
 from .base import EmbeddingFunction
@@ -41,33 +43,34 @@ class TransformersEmbeddingFunction(EmbeddingFunction):
     """
 
     name: str = "colbert-ir/colbertv2.0"
+    _tokenizer: Any = PrivateAttr()
+    _model: Any = PrivateAttr()
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-
-    @cached_property
-    def _model(self):
+        self._ndims = None
         transformers = attempt_import_or_raise("transformers")
-        tokenizer = transformers.AutoTokenizer.from_pretrained(self.name)
-        model = transformers.AutoModel.from_pretrained(self.name)
-        return tokenizer, model
+        self._tokenizer = transformers.AutoTokenizer.from_pretrained(self.name)
+        self._model = transformers.AutoModel.from_pretrained(self.name)
+
+    class Config:
+        keep_untouched = (cached_property,)
 
     def ndims(self):
-        _, model = self._model
-        return model.config.hidden_size
+        self._ndims = self._model.config.hidden_size
+        return self._ndims
 
     def compute_query_embeddings(self, query: str, *args, **kwargs) -> List[np.array]:
         return self.compute_source_embeddings(query)
 
     def compute_source_embeddings(self, texts: TEXT, *args, **kwargs) -> List[np.array]:
         texts = self.sanitize_input(texts)
-        tokenizer, model = self._model
         embedding = []
         for text in texts:
-            encoding = tokenizer(
+            encoding = self._tokenizer(
                 text, return_tensors="pt", padding=True, truncation=True
             )
-            emb = model(**encoding).last_hidden_state.mean(dim=1).squeeze()
+            emb = self._model(**encoding).last_hidden_state.mean(dim=1).squeeze()
             embedding.append(emb.detach().numpy())
 
         return embedding
