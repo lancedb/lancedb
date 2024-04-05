@@ -25,7 +25,6 @@ from .db import AsyncConnection, DBConnection, LanceDBConnection
 from .remote.db import RemoteDBConnection
 from .schema import vector
 from .table import AsyncTable
-from .utils import sentry_log
 
 
 def connect(
@@ -184,7 +183,6 @@ __all__ = [
     "AsyncTable",
     "URI",
     "sanitize_uri",
-    "sentry_log",
     "vector",
     "DBConnection",
     "LanceDBConnection",
