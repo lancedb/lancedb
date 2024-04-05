@@ -28,6 +28,10 @@ jobs:
       run:
         shell: bash
         working-directory: nodejs
+    env:
+      # Need up-to-date compilers for kernels
+      CC: gcc-12
+      CXX: g++-12
     steps:
     - uses: actions/checkout@v4
       with:
