@@ -143,7 +143,6 @@ nav:
               - TransformersJS Embedding Search: examples/transformerjs_embedding_search_nodejs.md
           - 🦀 Rust:
               - Overview: examples/examples_rust.md
-      - 🔧 CLI & Config: cli_config.md
       - 💭 FAQs: faq.md
       - ⚙️ API reference:
           - 🐍 Python: python/python.md
