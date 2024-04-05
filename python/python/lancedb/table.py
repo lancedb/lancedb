@@ -53,7 +53,6 @@ from .util import (
     safe_import_polars,
     value_to_sql,
 )
-from .utils.events import register_event
 
 if TYPE_CHECKING:
     import PIL
@@ -907,7 +906,6 @@ class LanceTable(Table):
                 f"Table {name} does not exist."
                 f"Please first call db.create_table({name}, data)"
             )
-        register_event("open_table")
 
         return tbl
 
@@ -1151,7 +1149,6 @@ class LanceTable(Table):
             accelerator=accelerator,
             index_cache_size=index_cache_size,
         )
-        register_event("create_index")
 
     def create_scalar_index(self, column: str, *, replace: bool = True):
         self._dataset_mut.create_scalar_index(
@@ -1211,7 +1208,6 @@ class LanceTable(Table):
             ordering_fields=ordering_field_names,
             writer_heap_size=writer_heap_size,
         )
-        register_event("create_fts_index")
 
     def _get_fts_index_path(self):
         return join_uri(self._dataset_uri, "_indices", "tantivy")
@@ -1259,7 +1255,6 @@ class LanceTable(Table):
         self._ref.dataset = lance.write_dataset(
             data, self._dataset_uri, schema=self.schema, mode=mode
         )
-        register_event("add")
 
     def merge(
         self,
@@ -1322,7 +1317,6 @@ class LanceTable(Table):
         self._ref.dataset = self._dataset_mut.merge(
             other_table, left_on=left_on, right_on=right_on, schema=schema
         )
-        register_event("merge")
 
     @cached_property
     def embedding_functions(self) -> dict:
@@ -1410,7 +1404,6 @@ class LanceTable(Table):
         """
         if vector_column_name is None and query is not None:
             vector_column_name = inf_vector_column_query(self.schema)
-        register_event("search_table")
         return LanceQueryBuilder.create(
             self,
             query,
@@ -1537,7 +1530,6 @@ class LanceTable(Table):
         if data is not None:
             new_table.add(data)
 
-        register_event("create_table")
         return new_table
 
     def delete(self, where: str):
@@ -1596,7 +1588,6 @@ class LanceTable(Table):
             values_sql = {k: value_to_sql(v) for k, v in values.items()}
 
         self._dataset_mut.update(values_sql, where)
-        register_event("update")
 
     def _execute_query(
         self, query: Query, batch_size: Optional[int] = None
@@ -2113,7 +2104,6 @@ class AsyncTable:
         if isinstance(data, pa.Table):
             data = pa.RecordBatchReader.from_batches(data.schema, data.to_batches())
         await self._inner.add(data, mode)
-        register_event("add")
 
     def merge_insert(self, on: Union[str, Iterable[str]]) -> LanceMergeInsertBuilder:
         """
