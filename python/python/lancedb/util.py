@@ -16,6 +16,7 @@ import importlib
 import os
 import pathlib
 import warnings
+import logging.config
 from datetime import date, datetime
 from functools import singledispatch
 from typing import Tuple, Union

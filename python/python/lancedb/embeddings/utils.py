@@ -19,15 +19,14 @@ import sys
 import time
 import urllib.error
 import weakref
+import logging
 from typing import Callable, List, Union
-
 import numpy as np
 import pyarrow as pa
 from lance.vector import vec_to_table
 from retry import retry
 
 from ..util import deprecated, safe_import_pandas
-from ..utils.general import LOGGER
 
 pd = safe_import_pandas()
 
@@ -256,7 +255,7 @@ def retry_with_exponential_backoff(
                     )
 
                 delay *= exponential_base * (1 + jitter * random.random())
-                LOGGER.info(f"Retrying in {delay:.2f} seconds due to {e}")
+                logging.info(f"Retrying in {delay:.2f} seconds due to {e}")
                 time.sleep(delay)
 
     return wrapper
@@ -277,5 +276,5 @@ def url_retrieve(url: str):
 
 
 def api_key_not_found_help(provider):
-    LOGGER.error(f"Could not find API key for {provider}.")
+    logging.error(f"Could not find API key for {provider}.")
     raise ValueError(f"Please set the {provider.upper()}_API_KEY environment variable.")
