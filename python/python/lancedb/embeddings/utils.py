@@ -28,6 +28,7 @@ from retry import retry
 
 from ..util import deprecated, safe_import_pandas, LOGGER
 
+
 pd = safe_import_pandas()
 
 DATA = Union[pa.Table, "pd.DataFrame"]
