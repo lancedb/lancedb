@@ -131,6 +131,15 @@ async fn test_minio_lifecycle() -> Result<()> {
     let table_names = db.table_names().execute().await?;
     assert_eq!(table_names, vec!["test_table"]);
 
+    // Re-open the table
+    let table = db.open_table("test_table").execute().await?;
+    let row_count = table.count_rows(None).await?;
+    assert_eq!(row_count, 3);
+
+    let data = test_data();
+    let data = RecordBatchIterator::new(vec![Ok(data.clone())], data.schema());
+    table.add(data).execute().await?;
+
     db.drop_table("test_table").await?;
 
     Ok(())
@@ -264,7 +273,7 @@ async fn test_encryption() -> Result<()> {
     table.delete("a = 1").await?;
     validate_objects_encrypted(&bucket.0, "test_table", &key.0).await;
 
-    // Create a connection with encryption
+    // Test we can set encryption at the connection level.
     let db = lancedb::connect(&uri)
         .storage_options(CONFIG.iter().cloned())
         .storage_option("aws_server_side_encryption", "aws:kms")
@@ -272,10 +281,8 @@ async fn test_encryption() -> Result<()> {
         .execute()
         .await?;
 
-    // open the table
     let table = db.open_table("test_table").execute().await?;
 
-    // Append to it
     let data = test_data();
     let data = RecordBatchIterator::new(vec![Ok(data.clone())], data.schema());
     table.add(data).execute().await?;

@@ -786,8 +786,23 @@ impl ConnectionInternal for Database {
         }
     }
 
-    async fn do_open_table(&self, options: OpenTableBuilder) -> Result<Table> {
+    async fn do_open_table(&self, mut options: OpenTableBuilder) -> Result<Table> {
         let table_uri = self.table_uri(&options.name)?;
+
+        // Inherit storage options from the connection
+        let storage_options = options
+            .lance_read_params
+            .get_or_insert_with(Default::default)
+            .store_options
+            .get_or_insert_with(Default::default)
+            .storage_options
+            .get_or_insert_with(Default::default);
+        for (key, value) in self.storage_options.iter() {
+            if !storage_options.contains_key(key) {
+                storage_options.insert(key.clone(), value.clone());
+            }
+        }
+
         let native_table = Arc::new(
             NativeTable::open_with_params(
                 &table_uri,
