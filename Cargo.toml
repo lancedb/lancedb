@@ -14,10 +14,14 @@ keywords = ["lancedb", "lance", "database", "vector", "search"]
 categories = ["database-implementations"]
 
 [workspace.dependencies]
-lance = { "version" = "=0.10.9", "features" = ["dynamodb"] }
-lance-index = { "version" = "=0.10.9" }
-lance-linalg = { "version" = "=0.10.9" }
-lance-testing = { "version" = "=0.10.9" }
+# lance = { "version" = "=0.10.9", "features" = ["dynamodb"] }
+# lance-index = { "version" = "=0.10.9" }
+# lance-linalg = { "version" = "=0.10.9" }
+# lance-testing = { "version" = "=0.10.9" }
+lance = { "git" = "https://github.com/lancedb/lance.git", "branch" = "main", "features" = ["dynamodb"] }
+lance-index = { "git" = "https://github.com/lancedb/lance.git", "branch" = "main" }
+lance-linalg = { "git" = "https://github.com/lancedb/lance.git", "branch" = "main" }
+lance-testing = { "git" = "https://github.com/lancedb/lance.git", "branch" = "main" }
 # Note that this one does not include pyarrow
 arrow = { version = "50.0", optional = false }
 arrow-array = "50.0"

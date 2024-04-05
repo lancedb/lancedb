@@ -1,11 +1,11 @@
 version: "3.9"
 services:
   localstack:
-    image: localstack/localstack:0.14
+    image: localstack/localstack:3.3
     ports:
       - 4566:4566
     environment:
-      - SERVICES=s3,dynamodb
+      - SERVICES=s3,dynamodb,kms
       - DEBUG=1
       - LS_LOG=trace
       - DOCKER_HOST=unix:///var/run/docker.sock
