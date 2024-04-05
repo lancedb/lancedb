@@ -906,7 +906,6 @@ class LanceTable(Table):
                 f"Table {name} does not exist."
                 f"Please first call db.create_table({name}, data)"
             )
-        register_event("open_table")
 
         return tbl
 
@@ -2105,7 +2104,6 @@ class AsyncTable:
         if isinstance(data, pa.Table):
             data = pa.RecordBatchReader.from_batches(data.schema, data.to_batches())
         await self._inner.add(data, mode)
-        register_event("add")
 
     def merge_insert(self, on: Union[str, Iterable[str]]) -> LanceMergeInsertBuilder:
         """

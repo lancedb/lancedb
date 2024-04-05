@@ -183,7 +183,6 @@ __all__ = [
     "AsyncTable",
     "URI",
     "sanitize_uri",
-    "sentry_log",
     "vector",
     "DBConnection",
     "LanceDBConnection",
