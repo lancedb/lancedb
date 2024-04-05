@@ -10,7 +10,6 @@
 #  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
-
 # ruff: noqa: F401
 from .base import EmbeddingFunction, EmbeddingFunctionConfig, TextEmbeddingFunction
 from .bedrock import BedRockText
@@ -21,4 +20,7 @@ from .open_clip import OpenClipEmbeddings
 from .openai import OpenAIEmbeddings
 from .registry import EmbeddingFunctionRegistry, get_registry
 from .sentence_transformers import SentenceTransformerEmbeddings
+from .gte import GteEmbeddings
+from .transformers import TransformersEmbeddingFunction, ColbertEmbeddings
+from .imagebind import ImageBindEmbeddings
 from .utils import with_embeddings

@@ -45,7 +45,7 @@ except Exception:
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize("alias", ["sentence-transformers", "openai"])
+@pytest.mark.parametrize("alias", ["sentence-transformers", "openai", "huggingface"])
 def test_basic_text_embeddings(alias, tmp_path):
     db = lancedb.connect(tmp_path)
     registry = get_registry()
@@ -84,7 +84,7 @@ def test_basic_text_embeddings(alias, tmp_path):
         )
     )
 
-    query = "greetings"
+    query = "greeting"
     actual = (
         table.search(query, vector_column_name="vector").limit(1).to_pydantic(Words)[0]
     )
@@ -184,9 +184,9 @@ def test_imagebind(tmp_path):
     import shutil
     import tempfile
 
-    import lancedb.embeddings.imagebind
     import pandas as pd
     import requests
+
     from lancedb.embeddings import get_registry
     from lancedb.pydantic import LanceModel, Vector
 
@@ -321,8 +321,6 @@ def test_gemini_embedding(tmp_path):
 )
 @pytest.mark.slow
 def test_gte_embedding(tmp_path):
-    import lancedb.embeddings.gte
-
     model = get_registry().get("gte-text").create()
 
     class TextModel(LanceModel):
