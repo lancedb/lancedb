@@ -16,6 +16,7 @@ import importlib
 import os
 import pathlib
 import warnings
+import logging.config
 from datetime import date, datetime
 from functools import singledispatch
 from typing import Tuple, Union
@@ -26,6 +27,46 @@ import pyarrow as pa
 import pyarrow.fs as pa_fs
 
 from ._lancedb import validate_table_name as native_validate_table_name
+
+
+LOGGING_NAME = "lancedb"
+VERBOSE = (
+    str(os.getenv("LANCEDB_VERBOSE", True)).lower() == "true"
+)  # global verbose mode
+
+
+def set_logging(name=LOGGING_NAME, verbose=True):
+    """Sets up logging for the given name.
+
+    Parameters
+    ----------
+    name : str, optional
+        The name of the logger. Default is 'lancedb'.
+    verbose : bool, optional
+        Whether to enable verbose logging. Default is True.
+    """
+
+    rank = int(os.getenv("RANK", -1))  # rank in world for Multi-GPU trainings
+    level = logging.INFO if verbose and rank in {-1, 0} else logging.ERROR
+    logging.config.dictConfig(
+        {
+            "version": 1,
+            "disable_existing_loggers": False,
+            "formatters": {name: {"format": "%(message)s"}},
+            "handlers": {
+                name: {
+                    "class": "logging.StreamHandler",
+                    "formatter": name,
+                    "level": level,
+                }
+            },
+            "loggers": {name: {"level": level, "handlers": [name], "propagate": False}},
+        }
+    )
+
+
+set_logging(LOGGING_NAME, verbose=VERBOSE)
+LOGGER = logging.getLogger(LOGGING_NAME)
 
 
 def safe_import_adlfs():

@@ -26,8 +26,7 @@ import pyarrow as pa
 from lance.vector import vec_to_table
 from retry import retry
 
-from ..util import deprecated, safe_import_pandas
-from ..utils.general import LOGGER
+from ..util import deprecated, safe_import_pandas, LOGGER
 
 pd = safe_import_pandas()
 
