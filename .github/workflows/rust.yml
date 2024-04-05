@@ -78,7 +78,7 @@ jobs:
       run: cargo build --all-features
     - name: Start integration test environment
       working-directory: .
-      run: docker compose up
+      run: docker compose up --detach && sleep 10
     - name: Run tests
       run: cargo test --all-features
     - name: Run examples
@@ -109,7 +109,7 @@ jobs:
         run: cargo build --all-features
       - name: Start integration test environment
         working-directory: .
-        run: docker compose up
+        run: docker compose up --detach && sleep 10
       - name: Run tests
         run: cargo test --all-features
   windows:

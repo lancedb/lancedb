@@ -850,7 +850,7 @@ impl NativeTable {
             uri: uri.to_string(),
             dataset,
             store_wrapper: write_store_wrapper,
-            storage_options: storage_options,
+            storage_options,
             read_consistency_interval,
         })
     }

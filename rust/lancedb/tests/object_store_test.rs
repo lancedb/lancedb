@@ -30,15 +30,13 @@ const CONFIG: &[(&str, &str)] = &[
 
 async fn aws_config() -> SdkConfig {
     let credentials = Credentials::new(CONFIG[0].1, CONFIG[1].1, None, None, "static");
-    let config = ConfigLoader::default()
+    ConfigLoader::default()
         .credentials_provider(credentials)
         .endpoint_url(CONFIG[2].1)
         .behavior_version(BehaviorVersion::latest())
         .region(Region::new("us-east-1"))
         .load()
-        .await;
-
-    config
+        .await
 }
 
 struct S3Bucket(String);
@@ -210,7 +208,7 @@ async fn validate_objects_encrypted(bucket: &str, path: &str, kms_key_id: &str) 
             .unwrap();
 
         // Verify the object is encrypted
-        if !(head.server_side_encryption() == Some(&ServerSideEncryption::AwsKms)) {
+        if head.server_side_encryption() != Some(&ServerSideEncryption::AwsKms) {
             errors.push(format!("Object {} is not encrypted", object.key().unwrap()));
             continue;
         }
