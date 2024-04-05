@@ -25,7 +25,6 @@ from overrides import EnforceOverrides, override
 from pyarrow import fs
 
 from lancedb.common import data_to_reader, validate_schema
-from lancedb.utils.events import register_event
 
 from ._lancedb import connect as lancedb_connect
 from .pydantic import LanceModel
@@ -739,7 +738,6 @@ class AsyncConnection(object):
                 data,
             )
 
-        register_event("create_table")
         return AsyncTable(new_table)
 
     async def open_table(self, name: str) -> Table:
@@ -755,7 +753,6 @@ class AsyncConnection(object):
         A LanceTable object representing the table.
         """
         table = await self._inner.open_table(name)
-        register_event("open_table")
         return AsyncTable(table)
 
     async def drop_table(self, name: str):
