@@ -255,7 +255,7 @@ def retry_with_exponential_backoff(
                     )
 
                 delay *= exponential_base * (1 + jitter * random.random())
-                logging.info(f"Retrying in {delay:.2f} seconds due to {e}")
+                logging.info("Retrying in %s seconds...", delay)
                 time.sleep(delay)
 
     return wrapper
@@ -276,5 +276,5 @@ def url_retrieve(url: str):
 
 
 def api_key_not_found_help(provider):
-    logging.error(f"Could not find API key for {provider}.")
+    logging.error("Could not find API key for %s", provider)
     raise ValueError(f"Please set the {provider.upper()}_API_KEY environment variable.")
