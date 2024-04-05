@@ -96,7 +96,7 @@ requires = ["maturin>=1.4"]
 build-backend = "maturin"
 
 [tool.ruff.lint]
-select = ["F", "E", "W", "I", "G", "TCH", "PERF"]
+select = ["F", "E", "W", "G", "TCH", "PERF"]
 
 [tool.pytest.ini_options]
 addopts = "--strict-markers --ignore-glob=lancedb/embeddings/*.py"

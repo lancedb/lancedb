@@ -38,6 +38,9 @@ class ImageBindEmbeddings(EmbeddingFunction):
     device: str = "cpu"
     normalize: bool = False
 
+    class Config:
+        keep_untouched = (cached_property,)
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._ndims = 1024
