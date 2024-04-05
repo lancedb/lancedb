@@ -76,6 +76,9 @@ jobs:
           sudo apt install -y protobuf-compiler libssl-dev
     - name: Build
       run: cargo build --all-features
+    - name: Start integration test environment
+      working-directory: .
+      run: docker compose up
     - name: Run tests
       run: cargo test --all-features
     - name: Run examples
@@ -104,6 +107,9 @@ jobs:
         run: brew install protobuf
       - name: Build
         run: cargo build --all-features
+      - name: Start integration test environment
+        working-directory: .
+        run: docker compose up
       - name: Run tests
         run: cargo test --all-features
   windows:
