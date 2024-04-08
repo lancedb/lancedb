@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::HashMap;
+
 use napi::bindgen_prelude::*;
 use napi_derive::*;
 
@@ -118,14 +120,18 @@ impl Connection {
         name: String,
         buf: Buffer,
         mode: String,
+        storage_options: Option<HashMap<String, String>>,
     ) -> napi::Result<Table> {
         let batches = ipc_file_to_batches(buf.to_vec())
             .map_err(|e| napi::Error::from_reason(format!("Failed to read IPC file: {}", e)))?;
         let mode = Self::parse_create_mode_str(&mode)?;
-        let tbl = self
-            .get_inner()?
-            .create_table(&name, batches)
-            .mode(mode)
+        let mut builder = self.get_inner()?.create_table(&name, batches).mode(mode);
+        if let Some(storage_options) = storage_options {
+            for (key, value) in storage_options {
+                builder = builder.storage_option(key, value);
+            }
+        }
+        let tbl = builder
             .execute()
             .await
             .map_err(|e| napi::Error::from_reason(format!("{}", e)))?;
@@ -138,15 +144,22 @@ impl Connection {
         name: String,
         schema_buf: Buffer,
         mode: String,
+        storage_options: Option<HashMap<String, String>>,
     ) -> napi::Result<Table> {
         let schema = ipc_file_to_schema(schema_buf.to_vec()).map_err(|e| {
             napi::Error::from_reason(format!("Failed to marshal schema from JS to Rust: {}", e))
         })?;
         let mode = Self::parse_create_mode_str(&mode)?;
-        let tbl = self
+        let mut builder = self
             .get_inner()?
             .create_empty_table(&name, schema)
-            .mode(mode)
+            .mode(mode);
+        if let Some(storage_options) = storage_options {
+            for (key, value) in storage_options {
+                builder = builder.storage_option(key, value);
+            }
+        }
+        let tbl = builder
             .execute()
             .await
             .map_err(|e| napi::Error::from_reason(format!("{}", e)))?;
@@ -154,10 +167,18 @@ impl Connection {
     }
 
     #[napi]
-    pub async fn open_table(&self, name: String) -> napi::Result<Table> {
-        let tbl = self
-            .get_inner()?
-            .open_table(&name)
+    pub async fn open_table(
+        &self,
+        name: String,
+        storage_options: Option<HashMap<String, String>>,
+    ) -> napi::Result<Table> {
+        let mut builder = self.get_inner()?.open_table(&name);
+        if let Some(storage_options) = storage_options {
+            for (key, value) in storage_options {
+                builder = builder.storage_option(key, value);
+            }
+        }
+        let tbl = builder
             .execute()
             .await
             .map_err(|e| napi::Error::from_reason(format!("{}", e)))?;

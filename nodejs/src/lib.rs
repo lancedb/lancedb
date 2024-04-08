@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::HashMap;
+
 use connection::Connection;
 use napi_derive::*;
 
@@ -38,6 +40,10 @@ pub struct ConnectionOptions {
     /// Note: this consistency only applies to read operations. Write operations are
     /// always consistent.
     pub read_consistency_interval: Option<f64>,
+    /// (For LanceDB OSS only): configuration for object storage.
+    ///
+    /// The available options are described at https://lancedb.github.io/lancedb/guides/storage/
+    pub storage_options: Option<HashMap<String, String>>,
 }
 
 /// Write mode for writing a table.
@@ -52,6 +58,11 @@ pub enum WriteMode {
 #[napi(object)]
 pub struct WriteOptions {
     pub mode: Option<WriteMode>,
+}
+
+#[napi(object)]
+pub struct OpenTableOptions {
+    pub storage_options: Option<HashMap<String, String>>,
 }
 
 #[napi]

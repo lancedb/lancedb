@@ -572,7 +572,9 @@ class AsyncConnection(object):
         fill_value: float
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
         storage_options: dict, optional
-            Additional options for the storage backend. See available options at
+            Additional options for the storage backend. Options already set on the
+            connection will be inherited by the table, but can be overridden here.
+            See available options at
             https://lancedb.github.io/lancedb/guides/storage/
 
 
@@ -758,7 +760,9 @@ class AsyncConnection(object):
         name: str
             The name of the table.
         storage_options: dict, optional
-            Additional options for the storage backend. See available options at
+            Additional options for the storage backend. Options already set on the
+            connection will be inherited by the table, but can be overridden here.
+            See available options at
             https://lancedb.github.io/lancedb/guides/storage/
 
         Returns

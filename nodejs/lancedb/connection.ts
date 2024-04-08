@@ -33,6 +33,28 @@ export interface CreateTableOptions {
    * then no error will be raised.
    */
   existOk: boolean;
+
+  /**
+   * Configuration for object storage.
+   * 
+   * Options already set on the connection will be inherited by the table,
+   * but can be overridden here.
+   * 
+   * The available options are described at https://lancedb.github.io/lancedb/guides/storage/
+   */
+  storageOptions?: Record<string, string>;
+}
+
+export interface OpenTableOptions {
+  /**
+   * Configuration for object storage.
+   * 
+   * Options already set on the connection will be inherited by the table,
+   * but can be overridden here.
+   *
+   * The available options are described at https://lancedb.github.io/lancedb/guides/storage/
+   */
+  storageOptions?: Record<string, string>;
 }
 
 export interface TableNamesOptions {
@@ -109,8 +131,14 @@ export class Connection {
    * Open a table in the database.
    * @param {string} name - The name of the table
    */
-  async openTable(name: string): Promise<Table> {
-    const innerTable = await this.inner.openTable(name);
+  async openTable(
+    name: string,
+    options?: Partial<OpenTableOptions>,
+  ): Promise<Table> {
+    const innerTable = await this.inner.openTable(
+      name,
+      options?.storageOptions,
+    );
     return new Table(innerTable);
   }
 
@@ -139,7 +167,12 @@ export class Connection {
       table = makeArrowTable(data);
     }
     const buf = await fromTableToBuffer(table);
-    const innerTable = await this.inner.createTable(name, buf, mode);
+    const innerTable = await this.inner.createTable(
+      name,
+      buf,
+      mode,
+      options?.storageOptions,
+    );
     return new Table(innerTable);
   }
 
@@ -162,7 +195,12 @@ export class Connection {
 
     const table = makeEmptyTable(schema);
     const buf = await fromTableToBuffer(table);
-    const innerTable = await this.inner.createEmptyTable(name, buf, mode);
+    const innerTable = await this.inner.createEmptyTable(
+      name,
+      buf,
+      mode,
+      options?.storageOptions,
+    );
     return new Table(innerTable);
   }
 
