@@ -55,18 +55,116 @@ LanceDB OSS supports object stores such as AWS S3 (and compatible stores), Azure
     const db = await lancedb.connect("az://bucket/path");
     ```
 
-In most cases, when running in the respective cloud and permissions are set up correctly, no additional configuration is required. When running outside of the respective cloud, authentication credentials must be provided using environment variables. In general, these environment variables are the same as those used by the respective cloud SDKs. The sections below describe the environment variables that can be used to configure each object store.
+In most cases, when running in the respective cloud and permissions are set up correctly, no additional configuration is required. When running outside of the respective cloud, authentication credentials must be provided. Credentials and other configuration options can be set in two ways: first, by setting environment variables. And second, by passing a `storage_options` object to the `connect` function. For example, to increase the request timeout to 60 seconds, you can set the `TIMEOUT` environment variable to `60s`:
 
-LanceDB OSS uses the [object-store](https://docs.rs/object_store/latest/object_store/) Rust crate for object store access. There are general environment variables that can be used to configure the object store, such as the request timeout and proxy configuration. See the [object_store ClientConfigKey](https://docs.rs/object_store/latest/object_store/enum.ClientConfigKey.html) doc for available configuration options. The environment variables that can be set are the snake-cased versions of these variable names. For example, to set `ProxyUrl` use the environment variable `PROXY_URL`. (Don't let the Rust docs intimidate you! We link to them so you can see an up-to-date list of the available options.)
+```bash
+export TIMEOUT=60s
+```
+
+If you only want this to apply to one particular connection, you can pass the `storage_options` object to the `connect` function:
+
+=== "Python"
+
+    ```python
+    import lancedb
+    db = lancedb.connect("s3://bucket/path",
+                         storage_options={"timeout": "60s"})
+    ```
+
+=== "JavaScript"
+
+    ```javascript
+    const lancedb = require("lancedb");
+    const db = await lancedb.connect("s3://bucket/path",
+                                     {timeout: "60s"});
+    ```
+
+Getting even more specific, you can set the `timeout` for only a particular table:
+
+=== "Python"
+
+    ```python
+    import lancedb
+    db = lancedb.connect("s3://bucket/path")
+    table = db.open_table("table", storage_options={"connect_timeout": "60s"})
+    ```
+
+=== "JavaScript"
+
+    ```javascript
+    const lancedb = require("lancedb");
+    const db = await lancedb.connect("s3://bucket/path");
+    const table = db.openTable("table", {timeout: "60s"});
+    ```
+
+### General configuration
+
+There are several options that can be set for all object stores, mostly related to network client configuration.
+
+<!-- from here: https://docs.rs/object_store/latest/object_store/enum.ClientConfigKey.html -->
+
+| Key                        | Description                                                                                      |
+|----------------------------|--------------------------------------------------------------------------------------------------|
+| `allow_http`               | Allow non-TLS, i.e. non-HTTPS connections. Default: `False`.                                      |
+| `allow_invalid_certificates`| Skip certificate validation on HTTPS connections. Default: `False`.                               |
+| `connect_timeout`          | Timeout for only the connect phase of a Client. Default: `5s`.                                    |
+| `timeout`                  | Timeout for the entire request, from connection until the response body has finished. Default: `30s`. |
+| `user_agent`               | User agent string to use in requests.                                                             |
+| `proxy_url`                | URL of a proxy server to use for requests. Default: `None`.                                       |
+| `proxy_ca_certificate`     | PEM-formatted CA certificate for proxy connections.                                                |
+| `proxy_excludes`           | List of hosts that bypass the proxy. This is a comma-separated list of domains and IP masks. Any subdomain of the provided domain will be bypassed. For example, `example.com, 192.168.1.0/24` would bypass `https://api.example.com`, `https://www.example.com`, and any IP in the range `192.168.1.0/24`. |
 
 
 ### AWS S3
 
-To configure credentials for AWS S3, you can use the `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and `AWS_SESSION_TOKEN` environment variables.
+To configure credentials for AWS S3, you can use the `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and `AWS_SESSION_TOKEN` keys.
+These can be set as environment variables or passed in the `storage_options` parameter:
+
+=== "Python"
+
+    ```python
+    import lancedb
+    db = lancedb.connect(
+        "s3://bucket/path",
+        storage_options={
+            "aws_access_key_id": "my-access-key",
+            "aws_secret_access_key": "my-secret-key",
+            "aws_session_token": "my-session-token",
+        }
+    )
+    ```
+
+=== "JavaScript"
+
+    ```javascript
+    const lancedb = require("lancedb");
+    const db = await lancedb.connect(
+        "s3://bucket/path",
+        {
+            aws_access_key_id: "my-access-key",
+            aws_secret_access_key: "my-secret-key",
+            aws_session_token: "my-session-token",
+        }
+    );
+    ```
 
 Alternatively, if you are using AWS SSO, you can use the `AWS_PROFILE` and `AWS_DEFAULT_REGION` environment variables.
 
-You can see a full list of environment variables [here](https://docs.rs/object_store/latest/object_store/aws/struct.AmazonS3Builder.html#method.from_env).
+The following keys can be used as both environment variables or keys in the `storage_options` parameter:
+
+| Key                                | Description                                                                                          |
+|------------------------------------|------------------------------------------------------------------------------------------------------|
+| `aws_region` / `region`             | The AWS region the bucket is in. This can be automatically detected when using AWS S3, but must be specified for S3-compatible stores. |
+| `aws_access_key_id` / `access_key_id` | The AWS access key ID to use.                                                                       |
+| `aws_secret_access_key` / `secret_access_key` | The AWS secret access key to use.                                                               |
+| `aws_session_token` / `session_token` | The AWS session token to use.                                                                     |
+| `aws_endpoint` / `endpoint`         | The endpoint to use for S3-compatible stores.                                                       |
+| `aws_virtual_hosted_style_request` / `virtual_hosted_style_request` | Whether to use virtual hosted-style requests, where the bucket name is part of the endpoint. Meant to be used with `aws_endpoint`. Default: `False`. |
+| `aws_s3_express` / `s3_express`     | Whether to use S3 Express One Zone endpoints. Default: `False`. See more details below.             |
+| `aws_server_side_encryption`        | The server-side encryption algorithm to use. Must be one of `"AES256"`, `"aws:kms"`, or `"aws:kms:dsse"`. Default: `None`. |
+| `aws_sse_kms_key_id`                | The KMS key ID to use for server-side encryption. If set, `aws_server_side_encryption` must be `"aws:kms"` or `"aws:kms:dsse"`. |
+| `aws_sse_bucket_key_enabled`        | Whether to use bucket keys for server-side encryption.                                               |
+
 
 !!! tip "Automatic cleanup for failed writes"
 
@@ -146,22 +244,164 @@ For **read-only access**, LanceDB will need a policy such as:
 
 #### S3-compatible stores
 
-LanceDB can also connect to S3-compatible stores, such as MinIO. To do so, you must specify two environment variables: `AWS_ENDPOINT` and `AWS_DEFAULT_REGION`. `AWS_ENDPOINT` should be the URL of the S3-compatible store, and `AWS_DEFAULT_REGION` should be the region to use.
+LanceDB can also connect to S3-compatible stores, such as MinIO. To do so, you must specify both region and endpoint:
 
-<!-- TODO: we should also document the use of S3 Express once we fully support it -->
+=== "Python"
+
+    ```python
+    import lancedb
+    db = lancedb.connect(
+        "s3://bucket/path",
+        storage_options={
+            "region": "us-east-1",
+            "endpoint": "http://minio:9000",
+        }
+    )
+    ```
+
+=== "JavaScript"
+
+    ```javascript
+    const lancedb = require("lancedb");
+    const db = await lancedb.connect(
+        "s3://bucket/path",
+        {
+            region: "us-east-1",
+            endpoint: "http://minio:9000",
+        }
+    );
+    ```
+
+This can also be done with the ``AWS_ENDPOINT`` and ``AWS_DEFAULT_REGION`` environment variables.
+
+#### S3 Express
+
+LanceDB supports [S3 Express One Zone](https://aws.amazon.com/s3/storage-classes/express-one-zone/) endpoints, but requires additional configuration. Also, S3 Express endpoints only support connecting from an EC2 instance within the same region.
+
+To configure LanceDB to use an S3 Express endpoint, you must set the storage option `s3_express`. The bucket name in your table URI should **include the suffix**.
+
+=== "Python"
+
+    ```python
+    import lancedb
+    db = lancedb.connect(
+        "s3://my-bucket--use1-az4--x-s3/path",
+        storage_options={
+            "region": "us-east-1",
+            "s3_express": "true",
+        }
+    )
+    ```
+
+=== "JavaScript"
+
+    ```javascript
+    const lancedb = require("lancedb");
+    const db = await lancedb.connect(
+        "s3://my-bucket--use1-az4--x-s3/path",
+        {
+            region: "us-east-1",
+            s3_express: "true",
+        }
+    );
+    ```
+
 
 ### Google Cloud Storage
 
-GCS credentials are configured by setting the `GOOGLE_SERVICE_ACCOUNT` environment variable to the path of a JSON file containing the service account credentials. There are several aliases for this environment variable, documented [here](https://docs.rs/object_store/latest/object_store/gcp/struct.GoogleCloudStorageBuilder.html#method.from_env).
+GCS credentials are configured by setting the `GOOGLE_SERVICE_ACCOUNT` environment variable to the path of a JSON file containing the service account credentials. Alternatively, you can pass the path to the JSON file in the `storage_options`:
+
+=== "Python"
+
+    ```python
+    import lancedb
+    db = lancedb.connect(
+        "gs://my-bucket/my-database",
+        storage_options={
+            "service_account": "path/to/service-account.json",
+        }
+    )
+    ```
+
+=== "JavaScript"
+
+    ```javascript
+    const lancedb = require("lancedb");
+    const db = await lancedb.connect(
+        "gs://my-bucket/my-database",
+        {
+            service_account: "path/to/service-account.json",
+        }
+    );
+    ```
 
 
 !!! info "HTTP/2 support"
 
     By default, GCS uses HTTP/1 for communication, as opposed to HTTP/2. This improves maximum throughput significantly. However, if you wish to use HTTP/2 for some reason, you can set the environment variable `HTTP1_ONLY` to `false`.
 
+
+The following keys can be used as both environment variables or keys in the `storage_options` parameter:
+<!-- source: https://docs.rs/object_store/latest/object_store/gcp/enum.GoogleConfigKey.html -->
+
+| Key                                   | Description                                  |
+|---------------------------------------|----------------------------------------------|
+| ``google_service_account``            | Path to the service account JSON file.       |
+| ``google_service_account_key``        | The serialized service account key.          |
+| ``google_application_credentials``    | Path to the application credentials.         |
+
+
 ### Azure Blob Storage
 
-Azure Blob Storage credentials can be configured by setting the `AZURE_STORAGE_ACCOUNT_NAME` and ``AZURE_STORAGE_ACCOUNT_KEY`` environment variables. The full list of environment variables that can be set are documented [here](https://docs.rs/object_store/latest/object_store/azure/struct.MicrosoftAzureBuilder.html#method.from_env).
+Azure Blob Storage credentials can be configured by setting the `AZURE_STORAGE_ACCOUNT_NAME`and `AZURE_STORAGE_ACCOUNT_KEY` environment variables. Alternatively, you can pass the account name and key in the `storage_options` parameter:
 
+=== "Python"
+
+    ```python
+    import lancedb
+    db = lancedb.connect(
+        "az://my-container/my-database",
+        storage_options={
+            account_name: "some-account",
+            account_key: "some-key",
+        }
+    )
+    ```
+
+=== "JavaScript"
+
+    ```javascript
+    const lancedb = require("lancedb");
+    const db = await lancedb.connect(
+        "az://my-container/my-database",
+        {
+            account_name: "some-account",
+            account_key: "some-key",
+        }
+    );
+    ```
+
+These keys can be used as both environment variables or keys in the `storage_options` parameter:
+
+<!-- source: https://docs.rs/object_store/latest/object_store/azure/enum.AzureConfigKey.html -->
+
+| Key                                   | Description                                                                                      |
+|---------------------------------------|--------------------------------------------------------------------------------------------------|
+| ``azure_storage_account_name``        | The name of the azure storage account.                                                           |
+| ``azure_storage_account_key``         | The serialized service account key.                                                              |
+| ``azure_client_id``                   | Service principal client id for authorizing requests.                                            |
+| ``azure_client_secret``               | Service principal client secret for authorizing requests.                                        |
+| ``azure_tenant_id``                   | Tenant id used in oauth flows.                                                                   |
+| ``azure_storage_sas_key``             | Shared access signature. The signature is expected to be percent-encoded, much like they are provided in the azure storage explorer or azure portal. |
+| ``azure_storage_token``               | Bearer token.                                                                                    |
+| ``azure_storage_use_emulator``        | Use object store with azurite storage emulator.                                                  |
+| ``azure_endpoint``                    | Override the endpoint used to communicate with blob storage.                                      |
+| ``azure_use_fabric_endpoint``         | Use object store with url scheme account.dfs.fabric.microsoft.com.                               |
+| ``azure_msi_endpoint``                | Endpoint to request a imds managed identity token.                                               |
+| ``azure_object_id``                   | Object id for use with managed identity authentication.                                          |
+| ``azure_msi_resource_id``             | Msi resource id for use with managed identity authentication.                                    |
+| ``azure_federated_token_file``        | File containing token for Azure AD workload identity federation.                                 |
+| ``azure_use_azure_cli``               | Use azure cli for acquiring access token.                                                        |
+| ``azure_disable_tagging``             | Disables tagging objects. This can be desirable if not supported by the backing store.           |
 
 <!-- TODO: demonstrate how to configure networked file systems for optimal performance -->
