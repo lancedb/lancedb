@@ -17,6 +17,7 @@ from typing import List, Any
 import numpy as np
 
 from pydantic import PrivateAttr
+from lancedb.pydantic import PYDANTIC_VERSION
 
 from ..util import attempt_import_or_raise
 from .base import EmbeddingFunction
@@ -53,8 +54,13 @@ class TransformersEmbeddingFunction(EmbeddingFunction):
         self._tokenizer = transformers.AutoTokenizer.from_pretrained(self.name)
         self._model = transformers.AutoModel.from_pretrained(self.name)
 
-    class Config:
-        keep_untouched = (cached_property,)
+    if PYDANTIC_VERSION < (2, 0):  # Pydantic 1.x compat
+
+        class Config:
+            ignored_types = (cached_property,)
+    else:
+        model_config = dict()
+        model_config["ignored_types"] = (cached_property,)
 
     def ndims(self):
         self._ndims = self._model.config.hidden_size

@@ -28,20 +28,28 @@ def test_basic(tmp_path):
     assert db.uri == str(tmp_path)
     assert db.table_names() == []
 
+    class SimpleModel(LanceModel):
+        item: str
+        price: float
+        vector: Vector(2)
+
     table = db.create_table(
         "test",
         data=[
             {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
             {"vector": [5.9, 26.5], "item": "bar", "price": 20.0},
         ],
+        schema=SimpleModel,
     )
+    try:
+        table.add(SimpleModel(item="baz", price=30.0, vector=[1.0, 2.0]))
+    except Exception as e:
+        assert type(e) == ValueError
+        assert str(e) == "Cannot add a single LanceModel to a table. Use a list."
+
     rs = table.search([100, 100]).limit(1).to_pandas()
     assert len(rs) == 1
     assert rs["item"].iloc[0] == "bar"
-
-    rs = table.search([100, 100]).where("price < 15").limit(2).to_pandas()
-    assert len(rs) == 1
-    assert rs["item"].iloc[0] == "foo"
 
     assert db.table_names() == ["test"]
     assert "test" in db

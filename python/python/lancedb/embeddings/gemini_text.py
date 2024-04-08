@@ -93,7 +93,10 @@ class GeminiText(TextEmbeddingFunction):
     if PYDANTIC_VERSION < (2, 0):  # Pydantic 1.x compat
 
         class Config:
-            keep_untouched = (cached_property,)
+            ignored_types = (cached_property,)
+    else:
+        model_config = dict()
+        model_config["ignored_types"] = (cached_property,)
 
     def ndims(self):
         # TODO: fix hardcoding
