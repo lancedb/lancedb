@@ -66,6 +66,11 @@ impl Connection {
             builder =
                 builder.read_consistency_interval(std::time::Duration::from_secs_f64(interval));
         }
+        if let Some(storage_options) = options.storage_options {
+            for (key, value) in storage_options {
+                builder = builder.storage_option(key, value);
+            }
+        }
         Ok(Self::inner_new(
             builder
                 .execute()

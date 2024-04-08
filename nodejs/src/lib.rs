@@ -14,7 +14,6 @@
 
 use std::collections::HashMap;
 
-use connection::Connection;
 use napi_derive::*;
 
 mod connection;
@@ -63,9 +62,4 @@ pub struct WriteOptions {
 #[napi(object)]
 pub struct OpenTableOptions {
     pub storage_options: Option<HashMap<String, String>>,
-}
-
-#[napi]
-pub async fn connect(uri: String, options: ConnectionOptions) -> napi::Result<Connection> {
-    Connection::new(uri, options).await
 }
