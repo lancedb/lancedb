@@ -51,6 +51,11 @@ def test_basic(tmp_path):
     assert len(rs) == 1
     assert rs["item"].iloc[0] == "bar"
 
+    table.create_fts_index(["item"])
+    rs = table.search("bar", query_type="fts").to_pandas()
+    assert len(rs) == 1
+    assert rs["item"].iloc[0] == "bar"
+
     assert db.table_names() == ["test"]
     assert "test" in db
     assert len(db) == 1
