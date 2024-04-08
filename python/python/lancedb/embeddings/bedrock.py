@@ -75,6 +75,7 @@ class BedRockText(TextEmbeddingFunction):
     role_session_name: str = "lancedb-embeddings"
 
     if PYDANTIC_VERSION < (2, 0):  # Pydantic 1.x compat
+
         class Config:
             keep_untouched = (cached_property,)
     else:
