@@ -14,6 +14,7 @@
 
 //! LanceDB Database
 
+use std::collections::HashMap;
 use std::fs::create_dir_all;
 use std::path::Path;
 use std::sync::Arc;
@@ -153,6 +154,38 @@ impl<T: IntoArrow> CreateTableBuilder<true, T> {
         self
     }
 
+    pub fn storage_option(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        let store_options = self
+            .write_options
+            .lance_write_params
+            .get_or_insert(Default::default())
+            .store_params
+            .get_or_insert(Default::default())
+            .storage_options
+            .get_or_insert(Default::default());
+        store_options.insert(key.into(), value.into());
+        self
+    }
+
+    pub fn storage_options(
+        mut self,
+        pairs: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
+    ) -> Self {
+        let store_options = self
+            .write_options
+            .lance_write_params
+            .get_or_insert(Default::default())
+            .store_params
+            .get_or_insert(Default::default())
+            .storage_options
+            .get_or_insert(Default::default());
+
+        for (key, value) in pairs {
+            store_options.insert(key.into(), value.into());
+        }
+        self
+    }
+
     /// Execute the create table operation
     pub async fn execute(self) -> Result<Table> {
         let parent = self.parent.clone();
@@ -190,6 +223,44 @@ impl CreateTableBuilder<false, NoData> {
             mode: CreateTableMode::default(),
             write_options: WriteOptions::default(),
         }
+    }
+
+    /// Apply the given write options when writing the initial data
+    pub fn write_options(mut self, write_options: WriteOptions) -> Self {
+        self.write_options = write_options;
+        self
+    }
+
+    pub fn storage_option(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        let store_options = self
+            .write_options
+            .lance_write_params
+            .get_or_insert(Default::default())
+            .store_params
+            .get_or_insert(Default::default())
+            .storage_options
+            .get_or_insert(Default::default());
+        store_options.insert(key.into(), value.into());
+        self
+    }
+
+    pub fn storage_options(
+        mut self,
+        pairs: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
+    ) -> Self {
+        let store_options = self
+            .write_options
+            .lance_write_params
+            .get_or_insert(Default::default())
+            .store_params
+            .get_or_insert(Default::default())
+            .storage_options
+            .get_or_insert(Default::default());
+
+        for (key, value) in pairs {
+            store_options.insert(key.into(), value.into());
+        }
+        self
     }
 
     /// Execute the create table operation
@@ -247,6 +318,36 @@ impl OpenTableBuilder {
     /// If set, these will take precedence over any overlapping `OpenTableOptions` options
     pub fn lance_read_params(mut self, params: ReadParams) -> Self {
         self.lance_read_params = Some(params);
+        self
+    }
+
+    pub fn storage_option(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        let storage_options = self
+            .lance_read_params
+            .get_or_insert(Default::default())
+            .store_options
+            .get_or_insert(Default::default())
+            .storage_options
+            .get_or_insert(Default::default());
+        storage_options.insert(key.into(), value.into());
+        self
+    }
+
+    pub fn storage_options(
+        mut self,
+        pairs: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
+    ) -> Self {
+        let storage_options = self
+            .lance_read_params
+            .get_or_insert(Default::default())
+            .store_options
+            .get_or_insert(Default::default())
+            .storage_options
+            .get_or_insert(Default::default());
+
+        for (key, value) in pairs {
+            storage_options.insert(key.into(), value.into());
+        }
         self
     }
 
@@ -383,8 +484,7 @@ pub struct ConnectBuilder {
     /// LanceDB Cloud host override, only required if using an on-premises Lance Cloud instance
     host_override: Option<String>,
 
-    /// User provided AWS credentials
-    aws_creds: Option<AwsCredential>,
+    storage_options: HashMap<String, String>,
 
     /// The interval at which to check for updates from other processes.
     ///
@@ -407,8 +507,8 @@ impl ConnectBuilder {
             api_key: None,
             region: None,
             host_override: None,
-            aws_creds: None,
             read_consistency_interval: None,
+            storage_options: HashMap::new(),
         }
     }
 
@@ -428,8 +528,34 @@ impl ConnectBuilder {
     }
 
     /// [`AwsCredential`] to use when connecting to S3.
+    #[deprecated(note = "Pass through storage params instead")]
     pub fn aws_creds(mut self, aws_creds: AwsCredential) -> Self {
-        self.aws_creds = Some(aws_creds);
+        self.storage_options
+            .insert("aws_access_key_id".into(), aws_creds.key_id.clone());
+        self.storage_options
+            .insert("aws_secret_access_key".into(), aws_creds.secret_key.clone());
+        if let Some(token) = &aws_creds.token {
+            self.storage_options
+                .insert("aws_session_token".into(), token.clone());
+        }
+        self
+    }
+
+    /// Set a storage option for object storage.
+    // TODO: provide a link to available keys
+    pub fn storage_option(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.storage_options.insert(key.into(), value.into());
+        self
+    }
+
+    /// Set multiple storage options
+    pub fn storage_options(
+        mut self,
+        pairs: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
+    ) -> Self {
+        for (key, value) in pairs {
+            self.storage_options.insert(key.into(), value.into());
+        }
         self
     }
 
@@ -606,16 +732,7 @@ impl Database {
 
                 let plain_uri = url.to_string();
 
-                let mut storage_options = options.storage_options.clone();
-                // TODO: remove this when we remove aws_creds from the builder
-                if let Some(aws_creds) = &options.aws_creds {
-                    storage_options.insert("aws_access_key_id".into(), aws_creds.key_id.clone());
-                    storage_options
-                        .insert("aws_secret_access_key".into(), aws_creds.secret_key.clone());
-                    if let Some(token) = &aws_creds.token {
-                        storage_options.insert("aws_session_token".into(), token.clone());
-                    }
-                }
+                let storage_options = options.storage_options.clone();
                 let os_params = ObjectStoreParams {
                     storage_options: Some(storage_options.clone()),
                     ..Default::default()
