@@ -48,6 +48,7 @@ repository = "https://github.com/lancedb/lancedb"
 [project.optional-dependencies]
 tests = [
     "aiohttp",
+    "boto3",
     "pandas>=1.4",
     "pytest",
     "pytest-mock",
@@ -97,4 +98,5 @@ addopts = "--strict-markers --ignore-glob=lancedb/embeddings/*.py"
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "asyncio",
+    "integration"
 ]

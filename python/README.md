@@ -41,7 +41,7 @@ To build the python package you can use maturin:
 ```bash
 # This will build the rust bindings and place them in the appropriate place
 # in your venv or conda environment
-matruin develop
+maturin develop
 ```
 
 To run the unit tests:

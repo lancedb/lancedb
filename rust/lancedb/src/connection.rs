@@ -990,7 +990,8 @@ impl ConnectionInternal for Database {
     }
 
     async fn drop_db(&self) -> Result<()> {
-        todo!()
+        self.object_store.remove_dir_all(self.base_path.clone()).await?;
+        Ok(())
     }
 }
 

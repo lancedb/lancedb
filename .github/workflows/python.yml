@@ -98,6 +98,8 @@ jobs:
         with:
           workspaces: python
       - uses: ./.github/workflows/build_linux_wheel
+        with:
+          integration: true
       - uses: ./.github/workflows/run_tests
       # Make sure wheels are not included in the Rust cache
       - name: Delete wheels
