@@ -91,9 +91,8 @@ class GeminiText(TextEmbeddingFunction):
     source_task_type: str = "retrieval_document"
 
     if PYDANTIC_VERSION < (2, 0):  # Pydantic 1.x compat
-
-        class Config:
-            ignored_types = (cached_property,)
+       class Config:
+            keep_untouched = (cached_property,)
     else:
         model_config = dict()
         model_config["ignored_types"] = (cached_property,)
