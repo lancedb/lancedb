@@ -17,7 +17,6 @@ use std::ops::Deref;
 use arrow_array::{RecordBatch, RecordBatchIterator};
 use lance::dataset::optimize::CompactionOptions;
 use lance::dataset::{ColumnAlteration, NewColumnTransform, WriteMode, WriteParams};
-use lance::io::ObjectStoreParams;
 use lancedb::table::{OptimizeAction, WriteOptions};
 
 use crate::arrow::{arrow_buffer_to_record_batch, record_batch_to_buffer};
@@ -26,7 +25,7 @@ use neon::prelude::*;
 use neon::types::buffer::TypedArray;
 
 use crate::error::ResultExt;
-use crate::{convert, get_aws_credential_provider, get_aws_region, runtime, JsDatabase};
+use crate::{convert, runtime, JsDatabase};
 
 pub struct JsTable {
     pub table: LanceDbTable,
@@ -59,23 +58,16 @@ impl JsTable {
                 return cx.throw_error("Table::create only supports 'overwrite' and 'create' modes")
             }
         };
+        let params = WriteParams {
+            mode,
+            ..WriteParams::default()
+        };
 
         let rt = runtime(&mut cx)?;
         let channel = cx.channel();
 
         let (deferred, promise) = cx.promise();
         let database = db.database.clone();
-
-        let aws_creds = get_aws_credential_provider(&mut cx, 3)?;
-        let aws_region = get_aws_region(&mut cx, 6)?;
-
-        let params = WriteParams {
-            store_params: Some(ObjectStoreParams::with_aws_credentials(
-                aws_creds, aws_region,
-            )),
-            mode,
-            ..WriteParams::default()
-        };
 
         rt.spawn(async move {
             let batch_reader = RecordBatchIterator::new(batches.into_iter().map(Ok), schema);
@@ -112,13 +104,8 @@ impl JsTable {
             "overwrite" => WriteMode::Overwrite,
             s => return cx.throw_error(format!("invalid write mode {}", s)),
         };
-        let aws_creds = get_aws_credential_provider(&mut cx, 2)?;
-        let aws_region = get_aws_region(&mut cx, 5)?;
 
         let params = WriteParams {
-            store_params: Some(ObjectStoreParams::with_aws_credentials(
-                aws_creds, aws_region,
-            )),
             mode: write_mode,
             ..WriteParams::default()
         };
