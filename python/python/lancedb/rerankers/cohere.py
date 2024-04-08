@@ -1,6 +1,5 @@
 import os
 import semver
-from importlib import metadata
 from functools import cached_property
 from typing import Union
 
