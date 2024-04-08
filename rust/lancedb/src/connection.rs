@@ -154,6 +154,12 @@ impl<T: IntoArrow> CreateTableBuilder<true, T> {
         self
     }
 
+    /// Set an option for the storage layer.
+    /// 
+    /// Options already set on the connection will be inherited by the table,
+    /// but can be overridden here.
+    /// 
+    /// See available options at <https://lancedb.github.io/lancedb/guides/storage/>
     pub fn storage_option(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         let store_options = self
             .write_options
@@ -167,6 +173,12 @@ impl<T: IntoArrow> CreateTableBuilder<true, T> {
         self
     }
 
+    /// Set multiple options for the storage layer.
+    /// 
+    /// Options already set on the connection will be inherited by the table,
+    /// but can be overridden here.
+    /// 
+    /// See available options at <https://lancedb.github.io/lancedb/guides/storage/>
     pub fn storage_options(
         mut self,
         pairs: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
@@ -231,6 +243,12 @@ impl CreateTableBuilder<false, NoData> {
         self
     }
 
+    /// Set an option for the storage layer.
+    /// 
+    /// Options already set on the connection will be inherited by the table,
+    /// but can be overridden here.
+    /// 
+    /// See available options at <https://lancedb.github.io/lancedb/guides/storage/>
     pub fn storage_option(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         let store_options = self
             .write_options
@@ -244,6 +262,12 @@ impl CreateTableBuilder<false, NoData> {
         self
     }
 
+    /// Set multiple options for the storage layer.
+    /// 
+    /// Options already set on the connection will be inherited by the table,
+    /// but can be overridden here.
+    /// 
+    /// See available options at <https://lancedb.github.io/lancedb/guides/storage/>
     pub fn storage_options(
         mut self,
         pairs: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
@@ -321,6 +345,12 @@ impl OpenTableBuilder {
         self
     }
 
+    /// Set an option for the storage layer.
+    /// 
+    /// Options already set on the connection will be inherited by the table,
+    /// but can be overridden here.
+    /// 
+    /// See available options at <https://lancedb.github.io/lancedb/guides/storage/>
     pub fn storage_option(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         let storage_options = self
             .lance_read_params
@@ -333,6 +363,12 @@ impl OpenTableBuilder {
         self
     }
 
+    /// Set multiple options for the storage layer.
+    /// 
+    /// Options already set on the connection will be inherited by the table,
+    /// but can be overridden here.
+    /// 
+    /// See available options at <https://lancedb.github.io/lancedb/guides/storage/>
     pub fn storage_options(
         mut self,
         pairs: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
@@ -541,14 +577,17 @@ impl ConnectBuilder {
         self
     }
 
-    /// Set a storage option for object storage.
-    // TODO: provide a link to available keys
+    /// Set an option for the storage layer.
+    /// 
+    /// See available options at <https://lancedb.github.io/lancedb/guides/storage/>
     pub fn storage_option(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.storage_options.insert(key.into(), value.into());
         self
     }
 
-    /// Set multiple storage options
+    /// Set multiple options for the storage layer.
+    /// 
+    /// See available options at <https://lancedb.github.io/lancedb/guides/storage/>
     pub fn storage_options(
         mut self,
         pairs: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
