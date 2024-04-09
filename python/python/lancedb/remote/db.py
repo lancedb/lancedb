@@ -33,7 +33,6 @@ from .client import ARROW_STREAM_CONTENT_TYPE, RestfulLanceDBClient
 from .errors import LanceDBClientError
 
 
-
 class RemoteDBConnection(DBConnection):
     """A connection to a remote LanceDB database."""
 
@@ -95,15 +94,6 @@ class RemoteDBConnection(DBConnection):
                 self._table_cache[item] = True
                 yield item
 
-    def _table_exists(self, name: str) -> bool:
-        # try:
-        
-        return True
-        # except LanceDBClientError as err:
-        #     if str(err).startswith("Not found"):
-        #         return False
-        #     raise err
-
     @override
     def open_table(self, name: str) -> Table:
         """Open a Lance Table in the database.
@@ -123,7 +113,6 @@ class RemoteDBConnection(DBConnection):
 
         # check if table exists
         if self._table_cache.get(name) is None:
-            print("checking if table exists!!!!!!")
             self._client.post(f"/v1/table/{name}/describe/")
             self._table_cache[name] = True
             
