@@ -64,7 +64,7 @@ export TIMEOUT=60s
 !!! note "`storage_options` availability"
 
     The `storage_options` parameter is only available in Python *async* API and JavaScript API.
-    It it not yet supported in Python synchronous API.
+    It is not yet supported in the Python synchronous API.
 
 If you only want this to apply to one particular connection, you can pass the `storage_options` object to the `connect` function:
 
@@ -83,7 +83,7 @@ If you only want this to apply to one particular connection, you can pass the `s
     ```javascript
     const lancedb = require("lancedb");
     const db = await lancedb.connect("s3://bucket/path",
-                                     {timeout: "60s"});
+                                     {storageOptions: {timeout: "60s"}});
     ```
 
 Getting even more specific, you can set the `timeout` for only a particular table:
@@ -93,7 +93,11 @@ Getting even more specific, you can set the `timeout` for only a particular tabl
     ```python
     import lancedb
     db = await lancedb.connect_async("s3://bucket/path")
-    table = await db.open_table("table", storage_options={"connect_timeout": "60s"})
+    table = await db.create_table(
+        "table",
+        [{"a": 1, "b": 2}],
+        storage_options={"timeout": "60s"}
+    )
     ```
 
 === "JavaScript"
@@ -101,8 +105,16 @@ Getting even more specific, you can set the `timeout` for only a particular tabl
     ```javascript
     const lancedb = require("lancedb");
     const db = await lancedb.connect("s3://bucket/path");
-    const table = db.openTable("table", {timeout: "60s"});
+    const table = db.createTable(
+        "table",
+        [{ a: 1, b: 2}],
+        {storageOptions: {timeout: "60s"}}
+    );
     ```
+
+!!! info "Storage option casing"
+
+    The storage option keys are case-insensitive. So `connect_timeout` and `CONNECT_TIMEOUT` are the same setting. Usually lowercase is used in the `storage_options` argument and uppercase is used for environment variables. In the `lancedb` Node package, the keys can also be provided in `camelCase` capitalization. For example, `connectTimeout` is equivalent to `connect_timeout`.
 
 ### General configuration
 
@@ -148,9 +160,11 @@ These can be set as environment variables or passed in the `storage_options` par
     const db = await lancedb.connect(
         "s3://bucket/path",
         {
-            aws_access_key_id: "my-access-key",
-            aws_secret_access_key: "my-secret-key",
-            aws_session_token: "my-session-token",
+            storageOptions: {
+                awsAccessKeyId: "my-access-key",
+                awsSecretAccessKey: "my-secret-key",
+                awsSessionToken: "my-session-token",
+            }
         }
     );
     ```
@@ -273,8 +287,10 @@ LanceDB can also connect to S3-compatible stores, such as MinIO. To do so, you m
     const db = await lancedb.connect(
         "s3://bucket/path",
         {
-            region: "us-east-1",
-            endpoint: "http://minio:9000",
+            storageOptions: {
+                region: "us-east-1",
+                endpoint: "http://minio:9000",
+            }
         }
     );
     ```
@@ -307,8 +323,10 @@ To configure LanceDB to use an S3 Express endpoint, you must set the storage opt
     const db = await lancedb.connect(
         "s3://my-bucket--use1-az4--x-s3/path",
         {
-            region: "us-east-1",
-            s3_express: "true",
+            storageOptions: {
+                region: "us-east-1",
+                s3Express: "true",
+            }
         }
     );
     ```
@@ -337,7 +355,9 @@ GCS credentials are configured by setting the `GOOGLE_SERVICE_ACCOUNT` environme
     const db = await lancedb.connect(
         "gs://my-bucket/my-database",
         {
-            service_account: "path/to/service-account.json",
+            storageOptions: {
+                serviceAccount: "path/to/service-account.json",
+            }
         }
     );
     ```
@@ -382,8 +402,10 @@ Azure Blob Storage credentials can be configured by setting the `AZURE_STORAGE_A
     const db = await lancedb.connect(
         "az://my-container/my-database",
         {
-            account_name: "some-account",
-            account_key: "some-key",
+            storageOptions: {
+                accountName: "some-account",
+                accountKey: "some-key",
+            }
         }
     );
     ```

@@ -97,7 +97,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: python
-      - uses: ./.github/workflows/build_linux_wheel      
+      - uses: ./.github/workflows/build_linux_wheel
       - uses: ./.github/workflows/run_tests
         with:
           integration: true
