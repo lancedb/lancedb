@@ -51,6 +51,10 @@ def test_basic(tmp_path):
     assert len(rs) == 1
     assert rs["item"].iloc[0] == "bar"
 
+    rs = table.search([100, 100]).where("price < 15").limit(2).to_pandas()
+    assert len(rs) == 1
+    assert rs["item"].iloc[0] == "foo"
+
     table.create_fts_index(["item"])
     rs = table.search("bar", query_type="fts").to_pandas()
     assert len(rs) == 1

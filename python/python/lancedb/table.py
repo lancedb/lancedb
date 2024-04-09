@@ -1339,7 +1339,7 @@ class LanceTable(Table):
     def search(
         self,
         query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
-        vector_column_name: Optional[str] = "",
+        vector_column_name: Optional[str] = None,
         query_type: str = "auto",
         ordering_field_name: Optional[str] = None,
     ) -> LanceQueryBuilder:
@@ -1405,9 +1405,14 @@ class LanceTable(Table):
             and also the "_distance" column which is the distance between the query
             vector and the returned vector.
         """
-        if vector_column_name == "" and query is not None:
-            if query_type != "fts":
+        if vector_column_name is None and query is not None:
+            try:
                 vector_column_name = inf_vector_column_query(self.schema)
+            except Exception as e:
+                if query_type == "fts":
+                    vector_column_name = ""
+                else:
+                    raise e
 
         return LanceQueryBuilder.create(
             self,
