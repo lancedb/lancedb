@@ -119,6 +119,8 @@ class RemoteDBConnection(DBConnection):
                     name,
                     name,
                 )
+                raise err
+                
         return RemoteTable(self, name)
 
     @override
