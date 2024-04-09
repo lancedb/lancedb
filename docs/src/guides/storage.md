@@ -66,7 +66,7 @@ export TIMEOUT=60s
     The `storage_options` parameter is only available in Python *async* API and JavaScript API.
     It is not yet supported in the Python synchronous API.
 
-If you only want this to apply to one particular connection, you can pass the `storage_options` object to the `connect` function:
+If you only want this to apply to one particular connection, you can pass the `storage_options` argument when opening the connection:
 
 === "Python"
 
@@ -138,7 +138,7 @@ There are several options that can be set for all object stores, mostly related 
 
 ### AWS S3
 
-To configure credentials for AWS S3, you can use the `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and `AWS_SESSION_TOKEN` keys.
+To configure credentials for AWS S3, you can use the `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and `AWS_SESSION_TOKEN` keys. Region can also be set, but it is not mandatory when using AWS.
 These can be set as environment variables or passed in the `storage_options` parameter:
 
 === "Python"
@@ -376,7 +376,7 @@ The following keys can be used as both environment variables or keys in the `sto
 
 | Key                                   | Description                                  |
 |---------------------------------------|----------------------------------------------|
-| ``google_service_account``            | Path to the service account JSON file.       |
+| ``google_service_account`` / `service_account` | Path to the service account JSON file.       |
 | ``google_service_account_key``        | The serialized service account key.          |
 | ``google_application_credentials``    | Path to the application credentials.         |
 

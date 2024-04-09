@@ -154,50 +154,6 @@ impl<T: IntoArrow> CreateTableBuilder<true, T> {
         self
     }
 
-    /// Set an option for the storage layer.
-    ///
-    /// Options already set on the connection will be inherited by the table,
-    /// but can be overridden here.
-    ///
-    /// See available options at <https://lancedb.github.io/lancedb/guides/storage/>
-    pub fn storage_option(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        let store_options = self
-            .write_options
-            .lance_write_params
-            .get_or_insert(Default::default())
-            .store_params
-            .get_or_insert(Default::default())
-            .storage_options
-            .get_or_insert(Default::default());
-        store_options.insert(key.into(), value.into());
-        self
-    }
-
-    /// Set multiple options for the storage layer.
-    ///
-    /// Options already set on the connection will be inherited by the table,
-    /// but can be overridden here.
-    ///
-    /// See available options at <https://lancedb.github.io/lancedb/guides/storage/>
-    pub fn storage_options(
-        mut self,
-        pairs: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
-    ) -> Self {
-        let store_options = self
-            .write_options
-            .lance_write_params
-            .get_or_insert(Default::default())
-            .store_params
-            .get_or_insert(Default::default())
-            .storage_options
-            .get_or_insert(Default::default());
-
-        for (key, value) in pairs {
-            store_options.insert(key.into(), value.into());
-        }
-        self
-    }
-
     /// Execute the create table operation
     pub async fn execute(self) -> Result<Table> {
         let parent = self.parent.clone();
@@ -237,9 +193,18 @@ impl CreateTableBuilder<false, NoData> {
         }
     }
 
-    /// Apply the given write options when writing the initial data
-    pub fn write_options(mut self, write_options: WriteOptions) -> Self {
-        self.write_options = write_options;
+    /// Execute the create table operation
+    pub async fn execute(self) -> Result<Table> {
+        self.parent.clone().do_create_empty_table(self).await
+    }
+}
+
+impl<const HAS_DATA: bool, T: IntoArrow> CreateTableBuilder<HAS_DATA, T> {
+    /// Set the mode for creating the table
+    ///
+    /// This controls what happens if a table with the given name already exists
+    pub fn mode(mut self, mode: CreateTableMode) -> Self {
+        self.mode = mode;
         self
     }
 
@@ -284,21 +249,6 @@ impl CreateTableBuilder<false, NoData> {
         for (key, value) in pairs {
             store_options.insert(key.into(), value.into());
         }
-        self
-    }
-
-    /// Execute the create table operation
-    pub async fn execute(self) -> Result<Table> {
-        self.parent.clone().do_create_empty_table(self).await
-    }
-}
-
-impl<const HAS_DATA: bool, T: IntoArrow> CreateTableBuilder<HAS_DATA, T> {
-    /// Set the mode for creating the table
-    ///
-    /// This controls what happens if a table with the given name already exists
-    pub fn mode(mut self, mode: CreateTableMode) -> Self {
-        self.mode = mode;
         self
     }
 }

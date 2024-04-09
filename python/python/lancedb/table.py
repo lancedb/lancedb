@@ -1424,7 +1424,6 @@ class LanceTable(Table):
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
         embedding_functions: List[EmbeddingFunctionConfig] = None,
-        storage_options=None,
     ):
         """
         Create a new table.
@@ -1516,13 +1515,7 @@ class LanceTable(Table):
 
         empty = pa.Table.from_pylist([], schema=schema)
         try:
-            lance.write_dataset(
-                empty,
-                tbl._dataset_uri,
-                schema=schema,
-                mode=mode,
-                storage_options=storage_options,
-            )
+            lance.write_dataset(empty, tbl._dataset_uri, schema=schema, mode=mode)
         except OSError as err:
             if "Dataset already exists" in str(err) and exist_ok:
                 if tbl.schema != schema:

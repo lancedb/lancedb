@@ -13,39 +13,7 @@ module.exports = tseslint.config(
   ...tseslint.configs.recommended,
   {
     rules: {
-      "@typescript-eslint/naming-convention": [
-        "error",
-        // Make exceptions for AWS SDK properties
-        {
-          selector: "property",
-          format: null,
-          filter: {
-            regex: "(Bucket|Key|KeyId|Prefix)",
-            match: true,
-          },
-        },
-        // Defaults from https://typescript-eslint.io/rules/naming-convention/#options
-        {
-          selector: "default",
-          format: ["camelCase"],
-          leadingUnderscore: "allow",
-          trailingUnderscore: "allow",
-        },
-        {
-          selector: "import",
-          format: ["camelCase", "PascalCase"],
-        },
-        {
-          selector: "variable",
-          format: ["camelCase", "UPPER_CASE"],
-          leadingUnderscore: "allow",
-          trailingUnderscore: "allow",
-        },
-        {
-          selector: "typeLike",
-          format: ["PascalCase"],
-        },
-      ],
+      "@typescript-eslint/naming-convention": "error",
       "jsdoc/require-returns": "off",
       "jsdoc/require-param": "off",
       "jsdoc/require-jsdoc": [

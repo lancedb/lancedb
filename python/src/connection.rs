@@ -85,7 +85,6 @@ impl Connection {
         future_into_py(self_.py(), async move { op.execute().await.infer_error() })
     }
 
-    #[pyo3(signature = (name, mode, data, storage_options = None))]
     pub fn create_table<'a>(
         self_: PyRef<'a, Self>,
         name: String,
@@ -110,7 +109,6 @@ impl Connection {
         })
     }
 
-    #[pyo3(signature = (name, mode, schema, storage_options = None))]
     pub fn create_empty_table<'a>(
         self_: PyRef<'a, Self>,
         name: String,
