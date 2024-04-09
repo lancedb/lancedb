@@ -115,7 +115,7 @@ async function decodeErrorData(
       return JSON.stringify(errorData)
     }
 
-      return errorData
+    return errorData
   }
 }
 
