@@ -41,11 +41,11 @@ def test_basic(tmp_path):
         ],
         schema=SimpleModel,
     )
-    try:
+
+    with pytest.raises(
+        ValueError, match="Cannot add a single LanceModel to a table. Use a list."
+    ):
         table.add(SimpleModel(item="baz", price=30.0, vector=[1.0, 2.0]))
-    except Exception as e:
-        assert type(e) == ValueError
-        assert str(e) == "Cannot add a single LanceModel to a table. Use a list."
 
     rs = table.search([100, 100]).limit(1).to_pandas()
     assert len(rs) == 1
