@@ -564,7 +564,7 @@ impl ConnectBuilder {
     }
 
     /// [`AwsCredential`] to use when connecting to S3.
-    #[deprecated(note = "Pass through storage params instead")]
+    #[deprecated(note = "Pass through storage_options instead")]
     pub fn aws_creds(mut self, aws_creds: AwsCredential) -> Self {
         self.storage_options
             .insert("aws_access_key_id".into(), aws_creds.key_id.clone());

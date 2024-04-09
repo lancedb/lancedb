@@ -192,4 +192,4 @@ jobs:
           pip install -e .[tests]
           pip install tantivy
       - name: Run tests
-        run: pytest -m "not slow" -x -v --durations=30 python/tests
+        run: pytest -m "not slow and not integration" -x -v --durations=30 python/tests

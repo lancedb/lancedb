@@ -90,6 +90,7 @@ Getting even more specific, you can set the `timeout` for only a particular tabl
 
 === "Python"
 
+    <!-- skip-test -->
     ```python
     import lancedb
     db = await lancedb.connect_async("s3://bucket/path")
@@ -102,6 +103,7 @@ Getting even more specific, you can set the `timeout` for only a particular tabl
 
 === "JavaScript"
 
+    <!-- skip-test -->
     ```javascript
     const lancedb = require("lancedb");
     const db = await lancedb.connect("s3://bucket/path");
