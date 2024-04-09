@@ -21,6 +21,11 @@ runs:
       shell: bash
       working-directory: .
       run: docker compose up --detach --wait
-    - name: pytest
+    - name: pytest (with integration)
       shell: bash
+      if: ${{ inputs.integration == 'true' }}
       run: pytest -m "not slow" -x -v --durations=30 python/python/tests
+    - name: pytest (no integration tests)
+      shell: bash
+      if: ${{ inputs.integration != 'true' }}
+      run: pytest -m "not slow and not integration" -x -v --durations=30 python/python/tests

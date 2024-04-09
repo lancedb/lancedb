@@ -87,8 +87,7 @@ jobs:
         npm run build
     - name: Setup localstack
       working-directory: .
-      run: |
-        docker-compose up --detach --wait
+      run: docker compose up --detach --wait
     - name: Test
       env:
         INTEGRATION_TEST: "1"

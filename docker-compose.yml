@@ -12,7 +12,7 @@ services:
       - AWS_ACCESS_KEY_ID=ACCESSKEY
       - AWS_SECRET_ACCESS_KEY=SECRETKEY
     healthcheck:
-      test: [ "CMD", "curl", "-f", "http://localhost:4566/health" ]
+      test: [ "CMD", "curl", "-s", "http://localhost:4566/_localstack/health" ]
       interval: 5s
       retries: 3
       start_period: 10s
