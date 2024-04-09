@@ -340,6 +340,7 @@ GCS credentials are configured by setting the `GOOGLE_SERVICE_ACCOUNT` environme
 
 === "Python"
 
+    <!-- skip-test -->
     ```python
     import lancedb
     db = await lancedb.connect_async(
@@ -386,6 +387,7 @@ Azure Blob Storage credentials can be configured by setting the `AZURE_STORAGE_A
 
 === "Python"
 
+    <!-- skip-test -->
     ```python
     import lancedb
     db = await lancedb.connect_async(
