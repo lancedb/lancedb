@@ -111,6 +111,10 @@ async function decodeErrorData(
   if (responseType === 'arraybuffer') {
       return new TextDecoder().decode(errorData)
   } else {
+    if (typeof errorData === 'object') {
+      return JSON.stringify(errorData)
+    }
+
       return errorData
   }
 }
