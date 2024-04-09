@@ -97,10 +97,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: python
-      - uses: ./.github/workflows/build_linux_wheel
+      - uses: ./.github/workflows/build_linux_wheel      
+      - uses: ./.github/workflows/run_tests
         with:
           integration: true
-      - uses: ./.github/workflows/run_tests
       # Make sure wheels are not included in the Rust cache
       - name: Delete wheels
         run: rm -rf target/wheels

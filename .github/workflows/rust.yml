@@ -78,7 +78,7 @@ jobs:
       run: cargo build --all-features
     - name: Start integration test environment
       working-directory: .
-      run: docker compose up --detach && sleep 10
+      run: docker compose up --detach --wait
     - name: Run tests
       run: cargo test --all-features
     - name: Run examples
@@ -107,11 +107,9 @@ jobs:
         run: brew install protobuf
       - name: Build
         run: cargo build --all-features
-      - name: Start integration test environment
-        working-directory: .
-        run: docker compose up --detach && sleep 10
       - name: Run tests
-        run: cargo test --all-features
+        # Run with everything except the integration tests.
+        run: cargo test --features remote,fp16kernels
   windows:
     runs-on: windows-2022
     steps:

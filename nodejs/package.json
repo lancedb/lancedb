@@ -65,6 +65,7 @@
     "lint": "eslint lancedb && eslint __test__",
     "prepublishOnly": "napi prepublish -t npm",
     "test": "npm run build && jest --verbose",
+    "integration": "INTEGRATION_TEST=1 npm run test",
     "universal": "napi universal",
     "version": "napi version"
   },

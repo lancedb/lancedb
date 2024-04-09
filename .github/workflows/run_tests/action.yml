@@ -20,9 +20,7 @@ runs:
       if: ${{ inputs.integration == 'true' }}
       shell: bash
       working-directory: .
-      run: |
-        docker-compose compose up --detach
-        sleep 10
+      run: docker compose up --detach --wait
     - name: pytest
       shell: bash
       run: pytest -m "not slow" -x -v --durations=30 python/python/tests
