@@ -30,7 +30,6 @@ from ..table import Table, _sanitize_data
 from ..util import validate_table_name
 from .arrow import to_ipc_binary
 from .client import ARROW_STREAM_CONTENT_TYPE, RestfulLanceDBClient
-from .errors import LanceDBClientError
 
 
 class RemoteDBConnection(DBConnection):
@@ -115,7 +114,7 @@ class RemoteDBConnection(DBConnection):
         if self._table_cache.get(name) is None:
             self._client.post(f"/v1/table/{name}/describe/")
             self._table_cache[name] = True
-            
+
         return RemoteTable(self, name)
 
     @override
