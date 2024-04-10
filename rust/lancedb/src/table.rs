@@ -14,6 +14,7 @@
 
 //! LanceDB Table APIs
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -757,6 +758,8 @@ pub struct NativeTable {
     // the object store wrapper to use on write path
     store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
 
+    storage_options: HashMap<String, String>,
+
     // This comes from the connection options. We store here so we can pass down
     // to the dataset when we recreate it (for example, in checkout_latest).
     read_consistency_interval: Option<std::time::Duration>,
@@ -822,6 +825,13 @@ impl NativeTable {
             None => params,
         };
 
+        let storage_options = params
+            .store_options
+            .clone()
+            .unwrap_or_default()
+            .storage_options
+            .unwrap_or_default();
+
         let dataset = DatasetBuilder::from_uri(uri)
             .with_read_params(params)
             .load()
@@ -840,6 +850,7 @@ impl NativeTable {
             uri: uri.to_string(),
             dataset,
             store_wrapper: write_store_wrapper,
+            storage_options,
             read_consistency_interval,
         })
     }
@@ -908,6 +919,13 @@ impl NativeTable {
             None => params,
         };
 
+        let storage_options = params
+            .store_params
+            .clone()
+            .unwrap_or_default()
+            .storage_options
+            .unwrap_or_default();
+
         let dataset = Dataset::write(batches, uri, Some(params))
             .await
             .map_err(|e| match e {
@@ -921,6 +939,7 @@ impl NativeTable {
             uri: uri.to_string(),
             dataset: DatasetConsistencyWrapper::new_latest(dataset, read_consistency_interval),
             store_wrapper: write_store_wrapper,
+            storage_options,
             read_consistency_interval,
         })
     }
@@ -1312,13 +1331,25 @@ impl TableInternal for NativeTable {
         add: AddDataBuilder<NoData>,
         data: Box<dyn RecordBatchReader + Send>,
     ) -> Result<()> {
-        let lance_params = add.write_options.lance_write_params.unwrap_or(WriteParams {
+        let mut lance_params = add.write_options.lance_write_params.unwrap_or(WriteParams {
             mode: match add.mode {
                 AddDataMode::Append => WriteMode::Append,
                 AddDataMode::Overwrite => WriteMode::Overwrite,
             },
             ..Default::default()
         });
+
+        // Bring storage options from table
+        let storage_options = lance_params
+            .store_params
+            .get_or_insert(Default::default())
+            .storage_options
+            .get_or_insert(Default::default());
+        for (key, value) in self.storage_options.iter() {
+            if !storage_options.contains_key(key) {
+                storage_options.insert(key.clone(), value.clone());
+            }
+        }
 
         // patch the params if we have a write store wrapper
         let lance_params = match self.store_wrapper.clone() {

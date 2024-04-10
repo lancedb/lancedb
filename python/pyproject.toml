@@ -3,7 +3,7 @@ name = "lancedb"
 version = "0.6.7"
 dependencies = [
     "deprecation",
-    "pylance==0.10.9",
+    "pylance==0.10.10",
     "ratelimiter~=1.0",
     "requests>=2.31.0",
     "retry>=0.9.2",
@@ -49,6 +49,7 @@ repository = "https://github.com/lancedb/lancedb"
 [project.optional-dependencies]
 tests = [
     "aiohttp",
+    "boto3",
     "pandas>=1.4",
     "pytest",
     "pytest-mock",
@@ -98,4 +99,5 @@ addopts = "--strict-markers --ignore-glob=lancedb/embeddings/*.py"
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "asyncio",
+    "s3_test"
 ]

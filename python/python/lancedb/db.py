@@ -18,7 +18,7 @@ import inspect
 import os
 from abc import abstractmethod
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterable, List, Literal, Optional, Union
+from typing import TYPE_CHECKING, Dict, Iterable, List, Literal, Optional, Union
 
 import pyarrow as pa
 from overrides import EnforceOverrides, override
@@ -533,6 +533,7 @@ class AsyncConnection(object):
         exist_ok: Optional[bool] = None,
         on_bad_vectors: Optional[str] = None,
         fill_value: Optional[float] = None,
+        storage_options: Optional[Dict[str, str]] = None,
     ) -> AsyncTable:
         """Create an [AsyncTable][lancedb.table.AsyncTable] in the database.
 
@@ -570,6 +571,12 @@ class AsyncConnection(object):
             One of "error", "drop", "fill".
         fill_value: float
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
+        storage_options: dict, optional
+            Additional options for the storage backend. Options already set on the
+            connection will be inherited by the table, but can be overridden here.
+            See available options at
+            https://lancedb.github.io/lancedb/guides/storage/
+
 
         Returns
         -------
@@ -729,30 +736,40 @@ class AsyncConnection(object):
             mode = "exist_ok"
 
         if data is None:
-            new_table = await self._inner.create_empty_table(name, mode, schema)
+            new_table = await self._inner.create_empty_table(
+                name, mode, schema, storage_options=storage_options
+            )
         else:
             data = data_to_reader(data, schema)
             new_table = await self._inner.create_table(
                 name,
                 mode,
                 data,
+                storage_options=storage_options,
             )
 
         return AsyncTable(new_table)
 
-    async def open_table(self, name: str) -> Table:
+    async def open_table(
+        self, name: str, storage_options: Optional[Dict[str, str]] = None
+    ) -> Table:
         """Open a Lance Table in the database.
 
         Parameters
         ----------
         name: str
             The name of the table.
+        storage_options: dict, optional
+            Additional options for the storage backend. Options already set on the
+            connection will be inherited by the table, but can be overridden here.
+            See available options at
+            https://lancedb.github.io/lancedb/guides/storage/
 
         Returns
         -------
         A LanceTable object representing the table.
         """
-        table = await self._inner.open_table(name)
+        table = await self._inner.open_table(name, storage_options)
         return AsyncTable(table)
 
     async def drop_table(self, name: str):

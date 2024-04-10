@@ -75,6 +75,19 @@ describe('LanceDB client', function () {
       assert.equal(con.uri, uri)
     })
 
+    it('should accept custom storage options', async function () {
+      const uri = await createTestDB()
+      const storageOptions = {
+        region: 'us-west-2',
+        timeout: '30s'
+      };
+      const con = await lancedb.connect({
+        uri,
+        storageOptions
+      })
+      assert.equal(con.uri, uri)
+    })
+
     it('should return the existing table names', async function () {
       const uri = await createTestDB()
       const con = await lancedb.connect(uri)

@@ -85,7 +85,12 @@ jobs:
       run: |
         npm ci
         npm run build
+    - name: Setup localstack
+      working-directory: .
+      run: docker compose up --detach --wait
     - name: Test
+      env:
+        S3_TEST: "1"
       run: npm run test
   macos:
     timeout-minutes: 30

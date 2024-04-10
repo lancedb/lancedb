@@ -99,6 +99,8 @@ jobs:
           workspaces: python
       - uses: ./.github/workflows/build_linux_wheel
       - uses: ./.github/workflows/run_tests
+        with:
+          integration: true
       # Make sure wheels are not included in the Rust cache
       - name: Delete wheels
         run: rm -rf target/wheels
@@ -190,4 +192,4 @@ jobs:
           pip install -e .[tests]
           pip install tantivy
       - name: Run tests
-        run: pytest -m "not slow" -x -v --durations=30 python/tests
+        run: pytest -m "not slow and not s3_test" -x -v --durations=30 python/tests

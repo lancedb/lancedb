@@ -14,6 +14,7 @@
 
 //! LanceDB Database
 
+use std::collections::HashMap;
 use std::fs::create_dir_all;
 use std::path::Path;
 use std::sync::Arc;
@@ -22,9 +23,7 @@ use arrow_array::{RecordBatchIterator, RecordBatchReader};
 use arrow_schema::SchemaRef;
 use lance::dataset::{ReadParams, WriteMode};
 use lance::io::{ObjectStore, ObjectStoreParams, WrappingObjectStore};
-use object_store::{
-    aws::AwsCredential, local::LocalFileSystem, CredentialProvider, StaticCredentialProvider,
-};
+use object_store::{aws::AwsCredential, local::LocalFileSystem};
 use snafu::prelude::*;
 
 use crate::arrow::IntoArrow;
@@ -208,6 +207,50 @@ impl<const HAS_DATA: bool, T: IntoArrow> CreateTableBuilder<HAS_DATA, T> {
         self.mode = mode;
         self
     }
+
+    /// Set an option for the storage layer.
+    ///
+    /// Options already set on the connection will be inherited by the table,
+    /// but can be overridden here.
+    ///
+    /// See available options at <https://lancedb.github.io/lancedb/guides/storage/>
+    pub fn storage_option(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        let store_options = self
+            .write_options
+            .lance_write_params
+            .get_or_insert(Default::default())
+            .store_params
+            .get_or_insert(Default::default())
+            .storage_options
+            .get_or_insert(Default::default());
+        store_options.insert(key.into(), value.into());
+        self
+    }
+
+    /// Set multiple options for the storage layer.
+    ///
+    /// Options already set on the connection will be inherited by the table,
+    /// but can be overridden here.
+    ///
+    /// See available options at <https://lancedb.github.io/lancedb/guides/storage/>
+    pub fn storage_options(
+        mut self,
+        pairs: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
+    ) -> Self {
+        let store_options = self
+            .write_options
+            .lance_write_params
+            .get_or_insert(Default::default())
+            .store_params
+            .get_or_insert(Default::default())
+            .storage_options
+            .get_or_insert(Default::default());
+
+        for (key, value) in pairs {
+            store_options.insert(key.into(), value.into());
+        }
+        self
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -249,6 +292,48 @@ impl OpenTableBuilder {
     /// If set, these will take precedence over any overlapping `OpenTableOptions` options
     pub fn lance_read_params(mut self, params: ReadParams) -> Self {
         self.lance_read_params = Some(params);
+        self
+    }
+
+    /// Set an option for the storage layer.
+    ///
+    /// Options already set on the connection will be inherited by the table,
+    /// but can be overridden here.
+    ///
+    /// See available options at <https://lancedb.github.io/lancedb/guides/storage/>
+    pub fn storage_option(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        let storage_options = self
+            .lance_read_params
+            .get_or_insert(Default::default())
+            .store_options
+            .get_or_insert(Default::default())
+            .storage_options
+            .get_or_insert(Default::default());
+        storage_options.insert(key.into(), value.into());
+        self
+    }
+
+    /// Set multiple options for the storage layer.
+    ///
+    /// Options already set on the connection will be inherited by the table,
+    /// but can be overridden here.
+    ///
+    /// See available options at <https://lancedb.github.io/lancedb/guides/storage/>
+    pub fn storage_options(
+        mut self,
+        pairs: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
+    ) -> Self {
+        let storage_options = self
+            .lance_read_params
+            .get_or_insert(Default::default())
+            .store_options
+            .get_or_insert(Default::default())
+            .storage_options
+            .get_or_insert(Default::default());
+
+        for (key, value) in pairs {
+            storage_options.insert(key.into(), value.into());
+        }
         self
     }
 
@@ -385,8 +470,7 @@ pub struct ConnectBuilder {
     /// LanceDB Cloud host override, only required if using an on-premises Lance Cloud instance
     host_override: Option<String>,
 
-    /// User provided AWS credentials
-    aws_creds: Option<AwsCredential>,
+    storage_options: HashMap<String, String>,
 
     /// The interval at which to check for updates from other processes.
     ///
@@ -409,8 +493,8 @@ impl ConnectBuilder {
             api_key: None,
             region: None,
             host_override: None,
-            aws_creds: None,
             read_consistency_interval: None,
+            storage_options: HashMap::new(),
         }
     }
 
@@ -430,8 +514,37 @@ impl ConnectBuilder {
     }
 
     /// [`AwsCredential`] to use when connecting to S3.
+    #[deprecated(note = "Pass through storage_options instead")]
     pub fn aws_creds(mut self, aws_creds: AwsCredential) -> Self {
-        self.aws_creds = Some(aws_creds);
+        self.storage_options
+            .insert("aws_access_key_id".into(), aws_creds.key_id.clone());
+        self.storage_options
+            .insert("aws_secret_access_key".into(), aws_creds.secret_key.clone());
+        if let Some(token) = &aws_creds.token {
+            self.storage_options
+                .insert("aws_session_token".into(), token.clone());
+        }
+        self
+    }
+
+    /// Set an option for the storage layer.
+    ///
+    /// See available options at <https://lancedb.github.io/lancedb/guides/storage/>
+    pub fn storage_option(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.storage_options.insert(key.into(), value.into());
+        self
+    }
+
+    /// Set multiple options for the storage layer.
+    ///
+    /// See available options at <https://lancedb.github.io/lancedb/guides/storage/>
+    pub fn storage_options(
+        mut self,
+        pairs: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
+    ) -> Self {
+        for (key, value) in pairs {
+            self.storage_options.insert(key.into(), value.into());
+        }
         self
     }
 
@@ -522,6 +635,9 @@ struct Database {
     pub(crate) store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
 
     read_consistency_interval: Option<std::time::Duration>,
+
+    // Storage options to be inherited by tables created from this connection
+    storage_options: HashMap<String, String>,
 }
 
 impl std::fmt::Display for Database {
@@ -604,20 +720,11 @@ impl Database {
                 };
 
                 let plain_uri = url.to_string();
-                let os_params: ObjectStoreParams = if let Some(aws_creds) = &options.aws_creds {
-                    let credential_provider: Arc<
-                        dyn CredentialProvider<Credential = AwsCredential>,
-                    > = Arc::new(StaticCredentialProvider::new(AwsCredential {
-                        key_id: aws_creds.key_id.clone(),
-                        secret_key: aws_creds.secret_key.clone(),
-                        token: aws_creds.token.clone(),
-                    }));
-                    ObjectStoreParams::with_aws_credentials(
-                        Some(credential_provider),
-                        options.region.clone(),
-                    )
-                } else {
-                    ObjectStoreParams::default()
+
+                let storage_options = options.storage_options.clone();
+                let os_params = ObjectStoreParams {
+                    storage_options: Some(storage_options.clone()),
+                    ..Default::default()
                 };
                 let (object_store, base_path) =
                     ObjectStore::from_uri_and_params(&plain_uri, &os_params).await?;
@@ -641,6 +748,7 @@ impl Database {
                     object_store,
                     store_wrapper: write_store_wrapper,
                     read_consistency_interval: options.read_consistency_interval,
+                    storage_options,
                 })
             }
             Err(_) => Self::open_path(uri, options.read_consistency_interval).await,
@@ -662,6 +770,7 @@ impl Database {
             object_store,
             store_wrapper: None,
             read_consistency_interval,
+            storage_options: HashMap::new(),
         })
     }
 
@@ -734,10 +843,25 @@ impl ConnectionInternal for Database {
 
     async fn do_create_table(
         &self,
-        options: CreateTableBuilder<false, NoData>,
+        mut options: CreateTableBuilder<false, NoData>,
         data: Box<dyn RecordBatchReader + Send>,
     ) -> Result<Table> {
         let table_uri = self.table_uri(&options.name)?;
+
+        // Inherit storage options from the connection
+        let storage_options = options
+            .write_options
+            .lance_write_params
+            .get_or_insert_with(Default::default)
+            .store_params
+            .get_or_insert_with(Default::default)
+            .storage_options
+            .get_or_insert_with(Default::default);
+        for (key, value) in self.storage_options.iter() {
+            if !storage_options.contains_key(key) {
+                storage_options.insert(key.clone(), value.clone());
+            }
+        }
 
         let mut write_params = options.write_options.lance_write_params.unwrap_or_default();
         if matches!(&options.mode, CreateTableMode::Overwrite) {
@@ -768,8 +892,23 @@ impl ConnectionInternal for Database {
         }
     }
 
-    async fn do_open_table(&self, options: OpenTableBuilder) -> Result<Table> {
+    async fn do_open_table(&self, mut options: OpenTableBuilder) -> Result<Table> {
         let table_uri = self.table_uri(&options.name)?;
+
+        // Inherit storage options from the connection
+        let storage_options = options
+            .lance_read_params
+            .get_or_insert_with(Default::default)
+            .store_options
+            .get_or_insert_with(Default::default)
+            .storage_options
+            .get_or_insert_with(Default::default);
+        for (key, value) in self.storage_options.iter() {
+            if !storage_options.contains_key(key) {
+                storage_options.insert(key.clone(), value.clone());
+            }
+        }
+
         let native_table = Arc::new(
             NativeTable::open_with_params(
                 &table_uri,
@@ -801,7 +940,10 @@ impl ConnectionInternal for Database {
     }
 
     async fn drop_db(&self) -> Result<()> {
-        todo!()
+        self.object_store
+            .remove_dir_all(self.base_path.clone())
+            .await?;
+        Ok(())
     }
 }
 

@@ -19,10 +19,18 @@ class Connection(object):
         self, start_after: Optional[str], limit: Optional[int]
     ) -> list[str]: ...
     async def create_table(
-        self, name: str, mode: str, data: pa.RecordBatchReader
+        self,
+        name: str,
+        mode: str,
+        data: pa.RecordBatchReader,
+        storage_options: Optional[Dict[str, str]] = None,
     ) -> Table: ...
     async def create_empty_table(
-        self, name: str, mode: str, schema: pa.Schema
+        self,
+        name: str,
+        mode: str,
+        schema: pa.Schema,
+        storage_options: Optional[Dict[str, str]] = None,
     ) -> Table: ...
 
 class Table:

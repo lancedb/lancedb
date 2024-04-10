@@ -18,6 +18,8 @@
   },
   "license": "Apache 2.0",
   "devDependencies": {
+    "@aws-sdk/client-s3": "^3.33.0",
+    "@aws-sdk/client-kms": "^3.33.0",
     "@napi-rs/cli": "^2.18.0",
     "@types/jest": "^29.1.2",
     "@types/tmp": "^0.2.6",
@@ -63,6 +65,7 @@
     "lint": "eslint lancedb && eslint __test__",
     "prepublishOnly": "napi prepublish -t npm",
     "test": "npm run build && jest --verbose",
+    "integration": "S3_TEST=1 npm run test",
     "universal": "napi universal",
     "version": "napi version"
   },
