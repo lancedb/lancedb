@@ -38,7 +38,7 @@ import {
   fromRecordsToStreamBuffer,
   fromTableToStreamBuffer
 } from '../arrow'
-import { toSQL } from '../util'
+import { toSQL, TTLCache } from '../util'
 import { type HttpMiddleware } from '../middleware'
 
 /**
@@ -47,6 +47,7 @@ import { type HttpMiddleware } from '../middleware'
 export class RemoteConnection implements Connection {
   private _client: HttpLancedbClient
   private readonly _dbName: string
+  private readonly _tableCache = new TTLCache(300_000)
 
   constructor (opts: ConnectionOptions) {
     if (!opts.uri.startsWith('db://')) {
@@ -89,6 +90,9 @@ export class RemoteConnection implements Connection {
       page_token: pageToken
     })
     const body = await response.body()
+    for (const table of body.tables) {
+      this._tableCache.set(table, true)
+    }
     return body.tables
   }
 
@@ -101,6 +105,12 @@ export class RemoteConnection implements Connection {
     name: string,
     embeddings?: EmbeddingFunction<T>
   ): Promise<Table<T>> {
+      // check if the table exists
+      if (this._tableCache.get(name) === undefined) {
+        await this._client.post(`/v1/table/${encodeURIComponent(name)}/describe/`)
+        this._tableCache.set(name, true)
+      }
+
     if (embeddings !== undefined) {
       return new RemoteTable(this._client, name, embeddings)
     } else {
@@ -169,6 +179,7 @@ export class RemoteConnection implements Connection {
       )
     }
 
+    this._tableCache.set(tableName, true)
     if (embeddings === undefined) {
       return new RemoteTable(this._client, tableName)
     } else {
@@ -178,6 +189,7 @@ export class RemoteConnection implements Connection {
 
   async dropTable (name: string): Promise<void> {
     await this._client.post(`/v1/table/${encodeURIComponent(name)}/drop/`)
+    this._tableCache.delete(name)
   }
 
   withMiddleware (middleware: HttpMiddleware): Connection {
