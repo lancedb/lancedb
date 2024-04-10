@@ -46,7 +46,7 @@ tempfile = "3.5.0"
 rand = { version = "0.8.3", features = ["small_rng"] }
 uuid = { version = "1.7.0", features = ["v4"] }
 walkdir = "2"
-# For integration tests (dev deps aren't allowed to be optional atm)
+# For s3 integration tests (dev deps aren't allowed to be optional atm)
 aws-sdk-s3 = { version = "1.0" }
 aws-sdk-kms = { version = "1.0" }
 aws-config = { version = "1.0" }
@@ -55,4 +55,4 @@ aws-config = { version = "1.0" }
 default = ["remote"]
 remote = ["dep:reqwest"]
 fp16kernels = ["lance-linalg/fp16kernels"]
-integration-test = []
+s3-test = []

@@ -29,8 +29,8 @@ import {
   KMSClient,
 } from "@aws-sdk/client-kms";
 
-// Skip these tests unless the INTEGRATION_TESTS environment variable is set
-const maybeDescribe = process.env.INTEGRATION_TEST ? describe : describe.skip;
+// Skip these tests unless the S3_TEST environment variable is set
+const maybeDescribe = process.env.S3_TEST ? describe : describe.skip;
 
 // These are all keys that are accepted by storage_options
 const CONFIG = {

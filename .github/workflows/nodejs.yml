@@ -90,7 +90,7 @@ jobs:
       run: docker compose up --detach --wait
     - name: Test
       env:
-        INTEGRATION_TEST: "1"
+        S3_TEST: "1"
       run: npm run test
   macos:
     timeout-minutes: 30

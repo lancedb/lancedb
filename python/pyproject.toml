@@ -98,5 +98,5 @@ addopts = "--strict-markers --ignore-glob=lancedb/embeddings/*.py"
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "asyncio",
-    "integration"
+    "s3_test"
 ]

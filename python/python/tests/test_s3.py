@@ -63,7 +63,7 @@ def delete_bucket(s3, bucket_name):
     s3.delete_bucket(Bucket=bucket_name)
 
 
-@pytest.mark.integration
+@pytest.mark.s3_test
 def test_s3_lifecycle(s3_bucket: str):
     storage_options = copy.copy(CONFIG)
 
@@ -113,7 +113,7 @@ def validate_objects_encrypted(bucket: str, path: str, kms_key: str):
         )
 
 
-@pytest.mark.integration
+@pytest.mark.s3_test
 def test_s3_sse(s3_bucket: str, kms_key: str):
     storage_options = copy.copy(CONFIG)
 

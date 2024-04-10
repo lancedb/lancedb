@@ -76,7 +76,7 @@ jobs:
           sudo apt install -y protobuf-compiler libssl-dev
     - name: Build
       run: cargo build --all-features
-    - name: Start integration test environment
+    - name: Start S3 integration test environment
       working-directory: .
       run: docker compose up --detach --wait
     - name: Run tests
