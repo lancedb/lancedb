@@ -95,6 +95,9 @@ def _sanitize_data(
                 data.data.to_batches(), schema, metadata, on_bad_vectors, fill_value
             )
 
+    if isinstance(data, LanceModel):
+        raise ValueError("Cannot add a single LanceModel to a table. Use a list.")
+
     if isinstance(data, list):
         # convert to list of dict if data is a bunch of LanceModels
         if isinstance(data[0], LanceModel):
@@ -1403,7 +1406,14 @@ class LanceTable(Table):
             vector and the returned vector.
         """
         if vector_column_name is None and query is not None:
-            vector_column_name = inf_vector_column_query(self.schema)
+            try:
+                vector_column_name = inf_vector_column_query(self.schema)
+            except Exception as e:
+                if query_type == "fts":
+                    vector_column_name = ""
+                else:
+                    raise e
+
         return LanceQueryBuilder.create(
             self,
             query,

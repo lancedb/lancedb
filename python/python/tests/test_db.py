@@ -28,13 +28,25 @@ def test_basic(tmp_path):
     assert db.uri == str(tmp_path)
     assert db.table_names() == []
 
+    class SimpleModel(LanceModel):
+        item: str
+        price: float
+        vector: Vector(2)
+
     table = db.create_table(
         "test",
         data=[
             {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
             {"vector": [5.9, 26.5], "item": "bar", "price": 20.0},
         ],
+        schema=SimpleModel,
     )
+
+    with pytest.raises(
+        ValueError, match="Cannot add a single LanceModel to a table. Use a list."
+    ):
+        table.add(SimpleModel(item="baz", price=30.0, vector=[1.0, 2.0]))
+
     rs = table.search([100, 100]).limit(1).to_pandas()
     assert len(rs) == 1
     assert rs["item"].iloc[0] == "bar"
@@ -42,6 +54,11 @@ def test_basic(tmp_path):
     rs = table.search([100, 100]).where("price < 15").limit(2).to_pandas()
     assert len(rs) == 1
     assert rs["item"].iloc[0] == "foo"
+
+    table.create_fts_index(["item"])
+    rs = table.search("bar", query_type="fts").to_pandas()
+    assert len(rs) == 1
+    assert rs["item"].iloc[0] == "bar"
 
     assert db.table_names() == ["test"]
     assert "test" in db
