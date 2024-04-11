@@ -193,8 +193,8 @@ nav:
       - Pandas and PyArrow: python/pandas_and_pyarrow.md
       - Polars: python/polars_arrow.md
       - DuckDB: python/duckdb.md
-      - LangChain 🦜️🔗↗: https://python.langchain.com/en/latest/modules/indexes/vectorstores/examples/lancedb.html
-      - LangChain.js 🦜️🔗↗: https://js.langchain.com/docs/modules/data_connection/vectorstores/integrations/lancedb
+      - LangChain 🦜️🔗↗: https://python.langchain.com/docs/integrations/vectorstores/lancedb
+      - LangChain.js 🦜️🔗↗: https://js.langchain.com/docs/integrations/vectorstores/lancedb
       - LlamaIndex 🦙↗: https://gpt-index.readthedocs.io/en/latest/examples/vector_stores/LanceDBIndexDemo.html
       - Pydantic: python/pydantic.md
       - Voxel51: integrations/voxel51.md
