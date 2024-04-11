@@ -83,7 +83,7 @@ def connect(
 
     >>> db = lancedb.connect("s3://my-bucket/lancedb")
 
-    Connect to LancdDB cloud:
+    Connect to LanceDB cloud:
 
     >>> db = lancedb.connect("db://my_database", api_key="ldb_...")
 
