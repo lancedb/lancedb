@@ -12,3 +12,63 @@ LanceDB supports 3 methods of working with embeddings.
 
 For python users, there is also a legacy [with_embeddings API](./legacy.md).
 It is retained for compatibility and will be removed in a future version.
+
+## Quickstart
+
+To get started with embeddings, you can use the built-in embedding functions.
+
+### OpenAI Embedding function
+LanceDB registers the OpenAI embeddings function in the registry as `openai`. You can pass any supported model name to the `create`. By default it uses `"text-embedding-ada-002"`.
+
+```python
+import lancedb
+from lancedb.pydantic import LanceModel, Vector
+from lancedb.embeddings import get_registry
+
+db = lancedb.connect("/tmp/db")
+func = get_registry().get("openai").create(name="text-embedding-ada-002")
+
+class Words(LanceModel):
+    text: str = func.SourceField()
+    vector: Vector(func.ndims()) = func.VectorField()
+
+table = db.create_table("words", schema=Words, mode="overwrite")
+table.add(
+    [
+        {"text": "hello world"},
+        {"text": "goodbye world"}
+    ]
+    )
+
+query = "greetings"
+actual = table.search(query).limit(1).to_pydantic(Words)[0]
+print(actual.text)
+```
+
+### Sentence Transformers Embedding function
+LanceDB registers the Sentence Transformers embeddings function in the registry as `sentence-transformers`. You can pass any supported model name to the `create`. By default it uses `"sentence-transformers/paraphrase-MiniLM-L6-v2"`.
+
+```python
+import lancedb
+from lancedb.pydantic import LanceModel, Vector
+from lancedb.embeddings import get_registry
+
+db = lancedb.connect("/tmp/db")
+model = get_registry().get("sentence-transformers").create(name="BAAI/bge-small-en-v1.5", device="cpu")
+
+class Words(LanceModel):
+    text: str = model.SourceField()
+    vector: Vector(model.ndims()) = model.VectorField()
+
+table = db.create_table("words", schema=Words)
+table.add(
+    [
+        {"text": "hello world"},
+        {"text": "goodbye world"}
+    ]
+)
+
+query = "greetings"
+actual = table.search(query).limit(1).to_pydantic(Words)[0]
+print(actual.text)
+```
