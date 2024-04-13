@@ -20,7 +20,7 @@ import { Table as ArrowTable, Schema } from "apache-arrow";
 /**
  * Connect to a LanceDB instance at the given URI.
  *
- * Accpeted formats:
+ * Accepted formats:
  *
  * - `/path/to/database` - local database
  * - `s3://bucket/path/to/database` or `gs://bucket/path/to/database` - database on cloud storage
