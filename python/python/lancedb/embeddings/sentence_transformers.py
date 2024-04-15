@@ -214,7 +214,7 @@ class SentenceTransformersTuner(BaseEmbeddingTuner):
     def helper(self) -> None:
         """A helper method."""
         logging.info("Finetuning complete.")
-        logging.info(f"Model saved to {self.path}.") # noqa
+        logging.info(f"Model saved to {self.path}.")  # noqa
         logging.info("You can now use the model as follows:")
         logging.info(
             f"model = get_registry().get('sentence-transformers').create(name='./{self.path}')"  # noqa
