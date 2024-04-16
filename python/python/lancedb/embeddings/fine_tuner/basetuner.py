@@ -6,8 +6,14 @@ class BaseEmbeddingTuner(ABC):
 
     @abstractmethod
     def finetune(self) -> None:
-        """Goes off and does stuff."""
+        """
+        Finetune the embedding model.
+        """
+        pass
 
     def helper(self) -> None:
-        """A helper method."""
+        """
+        A helper method called after finetuning. This is meant to provide
+        usage instructions or other helpful information.
+        """
         pass

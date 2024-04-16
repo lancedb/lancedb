@@ -52,7 +52,17 @@ class QADataset(BaseModel):
         ]
 
     def save(self, path: str, mode: str = "overwrite") -> None:
-        """Save to lance dataset"""
+        """
+        Save the current dataset to a directory as .lance files.
+
+        Parameters
+        ----------
+        path : str
+            The path to save the dataset.
+        mode : str, optional
+            The mode to save the dataset, by default "overwrite". Accepts
+            lance modes.
+        """
         save_dir = Path(path)
         save_dir.mkdir(parents=True, exist_ok=True)
 
@@ -87,7 +97,20 @@ class QADataset(BaseModel):
 
     @classmethod
     def load(cls, path: str) -> "QADataset":
-        """Load from .lance data"""
+        """
+        Load QADataset from a directory.
+
+        Parameters
+        ----------
+        path : str
+            The path to load the dataset from.
+        
+        Returns
+        -------
+        QADataset
+            The loaded QADataset.
+        
+        """
         load_dir = Path(path)
         queries = lance.dataset(load_dir / "queries.lance").to_table().to_pydict()
         corpus = lance.dataset(load_dir / "corpus.lance").to_table().to_pydict()
@@ -109,7 +132,25 @@ class QADataset(BaseModel):
         qa_generate_prompt_tmpl: str = DEFAULT_PROMPT_TMPL,
         num_questions_per_chunk: int = 2,
     ) -> "QADataset":
-        """Generate examples given a set of nodes."""
+        """
+        Generate a QADataset from a list of TextChunks. 
+        
+        Parameters
+        ----------
+        nodes : List[TextChunk]
+            The list of text chunks.
+        llm : BaseLLM
+            The language model to generate questions.
+        qa_generate_prompt_tmpl : str, optional
+            The template for generating questions, by default DEFAULT_PROMPT_TMPL.
+        num_questions_per_chunk : int, optional
+            The number of questions to generate per chunk, by default 2.
+
+        Returns
+        -------
+        QADataset
+            The generated QADataset.
+        """
         node_dict = {node.id: node.text for node in nodes}
 
         queries = {}
@@ -130,22 +171,46 @@ class QADataset(BaseModel):
                 queries[question_id] = question
                 relevant_docs[question_id] = [node_id]
 
-        return QADataset(queries=queries, corpus=node_dict, relevant_docs=relevant_docs)
+        return cls(queries=queries, corpus=node_dict, relevant_docs=relevant_docs)
 
     @classmethod
     def from_responses(
         cls,
-        docs: List["TextChunk"],
+        nodes: List["TextChunk"],
         queries: Dict[str, str],
         relevant_docs: Dict[str, List[str]],
     ) -> "QADataset":
-        """Create a QADataset from a list of TextChunks and a list of questions."""
-        node_dict = {node.id: node.text for node in docs}
+        """
+        Create a QADataset from a list of TextChunks and a list of questions, queries, and relevant docs.
+
+        Parameters
+        ----------
+        nodes : List[TextChunk]
+            The list of text chunks.
+        queries : Dict[str, str]
+            The queries. query id -> query.
+        relevant_docs : Dict[str, List[str]]
+            The relevant docs. Dict query id -> list of doc ids.
+        
+        Returns
+        -------
+        QADataset
+            The QADataset.
+        """
+        node_dict = {node.id: node.text for node in nodes}
         return cls(queries=queries, corpus=node_dict, relevant_docs=relevant_docs)
 
 
 class TextChunk(BaseModel):
-    """Simple text chunk for generating questions."""
+    """
+    Simple text chunk for storing text nodes. Acts as a wrapper around text.
+    Allow interoperability between different text processing libraries.
+
+    Args:
+        text (str): The text of the chunk.
+        id (str): The id of the chunk.
+        metadata (Dict[str, Any], optional): The metadata of the chunk. Defaults to {}.
+    """
 
     text: str
     id: str
@@ -153,22 +218,60 @@ class TextChunk(BaseModel):
 
     @classmethod
     def from_chunk(cls, chunk: str, metadata: dict = {}) -> "TextChunk":
-        """Create a SimpleTextChunk from a chunk."""
+        """
+        Create a SimpleTextChunk from a chunk.
+
+        Parameters
+        ----------
+        chunk : str
+            The text chunk.
+        metadata : dict, optional
+            The metadata, by default {}.
+
+        Returns
+        -------
+        TextChunk
+            The text chunk.
+        
+        """
         # generate a unique id
         return cls(text=chunk, id=str(uuid.uuid4()), metadata=metadata)
 
     @classmethod
     def from_llama_index_node(cls, node):
-        """Convert a llama index node to a text chunk."""
+        """
+        Generate a TextChunk from a llama index node.
+
+        Parameters
+        ----------
+        node : llama_index.core.TextNode
+            The llama index node.
+        
+        """
         return cls(text=node.text, id=node.node_id, metadata=node.metadata)
 
     @classmethod
     def from_langchain_node(cls, node):
-        """Convert a langchaain node to a text chunk."""
+        """
+        Generate a TextChunk from a langchain node.
+
+        Parameters
+        ----------
+        node : langchain.core.TextNode
+            The langchain node.
+        
+        """
         raise NotImplementedError("Not implemented yet.")
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to a dictionary."""
+        """
+        Convert to a dictionary.
+        
+        Returns
+        -------
+        Dict[str, Any]
+            The dictionary.
+        """
         return self.dict()
 
     def __str__(self) -> str:
