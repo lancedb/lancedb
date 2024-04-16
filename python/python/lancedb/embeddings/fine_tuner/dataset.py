@@ -104,12 +104,12 @@ class QADataset(BaseModel):
         ----------
         path : str
             The path to load the dataset from.
-        
+
         Returns
         -------
         QADataset
             The loaded QADataset.
-        
+
         """
         load_dir = Path(path)
         queries = lance.dataset(load_dir / "queries.lance").to_table().to_pydict()
@@ -133,8 +133,8 @@ class QADataset(BaseModel):
         num_questions_per_chunk: int = 2,
     ) -> "QADataset":
         """
-        Generate a QADataset from a list of TextChunks. 
-        
+        Generate a QADataset from a list of TextChunks.
+
         Parameters
         ----------
         nodes : List[TextChunk]
@@ -181,7 +181,8 @@ class QADataset(BaseModel):
         relevant_docs: Dict[str, List[str]],
     ) -> "QADataset":
         """
-        Create a QADataset from a list of TextChunks and a list of questions, queries, and relevant docs.
+        Create a QADataset from a list of TextChunks and a list of
+        questions, queries, and relevant docs.
 
         Parameters
         ----------
@@ -191,7 +192,7 @@ class QADataset(BaseModel):
             The queries. query id -> query.
         relevant_docs : Dict[str, List[str]]
             The relevant docs. Dict query id -> list of doc ids.
-        
+
         Returns
         -------
         QADataset
@@ -232,7 +233,7 @@ class TextChunk(BaseModel):
         -------
         TextChunk
             The text chunk.
-        
+
         """
         # generate a unique id
         return cls(text=chunk, id=str(uuid.uuid4()), metadata=metadata)
@@ -246,7 +247,7 @@ class TextChunk(BaseModel):
         ----------
         node : llama_index.core.TextNode
             The llama index node.
-        
+
         """
         return cls(text=node.text, id=node.node_id, metadata=node.metadata)
 
@@ -259,14 +260,14 @@ class TextChunk(BaseModel):
         ----------
         node : langchain.core.TextNode
             The langchain node.
-        
+
         """
         raise NotImplementedError("Not implemented yet.")
 
     def to_dict(self) -> Dict[str, Any]:
         """
         Convert to a dictionary.
-        
+
         Returns
         -------
         Dict[str, Any]
