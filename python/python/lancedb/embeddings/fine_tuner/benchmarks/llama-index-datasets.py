@@ -39,7 +39,7 @@ def get_llama_dataset(dataset: str):
     """
     if not os.path.exists(f"./data/{dataset}"):
         os.system(
-            f"llamaindex-cli download-llamadataset {dataset} --download-dir ./data/{dataset}" # noqa
+            f"llamaindex-cli download-llamadataset {dataset} --download-dir ./data/{dataset}"  # noqa
         )
     rag_dataset = LabelledRagDataset.from_json(f"./data/{dataset}/rag_dataset.json")
     docs = SimpleDirectoryReader(input_dir=f"./data/{dataset}/source_files").load_data()
