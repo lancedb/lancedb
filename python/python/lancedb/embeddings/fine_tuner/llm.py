@@ -15,12 +15,13 @@ class BaseLLM(BaseModel):
     Base class for Language Model based Embedding Functions. This class is
     loosely desined rn, and will be updated as the usage gets clearer.
     """
+
     class Config:
         protected_namespaces = ()  # Disable protected namespace check
 
     model_name: str
     model_kwargs: dict = {}
-    
+
     @cached_property
     def _client():
         """
