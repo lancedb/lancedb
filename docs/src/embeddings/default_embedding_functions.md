@@ -159,7 +159,7 @@ Allows you to set parameters when registering a `sentence-transformers` object.
     from lancedb.embeddings import get_registry
 
     db = lancedb.connect("/tmp/db")
-    model = get_registry.get("sentence-transformers").create(name="BAAI/bge-small-en-v1.5", device="cpu")
+    model = get_registry().get("sentence-transformers").create(name="BAAI/bge-small-en-v1.5", device="cpu")
 
     class Words(LanceModel):
         text: str = model.SourceField()
