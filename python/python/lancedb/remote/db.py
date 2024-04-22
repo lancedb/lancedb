@@ -18,6 +18,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Iterable, List, Optional, Union
 from urllib.parse import urlparse
 
+from cachetools import TTLCache
 import pyarrow as pa
 from overrides import override
 
@@ -29,7 +30,6 @@ from ..table import Table, _sanitize_data
 from ..util import validate_table_name
 from .arrow import to_ipc_binary
 from .client import ARROW_STREAM_CONTENT_TYPE, RestfulLanceDBClient
-from .errors import LanceDBClientError
 
 
 class RemoteDBConnection(DBConnection):
@@ -60,6 +60,7 @@ class RemoteDBConnection(DBConnection):
             read_timeout=read_timeout,
         )
         self._request_thread_pool = request_thread_pool
+        self._table_cache = TTLCache(maxsize=10000, ttl=300)
 
     def __repr__(self) -> str:
         return f"RemoteConnect(name={self.db_name})"
@@ -89,6 +90,7 @@ class RemoteDBConnection(DBConnection):
             else:
                 break
             for item in result:
+                self._table_cache[item] = True
                 yield item
 
     @override
@@ -109,16 +111,10 @@ class RemoteDBConnection(DBConnection):
         self._client.mount_retry_adapter_for_table(name)
 
         # check if table exists
-        try:
+        if self._table_cache.get(name) is None:
             self._client.post(f"/v1/table/{name}/describe/")
-        except LanceDBClientError as err:
-            if str(err).startswith("Not found"):
-                logging.error(
-                    "Table %s does not exist. Please first call "
-                    "db.create_table(%s, data).",
-                    name,
-                    name,
-                )
+            self._table_cache[name] = True
+
         return RemoteTable(self, name)
 
     @override
@@ -267,6 +263,7 @@ class RemoteDBConnection(DBConnection):
             content_type=ARROW_STREAM_CONTENT_TYPE,
         )
 
+        self._table_cache[name] = True
         return RemoteTable(self, name)
 
     @override
@@ -282,6 +279,25 @@ class RemoteDBConnection(DBConnection):
         self._client.post(
             f"/v1/table/{name}/drop/",
         )
+        self._table_cache.pop(name)
+
+    @override
+    def rename_table(self, cur_name: str, new_name: str):
+        """Rename a table in the database.
+
+        Parameters
+        ----------
+        cur_name: str
+            The current name of the table.
+        new_name: str
+            The new name of the table.
+        """
+        self._client.post(
+            f"/v1/table/{cur_name}/rename/",
+            json={"new_table_name": new_name},
+        )
+        self._table_cache.pop(cur_name)
+        self._table_cache[new_name] = True
 
     async def close(self):
         """Close the connection to the database."""
