@@ -15,7 +15,7 @@ import importlib.metadata
 import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
-from typing import Optional, Union
+from typing import Dict, Optional, Union
 
 __version__ = importlib.metadata.version("lancedb")
 
@@ -83,7 +83,7 @@ def connect(
 
     >>> db = lancedb.connect("s3://my-bucket/lancedb")
 
-    Connect to LancdDB cloud:
+    Connect to LanceDB cloud:
 
     >>> db = lancedb.connect("db://my_database", api_key="ldb_...")
 
@@ -118,6 +118,7 @@ async def connect_async(
     host_override: Optional[str] = None,
     read_consistency_interval: Optional[timedelta] = None,
     request_thread_pool: Optional[Union[int, ThreadPoolExecutor]] = None,
+    storage_options: Optional[Dict[str, str]] = None,
 ) -> AsyncConnection:
     """Connect to a LanceDB database.
 
@@ -144,6 +145,9 @@ async def connect_async(
         the last check, then the table will be checked for updates. Note: this
         consistency only applies to read operations. Write operations are
         always consistent.
+    storage_options: dict, optional
+        Additional options for the storage backend. See available options at
+        https://lancedb.github.io/lancedb/guides/storage/
 
     Examples
     --------
@@ -172,6 +176,7 @@ async def connect_async(
             region,
             host_override,
             read_consistency_interval_secs,
+            storage_options,
         )
     )
 

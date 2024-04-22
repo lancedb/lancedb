@@ -154,9 +154,12 @@ Allows you to set parameters when registering a `sentence-transformers` object.
 !!! note "BAAI Embeddings example"
     Here is an example that uses BAAI embedding model from the HuggingFace Hub [supported models](https://huggingface.co/models?library=sentence-transformers)
     ```python
+    import lancedb
+    from lancedb.pydantic import LanceModel, Vector
+    from lancedb.embeddings import get_registry
+
     db = lancedb.connect("/tmp/db")
-    registry = EmbeddingFunctionRegistry.get_instance()
-    model = registry.get("sentence-transformers").create(name="BAAI/bge-small-en-v1.5", device="cpu")
+    model = get_registry().get("sentence-transformers").create(name="BAAI/bge-small-en-v1.5", device="cpu")
 
     class Words(LanceModel):
         text: str = model.SourceField()
@@ -165,7 +168,7 @@ Allows you to set parameters when registering a `sentence-transformers` object.
     table = db.create_table("words", schema=Words)
     table.add(
         [
-            {"text": "hello world"}
+            {"text": "hello world"},
             {"text": "goodbye world"}
         ]
     )
@@ -213,18 +216,21 @@ LanceDB registers the OpenAI embeddings function in the registry by default, as 
 
 
 ```python
+import lancedb
+from lancedb.pydantic import LanceModel, Vector
+from lancedb.embeddings import get_registry
+
 db = lancedb.connect("/tmp/db")
-registry = EmbeddingFunctionRegistry.get_instance()
-func = registry.get("openai").create()
+func = get_registry().get("openai").create(name="text-embedding-ada-002")
 
 class Words(LanceModel):
     text: str = func.SourceField()
     vector: Vector(func.ndims()) = func.VectorField()
 
-table = db.create_table("words", schema=Words)
+table = db.create_table("words", schema=Words, mode="overwrite")
 table.add(
     [
-        {"text": "hello world"}
+        {"text": "hello world"},
         {"text": "goodbye world"}
     ]
     )
@@ -353,6 +359,10 @@ Supported parameters (to be passed in `create` method) are:
 Usage Example:
 
 ```python
+import lancedb
+from lancedb.pydantic import LanceModel, Vector
+from lancedb.embeddings import get_registry
+
 model = get_registry().get("bedrock-text").create()
 
 class TextModel(LanceModel):
@@ -387,10 +397,12 @@ This embedding function supports ingesting images as both bytes and urls. You ca
     LanceDB supports ingesting images directly from accessible links.
 
 ```python
+import lancedb
+from lancedb.pydantic import LanceModel, Vector
+from lancedb.embeddings import get_registry
 
 db = lancedb.connect(tmp_path)
-registry = EmbeddingFunctionRegistry.get_instance()
-func = registry.get("open-clip").create()
+func = get_registry.get("open-clip").create()
 
 class Images(LanceModel):
     label: str
@@ -465,9 +477,12 @@ This function is registered as `imagebind` and supports Audio, Video and Text mo
 Below is an example demonstrating how the API works:
 
 ```python
+import lancedb
+from lancedb.pydantic import LanceModel, Vector
+from lancedb.embeddings import get_registry
+
 db = lancedb.connect(tmp_path)
-registry = EmbeddingFunctionRegistry.get_instance()
-func = registry.get("imagebind").create()
+func = get_registry.get("imagebind").create()
 
 class ImageBindModel(LanceModel):
     text: str

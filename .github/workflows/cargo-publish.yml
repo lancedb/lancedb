@@ -8,6 +8,9 @@ env:
   # This env var is used by Swatinem/rust-cache@v2 for the cache
   # key, so we set it to make sure it is always consistent.
   CARGO_TERM_COLOR: always
+  # Up-to-date compilers needed for fp16kernels.
+  CC: gcc-12
+  CXX: g++-12
 
 jobs:
   build:

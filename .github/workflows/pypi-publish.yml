@@ -6,6 +6,8 @@ on:
 
 jobs:
   linux:
+    # Only runs on tags that matches the python-make-release action
+    if: startsWith(github.ref, 'refs/tags/python-v')
     name: Python ${{ matrix.config.platform }} manylinux${{ matrix.config.manylinux }}
     timeout-minutes: 60
     strategy:
@@ -44,6 +46,8 @@ jobs:
           token: ${{ secrets.LANCEDB_PYPI_API_TOKEN }}
           repo: "pypi"
   mac:
+    # Only runs on tags that matches the python-make-release action
+    if: startsWith(github.ref, 'refs/tags/python-v')
     timeout-minutes: 60
     runs-on: ${{ matrix.config.runner }}
     strategy:
@@ -76,6 +80,8 @@ jobs:
           token: ${{ secrets.LANCEDB_PYPI_API_TOKEN }}
           repo: "pypi"
   windows:
+    # Only runs on tags that matches the python-make-release action
+    if: startsWith(github.ref, 'refs/tags/python-v')
     timeout-minutes: 60
     runs-on: windows-latest
     strategy:

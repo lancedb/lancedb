@@ -13,9 +13,31 @@
 // limitations under the License.
 
 import { fromTableToBuffer, makeArrowTable, makeEmptyTable } from "./arrow";
-import { Connection as LanceDbConnection } from "./native";
+import { ConnectionOptions, Connection as LanceDbConnection } from "./native";
 import { Table } from "./table";
 import { Table as ArrowTable, Schema } from "apache-arrow";
+
+/**
+ * Connect to a LanceDB instance at the given URI.
+ *
+ * Accepted formats:
+ *
+ * - `/path/to/database` - local database
+ * - `s3://bucket/path/to/database` or `gs://bucket/path/to/database` - database on cloud storage
+ * - `db://host:port` - remote database (LanceDB cloud)
+ * @param {string} uri - The uri of the database. If the database uri starts
+ * with `db://` then it connects to a remote database.
+ * @see {@link ConnectionOptions} for more details on the URI format.
+ */
+export async function connect(
+  uri: string,
+  opts?: Partial<ConnectionOptions>,
+): Promise<Connection> {
+  opts = opts ?? {};
+  opts.storageOptions = cleanseStorageOptions(opts.storageOptions);
+  const nativeConn = await LanceDbConnection.new(uri, opts);
+  return new Connection(nativeConn);
+}
 
 export interface CreateTableOptions {
   /**
@@ -33,6 +55,28 @@ export interface CreateTableOptions {
    * then no error will be raised.
    */
   existOk: boolean;
+
+  /**
+   * Configuration for object storage.
+   *
+   * Options already set on the connection will be inherited by the table,
+   * but can be overridden here.
+   *
+   * The available options are described at https://lancedb.github.io/lancedb/guides/storage/
+   */
+  storageOptions?: Record<string, string>;
+}
+
+export interface OpenTableOptions {
+  /**
+   * Configuration for object storage.
+   *
+   * Options already set on the connection will be inherited by the table,
+   * but can be overridden here.
+   *
+   * The available options are described at https://lancedb.github.io/lancedb/guides/storage/
+   */
+  storageOptions?: Record<string, string>;
 }
 
 export interface TableNamesOptions {
@@ -109,8 +153,14 @@ export class Connection {
    * Open a table in the database.
    * @param {string} name - The name of the table
    */
-  async openTable(name: string): Promise<Table> {
-    const innerTable = await this.inner.openTable(name);
+  async openTable(
+    name: string,
+    options?: Partial<OpenTableOptions>,
+  ): Promise<Table> {
+    const innerTable = await this.inner.openTable(
+      name,
+      cleanseStorageOptions(options?.storageOptions),
+    );
     return new Table(innerTable);
   }
 
@@ -139,7 +189,12 @@ export class Connection {
       table = makeArrowTable(data);
     }
     const buf = await fromTableToBuffer(table);
-    const innerTable = await this.inner.createTable(name, buf, mode);
+    const innerTable = await this.inner.createTable(
+      name,
+      buf,
+      mode,
+      cleanseStorageOptions(options?.storageOptions),
+    );
     return new Table(innerTable);
   }
 
@@ -162,7 +217,12 @@ export class Connection {
 
     const table = makeEmptyTable(schema);
     const buf = await fromTableToBuffer(table);
-    const innerTable = await this.inner.createEmptyTable(name, buf, mode);
+    const innerTable = await this.inner.createEmptyTable(
+      name,
+      buf,
+      mode,
+      cleanseStorageOptions(options?.storageOptions),
+    );
     return new Table(innerTable);
   }
 
@@ -173,4 +233,44 @@ export class Connection {
   async dropTable(name: string): Promise<void> {
     return this.inner.dropTable(name);
   }
+}
+
+/**
+ * Takes storage options and makes all the keys snake case.
+ */
+function cleanseStorageOptions(
+  options?: Record<string, string>,
+): Record<string, string> | undefined {
+  if (options === undefined) {
+    return undefined;
+  }
+  const result: Record<string, string> = {};
+  for (const [key, value] of Object.entries(options)) {
+    if (value !== undefined) {
+      const newKey = camelToSnakeCase(key);
+      result[newKey] = value;
+    }
+  }
+  return result;
+}
+
+/**
+ * Convert a string to snake case. It might already be snake case, in which case it is
+ * returned unchanged.
+ */
+function camelToSnakeCase(camel: string): string {
+  if (camel.includes("_")) {
+    // Assume if there is at least one underscore, it is already snake case
+    return camel;
+  }
+  if (camel.toLocaleUpperCase() === camel) {
+    // Assume if the string is all uppercase, it is already snake case
+    return camel;
+  }
+
+  let result = camel.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`);
+  if (result.startsWith("_")) {
+    result = result.slice(1);
+  }
+  return result;
 }

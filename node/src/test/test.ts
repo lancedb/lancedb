@@ -42,6 +42,7 @@ import {
   Float16,
   Int64
 } from 'apache-arrow'
+import type { RemoteRequest, RemoteResponse } from '../middleware'
 
 const expect = chai.expect
 const assert = chai.assert
@@ -70,6 +71,19 @@ describe('LanceDB client', function () {
       const con = await lancedb.connect({
         uri,
         awsCredentials
+      })
+      assert.equal(con.uri, uri)
+    })
+
+    it('should accept custom storage options', async function () {
+      const uri = await createTestDB()
+      const storageOptions = {
+        region: 'us-west-2',
+        timeout: '30s'
+      };
+      const con = await lancedb.connect({
+        uri,
+        storageOptions
       })
       assert.equal(con.uri, uri)
     })
@@ -913,7 +927,22 @@ describe('Remote LanceDB client', function () {
       }
 
       // Search
-      const table = await con.openTable('vectors')
+      const table = await con.withMiddleware(new (class {
+        async onRemoteRequest(req: RemoteRequest, next: (req: RemoteRequest) => Promise<RemoteResponse>) {
+          // intercept call to check if the table exists and make the call succeed
+          if (req.uri.endsWith('/describe/')) {
+            return {
+              status: 200,
+              statusText: 'OK',
+              headers: new Map(),
+              body: async () => ({})
+            }
+          }
+
+          return await next(req)
+        }
+      })()).openTable('vectors')
+
       try {
         await table.search([0.1, 0.3]).execute()
       } catch (err) {

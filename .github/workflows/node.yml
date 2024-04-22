@@ -107,6 +107,7 @@ jobs:
       AWS_ENDPOINT: http://localhost:4566
       # this one is for dynamodb
       DYNAMODB_ENDPOINT: http://localhost:4566
+      ALLOW_HTTP: true
     steps:
     - uses: actions/checkout@v4
       with:

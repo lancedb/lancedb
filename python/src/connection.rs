@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use arrow::{datatypes::Schema, ffi_stream::ArrowArrayStreamReader, pyarrow::FromPyArrow};
 use lancedb::connection::{Connection as LanceConnection, CreateTableMode};
@@ -90,19 +90,21 @@ impl Connection {
         name: String,
         mode: &str,
         data: &PyAny,
+        storage_options: Option<HashMap<String, String>>,
     ) -> PyResult<&'a PyAny> {
         let inner = self_.get_inner()?.clone();
 
         let mode = Self::parse_create_mode_str(mode)?;
 
         let batches = ArrowArrayStreamReader::from_pyarrow(data)?;
+        let mut builder = inner.create_table(name, batches).mode(mode);
+
+        if let Some(storage_options) = storage_options {
+            builder = builder.storage_options(storage_options);
+        }
+
         future_into_py(self_.py(), async move {
-            let table = inner
-                .create_table(name, batches)
-                .mode(mode)
-                .execute()
-                .await
-                .infer_error()?;
+            let table = builder.execute().await.infer_error()?;
             Ok(Table::new(table))
         })
     }
@@ -112,6 +114,7 @@ impl Connection {
         name: String,
         mode: &str,
         schema: &PyAny,
+        storage_options: Option<HashMap<String, String>>,
     ) -> PyResult<&'a PyAny> {
         let inner = self_.get_inner()?.clone();
 
@@ -119,21 +122,31 @@ impl Connection {
 
         let schema = Schema::from_pyarrow(schema)?;
 
+        let mut builder = inner.create_empty_table(name, Arc::new(schema)).mode(mode);
+
+        if let Some(storage_options) = storage_options {
+            builder = builder.storage_options(storage_options);
+        }
+
         future_into_py(self_.py(), async move {
-            let table = inner
-                .create_empty_table(name, Arc::new(schema))
-                .mode(mode)
-                .execute()
-                .await
-                .infer_error()?;
+            let table = builder.execute().await.infer_error()?;
             Ok(Table::new(table))
         })
     }
 
-    pub fn open_table(self_: PyRef<'_, Self>, name: String) -> PyResult<&PyAny> {
+    #[pyo3(signature = (name, storage_options = None))]
+    pub fn open_table(
+        self_: PyRef<'_, Self>,
+        name: String,
+        storage_options: Option<HashMap<String, String>>,
+    ) -> PyResult<&PyAny> {
         let inner = self_.get_inner()?.clone();
+        let mut builder = inner.open_table(name);
+        if let Some(storage_options) = storage_options {
+            builder = builder.storage_options(storage_options);
+        }
         future_into_py(self_.py(), async move {
-            let table = inner.open_table(&name).execute().await.infer_error()?;
+            let table = builder.execute().await.infer_error()?;
             Ok(Table::new(table))
         })
     }
@@ -162,6 +175,7 @@ pub fn connect(
     region: Option<String>,
     host_override: Option<String>,
     read_consistency_interval: Option<f64>,
+    storage_options: Option<HashMap<String, String>>,
 ) -> PyResult<&PyAny> {
     future_into_py(py, async move {
         let mut builder = lancedb::connect(&uri);
@@ -177,6 +191,9 @@ pub fn connect(
         if let Some(read_consistency_interval) = read_consistency_interval {
             let read_consistency_interval = Duration::from_secs_f64(read_consistency_interval);
             builder = builder.read_consistency_interval(read_consistency_interval);
+        }
+        if let Some(storage_options) = storage_options {
+            builder = builder.storage_options(storage_options);
         }
         Ok(Connection::new(builder.execute().await.infer_error()?))
     })

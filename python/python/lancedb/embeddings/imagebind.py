@@ -22,6 +22,8 @@ from .base import EmbeddingFunction
 from .registry import register
 from .utils import AUDIO, IMAGES, TEXT
 
+from lancedb.pydantic import PYDANTIC_VERSION
+
 
 @register("imagebind")
 class ImageBindEmbeddings(EmbeddingFunction):
@@ -38,8 +40,13 @@ class ImageBindEmbeddings(EmbeddingFunction):
     device: str = "cpu"
     normalize: bool = False
 
-    class Config:
-        keep_untouched = (cached_property,)
+    if PYDANTIC_VERSION < (2, 0):  # Pydantic 1.x compat
+
+        class Config:
+            keep_untouched = (cached_property,)
+    else:
+        model_config = dict()
+        model_config["ignored_types"] = (cached_property,)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

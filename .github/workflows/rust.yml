@@ -76,6 +76,9 @@ jobs:
           sudo apt install -y protobuf-compiler libssl-dev
     - name: Build
       run: cargo build --all-features
+    - name: Start S3 integration test environment
+      working-directory: .
+      run: docker compose up --detach --wait
     - name: Run tests
       run: cargo test --all-features
     - name: Run examples
@@ -105,7 +108,8 @@ jobs:
       - name: Build
         run: cargo build --all-features
       - name: Run tests
-        run: cargo test --all-features
+        # Run with everything except the integration tests.
+        run: cargo test --features remote,fp16kernels
   windows:
     runs-on: windows-2022
     steps:

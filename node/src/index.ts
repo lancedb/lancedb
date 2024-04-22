@@ -78,11 +78,24 @@ export interface ConnectionOptions {
   /** User provided AWS crednetials.
    *
    * If not provided, LanceDB will use the default credentials provider chain.
+   *
+   * @deprecated Pass `aws_access_key_id`, `aws_secret_access_key`, and `aws_session_token`
+   * through `storageOptions` instead.
    */
   awsCredentials?: AwsCredentials
 
-  /** AWS region to connect to. Default is {@link defaultAwsRegion}. */
+  /** AWS region to connect to. Default is {@link defaultAwsRegion}
+   *
+   * @deprecated Pass `region` through `storageOptions` instead.
+   */
   awsRegion?: string
+
+  /**
+   * User provided options for object storage. For example, S3 credentials or request timeouts.
+   *
+   * The various options are described at https://lancedb.github.io/lancedb/guides/storage/
+   */
+  storageOptions?: Record<string, string>
 
   /**
    * API key for the remote connections
@@ -150,7 +163,7 @@ export interface CreateTableOptions<T> {
 /**
  * Connect to a LanceDB instance at the given URI.
  *
- * Accpeted formats:
+ * Accepted formats:
  *
  * - `/path/to/database` - local database
  * - `s3://bucket/path/to/database` or `gs://bucket/path/to/database` - database on cloud storage
@@ -176,7 +189,6 @@ export async function connect (
   if (typeof arg === 'string') {
     opts = { uri: arg }
   } else {
-    // opts = { uri: arg.uri, awsCredentials = arg.awsCredentials }
     const keys = Object.keys(arg)
     if (keys.length === 1 && keys[0] === 'uri' && typeof arg.uri === 'string') {
       opts = { uri: arg.uri }
@@ -198,12 +210,26 @@ export async function connect (
     // Remote connection
     return new RemoteConnection(opts)
   }
+
+  const storageOptions = opts.storageOptions ?? {};
+  if (opts.awsCredentials?.accessKeyId !== undefined) {
+    storageOptions.aws_access_key_id = opts.awsCredentials.accessKeyId
+  }
+  if (opts.awsCredentials?.secretKey !== undefined) {
+    storageOptions.aws_secret_access_key = opts.awsCredentials.secretKey
+  }
+  if (opts.awsCredentials?.sessionToken !== undefined) {
+    storageOptions.aws_session_token = opts.awsCredentials.sessionToken
+  }
+  if (opts.awsRegion !== undefined) {
+    storageOptions.region = opts.awsRegion
+  }
+  // It's a pain to pass a record to Rust, so we convert it to an array of key-value pairs
+  const storageOptionsArr = Object.entries(storageOptions);
+
   const db = await databaseNew(
     opts.uri,
-    opts.awsCredentials?.accessKeyId,
-    opts.awsCredentials?.secretKey,
-    opts.awsCredentials?.sessionToken,
-    opts.awsRegion,
+    storageOptionsArr,
     opts.readConsistencyInterval
   )
   return new LocalConnection(db, opts)
@@ -720,7 +746,6 @@ export class LocalConnection implements Connection {
     const tbl = await databaseOpenTable.call(
       this._db,
       name,
-      ...getAwsArgs(this._options())
     )
     if (embeddings !== undefined) {
       return new LocalTable(tbl, name, this._options(), embeddings)

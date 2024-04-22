@@ -78,6 +78,9 @@ class BedRockText(TextEmbeddingFunction):
 
         class Config:
             keep_untouched = (cached_property,)
+    else:
+        model_config = dict()
+        model_config["ignored_types"] = (cached_property,)
 
     def ndims(self):
         # return len(self._generate_embedding("test"))

@@ -24,7 +24,8 @@ data = [
 table = db.create_table("pd_table", data=data)
 ```
 
-To query the table, first call `to_lance` to convert the table to a "dataset", which is an object that can be queried by DuckDB. Then all you need to do is reference that dataset by the same name in your SQL query.
+The `to_lance` method converts the LanceDB table to a `LanceDataset`, which is accessible to DuckDB through the Arrow compatibility layer.
+To query the resulting Lance dataset in DuckDB, all you need to do is reference the dataset by the same name in your SQL query.
 
 ```python
 import duckdb
