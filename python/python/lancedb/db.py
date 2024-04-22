@@ -247,7 +247,7 @@ class DBConnection(EnforceOverrides):
             The name of the table.
         """
         raise NotImplementedError
-    
+
     def rename_table(self, cur_name: str, new_name: str):
         """Rename a table in the database.
 
