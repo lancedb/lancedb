@@ -50,6 +50,7 @@ impl<T> PythonErrorExt<T> for std::result::Result<T, LanceError> {
                     Err(PyNotImplementedError::new_err(err.to_string()))
                 }
                 LanceError::Other { .. } => self.runtime_error(),
+                _ => self.runtime_error(),
             },
         }
     }

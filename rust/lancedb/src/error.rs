@@ -19,6 +19,7 @@ use snafu::Snafu;
 
 #[derive(Debug, Snafu)]
 #[snafu(visibility(pub(crate)))]
+#[non_exhaustive]
 pub enum Error {
     #[snafu(display("Invalid table name (\"{name}\"): {reason}"))]
     InvalidTableName { name: String, reason: String },
@@ -49,6 +50,9 @@ pub enum Error {
     Arrow { source: ArrowError },
     #[snafu(display("LanceDBError: not supported: {message}"))]
     NotSupported { message: String },
+    #[cfg(feature = "polars")]
+    #[snafu(display("Polars error: {source}"))]
+    Polars { source: polars::error::PolarsError },
     #[snafu(whatever, display("{message}"))]
     Other {
         message: String,
@@ -110,5 +114,12 @@ impl From<url::ParseError> for Error {
         Self::Http {
             message: e.to_string(),
         }
+    }
+}
+
+#[cfg(feature = "polars")]
+impl From<polars::prelude::PolarsError> for Error {
+    fn from(source: polars::prelude::PolarsError) -> Self {
+        Self::Polars { source }
     }
 }
