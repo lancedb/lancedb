@@ -208,13 +208,13 @@ impl arrow_array::RecordBatchReader for PolarsDataFrameRecordBatchReader {
 /// chunks. The resulting Polars DataFrame will have aligned chunks, but the series's
 /// chunks are not guaranteed to be contiguous.
 #[cfg(feature = "polars")]
-pub trait ToPolars {
-    fn to_polars(self) -> impl std::future::Future<Output = Result<DataFrame>> + Send;
+pub trait IntoPolars {
+    fn into_polars(self) -> impl std::future::Future<Output = Result<DataFrame>> + Send;
 }
 
 #[cfg(feature = "polars")]
-impl ToPolars for SendableRecordBatchStream {
-    async fn to_polars(self) -> Result<DataFrame> {
+impl IntoPolars for SendableRecordBatchStream {
+    async fn into_polars(self) -> Result<DataFrame> {
         let arrow_schema = self.schema();
         let polars_schema = convert_arrow_schema_to_polars_schema(&arrow_schema);
         let mut acc_df: DataFrame = DataFrame::from(&polars_schema);
@@ -259,7 +259,7 @@ fn convert_record_batch_to_polars_df(
 mod tests {
     use super::SendableRecordBatchStream;
     use crate::arrow::{
-        IntoArrow, PolarsDataFrameRecordBatchReader, SimpleRecordBatchStream, ToPolars,
+        IntoArrow, IntoPolars, PolarsDataFrameRecordBatchReader, SimpleRecordBatchStream,
     };
     use polars::df;
 
@@ -319,7 +319,7 @@ mod tests {
                     .map(|r| r.map_err(Into::into)),
             ),
         });
-        let df = stream.to_polars().await.unwrap();
+        let df = stream.into_polars().await.unwrap();
 
         // Test number of chunks and rows
         assert_eq!(df.n_chunks(), 2);
