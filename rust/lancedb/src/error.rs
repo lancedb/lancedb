@@ -52,6 +52,7 @@ pub enum Error {
     NotSupported { message: String },
     #[cfg(feature = "polars")]
     #[snafu(display("Polars error: {source}"))]
+    #[cfg(feature = "polars")]
     Polars { source: polars::error::PolarsError },
     #[snafu(whatever, display("{message}"))]
     Other {

@@ -17,12 +17,12 @@ use std::{pin::Pin, sync::Arc};
 pub use arrow_array;
 pub use arrow_schema;
 use futures::{Stream, StreamExt};
-use polars::frame::ArrowChunk;
 
 #[cfg(feature = "polars")]
 use {
     futures::TryStreamExt,
     polars::datatypes,
+    polars::frame::ArrowChunk,
     polars::prelude::{DataFrame, Field, Schema, Series},
     polars_arrow::array,
 };
