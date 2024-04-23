@@ -1061,6 +1061,26 @@ impl NativeTable {
         }
     }
 
+    pub async fn get_index_type(&self, index_uuid: &str) -> Result<Option<String>> {
+        match self.load_index_stats(index_uuid).await? {
+            Some(stats) => Ok(Some(stats.index_type)),
+            None => Ok(None),
+        }
+    }
+
+    pub async fn get_distance_type(&self, index_uuid: &str) -> Result<Option<String>> {
+        match self.load_index_stats(index_uuid).await? {
+            Some(stats) => Ok(Some(
+                stats
+                    .indices
+                    .iter()
+                    .map(|i| i.metric_type.clone())
+                    .collect(),
+            )),
+            None => Ok(None),
+        }
+    }
+
     pub async fn load_indices(&self) -> Result<Vec<VectorIndex>> {
         let dataset = self.dataset.get().await?;
         let (indices, mf) = futures::try_join!(dataset.load_indices(), dataset.latest_manifest())?;
