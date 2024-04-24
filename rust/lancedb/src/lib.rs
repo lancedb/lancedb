@@ -34,6 +34,16 @@
 //! cargo install lancedb
 //! ```
 //!
+//! ## Create Features
+//!
+//! ### Experimental Features
+//!
+//! These features are not enabled by default.  They are experimental or in-development features that
+//! are not yet ready to be released.
+//!
+//! - `remote` - Enable remote client to connect to LanceDB cloud.  This is not yet fully implemented
+//!              and should not be enabled.
+//!
 //! ### Quick Start
 //!
 //! #### Connect to a database.
