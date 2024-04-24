@@ -1036,7 +1036,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "this can't pass due to https://github.com/lancedb/lancedb/issues/1019, enable it after the bug fixed"]
     async fn test_open_table() {
         let tmp_dir = tempdir().unwrap();
         let uri = tmp_dir.path().to_str().unwrap();
