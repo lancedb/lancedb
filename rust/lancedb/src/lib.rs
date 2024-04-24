@@ -34,7 +34,7 @@
 //! cargo install lancedb
 //! ```
 //!
-//! ## Create Features
+//! ## Crate Features
 //!
 //! ### Experimental Features
 //!
