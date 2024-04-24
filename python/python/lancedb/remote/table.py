@@ -485,6 +485,64 @@ class RemoteTable(Table):
 
         payload = {"predicate": where, "updates": updates}
         self._conn._client.post(f"/v1/table/{self._name}/update/", data=payload)
+    
+    def checkout(self, version: int):
+         """Checkout a version of the table. This is an in-place operation.
+
+        This allows viewing previous versions of the table. If you wish to
+        keep writing to the dataset starting from an old version, then use
+        the `restore` function.
+
+        Calling this method will set the table into time-travel mode. If you
+        wish to return to standard mode, call `checkout_latest`.
+
+        Parameters
+        ----------
+        version : int
+            The version to checkout.
+
+        Examples ??? to be changed
+        --------
+        >>> import lancedb
+        >>> data = [{"vector": [1.1, 0.9], "type": "vector"}]
+        >>> db = lancedb.connect("db://...", api_key="...", # doctest: +SKIP
+        ...                      region="...") # doctest: +SKIP
+        >>> table = db.create_table("my_table", data) # doctest: +SKIP
+        >>> table.version
+        2
+        >>> table.to_pandas()
+               vector    type
+        0  [1.1, 0.9]  vector
+        >>> table.add([{"vector": [0.5, 0.2], "type": "vector"}])
+        >>> table.version
+        3
+        >>> table.checkout(2)
+        >>> table.to_pandas()
+               vector    type
+        0  [1.1, 0.9]  vector
+        """
+    
+    def checkout_latest(self):
+        """checkout_latest() is not yet supported on LanceDB cloud"""
+        raise NotImplementedError("checkout_latest() is not yet supported on LanceDB cloud")
+    
+    def restore(self, version: int = None):
+        """Restore a version of the table. This is an in-place operation.
+
+        This creates a new version where the data is equivalent to the
+        specified previous version. Data is not copied (as of python-v0.2.1).
+
+        Parameters
+        ----------
+        version : int, default None
+            The version to restore. If unspecified then restores the currently
+            checked out version. If the currently checked out version is the
+            latest version then this is a no-op.
+        Examples
+        --------
+        >>> import lancedb
+        """
+        max_version = 
 
     def cleanup_old_versions(self, *_):
         """cleanup_old_versions() is not supported on the LanceDB cloud"""
