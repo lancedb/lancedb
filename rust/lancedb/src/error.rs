@@ -117,7 +117,7 @@ impl From<url::ParseError> for Error {
 impl From<polars::prelude::PolarsError> for Error {
     fn from(source: polars::prelude::PolarsError) -> Self {
         Self::Other {
-            message: "Error when importing or exporting Polars DataFrame into LanceDB".to_string(),
+            message: "Error in Polars DataFrame integration.".to_string(),
             source: Some(Box::new(source)),
         }
     }
