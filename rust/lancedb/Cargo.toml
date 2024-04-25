@@ -54,7 +54,7 @@ aws-sdk-kms = { version = "1.0" }
 aws-config = { version = "1.0" }
 
 [features]
-default = ["remote"]
+default = []
 remote = ["dep:reqwest"]
 fp16kernels = ["lance-linalg/fp16kernels"]
 s3-test = []

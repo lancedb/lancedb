@@ -281,6 +281,24 @@ class RemoteDBConnection(DBConnection):
         )
         self._table_cache.pop(name)
 
+    @override
+    def rename_table(self, cur_name: str, new_name: str):
+        """Rename a table in the database.
+
+        Parameters
+        ----------
+        cur_name: str
+            The current name of the table.
+        new_name: str
+            The new name of the table.
+        """
+        self._client.post(
+            f"/v1/table/{cur_name}/rename/",
+            json={"new_table_name": new_name},
+        )
+        self._table_cache.pop(cur_name)
+        self._table_cache[new_name] = True
+
     async def close(self):
         """Close the connection to the database."""
         self._client.close()

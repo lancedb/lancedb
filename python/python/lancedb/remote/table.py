@@ -72,7 +72,7 @@ class RemoteTable(Table):
         return resp
 
     def index_stats(self, index_uuid: str):
-        """List all the indices on the table"""
+        """List all the stats of a specified index"""
         resp = self._conn._client.post(
             f"/v1/table/{self._name}/index/{index_uuid}/stats/"
         )
