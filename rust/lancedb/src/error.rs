@@ -50,10 +50,10 @@ pub enum Error {
     Arrow { source: ArrowError },
     #[snafu(display("LanceDBError: not supported: {message}"))]
     NotSupported { message: String },
-    #[cfg(feature = "polars")]
-    #[snafu(display("Polars error: {source}"))]
-    #[cfg(feature = "polars")]
-    Polars { source: polars::error::PolarsError },
+    #[snafu(display("External error: {source}"))]
+    External {
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
     #[snafu(whatever, display("{message}"))]
     Other {
         message: String,
@@ -121,6 +121,8 @@ impl From<url::ParseError> for Error {
 #[cfg(feature = "polars")]
 impl From<polars::prelude::PolarsError> for Error {
     fn from(source: polars::prelude::PolarsError) -> Self {
-        Self::Polars { source }
+        Self::External {
+            source: Box::new(source),
+        }
     }
 }

@@ -20,7 +20,6 @@ use futures::{Stream, StreamExt};
 
 #[cfg(feature = "polars")]
 use {
-    futures::TryStreamExt,
     polars::datatypes,
     polars::frame::ArrowChunk,
     polars::prelude::{DataFrame, Field, Schema, Series},
@@ -129,42 +128,47 @@ impl<T: arrow_array::RecordBatchReader + Send + 'static> IntoArrow for T {
     }
 }
 
+/// When interpreting Polars dataframes as polars-arrow record batches,
+/// whether to use Arrow string/binary view types instead of the standard
+/// Arrow string/binary types.
+/// For now, we will not use string view types because conversions
+/// for string view types from polars-arrow to arrow-rs are not yet implemented.
+/// See: https://lists.apache.org/thread/w88tpz76ox8h3rxkjl4so6rg3f1rv7wt for the
+/// differences in the types.
 #[cfg(feature = "polars")]
-/// An iterator of record batches formed from a Polars DataFrame. The iterator
-/// panics if the DataFrame's chunks are not aligned. Consider calling
-/// [`polars::prelude::DataFrame::should_rechunk`] to determine whether the DataFrame
-/// should be rechunked and calling [`polars::prelude::DataFrame::align_chunks`]
-/// if the DataFrame needs to be rechunked before using the iterator.
+const POLARS_ARROW_FLAVOR: bool = false;
+
+#[cfg(feature = "polars")]
+/// An iterator of record batches formed from a Polars DataFrame.
 pub struct PolarsDataFrameRecordBatchReader {
-    chunks: Vec<ArrowChunk>,
+    chunks: std::vec::IntoIter<ArrowChunk>,
     arrow_schema: Arc<arrow_schema::Schema>,
-    index: usize,
 }
 
 #[cfg(feature = "polars")]
 impl PolarsDataFrameRecordBatchReader {
     /// Creates a new `PolarsDataFrameRecordBatchReader` from a given Polars DataFrame.
-    pub fn new(df: DataFrame) -> Self {
+    /// If the input dataframe does not have aligned chunks, this function undergoes
+    /// the costly operation of reallocating each series as a single contigous chunk.
+    pub fn new(mut df: DataFrame) -> Self {
+        df.align_chunks();
         let fields: Vec<arrow_schema::Field> = df
             .schema()
             .into_iter()
             .map(|(name, dtype)| {
                 arrow_schema::Field::new(
                     name,
-                    arrow_schema::DataType::from(dtype.to_arrow(false)),
+                    arrow_schema::DataType::from(dtype.to_arrow(POLARS_ARROW_FLAVOR)),
                     true,
                 )
             })
             .collect();
-        // Use pl_flavor = false to use LargeBinary and LargeUtf8 Arrow types instead of
-        // BinaryView and Utf8View types because polars-arrow to arrow-rs conversion
-        // is not yet implemented for BinaryView and Utf8View.
-        // See: https://lists.apache.org/thread/w88tpz76ox8h3rxkjl4so6rg3f1rv7wt for the
-        // differences in the types.
         PolarsDataFrameRecordBatchReader {
-            chunks: df.iter_chunks(false).collect(),
+            chunks: df
+                .iter_chunks(POLARS_ARROW_FLAVOR)
+                .collect::<Vec<ArrowChunk>>()
+                .into_iter(),
             arrow_schema: Arc::new(arrow_schema::Schema::new(fields)),
-            index: 0,
         }
     }
 }
@@ -174,20 +178,14 @@ impl Iterator for PolarsDataFrameRecordBatchReader {
     type Item = std::result::Result<arrow_array::RecordBatch, arrow_schema::ArrowError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.index < self.chunks.len() {
-            let columns: Vec<arrow_array::ArrayRef> = self.chunks[self.index]
+        self.chunks.next().map(|chunk| {
+            let columns: Vec<arrow_array::ArrayRef> = chunk
                 .arrays()
                 .iter()
                 .map(|polars_array| arrow_array::ArrayRef::from(&**polars_array))
                 .collect();
-            self.index += 1;
-            Some(arrow_array::RecordBatch::try_new(
-                self.arrow_schema.clone(),
-                columns,
-            ))
-        } else {
-            None
-        }
+            arrow_array::RecordBatch::try_new(self.arrow_schema.clone(), columns)
+        })
     }
 }
 
@@ -196,12 +194,6 @@ impl arrow_array::RecordBatchReader for PolarsDataFrameRecordBatchReader {
     fn schema(&self) -> Arc<arrow_schema::Schema> {
         self.arrow_schema.clone()
     }
-
-    fn next_batch(
-        &mut self,
-    ) -> std::prelude::v1::Result<Option<arrow_array::RecordBatch>, arrow_schema::ArrowError> {
-        self.next().transpose()
-    }
 }
 
 /// A trait for converting the result of a LanceDB query into a Polars DataFrame with aligned
@@ -209,18 +201,17 @@ impl arrow_array::RecordBatchReader for PolarsDataFrameRecordBatchReader {
 /// chunks are not guaranteed to be contiguous.
 #[cfg(feature = "polars")]
 pub trait IntoPolars {
-    fn into_polars(self) -> impl std::future::Future<Output = Result<DataFrame>> + Send;
+    fn into_polars(&mut self) -> impl std::future::Future<Output = Result<DataFrame>> + Send;
 }
 
 #[cfg(feature = "polars")]
 impl IntoPolars for SendableRecordBatchStream {
-    async fn into_polars(self) -> Result<DataFrame> {
+    async fn into_polars(&mut self) -> Result<DataFrame> {
         let arrow_schema = self.schema();
         let polars_schema = convert_arrow_schema_to_polars_schema(&arrow_schema);
         let mut acc_df: DataFrame = DataFrame::from(&polars_schema);
-        let record_batches = self.try_collect::<Vec<_>>().await?;
-        for record_batch in record_batches {
-            let new_df = convert_record_batch_to_polars_df(&record_batch, &polars_schema)?;
+        while let Some(record_batch) = self.next().await {
+            let new_df = convert_record_batch_to_polars_df(&record_batch?, &polars_schema)?;
             acc_df = acc_df.vstack(&new_df)?;
         }
         return Ok(acc_df);
@@ -279,7 +270,7 @@ mod tests {
     }
 
     #[test]
-    fn from_polars_to_arrow_non_empty() {
+    fn from_polars_to_arrow() {
         let record_batch_reader = get_record_batch_reader_from_polars();
         let schema = record_batch_reader.schema();
 
@@ -308,10 +299,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn from_arrow_to_polars_non_empty() {
+    async fn from_arrow_to_polars() {
         let record_batch_reader = get_record_batch_reader_from_polars();
         let schema = record_batch_reader.schema();
-        let stream: SendableRecordBatchStream = Box::pin(SimpleRecordBatchStream {
+        let mut stream: SendableRecordBatchStream = Box::pin(SimpleRecordBatchStream {
             schema: schema.clone(),
             stream: futures::stream::iter(
                 record_batch_reader
