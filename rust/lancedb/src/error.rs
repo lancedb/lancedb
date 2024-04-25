@@ -19,7 +19,6 @@ use snafu::Snafu;
 
 #[derive(Debug, Snafu)]
 #[snafu(visibility(pub(crate)))]
-#[non_exhaustive]
 pub enum Error {
     #[snafu(display("Invalid table name (\"{name}\"): {reason}"))]
     InvalidTableName { name: String, reason: String },
@@ -50,10 +49,6 @@ pub enum Error {
     Arrow { source: ArrowError },
     #[snafu(display("LanceDBError: not supported: {message}"))]
     NotSupported { message: String },
-    #[snafu(display("External error: {source}"))]
-    External {
-        source: Box<dyn std::error::Error + Send + Sync>,
-    },
     #[snafu(whatever, display("{message}"))]
     Other {
         message: String,
@@ -121,8 +116,9 @@ impl From<url::ParseError> for Error {
 #[cfg(feature = "polars")]
 impl From<polars::prelude::PolarsError> for Error {
     fn from(source: polars::prelude::PolarsError) -> Self {
-        Self::External {
-            source: Box::new(source),
+        Self::Other {
+            message: "Error when importing Polars DataFrame into LanceDB".to_string(),
+            source: Some(Box::new(source)),
         }
     }
 }
