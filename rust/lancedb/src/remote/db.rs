@@ -87,7 +87,8 @@ impl ConnectionInternal for RemoteDatabase {
             .await
             .unwrap()?;
 
-        let rsp = self.client
+        let rsp = self
+            .client
             .post(&format!("/v1/table/{}/create/", options.name))
             .body(data_buffer)
             .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE)
