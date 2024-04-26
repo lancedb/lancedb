@@ -94,7 +94,7 @@ class RemoteDBConnection(DBConnection):
                 yield item
 
     @override
-    def open_table(self, name: str) -> Table:
+    def open_table(self, name: str, *, index_cache_size: int = None) -> Table:
         """Open a Lance Table in the database.
 
         Parameters
@@ -109,6 +109,9 @@ class RemoteDBConnection(DBConnection):
         from .table import RemoteTable
 
         self._client.mount_retry_adapter_for_table(name)
+
+        if index_cache_size is not None:
+            raise ValueError("index_cache_size is not respected by the remote client")
 
         # check if table exists
         if self._table_cache.get(name) is None:
