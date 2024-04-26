@@ -111,7 +111,10 @@ class RemoteDBConnection(DBConnection):
         self._client.mount_retry_adapter_for_table(name)
 
         if index_cache_size is not None:
-            raise ValueError("index_cache_size is not respected by the remote client")
+            logging.info(
+                "index_cache_size is ignored in LanceDb Cloud"
+                " (there is no local cache to configure)"
+            )
 
         # check if table exists
         if self._table_cache.get(name) is None:
