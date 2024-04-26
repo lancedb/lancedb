@@ -94,7 +94,7 @@ class RemoteDBConnection(DBConnection):
                 yield item
 
     @override
-    def open_table(self, name: str, *, index_cache_size: int = None) -> Table:
+    def open_table(self, name: str, *, index_cache_size: Optional[int] = None) -> Table:
         """Open a Lance Table in the database.
 
         Parameters
