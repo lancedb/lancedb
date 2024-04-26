@@ -279,7 +279,7 @@ mod tests {
             schema
                 .fields
                 .iter()
-                .map(|field| ((field.name().as_str(), field.data_type())))
+                .map(|field| (field.name().as_str(), field.data_type()))
                 .collect::<Vec<_>>(),
             vec![
                 ("string", &arrow_schema::DataType::LargeUtf8),
