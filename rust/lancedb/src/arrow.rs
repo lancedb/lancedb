@@ -201,12 +201,12 @@ impl arrow_array::RecordBatchReader for PolarsDataFrameRecordBatchReader {
 /// chunks are not guaranteed to be contiguous.
 #[cfg(feature = "polars")]
 pub trait IntoPolars {
-    fn into_polars(&mut self) -> impl std::future::Future<Output = Result<DataFrame>> + Send;
+    fn into_polars(self) -> impl std::future::Future<Output = Result<DataFrame>> + Send;
 }
 
 #[cfg(feature = "polars")]
 impl IntoPolars for SendableRecordBatchStream {
-    async fn into_polars(&mut self) -> Result<DataFrame> {
+    async fn into_polars(mut self) -> Result<DataFrame> {
         let arrow_schema = self.schema();
         let polars_schema = convert_arrow_schema_to_polars_schema(&arrow_schema);
         let mut acc_df: DataFrame = DataFrame::from(&polars_schema);
@@ -302,7 +302,7 @@ mod tests {
     async fn from_arrow_to_polars() {
         let record_batch_reader = get_record_batch_reader_from_polars();
         let schema = record_batch_reader.schema();
-        let mut stream: SendableRecordBatchStream = Box::pin(SimpleRecordBatchStream {
+        let stream: SendableRecordBatchStream = Box::pin(SimpleRecordBatchStream {
             schema: schema.clone(),
             stream: futures::stream::iter(
                 record_batch_reader
