@@ -163,7 +163,7 @@ impl PolarsDataFrameRecordBatchReader {
                 )
             })
             .collect();
-        PolarsDataFrameRecordBatchReader {
+        Self {
             chunks: df
                 .iter_chunks(POLARS_ARROW_FLAVOR)
                 .collect::<Vec<ArrowChunk>>()
@@ -214,7 +214,7 @@ impl IntoPolars for SendableRecordBatchStream {
             let new_df = convert_record_batch_to_polars_df(&record_batch?, &polars_schema)?;
             acc_df = acc_df.vstack(&new_df)?;
         }
-        return Ok(acc_df);
+        Ok(acc_df)
     }
 }
 
