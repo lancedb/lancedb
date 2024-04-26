@@ -134,16 +134,20 @@ impl Connection {
         })
     }
 
-    #[pyo3(signature = (name, storage_options = None))]
+    #[pyo3(signature = (name, storage_options = None, index_cache_size = None))]
     pub fn open_table(
         self_: PyRef<'_, Self>,
         name: String,
         storage_options: Option<HashMap<String, String>>,
+        index_cache_size: Option<u32>,
     ) -> PyResult<&PyAny> {
         let inner = self_.get_inner()?.clone();
         let mut builder = inner.open_table(name);
         if let Some(storage_options) = storage_options {
             builder = builder.storage_options(storage_options);
+        }
+        if let Some(index_cache_size) = index_cache_size {
+            builder = builder.index_cache_size(index_cache_size);
         }
         future_into_py(self_.py(), async move {
             let table = builder.execute().await.infer_error()?;
