@@ -69,13 +69,6 @@
     "universal": "napi universal",
     "version": "napi version"
   },
-  "optionalDependencies": {
-    "@lancedb/lancedb-darwin-arm64": "0.4.17",
-    "@lancedb/lancedb-darwin-x64": "0.4.17",
-    "@lancedb/lancedb-linux-arm64-gnu": "0.4.17",
-    "@lancedb/lancedb-linux-x64-gnu": "0.4.17",
-    "@lancedb/lancedb-win32-x64-msvc": "0.4.17"
-  },
   "dependencies": {
     "openai": "^4.29.2",
     "apache-arrow": "^15.0.0"
