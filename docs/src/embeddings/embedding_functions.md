@@ -46,7 +46,7 @@ For this purpose, LanceDB introduces an **embedding functions API**, that allow 
 
     ```python
     class Pets(LanceModel):
-        vector: Vector(clip.ndims) = clip.VectorField()
+        vector: Vector(clip.ndims()) = clip.VectorField()
         image_uri: str = clip.SourceField()
     ```
 
@@ -149,7 +149,7 @@ You can also use the integration for adding utility operations in the schema. Fo
 
 ```python
 class Pets(LanceModel):
-    vector: Vector(clip.ndims) = clip.VectorField()
+    vector: Vector(clip.ndims()) = clip.VectorField()
     image_uri: str = clip.SourceField()
 
     @property
