@@ -10,7 +10,7 @@ dependencies = [
     "tqdm>=4.27.0",
     "pydantic>=1.10",
     "attrs>=21.3.0",
-    "semver>=3.0",
+    "semver",
     "cachetools",
     "overrides>=0.7",
 ]
