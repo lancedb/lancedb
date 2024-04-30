@@ -276,7 +276,7 @@ impl Table {
             .default_error()?
             .compaction
             .unwrap();
-        let older_than = older_than_ms.map(|since| Duration::milliseconds(since as i64));
+        let older_than = older_than_ms.map(Duration::milliseconds);
         let prune_stats = inner
             .optimize(OptimizeAction::Prune {
                 older_than,
