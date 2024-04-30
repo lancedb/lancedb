@@ -86,3 +86,17 @@ class VectorQuery:
     def refine_factor(self, refine_factor: int): ...
     def nprobes(self, nprobes: int): ...
     def bypass_vector_index(self): ...
+
+class CompactionStats:
+    fragments_removed: int
+    fragments_added: int
+    files_removed: int
+    files_added: int
+
+class RemovalStats:
+    bytes_removed: int
+    old_versions_removed: int
+
+class OptimizeStats:
+    compaction: CompactionStats
+    prune: RemovalStats
