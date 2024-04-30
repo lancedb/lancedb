@@ -180,7 +180,6 @@ export class Table {
    *     numSubVectors: 16,
    *   }),
    * });
-
    * @example
    * // Or create a Scalar index
    * await table.createIndex("my_float_col");
@@ -307,11 +306,10 @@ export class Table {
    *
    * Calling this method will set the table into time-travel mode. If you
    * wish to return to standard mode, call `checkoutLatest`.
-   *
-   * @param version The version to checkout
+   * @param {number} version The version to checkout
    * @example
    * ```typescript
-   * import * as lancedb from "@lancedb/lancedb";
+   * import * as lancedb from "@lancedb/lancedb"
    * const db = await lancedb.connect("./.lancedb");
    * const table = await db.createTable("my_table", [
    *   { vector: [1.1, 0.9], type: "vector" },
