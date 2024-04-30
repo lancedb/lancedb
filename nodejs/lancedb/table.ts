@@ -136,7 +136,7 @@ export class Table {
    */
   async update(
     updates: Map<string, string> | Record<string, string>,
-    options?: Partial<UpdateOptions>
+    options?: Partial<UpdateOptions>,
   ) {
     const onlyIf = options?.where;
     let columns: [string, string][];
@@ -200,7 +200,7 @@ export class Table {
    * vector similarity, sorting, and more.
    *
    * Note: By default, all columns are returned.  For best performance, you should
-   * only fetch the columns you need. 
+   * only fetch the columns you need.
    *
    * When appropriate, various indices and statistics based pruning will be used to
    * accelerate the query.
