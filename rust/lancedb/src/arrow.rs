@@ -12,18 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{pin::Pin, sync::Arc};
-
 pub use arrow_array;
+use std::{mem, pin::Pin, sync::Arc};
+
 pub use arrow_schema;
 use futures::{Stream, StreamExt};
 
 #[cfg(feature = "polars")]
 use {
+    arrow::ffi::from_ffi_and_data_type,
     polars::datatypes,
     polars::frame::ArrowChunk,
-    polars::prelude::{DataFrame, Field, Schema, Series},
-    polars_arrow::array,
+    polars::prelude::{DataFrame, Schema, Series},
 };
 
 use crate::error::Result;
@@ -152,15 +152,18 @@ impl PolarsDataFrameRecordBatchReader {
     /// the costly operation of reallocating each series as a single contigous chunk.
     pub fn new(mut df: DataFrame) -> Self {
         df.align_chunks();
-        let fields: Vec<arrow_schema::Field> = df
+        let arrow_fields: Vec<arrow_schema::Field> = df
             .schema()
             .into_iter()
-            .map(|(name, dtype)| {
-                arrow_schema::Field::new(
-                    name,
-                    arrow_schema::DataType::from(dtype.to_arrow(POLARS_ARROW_FLAVOR)),
-                    true,
-                )
+            .map(|(name, df_dtype)| {
+                let polars_arrow_dtype = df_dtype.to_arrow(POLARS_ARROW_FLAVOR);
+                let polars_field =
+                    polars_arrow::datatypes::Field::new(name.clone(), polars_arrow_dtype, true);
+                let polars_c_schema = polars_arrow::ffi::export_field_to_c(&polars_field);
+                let arrow_c_schema: arrow::ffi::FFI_ArrowSchema =
+                    unsafe { mem::transmute(polars_c_schema) };
+                let arrow_rs_dtype = arrow_schema::DataType::try_from(&arrow_c_schema).unwrap();
+                arrow_schema::Field::new(name, arrow_rs_dtype, true)
             })
             .collect();
         Self {
@@ -168,7 +171,7 @@ impl PolarsDataFrameRecordBatchReader {
                 .iter_chunks(POLARS_ARROW_FLAVOR)
                 .collect::<Vec<ArrowChunk>>()
                 .into_iter(),
-            arrow_schema: Arc::new(arrow_schema::Schema::new(fields)),
+            arrow_schema: Arc::new(arrow_schema::Schema::new(arrow_fields)),
         }
     }
 }
@@ -180,13 +183,31 @@ impl Iterator for PolarsDataFrameRecordBatchReader {
     fn next(&mut self) -> Option<Self::Item> {
         self.chunks.next().map(|chunk| {
             let columns: Vec<arrow_array::ArrayRef> = chunk
-                .arrays()
-                .iter()
-                .map(|polars_array| arrow_array::ArrayRef::from(&**polars_array))
+                .into_arrays()
+                .into_iter()
+                .zip(self.arrow_schema.clone().fields.into_iter())
+                .map(|(polars_array, arrow_field)| {
+                    convert_polars_array_to_arrow_rs_array(
+                        polars_array,
+                        arrow_field.data_type().to_owned(),
+                    )
+                })
                 .collect();
             arrow_array::RecordBatch::try_new(self.arrow_schema.clone(), columns)
         })
     }
+}
+
+#[cfg(feature = "polars")]
+fn convert_polars_array_to_arrow_rs_array(
+    polars_array: Box<dyn polars_arrow::array::Array>,
+    arrow_datatype: arrow_schema::DataType,
+) -> arrow_array::ArrayRef {
+    let polars_c_array = polars_arrow::ffi::export_array_to_c(polars_array);
+    let arrow_c_array = unsafe { mem::transmute(polars_c_array) };
+    arrow_array::make_array(
+        unsafe { from_ffi_and_data_type(arrow_c_array, arrow_datatype) }.unwrap(),
+    )
 }
 
 #[cfg(feature = "polars")]
@@ -208,7 +229,7 @@ pub trait IntoPolars {
 impl IntoPolars for SendableRecordBatchStream {
     async fn into_polars(mut self) -> Result<DataFrame> {
         let arrow_schema = self.schema();
-        let polars_schema = convert_arrow_schema_to_polars_schema(&arrow_schema);
+        let polars_schema = convert_arrow_schema_to_polars_df_schema(&arrow_schema);
         let mut acc_df: DataFrame = DataFrame::from(&polars_schema);
         while let Some(record_batch) = self.next().await {
             let new_df = convert_record_batch_to_polars_df(&record_batch?, &polars_schema)?;
@@ -219,11 +240,20 @@ impl IntoPolars for SendableRecordBatchStream {
 }
 
 #[cfg(feature = "polars")]
-fn convert_arrow_schema_to_polars_schema(arrow_schema: &arrow_schema::Schema) -> Schema {
-    Schema::from_iter(arrow_schema.fields().iter().map(|field| {
-        Field::new(
-            field.name(),
-            datatypes::DataType::from(&datatypes::ArrowDataType::from(field.data_type().clone())),
+fn convert_arrow_schema_to_polars_df_schema(
+    arrow_schema: &arrow_schema::Schema,
+) -> polars::prelude::Schema {
+    use polars_arrow::ffi::import_field_from_c;
+
+    polars::prelude::Schema::from_iter(arrow_schema.fields().iter().map(|arrow_field| {
+        let arrow_rs_dtype = arrow_field.data_type();
+        let arrow_c_schema = arrow::ffi::FFI_ArrowSchema::try_from(arrow_rs_dtype).unwrap();
+        let polars_c_schema: polars_arrow::ffi::ArrowSchema =
+            unsafe { mem::transmute(arrow_c_schema) };
+        let polars_arrow_field = unsafe { import_field_from_c(&polars_c_schema) }.unwrap();
+        polars::prelude::Field::new(
+            arrow_field.name(),
+            datatypes::DataType::from(polars_arrow_field.data_type()),
         )
     }))
 }
@@ -236,7 +266,9 @@ fn convert_record_batch_to_polars_df(
     let mut columns: Vec<Series> = Vec::with_capacity(record_batch.num_columns());
 
     for (i, column) in record_batch.columns().iter().enumerate() {
-        let polars_array = Box::<dyn array::Array>::from(&**column);
+        let polars_df_dtype = polars_schema.try_get_at_index(i)?.1;
+        let polars_arrow_dtype = polars_df_dtype.to_arrow(POLARS_ARROW_FLAVOR);
+        let polars_array = convert_arrow_rs_array_to_polars_array(column, polars_arrow_dtype);
         columns.push(Series::from_arrow(
             polars_schema.try_get_at_index(i)?.0,
             polars_array,
@@ -244,6 +276,16 @@ fn convert_record_batch_to_polars_df(
     }
 
     Ok(DataFrame::from_iter(columns))
+}
+
+#[cfg(feature = "polars")]
+fn convert_arrow_rs_array_to_polars_array(
+    arrow_rs_array: &Arc<dyn arrow_array::Array>,
+    polars_arrow_dtype: polars::datatypes::ArrowDataType,
+) -> Box<dyn polars_arrow::array::Array> {
+    let arrow_c_array = arrow::ffi::FFI_ArrowArray::new(&arrow_rs_array.to_data());
+    let polars_c_array = unsafe { mem::transmute(arrow_c_array) };
+    unsafe { polars_arrow::ffi::import_array_from_c(polars_c_array, polars_arrow_dtype) }.unwrap()
 }
 
 #[cfg(all(test, feature = "polars"))]
