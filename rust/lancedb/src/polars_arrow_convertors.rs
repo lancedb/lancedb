@@ -6,8 +6,9 @@
 /// between the arrows s in polars-arrow and arrow-rs using the C FFI.
 ///
 /// The polars-arrow does implement conversions to and from arrow-rs, but
-/// requires a feature flagged dependency on arrow-rs. Unfortunately, the arrow-rs
-/// versions are not compatible, which necessitates using the C FFI.
+/// requires a feature flagged dependency on arrow-rs. The version of arrow-rs
+/// depended on by polars-arrow and LanceDB may not be compatible,
+/// which necessitates using the C FFI.
 use crate::error::Result;
 use polars::prelude::{DataFrame, Series};
 use std::{mem, sync::Arc};

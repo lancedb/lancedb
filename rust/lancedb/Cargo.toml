@@ -40,7 +40,7 @@ serde = { version = "^1" }
 serde_json = { version = "1" }
 # For remote feature
 reqwest = { version = "0.11.24", features = ["gzip", "json"], optional = true }
-polars-arrow = { version = "0.39.2", features=["arrow_rs"], optional = true }
+polars-arrow = { version = "0.39.2", optional = true }
 polars = { version = "0.39.2", optional = true}
 
 [dev-dependencies]

@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-pub use arrow_array;
 use std::{pin::Pin, sync::Arc};
 
 pub use arrow_schema;
