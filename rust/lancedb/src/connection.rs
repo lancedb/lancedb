@@ -26,10 +26,11 @@ use lance::io::{ObjectStore, ObjectStoreParams, WrappingObjectStore};
 use object_store::{aws::AwsCredential, local::LocalFileSystem};
 use snafu::prelude::*;
 
-use crate::arrow::IntoArrow;
+use crate::arrow::{BoxedRecordBatchReader, IntoArrow};
+use crate::embeddings::{EmbeddingDefinition, EmbeddingRegistry, MemoryRegistry, WithEmbeddings};
 use crate::error::{CreateDirSnafu, Error, InvalidTableNameSnafu, Result};
 use crate::io::object_store::MirroringObjectStoreWrapper;
-use crate::table::{NativeTable, WriteOptions};
+use crate::table::{NativeTable, TableDefinition, WriteOptions};
 use crate::utils::validate_table_name;
 use crate::Table;
 
@@ -133,9 +134,10 @@ pub struct CreateTableBuilder<const HAS_DATA: bool, T: IntoArrow> {
     parent: Arc<dyn ConnectionInternal>,
     pub(crate) name: String,
     pub(crate) data: Option<T>,
-    pub(crate) schema: Option<SchemaRef>,
+    // pub(crate) schema: Option<SchemaRef>,
     pub(crate) mode: CreateTableMode,
     pub(crate) write_options: WriteOptions,
+    pub(crate) table_definition: Option<TableDefinition>,
 }
 
 // Builder methods that only apply when we have initial data
@@ -145,9 +147,10 @@ impl<T: IntoArrow> CreateTableBuilder<true, T> {
             parent,
             name,
             data: Some(data),
-            schema: None,
+            // schema: None,
             mode: CreateTableMode::default(),
             write_options: WriteOptions::default(),
+            table_definition: None,
         }
     }
 
@@ -175,22 +178,56 @@ impl<T: IntoArrow> CreateTableBuilder<true, T> {
             parent: self.parent,
             name: self.name,
             data: None,
-            schema: self.schema,
+            table_definition: self.table_definition,
             mode: self.mode,
             write_options: self.write_options,
         };
         Ok((data, builder))
+    }
+
+    pub fn add_embedding(
+        mut self,
+        definition: EmbeddingDefinition,
+    ) -> Result<CreateTableBuilder<true, WithEmbeddings<BoxedRecordBatchReader>>> {
+        let data = self.data.take().unwrap().into_arrow()?;
+
+        // Early verification of the embedding name
+        let embedding_func = self
+            .parent
+            .embedding_registry()
+            .get(&definition.embedding_name)
+            .ok_or_else(|| Error::InvalidInput {
+                message: format!(
+                    "There is no embedding named {} in the connection's embeddings registry",
+                    definition.embedding_name
+                ),
+            })?;
+
+        let data = WithEmbeddings::new(data, embedding_func, definition.clone());
+
+        let builder = CreateTableBuilder::<true, WithEmbeddings<BoxedRecordBatchReader>> {
+            parent: self.parent,
+            name: self.name,
+            table_definition: Some(TableDefinition::new_from_schema(data.schema())),
+            data: Some(data),
+            mode: self.mode,
+            write_options: self.write_options,
+        };
+
+        Ok(builder)
     }
 }
 
 // Builder methods that only apply when we do not have initial data
 impl CreateTableBuilder<false, NoData> {
     fn new(parent: Arc<dyn ConnectionInternal>, name: String, schema: SchemaRef) -> Self {
+        let table_definition = TableDefinition::new_from_schema(schema);
         Self {
             parent,
             name,
             data: None,
-            schema: Some(schema),
+            table_definition: Some(table_definition),
+            // schema: Some(schema),
             mode: CreateTableMode::default(),
             write_options: WriteOptions::default(),
         }
@@ -350,6 +387,7 @@ impl OpenTableBuilder {
 pub(crate) trait ConnectionInternal:
     Send + Sync + std::fmt::Debug + std::fmt::Display + 'static
 {
+    fn embedding_registry(&self) -> &dyn EmbeddingRegistry;
     async fn table_names(&self, options: TableNamesBuilder) -> Result<Vec<String>>;
     async fn do_create_table(
         &self,
@@ -366,7 +404,7 @@ pub(crate) trait ConnectionInternal:
     ) -> Result<Table> {
         let batches = Box::new(RecordBatchIterator::new(
             vec![],
-            options.schema.as_ref().unwrap().clone(),
+            options.table_definition.clone().unwrap().schema.clone(),
         ));
         self.do_create_table(options, batches).await
     }
@@ -452,6 +490,10 @@ impl Connection {
     /// This is the same as dropping all of the tables
     pub async fn drop_db(&self) -> Result<()> {
         self.internal.drop_db().await
+    }
+
+    pub fn embedding_registry(&self) -> &dyn EmbeddingRegistry {
+        self.internal.embedding_registry()
     }
 }
 
@@ -642,6 +684,7 @@ struct Database {
 
     // Storage options to be inherited by tables created from this connection
     storage_options: HashMap<String, String>,
+    embeddings_registry: MemoryRegistry,
 }
 
 impl std::fmt::Display for Database {
@@ -753,6 +796,7 @@ impl Database {
                     store_wrapper: write_store_wrapper,
                     read_consistency_interval: options.read_consistency_interval,
                     storage_options,
+                    embeddings_registry: MemoryRegistry::new(),
                 })
             }
             Err(_) => Self::open_path(uri, options.read_consistency_interval).await,
@@ -775,6 +819,7 @@ impl Database {
             store_wrapper: None,
             read_consistency_interval,
             storage_options: HashMap::new(),
+            embeddings_registry: Default::default(),
         })
     }
 
@@ -815,6 +860,9 @@ impl Database {
 
 #[async_trait::async_trait]
 impl ConnectionInternal for Database {
+    fn embedding_registry(&self) -> &dyn EmbeddingRegistry {
+        &self.embeddings_registry
+    }
     async fn table_names(&self, options: TableNamesBuilder) -> Result<Vec<String>> {
         let mut f = self
             .object_store
@@ -851,7 +899,7 @@ impl ConnectionInternal for Database {
         data: Box<dyn RecordBatchReader + Send>,
     ) -> Result<Table> {
         let table_uri = self.table_uri(&options.name)?;
-
+        let embedding_registry = Arc::new(self.embeddings_registry.clone());
         // Inherit storage options from the connection
         let storage_options = options
             .write_options
@@ -882,7 +930,10 @@ impl ConnectionInternal for Database {
         )
         .await
         {
-            Ok(table) => Ok(Table::new(Arc::new(table))),
+            Ok(table) => Ok(Table::new_with_embedding_registry(
+                Arc::new(table),
+                embedding_registry,
+            )),
             Err(Error::TableAlreadyExists { name }) => match options.mode {
                 CreateTableMode::Create => Err(Error::TableAlreadyExists { name }),
                 CreateTableMode::ExistOk(callback) => {

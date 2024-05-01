@@ -114,8 +114,16 @@ pub trait IntoArrow {
     fn into_arrow(self) -> Result<Box<dyn arrow_array::RecordBatchReader + Send>>;
 }
 
+pub type BoxedRecordBatchReader = Box<dyn arrow_array::RecordBatchReader + Send>;
+
 impl<T: arrow_array::RecordBatchReader + Send + 'static> IntoArrow for T {
     fn into_arrow(self) -> Result<Box<dyn arrow_array::RecordBatchReader + Send>> {
         Ok(Box::new(self))
+    }
+}
+
+impl<S: Stream<Item = Result<arrow_array::RecordBatch>>> SimpleRecordBatchStream<S> {
+    pub fn new(stream: S, schema: Arc<arrow_schema::Schema>) -> Self {
+        Self { schema, stream }
     }
 }
