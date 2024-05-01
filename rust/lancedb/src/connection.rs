@@ -913,12 +913,23 @@ impl ConnectionInternal for Database {
             }
         }
 
+        // Some ReadParams are exposed in the OpenTableBuilder, but we also
+        // let the user provide their own ReadParams.
+        //
+        // If we have a user provided ReadParams use that
+        // If we don't then start with the default ReadParams and customize it with
+        // the options from the OpenTableBuilder
+        let read_params = options.lance_read_params.unwrap_or_else(|| ReadParams {
+            index_cache_size: options.index_cache_size as usize,
+            ..Default::default()
+        });
+
         let native_table = Arc::new(
             NativeTable::open_with_params(
                 &table_uri,
                 &options.name,
                 self.store_wrapper.clone(),
-                options.lance_read_params,
+                Some(read_params),
                 self.read_consistency_interval,
             )
             .await?,

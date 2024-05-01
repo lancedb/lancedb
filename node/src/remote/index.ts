@@ -140,6 +140,9 @@ export class RemoteConnection implements Connection {
       schema = nameOrOpts.schema
       embeddings = nameOrOpts.embeddingFunction
       tableName = nameOrOpts.name
+      if (data === undefined) {
+        data = nameOrOpts.data
+      }
     }
 
     let buffer: Buffer
