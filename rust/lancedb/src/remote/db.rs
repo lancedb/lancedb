@@ -23,6 +23,7 @@ use tokio::task::spawn_blocking;
 use crate::connection::{
     ConnectionInternal, CreateTableBuilder, NoData, OpenTableBuilder, TableNamesBuilder,
 };
+use crate::embeddings::EmbeddingRegistry;
 use crate::error::Result;
 use crate::Table;
 
@@ -113,6 +114,10 @@ impl ConnectionInternal for RemoteDatabase {
     }
 
     async fn drop_db(&self) -> Result<()> {
+        todo!()
+    }
+
+    fn embedding_registry(&self) -> &dyn EmbeddingRegistry {
         todo!()
     }
 }

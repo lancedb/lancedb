@@ -10,7 +10,7 @@ use crate::{
     query::{Query, QueryExecutionOptions, VectorQuery},
     table::{
         merge::MergeInsertBuilder, AddDataBuilder, NativeTable, OptimizeAction, OptimizeStats,
-        TableInternal, UpdateBuilder,
+        TableDefinition, TableInternal, UpdateBuilder,
     },
 };
 
@@ -118,6 +118,9 @@ impl TableInternal for RemoteTable {
         todo!()
     }
     async fn list_indices(&self) -> Result<Vec<IndexConfig>> {
+        todo!()
+    }
+    async fn table_definition(&self) -> Result<TableDefinition> {
         todo!()
     }
 }
