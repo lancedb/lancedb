@@ -113,7 +113,7 @@ impl TableDefinition {
                 serde_json::from_str(column_definitions).map_err(|e| Error::Runtime {
                     message: format!("Failed to deserialize column definitions: {}", e),
                 })?;
-            Ok(TableDefinition::new(schema, column_definitions))
+            Ok(Self::new(schema, column_definitions))
         } else {
             let column_definitions = schema
                 .fields()
@@ -122,7 +122,7 @@ impl TableDefinition {
                     kind: ColumnKind::Physical,
                 })
                 .collect();
-            Ok(TableDefinition::new(schema, column_definitions))
+            Ok(Self::new(schema, column_definitions))
         }
     }
 
@@ -1010,8 +1010,6 @@ impl NativeTable {
             Some(wrapper) => params.patch_with_store_wrapper(wrapper)?,
             None => params,
         };
-        let schema = batches.schema();
-        println!("schema: {:#?}", schema);
         let storage_options = params
             .store_params
             .clone()
@@ -1434,7 +1432,7 @@ impl TableInternal for NativeTable {
         let lance_schema = self.dataset.get().await?.schema().clone();
         Ok(Arc::new(Schema::from(&lance_schema)))
     }
-    
+
     async fn table_definition(&self) -> Result<TableDefinition> {
         let schema = self.schema().await?;
         TableDefinition::try_from_rich_schema(schema)

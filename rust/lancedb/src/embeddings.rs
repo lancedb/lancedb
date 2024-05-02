@@ -29,7 +29,6 @@ use crate::{
 /// To use an embedding function you must first register it with the `EmbeddingsRegistry`.
 /// Then you can define it on a column in the table schema.  That embedding will then be used
 /// to embed the data in that column.
-// #[async_trait]
 pub trait EmbeddingFunction: std::fmt::Debug + Send + Sync {
     fn name(&self) -> &str;
     fn source_type(&self) -> Cow<DataType>;
@@ -121,7 +120,7 @@ impl<R: RecordBatchReader> MaybeEmbedded<R> {
         registry: Option<Arc<dyn EmbeddingRegistry>>,
     ) -> Result<Self> {
         if registry.is_none() {
-            return Ok(MaybeEmbedded::No(inner));
+            return Ok(Self::No(inner));
         }
 
         let embedding_def =
@@ -140,13 +139,13 @@ impl<R: RecordBatchReader> MaybeEmbedded<R> {
                 .expect("Embedding function not found in registry")
                 .clone();
 
-            Ok(MaybeEmbedded::Yes(WithEmbeddings {
+            Ok(Self::Yes(WithEmbeddings {
                 inner,
                 embedding_func,
                 embedding_def,
             }))
         } else {
-            Ok(MaybeEmbedded::No(inner))
+            Ok(Self::No(inner))
         }
     }
 }
@@ -214,8 +213,8 @@ impl<R: RecordBatchReader> Iterator for MaybeEmbedded<R> {
     type Item = std::result::Result<RecordBatch, arrow_schema::ArrowError>;
     fn next(&mut self) -> Option<Self::Item> {
         match self {
-            MaybeEmbedded::Yes(inner) => inner.next(),
-            MaybeEmbedded::No(inner) => inner.next(),
+            Self::Yes(inner) => inner.next(),
+            Self::No(inner) => inner.next(),
         }
     }
 }
@@ -223,8 +222,8 @@ impl<R: RecordBatchReader> Iterator for MaybeEmbedded<R> {
 impl<R: RecordBatchReader> RecordBatchReader for MaybeEmbedded<R> {
     fn schema(&self) -> Arc<arrow_schema::Schema> {
         match self {
-            MaybeEmbedded::Yes(inner) => inner.schema(),
-            MaybeEmbedded::No(inner) => inner.schema(),
+            Self::Yes(inner) => inner.schema(),
+            Self::No(inner) => inner.schema(),
         }
     }
 }
