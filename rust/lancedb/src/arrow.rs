@@ -209,17 +209,18 @@ mod tests {
     use crate::arrow::{
         IntoArrow, IntoPolars, PolarsDataFrameRecordBatchReader, SimpleRecordBatchStream,
     };
-    use polars::df;
+    use polars::prelude::{DataFrame, NamedFrom, Series};
 
     fn get_record_batch_reader_from_polars() -> Box<dyn arrow_array::RecordBatchReader + Send> {
-        let df1 = df!("string" => &["ab"],
-             "int" => &[1],
-             "float" => &[1.0])
-        .unwrap();
-        let df2 = df!("string" => &["bc"],
-             "int" => &[2],
-             "float" => &[2.0])
-        .unwrap();
+        let mut string_series = Series::new("string", &["ab"]);
+        let mut int_series = Series::new("int", &[1]);
+        let mut float_series = Series::new("float", &[1.0]);
+        let df1 = DataFrame::new(vec![string_series, int_series, float_series]).unwrap();
+
+        string_series = Series::new("string", &["bc"]);
+        int_series = Series::new("int", &[2]);
+        float_series = Series::new("float", &[2.0]);
+        let df2 = DataFrame::new(vec![string_series, int_series, float_series]).unwrap();
 
         PolarsDataFrameRecordBatchReader::new(df1.vstack(&df2).unwrap())
             .unwrap()
