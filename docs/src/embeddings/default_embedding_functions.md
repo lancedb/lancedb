@@ -186,21 +186,26 @@ We offer support for all huggingface models (which can be loaded via [transforme
 Example usage - 
 ```python
 import lancedb
-import pandas as pd
-
 from lancedb.embeddings import get_registry
 from lancedb.pydantic import LanceModel, Vector
 
+db = lancedb.connect("/tmp/db")
 model = get_registry().get("huggingface").create(name='facebook/bart-base')
 
-class TextModel(LanceModel):
+
+class Words(LanceModel):
     text: str = model.SourceField()
     vector: Vector(model.ndims()) = model.VectorField()
 
-df = pd.DataFrame({"text": ["hi hello sayonara", "goodbye world"]})
-table = db.create_table("greets", schema=Words)
-table.add()
-query = "old greeting"
+
+table = db.create_table("words", schema=Words)
+table.add(
+    [
+        {"text": "hello world"},
+        {"text": "goodbye world"}
+    ]
+)
+query = "greetings"
 actual = table.search(query).limit(1).to_pydantic(Words)[0]
 print(actual.text)
 ```
