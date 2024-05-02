@@ -227,7 +227,6 @@ impl CreateTableBuilder<false, NoData> {
             name,
             data: None,
             table_definition: Some(table_definition),
-            // schema: Some(schema),
             mode: CreateTableMode::default(),
             write_options: WriteOptions::default(),
         }
