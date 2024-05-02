@@ -29,7 +29,7 @@ arrow-arith = "51.0"
 arrow-cast = "51.0"
 async-trait = "0"
 chrono = "0.4.35"
-half = { "version" = "=2.3.1", default-features = false, features = [
+half = { "version" = "2.4.1", default-features = false, features = [
     "num-traits",
 ] }
 futures = "0"
