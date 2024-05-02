@@ -25,9 +25,9 @@ pub enum EmbeddingModel {
 impl EmbeddingModel {
     fn dims(&self) -> usize {
         match self {
-            EmbeddingModel::TextEmbedding3Small => 1536,
-            EmbeddingModel::TextEmbeddingAda002 => 1536,
-            EmbeddingModel::TextEmbedding3Large => 3072,
+            Self::TextEmbedding3Small => 1536,
+            Self::TextEmbeddingAda002 => 1536,
+            Self::TextEmbedding3Large => 3072,
         }
     }
 }
@@ -37,9 +37,9 @@ impl FromStr for EmbeddingModel {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "text-embedding-3-small" => Ok(EmbeddingModel::TextEmbedding3Small),
-            "text-embedding-ada-002" => Ok(EmbeddingModel::TextEmbeddingAda002),
-            "text-embedding-3-large" => Ok(EmbeddingModel::TextEmbedding3Large),
+            "text-embedding-3-small" => Ok(Self::TextEmbedding3Small),
+            "text-embedding-ada-002" => Ok(Self::TextEmbeddingAda002),
+            "text-embedding-3-large" => Ok(Self::TextEmbedding3Large),
             _ => Err(Error::InvalidInput {
                 message: "Invalid input. Available models are: 'text-embedding-3-small', 'text-embedding-ada-002', 'text-embedding-3-large' ".to_string()
             }),
@@ -50,9 +50,9 @@ impl FromStr for EmbeddingModel {
 impl ToString for EmbeddingModel {
     fn to_string(&self) -> String {
         match self {
-            EmbeddingModel::TextEmbedding3Small => "text-embedding-3-small".to_string(),
-            EmbeddingModel::TextEmbeddingAda002 => "text-embedding-ada-002".to_string(),
-            EmbeddingModel::TextEmbedding3Large => "text-embedding-3-large".to_string(),
+            Self::TextEmbedding3Small => "text-embedding-3-small".to_string(),
+            Self::TextEmbeddingAda002 => "text-embedding-ada-002".to_string(),
+            Self::TextEmbedding3Large => "text-embedding-3-large".to_string(),
         }
     }
 }
