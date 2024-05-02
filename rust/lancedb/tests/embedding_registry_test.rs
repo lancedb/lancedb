@@ -14,14 +14,8 @@ use lancedb::{
     Error, Result,
 };
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    custom_func().await?;
-    custom_registry().await?;
-    Ok(())
-}
-
-async fn custom_func() -> Result<()> {
+#[tokio::test]
+async fn test_custom_func() -> Result<()> {
     let tempdir = tempfile::tempdir().unwrap();
     let tempdir = tempdir.path().to_str().unwrap();
     let db = connect(tempdir).execute().await?;
@@ -64,32 +58,8 @@ async fn custom_func() -> Result<()> {
     Ok(())
 }
 
-async fn custom_registry() -> Result<()> {
-    #[derive(Debug)]
-    struct MyRegistry {}
-
-    /// a mock registry that only has one function called `embed_fun`
-    impl EmbeddingRegistry for MyRegistry {
-        fn functions(&self) -> HashSet<String> {
-            std::iter::once("embed_fun".to_string()).collect()
-        }
-
-        fn register(&self, _name: &str, _function: Arc<dyn EmbeddingFunction>) -> Result<()> {
-            Err(Error::Other {
-                message: "MyRegistry is read-only".to_string(),
-                source: None,
-            })
-        }
-
-        fn get(&self, name: &str) -> Option<Arc<dyn EmbeddingFunction>> {
-            if name == "embed_fun" {
-                Some(Arc::new(MockEmbed::new()))
-            } else {
-                None
-            }
-        }
-    }
-
+#[tokio::test]
+async fn test_custom_registry() -> Result<()> {
     let tempdir = tempfile::tempdir().unwrap();
     let tempdir = tempdir.path().to_str().unwrap();
 
@@ -145,6 +115,31 @@ fn create_some_records() -> Result<impl IntoArrow> {
         schema.clone(),
     );
     Ok(Box::new(batches))
+}
+
+#[derive(Debug)]
+struct MyRegistry {}
+
+/// a mock registry that only has one function called `embed_fun`
+impl EmbeddingRegistry for MyRegistry {
+    fn functions(&self) -> HashSet<String> {
+        std::iter::once("embed_fun".to_string()).collect()
+    }
+
+    fn register(&self, _name: &str, _function: Arc<dyn EmbeddingFunction>) -> Result<()> {
+        Err(Error::Other {
+            message: "MyRegistry is read-only".to_string(),
+            source: None,
+        })
+    }
+
+    fn get(&self, name: &str) -> Option<Arc<dyn EmbeddingFunction>> {
+        if name == "embed_fun" {
+            Some(Arc::new(MockEmbed::new()))
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Debug)]
