@@ -38,6 +38,7 @@ url.workspace = true
 regex.workspace = true
 serde = { version = "^1" }
 serde_json = { version = "1" }
+async-openai = { version = "0.20.0", optional = true }
 # For remote feature
 reqwest = { version = "0.11.24", features = ["gzip", "json"], optional = true }
 
@@ -56,3 +57,9 @@ default = []
 remote = ["dep:reqwest"]
 fp16kernels = ["lance-linalg/fp16kernels"]
 s3-test = []
+openai = ["dep:async-openai", "dep:reqwest"]
+
+
+[[example]]
+name = "openai"
+required-features = ["openai"]

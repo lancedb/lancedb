@@ -12,6 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#[cfg(feature = "openai")]
+pub mod openai;
+
 use lance::arrow::RecordBatchExt;
 use std::{
     borrow::Cow,
@@ -21,7 +24,6 @@ use std::{
 
 use arrow_array::{Array, RecordBatch, RecordBatchReader};
 use arrow_schema::{DataType, Field, SchemaBuilder};
-// use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use crate::{
