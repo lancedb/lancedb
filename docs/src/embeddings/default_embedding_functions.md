@@ -207,7 +207,7 @@ print(actual.text)
 
 
 ### Ollama embeddings
-Generate embedding via the [ollama](https://github.com/ollama/ollama-python) python library. More details:
+Generate embeddings via the [ollama](https://github.com/ollama/ollama-python) python library. More details:
 - https://github.com/ollama/ollama/blob/main/docs/api.md#generate-embeddings
 - https://ollama.com/blog/embedding-models
 
