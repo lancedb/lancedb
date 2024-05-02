@@ -2395,7 +2395,8 @@ class AsyncTable:
         ----------
         cleanup_older_than: timedelta, optional default 7 days
             All files belonging to versions older than this will be removed.  Set
-            to 0 days to remove all versions except the latest.
+            to 0 days to remove all versions except the latest.  The latest version
+            is never removed.
 
         Experimental API
         ----------------

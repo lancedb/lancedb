@@ -442,7 +442,7 @@ describe("when optimizing a dataset", () => {
   });
 
   it("cleanups old versions", async () => {
-    const stats = await table.optimize({ cleanupOlderThanMs: 0 });
+    const stats = await table.optimize({ cleanupOlderThan: new Date() });
     expect(stats.prune.bytesRemoved).toBeGreaterThan(0);
     expect(stats.prune.oldVersionsRemoved).toBe(3);
   });

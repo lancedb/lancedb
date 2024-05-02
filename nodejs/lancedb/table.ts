@@ -53,12 +53,19 @@ export interface UpdateOptions {
 
 export interface OptimizeOptions {
   /**
-   * If set then all versions older than this number of milliseconds will
-   * be removed.
+   * If set then all versions older than the given date
+   * be removed.  The current version will never be removed.
    *
    * The default is 7 days
    *
-   * Set this value to 0 to delete all but the current version.
+   * @example
+   * // Delete all versions older than 1 day
+   * const olderThan = new Date();
+   * olderThan.setDate(olderThan.getDate() - 1));
+   * tbl.cleanupOlderVersions(olderThan);
+   *
+   * // Delete all versions except the current version
+   * tbl.cleanupOlderVersions(new Date());
    */
   cleanupOlderThan: Date;
 }
@@ -396,7 +403,15 @@ export class Table {
    *  modification operations.
    */
   async optimize(options?: Partial<OptimizeOptions>): Promise<OptimizeStats> {
-    return await this.inner.optimize(options?.cleanupOlderThanMs);
+    let cleanupOlderThanMs;
+    if (
+      options?.cleanupOlderThan !== undefined &&
+      options?.cleanupOlderThan !== null
+    ) {
+      cleanupOlderThanMs =
+        new Date().getTime() - options.cleanupOlderThan.getTime();
+    }
+    return await this.inner.optimize(cleanupOlderThanMs);
   }
 
   /** List all indices that have been created with {@link Table.createIndex} */
