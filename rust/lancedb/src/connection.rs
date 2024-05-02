@@ -147,7 +147,6 @@ impl<T: IntoArrow> CreateTableBuilder<true, T> {
             parent,
             name,
             data: Some(data),
-            // schema: None,
             mode: CreateTableMode::default(),
             write_options: WriteOptions::default(),
             table_definition: None,
