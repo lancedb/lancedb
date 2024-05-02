@@ -1,7 +1,21 @@
+// Copyright 2024 LanceDB Developers.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 use lance::arrow::RecordBatchExt;
 use std::{
     borrow::Cow,
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{Arc, RwLock},
 };
 
@@ -27,14 +41,16 @@ use crate::{
 /// similar sentences to a query sentence.
 ///
 /// To use an embedding function you must first register it with the `EmbeddingsRegistry`.
-/// Then you can define it on a column in the table schema.  That embedding will then be used
+/// Then you can define it on a column in the table schema. That embedding will then be used
 /// to embed the data in that column.
 pub trait EmbeddingFunction: std::fmt::Debug + Send + Sync {
     fn name(&self) -> &str;
+    /// The type of the input data
     fn source_type(&self) -> Cow<DataType>;
+    /// The type of the output data
+    /// This should match the output of the `embed` function
     fn dest_type(&self) -> Cow<DataType>;
-
-    /// TODO: This should be async
+    /// Embed the input
     fn embed(&self, source: Arc<dyn Array>) -> Result<Arc<dyn Array>>;
 }
 
@@ -60,25 +76,34 @@ impl EmbeddingDefinition {
     }
 }
 
-pub trait EmbeddingRegistry: Send + Sync {
-    /// Register a new embedding function
-    // All embedding registries must provide inner mutability
-    fn register(&self, name: &str, function: Arc<dyn EmbeddingFunction>);
+/// A registry of embedding functions
+pub trait EmbeddingRegistry: Send + Sync + std::fmt::Debug {
+    /// Return the names of all registered embedding functions
+    fn functions(&self) -> HashSet<String>;
+    /// Register a new [`EmbeddingFunction`]
+    /// Returns an error if the function can not be registered
+    fn register(&self, name: &str, function: Arc<dyn EmbeddingFunction>) -> Result<()>;
     /// Get an embedding function by name
     fn get(&self, name: &str) -> Option<Arc<dyn EmbeddingFunction>>;
 }
 
+/// A [`EmbeddingRegistry`] that uses in-memory [`HashMap`]s
 #[derive(Debug, Default, Clone)]
 pub struct MemoryRegistry {
     functions: Arc<RwLock<HashMap<String, Arc<dyn EmbeddingFunction>>>>,
 }
 
 impl EmbeddingRegistry for MemoryRegistry {
-    fn register(&self, name: &str, function: Arc<dyn EmbeddingFunction>) {
+    fn functions(&self) -> HashSet<String> {
+        self.functions.read().unwrap().keys().cloned().collect()
+    }
+    fn register(&self, name: &str, function: Arc<dyn EmbeddingFunction>) -> Result<()> {
         self.functions
             .write()
             .unwrap()
             .insert(name.to_string(), function);
+
+        Ok(())
     }
 
     fn get(&self, name: &str) -> Option<Arc<dyn EmbeddingFunction>> {
@@ -107,13 +132,14 @@ pub enum MaybeEmbedded<R: RecordBatchReader> {
     /// The record batch reader has embeddings applied to it
     Yes(WithEmbeddings<R>),
     /// The record batch reader does not have embeddings applied to it
+    /// The inner record batch reader is returned as-is
     No(R),
 }
 
 impl<R: RecordBatchReader> MaybeEmbedded<R> {
     /// Create a new RecordBatchReader with embeddings applied to it if the table definition
     /// specifies an embedding column and the registry contains an embedding function with that name
-    /// Otherwise, return the original RecordBatchReader
+    /// Otherwise, this is a no-op and the inner RecordBatchReader is returned.
     pub fn try_new(
         inner: R,
         table_definition: TableDefinition,

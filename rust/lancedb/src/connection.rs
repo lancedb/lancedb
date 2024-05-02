@@ -528,6 +528,7 @@ pub struct ConnectBuilder {
     /// consistency only applies to read operations. Write operations are
     /// always consistent.
     read_consistency_interval: Option<std::time::Duration>,
+    embedding_registry: Option<Arc<dyn EmbeddingRegistry>>,
 }
 
 impl ConnectBuilder {
@@ -540,6 +541,7 @@ impl ConnectBuilder {
             host_override: None,
             read_consistency_interval: None,
             storage_options: HashMap::new(),
+            embedding_registry: None,
         }
     }
 
@@ -555,6 +557,12 @@ impl ConnectBuilder {
 
     pub fn host_override(mut self, host_override: &str) -> Self {
         self.host_override = Some(host_override.to_string());
+        self
+    }
+
+    /// Provide a custom [`EmbeddingRegistry`] to use for this connection.
+    pub fn embedding_registry(mut self, registry: Arc<dyn EmbeddingRegistry>) -> Self {
+        self.embedding_registry = Some(registry);
         self
     }
 
@@ -684,7 +692,7 @@ struct Database {
 
     // Storage options to be inherited by tables created from this connection
     storage_options: HashMap<String, String>,
-    embeddings_registry: MemoryRegistry,
+    embedding_registry: Arc<dyn EmbeddingRegistry>,
 }
 
 impl std::fmt::Display for Database {
@@ -718,7 +726,12 @@ impl Database {
         // TODO: pass params regardless of OS
         match parse_res {
             Ok(url) if url.scheme().len() == 1 && cfg!(windows) => {
-                Self::open_path(uri, options.read_consistency_interval).await
+                Self::open_path(
+                    uri,
+                    options.read_consistency_interval,
+                    options.embedding_registry.clone(),
+                )
+                .await
             }
             Ok(mut url) => {
                 // iter thru the query params and extract the commit store param
@@ -788,6 +801,10 @@ impl Database {
                     None => None,
                 };
 
+                let embedding_registry = options
+                    .embedding_registry
+                    .clone()
+                    .unwrap_or_else(|| Arc::new(MemoryRegistry::new()));
                 Ok(Self {
                     uri: table_base_uri,
                     query_string,
@@ -796,21 +813,33 @@ impl Database {
                     store_wrapper: write_store_wrapper,
                     read_consistency_interval: options.read_consistency_interval,
                     storage_options,
-                    embeddings_registry: MemoryRegistry::new(),
+                    embedding_registry,
                 })
             }
-            Err(_) => Self::open_path(uri, options.read_consistency_interval).await,
+            Err(_) => {
+                Self::open_path(
+                    uri,
+                    options.read_consistency_interval,
+                    options.embedding_registry.clone(),
+                )
+                .await
+            }
         }
     }
 
     async fn open_path(
         path: &str,
         read_consistency_interval: Option<std::time::Duration>,
+        embedding_registry: Option<Arc<dyn EmbeddingRegistry>>,
     ) -> Result<Self> {
         let (object_store, base_path) = ObjectStore::from_uri(path).await?;
         if object_store.is_local() {
             Self::try_create_dir(path).context(CreateDirSnafu { path })?;
         }
+
+        let embedding_registry =
+            embedding_registry.unwrap_or_else(|| Arc::new(MemoryRegistry::new()));
+
         Ok(Self {
             uri: path.to_string(),
             query_string: None,
@@ -819,7 +848,7 @@ impl Database {
             store_wrapper: None,
             read_consistency_interval,
             storage_options: HashMap::new(),
-            embeddings_registry: Default::default(),
+            embedding_registry,
         })
     }
 
@@ -861,7 +890,7 @@ impl Database {
 #[async_trait::async_trait]
 impl ConnectionInternal for Database {
     fn embedding_registry(&self) -> &dyn EmbeddingRegistry {
-        &self.embeddings_registry
+        self.embedding_registry.as_ref()
     }
     async fn table_names(&self, options: TableNamesBuilder) -> Result<Vec<String>> {
         let mut f = self
@@ -899,7 +928,7 @@ impl ConnectionInternal for Database {
         data: Box<dyn RecordBatchReader + Send>,
     ) -> Result<Table> {
         let table_uri = self.table_uri(&options.name)?;
-        let embedding_registry = Arc::new(self.embeddings_registry.clone());
+        let embedding_registry = self.embedding_registry.clone();
         // Inherit storage options from the connection
         let storage_options = options
             .write_options
