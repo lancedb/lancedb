@@ -134,7 +134,6 @@ pub struct CreateTableBuilder<const HAS_DATA: bool, T: IntoArrow> {
     parent: Arc<dyn ConnectionInternal>,
     pub(crate) name: String,
     pub(crate) data: Option<T>,
-    // pub(crate) schema: Option<SchemaRef>,
     pub(crate) mode: CreateTableMode,
     pub(crate) write_options: WriteOptions,
     pub(crate) table_definition: Option<TableDefinition>,
