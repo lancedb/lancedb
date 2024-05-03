@@ -3,7 +3,7 @@
 /// Polars uses the polars-arrow crate.
 ///
 /// This crate defines zero-copy conversions (of the underlying buffers)
-/// between the arrows s in polars-arrow and arrow-rs using the C FFI.
+/// between polars-arrow and arrow-rs using the C FFI.
 ///
 /// The polars-arrow does implement conversions to and from arrow-rs, but
 /// requires a feature flagged dependency on arrow-rs. The version of arrow-rs
