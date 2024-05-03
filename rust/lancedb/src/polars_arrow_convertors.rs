@@ -14,8 +14,8 @@ use polars::prelude::{DataFrame, Series};
 use std::{mem, sync::Arc};
 
 /// When interpreting Polars dataframes as polars-arrow record batches,
-/// whether to use Arrow string/binary view types instead of the standard
-/// Arrow string/binary types.
+/// one must decide whether to use Arrow string/binary view types
+/// instead of the standard Arrow string/binary types.
 /// For now, we will not use string view types because conversions
 /// for string view types from polars-arrow to arrow-rs are not yet implemented.
 /// See: https://lists.apache.org/thread/w88tpz76ox8h3rxkjl4so6rg3f1rv7wt for the
