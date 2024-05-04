@@ -255,7 +255,6 @@ def retry_with_exponential_backoff(
                     )
 
                 delay *= exponential_base * (1 + jitter * random.random())
-                # dont use f-string for logging
                 logging.warning(
                     "Error occurred: %s \n Retrying in %s seconds (retry %s of %s) \n",
                     e,
