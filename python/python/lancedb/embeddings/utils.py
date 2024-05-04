@@ -255,7 +255,10 @@ def retry_with_exponential_backoff(
                     )
 
                 delay *= exponential_base * (1 + jitter * random.random())
-                logging.info("Retrying in %s seconds...", delay)
+                logging.warning(
+                    f"Error occurred: {e}. Retrying in {delay:.2f} seconds. \n\n"
+                    f"Attempt {num_retries}/{max_retries}."
+                )
                 time.sleep(delay)
 
     return wrapper
