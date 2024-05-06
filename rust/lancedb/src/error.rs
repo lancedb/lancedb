@@ -26,7 +26,7 @@ pub enum Error {
     InvalidInput { message: String },
     #[snafu(display("Table '{name}' was not found"))]
     TableNotFound { name: String },
-    #[snafu(display("Embedding '{name}' was not found"))]
+    #[snafu(display("Embedding '{name}' was not found, Make sure you have registered the embedding function with the name '{name}' with your db/connection"))]
     EmbeddingFunctionNotFound { name: String },
     #[snafu(display("Table '{name}' already exists"))]
     TableAlreadyExists { name: String },
