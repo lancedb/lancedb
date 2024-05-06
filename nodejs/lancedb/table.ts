@@ -169,17 +169,20 @@ export class Table {
    * // If the column has a vector (fixed size list) data type then
    * // an IvfPq vector index will be created.
    * const table = await conn.openTable("my_table");
-   * await table.createIndex(["vector"]);
+   * await table.createIndex("vector");
    * @example
    * // For advanced control over vector index creation you can specify
    * // the index type and options.
    * const table = await conn.openTable("my_table");
-   * await table.createIndex(["vector"], I)
-   *   .ivf_pq({ num_partitions: 128, num_sub_vectors: 16 })
-   *   .build();
+   * await table.createIndex("vector", {
+   *   config: lancedb.Index.ivfPq({
+   *     numPartitions: 128,
+   *     numSubVectors: 16,
+   *   }),
+   * });
    * @example
    * // Or create a Scalar index
-   * await table.createIndex("my_float_col").build();
+   * await table.createIndex("my_float_col");
    */
   async createIndex(column: string, options?: Partial<IndexOptions>) {
     // Bit of a hack to get around the fact that TS has no package-scope.
@@ -197,8 +200,7 @@ export class Table {
    * vector similarity, sorting, and more.
    *
    * Note: By default, all columns are returned.  For best performance, you should
-   * only fetch the columns you need.  See [`Query::select_with_projection`] for
-   * more details.
+   * only fetch the columns you need.
    *
    * When appropriate, various indices and statistics based pruning will be used to
    * accelerate the query.
@@ -206,10 +208,13 @@ export class Table {
    * // SQL-style filtering
    * //
    * // This query will return up to 1000 rows whose value in the `id` column
-   * // is greater than 5.  LanceDb supports a broad set of filtering functions.
-   * for await (const batch of table.query()
-   *                          .filter("id > 1").select(["id"]).limit(20)) {
-   *  console.log(batch);
+   * // is greater than 5. LanceDb supports a broad set of filtering functions.
+   * for await (const batch of table
+   *   .query()
+   *   .where("id > 1")
+   *   .select(["id"])
+   *   .limit(20)) {
+   *   console.log(batch);
    * }
    * @example
    * // Vector Similarity Search
@@ -218,13 +223,14 @@ export class Table {
    * // closest to the query vector [1.0, 2.0, 3.0].  If an index has been created
    * // on the "vector" column then this will perform an ANN search.
    * //
-   * // The `refine_factor` and `nprobes` methods are used to control the recall /
+   * // The `refineFactor` and `nprobes` methods are used to control the recall /
    * // latency tradeoff of the search.
-   * for await (const batch of table.query()
-   *                    .nearestTo([1, 2, 3])
-   *                    .refineFactor(5).nprobe(10)
-   *                    .limit(10)) {
-   *  console.log(batch);
+   * for await (const batch of table
+   *   .query()
+   *   .where("id > 1")
+   *   .select(["id"])
+   *   .limit(20)) {
+   *   console.log(batch);
    * }
    * @example
    * // Scan the full dataset
@@ -286,43 +292,45 @@ export class Table {
     await this.inner.dropColumns(columnNames);
   }
 
-  /**
-   * Retrieve the version of the table
-   *
-   * LanceDb supports versioning.  Every operation that modifies the table increases
-   * version.  As long as a version hasn't been deleted you can `[Self::checkout]` that
-   * version to view the data at that point.  In addition, you can `[Self::restore]` the
-   * version to replace the current table with a previous version.
-   */
+  /** Retrieve the version of the table */
   async version(): Promise<number> {
     return await this.inner.version();
   }
 
   /**
-   * Checks out a specific version of the Table
+   * Checks out a specific version of the table _This is an in-place operation._
    *
-   * Any read operation on the table will now access the data at the checked out version.
-   * As a consequence, calling this method will disable any read consistency interval
-   * that was previously set.
+   * This allows viewing previous versions of the table. If you wish to
+   * keep writing to the dataset starting from an old version, then use
+   * the `restore` function.
    *
-   * This is a read-only operation that turns the table into a sort of "view"
-   * or "detached head".  Other table instances will not be affected.  To make the change
-   * permanent you can use the `[Self::restore]` method.
+   * Calling this method will set the table into time-travel mode. If you
+   * wish to return to standard mode, call `checkoutLatest`.
+   * @param {number} version The version to checkout
+   * @example
+   * ```typescript
+   * import * as lancedb from "@lancedb/lancedb"
+   * const db = await lancedb.connect("./.lancedb");
+   * const table = await db.createTable("my_table", [
+   *   { vector: [1.1, 0.9], type: "vector" },
+   * ]);
    *
-   * Any operation that modifies the table will fail while the table is in a checked
-   * out state.
-   *
-   * To return the table to a normal state use `[Self::checkout_latest]`
+   * console.log(await table.version()); // 1
+   * console.log(table.display());
+   * await table.add([{ vector: [0.5, 0.2], type: "vector" }]);
+   * await table.checkout(1);
+   * console.log(await table.version()); // 2
+   * ```
    */
   async checkout(version: number): Promise<void> {
     await this.inner.checkout(version);
   }
 
   /**
-   * Ensures the table is pointing at the latest version
+   * Checkout the latest version of the table. _This is an in-place operation._
    *
-   * This can be used to manually update a table when the read_consistency_interval is None
-   * It can also be used to undo a `[Self::checkout]` operation
+   * The table will be set back into standard mode, and will track the latest
+   * version of the table.
    */
   async checkoutLatest(): Promise<void> {
     await this.inner.checkoutLatest();
@@ -344,9 +352,7 @@ export class Table {
     await this.inner.restore();
   }
 
-  /**
-   * List all indices that have been created with Self::create_index
-   */
+  /** List all indices that have been created with {@link Table.createIndex} */
   async listIndices(): Promise<IndexConfig[]> {
     return await this.inner.listIndices();
   }
