@@ -124,11 +124,11 @@ impl<T: arrow_array::RecordBatchReader + Send + 'static> IntoArrow for T {
     }
 }
 
-
 impl<S: Stream<Item = Result<arrow_array::RecordBatch>>> SimpleRecordBatchStream<S> {
     pub fn new(stream: S, schema: Arc<arrow_schema::Schema>) -> Self {
         Self { schema, stream }
     }
+}
 #[cfg(feature = "polars")]
 /// An iterator of record batches formed from a Polars DataFrame.
 pub struct PolarsDataFrameRecordBatchReader {
@@ -294,6 +294,5 @@ mod tests {
                 ("float".to_owned(), polars::prelude::DataType::Float64)
             ]
         );
-
     }
 }

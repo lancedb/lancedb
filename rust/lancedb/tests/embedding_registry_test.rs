@@ -90,6 +90,11 @@ async fn test_custom_registry() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn test_multiple_embeddings() -> Result<()> {
+    Ok(())
+}
+
 fn create_some_records() -> Result<impl IntoArrow> {
     const TOTAL: usize = 2;
 
