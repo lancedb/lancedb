@@ -98,8 +98,6 @@ export class Table {
     return tbl.schema;
   }
 
-
-
   /**
    * Insert records into this Table.
    * @param {Data} data Records to be inserted into the Table
