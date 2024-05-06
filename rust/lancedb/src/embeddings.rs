@@ -46,16 +46,16 @@ use crate::{
 pub trait EmbeddingFunction: std::fmt::Debug + Send + Sync {
     fn name(&self) -> &str;
     /// The type of the input data
-    fn source_type(&self) -> Cow<DataType>;
+    fn source_type(&self) -> Result<Cow<DataType>>;
     /// The type of the output data
-    /// This should match the output of the `embed` function
-    fn dest_type(&self) -> Cow<DataType>;
+    /// This should **always** match the output of the `embed` function
+    fn dest_type(&self) -> Result<Cow<DataType>>;
     /// Embed the input
     fn embed(&self, source: Arc<dyn Array>) -> Result<Arc<dyn Array>>;
 }
 
 /// Defines an embedding from input data into a lower-dimensional space
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct EmbeddingDefinition {
     /// The name of the column in the input data
     pub source_column: String,
@@ -123,8 +123,7 @@ impl MemoryRegistry {
 /// when reading from the record batch
 pub struct WithEmbeddings<R: RecordBatchReader> {
     inner: R,
-    embedding_func: Arc<dyn EmbeddingFunction>,
-    embedding_def: EmbeddingDefinition,
+    embeddings: Vec<(EmbeddingDefinition, Arc<dyn EmbeddingFunction>)>,
 }
 
 /// A record batch that might have embeddings applied to it.
@@ -145,93 +144,88 @@ impl<R: RecordBatchReader> MaybeEmbedded<R> {
         table_definition: TableDefinition,
         registry: Option<Arc<dyn EmbeddingRegistry>>,
     ) -> Result<Self> {
-        if registry.is_none() {
-            return Ok(Self::No(inner));
-        }
-
-        let embedding_def =
-            table_definition
+        if let Some(registry) = registry {
+            let embeddings = table_definition
                 .column_definitions
                 .iter()
-                .find_map(|cd| match &cd.kind {
-                    ColumnKind::Embedding(embedding_def) => Some(embedding_def.clone()),
+                .filter_map(|cd| match &cd.kind {
+                    ColumnKind::Embedding(embedding_def) => {
+                        let func = registry.get(&embedding_def.embedding_name)?;
+
+                        Some((embedding_def.clone(), func))
+                    }
                     _ => None,
-                });
+                })
+                .collect::<Vec<_>>();
 
-        if let Some(embedding_def) = embedding_def {
-            let embedding_func = registry
-                .unwrap()
-                .get(&embedding_def.embedding_name)
-                .expect("Embedding function not found in registry")
-                .clone();
+            if !embeddings.is_empty() {
+                return Ok(Self::Yes(WithEmbeddings { inner, embeddings }));
+            }
+        };
 
-            Ok(Self::Yes(WithEmbeddings {
-                inner,
-                embedding_func,
-                embedding_def,
-            }))
-        } else {
-            Ok(Self::No(inner))
-        }
+        // No embeddings to apply
+        Ok(Self::No(inner))
     }
 }
 
 impl<R: RecordBatchReader> WithEmbeddings<R> {
     pub fn new(
         inner: R,
-        embedding_func: Arc<dyn EmbeddingFunction>,
-        embedding_def: EmbeddingDefinition,
+        embeddings: Vec<(EmbeddingDefinition, Arc<dyn EmbeddingFunction>)>,
     ) -> Self {
-        Self {
-            inner,
-            embedding_func,
-            embedding_def,
-        }
+        Self { inner, embeddings }
     }
 }
 
 impl<R: RecordBatchReader> WithEmbeddings<R> {
-    fn dest_field(&self, nullable: bool) -> Field {
-        let field_name = self
-            .embedding_def
-            .dest_column
-            .as_ref()
-            .cloned()
-            .unwrap_or_else(|| format!("{}_embedding", &self.embedding_def.source_column));
+    fn dest_fields(&self) -> Result<Vec<Field>> {
+        let schema = self.inner.schema();
+        self.embeddings
+            .iter()
+            .map(|(ed, func)| {
+                let src_field = schema.field_with_name(&ed.source_column).unwrap();
 
-        Field::new(
-            field_name,
-            self.embedding_func.dest_type().into_owned(),
-            nullable,
-        )
+                let field_name = ed
+                    .dest_column
+                    .clone()
+                    .unwrap_or_else(|| format!("{}_embedding", &ed.source_column));
+                Ok(Field::new(
+                    field_name,
+                    func.dest_type()?.into_owned(),
+                    src_field.is_nullable(),
+                ))
+            })
+            .collect()
     }
 
-    pub fn table_definition(&self) -> TableDefinition {
+    fn column_defs(&self) -> Vec<ColumnDefinition> {
         let base_schema = self.inner.schema();
-
-        let src_column = base_schema
-            .field_with_name(&self.embedding_def.source_column)
-            .unwrap();
-
-        let field = Arc::new(self.dest_field(src_column.is_nullable()));
-        let column_definitions: Vec<_> = base_schema
+        base_schema
             .fields()
             .iter()
             .map(|_| ColumnDefinition {
                 kind: ColumnKind::Physical,
             })
-            .chain(std::iter::once(ColumnDefinition {
-                kind: ColumnKind::Embedding(self.embedding_def.clone()),
+            .chain(self.embeddings.iter().map(|(ed, _)| ColumnDefinition {
+                kind: ColumnKind::Embedding(ed.clone()),
             }))
-            .collect();
+            .collect::<Vec<_>>()
+    }
+
+    pub fn table_definition(&self) -> Result<TableDefinition> {
+        let base_schema = self.inner.schema();
+
+        let output_fields = self.dest_fields()?;
+        let column_definitions = self.column_defs();
 
         let mut sb: SchemaBuilder = base_schema.as_ref().into();
-        sb.push(field);
+        sb.extend(output_fields);
+
         let schema = Arc::new(sb.finish());
-        TableDefinition {
+        Ok(TableDefinition {
             schema,
             column_definitions,
-        }
+        })
     }
 }
 
@@ -259,31 +253,47 @@ impl<R: RecordBatchReader> Iterator for WithEmbeddings<R> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let batch = self.inner.next()?;
-        if let Ok(mut batch) = batch {
-            let schema = batch.schema();
-            let is_nullable = schema
-                .field_with_name(&self.embedding_def.source_column)
-                .unwrap()
-                .is_nullable();
+        match batch {
+            Ok(mut batch) => {
+                // todo: parallelize this
+                for (fld, func) in self.embeddings.iter() {
+                    let src_column = batch.column_by_name(&fld.source_column).unwrap();
+                    let embedding = match func.embed(src_column.clone()) {
+                        Ok(embedding) => embedding,
+                        Err(e) => {
+                            return Some(Err(arrow_schema::ArrowError::ComputeError(format!(
+                                "Error computing embedding: {}",
+                                e
+                            ))))
+                        }
+                    };
+                    let dst_field_name = fld
+                        .dest_column
+                        .clone()
+                        .unwrap_or_else(|| format!("{}_embedding", &fld.source_column));
 
-            let dst_field = Arc::new(self.dest_field(is_nullable));
+                    let dst_field = Field::new(
+                        dst_field_name,
+                        embedding.data_type().clone(),
+                        embedding.nulls().is_some(),
+                    );
 
-            let src_column = batch
-                .column_by_name(&self.embedding_def.source_column)
-                .unwrap();
-            let embedding = self.embedding_func.embed(src_column.clone()).unwrap();
-            batch = batch
-                .try_with_column(dst_field.as_ref().clone(), embedding)
-                .unwrap();
-            Some(Ok(batch))
-        } else {
-            Some(Err(batch.unwrap_err()))
+                    match batch.try_with_column(dst_field.clone(), embedding) {
+                        Ok(b) => batch = b,
+                        Err(e) => return Some(Err(e)),
+                    };
+                }
+                Some(Ok(batch))
+            }
+            Err(e) => Some(Err(e)),
         }
     }
 }
 
 impl<R: RecordBatchReader> RecordBatchReader for WithEmbeddings<R> {
     fn schema(&self) -> Arc<arrow_schema::Schema> {
-        self.table_definition().into_rich_schema()
+        self.table_definition()
+            .expect("table definition should be infallible at this point")
+            .into_rich_schema()
     }
 }
