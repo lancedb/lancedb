@@ -196,6 +196,8 @@ impl<T: IntoArrow> CreateTableBuilder<true, T> {
             .get(&definition.embedding_name)
             .ok_or_else(|| Error::EmbeddingFunctionNotFound {
                 name: definition.embedding_name.to_string(),
+                reason: "No embedding function found in the connection's embedding_registry"
+                    .to_string(),
             })?;
 
         self.embeddings.push((definition, embedding_func));
@@ -477,6 +479,9 @@ impl Connection {
         self.internal.drop_db().await
     }
 
+    /// Get the in-memory embedding registry.
+    /// It's important to note that the embedding registry is not persisted across connections.
+    /// So if a table contains embeddings, you will need to make sure that you are using a connection that has the same embedding functions registered
     pub fn embedding_registry(&self) -> &dyn EmbeddingRegistry {
         self.internal.embedding_registry()
     }

@@ -77,11 +77,11 @@ impl EmbeddingDefinition {
     }
 }
 
-/// A registry of embedding functions
+/// A registry of embedding
 pub trait EmbeddingRegistry: Send + Sync + std::fmt::Debug {
     /// Return the names of all registered embedding functions
     fn functions(&self) -> HashSet<String>;
-    /// Register a new [`EmbeddingFunction`]
+    /// Register a new [`EmbeddingFunction
     /// Returns an error if the function can not be registered
     fn register(&self, name: &str, function: Arc<dyn EmbeddingFunction>) -> Result<()>;
     /// Get an embedding function by name
@@ -156,6 +156,10 @@ impl<R: RecordBatchReader> MaybeEmbedded<R> {
                         None => {
                             return Err(Error::EmbeddingFunctionNotFound {
                                 name: embedding_def.embedding_name.to_string(),
+                                reason: format!(
+                                    "Table was defined with an embedding column `{}` but no embedding function was found with that name within the registry.",
+                                    embedding_def.embedding_name
+                                ),
                             });
                         }
                     }
