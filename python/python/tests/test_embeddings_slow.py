@@ -45,7 +45,9 @@ except Exception:
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize("alias", ["sentence-transformers", "openai", "huggingface", "ollama"])
+@pytest.mark.parametrize(
+    "alias", ["sentence-transformers", "openai", "huggingface", "ollama"]
+)
 def test_basic_text_embeddings(alias, tmp_path):
     db = lancedb.connect(tmp_path)
     registry = get_registry()
