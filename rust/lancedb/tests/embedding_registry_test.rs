@@ -152,6 +152,63 @@ async fn test_multiple_embeddings() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn test_no_func_in_registry() -> Result<()> {
+    let tempdir = tempfile::tempdir().unwrap();
+    let tempdir = tempdir.path().to_str().unwrap();
+
+    let db = connect(tempdir).execute().await?;
+
+    let res = db
+        .create_table("test", create_some_records()?)
+        .add_embedding(EmbeddingDefinition::new(
+            "text",
+            "some_func",
+            Some("first_embeddings"),
+        ));
+    assert!(res.is_err());
+    assert!(matches!(
+        res.err().unwrap(),
+        Error::EmbeddingFunctionNotFound { .. }
+    ));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_no_func_in_registry_on_add() -> Result<()> {
+    let tempdir = tempfile::tempdir().unwrap();
+    let tempdir = tempdir.path().to_str().unwrap();
+
+    let db = connect(tempdir).execute().await?;
+    db.embedding_registry().register(
+        "some_func",
+        Arc::new(MockEmbed::new("some_func".to_string(), 1)),
+    )?;
+
+    db.create_table("test", create_some_records()?)
+        .add_embedding(EmbeddingDefinition::new(
+            "text",
+            "some_func",
+            Some("first_embeddings"),
+        ))?
+        .execute()
+        .await?;
+
+    let db = connect(tempdir).execute().await?;
+
+    let tbl = db.open_table("test").execute().await?;
+    // This should fail because 'tbl' is expecting "some_func" to be in the registry
+    let res = tbl.add(create_some_records()?).execute().await;
+    assert!(res.is_err());
+    assert!(matches!(
+        res.unwrap_err(),
+        crate::Error::EmbeddingFunctionNotFound { .. }
+    ));
+
+    Ok(())
+}
+
 fn create_some_records() -> Result<impl IntoArrow> {
     const TOTAL: usize = 2;
 

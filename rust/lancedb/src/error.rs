@@ -26,6 +26,8 @@ pub enum Error {
     InvalidInput { message: String },
     #[snafu(display("Table '{name}' was not found"))]
     TableNotFound { name: String },
+    #[snafu(display("Embedding '{name}' was not found"))]
+    EmbeddingFunctionNotFound { name: String },
     #[snafu(display("Table '{name}' already exists"))]
     TableAlreadyExists { name: String },
     #[snafu(display("Unable to created lance dataset at {path}: {source}"))]

@@ -27,6 +27,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     error::Result,
     table::{ColumnDefinition, ColumnKind, TableDefinition},
+    Error,
 };
 
 /// Trait for embedding functions
@@ -145,18 +146,21 @@ impl<R: RecordBatchReader> MaybeEmbedded<R> {
         registry: Option<Arc<dyn EmbeddingRegistry>>,
     ) -> Result<Self> {
         if let Some(registry) = registry {
-            let embeddings = table_definition
-                .column_definitions
-                .iter()
-                .filter_map(|cd| match &cd.kind {
-                    ColumnKind::Embedding(embedding_def) => {
-                        let func = registry.get(&embedding_def.embedding_name)?;
-
-                        Some((embedding_def.clone(), func))
+            let mut embeddings = Vec::with_capacity(table_definition.column_definitions.len());
+            for cd in table_definition.column_definitions.iter() {
+                if let ColumnKind::Embedding(embedding_def) = &cd.kind {
+                    match registry.get(&embedding_def.embedding_name) {
+                        Some(func) => {
+                            embeddings.push((embedding_def.clone(), func));
+                        }
+                        None => {
+                            return Err(Error::EmbeddingFunctionNotFound {
+                                name: embedding_def.embedding_name.to_string(),
+                            });
+                        }
                     }
-                    _ => None,
-                })
-                .collect::<Vec<_>>();
+                }
+            }
 
             if !embeddings.is_empty() {
                 return Ok(Self::Yes(WithEmbeddings { inner, embeddings }));

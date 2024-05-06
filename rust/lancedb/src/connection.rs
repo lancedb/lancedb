@@ -194,11 +194,8 @@ impl<T: IntoArrow> CreateTableBuilder<true, T> {
             .parent
             .embedding_registry()
             .get(&definition.embedding_name)
-            .ok_or_else(|| Error::InvalidInput {
-                message: format!(
-                    "There is no embedding named {} in the connection's embeddings registry",
-                    definition.embedding_name
-                ),
+            .ok_or_else(|| Error::EmbeddingFunctionNotFound {
+                name: definition.embedding_name.to_string(),
             })?;
 
         self.embeddings.push((definition, embedding_func));

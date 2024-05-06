@@ -1447,6 +1447,7 @@ impl TableInternal for NativeTable {
         add: AddDataBuilder<NoData>,
         data: Box<dyn RecordBatchReader + Send>,
     ) -> Result<()> {
+        println!("add embedding reg: {}", add.embedding_registry.is_some());
         let data =
             MaybeEmbedded::try_new(data, self.table_definition().await?, add.embedding_registry)?;
 
