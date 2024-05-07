@@ -59,7 +59,7 @@ fn database_new(mut cx: FunctionContext) -> JsResult<JsPromise> {
     for handle in storage_options_js {
         let obj = handle.downcast::<JsArray, _>(&mut cx).unwrap();
         let key = obj.get::<JsString, _, _>(&mut cx, 0)?.value(&mut cx);
-        let value = obj.get::<JsString, _, _>(&mut cx, 0)?.value(&mut cx);
+        let value = obj.get::<JsString, _, _>(&mut cx, 1)?.value(&mut cx);
 
         storage_options.push((key, value));
     }
