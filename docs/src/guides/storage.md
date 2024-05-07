@@ -304,7 +304,8 @@ This can also be done with the ``AWS_ENDPOINT`` and ``AWS_DEFAULT_REGION`` envir
     For local development, the server often has a `http` endpoint rather than a
     secure `https` endpoint. In this case, you must also set the `ALLOW_HTTP`
     environment variable to `true` to allow non-TLS connections, or pass the
-    storage option `allow_http` as `true`.
+    storage option `allow_http` as `true`. If you do not do this, you will get
+    an error like `URL scheme is not allowed`.
 
 #### S3 Express
 
