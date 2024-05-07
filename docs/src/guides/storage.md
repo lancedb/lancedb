@@ -299,6 +299,13 @@ LanceDB can also connect to S3-compatible stores, such as MinIO. To do so, you m
 
 This can also be done with the ``AWS_ENDPOINT`` and ``AWS_DEFAULT_REGION`` environment variables.
 
+!!! tip "Local servers"
+
+    For local development, the server often has a `http` endpoint rather than a
+    secure `https` endpoint. In this case, you must also set the `ALLOW_HTTP`
+    environment variable to `true` to allow non-TLS connections, or pass the
+    storage option `allow_http` as `true`.
+
 #### S3 Express
 
 LanceDB supports [S3 Express One Zone](https://aws.amazon.com/s3/storage-classes/express-one-zone/) endpoints, but requires additional configuration. Also, S3 Express endpoints only support connecting from an EC2 instance within the same region.
