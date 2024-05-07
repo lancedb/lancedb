@@ -26,8 +26,10 @@ use lance::io::{ObjectStore, ObjectStoreParams, WrappingObjectStore};
 use object_store::{aws::AwsCredential, local::LocalFileSystem};
 use snafu::prelude::*;
 
-use crate::arrow::{BoxedRecordBatchReader, IntoArrow};
-use crate::embeddings::{EmbeddingDefinition, EmbeddingRegistry, MemoryRegistry, WithEmbeddings};
+use crate::arrow::IntoArrow;
+use crate::embeddings::{
+    EmbeddingDefinition, EmbeddingFunction, EmbeddingRegistry, MemoryRegistry, WithEmbeddings,
+};
 use crate::error::{CreateDirSnafu, Error, InvalidTableNameSnafu, Result};
 use crate::io::object_store::MirroringObjectStoreWrapper;
 use crate::table::{NativeTable, TableDefinition, WriteOptions};
@@ -137,6 +139,7 @@ pub struct CreateTableBuilder<const HAS_DATA: bool, T: IntoArrow> {
     pub(crate) mode: CreateTableMode,
     pub(crate) write_options: WriteOptions,
     pub(crate) table_definition: Option<TableDefinition>,
+    pub(crate) embeddings: Vec<(EmbeddingDefinition, Arc<dyn EmbeddingFunction>)>,
 }
 
 // Builder methods that only apply when we have initial data
@@ -149,6 +152,7 @@ impl<T: IntoArrow> CreateTableBuilder<true, T> {
             mode: CreateTableMode::default(),
             write_options: WriteOptions::default(),
             table_definition: None,
+            embeddings: Vec::new(),
         }
     }
 
@@ -179,40 +183,25 @@ impl<T: IntoArrow> CreateTableBuilder<true, T> {
             table_definition: self.table_definition,
             mode: self.mode,
             write_options: self.write_options,
+            embeddings: self.embeddings,
         };
         Ok((data, builder))
     }
 
-    pub fn add_embedding(
-        mut self,
-        definition: EmbeddingDefinition,
-    ) -> Result<CreateTableBuilder<true, WithEmbeddings<BoxedRecordBatchReader>>> {
-        let data = self.data.take().unwrap().into_arrow()?;
-
+    pub fn add_embedding(mut self, definition: EmbeddingDefinition) -> Result<Self> {
         // Early verification of the embedding name
         let embedding_func = self
             .parent
             .embedding_registry()
             .get(&definition.embedding_name)
-            .ok_or_else(|| Error::InvalidInput {
-                message: format!(
-                    "There is no embedding named {} in the connection's embeddings registry",
-                    definition.embedding_name
-                ),
+            .ok_or_else(|| Error::EmbeddingFunctionNotFound {
+                name: definition.embedding_name.to_string(),
+                reason: "No embedding function found in the connection's embedding_registry"
+                    .to_string(),
             })?;
 
-        let data = WithEmbeddings::new(data, embedding_func, definition.clone());
-
-        let builder = CreateTableBuilder::<true, WithEmbeddings<BoxedRecordBatchReader>> {
-            parent: self.parent,
-            name: self.name,
-            table_definition: Some(TableDefinition::new_from_schema(data.schema())),
-            data: Some(data),
-            mode: self.mode,
-            write_options: self.write_options,
-        };
-
-        Ok(builder)
+        self.embeddings.push((definition, embedding_func));
+        Ok(self)
     }
 }
 
@@ -227,6 +216,7 @@ impl CreateTableBuilder<false, NoData> {
             table_definition: Some(table_definition),
             mode: CreateTableMode::default(),
             write_options: WriteOptions::default(),
+            embeddings: Vec::new(),
         }
     }
 
@@ -489,6 +479,9 @@ impl Connection {
         self.internal.drop_db().await
     }
 
+    /// Get the in-memory embedding registry.
+    /// It's important to note that the embedding registry is not persisted across connections.
+    /// So if a table contains embeddings, you will need to make sure that you are using a connection that has the same embedding functions registered
     pub fn embedding_registry(&self) -> &dyn EmbeddingRegistry {
         self.internal.embedding_registry()
     }
@@ -940,6 +933,11 @@ impl ConnectionInternal for Database {
                 storage_options.insert(key.clone(), value.clone());
             }
         }
+        let data = if options.embeddings.is_empty() {
+            data
+        } else {
+            Box::new(WithEmbeddings::new(data, options.embeddings))
+        };
 
         let mut write_params = options.write_options.lance_write_params.unwrap_or_default();
         if matches!(&options.mode, CreateTableMode::Overwrite) {

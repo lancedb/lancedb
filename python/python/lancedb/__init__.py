@@ -107,6 +107,9 @@ def connect(
             request_thread_pool=request_thread_pool,
             **kwargs,
         )
+
+    if kwargs:
+        raise ValueError(f"Unknown keyword arguments: {kwargs}")
     return LanceDBConnection(uri, read_consistency_interval=read_consistency_interval)
 
 
