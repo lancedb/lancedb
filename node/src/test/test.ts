@@ -58,7 +58,7 @@ describe('LanceDB client', function () {
 
     it('should accept an options object', async function () {
       const uri = await createTestDB()
-      const con = await lancedb.connect({ uri })
+      const con = await lancedb.connect({ uri, storageOptions: { allowHttp: 'true' } })
       assert.equal(con.uri, uri)
     })
 
