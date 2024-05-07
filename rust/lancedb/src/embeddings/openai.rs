@@ -1,7 +1,7 @@
 use std::{borrow::Cow, fmt::Formatter, str::FromStr, sync::Arc};
 
 use arrow::array::{AsArray, Float32Builder};
-use arrow_array::{Array, ArrayRef, FixedSizeListArray};
+use arrow_array::{Array, ArrayRef, FixedSizeListArray, Float32Array};
 use arrow_data::ArrayData;
 use arrow_schema::DataType;
 use async_openai::{
@@ -11,7 +11,7 @@ use async_openai::{
 };
 use tokio::{runtime::Handle, task};
 
-use crate::Error;
+use crate::{Error, Result};
 
 use super::EmbeddingFunction;
 
@@ -23,7 +23,7 @@ pub enum EmbeddingModel {
 }
 
 impl EmbeddingModel {
-    fn dims(&self) -> usize {
+    fn ndims(&self) -> usize {
         match self {
             Self::TextEmbedding3Small => 1536,
             Self::TextEmbeddingAda002 => 1536,
@@ -35,7 +35,7 @@ impl EmbeddingModel {
 impl FromStr for EmbeddingModel {
     type Err = Error;
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s {
             "text-embedding-3-small" => Ok(Self::TextEmbedding3Small),
             "text-embedding-ada-002" => Ok(Self::TextEmbeddingAda002),
@@ -60,7 +60,7 @@ impl ToString for EmbeddingModel {
 impl TryFrom<&str> for EmbeddingModel {
     type Error = Error;
 
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
+    fn try_from(value: &str) -> std::result::Result<Self, Self::Error> {
         value.parse()
     }
 }
@@ -146,20 +146,43 @@ impl EmbeddingFunction for OpenAIEmbeddingFunction {
         "openai"
     }
 
-    fn source_type(&self) -> Cow<DataType> {
-        Cow::Owned(DataType::Utf8)
+    fn source_type(&self) -> Result<Cow<DataType>> {
+        Ok(Cow::Owned(DataType::Utf8))
     }
 
-    fn dest_type(&self) -> Cow<DataType> {
-        let n_dims = self.model.dims();
-        Cow::Owned(DataType::new_fixed_size_list(
+    fn dest_type(&self) -> Result<Cow<DataType>> {
+        let n_dims = self.model.ndims();
+        Ok(Cow::Owned(DataType::new_fixed_size_list(
             DataType::Float32,
             n_dims as i32,
             false,
-        ))
+        )))
     }
 
-    fn embed(&self, source: ArrayRef) -> crate::Result<ArrayRef> {
+    fn compute_source_embeddings(&self, source: ArrayRef) -> crate::Result<ArrayRef> {
+        let len = source.len();
+        let n_dims = self.model.ndims();
+        let inner = self.compute_inner(source)?;
+
+        let fsl = DataType::new_fixed_size_list(DataType::Float32, n_dims as i32, false);
+
+        // We can't use the FixedSizeListBuilder here because it always adds a null bitmap
+        // and we want to explicitly work with non-nullable arrays.
+        let array_data = ArrayData::builder(fsl)
+            .len(len)
+            .add_child_data(inner.into_data())
+            .build()?;
+
+        Ok(Arc::new(FixedSizeListArray::from(array_data)))
+    }
+
+    fn compute_query_embeddings(&self, input: Arc<dyn Array>) -> Result<Arc<dyn Array>> {
+        let arr = self.compute_inner(input)?;
+        Ok(Arc::new(arr))
+    }
+}
+impl OpenAIEmbeddingFunction {
+    fn compute_inner(&self, source: Arc<dyn Array>) -> Result<Float32Array> {
         // OpenAI only supports non-nullable string arrays
         if source.is_nullable() {
             return Err(crate::Error::InvalidInput {
@@ -211,22 +234,16 @@ impl EmbeddingFunction for OpenAIEmbeddingFunction {
 
         let client = Client::with_config(creds);
         let embed = client.embeddings();
-        let dims = self.model.dims();
         let req = CreateEmbeddingRequest {
             model: self.model.to_string(),
             input,
             encoding_format: Some(EncodingFormat::Float),
             user: None,
-            dimensions: match self.model {
-                EmbeddingModel::TextEmbedding3Small | EmbeddingModel::TextEmbedding3Large => {
-                    Some(dims as u32)
-                }
-                EmbeddingModel::TextEmbeddingAda002 => None,
-            },
+            dimensions: None,
         };
 
-        // TODO: parallelize and batch requests
-        let res: crate::Result<FixedSizeListArray> = task::block_in_place(move || {
+        // TODO: request batching and retry logic
+        task::block_in_place(move || {
             Handle::current().block_on(async {
                 let mut builder = Float32Builder::new();
 
@@ -234,25 +251,12 @@ impl EmbeddingFunction for OpenAIEmbeddingFunction {
                     message: format!("OpenAI embed request failed: {e}"),
                 })?;
 
-                let len = res.data.len();
-
                 for Embedding { embedding, .. } in res.data.iter() {
                     builder.append_slice(embedding);
                 }
 
-                let fsl = DataType::new_fixed_size_list(DataType::Float32, dims as i32, false);
-
-                // We can't use the FixedSizeListBuilder here because it always adds a null bitmap
-                // and we want to explicitly work with non-nullable arrays.
-                let array_data = ArrayData::builder(fsl)
-                    .len(len)
-                    .add_child_data(builder.finish().into_data())
-                    .build()?;
-
-                Ok(FixedSizeListArray::from(array_data))
+                Ok(builder.finish())
             })
-        });
-        let array: ArrayRef = Arc::new(res?);
-        Ok(array)
+        })
     }
 }
