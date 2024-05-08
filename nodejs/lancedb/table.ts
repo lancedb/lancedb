@@ -22,7 +22,7 @@ import {
 import { Query, VectorQuery } from "./query";
 import { IndexOptions } from "./indices";
 import { Data, fromDataToBuffer } from "./arrow";
-
+import { Table as ArrowTable } from "apache-arrow";
 export { IndexConfig } from "./native";
 /**
  * Options for adding data to a table.
@@ -356,4 +356,10 @@ export class Table {
   async listIndices(): Promise<IndexConfig[]> {
     return await this.inner.listIndices();
   }
+
+  /** Return the table as an arrow table */
+  async toArrow():Promise<ArrowTable> {
+    return await this.query().toArrow()
+  }
+
 }

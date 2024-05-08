@@ -25,6 +25,7 @@ import {
   FixedSizeList,
   Int64,
   Float64,
+  Table as ArrowTable
 } from "apache-arrow";
 import { makeArrowTable } from "../dist/arrow";
 import { Index } from "../dist/indices";
@@ -83,6 +84,13 @@ describe("Given a table", () => {
     expect(await table.countRows("id == 7")).toBe(1);
     expect(await table.countRows("id == 10")).toBe(1);
   });
+
+  it("should return the table as an instance of an arrow table", async () => {
+    const arrowTbl = await table.toArrow()
+    expect(arrowTbl).toBeInstanceOf(ArrowTable)
+
+  })
+
 });
 
 describe("When creating an index", () => {
@@ -418,4 +426,6 @@ describe("when dealing with versioning", () => {
       "checkout before running restore",
     );
   });
+
+  
 });
