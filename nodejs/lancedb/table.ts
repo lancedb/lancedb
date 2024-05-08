@@ -359,7 +359,7 @@ export class Table {
 
   /** Return the table as an arrow table */
   async toArrow():Promise<ArrowTable> {
-    return await this.query().toArrow()
+    return await this.query().toArrow();
   }
 
 }
