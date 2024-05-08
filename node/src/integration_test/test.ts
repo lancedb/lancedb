@@ -51,7 +51,7 @@ describe('LanceDB Mirrored Store Integration test', function () {
 
     const dir = tmpdir()
     console.log(dir)
-    const conn = await lancedb.connect(`s3://lancedb-integtest?mirroredStore=${dir}`)
+    const conn = await lancedb.connect({ uri: `s3://lancedb-integtest?mirroredStore=${dir}`, storageOptions: { allowHttp: 'true' } })
     const data = Array(200).fill({ vector: Array(128).fill(1.0), id: 0 })
     data.push(...Array(200).fill({ vector: Array(128).fill(1.0), id: 1 }))
     data.push(...Array(200).fill({ vector: Array(128).fill(1.0), id: 2 }))
