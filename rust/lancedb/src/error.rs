@@ -26,6 +26,9 @@ pub enum Error {
     InvalidInput { message: String },
     #[snafu(display("Table '{name}' was not found"))]
     TableNotFound { name: String },
+    #[snafu(display("Embedding function '{name}' was not found. : {reason}"))]
+    EmbeddingFunctionNotFound { name: String, reason: String },
+
     #[snafu(display("Table '{name}' already exists"))]
     TableAlreadyExists { name: String },
     #[snafu(display("Unable to created lance dataset at {path}: {source}"))]
@@ -109,6 +112,16 @@ impl From<url::ParseError> for Error {
     fn from(e: url::ParseError) -> Self {
         Self::Http {
             message: e.to_string(),
+        }
+    }
+}
+
+#[cfg(feature = "polars")]
+impl From<polars::prelude::PolarsError> for Error {
+    fn from(source: polars::prelude::PolarsError) -> Self {
+        Self::Other {
+            message: "Error in Polars DataFrame integration.".to_string(),
+            source: Some(Box::new(source)),
         }
     }
 }

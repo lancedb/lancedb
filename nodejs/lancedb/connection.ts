@@ -77,6 +77,18 @@ export interface OpenTableOptions {
    * The available options are described at https://lancedb.github.io/lancedb/guides/storage/
    */
   storageOptions?: Record<string, string>;
+  /**
+   * Set the size of the index cache, specified as a number of entries
+   *
+   * The exact meaning of an "entry" will depend on the type of index:
+   * - IVF: there is one entry for each IVF partition
+   * - BTREE: there is one entry for the entire index
+   *
+   * This cache applies to the entire opened table, across all indices.
+   * Setting this value higher will increase performance on larger datasets
+   * at the expense of more RAM
+   */
+  indexCacheSize?: number;
 }
 
 export interface TableNamesOptions {
@@ -160,6 +172,7 @@ export class Connection {
     const innerTable = await this.inner.openTable(
       name,
       cleanseStorageOptions(options?.storageOptions),
+      options?.indexCacheSize,
     );
     return new Table(innerTable);
   }

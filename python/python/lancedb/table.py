@@ -806,6 +806,7 @@ class _LanceLatestDatasetRef(_LanceDatasetRef):
     """Reference to the latest version of a LanceDataset."""
 
     uri: str
+    index_cache_size: Optional[int] = None
     read_consistency_interval: Optional[timedelta] = None
     last_consistency_check: Optional[float] = None
     _dataset: Optional[LanceDataset] = None
@@ -813,7 +814,9 @@ class _LanceLatestDatasetRef(_LanceDatasetRef):
     @property
     def dataset(self) -> LanceDataset:
         if not self._dataset:
-            self._dataset = lance.dataset(self.uri)
+            self._dataset = lance.dataset(
+                self.uri, index_cache_size=self.index_cache_size
+            )
             self.last_consistency_check = time.monotonic()
         elif self.read_consistency_interval is not None:
             now = time.monotonic()
@@ -842,12 +845,15 @@ class _LanceLatestDatasetRef(_LanceDatasetRef):
 class _LanceTimeTravelRef(_LanceDatasetRef):
     uri: str
     version: int
+    index_cache_size: Optional[int] = None
     _dataset: Optional[LanceDataset] = None
 
     @property
     def dataset(self) -> LanceDataset:
         if not self._dataset:
-            self._dataset = lance.dataset(self.uri, version=self.version)
+            self._dataset = lance.dataset(
+                self.uri, version=self.version, index_cache_size=self.index_cache_size
+            )
         return self._dataset
 
     @dataset.setter
@@ -884,6 +890,8 @@ class LanceTable(Table):
         connection: "LanceDBConnection",
         name: str,
         version: Optional[int] = None,
+        *,
+        index_cache_size: Optional[int] = None,
     ):
         self._conn = connection
         self.name = name
@@ -892,11 +900,13 @@ class LanceTable(Table):
             self._ref = _LanceTimeTravelRef(
                 uri=self._dataset_uri,
                 version=version,
+                index_cache_size=index_cache_size,
             )
         else:
             self._ref = _LanceLatestDatasetRef(
                 uri=self._dataset_uri,
                 read_consistency_interval=connection.read_consistency_interval,
+                index_cache_size=index_cache_size,
             )
 
     @classmethod
@@ -1198,6 +1208,11 @@ class LanceTable(Table):
             if not replace:
                 raise ValueError("Index already exists. Use replace=True to overwrite.")
             fs.delete_dir(path)
+
+        if not isinstance(fs, pa_fs.LocalFileSystem):
+            raise NotImplementedError(
+                "Full-text search is only supported on the local filesystem"
+            )
 
         index = create_index(
             self._get_fts_index_path(),

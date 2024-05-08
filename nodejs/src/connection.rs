@@ -176,12 +176,16 @@ impl Connection {
         &self,
         name: String,
         storage_options: Option<HashMap<String, String>>,
+        index_cache_size: Option<u32>,
     ) -> napi::Result<Table> {
         let mut builder = self.get_inner()?.open_table(&name);
         if let Some(storage_options) = storage_options {
             for (key, value) in storage_options {
                 builder = builder.storage_option(key, value);
             }
+        }
+        if let Some(index_cache_size) = index_cache_size {
+            builder = builder.index_cache_size(index_cache_size);
         }
         let tbl = builder
             .execute()

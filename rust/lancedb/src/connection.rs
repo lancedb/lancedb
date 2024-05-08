@@ -27,9 +27,12 @@ use object_store::{aws::AwsCredential, local::LocalFileSystem};
 use snafu::prelude::*;
 
 use crate::arrow::IntoArrow;
+use crate::embeddings::{
+    EmbeddingDefinition, EmbeddingFunction, EmbeddingRegistry, MemoryRegistry, WithEmbeddings,
+};
 use crate::error::{CreateDirSnafu, Error, InvalidTableNameSnafu, Result};
 use crate::io::object_store::MirroringObjectStoreWrapper;
-use crate::table::{NativeTable, WriteOptions};
+use crate::table::{NativeTable, TableDefinition, WriteOptions};
 use crate::utils::validate_table_name;
 use crate::Table;
 
@@ -133,9 +136,10 @@ pub struct CreateTableBuilder<const HAS_DATA: bool, T: IntoArrow> {
     parent: Arc<dyn ConnectionInternal>,
     pub(crate) name: String,
     pub(crate) data: Option<T>,
-    pub(crate) schema: Option<SchemaRef>,
     pub(crate) mode: CreateTableMode,
     pub(crate) write_options: WriteOptions,
+    pub(crate) table_definition: Option<TableDefinition>,
+    pub(crate) embeddings: Vec<(EmbeddingDefinition, Arc<dyn EmbeddingFunction>)>,
 }
 
 // Builder methods that only apply when we have initial data
@@ -145,9 +149,10 @@ impl<T: IntoArrow> CreateTableBuilder<true, T> {
             parent,
             name,
             data: Some(data),
-            schema: None,
             mode: CreateTableMode::default(),
             write_options: WriteOptions::default(),
+            table_definition: None,
+            embeddings: Vec::new(),
         }
     }
 
@@ -175,24 +180,43 @@ impl<T: IntoArrow> CreateTableBuilder<true, T> {
             parent: self.parent,
             name: self.name,
             data: None,
-            schema: self.schema,
+            table_definition: self.table_definition,
             mode: self.mode,
             write_options: self.write_options,
+            embeddings: self.embeddings,
         };
         Ok((data, builder))
+    }
+
+    pub fn add_embedding(mut self, definition: EmbeddingDefinition) -> Result<Self> {
+        // Early verification of the embedding name
+        let embedding_func = self
+            .parent
+            .embedding_registry()
+            .get(&definition.embedding_name)
+            .ok_or_else(|| Error::EmbeddingFunctionNotFound {
+                name: definition.embedding_name.to_string(),
+                reason: "No embedding function found in the connection's embedding_registry"
+                    .to_string(),
+            })?;
+
+        self.embeddings.push((definition, embedding_func));
+        Ok(self)
     }
 }
 
 // Builder methods that only apply when we do not have initial data
 impl CreateTableBuilder<false, NoData> {
     fn new(parent: Arc<dyn ConnectionInternal>, name: String, schema: SchemaRef) -> Self {
+        let table_definition = TableDefinition::new_from_schema(schema);
         Self {
             parent,
             name,
             data: None,
-            schema: Some(schema),
+            table_definition: Some(table_definition),
             mode: CreateTableMode::default(),
             write_options: WriteOptions::default(),
+            embeddings: Vec::new(),
         }
     }
 
@@ -350,6 +374,7 @@ impl OpenTableBuilder {
 pub(crate) trait ConnectionInternal:
     Send + Sync + std::fmt::Debug + std::fmt::Display + 'static
 {
+    fn embedding_registry(&self) -> &dyn EmbeddingRegistry;
     async fn table_names(&self, options: TableNamesBuilder) -> Result<Vec<String>>;
     async fn do_create_table(
         &self,
@@ -366,7 +391,7 @@ pub(crate) trait ConnectionInternal:
     ) -> Result<Table> {
         let batches = Box::new(RecordBatchIterator::new(
             vec![],
-            options.schema.as_ref().unwrap().clone(),
+            options.table_definition.clone().unwrap().schema.clone(),
         ));
         self.do_create_table(options, batches).await
     }
@@ -453,6 +478,13 @@ impl Connection {
     pub async fn drop_db(&self) -> Result<()> {
         self.internal.drop_db().await
     }
+
+    /// Get the in-memory embedding registry.
+    /// It's important to note that the embedding registry is not persisted across connections.
+    /// So if a table contains embeddings, you will need to make sure that you are using a connection that has the same embedding functions registered
+    pub fn embedding_registry(&self) -> &dyn EmbeddingRegistry {
+        self.internal.embedding_registry()
+    }
 }
 
 #[derive(Debug)]
@@ -486,6 +518,7 @@ pub struct ConnectBuilder {
     /// consistency only applies to read operations. Write operations are
     /// always consistent.
     read_consistency_interval: Option<std::time::Duration>,
+    embedding_registry: Option<Arc<dyn EmbeddingRegistry>>,
 }
 
 impl ConnectBuilder {
@@ -498,6 +531,7 @@ impl ConnectBuilder {
             host_override: None,
             read_consistency_interval: None,
             storage_options: HashMap::new(),
+            embedding_registry: None,
         }
     }
 
@@ -513,6 +547,12 @@ impl ConnectBuilder {
 
     pub fn host_override(mut self, host_override: &str) -> Self {
         self.host_override = Some(host_override.to_string());
+        self
+    }
+
+    /// Provide a custom [`EmbeddingRegistry`] to use for this connection.
+    pub fn embedding_registry(mut self, registry: Arc<dyn EmbeddingRegistry>) -> Self {
+        self.embedding_registry = Some(registry);
         self
     }
 
@@ -642,6 +682,7 @@ struct Database {
 
     // Storage options to be inherited by tables created from this connection
     storage_options: HashMap<String, String>,
+    embedding_registry: Arc<dyn EmbeddingRegistry>,
 }
 
 impl std::fmt::Display for Database {
@@ -675,7 +716,12 @@ impl Database {
         // TODO: pass params regardless of OS
         match parse_res {
             Ok(url) if url.scheme().len() == 1 && cfg!(windows) => {
-                Self::open_path(uri, options.read_consistency_interval).await
+                Self::open_path(
+                    uri,
+                    options.read_consistency_interval,
+                    options.embedding_registry.clone(),
+                )
+                .await
             }
             Ok(mut url) => {
                 // iter thru the query params and extract the commit store param
@@ -745,6 +791,10 @@ impl Database {
                     None => None,
                 };
 
+                let embedding_registry = options
+                    .embedding_registry
+                    .clone()
+                    .unwrap_or_else(|| Arc::new(MemoryRegistry::new()));
                 Ok(Self {
                     uri: table_base_uri,
                     query_string,
@@ -753,20 +803,33 @@ impl Database {
                     store_wrapper: write_store_wrapper,
                     read_consistency_interval: options.read_consistency_interval,
                     storage_options,
+                    embedding_registry,
                 })
             }
-            Err(_) => Self::open_path(uri, options.read_consistency_interval).await,
+            Err(_) => {
+                Self::open_path(
+                    uri,
+                    options.read_consistency_interval,
+                    options.embedding_registry.clone(),
+                )
+                .await
+            }
         }
     }
 
     async fn open_path(
         path: &str,
         read_consistency_interval: Option<std::time::Duration>,
+        embedding_registry: Option<Arc<dyn EmbeddingRegistry>>,
     ) -> Result<Self> {
         let (object_store, base_path) = ObjectStore::from_uri(path).await?;
         if object_store.is_local() {
             Self::try_create_dir(path).context(CreateDirSnafu { path })?;
         }
+
+        let embedding_registry =
+            embedding_registry.unwrap_or_else(|| Arc::new(MemoryRegistry::new()));
+
         Ok(Self {
             uri: path.to_string(),
             query_string: None,
@@ -775,6 +838,7 @@ impl Database {
             store_wrapper: None,
             read_consistency_interval,
             storage_options: HashMap::new(),
+            embedding_registry,
         })
     }
 
@@ -815,6 +879,9 @@ impl Database {
 
 #[async_trait::async_trait]
 impl ConnectionInternal for Database {
+    fn embedding_registry(&self) -> &dyn EmbeddingRegistry {
+        self.embedding_registry.as_ref()
+    }
     async fn table_names(&self, options: TableNamesBuilder) -> Result<Vec<String>> {
         let mut f = self
             .object_store
@@ -851,7 +918,7 @@ impl ConnectionInternal for Database {
         data: Box<dyn RecordBatchReader + Send>,
     ) -> Result<Table> {
         let table_uri = self.table_uri(&options.name)?;
-
+        let embedding_registry = self.embedding_registry.clone();
         // Inherit storage options from the connection
         let storage_options = options
             .write_options
@@ -866,6 +933,11 @@ impl ConnectionInternal for Database {
                 storage_options.insert(key.clone(), value.clone());
             }
         }
+        let data = if options.embeddings.is_empty() {
+            data
+        } else {
+            Box::new(WithEmbeddings::new(data, options.embeddings))
+        };
 
         let mut write_params = options.write_options.lance_write_params.unwrap_or_default();
         if matches!(&options.mode, CreateTableMode::Overwrite) {
@@ -882,7 +954,10 @@ impl ConnectionInternal for Database {
         )
         .await
         {
-            Ok(table) => Ok(Table::new(Arc::new(table))),
+            Ok(table) => Ok(Table::new_with_embedding_registry(
+                Arc::new(table),
+                embedding_registry,
+            )),
             Err(Error::TableAlreadyExists { name }) => match options.mode {
                 CreateTableMode::Create => Err(Error::TableAlreadyExists { name }),
                 CreateTableMode::ExistOk(callback) => {
@@ -913,12 +988,23 @@ impl ConnectionInternal for Database {
             }
         }
 
+        // Some ReadParams are exposed in the OpenTableBuilder, but we also
+        // let the user provide their own ReadParams.
+        //
+        // If we have a user provided ReadParams use that
+        // If we don't then start with the default ReadParams and customize it with
+        // the options from the OpenTableBuilder
+        let read_params = options.lance_read_params.unwrap_or_else(|| ReadParams {
+            index_cache_size: options.index_cache_size as usize,
+            ..Default::default()
+        });
+
         let native_table = Arc::new(
             NativeTable::open_with_params(
                 &table_uri,
                 &options.name,
                 self.store_wrapper.clone(),
-                options.lance_read_params,
+                Some(read_params),
                 self.read_consistency_interval,
             )
             .await?,

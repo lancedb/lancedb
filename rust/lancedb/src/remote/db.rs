@@ -23,6 +23,7 @@ use tokio::task::spawn_blocking;
 use crate::connection::{
     ConnectionInternal, CreateTableBuilder, NoData, OpenTableBuilder, TableNamesBuilder,
 };
+use crate::embeddings::EmbeddingRegistry;
 use crate::error::Result;
 use crate::Table;
 
@@ -87,14 +88,16 @@ impl ConnectionInternal for RemoteDatabase {
             .await
             .unwrap()?;
 
-        self.client
-            .post(&format!("/v1/table/{}/create", options.name))
+        let rsp = self
+            .client
+            .post(&format!("/v1/table/{}/create/", options.name))
             .body(data_buffer)
             .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE)
             // This is currently expected by LanceDb cloud but will be removed soon.
             .header("x-request-id", "na")
             .send()
             .await?;
+        self.client.check_response(rsp).await?;
 
         Ok(Table::new(Arc::new(RemoteTable::new(
             self.client.clone(),
@@ -111,6 +114,10 @@ impl ConnectionInternal for RemoteDatabase {
     }
 
     async fn drop_db(&self) -> Result<()> {
+        todo!()
+    }
+
+    fn embedding_registry(&self) -> &dyn EmbeddingRegistry {
         todo!()
     }
 }

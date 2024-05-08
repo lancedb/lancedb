@@ -368,6 +368,15 @@ async def test_create_exist_ok_async(tmp_path):
     #     await db.create_table("test", schema=bad_schema, exist_ok=True)
 
 
+def test_open_table_sync(tmp_path):
+    db = lancedb.connect(tmp_path)
+    db.create_table("test", data=[{"id": 0}])
+    assert db.open_table("test").count_rows() == 1
+    assert db.open_table("test", index_cache_size=0).count_rows() == 1
+    with pytest.raises(FileNotFoundError, match="does not exist"):
+        db.open_table("does_not_exist")
+
+
 @pytest.mark.asyncio
 async def test_open_table(tmp_path):
     db = await lancedb.connect_async(tmp_path)
@@ -396,6 +405,10 @@ async def test_open_table(tmp_path):
             "price": pa.float64(),
         }
     )
+
+    # No way to verify this yet, but at least make sure we
+    # can pass the parameter
+    await db.open_table("test", index_cache_size=0)
 
     with pytest.raises(ValueError, match="was not found"):
         await db.open_table("does_not_exist")
