@@ -14,12 +14,15 @@ pub extern "system" fn Java_com_lancedb_lancedb_Database_tableNames<'local>(
     let conn = ok_or_throw!(env, RT.block_on(connect(dataset_uri.as_str()).execute()));
     let table_names = ok_or_throw!(env, RT.block_on(conn.table_names().execute()));
 
-    let j_names = env.new_object("java/util/ArrayList", "()V", &[]).unwrap();
+    let j_names = ok_or_throw!(env, env.new_object("java/util/ArrayList", "()V", &[]));
     for item in table_names {
-        let item_jobj = JObject::from(env.new_string(item).expect("msg"));
+        let jstr_item = ok_or_throw!(env, env.new_string(item));
+        let item_jobj = JObject::from(jstr_item);
         let item_gen = JValue::Object(&item_jobj);
-        env.call_method(&j_names, "add", "(Ljava/lang/Object;)Z", &[item_gen])
-            .expect("msg");
+        ok_or_throw!(
+            env,
+            env.call_method(&j_names, "add", "(Ljava/lang/Object;)Z", &[item_gen])
+        );
     }
     j_names
 }
