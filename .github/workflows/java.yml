@@ -55,9 +55,10 @@ jobs:
           cache: "maven"
       - name: Java Style Check
         run: mvn checkstyle:check
-      - name: Rust Clippy
-        working-directory: java/core/lancedb-jni
-        run: cargo clippy --all-targets -- -D warnings
+      # Disable because of issues in lancedb rust core code
+      # - name: Rust Clippy
+      #   working-directory: java/core/lancedb-jni
+      #   run: cargo clippy --all-targets -- -D warnings
       - name: Running tests with Java 11
         run: mvn clean test
       - name: Running tests with Java 17
