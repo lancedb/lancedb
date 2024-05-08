@@ -14,9 +14,12 @@
 
 package com.lancedb.lancedb;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+
 import java.nio.file.Path;
 import java.util.List;
+import java.net.URL;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -24,9 +27,20 @@ public class DatabaseTest {
   @TempDir static Path tempDir; // Temporary directory for the tests
 
   @Test
-  void testConnection() {
-    String databaseUri = tempDir.resolve("connection_database").toString();
+  void emptyDB() {
+    String databaseUri = tempDir.resolve("emptyDB").toString();
     List<String> tableNames = Database.tableNames(databaseUri);
     assertTrue(tableNames.isEmpty());
+  }
+
+  @Test
+  void tableNmaes() {
+    ClassLoader classLoader = getClass().getClassLoader();
+    URL lanceDbURL = classLoader.getResource("example_db");
+    List<String> tableNames = Database.tableNames(lanceDbURL.toString());
+    assertEquals("dataset_version", tableNames.get(0));
+    assertEquals("new_empty_dataset", tableNames.get(1));
+    assertEquals("test", tableNames.get(2));
+    assertEquals("write_stream", tableNames.get(3));
   }
 }
