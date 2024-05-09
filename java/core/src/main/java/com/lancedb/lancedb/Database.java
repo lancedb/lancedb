@@ -26,7 +26,7 @@ public class Database {
   }
 
   /**
-  * Get the names of all tables in the database.
+  * Get the names of all tables in the database. The names are sorted in ascending order.
   *
   * @param databaseUri The URI of the LanceDB database.
   * @return the table names
