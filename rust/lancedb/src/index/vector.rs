@@ -83,10 +83,14 @@ pub struct VectorIndexStatistics {
 #[derive(Debug, Clone)]
 pub struct IvfPqIndexBuilder {
     pub(crate) distance_type: DistanceType,
+
+    // IVF
     pub(crate) num_partitions: Option<u32>,
-    pub(crate) num_sub_vectors: Option<u32>,
     pub(crate) sample_rate: u32,
     pub(crate) max_iterations: u32,
+
+    // PQ
+    pub(crate) num_sub_vectors: Option<u32>,
 }
 
 impl Default for IvfPqIndexBuilder {
@@ -199,5 +203,123 @@ pub(crate) fn suggested_num_sub_vectors(dim: u32) -> u32 {
                 which may cause performance degradation in PQ"
         );
         1
+    }
+}
+
+/// Builder for an IVF_HNSW_SQ index.
+///
+/// This index is a combination of IVF and HNSW.
+/// The IVF part is the same as the IVF PQ index.
+/// For each IVF partition, this builds a HNSW graph, the graph is used to
+/// quickly find the closest vectors to a query vector.
+///
+/// The SQ (scalar quantizer) is used to compress the vectors,
+/// each vector is mapped to a 8-bit integer vector, 4x compression ratio for float32 vector.
+#[derive(Debug, Clone)]
+pub struct IvfHnswSqIndexBuilder {
+    // IVF
+    pub(crate) distance_type: DistanceType,
+    pub(crate) num_partitions: Option<u32>,
+    pub(crate) sample_rate: u32,
+    pub(crate) max_iterations: u32,
+
+    // HNSW
+    pub(crate) m: usize,
+    pub(crate) ef_construction: usize,
+    // SQ
+    // TODO add num_bits for SQ after it supports another num_bits besides 8
+}
+
+impl Default for IvfHnswSqIndexBuilder {
+    fn default() -> Self {
+        Self {
+            distance_type: DistanceType::L2,
+            num_partitions: None,
+            sample_rate: 256,
+            max_iterations: 50,
+            m: 20,
+            ef_construction: 300,
+        }
+    }
+}
+
+impl IvfHnswSqIndexBuilder {
+    /// [DistanceType] to use to build the index.
+    ///
+    /// Default value is [DistanceType::L2].
+    ///
+    /// This is used when training the index to calculate the IVF partitions (vectors are
+    /// grouped in partitions with similar vectors according to this distance type)
+    ///
+    /// The metric type used to train an index MUST match the metric type used to search the
+    /// index.  Failure to do so will yield inaccurate results.
+    ///
+    /// Now IVF_HNSW_SQ only supports L2 and Cosine distance types.
+    pub fn distance_type(mut self, distance_type: DistanceType) -> Self {
+        self.distance_type = distance_type;
+        self
+    }
+
+    /// The number of IVF partitions to create.
+    ///
+    /// This value should generally scale with the number of rows in the dataset.  By default
+    /// the number of partitions is the square root of the number of rows.
+    ///
+    /// If this value is too large then the first part of the search (picking the right partition)
+    /// will be slow.  If this value is too small then the second part of the search (searching
+    /// within a partition) will be slow.
+    pub fn num_partitions(mut self, num_partitions: u32) -> Self {
+        self.num_partitions = Some(num_partitions);
+        self
+    }
+
+    /// The rate used to calculate the number of training vectors for kmeans and SQ.
+    ///
+    /// When an IVF_HNSW_SQ index is trained, we need to calculate partitions and min/max value of vectors.  These are groups
+    /// of vectors that are similar to each other.  To do this we use an algorithm called kmeans.
+    ///
+    /// Running kmeans on a large dataset can be slow.  To speed this up we run kmeans on a
+    /// random sample of the data.  This parameter controls the size of the sample.  The total
+    /// number of vectors used to train the IVF is `sample_rate * num_partitions`.
+    ///
+    /// The total number of vectors used to train the SQ is `sample_rate * 2^{num_bits}`.
+    ///
+    /// Increasing this value might improve the quality of the index but in most cases the
+    /// default should be sufficient.
+    ///
+    /// The default value is 256.
+    pub fn sample_rate(mut self, sample_rate: u32) -> Self {
+        self.sample_rate = sample_rate;
+        self
+    }
+
+    /// Max iterations to train kmeans.
+    ///
+    /// When training an IVF index we use kmeans to calculate the partitions.  This parameter
+    /// controls how many iterations of kmeans to run.
+    ///
+    /// Increasing this might improve the quality of the index but in most cases the parameter
+    /// is unused because kmeans will converge with fewer iterations.  The parameter is only
+    /// used in cases where kmeans does not appear to converge.  In those cases it is unlikely
+    /// that setting this larger will lead to the index converging anyways.
+    ///
+    /// The default value is 50.
+    pub fn max_iterations(mut self, max_iterations: u32) -> Self {
+        self.max_iterations = max_iterations;
+        self
+    }
+
+    /// The number of neighbors to select for each vector in the HNSW graph.
+    /// The default value is 20.
+    pub fn m(mut self, m: usize) -> Self {
+        self.m = m;
+        self
+    }
+
+    /// The number of candidates to evaluate during the construction of the HNSW graph.
+    /// The default value is 300.
+    pub fn ef_construction(mut self, ef_construction: usize) -> Self {
+        self.ef_construction = ef_construction;
+        self
     }
 }
