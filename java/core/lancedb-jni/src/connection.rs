@@ -10,6 +10,8 @@ pub extern "system" fn Java_com_lancedb_lancedb_Connection_connect<'local>(
     _obj: JObject,
     dataset_uri_object: JString,
 ) -> JObject<'local> {
+    let dataset_uri: String = ok_or_throw!(env, env.get_string(&dataset_uri_object)).into();
+    let conn = ok_or_throw!(env, RT.block_on(connect(dataset_uri.as_str()).execute()));
     todo!()
 }
 
