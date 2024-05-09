@@ -16,7 +16,6 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::process::id;
 use std::sync::Arc;
 
 use arrow::array::AsArray;
@@ -1290,8 +1289,10 @@ impl NativeTable {
             .num_edges(index.m)
             .max_num_edges(index.m * 2)
             .ef_construction(index.ef_construction);
-        let mut sq_params = SQBuildParams::default();
-        sq_params.sample_rate = index.sample_rate as usize;
+        let sq_params = SQBuildParams {
+            sample_rate: index.sample_rate as usize,
+            ..Default::default()
+        };
         let lance_idx_params = lance::index::vector::VectorIndexParams::with_ivf_hnsw_sq_params(
             index.distance_type.into(),
             ivf_params,
