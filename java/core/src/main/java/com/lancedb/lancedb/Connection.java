@@ -23,6 +23,8 @@ import java.util.Optional;
  * Represents LanceDB database.
  */
 public class Connection {
+  private long connection;
+
   static {
     JarJniLoader.loadLib(Connection.class, "/nativelib", "lancedb_jni");
   }
@@ -42,12 +44,14 @@ public class Connection {
    * @return the table names
    */
   public List<String> tableNames() {
-    return nativeTableName(Optional.empty(), Optional.empty());
+    return nativeTableName(connection, Optional.empty(), Optional.empty());
   }
 
   public List<String> tableNames(String start_after, int limit) {
-    return nativeTableName(Optional.ofNullable(start_after), Optional.of(limit));
+    return nativeTableName(connection, Optional.ofNullable(start_after), Optional.of(limit));
   }
+
+  private static native long nativeConnect(String uri);
 
   private static native List<String> nativeTableName(long connection, Optional<String> start_after,
       Optional<Integer> limit);
