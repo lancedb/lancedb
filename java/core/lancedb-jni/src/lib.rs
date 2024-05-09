@@ -53,7 +53,7 @@ macro_rules! ok_or_throw_with_return {
     };
 }
 
-mod database;
+mod connection;
 pub mod error;
 mod ffi;
 
