@@ -814,13 +814,6 @@ export class LocalConnection implements Connection {
     embeddingFunction?: EmbeddingFunction<T> | undefined
     writeOptions?: WriteOptions | undefined
   }): Promise<Table<T>> {
-    console.log({
-      name,
-      data,
-      schema,
-      embeddingFunction,
-      writeOptions
-    });
     let buffer: Buffer;
 
     function isEmpty(
@@ -897,7 +890,6 @@ export class LocalTable<T = number[]> implements Table<T> {
     options: ConnectionOptions,
     embeddings?: EmbeddingFunction<T>
   ) {
-    console.log("LocalTable constructor", embeddings);
     this._tbl = tbl;
     this._name = name;
     this._embeddings = embeddings;
