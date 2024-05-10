@@ -1218,10 +1218,14 @@ function validateSchemaEmbeddings(
       if (!(data instanceof ArrowTable)) {
         if (data[0][field.name] === undefined) {
           missingEmbeddingFields.push(field);
+        } else {
+          fields.push(field);
         }
       } else {
         if (data.getChild(field.name) !== null) {
           missingEmbeddingFields.push(field);
+        } else {
+          fields.push(field);
         }
       }
     } else {
