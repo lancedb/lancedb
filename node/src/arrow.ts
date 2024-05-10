@@ -20,7 +20,7 @@ import {
   type Vector,
   FixedSizeList,
   vectorFromArray,
-  type Schema,
+  Schema,
   Table as ArrowTable,
   RecordBatchStreamWriter,
   List,
@@ -81,6 +81,8 @@ export class MakeArrowTableOptions {
   vectorColumns: Record<string, VectorColumnOptions> = {
     vector: new VectorColumnOptions()
   }
+
+  embeddings?: EmbeddingFunction<any>;
 
   /**
    * If true then string columns will be encoded with dictionary encoding
@@ -204,6 +206,7 @@ export function makeArrowTable (
   const opt = new MakeArrowTableOptions(options !== undefined ? options : {})
   if (opt.schema !== undefined && opt.schema !== null) {
     opt.schema = sanitizeSchema(opt.schema)
+    opt.schema = validateSchemaEmbeddings(opt.schema, data, opt.embeddings)
   }
   const columns: Record<string, Vector> = {}
   // TODO: sample dataset to find missing columns
@@ -449,7 +452,7 @@ export async function fromRecordsToBuffer<T> (
   if (schema !== undefined && schema !== null) {
     schema = sanitizeSchema(schema)
   }
-  const table = await convertToTable(data, embeddings, { schema })
+  const table = await convertToTable(data, embeddings, { schema, embeddings })
   const writer = RecordBatchFileWriter.writeAll(table)
   return Buffer.from(await writer.toUint8Array())
 }
@@ -548,4 +551,48 @@ function alignTable (table: ArrowTable, schema: Schema): ArrowTable {
 // Creates an empty Arrow Table
 export function createEmptyTable (schema: Schema): ArrowTable {
   return new ArrowTable(sanitizeSchema(schema))
+}
+
+function validateSchemaEmbeddings(
+  schema: Schema<any>,
+  data: Array<Record<string, unknown>> | ArrowTable<any>,
+  embeddings: EmbeddingFunction<any> | undefined
+) {
+  const fields = [];
+  const missingEmbeddingFields = [];
+
+  // First we check if the field is a `FixedSizeList`
+  // Then we check if the data contains the field
+  // if it does not, we add it to the list of missing embedding fields
+  // Finally, we check if those missing embedding fields are `this._embeddings`
+  // if they are not, we throw an error
+  for (const field of schema.fields) {
+    // Do we generally assume that any FixedSizeList is an embedding?
+    if (field.type instanceof FixedSizeList) {
+      if (!(data instanceof ArrowTable)) {
+        if (data[0][field.name] === undefined) {
+          missingEmbeddingFields.push(field);
+        } else {
+          fields.push(field);
+        }
+      } else {
+        if (data.getChild(field.name) !== null) {
+          missingEmbeddingFields.push(field);
+        } else {
+          fields.push(field);
+        }
+      }
+    } else {
+      fields.push(field);
+    }
+  }
+
+  if (missingEmbeddingFields.length > 0 && embeddings === undefined) {
+    throw new Error(
+      `Table has embeddings: "${missingEmbeddingFields
+        .map((f) => f.name)
+        .join(",")}", but no embedding function was provided`
+    );
+  }
+  return new Schema(fields);
 }

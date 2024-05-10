@@ -13,7 +13,7 @@
 // limitations under the License.
 
 import {
-  Schema,
+  type Schema,
   Table as ArrowTable,
   tableFromIPC,
   FixedSizeList
@@ -932,16 +932,10 @@ export class LocalTable<T = number[]> implements Table<T> {
 
     let tbl: ArrowTable;
 
-    const schemaWithoutEmbeddings = validateSchemaEmbeddings(
-      schema,
-      data,
-      this._embeddings
-    );
-
     if (data instanceof ArrowTable) {
       tbl = data;
     } else {
-      tbl = makeArrowTable(data, { schema: schemaWithoutEmbeddings });
+      tbl = makeArrowTable(data, { schema, embeddings: this._embeddings });
     }
 
     return tableAdd
@@ -1199,50 +1193,6 @@ export class LocalTable<T = number[]> implements Table<T> {
   }
 }
 
-function validateSchemaEmbeddings(
-  schema: Schema<any>,
-  data: Array<Record<string, unknown>> | ArrowTable<any>,
-  embeddings: EmbeddingFunction<any> | undefined
-) {
-  const fields = [];
-  const missingEmbeddingFields = [];
-
-  // First we check if the field is a `FixedSizeList`
-  // Then we check if the data contains the field
-  // if it does not, we add it to the list of missing embedding fields
-  // Finally, we check if those missing embedding fields are `this._embeddings`
-  // if they are not, we throw an error
-  for (const field of schema.fields) {
-    // Do we generally assume that any FixedSizeList is an embedding?
-    if (field.type instanceof FixedSizeList) {
-      if (!(data instanceof ArrowTable)) {
-        if (data[0][field.name] === undefined) {
-          missingEmbeddingFields.push(field);
-        } else {
-          fields.push(field);
-        }
-      } else {
-        if (data.getChild(field.name) !== null) {
-          missingEmbeddingFields.push(field);
-        } else {
-          fields.push(field);
-        }
-      }
-    } else {
-      fields.push(field);
-    }
-  }
-
-  if (missingEmbeddingFields.length > 0 && embeddings === undefined) {
-    throw new Error(
-      `Table has embeddings: "${missingEmbeddingFields
-        .map((f) => f.name)
-        .join(",")}", but no embedding function was provided`
-    );
-  }
-  return new Schema(fields);
-}
-
 export interface CleanupStats {
   /**
    * The number of bytes removed from disk.
@@ -1262,7 +1212,7 @@ export interface CompactionOptions {
    */
   targetRowsPerFragment?: number
   /**
-   * The maximum number of rows per group. Defaults to 1024.
+   * The maximum number of T per group. Defaults to 1024.
    */
   maxRowsPerGroup?: number
   /**
