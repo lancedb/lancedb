@@ -15,7 +15,6 @@
 package com.lancedb.lancedb;
 
 import io.questdb.jar.jni.JarJniLoader;
-
 import java.util.List;
 import java.util.Optional;
 
@@ -40,20 +39,29 @@ public class Connection {
    * Get the names of all tables in the database. The names are sorted in
    * ascending order.
    *
-   * @param databaseUri The URI of the LanceDB database.
    * @return the table names
    */
   public List<String> tableNames() {
     return nativeTableName(connection, Optional.empty(), Optional.empty());
   }
 
-  public List<String> tableNames(String start_after, int limit) {
-    return nativeTableName(connection, Optional.ofNullable(start_after), Optional.of(limit));
+  /**
+   * Get the names of filtered tables in the database. The names are sorted in
+   * ascending order.
+   *
+   * @param startAfter If present, only return names that come lexicographically after the supplied
+   *                   value. This can be combined with limit to implement pagination
+   *                   by setting this to the last table name from the previous page.
+   * @param limit The number of results to return.
+   * @return the table names
+   */
+  public List<String> tableNames(String startAfter, int limit) {
+    return nativeTableName(connection, Optional.ofNullable(startAfter), Optional.of(limit));
   }
 
   private static native long nativeConnect(String uri);
 
-  private static native List<String> nativeTableName(long connection, Optional<String> start_after,
+  private static native List<String> nativeTableName(long connection, Optional<String> startAfter,
       Optional<Integer> limit);
 
   private Connection(String uri) {
