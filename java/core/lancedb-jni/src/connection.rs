@@ -5,18 +5,7 @@ use lancedb::connection::connect;
 use crate::{Error, RT};
 
 #[no_mangle]
-pub extern "system" fn Java_com_lancedb_lancedb_Connection_connect<'local>(
-    mut env: JNIEnv<'local>,
-    _obj: JObject,
-    dataset_uri_object: JString,
-) -> JObject<'local> {
-    let dataset_uri: String = ok_or_throw!(env, env.get_string(&dataset_uri_object)).into();
-    let _ = ok_or_throw!(env, RT.block_on(connect(dataset_uri.as_str()).execute()));
-    todo!()
-}
-
-#[no_mangle]
-pub extern "system" fn Java_com_lancedb_lancedb_Connection_tableNames<'local>(
+pub extern "system" fn Java_com_lancedb_lancedb_Connection_nativeTableNames<'local>(
     mut env: JNIEnv<'local>,
     _obj: JObject,
     dataset_uri_object: JString,

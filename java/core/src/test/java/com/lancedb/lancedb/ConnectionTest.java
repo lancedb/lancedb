@@ -23,25 +23,29 @@ import java.net.URL;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-public class DatabaseTest {
+public class ConnectionTest {
   @TempDir
   static Path tempDir; // Temporary directory for the tests
 
   @Test
   void emptyDB() {
     String databaseUri = tempDir.resolve("emptyDB").toString();
-    List<String> tableNames = Connection.tableNames(databaseUri);
-    assertTrue(tableNames.isEmpty());
+    try (Connection conn = Connection.connect(databaseUri)) {
+      List<String> tableNames = conn.tableNames();
+      assertTrue(tableNames.isEmpty());
+    }
   }
 
   @Test
   void tableNmaes() {
     ClassLoader classLoader = getClass().getClassLoader();
     URL lanceDbURL = classLoader.getResource("example_db");
-    List<String> tableNames = Connection.tableNames(lanceDbURL.toString());
-    assertEquals("dataset_version", tableNames.get(0));
-    assertEquals("new_empty_dataset", tableNames.get(1));
-    assertEquals("test", tableNames.get(2));
-    assertEquals("write_stream", tableNames.get(3));
+    try (Connection conn = Connection.connect(lanceDbURL.toString())) {
+      List<String> tableNames = conn.tableNames();
+      assertEquals("dataset_version", tableNames.get(0));
+      assertEquals("new_empty_dataset", tableNames.get(1));
+      assertEquals("test", tableNames.get(2));
+      assertEquals("write_stream", tableNames.get(3));
+    }
   }
 }

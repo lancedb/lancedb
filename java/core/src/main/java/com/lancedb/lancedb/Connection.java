@@ -15,24 +15,32 @@
 package com.lancedb.lancedb;
 
 import io.questdb.jar.jni.JarJniLoader;
+import java.io.Closeable;
 import java.util.List;
 import java.util.Optional;
 
 /**
  * Represents LanceDB database.
  */
-public class Connection {
-  private long connection;
-
+public class Connection implements Closeable {
   static {
     JarJniLoader.loadLib(Connection.class, "/nativelib", "lancedb_jni");
   }
+  
+  private String uri;
 
   /**
    * Connect to a LanceDB instance.
    */
   public static Connection connect(String uri) {
-    return new Connection(uri);
+    return nativeConnection(uri);
+  }
+
+  // TODO change to native method
+  private static Connection nativeConnection(String uri) {
+    Connection connection = new Connection(uri);
+    connection.uri = uri;
+    return connection;
   }
 
   /**
@@ -42,7 +50,7 @@ public class Connection {
    * @return the table names
    */
   public List<String> tableNames() {
-    return nativeTableName(connection, Optional.empty(), Optional.empty());
+    return nativeTableNames(uri);
   }
 
   /**
@@ -56,15 +64,13 @@ public class Connection {
    * @return the table names
    */
   public List<String> tableNames(String startAfter, int limit) {
-    return nativeTableName(connection, Optional.ofNullable(startAfter), Optional.of(limit));
+    return nativeTableNames(uri);
   }
 
-  private static native long nativeConnect(String uri);
+  private static native List<String> nativeTableNames(String uri);
 
-  private static native List<String> nativeTableName(long connection, Optional<String> startAfter,
-      Optional<Integer> limit);
+  private Connection(String uri) {}
 
-  private Connection(String uri) {
-  }
-
+  @Override
+  public void close() {}
 }
