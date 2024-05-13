@@ -61,7 +61,11 @@ jobs:
         env:
           RELEASE_TYPE: ${{ inputs.type }}
         run: |
-          CURRENT_VERSION=$(cargo metadata --no-deps --format-version 1 | jq '.packages[0].version' | xargs echo)
+          CURRENT_VERSION=$(
+            cargo metadata --no-deps --format-version 1 \
+            | jq '.packages[] | select(.name == "lancedb-python") | .version' \
+            | xargs echo
+          )
           NEXT_TAG=$(bash ../ci/next_tag.sh $CURRENT_VERSION $RELEASE_TYPE "python-")
           echo "Creating tag $NEXT_TAG"
           git tag $NEXT_TAG
@@ -72,7 +76,11 @@ jobs:
         env:
           RELEASE_TYPE: ${{ inputs.type }}
         run: |
-          CURRENT_VERSION=$(cargo metadata --no-deps --format-version 1 | jq '.packages[0].version' | xargs echo)
+          CURRENT_VERSION=$(
+            cargo metadata --no-deps --format-version 1 \
+            | jq '.packages[] | select(.name == "lancedb") | .version' \
+            | xargs echo
+          )
           NEXT_TAG=$(ci/next_tag.sh $CURRENT_VERSION $RELEASE_TYPE)
           echo "Creating tag $NEXT_TAG"
           git tag $NEXT_TAG
