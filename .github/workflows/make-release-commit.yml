@@ -76,7 +76,7 @@ jobs:
         env:
           RELEASE_TYPE: ${{ inputs.type }}
         run: |
-          CURRENT_VERSION=$(bash ../ci/cargo_package_version.sh lancedb)
+          CURRENT_VERSION=$(bash ci/cargo_package_version.sh lancedb)
           TAGS=$(ci/next_tag.sh $CURRENT_VERSION $RELEASE_TYPE)
           NEXT_TAG=${TAGS%,*}
           PREV_TAG=${TAGS#*,}
