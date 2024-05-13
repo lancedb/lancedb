@@ -70,6 +70,7 @@ jobs:
           git tag $NEXT_TAG
           echo "python_tag=$NEXT_TAG" >> $GITHUB_OUTPUT
           echo "python_tag_prev=$PREV_TAG" >> $GITHUB_OUTPUT
+          echo "python_version=${NEXT_TAG#*-}" >> $GITHUB_OUTPUT
       - name: Create tag
         id: create_tag
         if: ${{ inputs.other }}
@@ -108,10 +109,10 @@ jobs:
         with:
           prerelease: ${{ inputs.type == 'preview' }}
           draft: ${{ inputs.draft-release }}
-          tag_name: ${{ steps.create_python_tag.outputs.tag }}
+          tag_name: ${{ steps.create_python_tag.outputs.python_tag }}
           token: ${{ secrets.GITHUB_TOKEN }}
           generate_release_notes: false
-          name: Python LanceDB ${{ steps.create_python_tag.outputs.python_tag }}
+          name: Python LanceDB ${{ steps.create_python_tag.outputs.python_version }}
           body: ${{ steps.python_release_notes.outputs.changelog }}
       # Node/Rust release
       - name: Create Node/Rust Release Notes
