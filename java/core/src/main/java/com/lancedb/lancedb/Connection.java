@@ -26,22 +26,13 @@ public class Connection implements Closeable {
   static {
     JarJniLoader.loadLib(Connection.class, "/nativelib", "lancedb_jni");
   }
-  
-  private String uri;
+
+  private long nativeConnectionHandle;
 
   /**
    * Connect to a LanceDB instance.
    */
-  public static Connection connect(String uri) {
-    return nativeConnection(uri);
-  }
-
-  // TODO change to native method
-  private static Connection nativeConnection(String uri) {
-    Connection connection = new Connection(uri);
-    connection.uri = uri;
-    return connection;
-  }
+  public static native Connection connect(String uri);
 
   /**
    * Get the names of all tables in the database. The names are sorted in
@@ -50,7 +41,7 @@ public class Connection implements Closeable {
    * @return the table names
    */
   public List<String> tableNames() {
-    return nativeTableNames(uri, Optional.empty(), Optional.empty());
+    return tableNames(Optional.empty(), Optional.empty());
   }
 
   /**
@@ -91,15 +82,39 @@ public class Connection implements Closeable {
     return tableNames(Optional.of(startAfter), Optional.of(limit));
   }
 
-  public List<String> tableNames(Optional<String> startAfter, Optional<Integer> limit) {
-    return nativeTableNames(uri, startAfter, limit);
-  }
-
-  private static native List<String> nativeTableNames(String uri,
+  /**
+   * Get the names of filtered tables in the database. The names are sorted in
+   * ascending order.
+   *
+   * @param startAfter If present, only return names that come lexicographically after the supplied
+   *                   value. This can be combined with limit to implement pagination
+   *                   by setting this to the last table name from the previous page.
+   * @param limit The number of results to return.
+   * @return the table names
+   */
+  public native List<String> tableNames(
       Optional<String> startAfter, Optional<Integer> limit);
 
-  private Connection(String uri) {}
-
+  /**
+   * Closes this connection and releases any system resources associated with it. If
+   * the connection is
+   * already closed, then invoking this method has no effect.
+   */
   @Override
-  public void close() {}
+  public void close() {
+    if (nativeConnectionHandle != 0) {
+      releaseNativeConnection(nativeConnectionHandle);
+      nativeConnectionHandle = 0;
+    }
+  }
+
+  /**
+   * Native method to release the Lance connection resources associated with the
+   * given handle.
+   *
+   * @param handle The native handle to the connection resource.
+   */
+  private native void releaseNativeConnection(long handle);
+
+  private Connection() {}
 }

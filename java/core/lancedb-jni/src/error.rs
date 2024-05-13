@@ -97,8 +97,13 @@ impl Error {
 
     /// Throw as an concrete Java Exception
     pub fn throw_as(&self, env: &mut jni::JNIEnv, exception: JavaException) {
+        let message = &format!(
+            "Error when throwing Java exception: {}:{}",
+            exception.as_str(),
+            self
+        );
         env.throw_new(exception.as_str(), self.to_string())
-            .expect("Error when throwing Java exception");
+            .expect(message);
     }
 }
 
