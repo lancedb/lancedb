@@ -1,9 +1,6 @@
 name: Create release commit
 
 on:
-  push:
-    branches:
-      - 'preview-releases'
   workflow_dispatch:
     inputs:
       dry_run:
