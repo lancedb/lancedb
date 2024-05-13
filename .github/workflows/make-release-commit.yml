@@ -37,7 +37,7 @@ jobs:
     # Creates tag and GH release. The GH release will trigger the build and release jobs.
     runs-on: ubuntu-latest
     permissions:
-      id-token: write
+      contents: write
     steps:
       - name: Output Inputs
         run: echo "${{ toJSON(github.event.inputs) }}"
@@ -116,6 +116,8 @@ jobs:
     runs-on: ubuntu-latest
     if: ${{ inputs.type == 'stable' }}
     needs: make-release
+    permissions:
+      contents: write
     steps:
       - name: Check out main
         uses: actions/checkout@v4
