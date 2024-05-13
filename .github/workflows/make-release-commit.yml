@@ -41,11 +41,8 @@ jobs:
     steps:
       - name: Output Inputs
         run: echo "${{ toJSON(github.event.inputs) }}"
-      - name: Check out main
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
-          ref: main
-          persist-credentials: false
           fetch-depth: 0
           lfs: true
       - name: Set git configs for bumpversion
@@ -119,11 +116,8 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Check out main
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
-          ref: main
-          persist-credentials: false
           fetch-depth: 0
           lfs: true
       - name: Set git configs for bumpversion
