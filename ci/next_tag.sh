@@ -20,7 +20,7 @@ else
     PREV_TAG=$(last_stable_tag)
   else
     # If there are existing beta tags, increment the last beta number to get the next one
-    LAST_BETA_NUMBER=$(echo $LAST_BETA_TAG | sed "s/v${CURRENT_VERSION}-beta.//")
+    LAST_BETA_NUMBER=$(echo $LAST_BETA_TAG | sed "s/${PREFIX}v${CURRENT_VERSION}-beta.//")
     NEXT_BETA_NUMBER=$((LAST_BETA_NUMBER + 1))
     NEXT_BETA_TAG="${PREFIX}v${CURRENT_VERSION}-beta.${NEXT_BETA_NUMBER}"
     PREV_TAG=$LAST_BETA_TAG
