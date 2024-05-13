@@ -46,7 +46,7 @@ class CohereReranker(Reranker):
         # ensure version is at least 0.5.0
         if (
             hasattr(cohere, "__version__")
-            and semver.compare(cohere.__version__, "5.0.0") < 0
+            and semver.Version.parse(cohere.__version__).compare("5.0.0") < 0
         ):
             raise ValueError(
                 f"cohere version must be at least 0.5.0, found {cohere.__version__}"
