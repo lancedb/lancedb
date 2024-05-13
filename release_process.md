@@ -8,6 +8,25 @@ The Python package is versioned and released separately from the Rust and Node.j
 ones. For Rust and Node.js, the release process is shared between `lancedb` and
 `vectordb` for now.
 
+## Preview releases
+
+LanceDB has stable releases about every 2 weeks, but in between we make frequent
+preview releases. These are released as `0.x.y.betaN` versions. They receive the
+same level of testing as normal releases and let you get access to the latest
+features. However, we do not guarantee that preview releases will be available
+more than 6 months after they are released. Once your application is stable, we
+recommend switching to stable releases.
+
+## Making a preview release
+
+To make a preview release, you can call the `Create Release Commit` GitHub action
+with the default parameters.
+
+## Making a stable release
+
+To make a stable release, you can call the `Create Release Commit` GitHub action
+with release type parameter set to `stable`.
+
 ## Breaking changes
 
 We try to avoid breaking changes, but sometimes they are necessary. When there

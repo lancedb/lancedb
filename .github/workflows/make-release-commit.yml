@@ -6,25 +6,41 @@ on:
       dry_run:
         description: 'Dry run (create the local commit/tags but do not push it)'
         required: true
-        default: "false"
-        type: choice
-        options:
-          - "true"
-          - "false"
-      part:
+        default: false
+        type: boolean
+      type:
         description: 'What kind of release is this?'
         required: true
-        default: 'patch'
+        default: 'preview'
         type: choice
         options:
-          - patch
-          - minor
-          - major
+          - preview
+          - stable
+      draft-release:
+        description: 'Create a draft release on GitHub'
+        required: true
+        default: false
+        type: boolean
+      python:
+        description: 'Make a Python release'
+        required: true
+        default: true
+        type: boolean
+      other:
+        description: 'Make a Node/Rust release'
+        required: true
+        default: false
+        type: boolean
 
 jobs:
-  bump-version:
+  make-release:
+    # Creates tag and GH release. The GH release will trigger the build and release jobs.
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
     steps:
+      - name: Output Inputs
+        run: echo "${{ toJSON(github.event.inputs) }}"
       - name: Check out main
         uses: actions/checkout@v4
         with:
@@ -41,19 +57,90 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Bump version, create tag and commit
+      - name: Create Python tag
+        id: create_python_tag
+        if: ${{ inputs.python }}
+        working-directory: python
+        env:
+          RELEASE_TYPE: ${{ inputs.type }}
+        run: |
+          CURRENT_VERSION=$(cargo metadata --no-deps --format-version 1 | jq '.packages[0].version' | xargs echo)
+          NEXT_TAG=$(ci/next_tag.sh $CURRENT_VERSION $RELEASE_TYPE "python-")
+          echo "Creating tag $NEXT_TAG"
+          git tag $NEXT_TAG
+          echo "python_tag=$NEXT_TAG" >> $GITHUB_OUTPUT
+      - name: Create tag
+        id: create_tag
+        if: ${{ inputs.other }}
+        env:
+          RELEASE_TYPE: ${{ inputs.type }}
+        run: |
+          CURRENT_VERSION=$(cargo metadata --no-deps --format-version 1 | jq '.packages[0].version' | xargs echo)
+          NEXT_TAG=$(ci/next_tag.sh $CURRENT_VERSION $RELEASE_TYPE)
+          echo "Creating tag $NEXT_TAG"
+          git tag $NEXT_TAG
+          echo "tag=$NEXT_TAG" >> $GITHUB_OUTPUT
+      - name: Push new version tag
+        if: ${{ !inputs.dry_run }}
+        uses: ad-m/github-push-action@master
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          branch: ${{ github.ref }}
+          tags: true
+      - name: Create Python GH release
+        if: ${{ !inputs.dry_run && inputs.python }}
+        uses: release-drafter/release-drafter@v6
+        with:
+          config-name: release-drafter-python.yml
+          name: Python LanceDB ${{ steps.create_python_tag.outputs.python_tag }}
+          tag: ${{ steps.create_python_tag.outputs.python_tag }}
+          prerelease: ${{ inputs.draft-release }}
+          disable-autolabeler: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create GH release
+        if: ${{ !inputs.dry_run && inputs.other }}
+        uses: release-drafter/release-drafter@v6
+        with:
+          config-name: release-drafter.yml
+          name: Node/Rust LanceDB ${{ steps.create_tag.outputs.tag }}
+          tag: ${{ steps.create_tag.outputs.tag }}
+          prerelease: ${{ inputs.draft-release }}
+          disable-autolabeler: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Bumps the version on main for the next release.
+  # This only applies for stable releases.
+  increment-version:
+    runs-on: ubuntu-latest
+    if: ${{ inputs.type == 'stable' }}
+    needs: make-release
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+          fetch-depth: 0
+          lfs: true
+      - name: Set git configs for bumpversion
+        shell: bash
+        run: |
+          git config user.name 'Lance Release'
+          git config user.email 'lance-dev@lancedb.com'
+      - name: Bump version
         run: |
           pip install bump2version
-          bumpversion --verbose ${{ inputs.part }}
-      - name: Push new version and tag
+          bumpversion --verbose patch
+      - name: Push new version commit
         if: ${{ inputs.dry_run }} == "false"
         uses: ad-m/github-push-action@master
         with:
-          github_token: ${{ secrets.LANCEDB_RELEASE_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
           branch: main
           tags: true
       - uses: ./.github/workflows/update_package_lock
         if: ${{ inputs.dry_run }} == "false"
         with:
-          github_token: ${{ secrets.LANCEDB_RELEASE_TOKEN }}
-
+          github_token: ${{ secrets.GITHUB_TOKEN }}

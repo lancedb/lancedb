@@ -1,0 +1,32 @@
+include-labels:
+  - python
+
+exclude-labels:
+  - ci
+  - chore
+
+categories:
+  - title: 🏆 Highlights
+    labels:
+      - highlight
+  - title: 🛠 Breaking Changes
+    labels:
+      - breaking-change
+  - title: ⚠️ Deprecations 
+    labels:
+     - deprecation
+  - title: 🎉 New Features
+    labels:
+      - enhancement
+  - title: 🐛 Bug Fixes
+    labels:
+      - bug
+  - title: 🚀 Performance Improvements
+    labels:
+      - performance
+  - title: 📚 Documentation
+    labels:
+      - documentation
+  - title: Other Changes
+    labels:
+     - "*"
