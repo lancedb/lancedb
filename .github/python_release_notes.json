@@ -1,0 +1,40 @@
+{
+    "ignore_labels": ["ci", "chore"],
+    "categories": [
+        {
+            "title": "## 🏆 Highlights",
+            "labels": ["python", "highlight"],
+            "exhaustive": true
+        },
+        {
+            "title": "## 🛠 Breaking Changes",
+            "labels": ["python", "breaking-change"],
+            "exhaustive": true
+        },
+        {
+            "title": "## ⚠️ Deprecations ",
+            "labels": ["python", "deprecation"],
+            "exhaustive": true
+        },
+        {
+            "title": "## 🎉 New Features",
+            "labels": ["python", "enhancement"],
+            "exhaustive": true
+        },
+        {
+            "title": "## 🐛 Bug Fixes",
+            "labels": ["python", "bug"],
+            "exhaustive": true
+        },
+        {
+            "title": "## 📚 Documentation",
+            "labels": ["python", "documentation"],
+            "exhaustive": true
+        },
+        {
+            "title": "## 🚀 Performance Improvements",
+            "labels": ["python", "performance"],
+            "exhaustive": true
+        }
+    ]
+}

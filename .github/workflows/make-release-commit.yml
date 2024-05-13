@@ -61,30 +61,30 @@ jobs:
         env:
           RELEASE_TYPE: ${{ inputs.type }}
         run: |
-          CURRENT_VERSION=$(
-            cargo metadata --no-deps --format-version 1 \
-            | jq '.packages[] | select(.name == "lancedb-python") | .version' \
-            | xargs echo
-          )
-          NEXT_TAG=$(bash ../ci/next_tag.sh $CURRENT_VERSION $RELEASE_TYPE "python-")
+          CURRENT_VERSION=$(bash ../ci/get_version.sh lancedb-python)
+          TAGS=$(bash ../ci/next_tag.sh $CURRENT_VERSION $RELEASE_TYPE "python-")
+          NEXT_TAG=${TAGS%,*}
+          PREV_TAG=${TAGS#*,}
+          echo "Found previous tag $PREV_TAG"
           echo "Creating tag $NEXT_TAG"
           git tag $NEXT_TAG
           echo "python_tag=$NEXT_TAG" >> $GITHUB_OUTPUT
+          echo "python_tag_prev=$PREV_TAG" >> $GITHUB_OUTPUT
       - name: Create tag
         id: create_tag
         if: ${{ inputs.other }}
         env:
           RELEASE_TYPE: ${{ inputs.type }}
         run: |
-          CURRENT_VERSION=$(
-            cargo metadata --no-deps --format-version 1 \
-            | jq '.packages[] | select(.name == "lancedb") | .version' \
-            | xargs echo
-          )
-          NEXT_TAG=$(ci/next_tag.sh $CURRENT_VERSION $RELEASE_TYPE)
+          CURRENT_VERSION=$(bash ../ci/get_version.sh lancedb)
+          TAGS=$(ci/next_tag.sh $CURRENT_VERSION $RELEASE_TYPE)
+          NEXT_TAG=${TAGS%,*}
+          PREV_TAG=${TAGS#*,}
+          echo "Found previous tag $PREV_TAG"
           echo "Creating tag $NEXT_TAG"
           git tag $NEXT_TAG
           echo "tag=$NEXT_TAG" >> $GITHUB_OUTPUT
+          echo "tag_prev=$PREV_TAG" >> $GITHUB_OUTPUT
       - name: Push new version tag
         if: ${{ !inputs.dry_run }}
         uses: ad-m/github-push-action@master
@@ -92,28 +92,48 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           branch: ${{ github.ref }}
           tags: true
+      # Python release
+      - name: Create Python Release Notes
+        id: python_release_notes
+        uses: mikepenz/release-changelog-builder-action@v4
+        if: ${{ inputs.python }}
+        with:
+          configuration: python_release_notes.json
+          ignorePreReleases: ${{ inputs.type == 'stable' }}
+          toTag: ${{ steps.create_python_tag.outputs.python_tag }}
+          fromTag: ${{ steps.create_python_tag.outputs.python_tag_prev }}
       - name: Create Python GH release
         if: ${{ !inputs.dry_run && inputs.python }}
-        uses: release-drafter/release-drafter@v6
+        uses: softprops/action-gh-release@v2
         with:
-          config-name: release-drafter-python.yml
+          prerelease: ${{ inputs.type == 'preview' }}
+          draft: ${{ inputs.draft-release }}
+          tag_name: ${{ steps.create_python_tag.outputs.tag }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          generate_release_notes: false
           name: Python LanceDB ${{ steps.create_python_tag.outputs.python_tag }}
-          tag: ${{ steps.create_python_tag.outputs.python_tag }}
-          prerelease: ${{ inputs.draft-release }}
-          disable-autolabeler: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Create GH release
-        if: ${{ !inputs.dry_run && inputs.other }}
-        uses: release-drafter/release-drafter@v6
+          body: ${{ steps.python_release_notes.outputs.changelog }}
+      # Node/Rust release
+      - name: Create Node/Rust Release Notes
+        id: release_notes
+        uses: mikepenz/release-changelog-builder-action@v4
+        if: ${{ inputs.python }}
         with:
-          config-name: release-drafter.yml
+          configuration: release_notes.json
+          ignorePreReleases: ${{ inputs.type == 'stable' }}
+          toTag: ${{ steps.create_tag.outputs.tag }}
+          fromTag: ${{ steps.create_tag.outputs.tag_prev }}
+      - name: Create GH release
+        if: ${{ !inputs.dry_run && inputs.python }}
+        uses: softprops/action-gh-release@v2
+        with:
+          prerelease: ${{ inputs.type == 'preview' }}
+          draft: ${{ inputs.draft-release }}
+          tag_name: ${{ steps.create_tag.outputs.tag }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          generate_release_notes: false
           name: Node/Rust LanceDB ${{ steps.create_tag.outputs.tag }}
-          tag: ${{ steps.create_tag.outputs.tag }}
-          prerelease: ${{ inputs.draft-release }}
-          disable-autolabeler: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          body: ${{ steps.release_notes.outputs.changelog }}
 
   # Bumps the version on main for the next release.
   # This only applies for stable releases.

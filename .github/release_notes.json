@@ -1,0 +1,36 @@
+{
+    "ignore_labels": ["ci", "chore"],
+    "categories": [
+        {
+            "title": "## 🏆 Highlights",
+            "labels": ["highlight"]
+        },
+        {
+            "title": "## 🛠 Breaking Changes",
+            "labels": ["breaking-change"]
+        },
+        {
+            "title": "## ⚠️ Deprecations ",
+            "labels": ["deprecation"]
+        },
+        {
+            "title": "## 🎉 New Features",
+            "labels": ["enhancement"]
+        },
+        {
+            "title": "## 🐛 Bug Fixes",
+            "labels": ["bug"]
+        },
+        {
+            "title": "## 📚 Documentation",
+            "labels": ["documentation"]
+        },
+        {
+            "title": "## 🚀 Performance Improvements",
+            "labels": ["performance"]
+        },
+        {
+            "title": "## Other Changes"
+        }
+    ]
+}
