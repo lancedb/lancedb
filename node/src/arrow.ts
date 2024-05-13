@@ -611,7 +611,6 @@ function validateSchemaEmbeddings(
   // Finally, we check if those missing embedding fields are `this._embeddings`
   // if they are not, we throw an error
   for (const field of schema.fields) {
-    // Do we generally assume that any FixedSizeList is an embedding?
     if (field.type instanceof FixedSizeList) {
       if (!(data instanceof ArrowTable)) {
         if (data.length !== 0 && data?.[0]?.[field.name] === undefined) {
