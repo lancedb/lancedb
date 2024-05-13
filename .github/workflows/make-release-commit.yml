@@ -32,7 +32,7 @@ on:
       other:
         description: 'Make a Node/Rust release'
         required: true
-        default: false
+        default: true
         type: boolean
 
 jobs:
@@ -68,7 +68,7 @@ jobs:
           RELEASE_TYPE: ${{ inputs.type }}
         run: |
           CURRENT_VERSION=$(cargo metadata --no-deps --format-version 1 | jq '.packages[0].version' | xargs echo)
-          NEXT_TAG=$(ci/next_tag.sh $CURRENT_VERSION $RELEASE_TYPE "python-")
+          NEXT_TAG=$(bash ../ci/next_tag.sh $CURRENT_VERSION $RELEASE_TYPE "python-")
           echo "Creating tag $NEXT_TAG"
           git tag $NEXT_TAG
           echo "python_tag=$NEXT_TAG" >> $GITHUB_OUTPUT
@@ -134,7 +134,14 @@ jobs:
         run: |
           git config user.name 'Lance Release'
           git config user.email 'lance-dev@lancedb.com'
+      - name: Bump Python version
+        if: ${{ inputs.python }}
+        working-directory: python
+        run: |
+          pip install bump2version
+          bumpversion --verbose patch
       - name: Bump version
+        if: ${{ inputs.other }}
         run: |
           pip install bump2version
           bumpversion --verbose patch
