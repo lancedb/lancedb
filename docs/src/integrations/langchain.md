@@ -1,6 +1,5 @@
 # Langchain
-<!-- ![Illustration](../assets/langchain.png) -->
-<img src="../assets/langchain.png" alt="image" width="500" height="auto">|
+![Illustration](../assets/langchain.png)
 
 ## Quick Start
 You can load your document data using langchain's loaders, for this example we are using `TextLoader` and `OpenAIEmbeddings` as the embedding model.
@@ -26,18 +25,19 @@ print(docs[0].page_content)
 ```
 
 ## Documentation
-In the above example `LanceDB` vector store class object is created using `from_documents()` method  which is a `classmethod` and returns the initialized class object. You can also use `LanceDB.from_texts(texts: List[str],embedding: Embeddings)` class method.  
+In the above example `LanceDB` vector store class object is created using `from_documents()` method  which is a `classmethod` and returns the initialized class object. 
+You can also use `LanceDB.from_texts(texts: List[str],embedding: Embeddings)` class method.  
 
-The exhaustive list of parameters for `LanceDB` vector store are :
-- `connection`: (Optional) `lancedb.db.LanceDBConnection` connection object to use. If not provided, a new connection will be created.
-- `embedding`: Langchain embedding model.
-- `vector_key`: (Optional) Column name to use for vector's in the table. Defaults to `vector`.
-- `id_key`: (Optional) Column name to use for id's in the table. Defaults to `id`.
-- `text_key`: (Optional) Column name to use for text in the table. Defaults to `text`.
-- `table_name`: (Optional) Name of your table in the database. Defaults to `vectorstore`.
-- `api_key`: (Optional) API key to use for LanceDB cloud database. Defaults to None.
-- `region`: (Optional) Region to use for LanceDB cloud database. Only for LanceDB Cloud. Defaults to None.
-- `mode`: (Optional) Mode to use for adding data to the table. Defaults to `overwrite`.
+The exhaustive list of parameters for `LanceDB` vector store are :  
+- `connection`: (Optional) `lancedb.db.LanceDBConnection` connection object to use.  If not provided, a new connection will be created.  
+- `embedding`: Langchain embedding model.  
+- `vector_key`: (Optional) Column name to use for vector's in the table. Defaults to `'vector'`.   
+- `id_key`: (Optional) Column name to use for id's in the table. Defaults to `'id'`.  
+- `text_key`: (Optional) Column name to use for text in the table. Defaults to `'text'`.  
+- `table_name`: (Optional) Name of your table in the database. Defaults to `'vectorstore'`.  
+- `api_key`: (Optional) API key to use for LanceDB cloud database. Defaults to `None`.  
+- `region`: (Optional) Region to use for LanceDB cloud database. Only for LanceDB Cloud, defaults to `None`.  
+- `mode`: (Optional) Mode to use for adding data to the table. Defaults to `'overwrite'`.  
 
 ```python
 db_url = "db://lang_test" # url of db you created
