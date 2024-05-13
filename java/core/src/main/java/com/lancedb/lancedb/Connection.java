@@ -50,7 +50,31 @@ public class Connection implements Closeable {
    * @return the table names
    */
   public List<String> tableNames() {
-    return nativeTableNames(uri);
+    return nativeTableNames(uri, Optional.empty(), Optional.empty());
+  }
+
+  /**
+   * Get the names of filtered tables in the database. The names are sorted in
+   * ascending order.
+   *
+   * @param limit The number of results to return.
+   * @return the table names
+   */
+  public List<String> tableNames(int limit) {
+    return tableNames(Optional.empty(), Optional.of(limit));
+  }
+
+  /**
+   * Get the names of filtered tables in the database. The names are sorted in
+   * ascending order.
+   *
+   * @param startAfter If present, only return names that come lexicographically after the supplied
+   *                   value. This can be combined with limit to implement pagination
+   *                   by setting this to the last table name from the previous page.
+   * @return the table names
+   */
+  public List<String> tableNames(String startAfter) {
+    return tableNames(Optional.of(startAfter), Optional.empty());
   }
 
   /**
@@ -64,10 +88,15 @@ public class Connection implements Closeable {
    * @return the table names
    */
   public List<String> tableNames(String startAfter, int limit) {
-    return nativeTableNames(uri);
+    return tableNames(Optional.of(startAfter), Optional.of(limit));
   }
 
-  private static native List<String> nativeTableNames(String uri);
+  public List<String> tableNames(Optional<String> startAfter, Optional<Integer> limit) {
+    return nativeTableNames(uri, startAfter, limit);
+  }
+
+  private static native List<String> nativeTableNames(String uri,
+      Optional<String> startAfter, Optional<Integer> limit);
 
   private Connection(String uri) {}
 

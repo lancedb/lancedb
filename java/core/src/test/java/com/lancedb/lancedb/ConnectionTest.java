@@ -48,4 +48,26 @@ public class ConnectionTest {
       assertEquals("write_stream", tableNames.get(3));
     }
   }
+
+  @Test
+  void tableNmaesStartAfter() {
+    ClassLoader classLoader = getClass().getClassLoader();
+    URL lanceDbURL = classLoader.getResource("example_db");
+    try (Connection conn = Connection.connect(lanceDbURL.toString())) {
+      List<String> tableNames = conn.tableNames("new_empty_dataset");
+      assertEquals("test", tableNames.get(0));
+      assertEquals("write_stream", tableNames.get(1));
+    }
+  }
+
+  @Test
+  void tableNmaesLimit() {
+    ClassLoader classLoader = getClass().getClassLoader();
+    URL lanceDbURL = classLoader.getResource("example_db");
+    try (Connection conn = Connection.connect(lanceDbURL.toString())) {
+      List<String> tableNames = conn.tableNames(2);
+      assertEquals("dataset_version", tableNames.get(0));
+      assertEquals("new_empty_dataset", tableNames.get(1));
+    }
+  }
 }
