@@ -30,7 +30,7 @@ import {
   type Float,
   DataType,
   Binary,
-  Float32,
+  Float32
 } from "apache-arrow";
 import { type EmbeddingFunction } from "./index";
 import { sanitizeSchema } from "./sanitize";
@@ -79,7 +79,7 @@ export class MakeArrowTableOptions {
    * vector column.
    */
   vectorColumns: Record<string, VectorColumnOptions> = {
-    vector: new VectorColumnOptions(),
+    vector: new VectorColumnOptions()
   };
 
   embeddings?: EmbeddingFunction<any>;
@@ -211,6 +211,7 @@ export function makeArrowTable(
     opt.schema = sanitizeSchema(opt.schema);
     opt.schema = validateSchemaEmbeddings(opt.schema, data, opt.embeddings);
   }
+
   const columns: Record<string, Vector> = {};
   // TODO: sample dataset to find missing columns
   // Prefer the field ordering of the schema, if present
@@ -271,8 +272,8 @@ export function makeArrowTable(
     // then patch the schema of the batches so we can use
     // `new ArrowTable(schema, batches)` which does not do any schema inference
     const firstTable = new ArrowTable(columns);
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
     const batchesFixed = firstTable.batches.map(
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
       (batch) => new RecordBatch(opt.schema!, batch.data)
     );
     return new ArrowTable(opt.schema, batchesFixed);
@@ -304,7 +305,7 @@ function makeListVector(lists: any[][]): Vector<any> {
   }
 
   const listBuilder = makeBuilder({
-    type: new List(new Field("item", inferredType, true)),
+    type: new List(new Field("item", inferredType, true))
   });
   for (const list of lists) {
     listBuilder.append(list);
@@ -580,7 +581,7 @@ function alignBatch(batch: RecordBatch, schema: Schema): RecordBatch {
     type: new Struct(schema.fields),
     length: batch.numRows,
     nullCount: batch.nullCount,
-    children: alignedChildren,
+    children: alignedChildren
   });
   return new RecordBatch(schema, newData);
 }
@@ -599,7 +600,7 @@ export function createEmptyTable(schema: Schema): ArrowTable {
 
 function validateSchemaEmbeddings(
   schema: Schema<any>,
-  data: Array<Record<string, unknown>> | ArrowTable<any>,
+  data: Array<Record<string, unknown>>,
   embeddings: EmbeddingFunction<any> | undefined
 ) {
   const fields = [];
@@ -612,18 +613,10 @@ function validateSchemaEmbeddings(
   // if they are not, we throw an error
   for (const field of schema.fields) {
     if (field.type instanceof FixedSizeList) {
-      if (!(data instanceof ArrowTable)) {
-        if (data.length !== 0 && data?.[0]?.[field.name] === undefined) {
-          missingEmbeddingFields.push(field);
-        } else {
-          fields.push(field);
-        }
+      if (data.length !== 0 && data?.[0]?.[field.name] === undefined) {
+        missingEmbeddingFields.push(field);
       } else {
-        if (data.getChild(field.name) !== null) {
-          missingEmbeddingFields.push(field);
-        } else {
-          fields.push(field);
-        }
+        fields.push(field);
       }
     } else {
       fields.push(field);
@@ -631,11 +624,14 @@ function validateSchemaEmbeddings(
   }
 
   if (missingEmbeddingFields.length > 0 && embeddings === undefined) {
+    console.log({ missingEmbeddingFields, embeddings });
+
     throw new Error(
       `Table has embeddings: "${missingEmbeddingFields
         .map((f) => f.name)
         .join(",")}", but no embedding function was provided`
     );
   }
+
   return new Schema(fields);
 }

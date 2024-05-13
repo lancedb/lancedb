@@ -12,12 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import {
-  type Schema,
-  Table as ArrowTable,
-  tableFromIPC,
-  FixedSizeList
-} from "apache-arrow";
+import { type Schema, Table as ArrowTable, tableFromIPC } from "apache-arrow";
 import {
   createEmptyTable,
   fromRecordsToBuffer,
