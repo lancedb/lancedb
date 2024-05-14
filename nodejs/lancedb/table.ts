@@ -56,7 +56,6 @@ export interface OptimizeOptions {
    * If set then all versions older than the given date
    * be removed.  The current version will never be removed.
    * The default is 7 days
-   *
    * @example
    * // Delete all versions older than 1 day
    * const olderThan = new Date();
