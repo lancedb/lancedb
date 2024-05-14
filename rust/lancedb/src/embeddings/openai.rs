@@ -97,6 +97,7 @@ impl std::fmt::Debug for OpenAIEmbeddingFunction {
 }
 
 impl OpenAIEmbeddingFunction {
+    /// Create a new OpenAIEmbeddingFunction
     pub fn new<S: Into<String>, A: Into<String>>(source_column: S, api_key: A) -> Self {
         Self::new_impl(
             source_column.into(),
@@ -130,11 +131,14 @@ impl OpenAIEmbeddingFunction {
             org_id: None,
         }
     }
+
+    /// To use a API base url different from default "https://api.openai.com/v1"
     pub fn api_base<S: Into<String>>(mut self, api_base: S) -> Self {
         self.api_base = Some(api_base.into());
         self
     }
 
+    /// To use a different OpenAI organization id other than default
     pub fn org_id<S: Into<String>>(mut self, org_id: S) -> Self {
         self.org_id = Some(org_id.into());
         self
