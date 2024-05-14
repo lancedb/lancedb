@@ -13,25 +13,25 @@
 // limitations under the License.
 
 import {
-  Field,
-  makeBuilder,
-  RecordBatchFileWriter,
-  Utf8,
-  type Vector,
-  FixedSizeList,
-  vectorFromArray,
-  Schema,
   Table as ArrowTable,
-  RecordBatchStreamWriter,
+  Binary,
+  DataType,
+  Field,
+  FixedSizeList,
+  type Float,
+  Float32,
   List,
   RecordBatch,
-  makeData,
+  RecordBatchFileWriter,
+  RecordBatchStreamWriter,
+  Schema,
   Struct,
-  type Float,
-  DataType,
-  Binary,
-  Float32,
+  Utf8,
+  type Vector,
+  makeBuilder,
+  makeData,
   type makeTable,
+  vectorFromArray,
 } from "apache-arrow";
 import { type EmbeddingFunction } from "./embedding/embedding_function";
 import { sanitizeSchema } from "./sanitize";
@@ -315,7 +315,7 @@ function makeListVector(lists: unknown[][]): Vector<unknown> {
     throw Error("Cannot infer list vector from empty array or empty list");
   }
   const sampleList = lists[0];
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // biome-ignore lint/suspicious/noExplicitAny: skip
   let inferredType: any;
   try {
     const sampleVector = makeVector(sampleList);
@@ -339,7 +339,7 @@ function makeVector(
   values: unknown[],
   type?: DataType,
   stringAsDictionary?: boolean,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // biome-ignore lint/suspicious/noExplicitAny: skip
 ): Vector<any> {
   if (type !== undefined) {
     // No need for inference, let Arrow create it

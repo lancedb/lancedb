@@ -12,14 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { RecordBatch, tableFromIPC, Table as ArrowTable } from "apache-arrow";
+import { Table as ArrowTable, RecordBatch, tableFromIPC } from "apache-arrow";
+import { type IvfPqOptions } from "./indices";
 import {
   RecordBatchIterator as NativeBatchIterator,
   Query as NativeQuery,
   Table as NativeTable,
   VectorQuery as NativeVectorQuery,
 } from "./native";
-import { type IvfPqOptions } from "./indices";
 export class RecordBatchIterator implements AsyncIterator<RecordBatch> {
   private promisedInner?: Promise<NativeBatchIterator>;
   private inner?: NativeBatchIterator;
@@ -29,7 +29,7 @@ export class RecordBatchIterator implements AsyncIterator<RecordBatch> {
     this.promisedInner = promise;
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // biome-ignore lint/suspicious/noExplicitAny: skip
   async next(): Promise<IteratorResult<RecordBatch<any>>> {
     if (this.inner === undefined) {
       this.inner = await this.promisedInner;
@@ -56,7 +56,9 @@ export class QueryBase<
   QueryType,
 > implements AsyncIterable<RecordBatch>
 {
-  protected constructor(protected inner: NativeQueryType) {}
+  protected constructor(protected inner: NativeQueryType) {
+    // intentionally empty
+  }
 
   /**
    * A filter statement to be applied to this query.
@@ -150,7 +152,7 @@ export class QueryBase<
     return new RecordBatchIterator(this.nativeExecute());
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // biome-ignore lint/suspicious/noExplicitAny: skip
   [Symbol.asyncIterator](): AsyncIterator<RecordBatch<any>> {
     const promise = this.nativeExecute();
     return new RecordBatchIterator(promise);
@@ -368,7 +370,7 @@ export class Query extends QueryBase<NativeQuery, Query> {
    * a default `limit` of 10 will be used.  @see {@link Query#limit}
    */
   nearestTo(vector: unknown): VectorQuery {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // biome-ignore lint/suspicious/noExplicitAny: skip
     const vectorQuery = this.inner.nearestTo(Float32Array.from(vector as any));
     return new VectorQuery(vectorQuery);
   }

@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { type EmbeddingFunction } from "./embedding_function";
 import type OpenAI from "openai";
+import { type EmbeddingFunction } from "./embedding_function";
 
 export class OpenAIEmbeddingFunction implements EmbeddingFunction<string> {
   private readonly _openai: OpenAI;
