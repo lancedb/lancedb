@@ -1,6 +1,11 @@
 {
 	"$schema": "https://biomejs.dev/schemas/1.7.3/schema.json",
-	"organizeImports": { "enabled": true },
+	"organizeImports": {
+		"enabled": true
+	},
+	"formatter": {
+		"indentStyle": "space"
+	},
 	"linter": {
 		"enabled": true,
 		"rules": {
@@ -45,7 +50,9 @@
 				"useBlockStatements": "off",
 				"useNamingConvention": {
 					"level": "error",
-					"options": { "strictCase": false }
+					"options": {
+						"strictCase": false
+					}
 				}
 			},
 			"suspicious": {
@@ -78,12 +85,23 @@
 				"useValidTypeof": "error"
 			}
 		},
-		"ignore": ["**/dist/**/*", "**/native.js", "**/native.d.ts"]
+		"ignore": [
+			"**/dist/**/*",
+			"**/native.js",
+			"**/native.d.ts"
+		]
 	},
-	"javascript": { "globals": [] },
+	"javascript": {
+		"globals": []
+	},
 	"overrides": [
 		{
-			"include": ["**/*.ts", "**/*.tsx", "**/*.mts", "**/*.cts"],
+			"include": [
+				"**/*.ts",
+				"**/*.tsx",
+				"**/*.mts",
+				"**/*.cts"
+			],
 			"linter": {
 				"rules": {
 					"correctness": {

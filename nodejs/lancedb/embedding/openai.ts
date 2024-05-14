@@ -16,47 +16,47 @@ import type OpenAI from "openai";
 import { type EmbeddingFunction } from "./embedding_function";
 
 export class OpenAIEmbeddingFunction implements EmbeddingFunction<string> {
-	private readonly _openai: OpenAI;
-	private readonly _modelName: string;
+  private readonly _openai: OpenAI;
+  private readonly _modelName: string;
 
-	constructor(
-		sourceColumn: string,
-		openAIKey: string,
-		modelName: string = "text-embedding-ada-002",
-	) {
-		/**
-		 * @type {import("openai").default}
-		 */
-		// eslint-disable-next-line @typescript-eslint/naming-convention
-		let Openai;
-		try {
-			// eslint-disable-next-line @typescript-eslint/no-var-requires
-			Openai = require("openai");
-		} catch {
-			throw new Error("please install openai@^4.24.1 using npm install openai");
-		}
+  constructor(
+    sourceColumn: string,
+    openAIKey: string,
+    modelName: string = "text-embedding-ada-002",
+  ) {
+    /**
+     * @type {import("openai").default}
+     */
+    // eslint-disable-next-line @typescript-eslint/naming-convention
+    let Openai;
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      Openai = require("openai");
+    } catch {
+      throw new Error("please install openai@^4.24.1 using npm install openai");
+    }
 
-		this.sourceColumn = sourceColumn;
-		const configuration = {
-			apiKey: openAIKey,
-		};
+    this.sourceColumn = sourceColumn;
+    const configuration = {
+      apiKey: openAIKey,
+    };
 
-		this._openai = new Openai(configuration);
-		this._modelName = modelName;
-	}
+    this._openai = new Openai(configuration);
+    this._modelName = modelName;
+  }
 
-	async embed(data: string[]): Promise<number[][]> {
-		const response = await this._openai.embeddings.create({
-			model: this._modelName,
-			input: data,
-		});
+  async embed(data: string[]): Promise<number[][]> {
+    const response = await this._openai.embeddings.create({
+      model: this._modelName,
+      input: data,
+    });
 
-		const embeddings: number[][] = [];
-		for (let i = 0; i < response.data.length; i++) {
-			embeddings.push(response.data[i].embedding);
-		}
-		return embeddings;
-	}
+    const embeddings: number[][] = [];
+    for (let i = 0; i < response.data.length; i++) {
+      embeddings.push(response.data[i].embedding);
+    }
+    return embeddings;
+  }
 
-	sourceColumn: string;
+  sourceColumn: string;
 }
