@@ -55,7 +55,6 @@ export interface OptimizeOptions {
   /**
    * If set then all versions older than the given date
    * be removed.  The current version will never be removed.
-   *
    * The default is 7 days
    *
    * @example
@@ -379,9 +378,9 @@ export class Table {
    *
    *  Optimization covers three operations:
    *
-   *   * Compaction: Merges small files into larger ones
-   *   * Prune: Removes old versions of the dataset
-   *   * Index: Optimizes the indices, adding new data to existing indices
+   *  - Compaction: Merges small files into larger ones
+   *  - Prune: Removes old versions of the dataset
+   *  - Index: Optimizes the indices, adding new data to existing indices
    *
    *
    *  Experimental API
