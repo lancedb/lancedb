@@ -13,30 +13,30 @@
 // limitations under the License.
 
 export {
-  WriteOptions,
-  WriteMode,
-  AddColumnsSql,
-  ColumnAlteration,
-  ConnectionOptions,
+	WriteOptions,
+	WriteMode,
+	AddColumnsSql,
+	ColumnAlteration,
+	ConnectionOptions,
 } from "./native.js";
 export {
-  makeArrowTable,
-  MakeArrowTableOptions,
-  Data,
-  VectorColumnOptions,
+	makeArrowTable,
+	MakeArrowTableOptions,
+	Data,
+	VectorColumnOptions,
 } from "./arrow";
 export {
-  connect,
-  Connection,
-  CreateTableOptions,
-  TableNamesOptions,
+	connect,
+	Connection,
+	CreateTableOptions,
+	TableNamesOptions,
 } from "./connection";
 export {
-  ExecutableQuery,
-  Query,
-  QueryBase,
-  VectorQuery,
-  RecordBatchIterator,
+	ExecutableQuery,
+	Query,
+	QueryBase,
+	VectorQuery,
+	RecordBatchIterator,
 } from "./query";
 export { Index, IndexOptions, IvfPqOptions } from "./indices";
 export { Table, AddDataOptions, IndexConfig, UpdateOptions } from "./table";

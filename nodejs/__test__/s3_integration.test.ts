@@ -14,206 +14,213 @@
 
 /* eslint-disable @typescript-eslint/naming-convention */
 
-import { connect } from "../dist";
 import {
-  CreateBucketCommand,
-  DeleteBucketCommand,
-  DeleteObjectCommand,
-  HeadObjectCommand,
-  ListObjectsV2Command,
-  S3Client,
-} from "@aws-sdk/client-s3";
-import {
-  CreateKeyCommand,
-  ScheduleKeyDeletionCommand,
-  KMSClient,
+	CreateKeyCommand,
+	KMSClient,
+	ScheduleKeyDeletionCommand,
 } from "@aws-sdk/client-kms";
+import {
+	CreateBucketCommand,
+	DeleteBucketCommand,
+	DeleteObjectCommand,
+	HeadObjectCommand,
+	ListObjectsV2Command,
+	S3Client,
+} from "@aws-sdk/client-s3";
+import { connect } from "../lancedb";
 
 // Skip these tests unless the S3_TEST environment variable is set
 const maybeDescribe = process.env.S3_TEST ? describe : describe.skip;
 
 // These are all keys that are accepted by storage_options
 const CONFIG = {
-  allowHttp: "true",
-  awsAccessKeyId: "ACCESSKEY",
-  awsSecretAccessKey: "SECRETKEY",
-  awsEndpoint: "http://127.0.0.1:4566",
-  awsRegion: "us-east-1",
+	allowHttp: "true",
+	awsAccessKeyId: "ACCESSKEY",
+	awsSecretAccessKey: "SECRETKEY",
+	awsEndpoint: "http://127.0.0.1:4566",
+	awsRegion: "us-east-1",
 };
 
 class S3Bucket {
-  name: string;
-  constructor(name: string) {
-    this.name = name;
-  }
+	name: string;
+	constructor(name: string) {
+		this.name = name;
+	}
 
-  static s3Client() {
-    return new S3Client({
-      region: CONFIG.awsRegion,
-      credentials: {
-        accessKeyId: CONFIG.awsAccessKeyId,
-        secretAccessKey: CONFIG.awsSecretAccessKey,
-      },
-      endpoint: CONFIG.awsEndpoint,
-    });
-  }
+	static s3Client() {
+		return new S3Client({
+			region: CONFIG.awsRegion,
+			credentials: {
+				accessKeyId: CONFIG.awsAccessKeyId,
+				secretAccessKey: CONFIG.awsSecretAccessKey,
+			},
+			endpoint: CONFIG.awsEndpoint,
+		});
+	}
 
-  public static async create(name: string): Promise<S3Bucket> {
-    const client = this.s3Client();
-    // Delete the bucket if it already exists
-    try {
-      await this.deleteBucket(client, name);
-    } catch (e) {
-      // It's fine if the bucket doesn't exist
-    }
-    await client.send(new CreateBucketCommand({ Bucket: name }));
-    return new S3Bucket(name);
-  }
+	public static async create(name: string): Promise<S3Bucket> {
+		const client = this.s3Client();
+		// Delete the bucket if it already exists
+		try {
+			await this.deleteBucket(client, name);
+		} catch {
+			// It's fine if the bucket doesn't exist
+		}
+		// biome-ignore lint/style/useNamingConvention: we dont control s3's api
+		await client.send(new CreateBucketCommand({ Bucket: name }));
+		return new S3Bucket(name);
+	}
 
-  public async delete() {
-    const client = S3Bucket.s3Client();
-    await S3Bucket.deleteBucket(client, this.name);
-  }
+	public async delete() {
+		const client = S3Bucket.s3Client();
+		await S3Bucket.deleteBucket(client, this.name);
+	}
 
-  static async deleteBucket(client: S3Client, name: string) {
-    // Must delete all objects before we can delete the bucket
-    const objects = await client.send(
-      new ListObjectsV2Command({ Bucket: name }),
-    );
-    if (objects.Contents) {
-      for (const object of objects.Contents) {
-        await client.send(
-          new DeleteObjectCommand({ Bucket: name, Key: object.Key }),
-        );
-      }
-    }
+	static async deleteBucket(client: S3Client, name: string) {
+		// Must delete all objects before we can delete the bucket
+		const objects = await client.send(
+			// biome-ignore lint/style/useNamingConvention: we dont control s3's api
+			new ListObjectsV2Command({ Bucket: name }),
+		);
+		if (objects.Contents) {
+			for (const object of objects.Contents) {
+				await client.send(
+					// biome-ignore lint/style/useNamingConvention: we dont control s3's api
+					new DeleteObjectCommand({ Bucket: name, Key: object.Key }),
+				);
+			}
+		}
 
-    await client.send(new DeleteBucketCommand({ Bucket: name }));
-  }
+		// biome-ignore lint/style/useNamingConvention: we dont control s3's api
+		await client.send(new DeleteBucketCommand({ Bucket: name }));
+	}
 
-  public async assertAllEncrypted(path: string, keyId: string) {
-    const client = S3Bucket.s3Client();
-    const objects = await client.send(
-      new ListObjectsV2Command({ Bucket: this.name, Prefix: path }),
-    );
-    if (objects.Contents) {
-      for (const object of objects.Contents) {
-        const metadata = await client.send(
-          new HeadObjectCommand({ Bucket: this.name, Key: object.Key }),
-        );
-        expect(metadata.ServerSideEncryption).toBe("aws:kms");
-        expect(metadata.SSEKMSKeyId).toContain(keyId);
-      }
-    }
-  }
+	public async assertAllEncrypted(path: string, keyId: string) {
+		const client = S3Bucket.s3Client();
+		const objects = await client.send(
+			// biome-ignore lint/style/useNamingConvention: we dont control s3's api
+			new ListObjectsV2Command({ Bucket: this.name, Prefix: path }),
+		);
+		if (objects.Contents) {
+			for (const object of objects.Contents) {
+				const metadata = await client.send(
+					// biome-ignore lint/style/useNamingConvention: we dont control s3's api
+					new HeadObjectCommand({ Bucket: this.name, Key: object.Key }),
+				);
+				expect(metadata.ServerSideEncryption).toBe("aws:kms");
+				expect(metadata.SSEKMSKeyId).toContain(keyId);
+			}
+		}
+	}
 }
 
 class KmsKey {
-  keyId: string;
-  constructor(keyId: string) {
-    this.keyId = keyId;
-  }
+	keyId: string;
+	constructor(keyId: string) {
+		this.keyId = keyId;
+	}
 
-  static kmsClient() {
-    return new KMSClient({
-      region: CONFIG.awsRegion,
-      credentials: {
-        accessKeyId: CONFIG.awsAccessKeyId,
-        secretAccessKey: CONFIG.awsSecretAccessKey,
-      },
-      endpoint: CONFIG.awsEndpoint,
-    });
-  }
+	static kmsClient() {
+		return new KMSClient({
+			region: CONFIG.awsRegion,
+			credentials: {
+				accessKeyId: CONFIG.awsAccessKeyId,
+				secretAccessKey: CONFIG.awsSecretAccessKey,
+			},
+			endpoint: CONFIG.awsEndpoint,
+		});
+	}
 
-  public static async create(): Promise<KmsKey> {
-    const client = this.kmsClient();
-    const key = await client.send(new CreateKeyCommand({}));
-    const keyId = key?.KeyMetadata?.KeyId;
-    if (!keyId) {
-      throw new Error("Failed to create KMS key");
-    }
-    return new KmsKey(keyId);
-  }
+	public static async create(): Promise<KmsKey> {
+		const client = this.kmsClient();
+		const key = await client.send(new CreateKeyCommand({}));
+		const keyId = key?.KeyMetadata?.KeyId;
+		if (!keyId) {
+			throw new Error("Failed to create KMS key");
+		}
+		return new KmsKey(keyId);
+	}
 
-  public async delete() {
-    const client = KmsKey.kmsClient();
-    await client.send(new ScheduleKeyDeletionCommand({ KeyId: this.keyId }));
-  }
+	public async delete() {
+		const client = KmsKey.kmsClient();
+		// biome-ignore lint/style/useNamingConvention: we dont control s3's api
+		await client.send(new ScheduleKeyDeletionCommand({ KeyId: this.keyId }));
+	}
 }
 
 maybeDescribe("storage_options", () => {
-  let bucket: S3Bucket;
-  let kmsKey: KmsKey;
-  beforeAll(async () => {
-    bucket = await S3Bucket.create("lancedb");
-    kmsKey = await KmsKey.create();
-  });
-  afterAll(async () => {
-    await kmsKey.delete();
-    await bucket.delete();
-  });
+	let bucket: S3Bucket;
+	let kmsKey: KmsKey;
+	beforeAll(async () => {
+		bucket = await S3Bucket.create("lancedb");
+		kmsKey = await KmsKey.create();
+	});
+	afterAll(async () => {
+		await kmsKey.delete();
+		await bucket.delete();
+	});
 
-  it("can be used to configure auth and endpoints", async () => {
-    const uri = `s3://${bucket.name}/test`;
-    const db = await connect(uri, { storageOptions: CONFIG });
+	it("can be used to configure auth and endpoints", async () => {
+		const uri = `s3://${bucket.name}/test`;
+		const db = await connect(uri, { storageOptions: CONFIG });
 
-    let table = await db.createTable("test", [{ a: 1, b: 2 }]);
+		let table = await db.createTable("test", [{ a: 1, b: 2 }]);
 
-    let rowCount = await table.countRows();
-    expect(rowCount).toBe(1);
+		let rowCount = await table.countRows();
+		expect(rowCount).toBe(1);
 
-    let tableNames = await db.tableNames();
-    expect(tableNames).toEqual(["test"]);
+		let tableNames = await db.tableNames();
+		expect(tableNames).toEqual(["test"]);
 
-    table = await db.openTable("test");
-    rowCount = await table.countRows();
-    expect(rowCount).toBe(1);
+		table = await db.openTable("test");
+		rowCount = await table.countRows();
+		expect(rowCount).toBe(1);
 
-    await table.add([
-      { a: 2, b: 3 },
-      { a: 3, b: 4 },
-    ]);
-    rowCount = await table.countRows();
-    expect(rowCount).toBe(3);
+		await table.add([
+			{ a: 2, b: 3 },
+			{ a: 3, b: 4 },
+		]);
+		rowCount = await table.countRows();
+		expect(rowCount).toBe(3);
 
-    await db.dropTable("test");
+		await db.dropTable("test");
 
-    tableNames = await db.tableNames();
-    expect(tableNames).toEqual([]);
-  });
+		tableNames = await db.tableNames();
+		expect(tableNames).toEqual([]);
+	});
 
-  it("can configure encryption at connection and table level", async () => {
-    const uri = `s3://${bucket.name}/test`;
-    let db = await connect(uri, { storageOptions: CONFIG });
+	it("can configure encryption at connection and table level", async () => {
+		const uri = `s3://${bucket.name}/test`;
+		let db = await connect(uri, { storageOptions: CONFIG });
 
-    let table = await db.createTable("table1", [{ a: 1, b: 2 }], {
-      storageOptions: {
-        awsServerSideEncryption: "aws:kms",
-        awsSseKmsKeyId: kmsKey.keyId,
-      },
-    });
+		let table = await db.createTable("table1", [{ a: 1, b: 2 }], {
+			storageOptions: {
+				awsServerSideEncryption: "aws:kms",
+				awsSseKmsKeyId: kmsKey.keyId,
+			},
+		});
 
-    let rowCount = await table.countRows();
-    expect(rowCount).toBe(1);
+		let rowCount = await table.countRows();
+		expect(rowCount).toBe(1);
 
-    await table.add([{ a: 2, b: 3 }]);
+		await table.add([{ a: 2, b: 3 }]);
 
-    await bucket.assertAllEncrypted("test/table1.lance", kmsKey.keyId);
+		await bucket.assertAllEncrypted("test/table1.lance", kmsKey.keyId);
 
-    // Now with encryption settings at connection level
-    db = await connect(uri, {
-      storageOptions: {
-        ...CONFIG,
-        awsServerSideEncryption: "aws:kms",
-        awsSseKmsKeyId: kmsKey.keyId,
-      },
-    });
-    table = await db.createTable("table2", [{ a: 1, b: 2 }]);
-    rowCount = await table.countRows();
-    expect(rowCount).toBe(1);
+		// Now with encryption settings at connection level
+		db = await connect(uri, {
+			storageOptions: {
+				...CONFIG,
+				awsServerSideEncryption: "aws:kms",
+				awsSseKmsKeyId: kmsKey.keyId,
+			},
+		});
+		table = await db.createTable("table2", [{ a: 1, b: 2 }]);
+		rowCount = await table.countRows();
+		expect(rowCount).toBe(1);
 
-    await table.add([{ a: 2, b: 3 }]);
+		await table.add([{ a: 2, b: 3 }]);
 
-    await bucket.assertAllEncrypted("test/table2.lance", kmsKey.keyId);
-  });
+		await bucket.assertAllEncrypted("test/table2.lance", kmsKey.keyId);
+	});
 });
