@@ -42,8 +42,15 @@
   "engines": {
     "node": ">= 18"
   },
-  "cpu": ["x64", "arm64"],
-  "os": ["darwin", "linux", "win32"],
+  "cpu": [
+    "x64",
+    "arm64"
+  ],
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
   "scripts": {
     "artifacts": "napi artifacts",
     "build:debug": "napi build --platform --dts ../lancedb/native.d.ts --js ../lancedb/native.js lancedb",
@@ -62,6 +69,7 @@
   },
   "dependencies": {
     "apache-arrow": "^15.0.0",
-    "openai": "^4.29.2"
+    "openai": "^4.29.2",
+    "reflect-metadata": "^0.2.2"
   }
 }

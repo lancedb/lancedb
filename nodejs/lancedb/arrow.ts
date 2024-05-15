@@ -35,6 +35,7 @@ import {
 } from "apache-arrow";
 import { type EmbeddingFunction } from "./embedding/embedding_function";
 import { sanitizeSchema } from "./sanitize";
+import { getRegistry } from "./embedding/registry";
 
 /** Data type accepted by NodeJS SDK */
 export type Data = Record<string, unknown>[] | ArrowTable;
@@ -375,10 +376,25 @@ function makeVector(
   }
 }
 
+async function applyEmbeddingsFromSchema(
+  table: ArrowTable,
+  schema: Schema,
+): Promise<ArrowTable> {
+  const registry = getRegistry();
+  const functions = registry.parseFunctions(schema.metadata);
+  console.log(functions);
+  const sourceColumn = schema.metadata.get("source_column")!;
+  const vectorColumn = schema.metadata.get("vector_column")!;
+  const func = JSON.parse(schema.metadata.get("model")!);
+  const embedding = registry.get(func.name);
+  // if (embedding === undefined) {
+  throw new Error(`Could not find embedding function ${func.name}`);
+  // }
+}
 /** Helper function to apply embeddings to an input table */
 async function applyEmbeddings<T>(
   table: ArrowTable,
-  embeddings?: EmbeddingFunction<T>,
+  embeddings?: any,
   schema?: Schema,
 ): Promise<ArrowTable> {
   if (embeddings == null) {
@@ -387,6 +403,9 @@ async function applyEmbeddings<T>(
 
   if (schema !== undefined && schema !== null) {
     schema = sanitizeSchema(schema);
+  }
+  if (schema?.metadata.has("model")) {
+    return applyEmbeddingsFromSchema(table, schema!);
   }
 
   // Convert from ArrowTable to Record<String, Vector>
@@ -667,7 +686,14 @@ function validateSchemaEmbeddings(
   for (const field of schema.fields) {
     if (field.type instanceof FixedSizeList) {
       if (data.length !== 0 && data?.[0]?.[field.name] === undefined) {
-        missingEmbeddingFields.push(field);
+        if (
+          schema.metadata.has("vector_column") &&
+          schema.metadata.get("vector_column") === field.name
+        ) {
+          fields.push(field);
+        } else {
+          missingEmbeddingFields.push(field);
+        }
       } else {
         fields.push(field);
       }
@@ -677,8 +703,6 @@ function validateSchemaEmbeddings(
   }
 
   if (missingEmbeddingFields.length > 0 && embeddings === undefined) {
-    console.log({ missingEmbeddingFields, embeddings });
-
     throw new Error(
       `Table has embeddings: "${missingEmbeddingFields
         .map((f) => f.name)
@@ -686,5 +710,5 @@ function validateSchemaEmbeddings(
     );
   }
 
-  return new Schema(fields);
+  return new Schema(fields, schema.metadata);
 }

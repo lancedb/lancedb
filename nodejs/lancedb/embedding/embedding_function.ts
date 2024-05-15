@@ -1,3 +1,4 @@
+import { DataType, Field, FixedSizeList, Float32 } from "apache-arrow";
 // Copyright 2023 Lance Developers.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,67 +13,73 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { type Float } from "apache-arrow";
-
 /**
  * An embedding function that automatically creates vector representation for a given column.
  */
-export interface EmbeddingFunction<T> {
+export abstract class EmbeddingFunction<T = any> {
   /**
-   * The name of the column that will be used as input for the Embedding Function.
+   * Convert the embedding function to a JSON object
    */
-  sourceColumn: string;
+  // biome-ignore lint/suspicious/noExplicitAny: `toJSON` typically can return any object
+  toJSON(): Record<string, any> {
+    return {
+      name: this.constructor.name,
+    };
+  }
 
+  modelDump(): string {
+    return JSON.stringify({
+      name: this.constructor.name,
+      ...this.toJSON(),
+    });
+  }
+
+  sourceField(
+    options: Partial<FieldOptions> | DataType,
+  ): [DataType, Map<string, string>] {
+    const datatype = options instanceof DataType ? options : options?.datatype;
+    if (!datatype) {
+      throw new Error("Datatype is required");
+    }
+    const metadata = new Map<string, string>();
+    metadata.set("model", this.modelDump());
+    metadata.set("source_column", "true");
+    if (options instanceof DataType) {
+      return [options, metadata];
+    } else {
+      return [datatype, metadata];
+    }
+  }
+
+  vectorField(
+    options?: Partial<FieldOptions>,
+  ): [DataType, Map<string, string>] {
+    let dtype: DataType;
+    if (!options?.datatype) {
+      dtype = new FixedSizeList(this.ndims(), new Field("item", new Float32()));
+    } else {
+      dtype = options.datatype;
+    }
+    const metadata = new Map<string, string>();
+    metadata.set("model", this.modelDump());
+    metadata.set("vector_column", "true");
+    return [dtype, metadata];
+  }
+  abstract ndims(): number;
   /**
-   * The data type of the embedding
-   *
-   * The embedding function should return `number`.  This will be converted into
-   * an Arrow float array.  By default this will be Float32 but this property can
-   * be used to control the conversion.
-   */
-  embeddingDataType?: Float;
-
-  /**
-   * The dimension of the embedding
-   *
-   * This is optional, normally this can be determined by looking at the results of
-   * `embed`.  If this is not specified, and there is an attempt to apply the embedding
-   * to an empty table, then that process will fail.
-   */
-  embeddingDimension?: number;
-
-  /**
-   * The name of the column that will contain the embedding
-   *
-   * By default this is "vector"
-   */
-  destColumn?: string;
-
-  /**
-   * Should the source column be excluded from the resulting table
-   *
-   * By default the source column is included.  Set this to true and
-   * only the embedding will be stored.
-   */
-  excludeSource?: boolean;
-
+  Compute the embeddings for the source column in the database
+ */
+  abstract computeQueryEmbeddings(
+    data: T,
+  ): Promise<number[] | Float32Array | Float64Array>;
   /**
    * Creates a vector representation for the given values.
    */
-  embed: (data: T[]) => Promise<number[][]>;
+  abstract computeSourceEmbeddings(
+    data: T[],
+  ): Promise<number[][] | Float32Array[] | Float64Array[]>;
 }
 
-/** Test if the input seems to be an embedding function */
-export function isEmbeddingFunction<T>(
-  value: unknown,
-): value is EmbeddingFunction<T> {
-  if (typeof value !== "object" || value === null) {
-    return false;
-  }
-  if (!("sourceColumn" in value) || !("embed" in value)) {
-    return false;
-  }
-  return (
-    typeof value.sourceColumn === "string" && typeof value.embed === "function"
-  );
+export interface FieldOptions<T extends DataType = DataType> {
+  datatype: T;
 }

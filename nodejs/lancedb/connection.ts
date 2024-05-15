@@ -65,6 +65,7 @@ export interface CreateTableOptions {
    * The available options are described at https://lancedb.github.io/lancedb/guides/storage/
    */
   storageOptions?: Record<string, string>;
+  schema?: Schema;
 }
 
 export interface OpenTableOptions {
@@ -199,9 +200,10 @@ export class Connection {
     if (data instanceof ArrowTable) {
       table = data;
     } else {
-      table = makeArrowTable(data);
+      table = makeArrowTable(data, options);
     }
-    const buf = await fromTableToBuffer(table);
+    
+    const buf = await fromTableToBuffer(table, undefined, options?.schema);
     const innerTable = await this.inner.createTable(
       name,
       buf,
