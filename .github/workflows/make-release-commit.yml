@@ -53,6 +53,7 @@ jobs:
         with:
           fetch-depth: 0
           lfs: true
+          token: ${{ secrets.LANCEDB_RELEASE_TOKEN }}
       - name: Set git configs for bumpversion
         shell: bash
         run: |
