@@ -1,36 +1,72 @@
 import { DataType, Field, Schema } from "apache-arrow";
+import { EmbeddingFunctionConfig, getRegistry } from "./registry";
+import { EmbeddingFunction } from "./embedding_function";
 
 export { EmbeddingFunction } from "./embedding_function";
 export * from "./openai";
 
 export function LanceSchema(
-  options: Record<string, [DataType, Map<string, string>] | DataType>,
+  options: Record<
+    string,
+    [DataType, Map<string, EmbeddingFunction>] | DataType
+  >,
 ): Schema {
   const fields: Field[] = [];
-  const metadata = new Map<string, string>();
+
+  const embeddingFunctions = new Map<
+    EmbeddingFunction,
+    Partial<EmbeddingFunctionConfig>
+  >();
   Object.entries(options).forEach(([key, value]) => {
     if (value instanceof DataType) {
-      const field = new Field(key, value);
-      fields.push(field);
+      fields.push(new Field(key, value));
     } else {
-      const [dtype, metadataInner] = value;
-
-      if (metadataInner.has("source_column")) {
-        metadata.set("source_column", key);
-      } else if (metadataInner.has("vector_column")) {
-        metadata.set("vector_column", key);
-      }
-
-      if (metadataInner.has("model")) {
-        metadata.set("model", metadataInner.get("model")!);
-      }
-
-      console.log("metadata", metadata);
-      const field = new Field(key, dtype);
-
-      fields.push(field);
+      const [dtype, metadata] = value;
+      fields.push(new Field(key, dtype));
+      parseEmbeddingFunctions(embeddingFunctions, key, metadata);
     }
   });
+  const registry = getRegistry();
+  const metadata = registry.getTableMetadata(
+    Array.from(embeddingFunctions.values()) as EmbeddingFunctionConfig[],
+  );
+  const schema = new Schema(fields, metadata);
+  return schema;
+}
 
-  return new Schema(fields, metadata);
+function parseEmbeddingFunctions(
+  embeddingFunctions: Map<EmbeddingFunction, Partial<EmbeddingFunctionConfig>>,
+  key: string,
+  metadata: Map<string, EmbeddingFunction>,
+): void {
+  if (metadata.has("source_column_for")) {
+    const embedFunction = metadata.get("source_column_for")!;
+    const current = embeddingFunctions.get(embedFunction);
+    if (current !== undefined) {
+      embeddingFunctions.set(embedFunction, {
+        ...current,
+        sourceColumn: key,
+      });
+    } else {
+      embeddingFunctions.set(embedFunction, {
+        sourceColumn: key,
+        function: embedFunction,
+      });
+    }
+  } else if (metadata.has("vector_column_for")) {
+    const embedFunction = metadata.get("vector_column_for")!;
+
+    const current = embeddingFunctions.get(embedFunction);
+    if (current !== undefined) {
+      embeddingFunctions.set(embedFunction, {
+        ...current,
+        vectorColumn: key,
+      });
+    } else {
+      embeddingFunctions.set(embedFunction, {
+        vectorColumn: key,
+        function: embedFunction,
+      });
+    }
+  }
 }

@@ -15,31 +15,29 @@
 import { EmbeddingFunction } from "./embedding_function";
 import type OpenAI from "openai";
 import { register } from "./registry";
+import { Float, Float32 } from "apache-arrow";
 
-export type OpenAIOptions =
-  | {
-      apiKey?: string;
-      model?: string;
-    }
-  | string;
+export type OpenAIOptions = {
+  apiKey?: string;
+  model?: string;
+};
 
 @register("openai")
-export class OpenAIEmbeddingFunction extends EmbeddingFunction<string> {
+export class OpenAIEmbeddingFunction extends EmbeddingFunction<
+  string,
+  OpenAIOptions
+> {
   #openai: OpenAI;
   #modelName: string;
 
   constructor(options: OpenAIOptions = { model: "text-embedding-ada-002" }) {
     super();
-    let openAIKey: string;
-    let modelName = "text-embedding-ada-002";
-
-    if (typeof options === "string") {
-      openAIKey = options;
-    } else {
-      console.log({ options });
-      openAIKey = options?.apiKey ?? "";
-      modelName = options?.model ?? modelName;
+    const openAIKey = options?.apiKey ?? process.env.OPENAI_API_KEY;
+    if (!openAIKey) {
+      throw new Error("OpenAI API key is required");
     }
+    const modelName = options?.model ?? "text-embedding-ada-002";
+
     /**
      * @type {import("openai").default}
      */
@@ -59,9 +57,10 @@ export class OpenAIEmbeddingFunction extends EmbeddingFunction<string> {
     this.#openai = new Openai(configuration);
     this.#modelName = modelName;
   }
-  toJSON(): Record<string, any> {
+
+  toJSON() {
     return {
-      modelName: this.#modelName,
+      model: this.#modelName,
     };
   }
 
@@ -76,6 +75,10 @@ export class OpenAIEmbeddingFunction extends EmbeddingFunction<string> {
       default:
         return null as never;
     }
+  }
+
+  embeddingDataType(): Float {
+    return new Float32();
   }
 
   async computeSourceEmbeddings(data: string[]): Promise<number[][]> {
