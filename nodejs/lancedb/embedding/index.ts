@@ -5,24 +5,43 @@ import { EmbeddingFunctionConfig, getRegistry } from "./registry";
 export { EmbeddingFunction } from "./embedding_function";
 export * from "./openai";
 
+/**
+ * Create a schema with embedding functions.
+ *
+ * @param fields
+ * @returns Schema
+ * @example
+ * ```ts
+ * class MyEmbeddingFunction extends EmbeddingFunction {
+ * // ...
+ * }
+ * const func = new MyEmbeddingFunction();
+ * const schema = LanceSchema({
+ *   id: new Int32(),
+ *   text: func.sourceField(new Utf8()),
+ *   vector: func.vectorField(),
+ *   // optional: specify the datatype and/or dimensions
+ *   vector2: func.vectorField({ datatype: new Float32(), dims: 3}),
+ * });
+ *
+ * const table = await db.createTable("my_table", data, { schema });
+ * ```
+ */
 export function LanceSchema(
-  options: Record<
-    string,
-    [DataType, Map<string, EmbeddingFunction>] | DataType
-  >,
+  fields: Record<string, [DataType, Map<string, EmbeddingFunction>] | DataType>,
 ): Schema {
-  const fields: Field[] = [];
+  const arrowFields: Field[] = [];
 
   const embeddingFunctions = new Map<
     EmbeddingFunction,
     Partial<EmbeddingFunctionConfig>
   >();
-  Object.entries(options).forEach(([key, value]) => {
+  Object.entries(fields).forEach(([key, value]) => {
     if (value instanceof DataType) {
-      fields.push(new Field(key, value));
+      arrowFields.push(new Field(key, value));
     } else {
       const [dtype, metadata] = value;
-      fields.push(new Field(key, dtype));
+      arrowFields.push(new Field(key, dtype));
       parseEmbeddingFunctions(embeddingFunctions, key, metadata);
     }
   });
@@ -30,7 +49,7 @@ export function LanceSchema(
   const metadata = registry.getTableMetadata(
     Array.from(embeddingFunctions.values()) as EmbeddingFunctionConfig[],
   );
-  const schema = new Schema(fields, metadata);
+  const schema = new Schema(arrowFields, metadata);
   return schema;
 }
 

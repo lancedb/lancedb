@@ -62,24 +62,10 @@ export abstract class EmbeddingFunction<
   /**
    * sourceField is used in combination with `LanceSchema` to provide a declarative data model
    *
-   * @param optionsOrDataType - The options for the field or the datatype
+   * @param optionsOrDatatype - The options for the field or the datatype
    *
-   * @returns A tuple containing the datatype and metadata for the field
-   *
-   * @example
-   * ```ts
-   * class MyEmbeddingFunction extends EmbeddingFunction {
-   * // ...
-   * }
-   * const func = new MyEmbeddingFunction();
-   * const schema = LanceSchema({
-   *   id: new Int32(),
-   *   text: func.sourceField(new Utf8()),
-   *   vector: func.vectorField(),
-   * });
-   * const table = await connection.createTable("my_table", data, { schema });
-   * ```
-   * */
+   * @see {@link lancedb.LanceSchema}
+   */
   sourceField(
     options: Partial<FieldOptions> | DataType,
   ): [DataType, Map<string, EmbeddingFunction>] {
@@ -102,23 +88,8 @@ export abstract class EmbeddingFunction<
    *
    * @param options - The options for the field
    *
-   * @example
-   * ```ts
-   * class MyEmbeddingFunction extends EmbeddingFunction {
-   * // ...
-   * }
-   * const func = new MyEmbeddingFunction();
-   * const schema = LanceSchema({
-   *   id: new Int32(),
-   *   text: func.sourceField(new Utf8()),
-   *   vector: func.vectorField(),
-   *   // optional: specify the datatype and/or dimensions
-   *   vector2: func.vectorField({ datatype: new Float32(), dims: 3}),
-   * });
-   *
-   * const table = await connection.createTable("my_table", data, { schema });
-   * ```
-   * */
+   * @see {@link lancedb.LanceSchema}
+   */
   vectorField(
     options?: Partial<FieldOptions>,
   ): [DataType, Map<string, EmbeddingFunction>] {
