@@ -16,7 +16,7 @@ if __name__ == "__main__":
     parser.add_argument("current_version")
     args = parser.parse_args()
 
-    repo = Github().get_repo(os.environ["GITHUB_REPOSITORY"])
+    repo = Github(os.environ["GITHUB_TOKEN"]).get_repo(os.environ["GITHUB_REPOSITORY"])
     commits = repo.compare(args.base, args.head).commits
     prs = (pr for commit in commits for pr in commit.get_pulls())
 
