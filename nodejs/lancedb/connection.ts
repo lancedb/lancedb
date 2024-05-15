@@ -14,9 +14,9 @@
 
 import { Table as ArrowTable, Schema } from "apache-arrow";
 import { fromTableToBuffer, makeArrowTable, makeEmptyTable } from "./arrow";
+import { EmbeddingFunctionConfig } from "./embedding/registry";
 import { ConnectionOptions, Connection as LanceDbConnection } from "./native";
 import { Table } from "./table";
-import { EmbeddingFunctionConfig } from "./embedding/registry";
 
 /**
  * Connect to a LanceDB instance at the given URI.

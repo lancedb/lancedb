@@ -42,15 +42,8 @@
   "engines": {
     "node": ">= 18"
   },
-  "cpu": [
-    "x64",
-    "arm64"
-  ],
-  "os": [
-    "darwin",
-    "linux",
-    "win32"
-  ],
+  "cpu": ["x64", "arm64"],
+  "os": ["darwin", "linux", "win32"],
   "scripts": {
     "artifacts": "napi artifacts",
     "build:debug": "napi build --platform --dts ../lancedb/native.d.ts --js ../lancedb/native.js lancedb",

@@ -34,8 +34,8 @@ import {
   vectorFromArray,
 } from "apache-arrow";
 import { type EmbeddingFunction } from "./embedding/embedding_function";
-import { sanitizeSchema } from "./sanitize";
 import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
+import { sanitizeSchema } from "./sanitize";
 
 /** Data type accepted by NodeJS SDK */
 export type Data = Record<string, unknown>[] | ArrowTable;

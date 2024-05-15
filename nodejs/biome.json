@@ -20,7 +20,7 @@
     "rules": {
       "recommended": false,
       "complexity": {
-        "noBannedTypes": "off",
+        "noBannedTypes": "error",
         "noExtraBooleanCast": "error",
         "noMultipleSpacesInRegularExpressionLiterals": "error",
         "noUselessCatch": "error",
@@ -29,7 +29,6 @@
         "noWith": "error"
       },
       "correctness": {
-
         "noConstAssign": "error",
         "noConstantCondition": "error",
         "noEmptyCharacterClassInRegex": "error",
@@ -78,7 +77,7 @@
         "noDuplicateObjectKeys": "error",
         "noDuplicateParameters": "error",
         "noEmptyBlockStatements": "error",
-        "noExplicitAny": "warn",
+        "noExplicitAny": "error",
         "noExtraNonNullAssertion": "error",
         "noFallthroughSwitchClause": "error",
         "noFunctionAssign": "error",
@@ -93,7 +92,6 @@
         "noUnsafeNegation": "error",
         "useGetterReturn": "error",
         "useValidTypeof": "error"
-
       }
     },
     "ignore": ["**/dist/**/*", "**/native.js", "**/native.d.ts"]

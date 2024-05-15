@@ -1,8 +1,8 @@
-import { getRegistry, register } from "../lancedb/embedding/registry";
-import { EmbeddingFunction, LanceSchema } from "../lancedb/embedding";
 import { Float, Float32, Int32, Utf8, Vector } from "apache-arrow";
 import * as tmp from "tmp";
 import { connect } from "../lancedb";
+import { EmbeddingFunction, LanceSchema } from "../lancedb/embedding";
+import { getRegistry, register } from "../lancedb/embedding/registry";
 
 describe("Registry", () => {
   let tmpDir: tmp.DirResult;

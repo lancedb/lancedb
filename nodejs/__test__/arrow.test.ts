@@ -31,9 +31,9 @@ import {
   Schema,
   Struct,
   type Table,
+  Type,
   Utf8,
   tableFromIPC,
-  Type,
 } from "apache-arrow";
 import {
   Dictionary as OldDictionary,
@@ -53,9 +53,9 @@ import {
   makeEmptyTable,
 } from "../lancedb/arrow";
 import {
+  EmbeddingFunction,
   FieldOptions,
   FunctionOptions,
-  EmbeddingFunction,
 } from "../lancedb/embedding/embedding_function";
 import { EmbeddingFunctionConfig } from "../lancedb/embedding/registry";
 

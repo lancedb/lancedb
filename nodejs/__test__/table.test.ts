@@ -30,8 +30,8 @@ import {
 } from "apache-arrow";
 import { Table, connect } from "../lancedb";
 import { makeArrowTable } from "../lancedb/arrow";
-import { Index } from "../lancedb/indices";
 import { EmbeddingFunction } from "../lancedb/embedding";
+import { Index } from "../lancedb/indices";
 
 describe("Given a table", () => {
   let tmpDir: tmp.DirResult;

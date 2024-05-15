@@ -1,6 +1,6 @@
 import { DataType, Field, Schema } from "apache-arrow";
-import { EmbeddingFunctionConfig, getRegistry } from "./registry";
 import { EmbeddingFunction } from "./embedding_function";
+import { EmbeddingFunctionConfig, getRegistry } from "./registry";
 
 export { EmbeddingFunction } from "./embedding_function";
 export * from "./openai";

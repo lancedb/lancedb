@@ -1,9 +1,5 @@
 {
-  "include": [
-    "lancedb/*.ts",
-    "lancedb/**/*.ts",
-    "lancedb/*.js"
-  ],
+  "include": ["lancedb/*.ts", "lancedb/**/*.ts", "lancedb/*.js"],
   "compilerOptions": {
     "target": "es2022",
     "module": "commonjs",
@@ -15,13 +11,9 @@
     "emitDecoratorMetadata": true,
     "experimentalDecorators": true
   },
-  "exclude": [
-    "./dist/*"
-  ],
+  "exclude": ["./dist/*"],
   "typedocOptions": {
-    "entryPoints": [
-      "lancedb/index.ts"
-    ],
+    "entryPoints": ["lancedb/index.ts"],
     "out": "../docs/src/javascript/",
     "visibilityFilters": {
       "protected": false,
