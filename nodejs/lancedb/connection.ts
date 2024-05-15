@@ -202,7 +202,7 @@ export class Connection {
     } else {
       table = makeArrowTable(data, options);
     }
-    
+
     const buf = await fromTableToBuffer(table, undefined, options?.schema);
     const innerTable = await this.inner.createTable(
       name,

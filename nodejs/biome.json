@@ -29,7 +29,7 @@
         "noWith": "error"
       },
       "correctness": {
-        
+
         "noConstAssign": "error",
         "noConstantCondition": "error",
         "noEmptyCharacterClassInRegex": "error",
@@ -93,7 +93,7 @@
         "noUnsafeNegation": "error",
         "useGetterReturn": "error",
         "useValidTypeof": "error"
-        
+
       }
     },
     "ignore": ["**/dist/**/*", "**/native.js", "**/native.d.ts"]
