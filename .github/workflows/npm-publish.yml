@@ -1,8 +1,9 @@
 name: NPM Publish
 
 on:
-  release:
-    types: [published]
+  push:
+    tags:
+      - 'v*'
 
 jobs:
   node:
@@ -321,6 +322,8 @@ jobs:
   update-package-lock:
     needs: [release]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -331,11 +334,13 @@ jobs:
           lfs: true
       - uses: ./.github/workflows/update_package_lock
         with:
-          github_token: ${{ secrets.LANCEDB_RELEASE_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
 
   update-package-lock-nodejs:
     needs: [release-nodejs]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -346,4 +351,46 @@ jobs:
           lfs: true
       - uses: ./.github/workflows/update_package_lock_nodejs
         with:
-          github_token: ${{ secrets.LANCEDB_RELEASE_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+  
+  gh-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: true
+      - name: Extract version
+        id: extract_version
+        env:
+          GITHUB_REF: ${{ github.ref }}
+        run: |
+          echo "Extracting tag and version from $GITHUB_REF"
+          if [[ $GITHUB_REF =~ refs/tags/v(.*) ]]; then
+            echo "tag=v${BASH_REMATCH[1]}" >> $GITHUB_OUTPUT
+            echo "version=${BASH_REMATCH[1]}" >> $GITHUB_OUTPUT
+          else
+            echo "Failed to extract version from $GITHUB_REF"
+            exit 1
+          fi
+      - name: Create Release Notes
+        id: release_notes
+        uses: mikepenz/release-changelog-builder-action@v4
+        with:
+          configuration: release_notes.json
+          # If making a stable release, include all changes since the last stable release.
+          ignorePreReleases: ${{ !contains('beta', github.ref) }}
+          toTag: ${{ steps.extract_version.outputs.tag }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create Python GH release
+        uses: softprops/action-gh-release@v2
+        with:
+          prerelease: ${{ contains('beta', github.ref) }}
+          tag_name: ${{ steps.extract_version.outputs.tag }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          generate_release_notes: false
+          name: Node/Rust LanceDB v${{ steps.extract_version.outputs.version }}
+          body: ${{ steps.release_notes.outputs.changelog }}

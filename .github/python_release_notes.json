@@ -1,5 +1,12 @@
 {
     "ignore_labels": ["ci", "chore"],
+    "tag_resolver": {
+        "filter": "python-.*",
+        "transformer": {
+            "pattern": "python-(.*)",
+            "replacement": "$1"
+        }
+    },
     "categories": [
         {
             "title": "## 🏆 Highlights",

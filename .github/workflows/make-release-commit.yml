@@ -1,5 +1,13 @@
 name: Create release commit
 
+# This workflow increments versions, tags the version, and pushes it.
+# When a tag is pushed, another workflow is triggered that creates a GH release
+# and uploads the binaries. This workflow is only for creating the tag.
+
+# This script will enforce that a minor version is incremented if there are any
+# breaking changes since the last minor increment. However, it isn't able to
+# differentiate between breaking changes in Node versus Python. If you wish to
+# bypass this check, you can manually increment the version and push the tag.
 on:
   workflow_dispatch:
     inputs:
@@ -31,6 +39,11 @@ on:
         required: true
         default: true
         type: boolean
+      bump-minor:
+        description: 'Bump minor version'
+        required: true
+        default: false
+        type: boolean
 
 jobs:
   make-release:
@@ -54,123 +67,23 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Create Python tag
-        id: create_python_tag
+      - name: Bump Python version
         if: ${{ inputs.python }}
         working-directory: python
-        env:
-          RELEASE_TYPE: ${{ inputs.type }}
         run: |
-          CURRENT_VERSION=$(bash ../ci/cargo_package_version.sh lancedb-python)
-          TAGS=$(bash ../ci/next_tag.sh $CURRENT_VERSION $RELEASE_TYPE "python-")
-          NEXT_TAG=${TAGS%,*}
-          PREV_TAG=${TAGS#*,}
-          echo "Found previous tag $PREV_TAG"
-          echo "Creating tag $NEXT_TAG"
-          git tag $NEXT_TAG
-          echo "python_tag=$NEXT_TAG" >> $GITHUB_OUTPUT
-          echo "python_tag_prev=$PREV_TAG" >> $GITHUB_OUTPUT
-          echo "python_version=${NEXT_TAG#*-}" >> $GITHUB_OUTPUT
-      - name: Create tag
-        id: create_tag
+          pip install bump-my-version PyGithub packaging
+          bash ci/bump_version.sh ${{ inputs.type }} ${{ inputs.bump-minor }} python-v
+      - name: Bump Node/Rust version
         if: ${{ inputs.other }}
-        env:
-          RELEASE_TYPE: ${{ inputs.type }}
         run: |
-          CURRENT_VERSION=$(bash ci/cargo_package_version.sh lancedb)
-          TAGS=$(ci/next_tag.sh $CURRENT_VERSION $RELEASE_TYPE)
-          NEXT_TAG=${TAGS%,*}
-          PREV_TAG=${TAGS#*,}
-          echo "Found previous tag $PREV_TAG"
-          echo "Creating tag $NEXT_TAG"
-          git tag $NEXT_TAG
-          echo "tag=$NEXT_TAG" >> $GITHUB_OUTPUT
-          echo "tag_prev=$PREV_TAG" >> $GITHUB_OUTPUT
+          pip install bump-my-version PyGithub packaging
+          bash ci/bump_version.sh ${{ inputs.type }} ${{ inputs.bump-minor }} v
       - name: Push new version tag
         if: ${{ !inputs.dry_run }}
         uses: ad-m/github-push-action@master
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           branch: ${{ github.ref }}
-          tags: true
-      # Python release
-      - name: Create Python Release Notes
-        id: python_release_notes
-        uses: mikepenz/release-changelog-builder-action@v4
-        if: ${{ inputs.python }}
-        with:
-          configuration: python_release_notes.json
-          ignorePreReleases: ${{ inputs.type == 'stable' }}
-          toTag: ${{ steps.create_python_tag.outputs.python_tag }}
-          fromTag: ${{ steps.create_python_tag.outputs.python_tag_prev }}
-      - name: Create Python GH release
-        if: ${{ !inputs.dry_run && inputs.python }}
-        uses: softprops/action-gh-release@v2
-        with:
-          prerelease: ${{ inputs.type == 'preview' }}
-          draft: ${{ inputs.draft-release }}
-          tag_name: ${{ steps.create_python_tag.outputs.python_tag }}
-          token: ${{ secrets.GITHUB_TOKEN }}
-          generate_release_notes: false
-          name: Python LanceDB ${{ steps.create_python_tag.outputs.python_version }}
-          body: ${{ steps.python_release_notes.outputs.changelog }}
-      # Node/Rust release
-      - name: Create Node/Rust Release Notes
-        id: release_notes
-        uses: mikepenz/release-changelog-builder-action@v4
-        if: ${{ inputs.python }}
-        with:
-          configuration: release_notes.json
-          ignorePreReleases: ${{ inputs.type == 'stable' }}
-          toTag: ${{ steps.create_tag.outputs.tag }}
-          fromTag: ${{ steps.create_tag.outputs.tag_prev }}
-      - name: Create GH release
-        if: ${{ !inputs.dry_run && inputs.python }}
-        uses: softprops/action-gh-release@v2
-        with:
-          prerelease: ${{ inputs.type == 'preview' }}
-          draft: ${{ inputs.draft-release }}
-          tag_name: ${{ steps.create_tag.outputs.tag }}
-          token: ${{ secrets.GITHUB_TOKEN }}
-          generate_release_notes: false
-          name: Node/Rust LanceDB ${{ steps.create_tag.outputs.tag }}
-          body: ${{ steps.release_notes.outputs.changelog }}
-
-  # Bumps the version on main for the next release.
-  # This only applies for stable releases.
-  increment-version:
-    runs-on: ubuntu-latest
-    if: ${{ inputs.type == 'stable' }}
-    needs: make-release
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          lfs: true
-      - name: Set git configs for bumpversion
-        shell: bash
-        run: |
-          git config user.name 'Lance Release'
-          git config user.email 'lance-dev@lancedb.com'
-      - name: Bump Python version
-        if: ${{ inputs.python }}
-        working-directory: python
-        run: |
-          pip install bump2version
-          bumpversion --verbose patch
-      - name: Bump version
-        if: ${{ inputs.other }}
-        run: |
-          pip install bump2version
-          bumpversion --verbose patch
-      - name: Push new version commit
-        if: ${{ inputs.dry_run }} == "false"
-        uses: ad-m/github-push-action@master
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          branch: main
           tags: true
       - uses: ./.github/workflows/update_package_lock
         if: ${{ inputs.dry_run }} == "false"

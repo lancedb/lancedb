@@ -1,18 +1,16 @@
 name: PyPI Publish
 
 on:
-  release:
-    types: [published]
+  push:
+    tags:
+      - 'python-v*'
 
 jobs:
   linux:
-    # Only runs on tags that matches the python-make-release action
-    if: startsWith(github.ref, 'refs/tags/python-v')
     name: Python ${{ matrix.config.platform }} manylinux${{ matrix.config.manylinux }}
     timeout-minutes: 60
     strategy:
       matrix:
-        python-minor-version: ["8"]
         config:
           - platform: x86_64
             manylinux: "2_17"
@@ -34,10 +32,10 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: 3.${{ matrix.python-minor-version }}
+          python-version: 3.8
       - uses: ./.github/workflows/build_linux_wheel
         with:
-          python-minor-version: ${{ matrix.python-minor-version }}
+          python-minor-version: 8
           args: "--release --strip ${{ matrix.config.extra_args }}"
           arm-build: ${{ matrix.config.platform == 'aarch64' }}
           manylinux: ${{ matrix.config.manylinux }}
@@ -46,13 +44,10 @@ jobs:
           token: ${{ secrets.LANCEDB_PYPI_API_TOKEN }}
           repo: "pypi"
   mac:
-    # Only runs on tags that matches the python-make-release action
-    if: startsWith(github.ref, 'refs/tags/python-v')
     timeout-minutes: 60
     runs-on: ${{ matrix.config.runner }}
     strategy:
       matrix:
-        python-minor-version: ["8"]
         config:
           - target: x86_64-apple-darwin
             runner: macos-13
@@ -63,7 +58,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref }}
           fetch-depth: 0
           lfs: true
       - name: Set up Python
@@ -72,38 +66,73 @@ jobs:
           python-version: 3.12
       - uses: ./.github/workflows/build_mac_wheel
         with:
-          python-minor-version: ${{ matrix.python-minor-version }}
+          python-minor-version: 8
           args: "--release --strip --target ${{ matrix.config.target }} --features fp16kernels"
       - uses: ./.github/workflows/upload_wheel
         with:
-          python-minor-version: ${{ matrix.python-minor-version }}
+          python-minor-version: 8
           token: ${{ secrets.LANCEDB_PYPI_API_TOKEN }}
           repo: "pypi"
   windows:
-    # Only runs on tags that matches the python-make-release action
-    if: startsWith(github.ref, 'refs/tags/python-v')
     timeout-minutes: 60
     runs-on: windows-latest
-    strategy:
-      matrix:
-        python-minor-version: ["8"]
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref }}
           fetch-depth: 0
           lfs: true
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: 3.${{ matrix.python-minor-version }}
+          python-version: 3.8
       - uses: ./.github/workflows/build_windows_wheel
         with:
-          python-minor-version: ${{ matrix.python-minor-version }}
+          python-minor-version: 8
           args: "--release --strip"
           vcpkg_token: ${{ secrets.VCPKG_GITHUB_PACKAGES }}
       - uses: ./.github/workflows/upload_wheel
         with:
-          python-minor-version: ${{ matrix.python-minor-version }}
+          python-minor-version: 8
           token: ${{ secrets.LANCEDB_PYPI_API_TOKEN }}
           repo: "pypi"
+  gh-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: true
+      - name: Extract version
+        id: extract_version
+        env:
+          GITHUB_REF: ${{ github.ref }}
+        run: |
+          echo "Extracting tag and version from $GITHUB_REF"
+          if [[ $GITHUB_REF =~ refs/tags/(python-v)(.*) ]]; then
+            echo "tag=${BASH_REMATCH[1]}${BASH_REMATCH[2]}" >> $GITHUB_OUTPUT
+            echo "version=${BASH_REMATCH[2]}" >> $GITHUB_OUTPUT
+          else
+            echo "Failed to extract version from $GITHUB_REF"
+            exit 1
+          fi
+      - name: Create Python Release Notes
+        id: python_release_notes
+        uses: mikepenz/release-changelog-builder-action@v4
+        with:
+          configuration: python_release_notes.json
+          # If making a stable release, include all changes since the last stable release.
+          ignorePreReleases: ${{ !contains('beta', github.ref) }}
+          toTag: ${{ steps.extract_version.outputs.tag }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create Python GH release
+        uses: softprops/action-gh-release@v2
+        with:
+          prerelease: ${{ contains('beta', github.ref) }}
+          tag_name: ${{ steps.extract_version.outputs.tag }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          generate_release_notes: false
+          name: Python LanceDB v${{ steps.extract_version.outputs.version }}
+          body: ${{ steps.python_release_notes.outputs.changelog }}

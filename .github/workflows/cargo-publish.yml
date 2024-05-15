@@ -1,8 +1,9 @@
 name: Cargo Publish
 
 on:
-  release:
-    types: [ published ]
+  push:
+    tags:
+      - 'v*'
 
 env:
   # This env var is used by Swatinem/rust-cache@v2 for the cache
