@@ -385,7 +385,7 @@ jobs:
           toTag: ${{ steps.extract_version.outputs.tag }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Create Python GH release
+      - name: Create GH release
         uses: softprops/action-gh-release@v2
         with:
           prerelease: ${{ contains('beta', github.ref) }}

@@ -41,8 +41,8 @@ jobs:
           manylinux: ${{ matrix.config.manylinux }}
       - uses: ./.github/workflows/upload_wheel
         with:
-          token: ${{ secrets.LANCEDB_PYPI_API_TOKEN }}
-          repo: "pypi"
+          pypi_token: ${{ secrets.LANCEDB_PYPI_API_TOKEN }}
+          fury_token: ${{ secrets.FURY_TOKEN }}
   mac:
     timeout-minutes: 60
     runs-on: ${{ matrix.config.runner }}
@@ -70,9 +70,8 @@ jobs:
           args: "--release --strip --target ${{ matrix.config.target }} --features fp16kernels"
       - uses: ./.github/workflows/upload_wheel
         with:
-          python-minor-version: 8
-          token: ${{ secrets.LANCEDB_PYPI_API_TOKEN }}
-          repo: "pypi"
+          pypi_token: ${{ secrets.LANCEDB_PYPI_API_TOKEN }}
+          fury_token: ${{ secrets.FURY_TOKEN }}
   windows:
     timeout-minutes: 60
     runs-on: windows-latest
@@ -92,9 +91,8 @@ jobs:
           vcpkg_token: ${{ secrets.VCPKG_GITHUB_PACKAGES }}
       - uses: ./.github/workflows/upload_wheel
         with:
-          python-minor-version: 8
-          token: ${{ secrets.LANCEDB_PYPI_API_TOKEN }}
-          repo: "pypi"
+          pypi_token: ${{ secrets.LANCEDB_PYPI_API_TOKEN }}
+          fury_token: ${{ secrets.FURY_TOKEN }}
   gh-release:
     runs-on: ubuntu-latest
     permissions:
