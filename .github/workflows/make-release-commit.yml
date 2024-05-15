@@ -66,13 +66,17 @@ jobs:
         if: ${{ inputs.python }}
         working-directory: python
         run: |
+          # Need to get the commit before bumping the version, so we can
+          # determine if there are breaking changes in the next step as well.
+          echo "COMMIT_BEFORE_BUMP=$(git rev-parse HEAD)" >> $GITHUB_ENV
+
           pip install bump-my-version PyGithub packaging
           bash ../ci/bump_version.sh ${{ inputs.type }} ${{ inputs.bump-minor }} python-v
       - name: Bump Node/Rust version
         if: ${{ inputs.other }}
         run: |
           pip install bump-my-version PyGithub packaging
-          bash ci/bump_version.sh ${{ inputs.type }} ${{ inputs.bump-minor }} v
+          bash ci/bump_version.sh ${{ inputs.type }} ${{ inputs.bump-minor }} v $COMMIT_BEFORE_BUMP
       - name: Push new version tag
         if: ${{ !inputs.dry_run }}
         uses: ad-m/github-push-action@master

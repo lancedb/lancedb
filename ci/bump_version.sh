@@ -3,12 +3,12 @@ set -e
 RELEASE_TYPE=${1:-"stable"}
 BUMP_MINOR=${2:-false}
 TAG_PREFIX=${3:-"v"} # Such as "python-v"
+HEAD_SHA=${4:-$(git rev-parse HEAD)}
 
 readonly SELF_DIR=$(cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )
 
 PREV_TAG=$(git tag --sort='version:refname' | grep ^$TAG_PREFIX | python $SELF_DIR/semver_sort.py $TAG_PREFIX | tail -n 1)
 echo "Found previous tag $PREV_TAG"
-HEAD_COMMIT=$(git rev-parse HEAD)
 
 # Initially, we don't want to tag if we are doing stable, because we will bump
 # again later. See comment at end for why.
@@ -21,14 +21,14 @@ if [[ $PREV_TAG != *beta* ]]; then
     if [[ "$BUMP_MINOR" != "false" ]]; then
       bump-my-version bump -vv $BUMP_ARGS minor
     else
-      python $SELF_DIR/check_breaking_changes.py $PREV_TAG $HEAD_COMMIT
+      python $SELF_DIR/check_breaking_changes.py $PREV_TAG $HEAD_SHA
       bump-my-version bump -vv $BUMP_ARGS patch
     fi
 else
   if [[ "$BUMP_MINOR" != "false" ]]; then
     bump-my-version bump -vv $BUMP_ARGS minor
   else
-    python $SELF_DIR/check_breaking_changes.py $PREV_TAG $HEAD_COMMIT
+    python $SELF_DIR/check_breaking_changes.py $PREV_TAG $HEAD_SHA
     bump-my-version bump -vv $BUMP_ARGS pre_n
   fi
 fi
