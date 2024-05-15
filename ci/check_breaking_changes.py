@@ -13,7 +13,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     repo = Github().get_repo(os.environ["GITHUB_REPOSITORY"])
-    breakpoint()
     commits = repo.compare(args.base, args.head).commits
     prs = (pr for commit in commits for pr in commit.get_pulls())
 
