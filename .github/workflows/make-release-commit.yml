@@ -65,6 +65,8 @@ jobs:
       - name: Bump Python version
         if: ${{ inputs.python }}
         working-directory: python
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # Need to get the commit before bumping the version, so we can
           # determine if there are breaking changes in the next step as well.
@@ -74,6 +76,8 @@ jobs:
           bash ../ci/bump_version.sh ${{ inputs.type }} ${{ inputs.bump-minor }} python-v
       - name: Bump Node/Rust version
         if: ${{ inputs.other }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           pip install bump-my-version PyGithub packaging
           bash ci/bump_version.sh ${{ inputs.type }} ${{ inputs.bump-minor }} v $COMMIT_BEFORE_BUMP
