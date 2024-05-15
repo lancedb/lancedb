@@ -72,7 +72,7 @@ jobs:
         working-directory: python
         run: |
           pip install bump-my-version PyGithub packaging
-          bash ci/bump_version.sh ${{ inputs.type }} ${{ inputs.bump-minor }} python-v
+          bash ../ci/bump_version.sh ${{ inputs.type }} ${{ inputs.bump-minor }} python-v
       - name: Bump Node/Rust version
         if: ${{ inputs.other }}
         run: |
