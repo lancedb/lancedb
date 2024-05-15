@@ -677,8 +677,6 @@ function validateSchemaEmbeddings(
   }
 
   if (missingEmbeddingFields.length > 0 && embeddings === undefined) {
-    console.log({ missingEmbeddingFields, embeddings });
-
     throw new Error(
       `Table has embeddings: "${missingEmbeddingFields
         .map((f) => f.name)
@@ -686,5 +684,5 @@ function validateSchemaEmbeddings(
     );
   }
 
-  return new Schema(fields);
+  return new Schema(fields, schema.metadata);
 }
