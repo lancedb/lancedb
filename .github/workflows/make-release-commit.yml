@@ -24,11 +24,6 @@ on:
         options:
           - preview
           - stable
-      draft-release:
-        description: 'Create a draft release on GitHub'
-        required: true
-        default: false
-        type: boolean
       python:
         description: 'Make a Python release'
         required: true
