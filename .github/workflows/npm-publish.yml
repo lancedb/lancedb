@@ -275,9 +275,15 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.LANCEDB_NPM_REGISTRY_TOKEN }}
         run: |
+          # Tag beta as "preview" instead of default "latest". See lancedb 
+          # npm publish step for more info.
+          if [[ $GITHUB_REF =~ refs/tags/v(.*)-beta.* ]]; then
+            PUBLISH_ARGS="--tag preview"
+          fi
+
           mv */*.tgz .
           for filename in *.tgz; do
-            npm publish $filename
+            npm publish $PUBLISH_ARGS $filename
           done
 
   release-nodejs:
@@ -317,7 +323,17 @@ jobs:
       - name: Publish to NPM
         env:
           NODE_AUTH_TOKEN: ${{ secrets.LANCEDB_NPM_REGISTRY_TOKEN }}
-        run: npm publish --access public
+        # By default, things are published to the latest tag. This is what is 
+        # installed by default if the user does not specify a version. This is
+        # good for stable releases, but for pre-releases, we want to publish to
+        # the "preview" tag so they can install with `npm install lancedb@preview`.
+        # See: https://medium.com/@mbostock/prereleases-and-npm-e778fc5e2420
+        run: |
+          if [[ $GITHUB_REF =~ refs/tags/v(.*)-beta.* ]]; then
+            npm publish --access public --tag preview
+          else
+            npm publish --access public
+          fi
 
   update-package-lock:
     needs: [release]
