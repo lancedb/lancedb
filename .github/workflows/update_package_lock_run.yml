@@ -6,6 +6,8 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -16,4 +18,4 @@ jobs:
           lfs: true
       - uses: ./.github/workflows/update_package_lock
         with:
-          github_token: ${{ secrets.LANCEDB_RELEASE_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}

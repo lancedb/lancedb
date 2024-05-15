@@ -20,7 +20,7 @@ sign_tags = false
 tag_name = "v{new_version}"
 tag_message = "Bump version: {current_version} → {new_version}"
 allow_dirty = true
-commit = false
+commit = true
 message = "Bump version: {current_version} → {new_version}"
 commit_args = ""
 
