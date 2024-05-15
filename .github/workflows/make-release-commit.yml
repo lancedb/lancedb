@@ -81,7 +81,10 @@ jobs:
         if: ${{ !inputs.dry_run }}
         uses: ad-m/github-push-action@master
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          # It's important we use our token here, as the default token will NOT
+          # trigger any workflows watching for new tags. See:
+          # https://docs.github.com/en/actions/using-workflows/triggering-a-workflow#triggering-a-workflow-from-a-workflow
+          github_token: ${{ secrets.LANCEDB_RELEASE_TOKEN }}
           branch: ${{ github.ref }}
           tags: true
       - uses: ./.github/workflows/update_package_lock
