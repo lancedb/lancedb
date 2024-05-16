@@ -317,6 +317,7 @@ impl UpdateBuilder {
 
 #[async_trait]
 pub(crate) trait TableInternal: std::fmt::Display + std::fmt::Debug + Send + Sync {
+    #[allow(dead_code)]
     fn as_any(&self) -> &dyn std::any::Any;
     /// Cast as [`NativeTable`], or return None it if is not a [`NativeTable`].
     fn as_native(&self) -> Option<&NativeTable>;
