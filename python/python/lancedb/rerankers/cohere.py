@@ -1,5 +1,5 @@
 import os
-import semver
+from packaging.version import Version
 from functools import cached_property
 from typing import Union
 
@@ -46,7 +46,7 @@ class CohereReranker(Reranker):
         # ensure version is at least 0.5.0
         if (
             hasattr(cohere, "__version__")
-            and semver.compare(cohere.__version__, "5.0.0") < 0
+            and Version(cohere.__version__) < Version("0.5.0")
         ):
             raise ValueError(
                 f"cohere version must be at least 0.5.0, found {cohere.__version__}"
