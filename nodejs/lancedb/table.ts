@@ -13,6 +13,8 @@
 // limitations under the License.
 
 import { Schema, tableFromIPC } from "apache-arrow";
+import { Data, fromDataToBuffer } from "./arrow";
+import { IndexOptions } from "./indices";
 import {
   AddColumnsSql,
   ColumnAlteration,
@@ -20,8 +22,6 @@ import {
   Table as _NativeTable,
 } from "./native";
 import { Query, VectorQuery } from "./query";
-import { IndexOptions } from "./indices";
-import { Data, fromDataToBuffer } from "./arrow";
 
 export { IndexConfig } from "./native";
 /**
@@ -186,7 +186,7 @@ export class Table {
    */
   async createIndex(column: string, options?: Partial<IndexOptions>) {
     // Bit of a hack to get around the fact that TS has no package-scope.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // biome-ignore lint/suspicious/noExplicitAny: skip
     const nativeIndex = (options?.config as any)?.inner;
     await this.inner.createIndex(nativeIndex, column, options?.replace);
   }

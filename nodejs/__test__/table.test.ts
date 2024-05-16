@@ -16,18 +16,18 @@ import * as fs from "fs";
 import * as path from "path";
 import * as tmp from "tmp";
 
-import { Table, connect } from "../dist";
 import {
-  Schema,
   Field,
-  Float32,
-  Int32,
   FixedSizeList,
-  Int64,
+  Float32,
   Float64,
+  Int32,
+  Int64,
+  Schema,
 } from "apache-arrow";
-import { makeArrowTable } from "../dist/arrow";
-import { Index } from "../dist/indices";
+import { Table, connect } from "../lancedb";
+import { makeArrowTable } from "../lancedb/arrow";
+import { Index } from "../lancedb/indices";
 
 describe("Given a table", () => {
   let tmpDir: tmp.DirResult;

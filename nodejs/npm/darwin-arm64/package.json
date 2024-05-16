@@ -1,18 +1,12 @@
 {
-  "name": "@lancedb/lancedb-darwin-arm64",
-  "version": "0.4.19",
-  "os": [
-    "darwin"
-  ],
-  "cpu": [
-    "arm64"
-  ],
-  "main": "lancedb.darwin-arm64.node",
-  "files": [
-    "lancedb.darwin-arm64.node"
-  ],
-  "license": "Apache 2.0",
-  "engines": {
-    "node": ">= 18"
-  }
+	"name": "@lancedb/lancedb-darwin-arm64",
+	"version": "0.4.20",
+	"os": ["darwin"],
+	"cpu": ["arm64"],
+	"main": "lancedb.darwin-arm64.node",
+	"files": ["lancedb.darwin-arm64.node"],
+	"license": "Apache 2.0",
+	"engines": {
+		"node": ">= 18"
+	}
 }
