@@ -119,7 +119,7 @@ nav:
           - Polars: python/polars_arrow.md
           - DuckDB: python/duckdb.md
           - LangChain:
-            - LangChain 🔗: https://python.langchain.com/docs/integrations/vectorstores/lancedb/
+            - LangChain 🔗: integrations/langchain.md
             - LangChain JS/TS 🔗: https://js.langchain.com/docs/integrations/vectorstores/lancedb
           - LlamaIndex 🦙: https://docs.llamaindex.ai/en/stable/examples/vector_stores/LanceDBIndexDemo/
           - Pydantic: python/pydantic.md

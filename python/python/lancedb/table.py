@@ -1209,6 +1209,11 @@ class LanceTable(Table):
                 raise ValueError("Index already exists. Use replace=True to overwrite.")
             fs.delete_dir(path)
 
+        if not isinstance(fs, pa_fs.LocalFileSystem):
+            raise NotImplementedError(
+                "Full-text search is only supported on the local filesystem"
+            )
+
         index = create_index(
             self._get_fts_index_path(),
             field_names,

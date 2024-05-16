@@ -37,7 +37,7 @@ import pyarrow as pa
 import pydantic
 import semver
 
-PYDANTIC_VERSION = semver.Version.parse(pydantic.__version__)
+PYDANTIC_VERSION = semver.parse_version_info(pydantic.__version__)
 try:
     from pydantic_core import CoreSchema, core_schema
 except ImportError:

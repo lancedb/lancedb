@@ -194,6 +194,7 @@
 pub mod arrow;
 pub mod connection;
 pub mod data;
+pub mod embeddings;
 pub mod error;
 pub mod index;
 pub mod io;
@@ -237,6 +238,9 @@ pub enum DistanceType {
     /// distance has a range of (-∞, ∞). If the vectors are normalized (i.e. their
     /// L2 norm is 1), then dot distance is equivalent to the cosine distance.
     Dot,
+    /// Hamming distance. Hamming distance is a distance metric that measures
+    /// the number of positions at which the corresponding elements are different.
+    Hamming,
 }
 
 impl From<DistanceType> for LanceDistanceType {
@@ -245,6 +249,7 @@ impl From<DistanceType> for LanceDistanceType {
             DistanceType::L2 => Self::L2,
             DistanceType::Cosine => Self::Cosine,
             DistanceType::Dot => Self::Dot,
+            DistanceType::Hamming => Self::Hamming,
         }
     }
 }
@@ -255,6 +260,7 @@ impl From<LanceDistanceType> for DistanceType {
             LanceDistanceType::L2 => Self::L2,
             LanceDistanceType::Cosine => Self::Cosine,
             LanceDistanceType::Dot => Self::Dot,
+            LanceDistanceType::Hamming => Self::Hamming,
         }
     }
 }

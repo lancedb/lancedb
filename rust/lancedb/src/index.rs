@@ -16,7 +16,10 @@ use std::sync::Arc;
 
 use crate::{table::TableInternal, Result};
 
-use self::{scalar::BTreeIndexBuilder, vector::IvfPqIndexBuilder};
+use self::{
+    scalar::BTreeIndexBuilder,
+    vector::{IvfHnswSqIndexBuilder, IvfPqIndexBuilder},
+};
 
 pub mod scalar;
 pub mod vector;
@@ -25,6 +28,7 @@ pub enum Index {
     Auto,
     BTree(BTreeIndexBuilder),
     IvfPq(IvfPqIndexBuilder),
+    IvfHnswSq(IvfHnswSqIndexBuilder),
 }
 
 /// Builder for the create_index operation
@@ -65,6 +69,7 @@ impl IndexBuilder {
 #[derive(Debug, Clone, PartialEq)]
 pub enum IndexType {
     IvfPq,
+    IvfHnswSq,
     BTree,
 }
 
