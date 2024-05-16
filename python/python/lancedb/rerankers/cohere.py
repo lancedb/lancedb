@@ -44,9 +44,8 @@ class CohereReranker(Reranker):
     def _client(self):
         cohere = attempt_import_or_raise("cohere")
         # ensure version is at least 0.5.0
-        if (
-            hasattr(cohere, "__version__")
-            and Version(cohere.__version__) < Version("0.5.0")
+        if hasattr(cohere, "__version__") and Version(cohere.__version__) < Version(
+            "0.5.0"
         ):
             raise ValueError(
                 f"cohere version must be at least 0.5.0, found {cohere.__version__}"
