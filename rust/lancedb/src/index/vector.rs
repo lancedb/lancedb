@@ -224,8 +224,8 @@ pub struct IvfHnswSqIndexBuilder {
     pub(crate) max_iterations: u32,
 
     // HNSW
-    pub(crate) m: usize,
-    pub(crate) ef_construction: usize,
+    pub(crate) m: u32,
+    pub(crate) ef_construction: u32,
     // SQ
     // TODO add num_bits for SQ after it supports another num_bits besides 8
 }
@@ -310,15 +310,18 @@ impl IvfHnswSqIndexBuilder {
     }
 
     /// The number of neighbors to select for each vector in the HNSW graph.
+    /// Bumping this number will increase the recall of the search but also increase the build/search time.
     /// The default value is 20.
-    pub fn m(mut self, m: usize) -> Self {
+    pub fn m(mut self, m: u32) -> Self {
         self.m = m;
         self
     }
 
     /// The number of candidates to evaluate during the construction of the HNSW graph.
+    /// Bumping this number will increase the recall of the search but also increase the build/search time.
+    /// This value should be not less than `ef` in the search phase.
     /// The default value is 300.
-    pub fn ef_construction(mut self, ef_construction: usize) -> Self {
+    pub fn ef_construction(mut self, ef_construction: u32) -> Self {
         self.ef_construction = ef_construction;
         self
     }
