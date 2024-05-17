@@ -110,19 +110,27 @@ jobs:
           echo "Extracting tag and version from $GITHUB_REF"
           if [[ $GITHUB_REF =~ refs/tags/(python-v)(.*) ]]; then
             echo "tag=${BASH_REMATCH[1]}${BASH_REMATCH[2]}" >> $GITHUB_OUTPUT
-            echo "version=${BASH_REMATCH[2]}" >> $GITHUB_OUTPUT
+            VERSION=${BASH_REMATCH[2]}
+            echo "version=$VERSION" >> $GITHUB_OUTPUT
           else
             echo "Failed to extract version from $GITHUB_REF"
             exit 1
           fi
+          if [[ $VERSION =~ beta ]]; then
+            # Get last release
+            FROM_TAG=$(git tag --sort='version:refname' | grep ^python-v | python ci/semver_sort.py python-v | tail -n 1)
+          else
+            # Get last stable tag (ignore betas)
+            FROM_TAG=$(git tag --sort='version:refname' | grep ^python-v | grep -v beta | python ci/semver_sort.py python-v | tail -n 1)
+          fi
+          echo "from_tag=$FROM_TAG"
       - name: Create Python Release Notes
         id: python_release_notes
         uses: mikepenz/release-changelog-builder-action@v4
         with:
-          configuration: python_release_notes.json
-          # If making a stable release, include all changes since the last stable release.
-          ignorePreReleases: ${{ !contains('beta', github.ref) }}
+          configuration: .github/python_release_notes.json
           toTag: ${{ steps.extract_version.outputs.tag }}
+          fromTag: ${{ steps.extract_version.outputs.from_tag }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Create Python GH release

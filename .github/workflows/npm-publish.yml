@@ -391,14 +391,21 @@ jobs:
             echo "Failed to extract version from $GITHUB_REF"
             exit 1
           fi
+          if [[ $VERSION =~ beta ]]; then
+            # Get last release
+            FROM_TAG=$(git tag --sort='version:refname' | grep ^v | python ci/semver_sort.py v | tail -n 1)
+          else
+            # Get last stable tag (ignore betas)
+            FROM_TAG=$(git tag --sort='version:refname' | grep ^v | grep -v beta | python ci/semver_sort.py v | tail -n 1)
+          fi
+          echo "from_tag=$FROM_TAG"
       - name: Create Release Notes
         id: release_notes
         uses: mikepenz/release-changelog-builder-action@v4
         with:
-          configuration: release_notes.json
-          # If making a stable release, include all changes since the last stable release.
-          ignorePreReleases: ${{ !contains('beta', github.ref) }}
+          configuration: .github/release_notes.json
           toTag: ${{ steps.extract_version.outputs.tag }}
+          fromTag: ${{ steps.extract_version.outputs.from_tag }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Create GH release
