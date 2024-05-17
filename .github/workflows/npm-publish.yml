@@ -383,11 +383,13 @@ jobs:
         env:
           GITHUB_REF: ${{ github.ref }}
         run: |
+          set -e
           echo "Extracting tag and version from $GITHUB_REF"
           if [[ $GITHUB_REF =~ refs/tags/v(.*) ]]; then
             TAG=v${BASH_REMATCH[1]}
             echo "tag=$TAG" >> $GITHUB_OUTPUT
-            echo "version=${BASH_REMATCH[1]}" >> $GITHUB_OUTPUT
+            VERSION=${BASH_REMATCH[1]}
+            echo "version=$VERSION" >> $GITHUB_OUTPUT
           else
             echo "Failed to extract version from $GITHUB_REF"
             exit 1
@@ -395,11 +397,6 @@ jobs:
           echo "Extracted version $VERSION from $GITHUB_REF"
           if [[ $VERSION =~ beta ]]; then
             echo "This is a beta release"
-
-            git tag --sort='version:refname' \
-              | grep ^v \
-              | grep -vF "$TAG" \
-              | python ci/semver_sort.py v
 
             # Get last release (that is not this one)
             FROM_TAG=$(git tag --sort='version:refname' \
