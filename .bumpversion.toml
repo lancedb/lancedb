@@ -1,5 +1,5 @@
 [tool.bumpversion]
-current_version = "0.4.20"
+current_version = "0.5.0-beta.0"
 parse = """(?x)
     (?P<major>0|[1-9]\\d*)\\.
     (?P<minor>0|[1-9]\\d*)\\.
@@ -40,22 +40,7 @@ replace = "\"version\": \"{new_version}\","
 
 # nodejs binary packages
 [[tool.bumpversion.files]]
-filename = "nodejs/npm/darwin-x64/package.json"
-search = "\"version\": \"{current_version}\","
-replace = "\"version\": \"{new_version}\","
-
-[[tool.bumpversion.files]]
-filename = "nodejs/npm/darwin-arm64/package.json"
-search = "\"version\": \"{current_version}\","
-replace = "\"version\": \"{new_version}\","
-
-[[tool.bumpversion.files]]
-filename = "nodejs/npm/linux-x64-gnu/package.json"
-search = "\"version\": \"{current_version}\","
-replace = "\"version\": \"{new_version}\","
-
-[[tool.bumpversion.files]]
-filename = "nodejs/npm/linux-arm64-gnu/package.json"
+glob = "nodejs/npm/*/package.json"
 search = "\"version\": \"{current_version}\","
 replace = "\"version\": \"{new_version}\","
 
@@ -63,10 +48,12 @@ replace = "\"version\": \"{new_version}\","
 # ------------
 [[tool.bumpversion.files]]
 filename = "rust/ffi/node/Cargo.toml"
-search = "version = \"{current_version}\""
-replace = "version = \"{new_version}\""
+search = "\nversion = \"{current_version}\""
+replace = "\nversion = \"{new_version}\""
+regex = true
 
 [[tool.bumpversion.files]]
 filename = "rust/lancedb/Cargo.toml"
-search = "version = \"{current_version}\""
-replace = "version = \"{new_version}\""
+search = "\nversion = \"{current_version}\""
+replace = "\nversion = \"{new_version}\""
+regex = true
