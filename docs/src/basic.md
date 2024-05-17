@@ -66,8 +66,12 @@ recommend switching to stable releases.
 
 === "Rust"
     
-    ```shell
-    cargo add lancedb --version 0.0.1-beta.1
+    We don't push preview releases to crates.io, but you can referent the tag
+    in GitHub within your Cargo dependencies:
+
+    ```toml
+    [dependencies]
+    lancedb = { git = "https://github.com/lancedb/lancedb.git", tag = "vX.Y.Z-beta.N" }
     ```
 
 ## Connect to a database

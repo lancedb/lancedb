@@ -10,12 +10,14 @@ ones. For Rust and Node.js, the release process is shared between `lancedb` and
 
 ## Preview releases
 
-LanceDB has stable releases about every 2 weeks, but in between we make frequent
+LanceDB has full releases about every 2 weeks, but in between we make frequent
 preview releases. These are released as `0.x.y.betaN` versions. They receive the
 same level of testing as normal releases and let you get access to the latest
 features. However, we do not guarantee that preview releases will be available
-more than 6 months after they are released. Once your application is stable, we
-recommend switching to stable releases.
+more than 6 months after they are released. We may delete the preview releases
+from the packaging index after a while. Once your application is stable, we
+recommend switching to full releases, which will never be removed from package
+indexes.
 
 ## Making releases
 

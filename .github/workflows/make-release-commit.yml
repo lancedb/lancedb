@@ -53,6 +53,9 @@ jobs:
         with:
           fetch-depth: 0
           lfs: true
+          # It's important we use our token here, as the default token will NOT
+          # trigger any workflows watching for new tags. See:
+          # https://docs.github.com/en/actions/using-workflows/triggering-a-workflow#triggering-a-workflow-from-a-workflow
           token: ${{ secrets.LANCEDB_RELEASE_TOKEN }}
       - name: Set git configs for bumpversion
         shell: bash
@@ -86,9 +89,7 @@ jobs:
         if: ${{ !inputs.dry_run }}
         uses: ad-m/github-push-action@master
         with:
-          # It's important we use our token here, as the default token will NOT
-          # trigger any workflows watching for new tags. See:
-          # https://docs.github.com/en/actions/using-workflows/triggering-a-workflow#triggering-a-workflow-from-a-workflow
+          # Need to use PAT here too to trigger next workflow. See comment above.
           github_token: ${{ secrets.LANCEDB_RELEASE_TOKEN }}
           branch: ${{ github.ref }}
           tags: true
