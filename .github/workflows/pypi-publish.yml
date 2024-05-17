@@ -109,10 +109,10 @@ jobs:
         run: |
           set -e
           echo "Extracting tag and version from $GITHUB_REF"
-          if [[ $GITHUB_REF =~ refs/tags/(python-v)(.*) ]]; then
-            TAG=v${BASH_REMATCH[1]}
-            echo "tag=${BASH_REMATCH[1]}${BASH_REMATCH[2]}" >> $GITHUB_OUTPUT
-            VERSION=${BASH_REMATCH[2]}
+          if [[ $GITHUB_REF =~ refs/tags/python-v(.*) ]]; then
+            VERSION=${BASH_REMATCH[1]}
+            TAG=python-v$VERSION
+            echo "tag=$TAG" >> $GITHUB_OUTPUT
             echo "version=$VERSION" >> $GITHUB_OUTPUT
           else
             echo "Failed to extract version from $GITHUB_REF"
