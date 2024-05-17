@@ -65,7 +65,7 @@ what will ultimately be used to CI to determine if the minor version should be
 incremented.
 
 > [!IMPORTANT]
-> Reviewers should check that PRs with breaking change receive the `breaking-change`
+> Reviewers should check that PRs with breaking changes receive the `breaking-change`
 > label. If a PR is missing the label, please add it, even if after it was merged.
 > This label is used in the release process.
 
