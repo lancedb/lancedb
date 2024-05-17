@@ -1,12 +1,5 @@
 {
     "ignore_labels": ["chore"],
-    "tag_resolver": {
-        "filter": "python-.*",
-        "transformer": {
-            "pattern": "python-(.*)",
-            "replacement": "$1"
-        }
-    },
     "pr_template": "- ${{TITLE}} by ${{AUTHOR}} in ${{URL}}",
     "categories": [
         {
