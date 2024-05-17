@@ -38,6 +38,9 @@ use lance::dataset::{
 };
 use lance::dataset::{MergeInsertBuilder as LanceMergeInsertBuilder, WhenNotMatchedBySource};
 use lance::io::WrappingObjectStore;
+use lance_index::vector::hnsw::builder::HnswBuildParams;
+use lance_index::vector::ivf::IvfBuildParams;
+use lance_index::vector::sq::builder::SQBuildParams;
 use lance_index::IndexType;
 use lance_index::{optimize::OptimizeOptions, DatasetIndexExt};
 use log::info;
@@ -48,7 +51,9 @@ use crate::arrow::IntoArrow;
 use crate::connection::NoData;
 use crate::embeddings::{EmbeddingDefinition, EmbeddingRegistry, MaybeEmbedded, MemoryRegistry};
 use crate::error::{Error, Result};
-use crate::index::vector::{IvfPqIndexBuilder, VectorIndex, VectorIndexStatistics};
+use crate::index::vector::{
+    IvfHnswSqIndexBuilder, IvfPqIndexBuilder, VectorIndex, VectorIndexStatistics,
+};
 use crate::index::IndexConfig;
 use crate::index::{
     vector::{suggested_num_partitions, suggested_num_sub_vectors},
@@ -312,6 +317,7 @@ impl UpdateBuilder {
 
 #[async_trait]
 pub(crate) trait TableInternal: std::fmt::Display + std::fmt::Debug + Send + Sync {
+    #[allow(dead_code)]
     fn as_any(&self) -> &dyn std::any::Any;
     /// Cast as [`NativeTable`], or return None it if is not a [`NativeTable`].
     fn as_native(&self) -> Option<&NativeTable>;
@@ -1254,6 +1260,58 @@ impl NativeTable {
         Ok(())
     }
 
+    async fn create_ivf_hnsw_sq_index(
+        &self,
+        index: IvfHnswSqIndexBuilder,
+        field: &Field,
+        replace: bool,
+    ) -> Result<()> {
+        if !Self::supported_vector_data_type(field.data_type()) {
+            return Err(Error::InvalidInput {
+                message: format!(
+                    "An IVF HNSW SQ index cannot be created on the column `{}` which has data type {}",
+                    field.name(),
+                    field.data_type()
+                ),
+            });
+        }
+
+        let num_partitions = if let Some(n) = index.num_partitions {
+            n
+        } else {
+            suggested_num_partitions(self.count_rows(None).await?)
+        };
+
+        let mut dataset = self.dataset.get_mut().await?;
+        let mut ivf_params = IvfBuildParams::new(num_partitions as usize);
+        ivf_params.sample_rate = index.sample_rate as usize;
+        ivf_params.max_iters = index.max_iterations as usize;
+        let hnsw_params = HnswBuildParams::default()
+            .num_edges(index.m as usize)
+            .max_num_edges(index.m as usize * 2)
+            .ef_construction(index.ef_construction as usize);
+        let sq_params = SQBuildParams {
+            sample_rate: index.sample_rate as usize,
+            ..Default::default()
+        };
+        let lance_idx_params = lance::index::vector::VectorIndexParams::with_ivf_hnsw_sq_params(
+            index.distance_type.into(),
+            ivf_params,
+            hnsw_params,
+            sq_params,
+        );
+        dataset
+            .create_index(
+                &[field.name()],
+                IndexType::Vector,
+                None,
+                &lance_idx_params,
+                replace,
+            )
+            .await?;
+        Ok(())
+    }
+
     async fn create_auto_index(&self, field: &Field, opts: IndexBuilder) -> Result<()> {
         if Self::supported_vector_data_type(field.data_type()) {
             self.create_ivf_pq_index(IvfPqIndexBuilder::default(), field, opts.replace)
@@ -1497,6 +1555,10 @@ impl TableInternal for NativeTable {
             Index::Auto => self.create_auto_index(field, opts).await,
             Index::BTree(_) => self.create_btree_index(field, opts).await,
             Index::IvfPq(ivf_pq) => self.create_ivf_pq_index(ivf_pq, field, opts.replace).await,
+            Index::IvfHnswSq(ivf_hnsw_sq) => {
+                self.create_ivf_hnsw_sq_index(ivf_hnsw_sq, field, opts.replace)
+                    .await
+            }
         }
     }
 
@@ -2323,6 +2385,102 @@ mod tests {
 
         table
             .create_index(&["embeddings"], Index::Auto)
+            .execute()
+            .await
+            .unwrap();
+
+        let index_configs = table.list_indices().await.unwrap();
+        assert_eq!(index_configs.len(), 1);
+        let index = index_configs.into_iter().next().unwrap();
+        assert_eq!(index.index_type, crate::index::IndexType::IvfPq);
+        assert_eq!(index.columns, vec!["embeddings".to_string()]);
+        assert_eq!(table.count_rows(None).await.unwrap(), 512);
+        assert_eq!(table.name(), "test");
+
+        let indices = table.as_native().unwrap().load_indices().await.unwrap();
+        let index_uuid = &indices[0].index_uuid;
+        assert_eq!(
+            table
+                .as_native()
+                .unwrap()
+                .count_indexed_rows(index_uuid)
+                .await
+                .unwrap(),
+            Some(512)
+        );
+        assert_eq!(
+            table
+                .as_native()
+                .unwrap()
+                .count_unindexed_rows(index_uuid)
+                .await
+                .unwrap(),
+            Some(0)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_create_index_ivf_hnsw_sq() {
+        use arrow_array::RecordBatch;
+        use arrow_schema::{DataType, Field, Schema as ArrowSchema};
+        use rand;
+        use std::iter::repeat_with;
+
+        use arrow_array::Float32Array;
+
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+        let conn = connect(uri).execute().await.unwrap();
+
+        let dimension = 16;
+        let schema = Arc::new(ArrowSchema::new(vec![Field::new(
+            "embeddings",
+            DataType::FixedSizeList(
+                Arc::new(Field::new("item", DataType::Float32, true)),
+                dimension,
+            ),
+            false,
+        )]));
+
+        let mut rng = rand::thread_rng();
+        let float_arr = Float32Array::from(
+            repeat_with(|| rng.gen::<f32>())
+                .take(512 * dimension as usize)
+                .collect::<Vec<f32>>(),
+        );
+
+        let vectors = Arc::new(create_fixed_size_list(float_arr, dimension).unwrap());
+        let batches = RecordBatchIterator::new(
+            vec![RecordBatch::try_new(schema.clone(), vec![vectors.clone()]).unwrap()]
+                .into_iter()
+                .map(Ok),
+            schema,
+        );
+
+        let table = conn.create_table("test", batches).execute().await.unwrap();
+
+        assert_eq!(
+            table
+                .as_native()
+                .unwrap()
+                .count_indexed_rows("my_index")
+                .await
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            table
+                .as_native()
+                .unwrap()
+                .count_unindexed_rows("my_index")
+                .await
+                .unwrap(),
+            None
+        );
+
+        let index = IvfHnswSqIndexBuilder::default();
+        table
+            .create_index(&["embeddings"], Index::IvfHnswSq(index))
             .execute()
             .await
             .unwrap();
