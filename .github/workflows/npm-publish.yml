@@ -392,7 +392,15 @@ jobs:
             echo "Failed to extract version from $GITHUB_REF"
             exit 1
           fi
+          echo "Extracted version $VERSION from $GITHUB_REF"
           if [[ $VERSION =~ beta ]]; then
+            echo "This is a beta release"
+
+            git tag --sort='version:refname' \
+              | grep ^v \
+              | grep -vF "$TAG" \
+              | python ci/semver_sort.py v
+
             # Get last release (that is not this one)
             FROM_TAG=$(git tag --sort='version:refname' \
               | grep ^v \
@@ -400,6 +408,7 @@ jobs:
               | python ci/semver_sort.py v \
               | tail -n 1)
           else
+            echo "This is a stable release"
             # Get last stable tag (ignore betas)
             FROM_TAG=$(git tag --sort='version:refname' \
               | grep ^v \
@@ -408,6 +417,7 @@ jobs:
               | python ci/semver_sort.py v \
               | tail -n 1)
           fi
+          echo "Found from tag $FROM_TAG"
           echo "from_tag=$FROM_TAG" >> $GITHUB_OUTPUT
       - name: Create Release Notes
         id: release_notes
