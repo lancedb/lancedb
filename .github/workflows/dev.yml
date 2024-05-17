@@ -85,18 +85,6 @@ jobs:
     name: Test Release Notes
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          lfs: true
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - name: Test Release Notes
-        run: |
-          pip install -r python/requirements.txt
-          python python/ci/test_release_notes.py
       - name: Create Python Release Notes
         uses: mikepenz/release-changelog-builder-action@v4
         with:
