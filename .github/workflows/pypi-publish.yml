@@ -144,7 +144,7 @@ jobs:
         id: python_release_notes
         uses: mikepenz/release-changelog-builder-action@v4
         with:
-          configuration: .github/python_release_notes.json
+          configuration: .github/release_notes.json
           toTag: ${{ steps.extract_version.outputs.tag }}
           fromTag: ${{ steps.extract_version.outputs.from_tag }}
         env:
