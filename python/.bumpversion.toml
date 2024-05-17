@@ -24,11 +24,11 @@ commit = true
 message = "Bump version: {current_version} → {new_version}"
 commit_args = ""
 
-[[tool.bumpversion.files]]
-filename = "Cargo.toml"
-search = "version = \"{current_version}\""
-replace = "version = \"{new_version}\""
-
 [tool.bumpversion.parts.pre_l]
 values = ["beta", "final"]
 optional_value = "final"
+
+[[tool.bumpversion.files]]
+filename = "Cargo.toml"
+search = "\nversion = \"{current_version}\""
+replace = "\nversion = \"{new_version}\""

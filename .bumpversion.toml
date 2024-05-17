@@ -1,5 +1,5 @@
 [tool.bumpversion]
-current_version = "0.4.20"
+current_version = "0.4.21-beta.0"
 parse = """(?x)
     (?P<major>0|[1-9]\\d*)\\.
     (?P<minor>0|[1-9]\\d*)\\.
@@ -50,10 +50,8 @@ replace = "\"version\": \"{new_version}\","
 filename = "rust/ffi/node/Cargo.toml"
 search = "\nversion = \"{current_version}\""
 replace = "\nversion = \"{new_version}\""
-regex = true
 
 [[tool.bumpversion.files]]
 filename = "rust/lancedb/Cargo.toml"
 search = "\nversion = \"{current_version}\""
 replace = "\nversion = \"{new_version}\""
-regex = true
