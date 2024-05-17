@@ -117,11 +117,20 @@ jobs:
             exit 1
           fi
           if [[ $VERSION =~ beta ]]; then
-            # Get last release
-            FROM_TAG=$(git tag --sort='version:refname' | grep ^python-v | python ci/semver_sort.py python-v | tail -n 1)
+            # Get last release (that is not this one)
+            FROM_TAG=$(git tag --sort='version:refname' \
+              | grep ^python-v \
+              | grep -vF "$TAG" \
+              | python ci/semver_sort.py python-v \
+              | tail -n 1)
           else
             # Get last stable tag (ignore betas)
-            FROM_TAG=$(git tag --sort='version:refname' | grep ^python-v | grep -v beta | python ci/semver_sort.py python-v | tail -n 1)
+            FROM_TAG=$(git tag --sort='version:refname' \
+              | grep ^python-v \
+              | grep -vF "$TAG" \
+              | grep -v beta \
+              | python ci/semver_sort.py python-v \
+              | tail -n 1)
           fi
           echo "from_tag=$FROM_TAG" >> $GITHUB_OUTPUT
       - name: Create Python Release Notes
