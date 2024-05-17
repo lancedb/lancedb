@@ -1,6 +1,6 @@
 {
-    "ignore_labels": ["ci", "chore"],
-    "pr_template": "- #{{TITLE}} by #{{AUTHOR}} in #{{URL}}",
+    "ignore_labels": ["chore"],
+    "pr_template": "- ${{TITLE}} by ${{AUTHOR}} in ${{URL}}",
     "categories": [
         {
             "title": "## 🏆 Highlights",
@@ -32,6 +32,10 @@
         },
         {
             "title": "## Other Changes"
+        },
+        {
+            "title": "## 🔧 Build and CI",
+            "labels": ["ci"]
         }
     ]
 }

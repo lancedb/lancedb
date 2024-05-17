@@ -1,5 +1,5 @@
 {
-    "ignore_labels": ["ci", "chore"],
+    "ignore_labels": ["chore"],
     "tag_resolver": {
         "filter": "python-.*",
         "transformer": {
@@ -7,7 +7,7 @@
             "replacement": "$1"
         }
     },
-    "pr_template": "- #{{TITLE}} by #{{AUTHOR}} in #{{URL}}",
+    "pr_template": "- ${{TITLE}} by ${{AUTHOR}} in ${{URL}}",
     "categories": [
         {
             "title": "## 🏆 Highlights",
@@ -42,6 +42,11 @@
         {
             "title": "## 🚀 Performance Improvements",
             "labels": ["python", "performance"],
+            "exhaustive": true
+        },
+        {
+            "title": "## 🔧 Build and CI",
+            "labels": ["python", "ci"],
             "exhaustive": true
         }
     ]
