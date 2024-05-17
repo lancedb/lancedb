@@ -123,7 +123,7 @@ jobs:
             # Get last stable tag (ignore betas)
             FROM_TAG=$(git tag --sort='version:refname' | grep ^python-v | grep -v beta | python ci/semver_sort.py python-v | tail -n 1)
           fi
-          echo "from_tag=$FROM_TAG"
+          echo "from_tag=$FROM_TAG" >> $GITHUB_OUTPUT
       - name: Create Python Release Notes
         id: python_release_notes
         uses: mikepenz/release-changelog-builder-action@v4
