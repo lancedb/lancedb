@@ -79,25 +79,3 @@ jobs:
               body: message
             })
             core.setFailed(message)
-  test_release_notes:
-    permissions:
-      pull-requests: write
-    name: Test Release Notes
-    runs-on: ubuntu-latest
-    steps:
-      - name: Create Python Release Notes
-        uses: mikepenz/release-changelog-builder-action@v4
-        with:
-          configuration: .github/python_release_notes.json
-          toTag: python-v0.6.13
-          fromTag: python-v0.6.12
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Create Release Notes
-        uses: mikepenz/release-changelog-builder-action@v4
-        with:
-          configuration: .github/release_notes.json
-          toTag: v0.6.13
-          fromTag: v0.6.12
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
