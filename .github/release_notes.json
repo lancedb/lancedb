@@ -1,5 +1,6 @@
 {
     "ignore_labels": ["ci", "chore"],
+    "pr_template": "- #{{TITLE}} by #{{AUTHOR}} in #{{URL}}",
     "categories": [
         {
             "title": "## 🏆 Highlights",
