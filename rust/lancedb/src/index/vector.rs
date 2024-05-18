@@ -155,14 +155,14 @@ macro_rules! impl_hnsw_params_setter {
     () => {
         /// The number of neighbors to select for each vector in the HNSW graph.
         /// The default value is 20.
-        pub fn num_edges(mut self, m: usize) -> Self {
+        pub fn num_edges(mut self, m: u32) -> Self {
             self.m = m;
             self
         }
 
         /// The number of candidates to evaluate during the construction of the HNSW graph.
         /// The default value is 300.
-        pub fn ef_construction(mut self, ef_construction: usize) -> Self {
+        pub fn ef_construction(mut self, ef_construction: u32) -> Self {
             self.ef_construction = ef_construction;
             self
         }
@@ -257,8 +257,8 @@ pub struct IvfHnswPqIndexBuilder {
     pub(crate) max_iterations: u32,
 
     // HNSW
-    pub(crate) m: usize,
-    pub(crate) ef_construction: usize,
+    pub(crate) m: u32,
+    pub(crate) ef_construction: u32,
 
     // PQ
     pub(crate) num_sub_vectors: Option<u32>,
