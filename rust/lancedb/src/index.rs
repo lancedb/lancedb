@@ -18,7 +18,7 @@ use crate::{table::TableInternal, Result};
 
 use self::{
     scalar::BTreeIndexBuilder,
-    vector::{IvfHnswSqIndexBuilder, IvfPqIndexBuilder},
+    vector::{IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder, IvfPqIndexBuilder},
 };
 
 pub mod scalar;
@@ -28,6 +28,7 @@ pub enum Index {
     Auto,
     BTree(BTreeIndexBuilder),
     IvfPq(IvfPqIndexBuilder),
+    IvfHnswPq(IvfHnswPqIndexBuilder),
     IvfHnswSq(IvfHnswSqIndexBuilder),
 }
 
@@ -69,6 +70,7 @@ impl IndexBuilder {
 #[derive(Debug, Clone, PartialEq)]
 pub enum IndexType {
     IvfPq,
+    IvfHnswPq,
     IvfHnswSq,
     BTree,
 }
