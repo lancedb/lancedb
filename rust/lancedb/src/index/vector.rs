@@ -154,6 +154,8 @@ macro_rules! impl_pq_params_setter {
 macro_rules! impl_hnsw_params_setter {
     () => {
         /// The number of neighbors to select for each vector in the HNSW graph.
+        /// This value controls the tradeoff between search speed and accuracy.
+        /// The higher the value the more accurate the search but the slower it will be.
         /// The default value is 20.
         pub fn num_edges(mut self, m: u32) -> Self {
             self.m = m;
@@ -161,6 +163,9 @@ macro_rules! impl_hnsw_params_setter {
         }
 
         /// The number of candidates to evaluate during the construction of the HNSW graph.
+        /// This value controls the tradeoff between build speed and accuracy.
+        /// The higher the value the more accurate the build but the slower it will be.
+        /// This value should be set to a value that is not less than `ef` in the search phase.
         /// The default value is 300.
         pub fn ef_construction(mut self, ef_construction: u32) -> Self {
             self.ef_construction = ef_construction;
