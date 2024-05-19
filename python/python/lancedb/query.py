@@ -30,6 +30,7 @@ from typing import (
 import deprecation
 import numpy as np
 import pyarrow as pa
+import pyarrow.fs as pa_fs
 import pydantic
 
 from . import __version__
@@ -37,7 +38,7 @@ from .arrow import AsyncRecordBatchReader
 from .common import VEC
 from .rerankers.base import Reranker
 from .rerankers.linear_combination import LinearCombinationReranker
-from .util import safe_import_pandas
+from .util import fs_from_uri, safe_import_pandas
 
 if TYPE_CHECKING:
     import PIL
@@ -665,6 +666,14 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
 
         # get the index path
         index_path = self._table._get_fts_index_path()
+
+        # Check that we are on local filesystem
+        fs, _path = fs_from_uri(index_path)
+        if not isinstance(fs, pa_fs.LocalFileSystem):
+            raise NotImplementedError(
+                "Full-text search is only supported on the local filesystem"
+            )
+
         # check if the index exist
         if not Path(index_path).exists():
             raise FileNotFoundError(

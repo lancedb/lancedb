@@ -1,6 +1,6 @@
 {
   "name": "@lancedb/lancedb",
-  "version": "0.4.18",
+  "version": "0.4.20",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "napi": {
@@ -18,19 +18,16 @@
   },
   "license": "Apache 2.0",
   "devDependencies": {
-    "@aws-sdk/client-s3": "^3.33.0",
     "@aws-sdk/client-kms": "^3.33.0",
+    "@aws-sdk/client-s3": "^3.33.0",
+    "@biomejs/biome": "^1.7.3",
+    "@jest/globals": "^29.7.0",
     "@napi-rs/cli": "^2.18.0",
     "@types/jest": "^29.1.2",
     "@types/tmp": "^0.2.6",
-    "@typescript-eslint/eslint-plugin": "^6.19.0",
-    "@typescript-eslint/parser": "^6.19.0",
     "apache-arrow-old": "npm:apache-arrow@13.0.0",
     "eslint": "^8.57.0",
-    "eslint-config-prettier": "^9.1.0",
-    "eslint-plugin-jsdoc": "^48.2.1",
     "jest": "^29.7.0",
-    "prettier": "^3.1.0",
     "shx": "^0.3.4",
     "tmp": "^0.2.3",
     "ts-jest": "^29.1.2",
@@ -45,33 +42,26 @@
   "engines": {
     "node": ">= 18"
   },
-  "cpu": [
-    "x64",
-    "arm64"
-  ],
-  "os": [
-    "darwin",
-    "linux",
-    "win32"
-  ],
+  "cpu": ["x64", "arm64"],
+  "os": ["darwin", "linux", "win32"],
   "scripts": {
     "artifacts": "napi artifacts",
-    "build:debug": "napi build --platform --dts ../lancedb/native.d.ts --js ../lancedb/native.js dist/",
+    "build:debug": "napi build --platform --dts ../lancedb/native.d.ts --js ../lancedb/native.js lancedb",
     "build:release": "napi build --platform --release --dts ../lancedb/native.d.ts --js ../lancedb/native.js dist/",
-    "build": "npm run build:debug && tsc -b && shx cp lancedb/native.d.ts dist/native.d.ts",
+    "build": "npm run build:debug && tsc -b && shx cp lancedb/native.d.ts dist/native.d.ts && shx cp lancedb/*.node dist/",
     "build-release": "npm run build:release && tsc -b && shx cp lancedb/native.d.ts dist/native.d.ts",
-    "chkformat": "prettier . --check",
+    "lint-ci": "biome ci .",
     "docs": "typedoc --plugin typedoc-plugin-markdown --out ../docs/src/js lancedb/index.ts",
-    "lint": "eslint lancedb __test__",
-    "lint-fix": "eslint lancedb __test__ --fix",
+    "lint": "biome check . && biome format .",
+    "lint-fix": "biome check --apply-unsafe  . && biome format --write .",
     "prepublishOnly": "napi prepublish -t npm",
-    "test": "npm run build && jest --verbose",
+    "test": "jest --verbose",
     "integration": "S3_TEST=1 npm run test",
     "universal": "napi universal",
     "version": "napi version"
   },
   "dependencies": {
-    "openai": "^4.29.2",
-    "apache-arrow": "^15.0.0"
+    "apache-arrow": "^15.0.0",
+    "openai": "^4.29.2"
   }
 }

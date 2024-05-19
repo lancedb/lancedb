@@ -213,7 +213,7 @@ def test_syntax(table):
     # https://github.com/lancedb/lancedb/issues/769
     table.create_fts_index("text")
     with pytest.raises(ValueError, match="Syntax Error"):
-        table.search("they could have been dogs OR cats").limit(10).to_list()
+        table.search("they could have been dogs OR").limit(10).to_list()
 
     # these should work
 

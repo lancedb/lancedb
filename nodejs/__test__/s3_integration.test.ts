@@ -14,7 +14,11 @@
 
 /* eslint-disable @typescript-eslint/naming-convention */
 
-import { connect } from "../dist";
+import {
+  CreateKeyCommand,
+  KMSClient,
+  ScheduleKeyDeletionCommand,
+} from "@aws-sdk/client-kms";
 import {
   CreateBucketCommand,
   DeleteBucketCommand,
@@ -23,11 +27,7 @@ import {
   ListObjectsV2Command,
   S3Client,
 } from "@aws-sdk/client-s3";
-import {
-  CreateKeyCommand,
-  ScheduleKeyDeletionCommand,
-  KMSClient,
-} from "@aws-sdk/client-kms";
+import { connect } from "../lancedb";
 
 // Skip these tests unless the S3_TEST environment variable is set
 const maybeDescribe = process.env.S3_TEST ? describe : describe.skip;
@@ -63,9 +63,10 @@ class S3Bucket {
     // Delete the bucket if it already exists
     try {
       await this.deleteBucket(client, name);
-    } catch (e) {
+    } catch {
       // It's fine if the bucket doesn't exist
     }
+    // biome-ignore lint/style/useNamingConvention: we dont control s3's api
     await client.send(new CreateBucketCommand({ Bucket: name }));
     return new S3Bucket(name);
   }
@@ -78,27 +79,32 @@ class S3Bucket {
   static async deleteBucket(client: S3Client, name: string) {
     // Must delete all objects before we can delete the bucket
     const objects = await client.send(
+      // biome-ignore lint/style/useNamingConvention: we dont control s3's api
       new ListObjectsV2Command({ Bucket: name }),
     );
     if (objects.Contents) {
       for (const object of objects.Contents) {
         await client.send(
+          // biome-ignore lint/style/useNamingConvention: we dont control s3's api
           new DeleteObjectCommand({ Bucket: name, Key: object.Key }),
         );
       }
     }
 
+    // biome-ignore lint/style/useNamingConvention: we dont control s3's api
     await client.send(new DeleteBucketCommand({ Bucket: name }));
   }
 
   public async assertAllEncrypted(path: string, keyId: string) {
     const client = S3Bucket.s3Client();
     const objects = await client.send(
+      // biome-ignore lint/style/useNamingConvention: we dont control s3's api
       new ListObjectsV2Command({ Bucket: this.name, Prefix: path }),
     );
     if (objects.Contents) {
       for (const object of objects.Contents) {
         const metadata = await client.send(
+          // biome-ignore lint/style/useNamingConvention: we dont control s3's api
           new HeadObjectCommand({ Bucket: this.name, Key: object.Key }),
         );
         expect(metadata.ServerSideEncryption).toBe("aws:kms");
@@ -137,6 +143,7 @@ class KmsKey {
 
   public async delete() {
     const client = KmsKey.kmsClient();
+    // biome-ignore lint/style/useNamingConvention: we dont control s3's api
     await client.send(new ScheduleKeyDeletionCommand({ KeyId: this.keyId }));
   }
 }

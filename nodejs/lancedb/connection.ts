@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+import { Table as ArrowTable, Schema } from "apache-arrow";
 import { fromTableToBuffer, makeArrowTable, makeEmptyTable } from "./arrow";
 import { ConnectionOptions, Connection as LanceDbConnection } from "./native";
 import { Table } from "./table";
-import { Table as ArrowTable, Schema } from "apache-arrow";
 
 /**
  * Connect to a LanceDB instance at the given URI.

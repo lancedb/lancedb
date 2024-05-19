@@ -13,32 +13,26 @@
 // limitations under the License.
 
 import {
-  convertToTable,
-  fromTableToBuffer,
-  makeArrowTable,
-  makeEmptyTable,
-} from "../dist/arrow";
-import {
-  Field,
-  FixedSizeList,
-  Float16,
-  Float32,
-  Int32,
-  tableFromIPC,
-  Schema,
-  Float64,
-  type Table,
   Binary,
   Bool,
-  Utf8,
-  Struct,
-  List,
   DataType,
   Dictionary,
-  Int64,
+  Field,
+  FixedSizeList,
   Float,
-  Precision,
+  Float16,
+  Float32,
+  Float64,
+  Int32,
+  Int64,
+  List,
   MetadataVersion,
+  Precision,
+  Schema,
+  Struct,
+  type Table,
+  Utf8,
+  tableFromIPC,
 } from "apache-arrow";
 import {
   Dictionary as OldDictionary,
@@ -46,14 +40,20 @@ import {
   FixedSizeList as OldFixedSizeList,
   Float32 as OldFloat32,
   Int32 as OldInt32,
-  Struct as OldStruct,
   Schema as OldSchema,
+  Struct as OldStruct,
   TimestampNanosecond as OldTimestampNanosecond,
   Utf8 as OldUtf8,
 } from "apache-arrow-old";
-import { type EmbeddingFunction } from "../dist/embedding/embedding_function";
+import {
+  convertToTable,
+  fromTableToBuffer,
+  makeArrowTable,
+  makeEmptyTable,
+} from "../lancedb/arrow";
+import { type EmbeddingFunction } from "../lancedb/embedding/embedding_function";
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// biome-ignore lint/suspicious/noExplicitAny: skip
 function sampleRecords(): Array<Record<string, any>> {
   return [
     {
@@ -438,7 +438,7 @@ describe("when using two versions of arrow", function () {
           new OldField("ts_no_tz", new OldTimestampNanosecond(null)),
         ]),
       ),
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // biome-ignore lint/suspicious/noExplicitAny: skip
     ]) as any;
     schema.metadataVersion = MetadataVersion.V5;
     const table = makeArrowTable([], { schema });
