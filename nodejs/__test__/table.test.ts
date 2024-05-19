@@ -17,14 +17,13 @@ import * as path from "path";
 import * as tmp from "tmp";
 
 import {
+  Table as ArrowTable,
   Field,
   FixedSizeList,
   Float32,
   Float64,
   Int32,
   Int64,
-  Float64,
-  Table as ArrowTable
   Schema,
 } from "apache-arrow";
 import { Table, connect } from "../lancedb";
@@ -87,11 +86,9 @@ describe("Given a table", () => {
   });
 
   it("should return the table as an instance of an arrow table", async () => {
-    const arrowTbl = await table.toArrow()
-    expect(arrowTbl).toBeInstanceOf(ArrowTable)
-
-  })
-
+    const arrowTbl = await table.toArrow();
+    expect(arrowTbl).toBeInstanceOf(ArrowTable);
+  });
 });
 
 describe("When creating an index", () => {
@@ -427,6 +424,4 @@ describe("when dealing with versioning", () => {
       "checkout before running restore",
     );
   });
-
-  
 });

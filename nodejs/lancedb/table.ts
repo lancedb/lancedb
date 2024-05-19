@@ -13,6 +13,7 @@
 // limitations under the License.
 
 import { Schema, tableFromIPC } from "apache-arrow";
+import { Table as ArrowTable } from "apache-arrow";
 import { Data, fromDataToBuffer } from "./arrow";
 import { IndexOptions } from "./indices";
 import {
@@ -23,6 +24,7 @@ import {
 } from "./native";
 import { Query, VectorQuery } from "./query";
 export { IndexConfig } from "./native";
+
 /**
  * Options for adding data to a table.
  */
@@ -357,8 +359,7 @@ export class Table {
   }
 
   /** Return the table as an arrow table */
-  async toArrow():Promise<ArrowTable> {
+  async toArrow(): Promise<ArrowTable> {
     return await this.query().toArrow();
   }
-
 }
