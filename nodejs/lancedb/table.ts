@@ -154,7 +154,7 @@ export class Table {
    */
   async update(
     updates: Map<string, string> | Record<string, string>,
-    options?: Partial<UpdateOptions>
+    options?: Partial<UpdateOptions>,
   ) {
     const onlyIf = options?.where;
     let columns: [string, string][];

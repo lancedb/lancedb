@@ -42,7 +42,7 @@ describe("Given a table", () => {
 
   it("be displayable", async () => {
     expect(table.display()).toMatch(
-      /NativeTable\(some_table, uri=.*, read_consistency_interval=None\)/
+      /NativeTable\(some_table, uri=.*, read_consistency_interval=None\)/,
     );
     table.close();
     expect(table.display()).toBe("ClosedTable(some_table)");
@@ -108,7 +108,7 @@ describe("When creating an index", () => {
         })),
       {
         schema,
-      }
+      },
     );
     queryVec = data.toArray()[5].vec.toJSON();
     tbl = await db.createTable("test", data);
@@ -167,7 +167,7 @@ describe("When creating an index", () => {
     // Default is replace=true
     await tbl.createIndex("id");
     await expect(tbl.createIndex("id", { replace: false })).rejects.toThrow(
-      "already exists"
+      "already exists",
     );
     await tbl.createIndex("id", { replace: true });
   });
@@ -191,7 +191,7 @@ describe("When creating an index", () => {
       new Field("vec", new FixedSizeList(32, new Field("item", new Float32()))),
       new Field(
         "vec2",
-        new FixedSizeList(64, new Field("item", new Float32()))
+        new FixedSizeList(64, new Field("item", new Float32())),
       ),
     ]);
     const tbl = await db.createTable(
@@ -208,8 +208,8 @@ describe("When creating an index", () => {
               .fill(1)
               .map(() => Math.random()),
           })),
-        { schema }
-      )
+        { schema },
+      ),
     );
 
     // Only build index over v1
@@ -223,7 +223,7 @@ describe("When creating an index", () => {
       .nearestTo(
         Array(32)
           .fill(1)
-          .map(() => Math.random())
+          .map(() => Math.random()),
       )
       .toArrow();
     expect(rst.numRows).toBe(2);
@@ -236,10 +236,10 @@ describe("When creating an index", () => {
         .nearestTo(
           Array(64)
             .fill(1)
-            .map(() => Math.random())
+            .map(() => Math.random()),
         )
         .column("vec")
-        .toArrow()
+        .toArrow(),
     ).rejects.toThrow(/.* query dim=64, expected vector dim=32.*/);
 
     const query64 = Array(64)
@@ -319,7 +319,7 @@ describe("schema evolution", function () {
       new Field(
         "vector",
         new FixedSizeList(2, new Field("item", new Float32(), true)),
-        true
+        true,
       ),
       new Field("price", new Float32(), false),
     ]);
@@ -333,7 +333,7 @@ describe("schema evolution", function () {
       new Field(
         "vector",
         new FixedSizeList(2, new Field("item", new Float32(), true)),
-        true
+        true,
       ),
       new Field("price", new Float64(), false),
     ]);
@@ -356,7 +356,7 @@ describe("schema evolution", function () {
       new Field(
         "vector",
         new FixedSizeList(2, new Field("item", new Float32(), true)),
-        true
+        true,
       ),
       new Field("price", new Float64(), true),
     ]);
@@ -398,7 +398,7 @@ describe("when dealing with versioning", () => {
     expect(await table.countRows()).toBe(1);
     // Can't add data in time travel mode
     await expect(table.add([{ id: 3n, vector: [0.1, 0.2] }])).rejects.toThrow(
-      "table cannot be modified when a specific version is checked out"
+      "table cannot be modified when a specific version is checked out",
     );
     // Can go back to normal mode
     await table.checkoutLatest();
@@ -415,7 +415,7 @@ describe("when dealing with versioning", () => {
     expect(await table.countRows()).toBe(2);
     // Can't use restore if not checked out
     await expect(table.restore()).rejects.toThrow(
-      "checkout before running restore"
+      "checkout before running restore",
     );
   });
 });
