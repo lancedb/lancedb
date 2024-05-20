@@ -23,12 +23,9 @@ use arrow::datatypes::Float32Type;
 use arrow_array::{RecordBatchIterator, RecordBatchReader};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use async_trait::async_trait;
-use chrono::Duration;
 use lance::dataset::builder::DatasetBuilder;
 use lance::dataset::cleanup::RemovalStats;
-use lance::dataset::optimize::{
-    compact_files, CompactionMetrics, CompactionOptions, IndexRemapperOptions,
-};
+use lance::dataset::optimize::{compact_files, CompactionMetrics, IndexRemapperOptions};
 use lance::dataset::scanner::{DatasetRecordBatchStream, Scanner};
 pub use lance::dataset::ColumnAlteration;
 pub use lance::dataset::NewColumnTransform;
@@ -41,8 +38,8 @@ use lance::io::WrappingObjectStore;
 use lance_index::vector::hnsw::builder::HnswBuildParams;
 use lance_index::vector::ivf::IvfBuildParams;
 use lance_index::vector::sq::builder::SQBuildParams;
+use lance_index::DatasetIndexExt;
 use lance_index::IndexType;
-use lance_index::{optimize::OptimizeOptions, DatasetIndexExt};
 use log::info;
 use serde::{Deserialize, Serialize};
 use snafu::whatever;
@@ -69,6 +66,10 @@ use self::merge::MergeInsertBuilder;
 
 pub(crate) mod dataset;
 pub mod merge;
+
+pub use chrono::Duration;
+pub use lance::dataset::optimize::CompactionOptions;
+pub use lance_index::optimize::OptimizeOptions;
 
 /// Defines the type of column
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -150,22 +151,58 @@ impl TableDefinition {
 ///
 /// By default, it optimizes everything, as [`OptimizeAction::All`].
 pub enum OptimizeAction {
-    /// Run optimization on every, with default options.
+    /// Run all optimizations with default values
     All,
-    /// Compact files in the dataset
+    /// Compacts files in the dataset
+    ///
+    /// LanceDb uses a readonly filesystem for performance and safe concurrency.  Every time
+    /// new data is added it will be added into new files.  Small files
+    /// can hurt both read and write performance.  Compaction will merge small files
+    /// into larger ones.
+    ///
+    /// All operations that modify data (add, delete, update, merge insert, etc.) will create
+    /// new files.  If these operations are run frequently then compaction should run frequently.
+    ///
+    /// If these operations are never run (search only) then compaction is not necessary.
     Compact {
         options: CompactionOptions,
         remap_options: Option<Arc<dyn IndexRemapperOptions>>,
     },
-    /// Prune old version of datasets.
+    /// Prune old version of datasets
+    ///
+    /// Every change in LanceDb is additive.  When data is removed from a dataset a new version is
+    /// created that doesn't contain the removed data.  However, the old version, which does contain
+    /// the removed data, is left in place.  This is necessary for consistency and concurrency and
+    /// also enables time travel functionality like the ability to checkout an older version of the
+    /// dataset to undo changes.
+    ///
+    /// Over time, these old versions can consume a lot of disk space.  The prune operation will
+    /// remove versions of the dataset that are older than a certain age.  This will free up the
+    /// space used by that old data.
+    ///
+    /// Once a version is pruned it can no longer be checked out.
     Prune {
         /// The duration of time to keep versions of the dataset.
-        older_than: Duration,
+        older_than: Option<Duration>,
         /// Because they may be part of an in-progress transaction, files newer than 7 days old are not deleted by default.
         /// If you are sure that there are no in-progress transactions, then you can set this to True to delete all files older than `older_than`.
         delete_unverified: Option<bool>,
     },
-    /// Optimize index.
+    /// Optimize the indices
+    ///
+    /// This operation optimizes all indices in the table.  When new data is added to LanceDb
+    /// it is not added to the indices.  However, it can still turn up in searches because the search
+    /// function will scan both the indexed data and the unindexed data in parallel.  Over time, the
+    /// unindexed data can become large enough that the search performance is slow.  This operation
+    /// will add the unindexed data to the indices without rerunning the full index creation process.
+    ///
+    /// Optimizing an index is faster than re-training the index but it does not typically adjust the
+    /// underlying model relied upon by the index.  This can eventually lead to poor search accuracy
+    /// and so users may still want to occasionally retrain the index after adding a large amount of
+    /// data.
+    ///
+    /// For example, when using IVF, an index will create clusters.  Optimizing an index assigns unindexed
+    /// data to the existing clusters, but it does not move the clusters or create new clusters.
     Index(OptimizeOptions),
 }
 
@@ -757,10 +794,30 @@ impl Table {
 
     /// Optimize the on-disk data and indices for better performance.
     ///
+    /// Modeled after ``VACUUM`` in PostgreSQL.
+    ///
+    /// Optimization is discussed in more detail in the [OptimizeAction] documentation
+    /// and covers three operations:
+    ///
+    ///  * Compaction: Merges small files into larger ones
+    ///  * Prune: Removes old versions of the dataset
+    ///  * Index: Optimizes the indices, adding new data to existing indices
+    ///
     /// <section class="warning">Experimental API</section>
     ///
-    /// Modeled after ``VACUUM`` in PostgreSQL.
-    /// Not all implementations support explicit optimization.
+    /// The optimization process is undergoing active development and may change.
+    /// Our goal with these changes is to improve the performance of optimization and
+    /// reduce the complexity.
+    ///
+    /// That being said, it is essential today to run optimize if you want the best
+    /// performance.  It should be stable and safe to use in production, but it our
+    /// hope that the API may be simplified (or not even need to be called) in the future.
+    ///
+    /// The frequency an application shoudl call optimize is based on the frequency of
+    /// data modifications.  If data is frequently added, deleted, or updated then
+    /// optimize should be run frequently.  A good rule of thumb is to run optimize if
+    /// you have added or modified 100,000 or more records or run more than 20 data
+    /// modification operations.
     pub async fn optimize(&self, action: OptimizeAction) -> Result<OptimizeStats> {
         self.inner.optimize(action).await
     }
@@ -1654,7 +1711,7 @@ impl TableInternal for NativeTable {
                     .compaction;
                 stats.prune = self
                     .optimize(OptimizeAction::Prune {
-                        older_than: Duration::try_days(7).unwrap(),
+                        older_than: None,
                         delete_unverified: None,
                     })
                     .await?
@@ -1673,8 +1730,11 @@ impl TableInternal for NativeTable {
                 delete_unverified,
             } => {
                 stats.prune = Some(
-                    self.cleanup_old_versions(older_than, delete_unverified)
-                        .await?,
+                    self.cleanup_old_versions(
+                        older_than.unwrap_or(Duration::days(7)),
+                        delete_unverified,
+                    )
+                    .await?,
                 );
             }
             OptimizeAction::Index(options) => {

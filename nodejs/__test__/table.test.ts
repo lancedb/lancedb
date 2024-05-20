@@ -419,3 +419,31 @@ describe("when dealing with versioning", () => {
     );
   });
 });
+
+describe("when optimizing a dataset", () => {
+  let tmpDir: tmp.DirResult;
+  let table: Table;
+  beforeEach(async () => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+    const con = await connect(tmpDir.name);
+    table = await con.createTable("vectors", [{ id: 1 }]);
+    await table.add([{ id: 2 }]);
+  });
+  afterEach(() => {
+    tmpDir.removeCallback();
+  });
+
+  it("compacts files", async () => {
+    const stats = await table.optimize();
+    expect(stats.compaction.filesAdded).toBe(1);
+    expect(stats.compaction.filesRemoved).toBe(2);
+    expect(stats.compaction.fragmentsAdded).toBe(1);
+    expect(stats.compaction.fragmentsRemoved).toBe(2);
+  });
+
+  it("cleanups old versions", async () => {
+    const stats = await table.optimize({ cleanupOlderThan: new Date() });
+    expect(stats.prune.bytesRemoved).toBeGreaterThan(0);
+    expect(stats.prune.oldVersionsRemoved).toBe(3);
+  });
+});
