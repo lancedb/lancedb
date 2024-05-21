@@ -267,6 +267,18 @@ impl Table {
     pub async fn optimize(&self, older_than_ms: Option<i64>) -> napi::Result<OptimizeStats> {
         let inner = self.inner_ref()?;
 
+        let older_than = if let Some(ms) = older_than_ms {
+            if ms == i64::MIN {
+                return Err(napi::Error::from_reason(format!(
+                    "older_than_ms can not be {}",
+                    i32::MIN,
+                )));
+            }
+            Duration::try_milliseconds(ms)
+        } else {
+            None
+        };
+
         let compaction_stats = inner
             .optimize(OptimizeAction::Compact {
                 options: lancedb::table::CompactionOptions::default(),
@@ -276,7 +288,6 @@ impl Table {
             .default_error()?
             .compaction
             .unwrap();
-        let older_than = older_than_ms.map(Duration::milliseconds);
         let prune_stats = inner
             .optimize(OptimizeAction::Prune {
                 older_than,
