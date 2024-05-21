@@ -230,6 +230,18 @@ impl Table {
 
     pub fn optimize(self_: PyRef<'_, Self>, cleanup_since_ms: Option<u64>) -> PyResult<&PyAny> {
         let inner = self_.inner_ref()?.clone();
+        let older_than = if let Some(ms) = cleanup_since_ms {
+            if ms > i64::MAX as u64 {
+                return Err(PyValueError::new_err(format!(
+                    "cleanup_since_ms must be between {} and -{}",
+                    i32::MAX,
+                    i32::MAX
+                )));
+            }
+            Duration::try_milliseconds(ms as i64)
+        } else {
+            None
+        };
         future_into_py(self_.py(), async move {
             let compaction_stats = inner
                 .optimize(OptimizeAction::Compact {
@@ -240,7 +252,6 @@ impl Table {
                 .infer_error()?
                 .compaction
                 .unwrap();
-            let older_than = cleanup_since_ms.map(|since| Duration::milliseconds(since as i64));
             let prune_stats = inner
                 .optimize(OptimizeAction::Prune {
                     older_than,

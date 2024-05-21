@@ -1301,7 +1301,6 @@ impl NativeTable {
             num_partitions as usize,
             /*num_bits=*/ 8,
             num_sub_vectors as usize,
-            false,
             index.distance_type.into(),
             index.max_iterations as usize,
         );
@@ -1345,7 +1344,6 @@ impl NativeTable {
         ivf_params.max_iters = index.max_iterations as usize;
         let hnsw_params = HnswBuildParams::default()
             .num_edges(index.m as usize)
-            .max_num_edges(index.m as usize * 2)
             .ef_construction(index.ef_construction as usize);
         let sq_params = SQBuildParams {
             sample_rate: index.sample_rate as usize,
@@ -1731,7 +1729,7 @@ impl TableInternal for NativeTable {
             } => {
                 stats.prune = Some(
                     self.cleanup_old_versions(
-                        older_than.unwrap_or(Duration::days(7)),
+                        older_than.unwrap_or(Duration::try_days(7).expect("valid delta")),
                         delete_unverified,
                     )
                     .await?,

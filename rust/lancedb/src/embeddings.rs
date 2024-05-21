@@ -155,7 +155,7 @@ impl<R: RecordBatchReader> MaybeEmbedded<R> {
                         }
                         None => {
                             return Err(Error::EmbeddingFunctionNotFound {
-                                name: embedding_def.embedding_name.to_string(),
+                                name: embedding_def.embedding_name.clone(),
                                 reason: format!(
                                     "Table was defined with an embedding column `{}` but no embedding function was found with that name within the registry.",
                                     embedding_def.embedding_name
