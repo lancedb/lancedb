@@ -1271,7 +1271,7 @@ impl NativeTable {
         if !Self::supported_vector_data_type(field.data_type()) {
             return Err(Error::InvalidInput {
                 message: format!(
-                    "An IVF HNSW SQ index cannot be created on the column `{}` which has data type {}",
+                    "An IVF HNSW PQ index cannot be created on the column `{}` which has data type {}",
                     field.name(),
                     field.data_type()
                 ),
