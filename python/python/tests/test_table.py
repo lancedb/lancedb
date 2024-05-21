@@ -1025,3 +1025,29 @@ async def test_time_travel(db_async: AsyncConnection):
     # Can't use restore if not checked out
     with pytest.raises(ValueError, match="checkout before running restore"):
         await table.restore()
+
+
+@pytest.mark.asyncio
+async def test_optimize(db_async: AsyncConnection):
+    table = await db_async.create_table(
+        "test",
+        data=[{"x": [1]}],
+    )
+    await table.add(
+        data=[
+            {"x": [2]},
+        ],
+    )
+    stats = await table.optimize()
+    assert stats.compaction.files_removed == 2
+    assert stats.compaction.files_added == 1
+    assert stats.compaction.fragments_added == 1
+    assert stats.compaction.fragments_removed == 2
+    assert stats.prune.bytes_removed == 0
+    assert stats.prune.old_versions_removed == 0
+
+    stats = await table.optimize(cleanup_older_than=timedelta(seconds=0))
+    assert stats.prune.bytes_removed > 0
+    assert stats.prune.old_versions_removed == 3
+
+    assert await table.query().to_arrow() == pa.table({"x": [[1], [2]]})
