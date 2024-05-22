@@ -101,7 +101,13 @@
   },
   "overrides": [
     {
-      "include": ["**/*.ts", "**/*.tsx", "**/*.mts", "**/*.cts"],
+      "include": [
+        "**/*.ts",
+        "**/*.tsx",
+        "**/*.mts",
+        "**/*.cts",
+        "__test__/*.test.ts"
+      ],
       "linter": {
         "rules": {
           "correctness": {
