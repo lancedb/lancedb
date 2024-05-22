@@ -14,7 +14,7 @@
 
 import { Table as ArrowTable, Schema } from "apache-arrow";
 import { fromTableToBuffer, makeArrowTable, makeEmptyTable } from "./arrow";
-import { EmbeddingFunctionConfig } from "./embedding/registry";
+import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
 import { ConnectionOptions, Connection as LanceDbConnection } from "./native";
 import { Table } from "./table";
 
@@ -235,8 +235,14 @@ export class Connection {
     if (mode === "create" && existOk) {
       mode = "exist_ok";
     }
+    let metadata: Map<string, string> | undefined = undefined;
+    if (options?.embeddingFunction !== undefined) {
+      const embeddingFunction = options.embeddingFunction;
+      const registry = getRegistry();
+      metadata = registry.getTableMetadata([embeddingFunction]);
+    }
 
-    const table = makeEmptyTable(schema);
+    const table = makeEmptyTable(schema, metadata);
     const buf = await fromTableToBuffer(table);
     const innerTable = await this.inner.createEmptyTable(
       name,

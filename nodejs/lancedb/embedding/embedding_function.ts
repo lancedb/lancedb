@@ -1,8 +1,4 @@
-import { DataType, Field, FixedSizeList, Float, Float32 } from "apache-arrow";
-import "reflect-metadata";
-import { newVectorType } from "../arrow";
-
-// Copyright 2023 Lance Developers.
+// Copyright 2024 Lance Developers.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,6 +11,10 @@ import { newVectorType } from "../arrow";
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+
+import { DataType, Field, FixedSizeList, Float, Float32 } from "apache-arrow";
+import "reflect-metadata";
+import { newVectorType } from "../arrow";
 
 /**
  * Options for a given embedding function
@@ -78,9 +78,8 @@ export abstract class EmbeddingFunction<
 
     if (options instanceof DataType) {
       return [options, metadata];
-    } else {
-      return [datatype, metadata];
     }
+    return [datatype, metadata];
   }
 
   /**

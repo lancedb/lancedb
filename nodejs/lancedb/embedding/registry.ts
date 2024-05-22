@@ -1,5 +1,20 @@
-import { EmbeddingFunction } from "./embedding_function";
+// Copyright 2024 Lance Developers.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+import type { EmbeddingFunction } from "./embedding_function";
 import "reflect-metadata";
+
 export interface EmbeddingFunctionOptions {
   [key: string]: unknown;
 }
@@ -22,10 +37,6 @@ interface EmbeddingFunctionCreate<T extends EmbeddingFunction> {
  */
 export class EmbeddingFunctionRegistry {
   #functions: Map<string, EmbeddingFunctionFactory> = new Map();
-
-  static getInstance() {
-    return _REGISTRY;
-  }
 
   /**
    * Register an embedding function
@@ -91,9 +102,9 @@ export class EmbeddingFunctionRegistry {
         vectorColumn: string;
         model: EmbeddingFunctionOptions;
       };
-      const functions = JSON.parse(
-        metadata.get("embedding_functions")!,
-      ) as FunctionConfig[];
+      const functions = <FunctionConfig[]>(
+        JSON.parse(metadata.get("embedding_functions")!)
+      );
       return new Map(
         functions.map((f) => {
           return [
@@ -117,7 +128,7 @@ export class EmbeddingFunctionRegistry {
       conf.function.constructor,
     );
     metadata["sourceColumn"] = conf.sourceColumn;
-    metadata["vectorColumn"] = conf.vectorColumn;
+    metadata["vectorColumn"] = conf.vectorColumn ?? "vector";
     metadata["name"] = name ?? conf.function.constructor.name;
     metadata["model"] = conf.function.toJSON();
     return metadata;
@@ -134,7 +145,7 @@ export class EmbeddingFunctionRegistry {
 
 const _REGISTRY = new EmbeddingFunctionRegistry();
 
-export function register(name: string) {
+export function register(name?: string) {
   return _REGISTRY.register(name);
 }
 

@@ -1,4 +1,3 @@
-import { EmbeddingFunctionConfig } from "./../lancedb/embedding/registry";
 // Copyright 2024 Lance Developers.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -26,11 +25,12 @@ import {
   Int32,
   Int64,
   Schema,
-  Type,
+  Utf8,
 } from "apache-arrow";
 import { Table, connect } from "../lancedb";
 import { makeArrowTable } from "../lancedb/arrow";
 import { EmbeddingFunction } from "../lancedb/embedding";
+import { register } from "../lancedb/embedding/registry";
 import { Index } from "../lancedb/indices";
 
 describe("Given a table", () => {
@@ -466,6 +466,58 @@ describe("embedding functions", () => {
         },
       },
     );
+    // biome-ignore lint/suspicious/noExplicitAny: test
+    const arr = (await table.query().toArray()) as any;
+    expect(arr[0].vector).toBeDefined();
+
+    // we round trip through JSON to make sure the vector properly gets converted to an array
+    // otherwise it'll be a TypedArray or Vector
+    const vector0 = JSON.parse(JSON.stringify(arr[0].vector));
+    expect(vector0).toEqual([1, 2, 3]);
+  });
+
+  it("should be able to create an empty table with an embedding function", async () => {
+    @register()
+    class MockEmbeddingFunction extends EmbeddingFunction<string> {
+      toJSON(): object {
+        return {};
+      }
+      ndims() {
+        return 3;
+      }
+      embeddingDataType(): Float {
+        return new Float32();
+      }
+      async computeQueryEmbeddings(_data: string) {
+        return [1, 2, 3];
+      }
+      async computeSourceEmbeddings(data: string[]) {
+        return Array.from({ length: data.length }).fill([
+          1, 2, 3,
+        ]) as number[][];
+      }
+    }
+    const schema = new Schema([
+      new Field("text", new Utf8(), true),
+      new Field(
+        "vector",
+        new FixedSizeList(3, new Field("item", new Float32(), true)),
+        true,
+      ),
+    ]);
+
+    const func = new MockEmbeddingFunction();
+    const db = await connect(tmpDir.name);
+    const table = await db.createEmptyTable("test", schema, {
+      embeddingFunction: {
+        function: func,
+        sourceColumn: "text",
+      },
+    });
+    const outSchema = await table.schema();
+    expect(outSchema.metadata.get("embedding_functions")).toBeDefined();
+    await table.add([{ text: "hello world" }]);
+
     // biome-ignore lint/suspicious/noExplicitAny: test
     const arr = (await table.query().toArray()) as any;
     expect(arr[0].vector).toBeDefined();

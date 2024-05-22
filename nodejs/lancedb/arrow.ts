@@ -199,6 +199,7 @@ export class MakeArrowTableOptions {
 export function makeArrowTable(
   data: Array<Record<string, unknown>>,
   options?: Partial<MakeArrowTableOptions>,
+  metadata?: Map<string, string>,
 ): ArrowTable {
   if (
     data.length === 0 &&
@@ -291,20 +292,41 @@ export function makeArrowTable(
     // `new ArrowTable(schema, batches)` which does not do any schema inference
     const firstTable = new ArrowTable(columns);
     const batchesFixed = firstTable.batches.map(
-      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
       (batch) => new RecordBatch(opt.schema!, batch.data),
     );
-    return new ArrowTable(opt.schema, batchesFixed);
-  } else {
-    return new ArrowTable(columns);
+    let schema: Schema;
+    if (metadata !== undefined) {
+      let schemaMetadata = opt.schema.metadata;
+      if (schemaMetadata.size === 0) {
+        schemaMetadata = metadata;
+      } else {
+        for (const [key, entry] of schemaMetadata.entries()) {
+          schemaMetadata.set(key, entry);
+        }
+      }
+
+      schema = new Schema(opt.schema.fields, schemaMetadata);
+    } else {
+      schema = opt.schema;
+    }
+    return new ArrowTable(schema, batchesFixed);
   }
+  const tbl = new ArrowTable(columns);
+  if (metadata !== undefined) {
+    // biome-ignore lint/suspicious/noExplicitAny: <explanation>
+    (<any>tbl.schema).metadata = metadata;
+  }
+  return tbl;
 }
 
 /**
  * Create an empty Arrow table with the provided schema
  */
-export function makeEmptyTable(schema: Schema): ArrowTable {
-  return makeArrowTable([], { schema });
+export function makeEmptyTable(
+  schema: Schema,
+  metadata?: Map<string, string>,
+): ArrowTable {
+  return makeArrowTable([], { schema }, metadata);
 }
 
 /**
@@ -376,7 +398,8 @@ function makeVector(
   }
 }
 
-async function appendVectorColumn(
+/** Helper function to apply embeddings from metadata to an input table */
+async function applyEmbeddingsFromMetadata(
   table: ArrowTable,
   schema: Schema,
 ): Promise<ArrowTable> {
@@ -422,7 +445,10 @@ async function appendVectorColumn(
     if (dtype instanceof FixedSizeList) {
       destType = dtype;
     } else {
-      destType = newVectorType(vectors[0].length, dtype);
+      throw new Error(
+        "Expected FixedSizeList as datatype for vector field, instead got: " +
+          dtype,
+      );
     }
 
     const vector = makeVector(vectors, destType);
@@ -439,9 +465,8 @@ async function applyEmbeddings<T>(
   schema?: Schema,
 ): Promise<ArrowTable> {
   if (schema?.metadata.has("embedding_functions")) {
-    return appendVectorColumn(table, schema!);
-  }
-  if (embeddings == null) {
+    return applyEmbeddingsFromMetadata(table, schema!);
+  } else if (embeddings == null || embeddings === undefined) {
     return table;
   }
 
@@ -647,8 +672,8 @@ export async function fromDataToBuffer(
   if (data instanceof ArrowTable) {
     return fromTableToBuffer(data, embeddings, schema);
   } else {
-    const table = await convertToTable(data);
-    return fromTableToBuffer(table, embeddings, schema);
+    const table = await convertToTable(data, embeddings, { schema });
+    return fromTableToBuffer(table);
   }
 }
 
