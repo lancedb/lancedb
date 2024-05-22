@@ -67,18 +67,18 @@ export abstract class EmbeddingFunction<
    * @see {@link lancedb.LanceSchema}
    */
   sourceField(
-    options: Partial<FieldOptions> | DataType,
+    optionsOrDatatype: Partial<FieldOptions> | DataType,
   ): [DataType, Map<string, EmbeddingFunction>] {
-    const datatype = options instanceof DataType ? options : options?.datatype;
+    const datatype =
+      optionsOrDatatype instanceof DataType
+        ? optionsOrDatatype
+        : optionsOrDatatype?.datatype;
     if (!datatype) {
       throw new Error("Datatype is required");
     }
     const metadata = new Map<string, EmbeddingFunction>();
     metadata.set("source_column_for", this);
 
-    if (options instanceof DataType) {
-      return [options, metadata];
-    }
     return [datatype, metadata];
   }
 
@@ -137,7 +137,7 @@ export abstract class EmbeddingFunction<
   /**
   Compute the embeddings for a single query
  */
-  computeQueryEmbeddings(
+  async computeQueryEmbeddings(
     data: T,
   ): Promise<number[] | Float32Array | Float64Array> {
     return this.computeSourceEmbeddings([data]).then(
