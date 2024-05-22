@@ -20,6 +20,7 @@ import {
   AddColumnsSql,
   ColumnAlteration,
   IndexConfig,
+  OptimizeStats,
   Table as _NativeTable,
 } from "./native";
 import { Query, VectorQuery } from "./query";
@@ -49,6 +50,23 @@ export interface UpdateOptions {
    * of 0 in a column with some other default value.
    */
   where: string;
+}
+
+export interface OptimizeOptions {
+  /**
+   * If set then all versions older than the given date
+   * be removed.  The current version will never be removed.
+   * The default is 7 days
+   * @example
+   * // Delete all versions older than 1 day
+   * const olderThan = new Date();
+   * olderThan.setDate(olderThan.getDate() - 1));
+   * tbl.cleanupOlderVersions(olderThan);
+   *
+   * // Delete all versions except the current version
+   * tbl.cleanupOlderVersions(new Date());
+   */
+  cleanupOlderThan: Date;
 }
 
 /**
@@ -356,6 +374,48 @@ export class Table {
    */
   async restore(): Promise<void> {
     await this.inner.restore();
+  }
+
+  /**
+   * Optimize the on-disk data and indices for better performance.
+   *
+   * Modeled after ``VACUUM`` in PostgreSQL.
+   *
+   *  Optimization covers three operations:
+   *
+   *  - Compaction: Merges small files into larger ones
+   *  - Prune: Removes old versions of the dataset
+   *  - Index: Optimizes the indices, adding new data to existing indices
+   *
+   *
+   *  Experimental API
+   *  ----------------
+   *
+   *  The optimization process is undergoing active development and may change.
+   *  Our goal with these changes is to improve the performance of optimization and
+   *  reduce the complexity.
+   *
+   *  That being said, it is essential today to run optimize if you want the best
+   *  performance.  It should be stable and safe to use in production, but it our
+   *  hope that the API may be simplified (or not even need to be called) in the
+   *  future.
+   *
+   *  The frequency an application shoudl call optimize is based on the frequency of
+   *  data modifications.  If data is frequently added, deleted, or updated then
+   *  optimize should be run frequently.  A good rule of thumb is to run optimize if
+   *  you have added or modified 100,000 or more records or run more than 20 data
+   *  modification operations.
+   */
+  async optimize(options?: Partial<OptimizeOptions>): Promise<OptimizeStats> {
+    let cleanupOlderThanMs;
+    if (
+      options?.cleanupOlderThan !== undefined &&
+      options?.cleanupOlderThan !== null
+    ) {
+      cleanupOlderThanMs =
+        new Date().getTime() - options.cleanupOlderThan.getTime();
+    }
+    return await this.inner.optimize(cleanupOlderThanMs);
   }
 
   /** List all indices that have been created with {@link Table.createIndex} */

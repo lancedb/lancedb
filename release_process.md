@@ -8,6 +8,51 @@ The Python package is versioned and released separately from the Rust and Node.j
 ones. For Rust and Node.js, the release process is shared between `lancedb` and
 `vectordb` for now.
 
+## Preview releases
+
+LanceDB has full releases about every 2 weeks, but in between we make frequent
+preview releases. These are released as `0.x.y.betaN` versions. They receive the
+same level of testing as normal releases and let you get access to the latest
+features. However, we do not guarantee that preview releases will be available
+more than 6 months after they are released. We may delete the preview releases
+from the packaging index after a while. Once your application is stable, we
+recommend switching to full releases, which will never be removed from package
+indexes.
+
+## Making releases
+
+The release process uses a handful of GitHub actions to automate the process.
+
+```text
+  ┌─────────────────────┐                                                
+  │Create Release Commit│                                                
+  └─┬───────────────────┘                                                
+    │                           ┌────────────┐ ┌──►Python GH Release     
+    ├──►(tag) python-vX.Y.Z ───►│PyPI Publish├─┤                         
+    │                           └────────────┘ └──►Python Wheels         
+    │                                                                    
+    │                           ┌───────────┐                            
+    └──►(tag) vX.Y.Z ───┬──────►│NPM Publish├──┬──►Rust/Node GH Release  
+                        │       └───────────┘  │                         
+                        │                      └──►NPM Packages          
+                        │       ┌─────────────┐                          
+                        └──────►│Cargo Publish├───►Cargo Release         
+                                └─────────────┘                          
+```
+
+To start a release, trigger a `Create Release Commit` action from
+[the workflows page](https://github.com/lancedb/lancedb/actions/workflows/make-release-commit.yml)
+(Click on "Run workflow").
+
+* **For a preview release**, leave the default parameters.
+* **For a stable release**, set the `release_type` input to `stable`.
+
+> [!IMPORTANT]
+> If there was a breaking change since the last stable release, and we haven't
+> done so yet, we should increment the minor version. The CI will detect if this
+> is needed and fail the `Create Release Commit` job. To fix, select the
+> "bump minor version" option.
+
 ## Breaking changes
 
 We try to avoid breaking changes, but sometimes they are necessary. When there
@@ -21,12 +66,10 @@ body of the PR. A CI job will add a `breaking-change` label to the PR, which is
 what will ultimately be used to CI to determine if the minor version should be
 incremented.
 
-A CI job will validate that if a `breaking-change` label is added, the minor
-version is incremented in the `Cargo.toml` and `pyproject.toml` files. The only
-exception is if it has already been incremented since the last stable release.
-
-**It is the responsibility of the PR author to increment the minor version when
-appropriate.**
+> [!IMPORTANT]
+> Reviewers should check that PRs with breaking changes receive the `breaking-change`
+> label. If a PR is missing the label, please add it, even if after it was merged.
+> This label is used in the release process.
 
 Some things that are considered breaking changes:
 

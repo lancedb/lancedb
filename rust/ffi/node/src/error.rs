@@ -19,10 +19,12 @@ use snafu::Snafu;
 
 #[derive(Debug, Snafu)]
 pub enum Error {
+    #[allow(dead_code)]
     #[snafu(display("column '{name}' is missing"))]
     MissingColumn { name: String },
     #[snafu(display("{name}: {message}"))]
     OutOfRange { name: String, message: String },
+    #[allow(dead_code)]
     #[snafu(display("{index_type} is not a valid index type"))]
     InvalidIndexType { index_type: String },
 
