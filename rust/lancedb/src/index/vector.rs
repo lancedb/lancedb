@@ -53,9 +53,14 @@ pub struct VectorIndexMetadata {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct VectorIndexStatistics {
+pub struct IndexMetadata {
     pub num_indexed_rows: usize,
     pub num_unindexed_rows: usize,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct VectorIndexStatistics {
+    pub num_indexed_and_unindexed_rows: IndexMetadata,
     pub index_type: String,
     pub indices: Vec<VectorIndexMetadata>,
 }

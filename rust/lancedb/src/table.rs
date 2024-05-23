@@ -49,7 +49,7 @@ use crate::connection::NoData;
 use crate::embeddings::{EmbeddingDefinition, EmbeddingRegistry, MaybeEmbedded, MemoryRegistry};
 use crate::error::{Error, Result};
 use crate::index::vector::{
-    IvfHnswSqIndexBuilder, IvfPqIndexBuilder, VectorIndex, VectorIndexStatistics,
+    IndexMetadata, IvfHnswSqIndexBuilder, IvfPqIndexBuilder, VectorIndex, VectorIndexStatistics,
 };
 use crate::index::IndexConfig;
 use crate::index::{
@@ -1216,14 +1216,14 @@ impl NativeTable {
     }
 
     pub async fn get_index_type(&self, index_uuid: &str) -> Result<Option<String>> {
-        match self.load_index_stats(index_uuid).await? {
+        match self.load_vector_index_stats(index_uuid).await? {
             Some(stats) => Ok(Some(stats.index_type)),
             None => Ok(None),
         }
     }
 
     pub async fn get_distance_type(&self, index_uuid: &str) -> Result<Option<String>> {
-        match self.load_index_stats(index_uuid).await? {
+        match self.load_vector_index_stats(index_uuid).await? {
             Some(stats) => Ok(Some(
                 stats
                     .indices
@@ -1244,7 +1244,10 @@ impl NativeTable {
             .collect())
     }
 
-    async fn load_index_stats(&self, index_uuid: &str) -> Result<Option<VectorIndexStatistics>> {
+    async fn load_vector_index_stats(
+        &self,
+        index_uuid: &str,
+    ) -> Result<Option<VectorIndexStatistics>> {
         let index = self
             .load_indices()
             .await?
@@ -1256,6 +1259,25 @@ impl NativeTable {
         let dataset = self.dataset.get().await?;
         let index_stats = dataset.index_statistics(&index.unwrap().index_name).await?;
         let index_stats: VectorIndexStatistics = whatever!(
+            serde_json::from_str(&index_stats),
+            "error deserializing index statistics {index_stats}",
+        );
+
+        Ok(Some(index_stats))
+    }
+
+    async fn load_index_stats(&self, index_uuid: &str) -> Result<Option<IndexMetadata>> {
+        let index = self
+            .load_indices()
+            .await?
+            .into_iter()
+            .find(|i| i.index_uuid == index_uuid);
+        if index.is_none() {
+            return Ok(None);
+        }
+        let dataset = self.dataset.get().await?;
+        let index_stats = dataset.index_statistics(&index.unwrap().index_name).await?;
+        let index_stats: IndexMetadata = whatever!(
             serde_json::from_str(&index_stats),
             "error deserializing index statistics {index_stats}",
         );
