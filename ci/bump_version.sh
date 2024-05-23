@@ -10,10 +10,6 @@ readonly SELF_DIR=$(cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )
 PREV_TAG=$(git tag --sort='version:refname' | grep ^$TAG_PREFIX | python $SELF_DIR/semver_sort.py $TAG_PREFIX | tail -n 1)
 echo "Found previous tag $PREV_TAG"
 
-LAST_STABLE_RELEASE=$(git tag --sort='version:refname' | grep ^$TAG_PREFIX | grep -v beta | python $SELF_DIR/semver_sort.py $TAG_PREFIX | tail -n 1)
-LAST_STABLE_VERSION=$(echo $LAST_STABLE_RELEASE | sed "s/^$TAG_PREFIX//")
-echo "Found previous stable version $LAST_STABLE_VERSION"
-
 # Initially, we don't want to tag if we are doing stable, because we will bump
 # again later. See comment at end for why.
 if [[ "$RELEASE_TYPE" == 'stable' ]]; then 
@@ -47,5 +43,9 @@ if [[ $RELEASE_TYPE == 'stable' ]]; then
 fi
 
 # Validate that we have incremented version appropriately for breaking changes
-NEW_VERSION=$(git describe --tags --exact-match HEAD | sed "s/^$TAG_PREFIX//")
+NEW_TAG=$(git describe --tags --exact-match HEAD)
+NEW_VERSION=$(echo $NEW_TAG | sed "s/^$TAG_PREFIX//")
+LAST_STABLE_RELEASE=$(git tag --sort='version:refname' | grep ^$TAG_PREFIX | grep -v beta | grep -vF "$NEW_TAG" | python $SELF_DIR/semver_sort.py $TAG_PREFIX | tail -n 1)
+LAST_STABLE_VERSION=$(echo $LAST_STABLE_RELEASE | sed "s/^$TAG_PREFIX//")
+
 python $SELF_DIR/check_breaking_changes.py $LAST_STABLE_RELEASE $HEAD_SHA $LAST_STABLE_VERSION $NEW_VERSION
