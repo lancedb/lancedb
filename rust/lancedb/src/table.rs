@@ -48,11 +48,9 @@ use crate::arrow::IntoArrow;
 use crate::connection::NoData;
 use crate::embeddings::{EmbeddingDefinition, EmbeddingRegistry, MaybeEmbedded, MemoryRegistry};
 use crate::error::{Error, Result};
-use crate::index::IndexStatistics;
-use crate::index::vector::{
-    IvfHnswSqIndexBuilder, IvfPqIndexBuilder, VectorIndex,
-};
+use crate::index::vector::{IvfHnswSqIndexBuilder, IvfPqIndexBuilder, VectorIndex};
 use crate::index::IndexConfig;
+use crate::index::IndexStatistics;
 use crate::index::{
     vector::{suggested_num_partitions, suggested_num_sub_vectors},
     Index, IndexBuilder,

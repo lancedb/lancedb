@@ -23,7 +23,6 @@ use lance::table::format::{Index, Manifest};
 
 use crate::DistanceType;
 
-
 pub struct VectorIndex {
     pub columns: Vec<String>,
     pub index_name: String,
