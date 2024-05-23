@@ -48,8 +48,9 @@ use crate::arrow::IntoArrow;
 use crate::connection::NoData;
 use crate::embeddings::{EmbeddingDefinition, EmbeddingRegistry, MaybeEmbedded, MemoryRegistry};
 use crate::error::{Error, Result};
+use crate::index::IndexStatistics;
 use crate::index::vector::{
-    IvfHnswSqIndexBuilder, IvfPqIndexBuilder, VectorIndex, VectorIndexStatistics,
+    IvfHnswSqIndexBuilder, IvfPqIndexBuilder, VectorIndex,
 };
 use crate::index::IndexConfig;
 use crate::index::{
@@ -1244,7 +1245,7 @@ impl NativeTable {
             .collect())
     }
 
-    async fn load_index_stats(&self, index_uuid: &str) -> Result<Option<VectorIndexStatistics>> {
+    async fn load_index_stats(&self, index_uuid: &str) -> Result<Option<IndexStatistics>> {
         let index = self
             .load_indices()
             .await?
@@ -1255,7 +1256,7 @@ impl NativeTable {
         }
         let dataset = self.dataset.get().await?;
         let index_stats = dataset.index_statistics(&index.unwrap().index_name).await?;
-        let index_stats: VectorIndexStatistics = whatever!(
+        let index_stats: IndexStatistics = whatever!(
             serde_json::from_str(&index_stats),
             "error deserializing index statistics {index_stats}",
         );
