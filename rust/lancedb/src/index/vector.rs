@@ -24,6 +24,7 @@ use serde::Deserialize;
 use lance::table::format::{Index, Manifest};
 
 use crate::DistanceType;
+use serde_with::skip_serializing_none;
 
 pub struct VectorIndex {
     pub columns: Vec<String>,
@@ -46,22 +47,20 @@ impl VectorIndex {
     }
 }
 
+#[skip_serializing_none]
 #[derive(Debug, Deserialize)]
 pub struct VectorIndexMetadata {
-    pub metric_type: String,
-    pub index_type: String,
+    pub metric_type: Option<String>,
+    pub index_type: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct IndexMetadata {
-    pub num_indexed_rows: usize,
-    pub num_unindexed_rows: usize,
-}
-
+#[skip_serializing_none]
 #[derive(Debug, Deserialize)]
 pub struct VectorIndexStatistics {
-    pub num_indexed_and_unindexed_rows: IndexMetadata,
-    pub index_type: String,
+    // pub row_stats: IndexRowStatistics,
+    pub num_indexed_rows: usize,
+    pub num_unindexed_rows: usize,
+    pub index_type: Option<String>,
     pub indices: Vec<VectorIndexMetadata>,
 }
 
