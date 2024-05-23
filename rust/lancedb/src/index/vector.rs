@@ -57,7 +57,6 @@ pub struct VectorIndexMetadata {
 #[skip_serializing_none]
 #[derive(Debug, Deserialize)]
 pub struct VectorIndexStatistics {
-    // pub row_stats: IndexRowStatistics,
     pub num_indexed_rows: usize,
     pub num_unindexed_rows: usize,
     pub index_type: Option<String>,
