@@ -19,8 +19,6 @@
 //! values
 use std::cmp::max;
 
-use serde::Deserialize;
-
 use lance::table::format::{Index, Manifest};
 
 use crate::DistanceType;
@@ -44,20 +42,6 @@ impl VectorIndex {
             index_uuid: index.uuid.to_string(),
         }
     }
-}
-
-#[derive(Debug, Deserialize)]
-pub struct VectorIndexMetadata {
-    pub metric_type: String,
-    pub index_type: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct VectorIndexStatistics {
-    pub num_indexed_rows: usize,
-    pub num_unindexed_rows: usize,
-    pub index_type: String,
-    pub indices: Vec<VectorIndexMetadata>,
 }
 
 /// Builder for an IVF PQ index.
