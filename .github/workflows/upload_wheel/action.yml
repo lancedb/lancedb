@@ -27,7 +27,6 @@ runs:
         echo "repo=pypi" >> $GITHUB_OUTPUT
       fi
   - name: Publish to PyPI
-    working-directory: python
     shell: bash
     env:
       FURY_TOKEN: ${{ inputs.fury_token }}
