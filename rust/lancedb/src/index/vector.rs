@@ -19,8 +19,6 @@
 //! values
 use std::cmp::max;
 
-use serde::Deserialize;
-
 use lance::table::format::{Index, Manifest};
 
 use crate::DistanceType;

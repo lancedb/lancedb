@@ -54,6 +54,7 @@ use crate::index::vector::{
     VectorIndexStatistics,
 };
 use crate::index::IndexConfig;
+use crate::index::IndexStatistics;
 use crate::index::{
     vector::{suggested_num_partitions, suggested_num_sub_vectors},
     Index, IndexBuilder,
@@ -1219,7 +1220,7 @@ impl NativeTable {
 
     pub async fn get_index_type(&self, index_uuid: &str) -> Result<Option<String>> {
         match self.load_index_stats(index_uuid).await? {
-            Some(stats) => Ok(Some(stats.index_type)),
+            Some(stats) => Ok(Some(stats.index_type.unwrap_or_default())),
             None => Ok(None),
         }
     }
@@ -1230,7 +1231,7 @@ impl NativeTable {
                 stats
                     .indices
                     .iter()
-                    .map(|i| i.metric_type.clone())
+                    .filter_map(|i| i.metric_type.clone())
                     .collect(),
             )),
             None => Ok(None),
@@ -1246,7 +1247,7 @@ impl NativeTable {
             .collect())
     }
 
-    async fn load_index_stats(&self, index_uuid: &str) -> Result<Option<VectorIndexStatistics>> {
+    async fn load_index_stats(&self, index_uuid: &str) -> Result<Option<IndexStatistics>> {
         let index = self
             .load_indices()
             .await?
@@ -1257,7 +1258,7 @@ impl NativeTable {
         }
         let dataset = self.dataset.get().await?;
         let index_stats = dataset.index_statistics(&index.unwrap().index_name).await?;
-        let index_stats: VectorIndexStatistics = whatever!(
+        let index_stats: IndexStatistics = whatever!(
             serde_json::from_str(&index_stats),
             "error deserializing index statistics {index_stats}",
         );
@@ -1303,7 +1304,6 @@ impl NativeTable {
             num_partitions as usize,
             /*num_bits=*/ 8,
             num_sub_vectors as usize,
-            false,
             index.distance_type.into(),
             index.max_iterations as usize,
         );
@@ -1411,7 +1411,6 @@ impl NativeTable {
         ivf_params.max_iters = index.max_iterations as usize;
         let hnsw_params = HnswBuildParams::default()
             .num_edges(index.m as usize)
-            .max_num_edges(index.m as usize * 2)
             .ef_construction(index.ef_construction as usize);
         let sq_params = SQBuildParams {
             sample_rate: index.sample_rate as usize,
@@ -1801,7 +1800,7 @@ impl TableInternal for NativeTable {
             } => {
                 stats.prune = Some(
                     self.cleanup_old_versions(
-                        older_than.unwrap_or(Duration::days(7)),
+                        older_than.unwrap_or(Duration::try_days(7).expect("valid delta")),
                         delete_unverified,
                     )
                     .await?,
@@ -2547,6 +2546,25 @@ mod tests {
                 .unwrap(),
             Some(0)
         );
+        assert_eq!(
+            table
+                .as_native()
+                .unwrap()
+                .get_index_type(index_uuid)
+                .await
+                .unwrap()
+                .map(|index_type| index_type.to_string()),
+            Some("IVF".to_string())
+        );
+        assert_eq!(
+            table
+                .as_native()
+                .unwrap()
+                .get_distance_type(index_uuid)
+                .await
+                .unwrap(),
+            Some(crate::DistanceType::L2.to_string())
+        );
     }
 
     #[tokio::test]
@@ -2812,6 +2830,27 @@ mod tests {
         let index = index_configs.into_iter().next().unwrap();
         assert_eq!(index.index_type, crate::index::IndexType::BTree);
         assert_eq!(index.columns, vec!["i".to_string()]);
+
+        let indices = table.as_native().unwrap().load_indices().await.unwrap();
+        let index_uuid = &indices[0].index_uuid;
+        assert_eq!(
+            table
+                .as_native()
+                .unwrap()
+                .count_indexed_rows(index_uuid)
+                .await
+                .unwrap(),
+            Some(1)
+        );
+        assert_eq!(
+            table
+                .as_native()
+                .unwrap()
+                .count_unindexed_rows(index_uuid)
+                .await
+                .unwrap(),
+            Some(0)
+        );
     }
 
     #[tokio::test]

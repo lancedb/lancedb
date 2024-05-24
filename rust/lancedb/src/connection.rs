@@ -195,7 +195,7 @@ impl<T: IntoArrow> CreateTableBuilder<true, T> {
             .embedding_registry()
             .get(&definition.embedding_name)
             .ok_or_else(|| Error::EmbeddingFunctionNotFound {
-                name: definition.embedding_name.to_string(),
+                name: definition.embedding_name.clone(),
                 reason: "No embedding function found in the connection's embedding_registry"
                     .to_string(),
             })?;

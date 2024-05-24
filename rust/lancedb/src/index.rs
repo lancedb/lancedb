@@ -14,6 +14,9 @@
 
 use std::sync::Arc;
 
+use serde::Deserialize;
+use serde_with::skip_serializing_none;
+
 use crate::{table::TableInternal, Result};
 
 use self::{
@@ -84,4 +87,20 @@ pub struct IndexConfig {
     /// Currently this is always a Vec of size 1.  In the future there may
     /// be more columns to represent composite indices.
     pub columns: Vec<String>,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Deserialize)]
+pub struct IndexMetadata {
+    pub metric_type: Option<String>,
+    pub index_type: Option<String>,
+}
+
+#[skip_serializing_none]
+#[derive(Debug, Deserialize)]
+pub struct IndexStatistics {
+    pub num_indexed_rows: usize,
+    pub num_unindexed_rows: usize,
+    pub index_type: Option<String>,
+    pub indices: Vec<IndexMetadata>,
 }
