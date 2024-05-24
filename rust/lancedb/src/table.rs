@@ -51,7 +51,6 @@ use crate::embeddings::{EmbeddingDefinition, EmbeddingRegistry, MaybeEmbedded, M
 use crate::error::{Error, Result};
 use crate::index::vector::{
     IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder, IvfPqIndexBuilder, VectorIndex,
-    VectorIndexStatistics,
 };
 use crate::index::IndexConfig;
 use crate::index::IndexStatistics;
@@ -1359,7 +1358,6 @@ impl NativeTable {
         ivf_params.max_iters = index.max_iterations as usize;
         let hnsw_params = HnswBuildParams::default()
             .num_edges(index.m as usize)
-            .max_num_edges(index.m as usize * 2)
             .ef_construction(index.ef_construction as usize);
         let pq_params = PQBuildParams {
             num_sub_vectors: num_sub_vectors as usize,
