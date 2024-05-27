@@ -2,7 +2,6 @@
 
 LanceDB provides support for full-text search via [Tantivy](https://github.com/quickwit-oss/tantivy) (currently Python only), allowing you to incorporate keyword-based search (based on BM25) in your retrieval solutions. Our goal is to push the FTS integration down to the Rust level in the future, so that it's available for Rust and JavaScript users as well.  Follow along at [this Github issue](https://github.com/lancedb/lance/issues/1195)
 
-A hybrid search solution combining vector and full-text search is also on the way.
 
 ## Installation
 

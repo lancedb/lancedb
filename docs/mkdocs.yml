@@ -106,6 +106,9 @@ nav:
           - Versioning & Reproducibility: notebooks/reproducibility.ipynb
           - Configuring Storage: guides/storage.md
           - Sync -> Async Migration Guide: migration.md
+          - Tuning retrieval performance:
+              - Choosing right query type: guides/tuning_retrievers/1_query_types.md
+              - Reranking: guides/tuning_retrievers/2_reranking.md
       - 🧬 Managing embeddings:
           - Overview: embeddings/index.md
           - Embedding functions: embeddings/embedding_functions.md
@@ -181,6 +184,9 @@ nav:
       - Versioning & Reproducibility: notebooks/reproducibility.ipynb
       - Configuring Storage: guides/storage.md
       - Sync -> Async Migration Guide: migration.md
+      - Tuning retrieval performance:
+          - Choosing right query type: guides/tuning_retrievers/1_query_types.md
+          - Reranking: guides/tuning_retrievers/2_reranking.md
   - Managing Embeddings:
       - Overview: embeddings/index.md
       - Embedding functions: embeddings/embedding_functions.md
