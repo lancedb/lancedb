@@ -19,6 +19,8 @@ use jni::errors::Error as JniError;
 use serde_json::Error as JsonError;
 use snafu::{Location, Snafu};
 
+type BoxedError = Box<dyn std::error::Error + Send + Sync + 'static>;
+
 /// Java Exception types
 pub enum JavaException {
     IllegalArgumentException,
@@ -43,8 +45,11 @@ pub enum Error {
     Jni { message: String, location: Location },
     #[snafu(display("Invalid argument: {message}, {location}"))]
     InvalidArgument { message: String, location: Location },
-    #[snafu(display("IO error: {message}, {location}"))]
-    IO { message: String, location: Location },
+    #[snafu(display("IO error: {source}, {location}"))]
+    IO {
+        source: BoxedError,
+        location: Location,
+    },
     #[snafu(display("Arrow error: {message}, {location}"))]
     Arrow { message: String, location: Location },
     #[snafu(display("Index error: {message}, {location}"))]
@@ -171,7 +176,7 @@ impl From<lance::Error> for Error {
             lance::Error::DatasetAlreadyExists { uri, location } => {
                 Self::DatasetAlreadyExists { uri, location }
             }
-            lance::Error::IO { message, location } => Self::IO { message, location },
+            lance::Error::IO { source, location } => Self::IO { source, location },
             lance::Error::Arrow { message, location } => Self::Arrow { message, location },
             lance::Error::Index { message, location } => Self::Index { message, location },
             lance::Error::InvalidInput { source, location } => Self::InvalidArgument {
