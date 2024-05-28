@@ -1051,3 +1051,14 @@ async def test_optimize(db_async: AsyncConnection):
     assert stats.prune.old_versions_removed == 3
 
     assert await table.query().to_arrow() == pa.table({"x": [[1], [2]]})
+
+def test_explain_plan(db):
+    table = LanceTable.create(
+        db,
+        "my_table",
+         data=[{"vector": [3.1, 4.1], "item": "foo"},
+               {"vector": [5.9, 26.5], "item": "bar"}]
+    )
+    query = [100, 100]
+    plan = table.explain_plan(query, vector_column_name="vector", k=1, verbose=True)
+    assert "KNN" in plan
