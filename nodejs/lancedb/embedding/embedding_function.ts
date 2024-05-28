@@ -98,7 +98,7 @@ export abstract class EmbeddingFunction<
       if (dims === undefined) {
         throw new Error("ndims is required for vector field");
       }
-      dtype = new FixedSizeList(dims, new Field("item", new Float32()));
+      dtype = new FixedSizeList(dims, new Field("item", new Float32(), true));
     } else {
       if (options.datatype instanceof FixedSizeList) {
         dtype = options.datatype;

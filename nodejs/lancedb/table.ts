@@ -126,6 +126,7 @@ export class Table {
     const schema = await this.schema();
     const registry = getRegistry();
     const functions = registry.parseFunctions(schema.metadata);
+
     const buffer = await fromDataToBuffer(
       data,
       functions.values().next().value,

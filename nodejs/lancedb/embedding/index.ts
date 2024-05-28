@@ -52,10 +52,10 @@ export function LanceSchema(
   >();
   Object.entries(fields).forEach(([key, value]) => {
     if (value instanceof DataType) {
-      arrowFields.push(new Field(key, value));
+      arrowFields.push(new Field(key, value, true));
     } else {
       const [dtype, metadata] = value;
-      arrowFields.push(new Field(key, dtype));
+      arrowFields.push(new Field(key, dtype, true));
       parseEmbeddingFunctions(embeddingFunctions, key, metadata);
     }
   });

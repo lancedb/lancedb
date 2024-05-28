@@ -177,6 +177,7 @@ export class Connection {
       cleanseStorageOptions(options?.storageOptions),
       options?.indexCacheSize,
     );
+
     return new Table(innerTable);
   }
 
@@ -216,6 +217,7 @@ export class Connection {
       mode,
       cleanseStorageOptions(options?.storageOptions),
     );
+
     return new Table(innerTable);
   }
 

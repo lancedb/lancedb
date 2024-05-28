@@ -55,7 +55,7 @@ export class EmbeddingFunctionRegistry {
       }
       if (self.#functions.has(alias)) {
         throw new Error(
-          `Embedding function with alias ${alias} already exists`,
+          `Embedding function with alias "${alias}" already exists`,
         );
       }
       self.#functions.set(alias, ctor);
@@ -107,6 +107,10 @@ export class EmbeddingFunctionRegistry {
       );
       return new Map(
         functions.map((f) => {
+          const fn = this.get(f.name);
+          if (!fn) {
+            throw new Error(`Function "${f.name}" not found in registry`);
+          }
           return [
             f.name,
             {

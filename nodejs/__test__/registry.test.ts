@@ -17,6 +17,17 @@ import { connect } from "../lancedb";
 import { EmbeddingFunction, LanceSchema } from "../lancedb/embedding";
 import { getRegistry, register } from "../lancedb/embedding/registry";
 
+describe("LanceSchema", () => {
+  test("should preserve input order", async () => {
+    const schema = LanceSchema({
+      id: new Int32(),
+      text: new Utf8(),
+      vector: new Float32(),
+    });
+    expect(schema.fields.map((x) => x.name)).toEqual(["id", "text", "vector"]);
+  });
+});
+
 describe("Registry", () => {
   let tmpDir: tmp.DirResult;
   beforeEach(() => {
@@ -28,7 +39,7 @@ describe("Registry", () => {
     getRegistry().reset();
   });
 
-  it.only("should register a new item to the registry", async () => {
+  it("should register a new item to the registry", async () => {
     @register("mock-embedding")
     class MockEmbeddingFunction extends EmbeddingFunction<string> {
       toJSON(): object {
@@ -106,7 +117,9 @@ describe("Registry", () => {
       }
     }
     register("mock-embedding")(MockEmbeddingFunction);
-    expect(() => register("mock-embedding")(MockEmbeddingFunction)).toThrow();
+    expect(() => register("mock-embedding")(MockEmbeddingFunction)).toThrow(
+      'Embedding function with alias "mock-embedding" already exists',
+    );
   });
   test("schema should contain correct metadata", async () => {
     class MockEmbeddingFunction extends EmbeddingFunction<string> {

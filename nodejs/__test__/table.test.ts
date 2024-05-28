@@ -29,8 +29,8 @@ import {
 } from "apache-arrow";
 import { Table, connect } from "../lancedb";
 import { makeArrowTable } from "../lancedb/arrow";
-import { EmbeddingFunction } from "../lancedb/embedding";
-import { register } from "../lancedb/embedding/registry";
+import { EmbeddingFunction, LanceSchema } from "../lancedb/embedding";
+import { getRegistry, register } from "../lancedb/embedding/registry";
 import { Index } from "../lancedb/indices";
 
 describe("Given a table", () => {
@@ -431,7 +431,7 @@ describe("embedding functions", () => {
   });
   afterEach(() => tmpDir.removeCallback());
 
-  test("should be able to create a table with an embedding function", async () => {
+  it("should be able to create a table with an embedding function", async () => {
     class MockEmbeddingFunction extends EmbeddingFunction<string> {
       toJSON(): object {
         return {};
@@ -526,6 +526,56 @@ describe("embedding functions", () => {
     // otherwise it'll be a TypedArray or Vector
     const vector0 = JSON.parse(JSON.stringify(arr[0].vector));
     expect(vector0).toEqual([1, 2, 3]);
+  });
+  it("should provide an error when opening a table with an unregistered embedding function", async () => {
+    @register("mock")
+    class MockEmbeddingFunction extends EmbeddingFunction<string> {
+      toJSON(): object {
+        return {};
+      }
+      ndims() {
+        return 3;
+      }
+      embeddingDataType(): Float {
+        return new Float32();
+      }
+      async computeQueryEmbeddings(_data: string) {
+        return [1, 2, 3];
+      }
+      async computeSourceEmbeddings(data: string[]) {
+        return Array.from({ length: data.length }).fill([
+          1, 2, 3,
+        ]) as number[][];
+      }
+    }
+    const func = getRegistry().get<MockEmbeddingFunction>("mock")!.create();
+
+    const schema = LanceSchema({
+      id: new Float64(),
+      text: func.sourceField(new Utf8()),
+      vector: func.vectorField(),
+    });
+
+    const db = await connect(tmpDir.name);
+    await db.createTable(
+      "test",
+      [
+        { id: 1, text: "hello" },
+        { id: 2, text: "world" },
+      ],
+      {
+        schema,
+      },
+    );
+
+    getRegistry().reset();
+    const db2 = await connect(tmpDir.name);
+
+    const tbl = await db2.openTable("test");
+
+    expect(tbl.add([{ id: 3, text: "hello" }])).rejects.toThrow(
+      `Function "mock" not found in registry`,
+    );
   });
 });
 
