@@ -13,25 +13,25 @@
 // limitations under the License.
 
 import {
-  Field,
-  makeBuilder,
-  RecordBatchFileWriter,
-  Utf8,
-  type Vector,
-  FixedSizeList,
-  vectorFromArray,
-  type Schema,
   Table as ArrowTable,
-  RecordBatchStreamWriter,
+  Binary,
+  DataType,
+  Field,
+  FixedSizeList,
+  type Float,
+  Float32,
   List,
   RecordBatch,
-  makeData,
+  RecordBatchFileWriter,
+  RecordBatchStreamWriter,
+  Schema,
   Struct,
-  type Float,
-  DataType,
-  Binary,
-  Float32,
+  Utf8,
+  type Vector,
+  makeBuilder,
+  makeData,
   type makeTable,
+  vectorFromArray,
 } from "apache-arrow";
 import { type EmbeddingFunction } from "./embedding/embedding_function";
 import { sanitizeSchema } from "./sanitize";
@@ -85,6 +85,7 @@ export class MakeArrowTableOptions {
   vectorColumns: Record<string, VectorColumnOptions> = {
     vector: new VectorColumnOptions(),
   };
+  embeddings?: EmbeddingFunction<unknown>;
 
   /**
    * If true then string columns will be encoded with dictionary encoding
@@ -208,6 +209,7 @@ export function makeArrowTable(
   const opt = new MakeArrowTableOptions(options !== undefined ? options : {});
   if (opt.schema !== undefined && opt.schema !== null) {
     opt.schema = sanitizeSchema(opt.schema);
+    opt.schema = validateSchemaEmbeddings(opt.schema, data, opt.embeddings);
   }
   const columns: Record<string, Vector> = {};
   // TODO: sample dataset to find missing columns
@@ -287,8 +289,8 @@ export function makeArrowTable(
     // then patch the schema of the batches so we can use
     // `new ArrowTable(schema, batches)` which does not do any schema inference
     const firstTable = new ArrowTable(columns);
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
     const batchesFixed = firstTable.batches.map(
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
       (batch) => new RecordBatch(opt.schema!, batch.data),
     );
     return new ArrowTable(opt.schema, batchesFixed);
@@ -313,7 +315,7 @@ function makeListVector(lists: unknown[][]): Vector<unknown> {
     throw Error("Cannot infer list vector from empty array or empty list");
   }
   const sampleList = lists[0];
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // biome-ignore lint/suspicious/noExplicitAny: skip
   let inferredType: any;
   try {
     const sampleVector = makeVector(sampleList);
@@ -337,7 +339,7 @@ function makeVector(
   values: unknown[],
   type?: DataType,
   stringAsDictionary?: boolean,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // biome-ignore lint/suspicious/noExplicitAny: skip
 ): Vector<any> {
   if (type !== undefined) {
     // No need for inference, let Arrow create it
@@ -647,4 +649,40 @@ function alignTable(table: ArrowTable, schema: Schema): ArrowTable {
  */
 export function createEmptyTable(schema: Schema): ArrowTable {
   return new ArrowTable(sanitizeSchema(schema));
+}
+
+function validateSchemaEmbeddings(
+  schema: Schema,
+  data: Array<Record<string, unknown>>,
+  embeddings: EmbeddingFunction<unknown> | undefined,
+) {
+  const fields = [];
+  const missingEmbeddingFields = [];
+
+  // First we check if the field is a `FixedSizeList`
+  // Then we check if the data contains the field
+  // if it does not, we add it to the list of missing embedding fields
+  // Finally, we check if those missing embedding fields are `this._embeddings`
+  // if they are not, we throw an error
+  for (const field of schema.fields) {
+    if (field.type instanceof FixedSizeList) {
+      if (data.length !== 0 && data?.[0]?.[field.name] === undefined) {
+        missingEmbeddingFields.push(field);
+      } else {
+        fields.push(field);
+      }
+    } else {
+      fields.push(field);
+    }
+  }
+
+  if (missingEmbeddingFields.length > 0 && embeddings === undefined) {
+    throw new Error(
+      `Table has embeddings: "${missingEmbeddingFields
+        .map((f) => f.name)
+        .join(",")}", but no embedding function was provided`,
+    );
+  }
+
+  return new Schema(fields, schema.metadata);
 }

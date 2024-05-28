@@ -16,18 +16,18 @@ import * as fs from "fs";
 import * as path from "path";
 import * as tmp from "tmp";
 
-import { Table, connect } from "../dist";
 import {
-  Schema,
   Field,
-  Float32,
-  Int32,
   FixedSizeList,
-  Int64,
+  Float32,
   Float64,
+  Int32,
+  Int64,
+  Schema,
 } from "apache-arrow";
-import { makeArrowTable } from "../dist/arrow";
-import { Index } from "../dist/indices";
+import { Table, connect } from "../lancedb";
+import { makeArrowTable } from "../lancedb/arrow";
+import { Index } from "../lancedb/indices";
 
 describe("Given a table", () => {
   let tmpDir: tmp.DirResult;
@@ -417,5 +417,33 @@ describe("when dealing with versioning", () => {
     await expect(table.restore()).rejects.toThrow(
       "checkout before running restore",
     );
+  });
+});
+
+describe("when optimizing a dataset", () => {
+  let tmpDir: tmp.DirResult;
+  let table: Table;
+  beforeEach(async () => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+    const con = await connect(tmpDir.name);
+    table = await con.createTable("vectors", [{ id: 1 }]);
+    await table.add([{ id: 2 }]);
+  });
+  afterEach(() => {
+    tmpDir.removeCallback();
+  });
+
+  it("compacts files", async () => {
+    const stats = await table.optimize();
+    expect(stats.compaction.filesAdded).toBe(1);
+    expect(stats.compaction.filesRemoved).toBe(2);
+    expect(stats.compaction.fragmentsAdded).toBe(1);
+    expect(stats.compaction.fragmentsRemoved).toBe(2);
+  });
+
+  it("cleanups old versions", async () => {
+    const stats = await table.optimize({ cleanupOlderThan: new Date() });
+    expect(stats.prune.bytesRemoved).toBeGreaterThan(0);
+    expect(stats.prune.oldVersionsRemoved).toBe(3);
   });
 });

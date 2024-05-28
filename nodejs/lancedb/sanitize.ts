@@ -21,60 +21,60 @@
 // and so we must sanitize the input to ensure that it is compatible.
 
 import {
-  Field,
-  Utf8,
-  FixedSizeBinary,
-  FixedSizeList,
-  Schema,
-  List,
-  Struct,
-  Float,
+  Binary,
   Bool,
+  DataType,
+  DateDay,
+  DateMillisecond,
+  type DateUnit,
   Date_,
   Decimal,
-  DataType,
+  DenseUnion,
   Dictionary,
-  Binary,
-  Float32,
-  Interval,
-  Map_,
   Duration,
-  Union,
-  Time,
-  Timestamp,
-  Type,
-  Null,
+  DurationMicrosecond,
+  DurationMillisecond,
+  DurationNanosecond,
+  DurationSecond,
+  Field,
+  FixedSizeBinary,
+  FixedSizeList,
+  Float,
+  Float16,
+  Float32,
+  Float64,
   Int,
-  type Precision,
-  type DateUnit,
   Int8,
   Int16,
   Int32,
   Int64,
+  Interval,
+  IntervalDayTime,
+  IntervalYearMonth,
+  List,
+  Map_,
+  Null,
+  type Precision,
+  Schema,
+  SparseUnion,
+  Struct,
+  Time,
+  TimeMicrosecond,
+  TimeMillisecond,
+  TimeNanosecond,
+  TimeSecond,
+  Timestamp,
+  TimestampMicrosecond,
+  TimestampMillisecond,
+  TimestampNanosecond,
+  TimestampSecond,
+  Type,
   Uint8,
   Uint16,
   Uint32,
   Uint64,
-  Float16,
-  Float64,
-  DateDay,
-  DateMillisecond,
-  DenseUnion,
-  SparseUnion,
-  TimeNanosecond,
-  TimeMicrosecond,
-  TimeMillisecond,
-  TimeSecond,
-  TimestampNanosecond,
-  TimestampMicrosecond,
-  TimestampMillisecond,
-  TimestampSecond,
-  IntervalDayTime,
-  IntervalYearMonth,
-  DurationNanosecond,
-  DurationMicrosecond,
-  DurationMillisecond,
-  DurationSecond,
+  Union,
+  Utf8,
 } from "apache-arrow";
 import type { IntBitWidth, TKeys, TimeBitWidth } from "apache-arrow/type";
 
@@ -228,7 +228,7 @@ function sanitizeUnion(typeLike: object) {
 
   return new Union(
     typeLike.mode,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // biome-ignore lint/suspicious/noExplicitAny: skip
     typeLike.typeIds as any,
     typeLike.children.map((child) => sanitizeField(child)),
   );
@@ -294,7 +294,7 @@ function sanitizeMap(typeLike: object) {
   }
 
   return new Map_(
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // biome-ignore lint/suspicious/noExplicitAny: skip
     typeLike.children.map((field) => sanitizeField(field)) as any,
     typeLike.keysSorted,
   );
@@ -328,7 +328,7 @@ function sanitizeDictionary(typeLike: object) {
   );
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+// biome-ignore lint/suspicious/noExplicitAny: skip
 function sanitizeType(typeLike: unknown): DataType<any> {
   if (typeof typeLike !== "object" || typeLike === null) {
     throw Error("Expected a Type but object was null/undefined");

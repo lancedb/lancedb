@@ -14,11 +14,13 @@
 
 import * as tmp from "tmp";
 
-import { Connection, connect } from "../dist/index.js";
+import { Connection, connect } from "../lancedb";
 
 describe("when connecting", () => {
   let tmpDir: tmp.DirResult;
-  beforeEach(() => (tmpDir = tmp.dirSync({ unsafeCleanup: true })));
+  beforeEach(() => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+  });
   afterEach(() => tmpDir.removeCallback());
 
   it("should connect", async () => {

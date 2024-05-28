@@ -44,6 +44,36 @@
 
     !!! info "Please also make sure you're using the same version of Arrow as in the [lancedb crate](https://github.com/lancedb/lancedb/blob/main/Cargo.toml)"
 
+### Preview releases
+
+Stable releases are created about every 2 weeks. For the latest features and bug
+fixes, you can install the preview release. These releases receive the same
+level of testing as stable releases, but are not guaranteed to be available for
+more than 6 months after they are released. Once your application is stable, we
+recommend switching to stable releases.
+
+=== "Python"
+
+      ```shell
+      pip install --pre --extra-index-url https://pypi.fury.io/lancedb/ lancedb
+      ```
+
+=== "Typescript"
+
+      ```shell
+      npm install vectordb@preview
+      ```
+
+=== "Rust"
+    
+    We don't push preview releases to crates.io, but you can referent the tag
+    in GitHub within your Cargo dependencies:
+
+    ```toml
+    [dependencies]
+    lancedb = { git = "https://github.com/lancedb/lancedb.git", tag = "vX.Y.Z-beta.N" }
+    ```
+
 ## Connect to a database
 
 === "Python"

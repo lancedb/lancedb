@@ -1,0 +1,57 @@
+[tool.bumpversion]
+current_version = "0.5.0"
+parse = """(?x)
+    (?P<major>0|[1-9]\\d*)\\.
+    (?P<minor>0|[1-9]\\d*)\\.
+    (?P<patch>0|[1-9]\\d*)
+    (?:-(?P<pre_l>[a-zA-Z-]+)\\.(?P<pre_n>0|[1-9]\\d*))?
+"""
+serialize = [
+    "{major}.{minor}.{patch}-{pre_l}.{pre_n}",
+    "{major}.{minor}.{patch}",
+]
+search = "{current_version}"
+replace = "{new_version}"
+regex = false
+ignore_missing_version = false
+ignore_missing_files = false
+tag = true
+sign_tags = false
+tag_name = "v{new_version}"
+tag_message = "Bump version: {current_version} → {new_version}"
+allow_dirty = true
+commit = true
+message = "Bump version: {current_version} → {new_version}"
+commit_args = ""
+
+[tool.bumpversion.parts.pre_l]
+values = ["beta", "final"]
+optional_value = "final"
+
+[[tool.bumpversion.files]]
+filename = "node/package.json"
+search = "\"version\": \"{current_version}\","
+replace = "\"version\": \"{new_version}\","
+
+[[tool.bumpversion.files]]
+filename = "nodejs/package.json"
+search = "\"version\": \"{current_version}\","
+replace = "\"version\": \"{new_version}\","
+
+# nodejs binary packages
+[[tool.bumpversion.files]]
+glob = "nodejs/npm/*/package.json"
+search = "\"version\": \"{current_version}\","
+replace = "\"version\": \"{new_version}\","
+
+# Cargo files
+# ------------
+[[tool.bumpversion.files]]
+filename = "rust/ffi/node/Cargo.toml"
+search = "\nversion = \"{current_version}\""
+replace = "\nversion = \"{new_version}\""
+
+[[tool.bumpversion.files]]
+filename = "rust/lancedb/Cargo.toml"
+search = "\nversion = \"{current_version}\""
+replace = "\nversion = \"{new_version}\""
