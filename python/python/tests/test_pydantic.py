@@ -197,7 +197,7 @@ def test_fixed_size_list_field():
         ]
     )
 
-    if PYDANTIC_VERSION >= 2:
+    if PYDANTIC_VERSION.major >= 2:
         json_schema = TestModel.model_json_schema()
     else:
         json_schema = TestModel.schema()
