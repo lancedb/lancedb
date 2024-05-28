@@ -1751,7 +1751,7 @@ impl TableInternal for NativeTable {
             builder.when_not_matched_by_source(WhenNotMatchedBySource::Keep);
         }
         let job = builder.try_build()?;
-        let new_dataset = job.execute_reader(new_data).await?;
+        let new_dataset = job.execute_reader(new_data).await?.0;
         self.dataset.set_latest(new_dataset.as_ref().clone()).await;
         Ok(())
     }
