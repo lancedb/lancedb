@@ -40,7 +40,7 @@ class ImageBindEmbeddings(EmbeddingFunction):
     device: str = "cpu"
     normalize: bool = False
 
-    if PYDANTIC_VERSION < (2, 0):  # Pydantic 1.x compat
+    if PYDANTIC_VERSION.major < 2:  # Pydantic 1.x compat
 
         class Config:
             keep_untouched = (cached_property,)

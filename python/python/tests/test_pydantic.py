@@ -178,7 +178,7 @@ def test_fixed_size_list_field():
         li: List[int]
 
     data = TestModel(vec=list(range(16)), li=[1, 2, 3])
-    if PYDANTIC_VERSION >= (2,):
+    if PYDANTIC_VERSION.major >= 2:
         assert json.loads(data.model_dump_json()) == {
             "vec": list(range(16)),
             "li": [1, 2, 3],
@@ -197,7 +197,7 @@ def test_fixed_size_list_field():
         ]
     )
 
-    if PYDANTIC_VERSION >= (2,):
+    if PYDANTIC_VERSION.major >= 2:
         json_schema = TestModel.model_json_schema()
     else:
         json_schema = TestModel.schema()
