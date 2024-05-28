@@ -31,12 +31,14 @@ pub trait JNIEnvExt {
 
     /// Get strings from Java String[] object.
     /// Note that get Option<Vec<String>> from Java Optional<String[]> just doesn't work.
+    #[allow(unused)]
     fn get_strings_array(&mut self, obj: jobjectArray) -> Result<Vec<String>>;
 
     /// Get Option<String> from Java Optional<String>.
     fn get_string_opt(&mut self, obj: &JObject) -> Result<Option<String>>;
 
     /// Get Option<Vec<String>> from Java Optional<List<String>>.
+    #[allow(unused)]
     fn get_strings_opt(&mut self, obj: &JObject) -> Result<Option<Vec<String>>>;
 
     /// Get Option<i32> from Java Optional<Integer>.
@@ -46,12 +48,15 @@ pub trait JNIEnvExt {
     fn get_ints_opt(&mut self, obj: &JObject) -> Result<Option<Vec<i32>>>;
 
     /// Get Option<i64> from Java Optional<Long>.
+    #[allow(unused)]
     fn get_long_opt(&mut self, obj: &JObject) -> Result<Option<i64>>;
 
     /// Get Option<u64> from Java Optional<Long>.
+    #[allow(unused)]
     fn get_u64_opt(&mut self, obj: &JObject) -> Result<Option<u64>>;
 
     /// Get Option<&[u8]> from Java Optional<ByteBuffer>.
+    #[allow(unused)]
     fn get_bytes_opt(&mut self, obj: &JObject) -> Result<Option<&[u8]>>;
 
     fn get_optional<T, F>(&mut self, obj: &JObject, f: F) -> Result<Option<T>>
