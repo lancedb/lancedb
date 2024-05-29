@@ -89,7 +89,11 @@ class BedRockText(TextEmbeddingFunction):
         # TODO: fix hardcoding
         if self.name == "amazon.titan-embed-text-v1":
             return 1536
-        elif self.name in ["amazon.titan-embed-text-v2:0", "cohere.embed-english-v3", "cohere.embed-multilingual-v3"]:
+        elif self.name in [
+            "amazon.titan-embed-text-v2:0",
+            "cohere.embed-english-v3",
+            "cohere.embed-multilingual-v3",
+        ]:
             # TODO: "amazon.titan-embed-text-v2:0" model supports dynamic ndims
             return 1024
         else:
@@ -105,9 +109,7 @@ class BedRockText(TextEmbeddingFunction):
     ) -> List[List[float]]:
         texts = self.sanitize_input(texts)
         # assume source input type if not passed by `compute_query_embeddings`
-        kwargs["input_type"] = ( 
-            kwargs.get("input_type") or self.source_input_type
-        )
+        kwargs["input_type"] = kwargs.get("input_type") or self.source_input_type
 
         return self.generate_embeddings(texts, **kwargs)
 

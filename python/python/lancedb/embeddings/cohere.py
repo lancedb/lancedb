@@ -33,6 +33,7 @@ class CohereEmbeddingFunction(TextEmbeddingFunction):
     ----------
     name: str, default "embed-multilingual-v2.0"
         The name of the model to use. List of acceptable models:
+
             * embed-english-v3.0
             * embed-multilingual-v3.0
             * embed-english-light-v3.0
@@ -40,25 +41,27 @@ class CohereEmbeddingFunction(TextEmbeddingFunction):
             * embed-english-v2.0
             * embed-english-light-v2.0
             * embed-multilingual-v2.0
-    
+
     source_input_type: str, default "search_document"
         The input type for the source column in the database
-    
+
     query_input_type: str, default "search_query"
         The input type for the query column in the database
-    
+
     Cohere supports following input types:
 
-    | Input Type               | Description                                                         |
-    |-------------------------|----------------------------------------------------------------------|
-    | "`search_document`"     | Used for embeddings stored in a vector database for search use-cases.|
-    | "`search_query`"        | Used for embeddings of search queries run against a vector DB        |
-    |                         | to find relevant documents.                                          |
-    | "`semantic_similarity`" | Specifies the given text will be used for Semantic                   |
-    |                         | Textual Similarity (STS).                                            |
-    | "`classification`"      | Used for embeddings passed through a text classifier.                |
-    |                         | classification.                                                      |
-    | "`clustering`"          | Used for the embeddings run through a clustering algorithm           |
+    | Input Type               | Description                          |
+    |-------------------------|---------------------------------------|
+    | "`search_document`"     | Used for embeddings stored in a vector|
+    |                         | database for search use-cases.        |
+    | "`search_query`"        | Used for embeddings of search queries |
+    |                         | run against a vector DB               |
+    | "`semantic_similarity`" | Specifies the given text will be used |
+    |                         | for Semantic Textual Similarity (STS) |
+    | "`classification`"      | Used for embeddings passed through a  |
+    |                         | text classifier.                      |
+    | "`clustering`"          | Used for the embeddings run through a |
+    |                         | clustering algorithm                  |
 
     Examples
     --------
@@ -92,7 +95,11 @@ class CohereEmbeddingFunction(TextEmbeddingFunction):
 
     def ndims(self):
         # TODO: fix hardcoding
-        if self.name in ["embed-english-v3.0", "embed-multilingual-v3.0", "embed-english-light-v2.0"]:
+        if self.name in [
+            "embed-english-v3.0",
+            "embed-multilingual-v3.0",
+            "embed-english-light-v2.0",
+        ]:
             return 1024
         elif self.name in ["embed-english-light-v3.0", "embed-multilingual-light-v3.0"]:
             return 384
@@ -102,7 +109,7 @@ class CohereEmbeddingFunction(TextEmbeddingFunction):
             return 768
         else:
             raise ValueError(f"Model {self.name} not supported")
-    
+
     def compute_query_embeddings(self, query: str, *args, **kwargs) -> List[np.array]:
         return self.compute_source_embeddings(query, input_type=self.query_input_type)
 
@@ -114,7 +121,7 @@ class CohereEmbeddingFunction(TextEmbeddingFunction):
         return self.generate_embeddings(texts, input_type=input_type)
 
     def generate_embeddings(
-        self, texts: Union[List[str], np.ndarray],  *args, **kwargs
+        self, texts: Union[List[str], np.ndarray], *args, **kwargs
     ) -> List[np.array]:
         """
         Get the embeddings for the given texts
@@ -125,7 +132,9 @@ class CohereEmbeddingFunction(TextEmbeddingFunction):
             The texts to embed
         """
         self._init_client()
-        rs = CohereEmbeddingFunction.client.embed(texts=texts, model=self.name, **kwargs)
+        rs = CohereEmbeddingFunction.client.embed(
+            texts=texts, model=self.name, **kwargs
+        )
 
         return [emb for emb in rs.embeddings]
 
