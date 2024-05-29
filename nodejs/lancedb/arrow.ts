@@ -17,10 +17,14 @@ import {
   Binary,
   DataType,
   Field,
+  FixedSizeBinary,
   FixedSizeList,
-  type Float,
+  Float,
   Float32,
+  Int,
+  LargeBinary,
   List,
+  Null,
   RecordBatch,
   RecordBatchFileWriter,
   RecordBatchStreamWriter,
@@ -35,7 +39,98 @@ import {
 } from "apache-arrow";
 import { type EmbeddingFunction } from "./embedding/embedding_function";
 import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
-import { sanitizeSchema } from "./sanitize";
+import { sanitizeField, sanitizeSchema, sanitizeType } from "./sanitize";
+export * from "apache-arrow";
+
+export function isArrowTable(value: object): value is ArrowTable {
+  if (value instanceof ArrowTable) return true;
+  return "schema" in value && "batches" in value;
+}
+
+export function isDataType(value: unknown): value is DataType {
+  return (
+    value instanceof DataType ||
+    DataType.isNull(value) ||
+    DataType.isInt(value) ||
+    DataType.isFloat(value) ||
+    DataType.isBinary(value) ||
+    DataType.isLargeBinary(value) ||
+    DataType.isUtf8(value) ||
+    DataType.isLargeUtf8(value) ||
+    DataType.isBool(value) ||
+    DataType.isDecimal(value) ||
+    DataType.isDate(value) ||
+    DataType.isTime(value) ||
+    DataType.isTimestamp(value) ||
+    DataType.isInterval(value) ||
+    DataType.isDuration(value) ||
+    DataType.isList(value) ||
+    DataType.isStruct(value) ||
+    DataType.isUnion(value) ||
+    DataType.isFixedSizeBinary(value) ||
+    DataType.isFixedSizeList(value) ||
+    DataType.isMap(value) ||
+    DataType.isDictionary(value)
+  );
+}
+export function isNull(value: unknown): value is Null {
+  return value instanceof Null || DataType.isNull(value);
+}
+export function isInt(value: unknown): value is Int {
+  return value instanceof Int || DataType.isInt(value);
+}
+export function isFloat(value: unknown): value is Float {
+  return value instanceof Float || DataType.isFloat(value);
+}
+export function isBinary(value: unknown): value is Binary {
+  return value instanceof Binary || DataType.isBinary(value);
+}
+export function isLargeBinary(value: unknown): value is LargeBinary {
+  return value instanceof LargeBinary || DataType.isLargeBinary(value);
+}
+export function isUtf8(value: unknown): value is Utf8 {
+  return value instanceof Utf8 || DataType.isUtf8(value);
+}
+export function isLargeUtf8(value: unknown): value is Utf8 {
+  return value instanceof Utf8 || DataType.isLargeUtf8(value);
+}
+export function isBool(value: unknown): value is Utf8 {
+  return value instanceof Utf8 || DataType.isBool(value);
+}
+export function isDecimal(value: unknown): value is Utf8 {
+  return value instanceof Utf8 || DataType.isDecimal(value);
+}
+export function isDate(value: unknown): value is Utf8 {
+  return value instanceof Utf8 || DataType.isDate(value);
+}
+export function isTime(value: unknown): value is Utf8 {
+  return value instanceof Utf8 || DataType.isTime(value);
+}
+export function isTimestamp(value: unknown): value is Utf8 {
+  return value instanceof Utf8 || DataType.isTimestamp(value);
+}
+export function isInterval(value: unknown): value is Utf8 {
+  return value instanceof Utf8 || DataType.isInterval(value);
+}
+export function isDuration(value: unknown): value is Utf8 {
+  return value instanceof Utf8 || DataType.isDuration(value);
+}
+export function isList(value: unknown): value is List {
+  return value instanceof List || DataType.isList(value);
+}
+export function isStruct(value: unknown): value is Struct {
+  return value instanceof Struct || DataType.isStruct(value);
+}
+export function isUnion(value: unknown): value is Struct {
+  return value instanceof Struct || DataType.isUnion(value);
+}
+export function isFixedSizeBinary(value: unknown): value is FixedSizeBinary {
+  return value instanceof FixedSizeBinary || DataType.isFixedSizeBinary(value);
+}
+
+export function isFixedSizeList(value: unknown): value is FixedSizeList {
+  return value instanceof FixedSizeList || DataType.isFixedSizeList(value);
+}
 
 /** Data type accepted by NodeJS SDK */
 export type Data = Record<string, unknown>[] | ArrowTable;
@@ -442,8 +537,8 @@ async function applyEmbeddingsFromMetadata(
     }
     let destType: DataType;
     const dtype = schema.fields.find((f) => f.name === destColumn)!.type;
-    if (dtype instanceof FixedSizeList) {
-      destType = dtype;
+    if (isFixedSizeList(dtype)) {
+      destType = sanitizeType(dtype);
     } else {
       throw new Error(
         "Expected FixedSizeList as datatype for vector field, instead got: " +
@@ -588,7 +683,7 @@ export function newVectorType<T extends Float>(
 ): FixedSizeList<T> {
   // in Lance we always default to have the elements nullable, so we need to set it to true
   // otherwise we often get schema mismatches because the stored data always has schema with nullable elements
-  const children = new Field<T>("item", innerType, true);
+  const children = new Field("item", <T>sanitizeType(innerType), true);
   return new FixedSizeList(dim, children);
 }
 
@@ -669,7 +764,7 @@ export async function fromDataToBuffer(
   if (schema !== undefined && schema !== null) {
     schema = sanitizeSchema(schema);
   }
-  if (data instanceof ArrowTable) {
+  if (isArrowTable(data)) {
     return fromTableToBuffer(data, embeddings, schema);
   } else {
     const table = await convertToTable(data, embeddings, { schema });
@@ -750,8 +845,10 @@ function validateSchemaEmbeddings(
   // if it does not, we add it to the list of missing embedding fields
   // Finally, we check if those missing embedding fields are `this._embeddings`
   // if they are not, we throw an error
-  for (const field of schema.fields) {
-    if (field.type instanceof FixedSizeList) {
+  for (let field of schema.fields) {
+    if (isFixedSizeList(field.type)) {
+      field = sanitizeField(field);
+
       if (data.length !== 0 && data?.[0]?.[field.name] === undefined) {
         if (schema.metadata.has("embedding_functions")) {
           const embeddings = JSON.parse(
