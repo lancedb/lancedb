@@ -527,7 +527,7 @@ describe("embedding functions", () => {
     const vector0 = JSON.parse(JSON.stringify(arr[0].vector));
     expect(vector0).toEqual([1, 2, 3]);
   });
-  it("should provide an error when opening a table with an unregistered embedding function", async () => {
+  it("should error when appending to a table with an unregistered embedding function", async () => {
     @register("mock")
     class MockEmbeddingFunction extends EmbeddingFunction<string> {
       toJSON(): object {
