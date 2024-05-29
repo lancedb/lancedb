@@ -1,12 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<project xmlns="http://maven.apache.org/POM/4.0.0"
-    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-    xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>com.lancedb</groupId>
     <artifactId>lancedb-parent</artifactId>
-    <version>0.1-SNAPSHOT</version>
+    <version>0.0.2</version>
     <packaging>pom</packaging>
 
     <name>Lance Parent</name>
@@ -28,7 +26,7 @@
 
     <scm>
         <developerConnection>scm:git:git@github.com:lancedb/lancedb.git</developerConnection>
-        <tag>HEAD</tag>
+        <tag>lancedb-parent-0.0.2</tag>
         <url>scm:git:git@github.com:lancedb/lancedb.git</url>
     </scm>
 
@@ -158,7 +156,7 @@
                     <version>3.2.5</version>
                     <configuration>
                         <argLine>--add-opens=java.base/java.nio=ALL-UNNAMED</argLine>
-                        <forkNode implementation="org.apache.maven.plugin.surefire.extensions.SurefireForkNodeFactory"/>
+                        <forkNode implementation="org.apache.maven.plugin.surefire.extensions.SurefireForkNodeFactory" />
                         <useSystemClassLoader>false</useSystemClassLoader>
                     </configuration>
                 </plugin>
