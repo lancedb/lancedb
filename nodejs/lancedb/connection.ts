@@ -12,8 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { Table as ArrowTable, Schema } from "apache-arrow";
-import { fromTableToBuffer, makeArrowTable, makeEmptyTable } from "./arrow";
+import { Table as ArrowTable, Schema } from "./arrow";
+import {
+  fromTableToBuffer,
+  isArrowTable,
+  makeArrowTable,
+  makeEmptyTable,
+} from "./arrow";
 import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
 import { ConnectionOptions, Connection as LanceDbConnection } from "./native";
 import { Table } from "./table";
@@ -200,7 +205,7 @@ export class Connection {
     }
 
     let table: ArrowTable;
-    if (data instanceof ArrowTable) {
+    if (isArrowTable(data)) {
       table = data;
     } else {
       table = makeArrowTable(data, options);

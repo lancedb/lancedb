@@ -11,18 +11,21 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-import { Float, Float32, Int32, Utf8, Vector } from "apache-arrow";
+import * as arrow from "apache-arrow";
+import * as arrowOld from "apache-arrow-old";
+
 import * as tmp from "tmp";
+
 import { connect } from "../lancedb";
 import { EmbeddingFunction, LanceSchema } from "../lancedb/embedding";
 import { getRegistry, register } from "../lancedb/embedding/registry";
 
-describe("LanceSchema", () => {
+describe.each([arrow, arrowOld])("LanceSchema", (arrow) => {
   test("should preserve input order", async () => {
     const schema = LanceSchema({
-      id: new Int32(),
-      text: new Utf8(),
-      vector: new Float32(),
+      id: new arrow.Int32(),
+      text: new arrow.Utf8(),
+      vector: new arrow.Float32(),
     });
     expect(schema.fields.map((x) => x.name)).toEqual(["id", "text", "vector"]);
   });
@@ -53,8 +56,8 @@ describe("Registry", () => {
       ndims() {
         return 3;
       }
-      embeddingDataType(): Float {
-        return new Float32();
+      embeddingDataType(): arrow.Float {
+        return new arrow.Float32();
       }
       async computeSourceEmbeddings(data: string[]) {
         return data.map(() => [1, 2, 3]);
@@ -65,8 +68,8 @@ describe("Registry", () => {
       .create();
 
     const schema = LanceSchema({
-      id: new Int32(),
-      text: func.sourceField(new Utf8()),
+      id: new arrow.Int32(),
+      text: func.sourceField(new arrow.Utf8()),
       vector: func.vectorField(),
     });
 
@@ -88,7 +91,7 @@ describe("Registry", () => {
       .getChild("vector")
       ?.toArray()
       .map((x: unknown) => {
-        if (x instanceof Vector) {
+        if (x instanceof arrow.Vector) {
           return [...x];
         } else {
           return x;
@@ -109,8 +112,8 @@ describe("Registry", () => {
       ndims() {
         return 3;
       }
-      embeddingDataType(): Float {
-        return new Float32();
+      embeddingDataType(): arrow.Float {
+        return new arrow.Float32();
       }
       async computeSourceEmbeddings(data: string[]) {
         return data.map(() => [1, 2, 3]);
@@ -134,8 +137,8 @@ describe("Registry", () => {
       ndims() {
         return 3;
       }
-      embeddingDataType(): Float {
-        return new Float32();
+      embeddingDataType(): arrow.Float {
+        return new arrow.Float32();
       }
       async computeSourceEmbeddings(data: string[]) {
         return data.map(() => [1, 2, 3]);
@@ -144,8 +147,8 @@ describe("Registry", () => {
     const func = new MockEmbeddingFunction();
 
     const schema = LanceSchema({
-      id: new Int32(),
-      text: func.sourceField(new Utf8()),
+      id: new arrow.Int32(),
+      text: func.sourceField(new arrow.Utf8()),
       vector: func.vectorField(),
     });
     const expectedMetadata = new Map<string, string>([

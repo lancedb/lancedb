@@ -16,6 +16,10 @@ import * as fs from "fs";
 import * as path from "path";
 import * as tmp from "tmp";
 
+import * as arrow from "apache-arrow";
+import * as arrowOld from "apache-arrow-old";
+
+import { Table, connect } from "../lancedb";
 import {
   Field,
   FixedSizeList,
@@ -26,17 +30,20 @@ import {
   Int64,
   Schema,
   Utf8,
-} from "apache-arrow";
-import { Table, connect } from "../lancedb";
-import { makeArrowTable } from "../lancedb/arrow";
+  makeArrowTable,
+} from "../lancedb/arrow";
 import { EmbeddingFunction, LanceSchema } from "../lancedb/embedding";
 import { getRegistry, register } from "../lancedb/embedding/registry";
 import { Index } from "../lancedb/indices";
 
-describe("Given a table", () => {
+// biome-ignore lint/suspicious/noExplicitAny: <explanation>
+describe.each([arrow, arrowOld])("Given a table", (arrow: any) => {
   let tmpDir: tmp.DirResult;
   let table: Table;
-  const schema = new Schema([new Field("id", new Float64(), true)]);
+
+  const schema = new arrow.Schema([
+    new arrow.Field("id", new arrow.Float64(), true),
+  ]);
   beforeEach(async () => {
     tmpDir = tmp.dirSync({ unsafeCleanup: true });
     const conn = await connect(tmpDir.name);
@@ -551,7 +558,7 @@ describe("embedding functions", () => {
     const func = getRegistry().get<MockEmbeddingFunction>("mock")!.create();
 
     const schema = LanceSchema({
-      id: new Float64(),
+      id: new arrow.Float64(),
       text: func.sourceField(new Utf8()),
       vector: func.vectorField(),
     });

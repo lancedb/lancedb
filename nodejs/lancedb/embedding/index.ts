@@ -12,12 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { DataType, Field, Schema } from "apache-arrow";
+import { DataType, Field, Schema } from "../arrow";
+import { isDataType } from "../arrow";
+import { sanitizeType } from "../sanitize";
 import { EmbeddingFunction } from "./embedding_function";
 import { EmbeddingFunctionConfig, getRegistry } from "./registry";
 
 export { EmbeddingFunction } from "./embedding_function";
+
+// We need to explicitly export '*' so that the `register` decorator actually registers the class.
 export * from "./openai";
+export * from "./registry";
 
 /**
  * Create a schema with embedding functions.
@@ -42,7 +47,7 @@ export * from "./openai";
  * ```
  */
 export function LanceSchema(
-  fields: Record<string, [DataType, Map<string, EmbeddingFunction>] | DataType>,
+  fields: Record<string, [object, Map<string, EmbeddingFunction>] | object>,
 ): Schema {
   const arrowFields: Field[] = [];
 
@@ -51,11 +56,14 @@ export function LanceSchema(
     Partial<EmbeddingFunctionConfig>
   >();
   Object.entries(fields).forEach(([key, value]) => {
-    if (value instanceof DataType) {
-      arrowFields.push(new Field(key, value, true));
+    if (isDataType(value)) {
+      arrowFields.push(new Field(key, sanitizeType(value), true));
     } else {
-      const [dtype, metadata] = value;
-      arrowFields.push(new Field(key, dtype, true));
+      const [dtype, metadata] = value as [
+        object,
+        Map<string, EmbeddingFunction>,
+      ];
+      arrowFields.push(new Field(key, sanitizeType(dtype), true));
       parseEmbeddingFunctions(embeddingFunctions, key, metadata);
     }
   });

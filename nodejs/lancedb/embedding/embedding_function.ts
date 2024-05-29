@@ -12,9 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { DataType, Field, FixedSizeList, Float, Float32 } from "apache-arrow";
 import "reflect-metadata";
-import { newVectorType } from "../arrow";
+import {
+  DataType,
+  Field,
+  FixedSizeList,
+  Float,
+  Float32,
+  isDataType,
+  isFixedSizeList,
+  isFloat,
+  newVectorType,
+} from "../arrow";
+import { sanitizeType } from "../sanitize";
 
 /**
  * Options for a given embedding function
@@ -69,13 +79,13 @@ export abstract class EmbeddingFunction<
   sourceField(
     optionsOrDatatype: Partial<FieldOptions> | DataType,
   ): [DataType, Map<string, EmbeddingFunction>] {
-    const datatype =
-      optionsOrDatatype instanceof DataType
-        ? optionsOrDatatype
-        : optionsOrDatatype?.datatype;
+    let datatype = isDataType(optionsOrDatatype)
+      ? optionsOrDatatype
+      : optionsOrDatatype?.datatype;
     if (!datatype) {
       throw new Error("Datatype is required");
     }
+    datatype = sanitizeType(datatype);
     const metadata = new Map<string, EmbeddingFunction>();
     metadata.set("source_column_for", this);
 
@@ -100,9 +110,9 @@ export abstract class EmbeddingFunction<
       }
       dtype = new FixedSizeList(dims, new Field("item", new Float32(), true));
     } else {
-      if (options.datatype instanceof FixedSizeList) {
+      if (isFixedSizeList(options.datatype)) {
         dtype = options.datatype;
-      } else if (options.datatype instanceof Float) {
+      } else if (isFloat(options.datatype)) {
         if (dims === undefined) {
           throw new Error("ndims is required for vector field");
         }

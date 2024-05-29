@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { Schema, tableFromIPC } from "apache-arrow";
-import { Data, fromDataToBuffer } from "./arrow";
+import { Data, Schema, fromDataToBuffer, tableFromIPC } from "./arrow";
+
 import { getRegistry } from "./embedding/registry";
 import { IndexOptions } from "./indices";
 import {
