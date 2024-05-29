@@ -13,7 +13,6 @@
 // limitations under the License.
 
 import * as tmp from "tmp";
-
 import { Connection, connect } from "../lancedb";
 
 describe("when connecting", () => {

@@ -12,18 +12,32 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+import { Float, Float32 } from "apache-arrow";
 import type OpenAI from "openai";
-import { type EmbeddingFunction } from "./embedding_function";
+import { EmbeddingFunction } from "./embedding_function";
+import { register } from "./registry";
 
-export class OpenAIEmbeddingFunction implements EmbeddingFunction<string> {
-  private readonly _openai: OpenAI;
-  private readonly _modelName: string;
+export type OpenAIOptions = {
+  apiKey?: string;
+  model?: string;
+};
 
-  constructor(
-    sourceColumn: string,
-    openAIKey: string,
-    modelName: string = "text-embedding-ada-002",
-  ) {
+@register("openai")
+export class OpenAIEmbeddingFunction extends EmbeddingFunction<
+  string,
+  OpenAIOptions
+> {
+  #openai: OpenAI;
+  #modelName: string;
+
+  constructor(options: OpenAIOptions = { model: "text-embedding-ada-002" }) {
+    super();
+    const openAIKey = options?.apiKey ?? process.env.OPENAI_API_KEY;
+    if (!openAIKey) {
+      throw new Error("OpenAI API key is required");
+    }
+    const modelName = options?.model ?? "text-embedding-ada-002";
+
     /**
      * @type {import("openai").default}
      */
@@ -36,18 +50,40 @@ export class OpenAIEmbeddingFunction implements EmbeddingFunction<string> {
       throw new Error("please install openai@^4.24.1 using npm install openai");
     }
 
-    this.sourceColumn = sourceColumn;
     const configuration = {
       apiKey: openAIKey,
     };
 
-    this._openai = new Openai(configuration);
-    this._modelName = modelName;
+    this.#openai = new Openai(configuration);
+    this.#modelName = modelName;
   }
 
-  async embed(data: string[]): Promise<number[][]> {
-    const response = await this._openai.embeddings.create({
-      model: this._modelName,
+  toJSON() {
+    return {
+      model: this.#modelName,
+    };
+  }
+
+  ndims(): number {
+    switch (this.#modelName) {
+      case "text-embedding-ada-002":
+        return 1536;
+      case "text-embedding-3-large":
+        return 3072;
+      case "text-embedding-3-small":
+        return 1536;
+      default:
+        return null as never;
+    }
+  }
+
+  embeddingDataType(): Float {
+    return new Float32();
+  }
+
+  async computeSourceEmbeddings(data: string[]): Promise<number[][]> {
+    const response = await this.#openai.embeddings.create({
+      model: this.#modelName,
       input: data,
     });
 
@@ -58,5 +94,15 @@ export class OpenAIEmbeddingFunction implements EmbeddingFunction<string> {
     return embeddings;
   }
 
-  sourceColumn: string;
+  async computeQueryEmbeddings(data: string): Promise<number[]> {
+    if (typeof data !== "string") {
+      throw new Error("Data must be a string");
+    }
+    const response = await this.#openai.embeddings.create({
+      model: this.#modelName,
+      input: data,
+    });
+
+    return response.data[0].embedding;
+  }
 }

@@ -170,6 +170,7 @@ export class QueryBase<
   /** Collect the results as an array of objects. */
   async toArray(): Promise<unknown[]> {
     const tbl = await this.toArrow();
+
     // eslint-disable-next-line @typescript-eslint/no-unsafe-return
     return tbl.toArray();
   }

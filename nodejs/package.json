@@ -62,6 +62,7 @@
   },
   "dependencies": {
     "apache-arrow": "^15.0.0",
-    "openai": "^4.29.2"
+    "openai": "^4.29.2",
+    "reflect-metadata": "^0.2.2"
   }
 }

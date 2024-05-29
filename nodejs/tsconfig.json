@@ -7,7 +7,9 @@
     "outDir": "./dist",
     "strict": true,
     "allowJs": true,
-    "resolveJsonModule": true
+    "resolveJsonModule": true,
+    "emitDecoratorMetadata": true,
+    "experimentalDecorators": true
   },
   "exclude": ["./dist/*"],
   "typedocOptions": {

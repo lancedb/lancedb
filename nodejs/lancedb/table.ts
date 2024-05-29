@@ -14,6 +14,7 @@
 
 import { Schema, tableFromIPC } from "apache-arrow";
 import { Data, fromDataToBuffer } from "./arrow";
+import { getRegistry } from "./embedding/registry";
 import { IndexOptions } from "./indices";
 import {
   AddColumnsSql,
@@ -122,8 +123,14 @@ export class Table {
    */
   async add(data: Data, options?: Partial<AddDataOptions>): Promise<void> {
     const mode = options?.mode ?? "append";
+    const schema = await this.schema();
+    const registry = getRegistry();
+    const functions = registry.parseFunctions(schema.metadata);
 
-    const buffer = await fromDataToBuffer(data);
+    const buffer = await fromDataToBuffer(
+      data,
+      functions.values().next().value,
+    );
     await this.inner.add(buffer, mode);
   }
 
