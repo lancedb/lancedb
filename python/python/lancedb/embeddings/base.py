@@ -153,7 +153,7 @@ class TextEmbeddingFunction(EmbeddingFunction):
 
     @abstractmethod
     def generate_embeddings(
-        self, texts: Union[List[str], np.ndarray]
+        self, texts: Union[List[str], np.ndarray], *args, **kwargs
     ) -> List[np.array]:
         """
         Generate the embeddings for the given texts
