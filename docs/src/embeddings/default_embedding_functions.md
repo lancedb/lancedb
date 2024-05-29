@@ -216,7 +216,7 @@ Generate embeddings via the [ollama](https://github.com/ollama/ollama-python) py
 |------------------------|----------------------------|--------------------------|------------------------------------------------------------------------------------------------------------------------------------------------|
 | `name`                 | `str`                      | `nomic-embed-text`       | The name of the model.                                                                                                                         |
 | `host`                 | `str`                      | `http://localhost:11434` | The Ollama host to connect to.                                                                                                                 |
-| `options`              | `ollama.Options` or `dict` | `None`                   | Additional model parameters listed in the documentation for the [Modelfile](./modelfile.md#valid-parameters-and-values) such as `temperature`. |
+| `options`              | `ollama.Options` or `dict` | `None`                   | Additional model parameters listed in the documentation for the Modelfile such as `temperature`. |
 | `keep_alive`           | `float` or `str`           | `"5m"`                   | Controls how long the model will stay loaded into memory following the request.                                                                |
 | `ollama_client_kwargs` | `dict`                     | `{}`                     | kwargs that can be past to the `ollama.Client`.                                                                                                |
 

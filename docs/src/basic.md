@@ -436,31 +436,14 @@ You can use embedding API when working with embedding models. The embedding API 
 === "Python"
 
     ```python
-    import lancedb
-    from lancedb.pydantic import LanceModel, Vector
-    from lancedb.embeddings import get_registry
-
-    db = lancedb.connect("/tmp/db")
-    func = get_registry().get("openai").create(name="text-embedding-ada-002")
-
-    class Words(LanceModel):
-        text: str = func.SourceField()
-        vector: Vector(func.ndims()) = func.VectorField()
-
-    table = db.create_table("words", schema=Words, mode="overwrite")
-    table.add(
-        [
-            {"text": "hello world"},
-            {"text": "goodbye world"}
-        ]
-        )
-
-    query = "greetings"
-    actual = table.search(query).limit(1).to_pydantic(Words)[0]
-    print(actual.text)
+    --8<-- "python/python/tests/docs/test_embeddings_slow.py:imports"
+    --8<-- "python/python/tests/docs/test_embeddings_slow.py:openai_embeddings"
     ```
 
 Learn about using the existing integrations and creating custom embedding functions in the [embedding API guide](./embeddings/).
+
+!!! note "Using Embedding API in Rust & Typescript"
+    The Embedding API is currently only available in Python. Support for Rust and Typescript is being worked on.
 
 ## What's next
 
