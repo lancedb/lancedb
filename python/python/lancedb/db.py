@@ -509,7 +509,7 @@ class AsyncConnection(object):
         return self._inner.__repr__()
 
     def __enter__(self):
-        self
+        return self
 
     def __exit__(self, *_):
         self.close()
@@ -779,7 +779,7 @@ class AsyncConnection(object):
         name: str,
         storage_options: Optional[Dict[str, str]] = None,
         index_cache_size: Optional[int] = None,
-    ) -> Table:
+    ) -> AsyncTable:
         """Open a Lance Table in the database.
 
         Parameters
