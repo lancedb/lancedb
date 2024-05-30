@@ -66,7 +66,6 @@ impl TryFrom<&str> for EmbeddingModel {
 }
 
 pub struct OpenAIEmbeddingFunction {
-    source_column: String,
     model: EmbeddingModel,
     api_key: String,
     api_base: Option<String>,
@@ -87,9 +86,8 @@ impl std::fmt::Debug for OpenAIEmbeddingFunction {
         };
 
         f.debug_struct("OpenAI")
-            .field("source_column", &self.source_column)
             .field("model", &self.model)
-            .field("credentials", &creds_display)
+            .field("api_key", &creds_display)
             .field("api_base", &self.api_base)
             .field("org_id", &self.org_id)
             .finish()
@@ -98,16 +96,11 @@ impl std::fmt::Debug for OpenAIEmbeddingFunction {
 
 impl OpenAIEmbeddingFunction {
     /// Create a new OpenAIEmbeddingFunction
-    pub fn new<S: Into<String>, A: Into<String>>(source_column: S, api_key: A) -> Self {
-        Self::new_impl(
-            source_column.into(),
-            api_key.into(),
-            EmbeddingModel::TextEmbeddingAda002,
-        )
+    pub fn new<A: Into<String>>(api_key: A) -> Self {
+        Self::new_impl(api_key.into(), EmbeddingModel::TextEmbeddingAda002)
     }
 
-    pub fn new_with_model<S: Into<String>, A: Into<String>, M: TryInto<EmbeddingModel>>(
-        source_column: S,
+    pub fn new_with_model<A: Into<String>, M: TryInto<EmbeddingModel>>(
         api_key: A,
         model: M,
     ) -> crate::Result<Self>
@@ -115,16 +108,14 @@ impl OpenAIEmbeddingFunction {
         M::Error: Into<crate::Error>,
     {
         Ok(Self::new_impl(
-            source_column.into(),
             api_key.into(),
             model.try_into().map_err(|e| e.into())?,
         ))
     }
 
     /// concrete implementation to reduce monomorphization
-    fn new_impl(source_column: String, api_key: String, model: EmbeddingModel) -> Self {
+    fn new_impl(api_key: String, model: EmbeddingModel) -> Self {
         Self {
-            source_column,
             model,
             api_key,
             api_base: None,
