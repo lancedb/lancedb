@@ -1529,6 +1529,7 @@ impl NativeTable {
         scanner.use_index(query.use_index);
         scanner.prefilter(query.prefilter);
         scanner.batch_size(options.max_batch_length as usize);
+        scanner.with_row_id();
 
         match &query.base.select {
             Select::Columns(select) => {
