@@ -677,6 +677,19 @@ describe("table.search", () => {
     expect(results2[0].text).toBe(data[1].text);
   });
 
+  test("rejects if no embedding function provided", async () => {
+    const db = await connect(tmpDir.name);
+    const data = [
+      { text: "hello world", vector: [0.1, 0.2, 0.3] },
+      { text: "goodbye world", vector: [0.4, 0.5, 0.6] },
+    ];
+    const table = await db.createTable("test", data);
+
+    expect(table.search("hello")).rejects.toThrow(
+      "No embedding functions are defined in the table",
+    );
+  });
+
   test.each([
     [0.4, 0.5, 0.599], // number[]
     Float32Array.of(0.4, 0.5, 0.599), // Float32Array
