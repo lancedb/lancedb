@@ -11,6 +11,8 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+#[cfg(feature = "openai")]
+pub mod openai;
 
 use lance::arrow::RecordBatchExt;
 use std::{
@@ -51,8 +53,10 @@ pub trait EmbeddingFunction: std::fmt::Debug + Send + Sync {
     /// The type of the output data
     /// This should **always** match the output of the `embed` function
     fn dest_type(&self) -> Result<Cow<DataType>>;
-    /// Embed the input
-    fn embed(&self, source: Arc<dyn Array>) -> Result<Arc<dyn Array>>;
+    /// Compute the embeddings for the source column in the database
+    fn compute_source_embeddings(&self, source: Arc<dyn Array>) -> Result<Arc<dyn Array>>;
+    /// Compute the embeddings for a given user query
+    fn compute_query_embeddings(&self, input: Arc<dyn Array>) -> Result<Arc<dyn Array>>;
 }
 
 /// Defines an embedding from input data into a lower-dimensional space
@@ -266,7 +270,7 @@ impl<R: RecordBatchReader> Iterator for WithEmbeddings<R> {
                 // todo: parallelize this
                 for (fld, func) in self.embeddings.iter() {
                     let src_column = batch.column_by_name(&fld.source_column).unwrap();
-                    let embedding = match func.embed(src_column.clone()) {
+                    let embedding = match func.compute_source_embeddings(src_column.clone()) {
                         Ok(embedding) => embedding,
                         Err(e) => {
                             return Some(Err(arrow_schema::ArrowError::ComputeError(format!(
