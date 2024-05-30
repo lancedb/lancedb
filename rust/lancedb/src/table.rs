@@ -1506,7 +1506,7 @@ impl NativeTable {
                 if dim != query_vector.len() as i32 {
                     return Err(Error::InvalidInput {
                         message: format!(
-                            "The dimension of the query vector does not match with the dimension of the vector column '{}':
+                            "The dimension of the query vector does not match with the dimension of the vector column '{}': \
                                 query dim={}, expected vector dim={}",
                             column,
                             query_vector.len(),
@@ -2550,8 +2550,7 @@ mod tests {
                 .unwrap()
                 .get_index_type(index_uuid)
                 .await
-                .unwrap()
-                .map(|index_type| index_type.to_string()),
+                .unwrap(),
             Some("IVF".to_string())
         );
         assert_eq!(
