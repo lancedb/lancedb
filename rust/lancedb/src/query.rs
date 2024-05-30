@@ -1001,6 +1001,6 @@ mod tests {
             .err()
             .unwrap()
             .to_string()
-            .contains("No vector column found to match with the query vector dimension"));
+            .contains("No vector column found to match with the query vector dimension: 3"));
     }
 }

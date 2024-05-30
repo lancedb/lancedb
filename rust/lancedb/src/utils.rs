@@ -119,7 +119,10 @@ pub(crate) fn default_vector_column(schema: &Schema, dim: Option<i32>) -> Result
         .collect::<Vec<_>>();
     if candidates.is_empty() {
         Err(Error::InvalidInput {
-            message: "No vector column found to match with the query vector dimension".to_string(),
+            message: format!(
+                "No vector column found to match with the query vector dimension: {}",
+                dim.unwrap_or_default()
+            ),
         })
     } else if candidates.len() != 1 {
         Err(Error::Schema {
