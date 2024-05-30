@@ -40,6 +40,7 @@ describe.each([arrow, arrowOld])("Given a table", (arrow: any) => {
   const schema = new arrow.Schema([
     new arrow.Field("id", new arrow.Float64(), true),
   ]);
+
   beforeEach(async () => {
     tmpDir = tmp.dirSync({ unsafeCleanup: true });
     const conn = await connect(tmpDir.name);
@@ -90,6 +91,37 @@ describe.each([arrow, arrowOld])("Given a table", (arrow: any) => {
     expect(await table.countRows("id == 7")).toBe(1);
     expect(await table.countRows("id == 10")).toBe(1);
   });
+  // https://github.com/lancedb/lancedb/issues/1293
+  test.each([new arrow.Float16(), new arrow.Float32(), new arrow.Float64()])(
+    "can create empty table with non default float type: %s",
+    async (floatType) => {
+      const db = await connect(tmpDir.name);
+
+      const data = [
+        { text: "hello", vector: Array(512).fill(1.0) },
+        { text: "hello world", vector: Array(512).fill(1.0) },
+      ];
+      const f64Schema = new arrow.Schema([
+        new arrow.Field("text", new arrow.Utf8(), true),
+        new arrow.Field(
+          "vector",
+          new arrow.FixedSizeList(512, new arrow.Field("item", floatType)),
+          true,
+        ),
+      ]);
+
+      const f64Table = await db.createEmptyTable("f64", f64Schema, {
+        mode: "overwrite",
+      });
+      try {
+        await f64Table.add(data);
+        const res = await f64Table.query().toArray();
+        expect(res.length).toBe(2);
+      } catch (e) {
+        expect(e).toBeUndefined();
+      }
+    },
+  );
 });
 
 describe("When creating an index", () => {
