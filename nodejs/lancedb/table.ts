@@ -287,7 +287,7 @@ export class Table {
    * Create a search query to find the nearest neighbors
    * of the given query vector
    * @param {string} query - the query. This will be converted to a vector using the table's provided embedding function
-   * @throws {Error} If no embedding function is provided, an error will be thrown
+   * @rejects {Error} If no embedding functions are defined in the table
    */
   search(query: string): Promise<VectorQuery>;
   /**
@@ -306,7 +306,9 @@ export class Table {
           .values()
           .next().value;
         if (!embeddingFunc) {
-          throw new Error("No embedding functions are defined in the table");
+          return Promise.reject(
+            new Error("No embedding functions are defined in the table"),
+          );
         }
         const embeddings =
           await embeddingFunc.function.computeQueryEmbeddings(query);
