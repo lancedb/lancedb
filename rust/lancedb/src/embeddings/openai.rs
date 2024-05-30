@@ -17,16 +17,16 @@ use super::EmbeddingFunction;
 
 #[derive(Debug)]
 pub enum EmbeddingModel {
-    TextEmbedding3Small,
     TextEmbeddingAda002,
+    TextEmbedding3Small,
     TextEmbedding3Large,
 }
 
 impl EmbeddingModel {
     fn ndims(&self) -> usize {
         match self {
-            Self::TextEmbedding3Small => 1536,
             Self::TextEmbeddingAda002 => 1536,
+            Self::TextEmbedding3Small => 1536,
             Self::TextEmbedding3Large => 3072,
         }
     }
@@ -37,8 +37,8 @@ impl FromStr for EmbeddingModel {
 
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s {
-            "text-embedding-3-small" => Ok(Self::TextEmbedding3Small),
             "text-embedding-ada-002" => Ok(Self::TextEmbeddingAda002),
+            "text-embedding-3-small" => Ok(Self::TextEmbedding3Small),
             "text-embedding-3-large" => Ok(Self::TextEmbedding3Large),
             _ => Err(Error::InvalidInput {
                 message: "Invalid input. Available models are: 'text-embedding-3-small', 'text-embedding-ada-002', 'text-embedding-3-large' ".to_string()
@@ -47,12 +47,12 @@ impl FromStr for EmbeddingModel {
     }
 }
 
-impl ToString for EmbeddingModel {
-    fn to_string(&self) -> String {
+impl std::fmt::Display for EmbeddingModel {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         match self {
-            Self::TextEmbedding3Small => "text-embedding-3-small".to_string(),
-            Self::TextEmbeddingAda002 => "text-embedding-ada-002".to_string(),
-            Self::TextEmbedding3Large => "text-embedding-3-large".to_string(),
+            Self::TextEmbeddingAda002 => write!(f, "text-embedding-ada-002"),
+            Self::TextEmbedding3Small => write!(f, "text-embedding-3-small"),
+            Self::TextEmbedding3Large => write!(f, "text-embedding-3-large"),
         }
     }
 }
