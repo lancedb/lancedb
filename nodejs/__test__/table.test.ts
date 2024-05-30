@@ -621,7 +621,7 @@ describe("table.search", () => {
   });
   afterEach(() => tmpDir.removeCallback());
 
-  test.only("can search using a string", async () => {
+  test("can search using a string", async () => {
     @register()
     class MockEmbeddingFunction extends EmbeddingFunction<string> {
       toJSON(): object {
