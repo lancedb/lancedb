@@ -19,6 +19,7 @@ use snafu::Snafu;
 
 #[derive(Debug, Snafu)]
 #[snafu(visibility(pub(crate)))]
+
 pub enum Error {
     #[snafu(display("Invalid table name (\"{name}\"): {reason}"))]
     InvalidTableName { name: String, reason: String },
