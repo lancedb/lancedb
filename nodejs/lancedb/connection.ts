@@ -12,10 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { fromTableToBuffer, makeArrowTable, makeEmptyTable } from "./arrow";
+import { Table as ArrowTable, Schema } from "./arrow";
+import {
+  fromTableToBuffer,
+  isArrowTable,
+  makeArrowTable,
+  makeEmptyTable,
+} from "./arrow";
+import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
 import { ConnectionOptions, Connection as LanceDbConnection } from "./native";
 import { Table } from "./table";
-import { Table as ArrowTable, Schema } from "apache-arrow";
 
 /**
  * Connect to a LanceDB instance at the given URI.
@@ -65,6 +71,8 @@ export interface CreateTableOptions {
    * The available options are described at https://lancedb.github.io/lancedb/guides/storage/
    */
   storageOptions?: Record<string, string>;
+  schema?: Schema;
+  embeddingFunction?: EmbeddingFunctionConfig;
 }
 
 export interface OpenTableOptions {
@@ -174,6 +182,7 @@ export class Connection {
       cleanseStorageOptions(options?.storageOptions),
       options?.indexCacheSize,
     );
+
     return new Table(innerTable);
   }
 
@@ -196,18 +205,24 @@ export class Connection {
     }
 
     let table: ArrowTable;
-    if (data instanceof ArrowTable) {
+    if (isArrowTable(data)) {
       table = data;
     } else {
-      table = makeArrowTable(data);
+      table = makeArrowTable(data, options);
     }
-    const buf = await fromTableToBuffer(table);
+
+    const buf = await fromTableToBuffer(
+      table,
+      options?.embeddingFunction,
+      options?.schema,
+    );
     const innerTable = await this.inner.createTable(
       name,
       buf,
       mode,
       cleanseStorageOptions(options?.storageOptions),
     );
+
     return new Table(innerTable);
   }
 
@@ -227,8 +242,14 @@ export class Connection {
     if (mode === "create" && existOk) {
       mode = "exist_ok";
     }
+    let metadata: Map<string, string> | undefined = undefined;
+    if (options?.embeddingFunction !== undefined) {
+      const embeddingFunction = options.embeddingFunction;
+      const registry = getRegistry();
+      metadata = registry.getTableMetadata([embeddingFunction]);
+    }
 
-    const table = makeEmptyTable(schema);
+    const table = makeEmptyTable(schema, metadata);
     const buf = await fromTableToBuffer(table);
     const innerTable = await this.inner.createEmptyTable(
       name,

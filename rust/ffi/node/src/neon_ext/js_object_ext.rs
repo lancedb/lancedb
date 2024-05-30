@@ -19,6 +19,7 @@ use neon::prelude::*;
 pub trait JsObjectExt {
     fn get_opt_u32(&self, cx: &mut FunctionContext, key: &str) -> Result<Option<u32>>;
     fn get_usize(&self, cx: &mut FunctionContext, key: &str) -> Result<usize>;
+    #[allow(dead_code)]
     fn get_opt_usize(&self, cx: &mut FunctionContext, key: &str) -> Result<Option<usize>>;
 }
 

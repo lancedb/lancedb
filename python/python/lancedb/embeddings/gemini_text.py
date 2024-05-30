@@ -90,7 +90,7 @@ class GeminiText(TextEmbeddingFunction):
     query_task_type: str = "retrieval_query"
     source_task_type: str = "retrieval_document"
 
-    if PYDANTIC_VERSION < (2, 0):  # Pydantic 1.x compat
+    if PYDANTIC_VERSION.major < 2:  # Pydantic 1.x compat
 
         class Config:
             keep_untouched = (cached_property,)

@@ -285,7 +285,7 @@ class RemoteDBConnection(DBConnection):
         self._client.post(
             f"/v1/table/{name}/drop/",
         )
-        self._table_cache.pop(name)
+        self._table_cache.pop(name, default=None)
 
     @override
     def rename_table(self, cur_name: str, new_name: str):
@@ -300,9 +300,9 @@ class RemoteDBConnection(DBConnection):
         """
         self._client.post(
             f"/v1/table/{cur_name}/rename/",
-            json={"new_table_name": new_name},
+            data={"new_table_name": new_name},
         )
-        self._table_cache.pop(cur_name)
+        self._table_cache.pop(cur_name, default=None)
         self._table_cache[new_name] = True
 
     async def close(self):

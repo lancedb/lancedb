@@ -35,13 +35,13 @@ from typing import (
 import numpy as np
 import pyarrow as pa
 import pydantic
-import semver
+from packaging.version import Version
 
-PYDANTIC_VERSION = semver.Version.parse(pydantic.__version__)
+PYDANTIC_VERSION = Version(pydantic.__version__)
 try:
     from pydantic_core import CoreSchema, core_schema
 except ImportError:
-    if PYDANTIC_VERSION >= (2,):
+    if PYDANTIC_VERSION.major >= 2:
         raise
 
 if TYPE_CHECKING:
@@ -144,7 +144,7 @@ def Vector(
                 raise TypeError("A list of numbers or numpy.ndarray is needed")
             return cls(v)
 
-        if PYDANTIC_VERSION < (2, 0):
+        if PYDANTIC_VERSION.major < 2:
 
             @classmethod
             def __modify_schema__(cls, field_schema: Dict[str, Any]):

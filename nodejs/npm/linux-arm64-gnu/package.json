@@ -1,21 +1,13 @@
 {
-  "name": "@lancedb/lancedb-linux-arm64-gnu",
-  "version": "0.4.18",
-  "os": [
-    "linux"
-  ],
-  "cpu": [
-    "arm64"
-  ],
-  "main": "lancedb.linux-arm64-gnu.node",
-  "files": [
-    "lancedb.linux-arm64-gnu.node"
-  ],
-  "license": "Apache 2.0",
-  "engines": {
-    "node": ">= 18"
-  },
-  "libc": [
-    "glibc"
-  ]
+	"name": "@lancedb/lancedb-linux-arm64-gnu",
+	"version": "0.5.1",
+	"os": ["linux"],
+	"cpu": ["arm64"],
+	"main": "lancedb.linux-arm64-gnu.node",
+	"files": ["lancedb.linux-arm64-gnu.node"],
+	"license": "Apache 2.0",
+	"engines": {
+		"node": ">= 18"
+	},
+	"libc": ["glibc"]
 }
