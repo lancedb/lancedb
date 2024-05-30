@@ -42,6 +42,8 @@ import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
 import { sanitizeField, sanitizeSchema, sanitizeType } from "./sanitize";
 export * from "apache-arrow";
 
+export type IntoVector = Float32Array | Float64Array | number[];
+
 export function isArrowTable(value: object): value is ArrowTable {
   if (value instanceof ArrowTable) return true;
   return "schema" in value && "batches" in value;

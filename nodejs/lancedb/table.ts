@@ -12,9 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { Data, Schema, fromDataToBuffer, tableFromIPC } from "./arrow";
+import {
+  Data,
+  IntoVector,
+  Schema,
+  fromDataToBuffer,
+  tableFromIPC,
+} from "./arrow";
+import { EmbeddingFunction } from "./embedding";
 
-import { getRegistry } from "./embedding/registry";
+import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
 import { IndexOptions } from "./indices";
 import {
   AddColumnsSql,
@@ -110,6 +117,14 @@ export class Table {
     return this.inner.display();
   }
 
+  async #getEmbeddingFunctions(): Promise<
+    Map<string, EmbeddingFunctionConfig>
+  > {
+    const schema = await this.schema();
+    const registry = getRegistry();
+    return registry.parseFunctions(schema.metadata);
+  }
+
   /** Get the schema of the table. */
   async schema(): Promise<Schema> {
     const schemaBuf = await this.inner.schema();
@@ -123,9 +138,7 @@ export class Table {
    */
   async add(data: Data, options?: Partial<AddDataOptions>): Promise<void> {
     const mode = options?.mode ?? "append";
-    const schema = await this.schema();
-    const registry = getRegistry();
-    const functions = registry.parseFunctions(schema.metadata);
+    const functions = await this.#getEmbeddingFunctions();
 
     const buffer = await fromDataToBuffer(
       data,
@@ -271,13 +284,45 @@ export class Table {
   }
 
   /**
+   * Create a search query to find the nearest neighbors
+   * of the given query vector
+   * @param {string} query - the query. This will be converted to a vector using the table's provided embedding function
+   * @throws {Error} If no embedding function is provided, an error will be thrown
+   */
+  search(query: string): Promise<VectorQuery>;
+  /**
+   * Create a search query to find the nearest neighbors
+   * of the given query vector
+   * @param {IntoVector} query - the query vector
+   */
+  search(query: IntoVector): VectorQuery;
+  search(query: string | IntoVector): Promise<VectorQuery> | VectorQuery {
+    if (typeof query !== "string") {
+      return this.vectorSearch(query);
+    } else {
+      return this.#getEmbeddingFunctions().then(async (functions) => {
+        // TODO: Support multiple embedding functions
+        const embeddingFunc: EmbeddingFunctionConfig | undefined = functions
+          .values()
+          .next().value;
+        if (!embeddingFunc) {
+          throw new Error("No embedding functions are defined in the table");
+        }
+        const embeddings =
+          await embeddingFunc.function.computeQueryEmbeddings(query);
+        return this.query().nearestTo(embeddings);
+      });
+    }
+  }
+
+  /**
    * Search the table with a given query vector.
    *
    * This is a convenience method for preparing a vector query and
    * is the same thing as calling `nearestTo` on the builder returned
    * by `query`.  @see {@link Query#nearestTo} for more details.
    */
-  vectorSearch(vector: unknown): VectorQuery {
+  vectorSearch(vector: IntoVector): VectorQuery {
     return this.query().nearestTo(vector);
   }
 

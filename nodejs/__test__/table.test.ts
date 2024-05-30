@@ -613,3 +613,86 @@ describe("when optimizing a dataset", () => {
     expect(stats.prune.oldVersionsRemoved).toBe(3);
   });
 });
+
+describe("table.search", () => {
+  let tmpDir: tmp.DirResult;
+  beforeEach(() => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+  });
+  afterEach(() => tmpDir.removeCallback());
+
+  test.only("can search using a string", async () => {
+    @register()
+    class MockEmbeddingFunction extends EmbeddingFunction<string> {
+      toJSON(): object {
+        return {};
+      }
+      ndims() {
+        return 1;
+      }
+      embeddingDataType(): Float {
+        return new Float32();
+      }
+
+      // Hardcoded embeddings for the sake of testing
+      async computeQueryEmbeddings(_data: string) {
+        switch (_data) {
+          case "greetings":
+            return [0.1];
+          case "farewell":
+            return [0.2];
+          default:
+            return null as never;
+        }
+      }
+
+      // Hardcoded embeddings for the sake of testing
+      async computeSourceEmbeddings(data: string[]) {
+        return data.map((s) => {
+          switch (s) {
+            case "hello world":
+              return [0.1];
+            case "goodbye world":
+              return [0.2];
+            default:
+              return null as never;
+          }
+        });
+      }
+    }
+
+    const func = new MockEmbeddingFunction();
+    const schema = LanceSchema({
+      text: func.sourceField(new Utf8()),
+      vector: func.vectorField(),
+    });
+    const db = await connect(tmpDir.name);
+    const data = [{ text: "hello world" }, { text: "goodbye world" }];
+    const table = await db.createTable("test", data, { schema });
+
+    const results = await table.search("greetings").then((r) => r.toArray());
+    expect(results[0].text).toBe(data[0].text);
+
+    const results2 = await table.search("farewell").then((r) => r.toArray());
+    expect(results2[0].text).toBe(data[1].text);
+  });
+
+  test.each([
+    [0.4, 0.5, 0.599], // number[]
+    Float32Array.of(0.4, 0.5, 0.599), // Float32Array
+    Float64Array.of(0.4, 0.5, 0.599), // Float64Array
+  ])("can search using vectorlike datatypes", async (vectorlike) => {
+    const db = await connect(tmpDir.name);
+    const data = [
+      { text: "hello world", vector: [0.1, 0.2, 0.3] },
+      { text: "goodbye world", vector: [0.4, 0.5, 0.6] },
+    ];
+    const table = await db.createTable("test", data);
+
+    // biome-ignore lint/suspicious/noExplicitAny: test
+    const results: any[] = await table.search(vectorlike).toArray();
+
+    expect(results.length).toBe(2);
+    expect(results[0].text).toBe(data[1].text);
+  });
+});
