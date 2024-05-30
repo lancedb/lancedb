@@ -1,6 +1,6 @@
 {
   "name": "@lancedb/lancedb",
-  "version": "0.5.1-beta.0",
+  "version": "0.5.1",
   "main": "dist/index.js",
   "exports": {
     ".": "./dist/index.js",
