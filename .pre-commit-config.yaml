@@ -22,12 +22,14 @@ repos:
 - repo: local
   hooks:
   - id: fmt
-    name: fmt
+    name: cargo fmt
     description: Format files with cargo fmt.
     entry: cargo fmt
     language: system
     types: [rust]
     args: [--]
+    files: '.*\.rs$'
+
   - id: cargo-check
     name: cargo check
     description: Check the package for errors.
@@ -36,12 +38,14 @@ repos:
     types: [rust]
     pass_filenames: false
     args: [--all]
+    files: '.*\.rs$'
 
   - id: clippy
-    name: clippy
+    name: cargo clippy
     description: Lint rust sources
     entry: cargo clippy
     language: system
     args: [--workspace, --, -D, warnings]
     types: [rust]
     pass_filenames: false
+    files: '.*\.rs$'
