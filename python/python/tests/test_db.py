@@ -297,6 +297,13 @@ async def test_close(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_context_manager(tmp_path):
+    with await lancedb.connect_async(tmp_path) as db:
+        assert db.is_open()
+    assert not db.is_open()
+
+
+@pytest.mark.asyncio
 async def test_create_mode_async(tmp_path):
     db = await lancedb.connect_async(tmp_path)
     data = pd.DataFrame(

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { Table as ArrowTable, RecordBatch, tableFromIPC } from "apache-arrow";
+import { Table as ArrowTable, RecordBatch, tableFromIPC } from "./arrow";
 import { type IvfPqOptions } from "./indices";
 import {
   RecordBatchIterator as NativeBatchIterator,
@@ -170,6 +170,7 @@ export class QueryBase<
   /** Collect the results as an array of objects. */
   async toArray(): Promise<unknown[]> {
     const tbl = await this.toArrow();
+
     // eslint-disable-next-line @typescript-eslint/no-unsafe-return
     return tbl.toArray();
   }

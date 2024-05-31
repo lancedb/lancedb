@@ -14,7 +14,7 @@ repos:
   hooks:
     - id: local-biome-check
       name: biome check
-      entry: npx biome check
+      entry: npx @biomejs/biome check --config-path nodejs/biome.json nodejs/
       language: system
       types: [text]
       files: "nodejs/.*"

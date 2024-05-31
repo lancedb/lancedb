@@ -15,8 +15,8 @@
 use arrow_ipc::writer::FileWriter;
 use lancedb::ipc::ipc_file_to_batches;
 use lancedb::table::{
-    AddDataMode, ColumnAlteration as LanceColumnAlteration, NewColumnTransform,
-    Table as LanceDbTable,
+    AddDataMode, ColumnAlteration as LanceColumnAlteration, Duration, NewColumnTransform,
+    OptimizeAction, OptimizeOptions, Table as LanceDbTable,
 };
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
@@ -264,6 +264,60 @@ impl Table {
     }
 
     #[napi]
+    pub async fn optimize(&self, older_than_ms: Option<i64>) -> napi::Result<OptimizeStats> {
+        let inner = self.inner_ref()?;
+
+        let older_than = if let Some(ms) = older_than_ms {
+            if ms == i64::MIN {
+                return Err(napi::Error::from_reason(format!(
+                    "older_than_ms can not be {}",
+                    i32::MIN,
+                )));
+            }
+            Duration::try_milliseconds(ms)
+        } else {
+            None
+        };
+
+        let compaction_stats = inner
+            .optimize(OptimizeAction::Compact {
+                options: lancedb::table::CompactionOptions::default(),
+                remap_options: None,
+            })
+            .await
+            .default_error()?
+            .compaction
+            .unwrap();
+        let prune_stats = inner
+            .optimize(OptimizeAction::Prune {
+                older_than,
+                delete_unverified: None,
+            })
+            .await
+            .default_error()?
+            .prune
+            .unwrap();
+        inner
+            .optimize(lancedb::table::OptimizeAction::Index(
+                OptimizeOptions::default(),
+            ))
+            .await
+            .default_error()?;
+        Ok(OptimizeStats {
+            compaction: CompactionStats {
+                files_added: compaction_stats.files_added as i64,
+                files_removed: compaction_stats.files_removed as i64,
+                fragments_added: compaction_stats.fragments_added as i64,
+                fragments_removed: compaction_stats.fragments_removed as i64,
+            },
+            prune: RemovalStats {
+                bytes_removed: prune_stats.bytes_removed as i64,
+                old_versions_removed: prune_stats.old_versions as i64,
+            },
+        })
+    }
+
+    #[napi]
     pub async fn list_indices(&self) -> napi::Result<Vec<IndexConfig>> {
         Ok(self
             .inner_ref()?
@@ -296,6 +350,40 @@ impl From<lancedb::index::IndexConfig> for IndexConfig {
             columns: value.columns,
         }
     }
+}
+
+/// Statistics about a compaction operation.
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct CompactionStats {
+    /// The number of fragments removed
+    pub fragments_removed: i64,
+    /// The number of new, compacted fragments added
+    pub fragments_added: i64,
+    /// The number of data files removed
+    pub files_removed: i64,
+    /// The number of new, compacted data files added
+    pub files_added: i64,
+}
+
+/// Statistics about a cleanup operation
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct RemovalStats {
+    /// The number of bytes removed
+    pub bytes_removed: i64,
+    /// The number of old versions removed
+    pub old_versions_removed: i64,
+}
+
+/// Statistics about an optimize operation
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct OptimizeStats {
+    /// Statistics about the compaction operation
+    pub compaction: CompactionStats,
+    /// Statistics about the removal operation
+    pub prune: RemovalStats,
 }
 
 ///  A definition of a column alteration. The alteration changes the column at

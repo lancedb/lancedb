@@ -31,6 +31,7 @@ import {
   Schema,
   Struct,
   type Table,
+  Type,
   Utf8,
   tableFromIPC,
 } from "apache-arrow";
@@ -51,7 +52,12 @@ import {
   makeArrowTable,
   makeEmptyTable,
 } from "../lancedb/arrow";
-import { type EmbeddingFunction } from "../lancedb/embedding/embedding_function";
+import {
+  EmbeddingFunction,
+  FieldOptions,
+  FunctionOptions,
+} from "../lancedb/embedding/embedding_function";
+import { EmbeddingFunctionConfig } from "../lancedb/embedding/registry";
 
 // biome-ignore lint/suspicious/noExplicitAny: skip
 function sampleRecords(): Array<Record<string, any>> {
@@ -280,23 +286,46 @@ describe("The function makeArrowTable", function () {
   });
 });
 
-class DummyEmbedding implements EmbeddingFunction<string> {
-  public readonly sourceColumn = "string";
-  public readonly embeddingDimension = 2;
-  public readonly embeddingDataType = new Float16();
+class DummyEmbedding extends EmbeddingFunction<string> {
+  toJSON(): Partial<FunctionOptions> {
+    return {};
+  }
 
-  async embed(data: string[]): Promise<number[][]> {
+  async computeSourceEmbeddings(data: string[]): Promise<number[][]> {
     return data.map(() => [0.0, 0.0]);
+  }
+
+  ndims(): number {
+    return 2;
+  }
+
+  embeddingDataType() {
+    return new Float16();
   }
 }
 
-class DummyEmbeddingWithNoDimension implements EmbeddingFunction<string> {
-  public readonly sourceColumn = "string";
+class DummyEmbeddingWithNoDimension extends EmbeddingFunction<string> {
+  toJSON(): Partial<FunctionOptions> {
+    return {};
+  }
 
-  async embed(data: string[]): Promise<number[][]> {
+  embeddingDataType(): Float {
+    return new Float16();
+  }
+
+  async computeSourceEmbeddings(data: string[]): Promise<number[][]> {
     return data.map(() => [0.0, 0.0]);
   }
 }
+const dummyEmbeddingConfig: EmbeddingFunctionConfig = {
+  sourceColumn: "string",
+  function: new DummyEmbedding(),
+};
+
+const dummyEmbeddingConfigWithNoDimension: EmbeddingFunctionConfig = {
+  sourceColumn: "string",
+  function: new DummyEmbeddingWithNoDimension(),
+};
 
 describe("convertToTable", function () {
   it("will infer data types correctly", async function () {
@@ -331,7 +360,7 @@ describe("convertToTable", function () {
 
   it("will apply embeddings", async function () {
     const records = sampleRecords();
-    const table = await convertToTable(records, new DummyEmbedding());
+    const table = await convertToTable(records, dummyEmbeddingConfig);
     expect(DataType.isFixedSizeList(table.getChild("vector")?.type)).toBe(true);
     expect(table.getChild("vector")?.type.children[0].type.toString()).toEqual(
       new Float16().toString(),
@@ -340,7 +369,7 @@ describe("convertToTable", function () {
 
   it("will fail if missing the embedding source column", async function () {
     await expect(
-      convertToTable([{ id: 1 }], new DummyEmbedding()),
+      convertToTable([{ id: 1 }], dummyEmbeddingConfig),
     ).rejects.toThrow("'string' was not present");
   });
 
@@ -351,7 +380,7 @@ describe("convertToTable", function () {
     const table = makeEmptyTable(schema);
 
     // If the embedding specifies the dimension we are fine
-    await fromTableToBuffer(table, new DummyEmbedding());
+    await fromTableToBuffer(table, dummyEmbeddingConfig);
 
     // We can also supply a schema and should be ok
     const schemaWithEmbedding = new Schema([
@@ -364,13 +393,13 @@ describe("convertToTable", function () {
     ]);
     await fromTableToBuffer(
       table,
-      new DummyEmbeddingWithNoDimension(),
+      dummyEmbeddingConfigWithNoDimension,
       schemaWithEmbedding,
     );
 
     // Otherwise we will get an error
     await expect(
-      fromTableToBuffer(table, new DummyEmbeddingWithNoDimension()),
+      fromTableToBuffer(table, dummyEmbeddingConfigWithNoDimension),
     ).rejects.toThrow("does not specify `embeddingDimension`");
   });
 
@@ -383,7 +412,7 @@ describe("convertToTable", function () {
         false,
       ),
     ]);
-    const table = await convertToTable([], new DummyEmbedding(), { schema });
+    const table = await convertToTable([], dummyEmbeddingConfig, { schema });
     expect(DataType.isFixedSizeList(table.getChild("vector")?.type)).toBe(true);
     expect(table.getChild("vector")?.type.children[0].type.toString()).toEqual(
       new Float16().toString(),
@@ -393,16 +422,17 @@ describe("convertToTable", function () {
   it("will complain if embeddings present but schema missing embedding column", async function () {
     const schema = new Schema([new Field("string", new Utf8(), false)]);
     await expect(
-      convertToTable([], new DummyEmbedding(), { schema }),
+      convertToTable([], dummyEmbeddingConfig, { schema }),
     ).rejects.toThrow("column vector was missing");
   });
 
   it("will provide a nice error if run twice", async function () {
     const records = sampleRecords();
-    const table = await convertToTable(records, new DummyEmbedding());
+    const table = await convertToTable(records, dummyEmbeddingConfig);
+
     // fromTableToBuffer will try and apply the embeddings again
     await expect(
-      fromTableToBuffer(table, new DummyEmbedding()),
+      fromTableToBuffer(table, dummyEmbeddingConfig),
     ).rejects.toThrow("already existed");
   });
 });

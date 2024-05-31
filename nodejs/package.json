@@ -1,8 +1,12 @@
 {
   "name": "@lancedb/lancedb",
-  "version": "0.4.20",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
+  "version": "0.5.1",
+  "main": "dist/index.js",
+  "exports": {
+    ".": "./dist/index.js",
+    "./embedding": "./dist/embedding/index.js"
+  },
+  "types": "dist/index.d.ts",
   "napi": {
     "name": "lancedb",
     "triples": {
@@ -62,6 +66,7 @@
   },
   "dependencies": {
     "apache-arrow": "^15.0.0",
-    "openai": "^4.29.2"
+    "openai": "^4.29.2",
+    "reflect-metadata": "^0.2.2"
   }
 }

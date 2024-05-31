@@ -302,7 +302,7 @@ impl EmbeddingFunction for MockEmbed {
     fn dest_type(&self) -> Result<Cow<DataType>> {
         Ok(Cow::Borrowed(&self.dest_type))
     }
-    fn embed(&self, source: Arc<dyn Array>) -> Result<Arc<dyn Array>> {
+    fn compute_source_embeddings(&self, source: Arc<dyn Array>) -> Result<Arc<dyn Array>> {
         // We can't use the FixedSizeListBuilder here because it always adds a null bitmap
         // and we want to explicitly work with non-nullable arrays.
         let len = source.len();
@@ -316,5 +316,9 @@ impl EmbeddingFunction for MockEmbed {
         );
 
         Ok(Arc::new(arr))
+    }
+
+    fn compute_query_embeddings(&self, input: Arc<dyn Array>) -> Result<Arc<dyn Array>> {
+        unimplemented!()
     }
 }

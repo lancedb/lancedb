@@ -1,8 +1,9 @@
 name: NPM Publish
 
 on:
-  release:
-    types: [published]
+  push:
+    tags:
+      - 'v*'
 
 jobs:
   node:
@@ -274,9 +275,15 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.LANCEDB_NPM_REGISTRY_TOKEN }}
         run: |
+          # Tag beta as "preview" instead of default "latest". See lancedb 
+          # npm publish step for more info.
+          if [[ $GITHUB_REF =~ refs/tags/v(.*)-beta.* ]]; then
+            PUBLISH_ARGS="--tag preview"
+          fi
+
           mv */*.tgz .
           for filename in *.tgz; do
-            npm publish $filename
+            npm publish $PUBLISH_ARGS $filename
           done
 
   release-nodejs:
@@ -316,11 +323,23 @@ jobs:
       - name: Publish to NPM
         env:
           NODE_AUTH_TOKEN: ${{ secrets.LANCEDB_NPM_REGISTRY_TOKEN }}
-        run: npm publish --access public
+        # By default, things are published to the latest tag. This is what is 
+        # installed by default if the user does not specify a version. This is
+        # good for stable releases, but for pre-releases, we want to publish to
+        # the "preview" tag so they can install with `npm install lancedb@preview`.
+        # See: https://medium.com/@mbostock/prereleases-and-npm-e778fc5e2420
+        run: |
+          if [[ $GITHUB_REF =~ refs/tags/v(.*)-beta.* ]]; then
+            npm publish --access public --tag preview
+          else
+            npm publish --access public
+          fi
 
   update-package-lock:
     needs: [release]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -331,11 +350,13 @@ jobs:
           lfs: true
       - uses: ./.github/workflows/update_package_lock
         with:
-          github_token: ${{ secrets.LANCEDB_RELEASE_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
 
   update-package-lock-nodejs:
     needs: [release-nodejs]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -346,4 +367,70 @@ jobs:
           lfs: true
       - uses: ./.github/workflows/update_package_lock_nodejs
         with:
-          github_token: ${{ secrets.LANCEDB_RELEASE_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+  
+  gh-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: true
+      - name: Extract version
+        id: extract_version
+        env:
+          GITHUB_REF: ${{ github.ref }}
+        run: |
+          set -e
+          echo "Extracting tag and version from $GITHUB_REF"
+          if [[ $GITHUB_REF =~ refs/tags/v(.*) ]]; then
+            VERSION=${BASH_REMATCH[1]}
+            TAG=v$VERSION
+            echo "tag=$TAG" >> $GITHUB_OUTPUT
+            echo "version=$VERSION" >> $GITHUB_OUTPUT
+          else
+            echo "Failed to extract version from $GITHUB_REF"
+            exit 1
+          fi
+          echo "Extracted version $VERSION from $GITHUB_REF"
+          if [[ $VERSION =~ beta ]]; then
+            echo "This is a beta release"
+
+            # Get last release (that is not this one)
+            FROM_TAG=$(git tag --sort='version:refname' \
+              | grep ^v \
+              | grep -vF "$TAG" \
+              | python ci/semver_sort.py v \
+              | tail -n 1)
+          else
+            echo "This is a stable release"
+            # Get last stable tag (ignore betas)
+            FROM_TAG=$(git tag --sort='version:refname' \
+              | grep ^v \
+              | grep -vF "$TAG" \
+              | grep -v beta \
+              | python ci/semver_sort.py v \
+              | tail -n 1)
+          fi
+          echo "Found from tag $FROM_TAG"
+          echo "from_tag=$FROM_TAG" >> $GITHUB_OUTPUT
+      - name: Create Release Notes
+        id: release_notes
+        uses: mikepenz/release-changelog-builder-action@v4
+        with:
+          configuration: .github/release_notes.json
+          toTag: ${{ steps.extract_version.outputs.tag }}
+          fromTag: ${{ steps.extract_version.outputs.from_tag }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create GH release
+        uses: softprops/action-gh-release@v2
+        with:
+          prerelease: ${{ contains('beta', github.ref) }}
+          tag_name: ${{ steps.extract_version.outputs.tag }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          generate_release_notes: false
+          name: Node/Rust LanceDB v${{ steps.extract_version.outputs.version }}
+          body: ${{ steps.release_notes.outputs.changelog }}
