@@ -417,6 +417,35 @@ class LanceQueryBuilder(ABC):
         self._with_row_id = with_row_id
         return self
 
+    def explain_plan(self, verbose: Optional[bool] = False) -> str:
+        """Return the execution plan for this query.
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> db = lancedb.connect("./.lancedb")
+        >>> table = db.open_table("my_table")
+        >>> query = [100, 100]
+        >>> plan = table.search(query).explain_plan(True)
+        >>> print(plan)
+
+        Parameters
+        ----------
+        verbose : bool, default False
+            Use a verbose output format.
+
+        Returns
+        -------
+        plan : str
+        """
+        ds = self._table.to_lance()
+        return ds.scanner(
+            nearest={
+                "column": self._vector_column,
+                "q": self._query,
+            },
+        ).explain_plan(verbose)
+
 
 class LanceVectorQueryBuilder(LanceQueryBuilder):
     """
