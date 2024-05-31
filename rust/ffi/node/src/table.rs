@@ -324,7 +324,7 @@ impl JsTable {
         rt.spawn(async move {
             let stats = table
                 .optimize(OptimizeAction::Prune {
-                    older_than,
+                    older_than: Some(older_than),
                     delete_unverified,
                 })
                 .await;

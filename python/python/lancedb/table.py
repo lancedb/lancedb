@@ -58,7 +58,7 @@ if TYPE_CHECKING:
     import PIL
     from lance.dataset import CleanupStats, ReaderLike
 
-    from ._lancedb import Table as LanceDBTable
+    from ._lancedb import Table as LanceDBTable, OptimizeStats
     from .db import LanceDBConnection
     from .index import BTree, IndexConfig, IvfPq
 
@@ -2376,6 +2376,49 @@ class AsyncTable:
         out state and the read_consistency_interval, if any, will apply.
         """
         await self._inner.restore()
+
+    async def optimize(
+        self, *, cleanup_older_than: Optional[timedelta] = None
+    ) -> OptimizeStats:
+        """
+        Optimize the on-disk data and indices for better performance.
+
+        Modeled after ``VACUUM`` in PostgreSQL.
+
+        Optimization covers three operations:
+
+         * Compaction: Merges small files into larger ones
+         * Prune: Removes old versions of the dataset
+         * Index: Optimizes the indices, adding new data to existing indices
+
+        Parameters
+        ----------
+        cleanup_older_than: timedelta, optional default 7 days
+            All files belonging to versions older than this will be removed.  Set
+            to 0 days to remove all versions except the latest.  The latest version
+            is never removed.
+
+        Experimental API
+        ----------------
+
+        The optimization process is undergoing active development and may change.
+        Our goal with these changes is to improve the performance of optimization and
+        reduce the complexity.
+
+        That being said, it is essential today to run optimize if you want the best
+        performance.  It should be stable and safe to use in production, but it our
+        hope that the API may be simplified (or not even need to be called) in the
+        future.
+
+        The frequency an application shoudl call optimize is based on the frequency of
+        data modifications.  If data is frequently added, deleted, or updated then
+        optimize should be run frequently.  A good rule of thumb is to run optimize if
+        you have added or modified 100,000 or more records or run more than 20 data
+        modification operations.
+        """
+        if cleanup_older_than is not None:
+            cleanup_older_than = round(cleanup_older_than.total_seconds() * 1000)
+        return await self._inner.optimize(cleanup_older_than)
 
     async def list_indices(self) -> IndexConfig:
         """

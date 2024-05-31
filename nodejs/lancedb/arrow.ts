@@ -13,28 +13,124 @@
 // limitations under the License.
 
 import {
+  Table as ArrowTable,
+  Binary,
+  DataType,
   Field,
-  makeBuilder,
+  FixedSizeBinary,
+  FixedSizeList,
+  Float,
+  Float32,
+  Int,
+  LargeBinary,
+  List,
+  Null,
+  RecordBatch,
   RecordBatchFileWriter,
+  RecordBatchStreamWriter,
+  Schema,
+  Struct,
   Utf8,
   type Vector,
-  FixedSizeList,
-  vectorFromArray,
-  type Schema,
-  Table as ArrowTable,
-  RecordBatchStreamWriter,
-  List,
-  RecordBatch,
+  makeBuilder,
   makeData,
-  Struct,
-  type Float,
-  DataType,
-  Binary,
-  Float32,
   type makeTable,
+  vectorFromArray,
 } from "apache-arrow";
 import { type EmbeddingFunction } from "./embedding/embedding_function";
-import { sanitizeSchema } from "./sanitize";
+import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
+import { sanitizeField, sanitizeSchema, sanitizeType } from "./sanitize";
+export * from "apache-arrow";
+
+export function isArrowTable(value: object): value is ArrowTable {
+  if (value instanceof ArrowTable) return true;
+  return "schema" in value && "batches" in value;
+}
+
+export function isDataType(value: unknown): value is DataType {
+  return (
+    value instanceof DataType ||
+    DataType.isNull(value) ||
+    DataType.isInt(value) ||
+    DataType.isFloat(value) ||
+    DataType.isBinary(value) ||
+    DataType.isLargeBinary(value) ||
+    DataType.isUtf8(value) ||
+    DataType.isLargeUtf8(value) ||
+    DataType.isBool(value) ||
+    DataType.isDecimal(value) ||
+    DataType.isDate(value) ||
+    DataType.isTime(value) ||
+    DataType.isTimestamp(value) ||
+    DataType.isInterval(value) ||
+    DataType.isDuration(value) ||
+    DataType.isList(value) ||
+    DataType.isStruct(value) ||
+    DataType.isUnion(value) ||
+    DataType.isFixedSizeBinary(value) ||
+    DataType.isFixedSizeList(value) ||
+    DataType.isMap(value) ||
+    DataType.isDictionary(value)
+  );
+}
+export function isNull(value: unknown): value is Null {
+  return value instanceof Null || DataType.isNull(value);
+}
+export function isInt(value: unknown): value is Int {
+  return value instanceof Int || DataType.isInt(value);
+}
+export function isFloat(value: unknown): value is Float {
+  return value instanceof Float || DataType.isFloat(value);
+}
+export function isBinary(value: unknown): value is Binary {
+  return value instanceof Binary || DataType.isBinary(value);
+}
+export function isLargeBinary(value: unknown): value is LargeBinary {
+  return value instanceof LargeBinary || DataType.isLargeBinary(value);
+}
+export function isUtf8(value: unknown): value is Utf8 {
+  return value instanceof Utf8 || DataType.isUtf8(value);
+}
+export function isLargeUtf8(value: unknown): value is Utf8 {
+  return value instanceof Utf8 || DataType.isLargeUtf8(value);
+}
+export function isBool(value: unknown): value is Utf8 {
+  return value instanceof Utf8 || DataType.isBool(value);
+}
+export function isDecimal(value: unknown): value is Utf8 {
+  return value instanceof Utf8 || DataType.isDecimal(value);
+}
+export function isDate(value: unknown): value is Utf8 {
+  return value instanceof Utf8 || DataType.isDate(value);
+}
+export function isTime(value: unknown): value is Utf8 {
+  return value instanceof Utf8 || DataType.isTime(value);
+}
+export function isTimestamp(value: unknown): value is Utf8 {
+  return value instanceof Utf8 || DataType.isTimestamp(value);
+}
+export function isInterval(value: unknown): value is Utf8 {
+  return value instanceof Utf8 || DataType.isInterval(value);
+}
+export function isDuration(value: unknown): value is Utf8 {
+  return value instanceof Utf8 || DataType.isDuration(value);
+}
+export function isList(value: unknown): value is List {
+  return value instanceof List || DataType.isList(value);
+}
+export function isStruct(value: unknown): value is Struct {
+  return value instanceof Struct || DataType.isStruct(value);
+}
+export function isUnion(value: unknown): value is Struct {
+  return value instanceof Struct || DataType.isUnion(value);
+}
+export function isFixedSizeBinary(value: unknown): value is FixedSizeBinary {
+  return value instanceof FixedSizeBinary || DataType.isFixedSizeBinary(value);
+}
+
+export function isFixedSizeList(value: unknown): value is FixedSizeList {
+  return value instanceof FixedSizeList || DataType.isFixedSizeList(value);
+}
 
 /** Data type accepted by NodeJS SDK */
 export type Data = Record<string, unknown>[] | ArrowTable;
@@ -85,6 +181,7 @@ export class MakeArrowTableOptions {
   vectorColumns: Record<string, VectorColumnOptions> = {
     vector: new VectorColumnOptions(),
   };
+  embeddings?: EmbeddingFunction<unknown>;
 
   /**
    * If true then string columns will be encoded with dictionary encoding
@@ -197,6 +294,7 @@ export class MakeArrowTableOptions {
 export function makeArrowTable(
   data: Array<Record<string, unknown>>,
   options?: Partial<MakeArrowTableOptions>,
+  metadata?: Map<string, string>,
 ): ArrowTable {
   if (
     data.length === 0 &&
@@ -208,6 +306,7 @@ export function makeArrowTable(
   const opt = new MakeArrowTableOptions(options !== undefined ? options : {});
   if (opt.schema !== undefined && opt.schema !== null) {
     opt.schema = sanitizeSchema(opt.schema);
+    opt.schema = validateSchemaEmbeddings(opt.schema, data, opt.embeddings);
   }
   const columns: Record<string, Vector> = {};
   // TODO: sample dataset to find missing columns
@@ -287,21 +386,42 @@ export function makeArrowTable(
     // then patch the schema of the batches so we can use
     // `new ArrowTable(schema, batches)` which does not do any schema inference
     const firstTable = new ArrowTable(columns);
-    // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
     const batchesFixed = firstTable.batches.map(
       (batch) => new RecordBatch(opt.schema!, batch.data),
     );
-    return new ArrowTable(opt.schema, batchesFixed);
-  } else {
-    return new ArrowTable(columns);
+    let schema: Schema;
+    if (metadata !== undefined) {
+      let schemaMetadata = opt.schema.metadata;
+      if (schemaMetadata.size === 0) {
+        schemaMetadata = metadata;
+      } else {
+        for (const [key, entry] of schemaMetadata.entries()) {
+          schemaMetadata.set(key, entry);
+        }
+      }
+
+      schema = new Schema(opt.schema.fields, schemaMetadata);
+    } else {
+      schema = opt.schema;
+    }
+    return new ArrowTable(schema, batchesFixed);
   }
+  const tbl = new ArrowTable(columns);
+  if (metadata !== undefined) {
+    // biome-ignore lint/suspicious/noExplicitAny: <explanation>
+    (<any>tbl.schema).metadata = metadata;
+  }
+  return tbl;
 }
 
 /**
  * Create an empty Arrow table with the provided schema
  */
-export function makeEmptyTable(schema: Schema): ArrowTable {
-  return makeArrowTable([], { schema });
+export function makeEmptyTable(
+  schema: Schema,
+  metadata?: Map<string, string>,
+): ArrowTable {
+  return makeArrowTable([], { schema }, metadata);
 }
 
 /**
@@ -313,7 +433,7 @@ function makeListVector(lists: unknown[][]): Vector<unknown> {
     throw Error("Cannot infer list vector from empty array or empty list");
   }
   const sampleList = lists[0];
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // biome-ignore lint/suspicious/noExplicitAny: skip
   let inferredType: any;
   try {
     const sampleVector = makeVector(sampleList);
@@ -337,7 +457,7 @@ function makeVector(
   values: unknown[],
   type?: DataType,
   stringAsDictionary?: boolean,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // biome-ignore lint/suspicious/noExplicitAny: skip
 ): Vector<any> {
   if (type !== undefined) {
     // No need for inference, let Arrow create it
@@ -373,13 +493,75 @@ function makeVector(
   }
 }
 
+/** Helper function to apply embeddings from metadata to an input table */
+async function applyEmbeddingsFromMetadata(
+  table: ArrowTable,
+  schema: Schema,
+): Promise<ArrowTable> {
+  const registry = getRegistry();
+  const functions = registry.parseFunctions(schema.metadata);
+
+  const columns = Object.fromEntries(
+    table.schema.fields.map((field) => [
+      field.name,
+      table.getChild(field.name)!,
+    ]),
+  );
+
+  for (const functionEntry of functions.values()) {
+    const sourceColumn = columns[functionEntry.sourceColumn];
+    const destColumn = functionEntry.vectorColumn ?? "vector";
+    if (sourceColumn === undefined) {
+      throw new Error(
+        `Cannot apply embedding function because the source column '${functionEntry.sourceColumn}' was not present in the data`,
+      );
+    }
+    if (columns[destColumn] !== undefined) {
+      throw new Error(
+        `Attempt to apply embeddings to table failed because column ${destColumn} already existed`,
+      );
+    }
+    if (table.batches.length > 1) {
+      throw new Error(
+        "Internal error: `makeArrowTable` unexpectedly created a table with more than one batch",
+      );
+    }
+    const values = sourceColumn.toArray();
+
+    const vectors =
+      await functionEntry.function.computeSourceEmbeddings(values);
+    if (vectors.length !== values.length) {
+      throw new Error(
+        "Embedding function did not return an embedding for each input element",
+      );
+    }
+    let destType: DataType;
+    const dtype = schema.fields.find((f) => f.name === destColumn)!.type;
+    if (isFixedSizeList(dtype)) {
+      destType = sanitizeType(dtype);
+    } else {
+      throw new Error(
+        "Expected FixedSizeList as datatype for vector field, instead got: " +
+          dtype,
+      );
+    }
+
+    const vector = makeVector(vectors, destType);
+    columns[destColumn] = vector;
+  }
+  const newTable = new ArrowTable(columns);
+  return alignTable(newTable, schema);
+}
+
 /** Helper function to apply embeddings to an input table */
 async function applyEmbeddings<T>(
   table: ArrowTable,
-  embeddings?: EmbeddingFunction<T>,
+  embeddings?: EmbeddingFunctionConfig,
   schema?: Schema,
 ): Promise<ArrowTable> {
-  if (embeddings == null) {
+  if (schema?.metadata.has("embedding_functions")) {
+    return applyEmbeddingsFromMetadata(table, schema!);
+  } else if (embeddings == null || embeddings === undefined) {
     return table;
   }
 
@@ -397,8 +579,9 @@ async function applyEmbeddings<T>(
   const newColumns = Object.fromEntries(colEntries);
 
   const sourceColumn = newColumns[embeddings.sourceColumn];
-  const destColumn = embeddings.destColumn ?? "vector";
-  const innerDestType = embeddings.embeddingDataType ?? new Float32();
+  const destColumn = embeddings.vectorColumn ?? "vector";
+  const innerDestType =
+    embeddings.function.embeddingDataType() ?? new Float32();
   if (sourceColumn === undefined) {
     throw new Error(
       `Cannot apply embedding function because the source column '${embeddings.sourceColumn}' was not present in the data`,
@@ -412,11 +595,9 @@ async function applyEmbeddings<T>(
       // if we call convertToTable with 0 records and a schema that includes the embedding
       return table;
     }
-    if (embeddings.embeddingDimension !== undefined) {
-      const destType = newVectorType(
-        embeddings.embeddingDimension,
-        innerDestType,
-      );
+    const dimensions = embeddings.function.ndims();
+    if (dimensions !== undefined) {
+      const destType = newVectorType(dimensions, innerDestType);
       newColumns[destColumn] = makeVector([], destType);
     } else if (schema != null) {
       const destField = schema.fields.find((f) => f.name === destColumn);
@@ -444,7 +625,9 @@ async function applyEmbeddings<T>(
       );
     }
     const values = sourceColumn.toArray();
-    const vectors = await embeddings.embed(values as T[]);
+    const vectors = await embeddings.function.computeSourceEmbeddings(
+      values as T[],
+    );
     if (vectors.length !== values.length) {
       throw new Error(
         "Embedding function did not return an embedding for each input element",
@@ -484,9 +667,9 @@ async function applyEmbeddings<T>(
  * embedding columns.  If no schema is provded then embedding columns will
  * be placed at the end of the table, after all of the input columns.
  */
-export async function convertToTable<T>(
+export async function convertToTable(
   data: Array<Record<string, unknown>>,
-  embeddings?: EmbeddingFunction<T>,
+  embeddings?: EmbeddingFunctionConfig,
   makeTableOptions?: Partial<MakeArrowTableOptions>,
 ): Promise<ArrowTable> {
   const table = makeArrowTable(data, makeTableOptions);
@@ -494,13 +677,13 @@ export async function convertToTable<T>(
 }
 
 /** Creates the Arrow Type for a Vector column with dimension `dim` */
-function newVectorType<T extends Float>(
+export function newVectorType<T extends Float>(
   dim: number,
   innerType: T,
 ): FixedSizeList<T> {
   // in Lance we always default to have the elements nullable, so we need to set it to true
   // otherwise we often get schema mismatches because the stored data always has schema with nullable elements
-  const children = new Field<T>("item", innerType, true);
+  const children = new Field("item", <T>sanitizeType(innerType), true);
   return new FixedSizeList(dim, children);
 }
 
@@ -511,9 +694,9 @@ function newVectorType<T extends Float>(
  *
  * `schema` is required if data is empty
  */
-export async function fromRecordsToBuffer<T>(
+export async function fromRecordsToBuffer(
   data: Array<Record<string, unknown>>,
-  embeddings?: EmbeddingFunction<T>,
+  embeddings?: EmbeddingFunctionConfig,
   schema?: Schema,
 ): Promise<Buffer> {
   if (schema !== undefined && schema !== null) {
@@ -531,9 +714,9 @@ export async function fromRecordsToBuffer<T>(
  *
  * `schema` is required if data is empty
  */
-export async function fromRecordsToStreamBuffer<T>(
+export async function fromRecordsToStreamBuffer(
   data: Array<Record<string, unknown>>,
-  embeddings?: EmbeddingFunction<T>,
+  embeddings?: EmbeddingFunctionConfig,
   schema?: Schema,
 ): Promise<Buffer> {
   if (schema !== undefined && schema !== null) {
@@ -552,9 +735,9 @@ export async function fromRecordsToStreamBuffer<T>(
  *
  * `schema` is required if the table is empty
  */
-export async function fromTableToBuffer<T>(
+export async function fromTableToBuffer(
   table: ArrowTable,
-  embeddings?: EmbeddingFunction<T>,
+  embeddings?: EmbeddingFunctionConfig,
   schema?: Schema,
 ): Promise<Buffer> {
   if (schema !== undefined && schema !== null) {
@@ -573,19 +756,19 @@ export async function fromTableToBuffer<T>(
  *
  * `schema` is required if the table is empty
  */
-export async function fromDataToBuffer<T>(
+export async function fromDataToBuffer(
   data: Data,
-  embeddings?: EmbeddingFunction<T>,
+  embeddings?: EmbeddingFunctionConfig,
   schema?: Schema,
 ): Promise<Buffer> {
   if (schema !== undefined && schema !== null) {
     schema = sanitizeSchema(schema);
   }
-  if (data instanceof ArrowTable) {
+  if (isArrowTable(data)) {
     return fromTableToBuffer(data, embeddings, schema);
   } else {
-    const table = await convertToTable(data);
-    return fromTableToBuffer(table, embeddings, schema);
+    const table = await convertToTable(data, embeddings, { schema });
+    return fromTableToBuffer(table);
   }
 }
 
@@ -597,9 +780,9 @@ export async function fromDataToBuffer<T>(
  *
  * `schema` is required if the table is empty
  */
-export async function fromTableToStreamBuffer<T>(
+export async function fromTableToStreamBuffer(
   table: ArrowTable,
-  embeddings?: EmbeddingFunction<T>,
+  embeddings?: EmbeddingFunctionConfig,
   schema?: Schema,
 ): Promise<Buffer> {
   const tableWithEmbeddings = await applyEmbeddings(table, embeddings, schema);
@@ -647,4 +830,55 @@ function alignTable(table: ArrowTable, schema: Schema): ArrowTable {
  */
 export function createEmptyTable(schema: Schema): ArrowTable {
   return new ArrowTable(sanitizeSchema(schema));
+}
+
+function validateSchemaEmbeddings(
+  schema: Schema,
+  data: Array<Record<string, unknown>>,
+  embeddings: EmbeddingFunction<unknown> | undefined,
+) {
+  const fields = [];
+  const missingEmbeddingFields = [];
+
+  // First we check if the field is a `FixedSizeList`
+  // Then we check if the data contains the field
+  // if it does not, we add it to the list of missing embedding fields
+  // Finally, we check if those missing embedding fields are `this._embeddings`
+  // if they are not, we throw an error
+  for (let field of schema.fields) {
+    if (isFixedSizeList(field.type)) {
+      field = sanitizeField(field);
+
+      if (data.length !== 0 && data?.[0]?.[field.name] === undefined) {
+        if (schema.metadata.has("embedding_functions")) {
+          const embeddings = JSON.parse(
+            schema.metadata.get("embedding_functions")!,
+          );
+          if (
+            // biome-ignore lint/suspicious/noExplicitAny: we don't know the type of `f`
+            embeddings.find((f: any) => f["vectorColumn"] === field.name) ===
+            undefined
+          ) {
+            missingEmbeddingFields.push(field);
+          }
+        } else {
+          missingEmbeddingFields.push(field);
+        }
+      } else {
+        fields.push(field);
+      }
+    } else {
+      fields.push(field);
+    }
+  }
+
+  if (missingEmbeddingFields.length > 0 && embeddings === undefined) {
+    throw new Error(
+      `Table has embeddings: "${missingEmbeddingFields
+        .map((f) => f.name)
+        .join(",")}", but no embedding function was provided`,
+    );
+  }
+
+  return new Schema(fields, schema.metadata);
 }

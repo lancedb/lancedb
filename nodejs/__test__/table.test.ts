@@ -16,23 +16,34 @@ import * as fs from "fs";
 import * as path from "path";
 import * as tmp from "tmp";
 
-import { Table, connect } from "../dist";
-import {
-  Schema,
-  Field,
-  Float32,
-  Int32,
-  FixedSizeList,
-  Int64,
-  Float64,
-} from "apache-arrow";
-import { makeArrowTable } from "../dist/arrow";
-import { Index } from "../dist/indices";
+import * as arrow from "apache-arrow";
+import * as arrowOld from "apache-arrow-old";
 
-describe("Given a table", () => {
+import { Table, connect } from "../lancedb";
+import {
+  Field,
+  FixedSizeList,
+  Float,
+  Float32,
+  Float64,
+  Int32,
+  Int64,
+  Schema,
+  Utf8,
+  makeArrowTable,
+} from "../lancedb/arrow";
+import { EmbeddingFunction, LanceSchema } from "../lancedb/embedding";
+import { getRegistry, register } from "../lancedb/embedding/registry";
+import { Index } from "../lancedb/indices";
+
+// biome-ignore lint/suspicious/noExplicitAny: <explanation>
+describe.each([arrow, arrowOld])("Given a table", (arrow: any) => {
   let tmpDir: tmp.DirResult;
   let table: Table;
-  const schema = new Schema([new Field("id", new Float64(), true)]);
+
+  const schema = new arrow.Schema([
+    new arrow.Field("id", new arrow.Float64(), true),
+  ]);
   beforeEach(async () => {
     tmpDir = tmp.dirSync({ unsafeCleanup: true });
     const conn = await connect(tmpDir.name);
@@ -417,5 +428,188 @@ describe("when dealing with versioning", () => {
     await expect(table.restore()).rejects.toThrow(
       "checkout before running restore",
     );
+  });
+});
+
+describe("embedding functions", () => {
+  let tmpDir: tmp.DirResult;
+  beforeEach(() => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+  });
+  afterEach(() => tmpDir.removeCallback());
+
+  it("should be able to create a table with an embedding function", async () => {
+    class MockEmbeddingFunction extends EmbeddingFunction<string> {
+      toJSON(): object {
+        return {};
+      }
+      ndims() {
+        return 3;
+      }
+      embeddingDataType(): Float {
+        return new Float32();
+      }
+      async computeQueryEmbeddings(_data: string) {
+        return [1, 2, 3];
+      }
+      async computeSourceEmbeddings(data: string[]) {
+        return Array.from({ length: data.length }).fill([
+          1, 2, 3,
+        ]) as number[][];
+      }
+    }
+    const func = new MockEmbeddingFunction();
+    const db = await connect(tmpDir.name);
+    const table = await db.createTable(
+      "test",
+      [
+        { id: 1, text: "hello" },
+        { id: 2, text: "world" },
+      ],
+      {
+        embeddingFunction: {
+          function: func,
+          sourceColumn: "text",
+        },
+      },
+    );
+    // biome-ignore lint/suspicious/noExplicitAny: test
+    const arr = (await table.query().toArray()) as any;
+    expect(arr[0].vector).toBeDefined();
+
+    // we round trip through JSON to make sure the vector properly gets converted to an array
+    // otherwise it'll be a TypedArray or Vector
+    const vector0 = JSON.parse(JSON.stringify(arr[0].vector));
+    expect(vector0).toEqual([1, 2, 3]);
+  });
+
+  it("should be able to create an empty table with an embedding function", async () => {
+    @register()
+    class MockEmbeddingFunction extends EmbeddingFunction<string> {
+      toJSON(): object {
+        return {};
+      }
+      ndims() {
+        return 3;
+      }
+      embeddingDataType(): Float {
+        return new Float32();
+      }
+      async computeQueryEmbeddings(_data: string) {
+        return [1, 2, 3];
+      }
+      async computeSourceEmbeddings(data: string[]) {
+        return Array.from({ length: data.length }).fill([
+          1, 2, 3,
+        ]) as number[][];
+      }
+    }
+    const schema = new Schema([
+      new Field("text", new Utf8(), true),
+      new Field(
+        "vector",
+        new FixedSizeList(3, new Field("item", new Float32(), true)),
+        true,
+      ),
+    ]);
+
+    const func = new MockEmbeddingFunction();
+    const db = await connect(tmpDir.name);
+    const table = await db.createEmptyTable("test", schema, {
+      embeddingFunction: {
+        function: func,
+        sourceColumn: "text",
+      },
+    });
+    const outSchema = await table.schema();
+    expect(outSchema.metadata.get("embedding_functions")).toBeDefined();
+    await table.add([{ text: "hello world" }]);
+
+    // biome-ignore lint/suspicious/noExplicitAny: test
+    const arr = (await table.query().toArray()) as any;
+    expect(arr[0].vector).toBeDefined();
+
+    // we round trip through JSON to make sure the vector properly gets converted to an array
+    // otherwise it'll be a TypedArray or Vector
+    const vector0 = JSON.parse(JSON.stringify(arr[0].vector));
+    expect(vector0).toEqual([1, 2, 3]);
+  });
+  it("should error when appending to a table with an unregistered embedding function", async () => {
+    @register("mock")
+    class MockEmbeddingFunction extends EmbeddingFunction<string> {
+      toJSON(): object {
+        return {};
+      }
+      ndims() {
+        return 3;
+      }
+      embeddingDataType(): Float {
+        return new Float32();
+      }
+      async computeQueryEmbeddings(_data: string) {
+        return [1, 2, 3];
+      }
+      async computeSourceEmbeddings(data: string[]) {
+        return Array.from({ length: data.length }).fill([
+          1, 2, 3,
+        ]) as number[][];
+      }
+    }
+    const func = getRegistry().get<MockEmbeddingFunction>("mock")!.create();
+
+    const schema = LanceSchema({
+      id: new arrow.Float64(),
+      text: func.sourceField(new Utf8()),
+      vector: func.vectorField(),
+    });
+
+    const db = await connect(tmpDir.name);
+    await db.createTable(
+      "test",
+      [
+        { id: 1, text: "hello" },
+        { id: 2, text: "world" },
+      ],
+      {
+        schema,
+      },
+    );
+
+    getRegistry().reset();
+    const db2 = await connect(tmpDir.name);
+
+    const tbl = await db2.openTable("test");
+
+    expect(tbl.add([{ id: 3, text: "hello" }])).rejects.toThrow(
+      `Function "mock" not found in registry`,
+    );
+  });
+});
+
+describe("when optimizing a dataset", () => {
+  let tmpDir: tmp.DirResult;
+  let table: Table;
+  beforeEach(async () => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+    const con = await connect(tmpDir.name);
+    table = await con.createTable("vectors", [{ id: 1 }]);
+    await table.add([{ id: 2 }]);
+  });
+  afterEach(() => {
+    tmpDir.removeCallback();
+  });
+
+  it("compacts files", async () => {
+    const stats = await table.optimize();
+    expect(stats.compaction.filesAdded).toBe(1);
+    expect(stats.compaction.filesRemoved).toBe(2);
+    expect(stats.compaction.fragmentsAdded).toBe(1);
+    expect(stats.compaction.fragmentsRemoved).toBe(2);
+  });
+
+  it("cleanups old versions", async () => {
+    const stats = await table.optimize({ cleanupOlderThan: new Date() });
+    expect(stats.prune.bytesRemoved).toBeGreaterThan(0);
+    expect(stats.prune.oldVersionsRemoved).toBe(3);
   });
 });

@@ -73,8 +73,10 @@ class BedRockText(TextEmbeddingFunction):
     assumed_role: Union[str, None] = None
     profile_name: Union[str, None] = None
     role_session_name: str = "lancedb-embeddings"
+    source_input_type: str = "search_document"
+    query_input_type: str = "search_query"
 
-    if PYDANTIC_VERSION < (2, 0):  # Pydantic 1.x compat
+    if PYDANTIC_VERSION.major < 2:  # Pydantic 1.x compat
 
         class Config:
             keep_untouched = (cached_property,)
@@ -87,21 +89,29 @@ class BedRockText(TextEmbeddingFunction):
         # TODO: fix hardcoding
         if self.name == "amazon.titan-embed-text-v1":
             return 1536
-        elif self.name in {"cohere.embed-english-v3", "cohere.embed-multilingual-v3"}:
+        elif self.name in [
+            "amazon.titan-embed-text-v2:0",
+            "cohere.embed-english-v3",
+            "cohere.embed-multilingual-v3",
+        ]:
+            # TODO: "amazon.titan-embed-text-v2:0" model supports dynamic ndims
             return 1024
         else:
-            raise ValueError(f"Unknown model name: {self.name}")
+            raise ValueError(f"Model {self.name} not supported")
 
     def compute_query_embeddings(
         self, query: str, *args, **kwargs
     ) -> List[List[float]]:
-        return self.compute_source_embeddings(query)
+        return self.compute_source_embeddings(query, input_type=self.query_input_type)
 
     def compute_source_embeddings(
         self, texts: TEXT, *args, **kwargs
     ) -> List[List[float]]:
         texts = self.sanitize_input(texts)
-        return self.generate_embeddings(texts)
+        # assume source input type if not passed by `compute_query_embeddings`
+        kwargs["input_type"] = kwargs.get("input_type") or self.source_input_type
+
+        return self.generate_embeddings(texts, **kwargs)
 
     def generate_embeddings(
         self, texts: Union[List[str], np.ndarray], *args, **kwargs
@@ -121,11 +131,11 @@ class BedRockText(TextEmbeddingFunction):
         """
         results = []
         for text in texts:
-            response = self._generate_embedding(text)
+            response = self._generate_embedding(text, *args, **kwargs)
             results.append(response)
         return results
 
-    def _generate_embedding(self, text: str) -> List[float]:
+    def _generate_embedding(self, text: str, *args, **kwargs) -> List[float]:
         """
         Get the embeddings for the given texts
 
@@ -141,14 +151,12 @@ class BedRockText(TextEmbeddingFunction):
         """
         # format input body for provider
         provider = self.name.split(".")[0]
-        _model_kwargs = {}
-        input_body = {**_model_kwargs}
+        input_body = {**kwargs}
         if provider == "cohere":
-            if "input_type" not in input_body.keys():
-                input_body["input_type"] = "search_document"
             input_body["texts"] = [text]
         else:
             # includes common provider == "amazon"
+            input_body.pop("input_type", None)
             input_body["inputText"] = text
         body = json.dumps(input_body)
 

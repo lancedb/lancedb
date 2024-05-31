@@ -20,65 +20,65 @@
 // comes from the exact same library instance.  This is not always the case
 // and so we must sanitize the input to ensure that it is compatible.
 
+import type { IntBitWidth, TKeys, TimeBitWidth } from "apache-arrow/type";
 import {
-  Field,
-  Utf8,
-  FixedSizeBinary,
-  FixedSizeList,
-  Schema,
-  List,
-  Struct,
-  Float,
+  Binary,
   Bool,
+  DataType,
+  DateDay,
+  DateMillisecond,
+  type DateUnit,
   Date_,
   Decimal,
-  DataType,
+  DenseUnion,
   Dictionary,
-  Binary,
-  Float32,
-  Interval,
-  Map_,
   Duration,
-  Union,
-  Time,
-  Timestamp,
-  Type,
-  Null,
+  DurationMicrosecond,
+  DurationMillisecond,
+  DurationNanosecond,
+  DurationSecond,
+  Field,
+  FixedSizeBinary,
+  FixedSizeList,
+  Float,
+  Float16,
+  Float32,
+  Float64,
   Int,
-  type Precision,
-  type DateUnit,
   Int8,
   Int16,
   Int32,
   Int64,
+  Interval,
+  IntervalDayTime,
+  IntervalYearMonth,
+  List,
+  Map_,
+  Null,
+  type Precision,
+  Schema,
+  SparseUnion,
+  Struct,
+  Time,
+  TimeMicrosecond,
+  TimeMillisecond,
+  TimeNanosecond,
+  TimeSecond,
+  Timestamp,
+  TimestampMicrosecond,
+  TimestampMillisecond,
+  TimestampNanosecond,
+  TimestampSecond,
+  Type,
   Uint8,
   Uint16,
   Uint32,
   Uint64,
-  Float16,
-  Float64,
-  DateDay,
-  DateMillisecond,
-  DenseUnion,
-  SparseUnion,
-  TimeNanosecond,
-  TimeMicrosecond,
-  TimeMillisecond,
-  TimeSecond,
-  TimestampNanosecond,
-  TimestampMicrosecond,
-  TimestampMillisecond,
-  TimestampSecond,
-  IntervalDayTime,
-  IntervalYearMonth,
-  DurationNanosecond,
-  DurationMicrosecond,
-  DurationMillisecond,
-  DurationSecond,
-} from "apache-arrow";
-import type { IntBitWidth, TKeys, TimeBitWidth } from "apache-arrow/type";
+  Union,
+  Utf8,
+} from "./arrow";
 
-function sanitizeMetadata(
+export function sanitizeMetadata(
   metadataLike?: unknown,
 ): Map<string, string> | undefined {
   if (metadataLike === undefined || metadataLike === null) {
@@ -97,7 +97,7 @@ function sanitizeMetadata(
   return metadataLike as Map<string, string>;
 }
 
-function sanitizeInt(typeLike: object) {
+export function sanitizeInt(typeLike: object) {
   if (
     !("bitWidth" in typeLike) ||
     typeof typeLike.bitWidth !== "number" ||
@@ -111,14 +111,14 @@ function sanitizeInt(typeLike: object) {
   return new Int(typeLike.isSigned, typeLike.bitWidth as IntBitWidth);
 }
 
-function sanitizeFloat(typeLike: object) {
+export function sanitizeFloat(typeLike: object) {
   if (!("precision" in typeLike) || typeof typeLike.precision !== "number") {
     throw Error("Expected a Float Type to have a `precision` property");
   }
   return new Float(typeLike.precision as Precision);
 }
 
-function sanitizeDecimal(typeLike: object) {
+export function sanitizeDecimal(typeLike: object) {
   if (
     !("scale" in typeLike) ||
     typeof typeLike.scale !== "number" ||
@@ -134,14 +134,14 @@ function sanitizeDecimal(typeLike: object) {
   return new Decimal(typeLike.scale, typeLike.precision, typeLike.bitWidth);
 }
 
-function sanitizeDate(typeLike: object) {
+export function sanitizeDate(typeLike: object) {
   if (!("unit" in typeLike) || typeof typeLike.unit !== "number") {
     throw Error("Expected a Date type to have a `unit` property");
   }
   return new Date_(typeLike.unit as DateUnit);
 }
 
-function sanitizeTime(typeLike: object) {
+export function sanitizeTime(typeLike: object) {
   if (
     !("unit" in typeLike) ||
     typeof typeLike.unit !== "number" ||
@@ -155,7 +155,7 @@ function sanitizeTime(typeLike: object) {
   return new Time(typeLike.unit, typeLike.bitWidth as TimeBitWidth);
 }
 
-function sanitizeTimestamp(typeLike: object) {
+export function sanitizeTimestamp(typeLike: object) {
   if (!("unit" in typeLike) || typeof typeLike.unit !== "number") {
     throw Error("Expected a Timestamp type to have a `unit` property");
   }
@@ -166,7 +166,7 @@ function sanitizeTimestamp(typeLike: object) {
   return new Timestamp(typeLike.unit, timezone);
 }
 
-function sanitizeTypedTimestamp(
+export function sanitizeTypedTimestamp(
   typeLike: object,
   // eslint-disable-next-line @typescript-eslint/naming-convention
   Datatype:
@@ -182,14 +182,14 @@ function sanitizeTypedTimestamp(
   return new Datatype(timezone);
 }
 
-function sanitizeInterval(typeLike: object) {
+export function sanitizeInterval(typeLike: object) {
   if (!("unit" in typeLike) || typeof typeLike.unit !== "number") {
     throw Error("Expected an Interval type to have a `unit` property");
   }
   return new Interval(typeLike.unit);
 }
 
-function sanitizeList(typeLike: object) {
+export function sanitizeList(typeLike: object) {
   if (!("children" in typeLike) || !Array.isArray(typeLike.children)) {
     throw Error(
       "Expected a List type to have an array-like `children` property",
@@ -201,7 +201,7 @@ function sanitizeList(typeLike: object) {
   return new List(sanitizeField(typeLike.children[0]));
 }
 
-function sanitizeStruct(typeLike: object) {
+export function sanitizeStruct(typeLike: object) {
   if (!("children" in typeLike) || !Array.isArray(typeLike.children)) {
     throw Error(
       "Expected a Struct type to have an array-like `children` property",
@@ -210,7 +210,7 @@ function sanitizeStruct(typeLike: object) {
   return new Struct(typeLike.children.map((child) => sanitizeField(child)));
 }
 
-function sanitizeUnion(typeLike: object) {
+export function sanitizeUnion(typeLike: object) {
   if (
     !("typeIds" in typeLike) ||
     !("mode" in typeLike) ||
@@ -228,13 +228,13 @@ function sanitizeUnion(typeLike: object) {
 
   return new Union(
     typeLike.mode,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // biome-ignore lint/suspicious/noExplicitAny: skip
     typeLike.typeIds as any,
     typeLike.children.map((child) => sanitizeField(child)),
   );
 }
 
-function sanitizeTypedUnion(
+export function sanitizeTypedUnion(
   typeLike: object,
   // eslint-disable-next-line @typescript-eslint/naming-convention
   UnionType: typeof DenseUnion | typeof SparseUnion,
@@ -256,7 +256,7 @@ function sanitizeTypedUnion(
   );
 }
 
-function sanitizeFixedSizeBinary(typeLike: object) {
+export function sanitizeFixedSizeBinary(typeLike: object) {
   if (!("byteWidth" in typeLike) || typeof typeLike.byteWidth !== "number") {
     throw Error(
       "Expected a FixedSizeBinary type to have a `byteWidth` property",
@@ -265,7 +265,7 @@ function sanitizeFixedSizeBinary(typeLike: object) {
   return new FixedSizeBinary(typeLike.byteWidth);
 }
 
-function sanitizeFixedSizeList(typeLike: object) {
+export function sanitizeFixedSizeList(typeLike: object) {
   if (!("listSize" in typeLike) || typeof typeLike.listSize !== "number") {
     throw Error("Expected a FixedSizeList type to have a `listSize` property");
   }
@@ -283,7 +283,7 @@ function sanitizeFixedSizeList(typeLike: object) {
   );
 }
 
-function sanitizeMap(typeLike: object) {
+export function sanitizeMap(typeLike: object) {
   if (!("children" in typeLike) || !Array.isArray(typeLike.children)) {
     throw Error(
       "Expected a Map type to have an array-like `children` property",
@@ -294,20 +294,20 @@ function sanitizeMap(typeLike: object) {
   }
 
   return new Map_(
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // biome-ignore lint/suspicious/noExplicitAny: skip
     typeLike.children.map((field) => sanitizeField(field)) as any,
     typeLike.keysSorted,
   );
 }
 
-function sanitizeDuration(typeLike: object) {
+export function sanitizeDuration(typeLike: object) {
   if (!("unit" in typeLike) || typeof typeLike.unit !== "number") {
     throw Error("Expected a Duration type to have a `unit` property");
   }
   return new Duration(typeLike.unit);
 }
 
-function sanitizeDictionary(typeLike: object) {
+export function sanitizeDictionary(typeLike: object) {
   if (!("id" in typeLike) || typeof typeLike.id !== "number") {
     throw Error("Expected a Dictionary type to have an `id` property");
   }
@@ -328,8 +328,8 @@ function sanitizeDictionary(typeLike: object) {
   );
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function sanitizeType(typeLike: unknown): DataType<any> {
+// biome-ignore lint/suspicious/noExplicitAny: skip
+export function sanitizeType(typeLike: unknown): DataType<any> {
   if (typeof typeLike !== "object" || typeLike === null) {
     throw Error("Expected a Type but object was null/undefined");
   }
@@ -449,7 +449,7 @@ function sanitizeType(typeLike: unknown): DataType<any> {
   }
 }
 
-function sanitizeField(fieldLike: unknown): Field {
+export function sanitizeField(fieldLike: unknown): Field {
   if (fieldLike instanceof Field) {
     return fieldLike;
   }

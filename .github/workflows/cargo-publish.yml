@@ -1,8 +1,12 @@
 name: Cargo Publish
 
 on:
-  release:
-    types: [ published ]
+  push:
+    tags-ignore:
+      # We don't publish pre-releases for Rust. Crates.io is just a source
+      # distribution, so we don't need to publish pre-releases.
+      - 'v*-beta*'
+      - '*-v*' # for example, python-vX.Y.Z
 
 env:
   # This env var is used by Swatinem/rust-cache@v2 for the cache
