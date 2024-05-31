@@ -953,55 +953,6 @@ class LanceTable(Table):
         """Get the current version of the table"""
         return self._dataset.version
 
-    def explain_plan(
-        self, 
-        query: Union[VEC, str, "PIL.Image.Image", Tuple] = None,
-        *,
-        vector_column_name: Optional[str] = "vector",
-        k: Optional[int] = 1,
-        verbose: Optional[bool] = False
-        ) -> str:
-        """Return the execution plan for this query.
-
-        Examples
-        --------
-        >>> import lancedb
-        >>> db = lancedb.connect("./.lancedb")
-        >>> table = db.open_table("my_table")
-        >>> query = [100, 100]
-        >>> plan = table.explain_plan(query, k=5, verbose=True)
-        >>> print(plan)
-
-        Parameters
-        ----------
-        query: list/np.ndarray/str/PIL.Image.Image, default None
-            The targetted vector to search for.
-        vector_column_name: str, optional
-            The name of the vector column to search.
-
-            The vector column needs to be a pyarrow fixed size list type
-
-            - If not specified then the vector column is inferred from
-            the table schema
-
-            - If the table has multiple vector columns then the *vector_column_name*
-            needs to be specified. Otherwise, an error is raised.
-        k : int, default 1
-            Top k results to query
-        verbose : bool, default False
-            Use a verbose output format.
-
-        Returns
-        -------
-        plan : str
-        """
-        query_dict = {
-            "column": vector_column_name,
-            "q": query,
-            "k": k,
-        }
-        return self._dataset.scanner(nearest=query_dict).explain_plan(verbose)
-
     def checkout(self, version: int):
         """Checkout a version of the table. This is an in-place operation.
 
