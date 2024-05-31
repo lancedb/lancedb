@@ -989,5 +989,18 @@ mod tests {
         let first_batch = results.next().await.unwrap().unwrap();
         assert_eq!(first_batch.num_rows(), 1);
         assert!(results.next().await.is_none());
+
+        // query with wrong vector dimension
+        let error_result = table
+            .vector_search(&[1.0, 2.0, 3.0])
+            .unwrap()
+            .limit(1)
+            .execute()
+            .await;
+        assert!(error_result
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("No vector column found to match with the query vector dimension: 3"));
     }
 }
