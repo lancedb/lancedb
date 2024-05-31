@@ -23,6 +23,7 @@ use arrow::datatypes::Float32Type;
 use arrow_array::{RecordBatchIterator, RecordBatchReader};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use async_trait::async_trait;
+use datafusion_physical_plan::ExecutionPlan;
 use lance::dataset::builder::DatasetBuilder;
 use lance::dataset::cleanup::RemovalStats;
 use lance::dataset::optimize::{compact_files, CompactionMetrics, IndexRemapperOptions};
@@ -35,6 +36,7 @@ use lance::dataset::{
 };
 use lance::dataset::{MergeInsertBuilder as LanceMergeInsertBuilder, WhenNotMatchedBySource};
 use lance::io::WrappingObjectStore;
+use lance_datafusion::exec::execute_plan;
 use lance_index::vector::hnsw::builder::HnswBuildParams;
 use lance_index::vector::ivf::IvfBuildParams;
 use lance_index::vector::pq::PQBuildParams;
@@ -366,6 +368,11 @@ pub(crate) trait TableInternal: std::fmt::Display + std::fmt::Debug + Send + Syn
     async fn schema(&self) -> Result<SchemaRef>;
     /// Count the number of rows in this table.
     async fn count_rows(&self, filter: Option<String>) -> Result<usize>;
+    async fn create_plan(
+        &self,
+        query: &VectorQuery,
+        options: QueryExecutionOptions,
+    ) -> Result<Arc<dyn ExecutionPlan>>;
     async fn plain_query(
         &self,
         query: &Query,
@@ -1479,79 +1486,11 @@ impl NativeTable {
         query: &VectorQuery,
         options: QueryExecutionOptions,
     ) -> Result<DatasetRecordBatchStream> {
-        let ds_ref = self.dataset.get().await?;
-        let mut scanner: Scanner = ds_ref.scan();
-
-        if let Some(query_vector) = query.query_vector.as_ref() {
-            // If there is a vector query, default to limit=10 if unspecified
-            let column = if let Some(col) = query.column.as_ref() {
-                col.clone()
-            } else {
-                // Infer a vector column with the same dimension of the query vector.
-                let arrow_schema = Schema::from(ds_ref.schema());
-                default_vector_column(&arrow_schema, Some(query_vector.len() as i32))?
-            };
-            let field = ds_ref.schema().field(&column).ok_or(Error::Schema {
-                message: format!("Column {} not found in dataset schema", column),
-            })?;
-            if let arrow_schema::DataType::FixedSizeList(f, dim) = field.data_type() {
-                if !f.data_type().is_floating() {
-                    return Err(Error::InvalidInput {
-                        message: format!(
-                            "The data type of the vector column '{}' is not a floating point type",
-                            column
-                        ),
-                    });
-                }
-                if dim != query_vector.len() as i32 {
-                    return Err(Error::InvalidInput {
-                        message: format!(
-                            "The dimension of the query vector does not match with the dimension of the vector column '{}': \
-                                query dim={}, expected vector dim={}",
-                            column,
-                            query_vector.len(),
-                            dim,
-                        ),
-                    });
-                }
-            }
-            let query_vector = query_vector.as_primitive::<Float32Type>();
-            scanner.nearest(
-                &column,
-                query_vector,
-                query.base.limit.unwrap_or(DEFAULT_TOP_K),
-            )?;
-        } else {
-            // If there is no vector query, it's ok to not have a limit
-            scanner.limit(query.base.limit.map(|limit| limit as i64), None)?;
-        }
-        scanner.nprobs(query.nprobes);
-        scanner.use_index(query.use_index);
-        scanner.prefilter(query.prefilter);
-        scanner.batch_size(options.max_batch_length as usize);
-
-        match &query.base.select {
-            Select::Columns(select) => {
-                scanner.project(select.as_slice())?;
-            }
-            Select::Dynamic(select_with_transform) => {
-                scanner.project_with_transform(select_with_transform.as_slice())?;
-            }
-            Select::All => { /* Do nothing */ }
-        }
-
-        if let Some(filter) = &query.base.filter {
-            scanner.filter(filter)?;
-        }
-
-        if let Some(refine_factor) = query.refine_factor {
-            scanner.refine(refine_factor);
-        }
-
-        if let Some(distance_type) = query.distance_type {
-            scanner.distance_metric(distance_type.into());
-        }
-        Ok(scanner.try_into_stream().await?)
+        let plan = self.create_plan(query, options).await?;
+        Ok(DatasetRecordBatchStream::new(execute_plan(
+            plan,
+            Default::default(),
+        )?))
     }
 }
 
@@ -1701,6 +1640,86 @@ impl TableInternal for NativeTable {
         let ds = operation.execute().await?;
         self.dataset.set_latest(ds.as_ref().clone()).await;
         Ok(())
+    }
+
+    async fn create_plan(
+        &self,
+        query: &VectorQuery,
+        options: QueryExecutionOptions,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        let ds_ref = self.dataset.get().await?;
+        let mut scanner: Scanner = ds_ref.scan();
+
+        if let Some(query_vector) = query.query_vector.as_ref() {
+            // If there is a vector query, default to limit=10 if unspecified
+            let column = if let Some(col) = query.column.as_ref() {
+                col.clone()
+            } else {
+                // Infer a vector column with the same dimension of the query vector.
+                let arrow_schema = Schema::from(ds_ref.schema());
+                default_vector_column(&arrow_schema, Some(query_vector.len() as i32))?
+            };
+            let field = ds_ref.schema().field(&column).ok_or(Error::Schema {
+                message: format!("Column {} not found in dataset schema", column),
+            })?;
+            if let arrow_schema::DataType::FixedSizeList(f, dim) = field.data_type() {
+                if !f.data_type().is_floating() {
+                    return Err(Error::InvalidInput {
+                        message: format!(
+                            "The data type of the vector column '{}' is not a floating point type",
+                            column
+                        ),
+                    });
+                }
+                if dim != query_vector.len() as i32 {
+                    return Err(Error::InvalidInput {
+                        message: format!(
+                            "The dimension of the query vector does not match with the dimension of the vector column '{}': \
+                                query dim={}, expected vector dim={}",
+                            column,
+                            query_vector.len(),
+                            dim,
+                        ),
+                    });
+                }
+            }
+            let query_vector = query_vector.as_primitive::<Float32Type>();
+            scanner.nearest(
+                &column,
+                query_vector,
+                query.base.limit.unwrap_or(DEFAULT_TOP_K),
+            )?;
+        } else {
+            // If there is no vector query, it's ok to not have a limit
+            scanner.limit(query.base.limit.map(|limit| limit as i64), None)?;
+        }
+        scanner.nprobs(query.nprobes);
+        scanner.use_index(query.use_index);
+        scanner.prefilter(query.prefilter);
+        scanner.batch_size(options.max_batch_length as usize);
+
+        match &query.base.select {
+            Select::Columns(select) => {
+                scanner.project(select.as_slice())?;
+            }
+            Select::Dynamic(select_with_transform) => {
+                scanner.project_with_transform(select_with_transform.as_slice())?;
+            }
+            Select::All => { /* Do nothing */ }
+        }
+
+        if let Some(filter) = &query.base.filter {
+            scanner.filter(filter)?;
+        }
+
+        if let Some(refine_factor) = query.refine_factor {
+            scanner.refine(refine_factor);
+        }
+
+        if let Some(distance_type) = query.distance_type {
+            scanner.distance_metric(distance_type.into());
+        }
+        Ok(scanner.create_plan().await?)
     }
 
     async fn plain_query(
