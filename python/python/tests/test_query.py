@@ -333,3 +333,9 @@ async def test_query_to_pandas_async(table_async: AsyncTable):
 
     df = await table_async.query().where("id < 0").to_pandas()
     assert df.shape == (0, 4)
+
+
+def test_explain_plan(table):
+    q = LanceVectorQueryBuilder(table, [0, 0], "vector")
+    plan = q.explain_plan(verbose=True)
+    assert "KNN" in plan
