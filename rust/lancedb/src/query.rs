@@ -428,7 +428,10 @@ impl Default for QueryExecutionOptions {
 /// There are various kinds of queries but they all return results
 /// in the same way.
 pub trait ExecutableQuery {
-    /// Return the Datafusion execution plan.
+    /// Return the Datafusion [ExecutionPlan].
+    ///
+    /// The caller can further to optimize the plan or execute it.
+    ///
     fn create_plan(
         &self,
         options: QueryExecutionOptions,
@@ -993,6 +996,30 @@ mod tests {
         while let Some(batch) = results.next().await {
             assert!(batch.unwrap().num_rows() <= 10);
         }
+    }
+
+    fn assert_plan_exists(plan: &Arc<dyn ExecutionPlan>, name: &str) -> bool {
+        if plan.name() == name {
+            return true;
+        }
+        plan.children()
+            .iter()
+            .any(|child| assert_plan_exists(child, name))
+    }
+
+    #[tokio::test]
+    async fn test_create_execute_plan() {
+        let tmp_dir = tempdir().unwrap();
+        let table = make_test_table(&tmp_dir).await;
+        let plan = table
+            .query()
+            .nearest_to(vec![0.1, 0.2, 0.3, 0.4])
+            .unwrap()
+            .create_plan(QueryExecutionOptions::default())
+            .await
+            .unwrap();
+        assert_plan_exists(&plan, "KNNFlatSearch");
+        assert_plan_exists(&plan, "ProjectionExec");
     }
 
     #[tokio::test]

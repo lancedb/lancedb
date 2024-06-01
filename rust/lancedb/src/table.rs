@@ -378,11 +378,6 @@ pub(crate) trait TableInternal: std::fmt::Display + std::fmt::Debug + Send + Syn
         query: &Query,
         options: QueryExecutionOptions,
     ) -> Result<DatasetRecordBatchStream>;
-    async fn vector_query(
-        &self,
-        query: &VectorQuery,
-        options: QueryExecutionOptions,
-    ) -> Result<DatasetRecordBatchStream>;
     async fn add(
         &self,
         add: AddDataBuilder<NoData>,
@@ -1729,14 +1724,6 @@ impl TableInternal for NativeTable {
     ) -> Result<DatasetRecordBatchStream> {
         self.generic_query(&query.clone().into_vector(), options)
             .await
-    }
-
-    async fn vector_query(
-        &self,
-        query: &VectorQuery,
-        options: QueryExecutionOptions,
-    ) -> Result<DatasetRecordBatchStream> {
-        self.generic_query(query, options).await
     }
 
     async fn merge_insert(
