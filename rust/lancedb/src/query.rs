@@ -430,7 +430,7 @@ impl Default for QueryExecutionOptions {
 pub trait ExecutableQuery {
     /// Return the Datafusion [ExecutionPlan].
     ///
-    /// The caller can further to optimize the plan or execute it.
+    /// The caller can further optimize the plan or execute it.
     ///
     fn create_plan(
         &self,
