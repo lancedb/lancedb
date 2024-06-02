@@ -14,8 +14,9 @@
 
 package com.lancedb.lancedb.spark;
 
-import com.lancedb.lancedb.spark.internal.LanceFragmentInternalRowScanner;
+import com.lancedb.lancedb.spark.internal.LanceFragmentColumnarBatchScanner;
 import org.apache.spark.sql.catalyst.InternalRow;
+import org.apache.spark.sql.vectorized.ColumnarBatch;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -25,7 +26,7 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 
-public class LanceFragmentInternalRowScannerTest {
+public class LanceFragmentColumnarBatchScannerTest {
   
   @Test
   public void scanner() throws IOException {
@@ -33,19 +34,21 @@ public class LanceFragmentInternalRowScannerTest {
     int rowIndex = 0;
     int fragmentId = 0;
     while (fragmentId <= 1) {
-      try (LanceFragmentInternalRowScanner scanner = LanceFragmentInternalRowScanner.create(
+      try (LanceFragmentColumnarBatchScanner scanner = LanceFragmentColumnarBatchScanner.create(
           fragmentId, TestUtils.TestTable1Config.tablePath)) {
         while (scanner.loadNextBatch()) {
-          Iterator<InternalRow> rows = scanner.getCurrentBatchIterator();
-          while (rows.hasNext()) {
-            InternalRow row = rows.next();
-            assertNotNull(row);
-            for (int colIndex = 0; colIndex < row.numFields(); colIndex++) {
-              long actualValue = row.getLong(colIndex);
-              long expectedValue = expectedValues.get(rowIndex).get(colIndex);
-              assertEquals(expectedValue, actualValue, "Mismatch at row " + rowIndex + " column " + colIndex);
-            }
-            rowIndex++;
+          try (ColumnarBatch batch = scanner.getCurrentBatch()) {
+            Iterator<InternalRow> rows = batch.rowIterator();
+            while (rows.hasNext()) {
+              InternalRow row = rows.next();
+              assertNotNull(row);
+              for (int colIndex = 0; colIndex < row.numFields(); colIndex++) {
+                long actualValue = row.getLong(colIndex);
+                long expectedValue = expectedValues.get(rowIndex).get(colIndex);
+                assertEquals(expectedValue, actualValue, "Mismatch at row " + rowIndex + " column " + colIndex);
+              }
+              rowIndex++;
+            } 
           }
         }
       }

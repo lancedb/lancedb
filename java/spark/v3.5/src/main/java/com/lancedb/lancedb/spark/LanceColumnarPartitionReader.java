@@ -14,67 +14,61 @@
 
 package com.lancedb.lancedb.spark;
 
-import com.lancedb.lancedb.spark.internal.LanceFragmentInternalRowScanner;
+import com.lancedb.lancedb.spark.internal.LanceFragmentColumnarBatchScanner;
 import org.apache.spark.sql.connector.read.PartitionReader;
-import org.apache.spark.sql.catalyst.InternalRow;
+import org.apache.spark.sql.vectorized.ColumnarBatch;
 
 import java.io.IOException;
-import java.util.Iterator;
 
-public class LancePartitionReader implements PartitionReader<InternalRow> {
+public class LanceColumnarPartitionReader implements PartitionReader<ColumnarBatch> {
   private final LanceInputPartition inputPartition;
   private int fragmentIndex;
-  private LanceFragmentInternalRowScanner fragmentReader;
-  private Iterator<InternalRow> currentBatch;
-  private InternalRow currentRecord;
+  private LanceFragmentColumnarBatchScanner fragmentReader;
+  private ColumnarBatch currentBatch;
 
-  public LancePartitionReader(LanceInputPartition inputPartition) {
+  public LanceColumnarPartitionReader(LanceInputPartition inputPartition) {
     this.inputPartition = inputPartition;
     this.fragmentIndex = 0;
   }
 
   @Override
   public boolean next() throws IOException {
-    // Read from current batch
-    if (currentBatch != null && currentBatch.hasNext()) {
-      currentRecord = currentBatch.next();
+    if (fragmentReader != null && fragmentReader.loadNextBatch()) {
+      if (currentBatch != null) {
+        currentBatch.close();
+      }
+      currentBatch = fragmentReader.getCurrentBatch();
       return true;
     }
-    // Read from next batch
-    if (fragmentReader != null && fragmentReader.loadNextBatch()) {
-      currentBatch = fragmentReader.getCurrentBatchIterator();
-      if (currentBatch != null && currentBatch.hasNext()) {
-        currentRecord = currentBatch.next();
-        return true;
-      }
-    }
-    // Read from next fragments
     while (fragmentIndex < inputPartition.getLanceSplit().getFragments().size()) {
       if (fragmentReader != null) {
         fragmentReader.close();
       }
-      fragmentReader = LanceFragmentInternalRowScanner.create(
+      fragmentReader = LanceFragmentColumnarBatchScanner.create(
           inputPartition.getLanceSplit().getFragments().get(fragmentIndex),
           inputPartition.getConfig().getTablePath());
       fragmentIndex++;
       if (fragmentReader.loadNextBatch()) {
-        currentBatch = fragmentReader.getCurrentBatchIterator();
-        if (currentBatch != null && currentBatch.hasNext()) {
-          currentRecord = currentBatch.next();
-          return true;
+        if (currentBatch != null) {
+          currentBatch.close();
         }
+        currentBatch = fragmentReader.getCurrentBatch();
+        return true;
       }
     }
     return false;
   }
 
   @Override
-  public InternalRow get() {
-    return currentRecord;
+  public ColumnarBatch get() {
+    return currentBatch;
   }
 
   @Override
   public void close() throws IOException {
+    if (currentBatch != null) {
+      currentBatch.close();
+    }
     if (fragmentReader != null) {
       try {
         fragmentReader.close();

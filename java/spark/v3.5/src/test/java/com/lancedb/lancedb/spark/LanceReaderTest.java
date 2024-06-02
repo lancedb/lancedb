@@ -32,7 +32,7 @@ public class LanceReaderTest {
   
   @Test
   public void testSchema() {
-    StructType expectedSchema = TestUtils.TestTable1Config.expectedSchema;
+    StructType expectedSchema = TestUtils.TestTable1Config.schema;
     StructType schema = LanceReader.getSchema(TestUtils.TestTable1Config.lanceConfig);
     assertNotNull(schema);
     assertEquals(expectedSchema, schema);

@@ -23,6 +23,7 @@ import org.apache.spark.sql.connector.read.PartitionReader;
 import org.apache.spark.sql.connector.read.PartitionReaderFactory;
 import org.apache.spark.sql.connector.read.Scan;
 import org.apache.spark.sql.types.StructType;
+import org.apache.spark.sql.vectorized.ColumnarBatch;
 
 import java.io.Serializable;
 import java.util.List;
@@ -67,7 +68,19 @@ public class LanceScan implements Batch, Scan, Serializable {
     public PartitionReader<InternalRow> createReader(InputPartition partition) {
       Preconditions.checkArgument(partition instanceof LanceInputPartition,
           "Unknown InputPartition type. Expecting LanceInputPartition");
-      return new LancePartitionReader((LanceInputPartition) partition);
+      return LanceRowPartitionReader.create((LanceInputPartition) partition);
+    }
+    
+    @Override
+    public PartitionReader<ColumnarBatch> createColumnarReader(InputPartition partition) {
+      Preconditions.checkArgument(partition instanceof LanceInputPartition,
+          "Unknown InputPartition type. Expecting LanceInputPartition");
+      return new LanceColumnarPartitionReader((LanceInputPartition) partition);
+    }
+    
+    @Override
+    public boolean supportColumnarReads(InputPartition partition) {
+      return true;
     }
   }
 }

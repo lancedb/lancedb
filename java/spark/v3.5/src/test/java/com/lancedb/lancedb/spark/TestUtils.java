@@ -52,7 +52,7 @@ public class TestUtils {
     );
     public static final LanceConfig lanceConfig;
 
-    public static final StructType expectedSchema = new StructType(new StructField[]{
+    public static final StructType schema = new StructType(new StructField[]{
         DataTypes.createStructField("x", DataTypes.LongType, true),
         DataTypes.createStructField("y", DataTypes.LongType, true),
         DataTypes.createStructField("b", DataTypes.LongType, true),
