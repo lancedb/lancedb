@@ -22,6 +22,7 @@ import org.apache.spark.sql.types.StructType;
 import org.apache.spark.sql.util.ArrowUtils;
 
 import java.util.List;
+import java.util.stream.Collectors;
 
 public class LanceReader {
   private static final BufferAllocator allocator = new RootAllocator(
@@ -35,9 +36,9 @@ public class LanceReader {
     }
   }
 
-  public static List<DatasetFragment> getFragments(LanceConfig config) {
+  public static List<Integer> getFragmentIds(LanceConfig config) {
     try (Dataset dataset = Dataset.open(config.getTablePath(), allocator)) {
-      return dataset.getFragments();
+      return dataset.getFragments().stream().map(DatasetFragment::getId).collect(Collectors.toList());
     }
   }
 

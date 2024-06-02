@@ -21,8 +21,6 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
-import java.net.URL;
-
 public class SparkLanceConnectorTest {
   private static SparkSession spark;
   private static String dbPath;
@@ -33,13 +31,7 @@ public class SparkLanceConnectorTest {
         .appName("spark-lance-connector-test")
         .master("local")
         .getOrCreate();
-    // Get the path to the example_db in the test resources directory
-    URL resource = SparkLanceConnectorTest.class.getResource("/example_db");
-    if (resource != null) {
-      dbPath = resource.toString();
-    } else {
-      throw new IllegalArgumentException("example_db not found in resources directory");
-    }
+    dbPath = TestUtils.TestTable1Config.dbPath;
   }
 
   @AfterAll
@@ -53,7 +45,7 @@ public class SparkLanceConnectorTest {
   public void readAll() {
     Dataset<Row> data = spark.read().format("lance")
         .option("db", dbPath)
-        .option("table", "test_table1")
+        .option("table", TestUtils.TestTable1Config.tableName)
         .load();
     data.show();
   }

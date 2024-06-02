@@ -37,9 +37,8 @@ public class LanceSplit implements Serializable {
   }
 
   public static List<LanceSplit> generateLanceSplits(LanceConfig config) {
-    List<Integer> fragmentIds = LanceReader.getFragments(config)
-        .stream().map(DatasetFragment::getId).collect(Collectors.toList());
-    return fragmentIds.stream().map(id -> new LanceSplit(Collections.singletonList(id)))
+    return LanceReader.getFragmentIds(config).stream()
+        .map(id -> new LanceSplit(Collections.singletonList(id)))
         .collect(Collectors.toList());
   }
 }
