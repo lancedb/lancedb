@@ -424,6 +424,7 @@ class LanceQueryBuilder(ABC):
         --------
         >>> import lancedb
         >>> db = lancedb.connect("./.lancedb")
+        >>> db.create_table("my_table", [{"vector": [99, 99]}])
         >>> table = db.open_table("my_table")
         >>> query = [100, 100]
         >>> plan = table.search(query).explain_plan(True)
