@@ -424,11 +424,13 @@ class LanceQueryBuilder(ABC):
         --------
         >>> import lancedb
         >>> db = lancedb.connect("./.lancedb")
-        >>> db.create_table("my_table", [{"vector": [99, 99]}])
-        >>> table = db.open_table("my_table")
+        >>> table = db.create_table("my_table", [{"vector": [99, 99]}])
         >>> query = [100, 100]
         >>> plan = table.search(query).explain_plan(True)
-        >>> print(plan)
+        >>> print(plan) # doctest: +ELLIPSIS, +NORMALIZE_WHITESPACE
+        Projection: fields=[vector, _distance]
+          KNNFlat: k=10 metric=l2
+            LanceScan: uri=..., projection=[vector], row_id=true, ordered=false
 
         Parameters
         ----------
