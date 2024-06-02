@@ -14,20 +14,20 @@
 
 package com.lancedb.lancedb.spark;
 
-import com.lancedb.lancedb.spark.internal.LanceDataSourceReadOptions;
+import com.lancedb.lancedb.spark.internal.LanceConfig;
 import org.apache.spark.sql.connector.read.Scan;
 import org.apache.spark.sql.connector.read.ScanBuilder;
 import org.apache.spark.sql.types.StructType;
 
 public class LanceScanBuilder implements ScanBuilder {
   private final StructType schema;
-  private final LanceDataSourceReadOptions options;
-  
-  public LanceScanBuilder(StructType schema, LanceDataSourceReadOptions options) {
+  private final LanceConfig options;
+
+  public LanceScanBuilder(StructType schema, LanceConfig options) {
     this.schema = schema;
     this.options = options;
   }
-  
+
   @Override
   public Scan build() {
     return new LanceScan(schema, options);

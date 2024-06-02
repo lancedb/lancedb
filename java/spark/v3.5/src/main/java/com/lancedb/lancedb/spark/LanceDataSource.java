@@ -14,7 +14,7 @@
 
 package com.lancedb.lancedb.spark;
 
-import com.lancedb.lancedb.spark.internal.LanceDataSourceReadOptions;
+import com.lancedb.lancedb.spark.internal.LanceConfig;
 import com.lancedb.lancedb.spark.internal.LanceReader;
 import org.apache.spark.sql.connector.catalog.Table;
 import org.apache.spark.sql.connector.catalog.TableProvider;
@@ -29,13 +29,14 @@ public class LanceDataSource implements TableProvider, DataSourceRegister {
 
   @Override
   public StructType inferSchema(CaseInsensitiveStringMap options) {
-    return LanceReader.getSchema(LanceDataSourceReadOptions.from(options));
+    return LanceReader.getSchema(LanceConfig.from(options));
   }
 
   @Override
-  public Table getTable(StructType schema, Transform[] partitioning, Map<String, String> properties) {
-    LanceDataSourceReadOptions options = LanceDataSourceReadOptions.from(properties);
-    return new LanceTable(options, LanceReader.getSchema(options));
+  public Table getTable(StructType schema, Transform[] partitioning,
+      Map<String, String> properties) {
+    LanceConfig config = LanceConfig.from(properties);
+    return new LanceTable(config, LanceReader.getSchema(config));
   }
 
   @Override

@@ -15,20 +15,34 @@
 package com.lancedb.lancedb.spark.internal;
 
 import com.lancedb.lance.Dataset;
+import com.lancedb.lance.DatasetFragment;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.RootAllocator;
 import org.apache.spark.sql.types.StructType;
 import org.apache.spark.sql.util.ArrowUtils;
+
+import java.util.List;
 
 public class LanceReader {
   private static final BufferAllocator allocator = new RootAllocator(
       RootAllocator.configBuilder().from(RootAllocator.defaultConfig())
           .maxAllocation(4 * 1024 * 1024).build());
 
-  public static StructType getSchema(LanceDataSourceReadOptions options)
+  public static StructType getSchema(LanceConfig options)
   {
     try (Dataset dataset = Dataset.open(options.getTablePath(), allocator)) {
       return ArrowUtils.fromArrowSchema(dataset.getSchema());
     }
   }
+
+  public static List<DatasetFragment> getFragments(LanceConfig config) {
+    try (Dataset dataset = Dataset.open(config.getTablePath(), allocator)) {
+      return dataset.getFragments();
+    }
+  }
+
+  public static LanceFragmentScanner getFragmentScanner(int fragmentId, String tablePath) {
+    return LanceFragmentScanner.create(fragmentId, tablePath, allocator);
+  }
 }
+

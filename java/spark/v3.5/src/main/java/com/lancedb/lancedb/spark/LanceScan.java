@@ -14,18 +14,27 @@
 
 package com.lancedb.lancedb.spark;
 
-import com.lancedb.lancedb.spark.internal.LanceDataSourceReadOptions;
+import com.lancedb.lancedb.spark.internal.LanceConfig;
+import org.apache.arrow.util.Preconditions;
+import org.apache.spark.sql.catalyst.InternalRow;
 import org.apache.spark.sql.connector.read.Batch;
 import org.apache.spark.sql.connector.read.InputPartition;
+import org.apache.spark.sql.connector.read.PartitionReader;
 import org.apache.spark.sql.connector.read.PartitionReaderFactory;
 import org.apache.spark.sql.connector.read.Scan;
 import org.apache.spark.sql.types.StructType;
 
-public class LanceScan implements Batch, Scan {
+import java.io.Serializable;
+import java.util.List;
+import java.util.stream.IntStream;
+
+public class LanceScan implements Batch, Scan, Serializable {
+  private static final long serialVersionUID = 947284762748623947L;
+
   private final StructType schema;
-  private final LanceDataSourceReadOptions options;
-  
-  public LanceScan(StructType schema, LanceDataSourceReadOptions options) {
+  private final LanceConfig options;
+
+  public LanceScan(StructType schema, LanceConfig options) {
     this.schema = schema;
     this.options = options;
   }
@@ -37,17 +46,28 @@ public class LanceScan implements Batch, Scan {
 
   @Override
   public InputPartition[] planInputPartitions() {
-    // Return fragments???
-    return new InputPartition[0];
+    List<LanceSplit> splits = LanceSplit.generateLanceSplits(options);
+    return IntStream.range(0, splits.size())
+        .mapToObj(i -> new LanceInputPartition(schema, i, splits.get(i), options))
+        .toArray(InputPartition[]::new);
   }
 
   @Override
   public PartitionReaderFactory createReaderFactory() {
-    return null;
+    return new LanceReaderFactory();
   }
 
   @Override
   public StructType readSchema() {
     return schema;
+  }
+
+  private class LanceReaderFactory implements PartitionReaderFactory {
+    @Override
+    public PartitionReader<InternalRow> createReader(InputPartition partition) {
+      Preconditions.checkArgument(partition instanceof LanceInputPartition,
+          "Unknown InputPartition type. Expecting LanceInputPartition");
+      return new LancePartitionReader((LanceInputPartition) partition);
+    }
   }
 }

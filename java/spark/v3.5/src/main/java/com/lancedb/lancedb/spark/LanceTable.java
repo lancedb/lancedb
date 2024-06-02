@@ -15,9 +15,8 @@
 package com.lancedb.lancedb.spark;
 
 import com.google.common.collect.ImmutableSet;
+import com.lancedb.lancedb.spark.internal.LanceConfig;
 import java.util.Set;
-
-import com.lancedb.lancedb.spark.internal.LanceDataSourceReadOptions;
 import org.apache.spark.sql.connector.catalog.SupportsRead;
 import org.apache.spark.sql.connector.catalog.Table;
 import org.apache.spark.sql.connector.catalog.TableCapability;
@@ -33,17 +32,17 @@ public class LanceTable implements Table, SupportsRead {
     ImmutableSet.of(
         TableCapability.BATCH_READ);
 
-  LanceDataSourceReadOptions options;
+  LanceConfig options;
   private final StructType sparkSchema;
 
   /**
    * Creates a spark table.
    *
-   * @param options read options
+   * @param config read config
    * @param sparkSchema spark struct type
    */
-  public LanceTable(LanceDataSourceReadOptions options, StructType sparkSchema) {
-    this.options = options;
+  public LanceTable(LanceConfig config, StructType sparkSchema) {
+    this.options = config;
     this.sparkSchema = sparkSchema;
   }
 
