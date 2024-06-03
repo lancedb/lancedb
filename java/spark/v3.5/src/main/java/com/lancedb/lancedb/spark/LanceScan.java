@@ -70,14 +70,14 @@ public class LanceScan implements Batch, Scan, Serializable {
           "Unknown InputPartition type. Expecting LanceInputPartition");
       return LanceRowPartitionReader.create((LanceInputPartition) partition);
     }
-    
+
     @Override
     public PartitionReader<ColumnarBatch> createColumnarReader(InputPartition partition) {
       Preconditions.checkArgument(partition instanceof LanceInputPartition,
           "Unknown InputPartition type. Expecting LanceInputPartition");
       return new LanceColumnarPartitionReader((LanceInputPartition) partition);
     }
-    
+
     @Override
     public boolean supportColumnarReads(InputPartition partition) {
       return true;

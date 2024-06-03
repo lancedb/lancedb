@@ -38,7 +38,8 @@ public class LanceReader {
 
   public static List<Integer> getFragmentIds(LanceConfig config) {
     try (Dataset dataset = Dataset.open(config.getTablePath(), allocator)) {
-      return dataset.getFragments().stream().map(DatasetFragment::getId).collect(Collectors.toList());
+      return dataset.getFragments().stream()
+          .map(DatasetFragment::getId).collect(Collectors.toList());
     }
   }
 

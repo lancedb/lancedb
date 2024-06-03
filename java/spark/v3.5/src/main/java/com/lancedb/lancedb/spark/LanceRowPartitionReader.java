@@ -30,7 +30,7 @@ public class LanceRowPartitionReader implements PartitionReader<InternalRow> {
   public LanceRowPartitionReader(LanceColumnarPartitionReader reader) {
     this.reader = reader;
   }
-  
+
   public static LanceRowPartitionReader create(LanceInputPartition inputPartition) {
     return new LanceRowPartitionReader(new LanceColumnarPartitionReader(inputPartition));
   }

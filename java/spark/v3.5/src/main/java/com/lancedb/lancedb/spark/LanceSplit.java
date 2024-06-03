@@ -14,7 +14,6 @@
 
 package com.lancedb.lancedb.spark;
 
-import com.lancedb.lance.DatasetFragment;
 import com.lancedb.lancedb.spark.internal.LanceConfig;
 import com.lancedb.lancedb.spark.internal.LanceReader;
 

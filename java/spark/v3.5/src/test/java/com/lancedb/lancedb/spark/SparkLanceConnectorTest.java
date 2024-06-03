@@ -21,6 +21,11 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
+import java.util.stream.Collectors;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
 public class SparkLanceConnectorTest {
   private static SparkSession spark;
   private static String dbPath;
@@ -41,12 +46,76 @@ public class SparkLanceConnectorTest {
     }
   }
 
+  private void validateData(Dataset<Row> data, List<List<Long>> expectedValues) {
+    List<Row> rows = data.collectAsList();
+    assertEquals(expectedValues.size(), rows.size());
+
+    for (int i = 0; i < rows.size(); i++) {
+      Row row = rows.get(i);
+      List<Long> expectedRow = expectedValues.get(i);
+      assertEquals(expectedRow.size(), row.size());
+
+      for (int j = 0; j < expectedRow.size(); j++) {
+        long expectedValue = expectedRow.get(j);
+        long actualValue = row.getLong(j);
+        assertEquals(expectedValue, actualValue, "Mismatch at row " + i + " column " + j);
+      }
+    }
+  }
+
   @Test
   public void readAll() {
     Dataset<Row> data = spark.read().format("lance")
         .option("db", dbPath)
         .option("table", TestUtils.TestTable1Config.tableName)
         .load();
-    data.show();
+    validateData(data, TestUtils.TestTable1Config.expectedValues);
+  }
+
+  @Test
+  public void filter() {
+    Dataset<Row> data = spark.read().format("lance")
+        .option("db", dbPath)
+        .option("table", TestUtils.TestTable1Config.tableName)
+        .load()
+        .filter("x > 1");
+
+    List<List<Long>> expectedValues = TestUtils.TestTable1Config.expectedValues.stream()
+        .filter(row -> row.get(0) > 1)
+        .collect(Collectors.toList());
+
+    validateData(data, expectedValues);
+  }
+
+  @Test
+  public void select() {
+    Dataset<Row> data = spark.read().format("lance")
+        .option("db", dbPath)
+        .option("table", TestUtils.TestTable1Config.tableName)
+        .load()
+        .select("y", "b");
+
+    List<List<Long>> expectedValues = TestUtils.TestTable1Config.expectedValues.stream()
+        .map(row -> List.of(row.get(1), row.get(2)))
+        .collect(Collectors.toList());
+
+    validateData(data, expectedValues);
+  }
+
+  @Test
+  public void filterSelect() {
+    Dataset<Row> data = spark.read().format("lance")
+        .option("db", dbPath)
+        .option("table", TestUtils.TestTable1Config.tableName)
+        .load()
+        .select("y", "b")
+        .filter("y > 3");
+
+    List<List<Long>> expectedValues = TestUtils.TestTable1Config.expectedValues.stream()
+        .map(row -> List.of(row.get(1), row.get(2))) // "y" is at index 1, "b" is at index 2
+        .filter(row -> row.get(0) > 3)
+        .collect(Collectors.toList());
+
+    validateData(data, expectedValues);
   }
 }
