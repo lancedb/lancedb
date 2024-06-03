@@ -21,6 +21,7 @@ import {
 
 import { getRegistry } from "./embedding/registry";
 import { IndexOptions } from "./indices";
+import { MergeInsertBuilder } from "./merge";
 import {
   AddColumnsSql,
   ColumnAlteration,
@@ -432,5 +433,8 @@ export class Table {
   /** Return the table as an arrow table */
   async toArrow(): Promise<ArrowTable> {
     return await this.query().toArrow();
+  }
+  mergeInsert(on: string): MergeInsertBuilder {
+    return new MergeInsertBuilder(this.inner.mergeInsert([on]));
   }
 }

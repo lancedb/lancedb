@@ -102,6 +102,140 @@ describe.each([arrow, arrowOld])("Given a table", (arrow: any) => {
   });
 });
 
+describe("merge insert", () => {
+  let tmpDir: tmp.DirResult;
+  let table: Table;
+
+  beforeEach(async () => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+    const conn = await connect(tmpDir.name);
+
+    table = await conn.createTable("some_table", [
+      { a: 1, b: "a" },
+      { a: 2, b: "b" },
+      { a: 3, b: "c" },
+    ]);
+  });
+  afterEach(() => tmpDir.removeCallback());
+
+  test("upsert", async () => {
+    const newData = [
+      { a: 2, b: "x" },
+      { a: 3, b: "y" },
+      { a: 4, b: "z" },
+    ];
+    await table
+      .mergeInsert("a")
+      .whenMatchedUpdateAll()
+      .whenNotMatchedInsertAll()
+      .execute(newData);
+    const expected = [
+      { a: 1, b: "a" },
+      { a: 2, b: "x" },
+      { a: 3, b: "y" },
+      { a: 4, b: "z" },
+    ];
+
+    expect(
+      JSON.parse(JSON.stringify((await table.toArrow()).toArray())),
+    ).toEqual(expected);
+  });
+  test("conditional update", async () => {
+    const newData = [
+      { a: 2, b: "x" },
+      { a: 3, b: "y" },
+      { a: 4, b: "z" },
+    ];
+    await table
+      .mergeInsert("a")
+      .whenMatchedUpdateAll("target.b = 'b'")
+      .execute(newData);
+
+    const expected = [
+      { a: 1, b: "a" },
+      { a: 2, b: "x" },
+      { a: 3, b: "c" },
+    ];
+    // round trip to arrow and back to json to avoid comparing arrow objects to js object
+    // biome-ignore lint/suspicious/noExplicitAny: test
+    let res: any[] = JSON.parse(
+      JSON.stringify((await table.toArrow()).toArray()),
+    );
+    res = res.sort((a, b) => a.a - b.a);
+
+    expect(res).toEqual(expected);
+  });
+
+  test("insert if not exists", async () => {
+    const newData = [
+      { a: 2, b: "x" },
+      { a: 3, b: "y" },
+      { a: 4, b: "z" },
+    ];
+    await table.mergeInsert("a").whenNotMatchedInsertAll().execute(newData);
+    const expected = [
+      { a: 1, b: "a" },
+      { a: 2, b: "b" },
+      { a: 3, b: "c" },
+      { a: 4, b: "z" },
+    ];
+    // biome-ignore lint/suspicious/noExplicitAny: <explanation>
+    let res: any[] = JSON.parse(
+      JSON.stringify((await table.toArrow()).toArray()),
+    );
+    res = res.sort((a, b) => a.a - b.a);
+    expect(res).toEqual(expected);
+  });
+  test("replace range", async () => {
+    const newData = [
+      { a: 2, b: "x" },
+      { a: 4, b: "z" },
+    ];
+    await table
+      .mergeInsert("a")
+      .whenMatchedUpdateAll()
+      .whenNotMatchedInsertAll()
+      .whenNotMatchedBySourceDelete("a > 2")
+      .execute(newData);
+
+    const expected = [
+      { a: 1, b: "a" },
+      { a: 2, b: "x" },
+      { a: 4, b: "z" },
+    ];
+    // biome-ignore lint/suspicious/noExplicitAny: <explanation>
+    let res: any[] = JSON.parse(
+      JSON.stringify((await table.toArrow()).toArray()),
+    );
+    res = res.sort((a, b) => a.a - b.a);
+    expect(res).toEqual(expected);
+  });
+  test("replace range no condition", async () => {
+    const newData = [
+      { a: 2, b: "x" },
+      { a: 4, b: "z" },
+    ];
+    await table
+      .mergeInsert("a")
+      .whenMatchedUpdateAll()
+      .whenNotMatchedInsertAll()
+      .whenNotMatchedBySourceDelete()
+      .execute(newData);
+
+    const expected = [
+      { a: 2, b: "x" },
+      { a: 4, b: "z" },
+    ];
+
+    // biome-ignore lint/suspicious/noExplicitAny: test
+    let res: any[] = JSON.parse(
+      JSON.stringify((await table.toArrow()).toArray()),
+    );
+    res = res.sort((a, b) => a.a - b.a);
+    expect(res).toEqual(expected);
+  });
+});
+
 describe("When creating an index", () => {
   let tmpDir: tmp.DirResult;
   const schema = new Schema([
