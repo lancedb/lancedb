@@ -21,6 +21,7 @@ import * as arrowOld from "apache-arrow-old";
 
 import { Table, connect } from "../lancedb";
 import {
+  Table as ArrowTable,
   Field,
   FixedSizeList,
   Float32,
@@ -91,6 +92,7 @@ describe.each([arrow, arrowOld])("Given a table", (arrow: any) => {
     expect(await table.countRows("id == 7")).toBe(1);
     expect(await table.countRows("id == 10")).toBe(1);
   });
+
   // https://github.com/lancedb/lancedb/issues/1293
   test.each([new arrow.Float16(), new arrow.Float32(), new arrow.Float64()])(
     "can create empty table with non default float type: %s",
@@ -122,6 +124,11 @@ describe.each([arrow, arrowOld])("Given a table", (arrow: any) => {
       }
     },
   );
+
+  it("should return the table as an instance of an arrow table", async () => {
+    const arrowTbl = await table.toArrow();
+    expect(arrowTbl).toBeInstanceOf(ArrowTable);
+  });
 });
 
 describe("When creating an index", () => {

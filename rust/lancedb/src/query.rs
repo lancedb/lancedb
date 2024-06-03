@@ -17,7 +17,10 @@ use std::sync::Arc;
 
 use arrow_array::{make_array, Array, Float16Array, Float32Array, Float64Array};
 use arrow_schema::DataType;
+use datafusion_physical_plan::ExecutionPlan;
 use half::f16;
+use lance::dataset::scanner::DatasetRecordBatchStream;
+use lance_datafusion::exec::execute_plan;
 
 use crate::arrow::SendableRecordBatchStream;
 use crate::error::{Error, Result};
@@ -425,6 +428,15 @@ impl Default for QueryExecutionOptions {
 /// There are various kinds of queries but they all return results
 /// in the same way.
 pub trait ExecutableQuery {
+    /// Return the Datafusion [ExecutionPlan].
+    ///
+    /// The caller can further optimize the plan or execute it.
+    ///
+    fn create_plan(
+        &self,
+        options: QueryExecutionOptions,
+    ) -> impl Future<Output = Result<Arc<dyn ExecutionPlan>>> + Send;
+
     /// Execute the query with default options and return results
     ///
     /// See [`ExecutableQuery::execute_with_options`] for more details.
@@ -545,6 +557,13 @@ impl HasQuery for Query {
 }
 
 impl ExecutableQuery for Query {
+    async fn create_plan(&self, options: QueryExecutionOptions) -> Result<Arc<dyn ExecutionPlan>> {
+        self.parent
+            .clone()
+            .create_plan(&self.clone().into_vector(), options)
+            .await
+    }
+
     async fn execute_with_options(
         &self,
         options: QueryExecutionOptions,
@@ -718,12 +737,19 @@ impl VectorQuery {
 }
 
 impl ExecutableQuery for VectorQuery {
+    async fn create_plan(&self, options: QueryExecutionOptions) -> Result<Arc<dyn ExecutionPlan>> {
+        self.base.parent.clone().create_plan(self, options).await
+    }
+
     async fn execute_with_options(
         &self,
         options: QueryExecutionOptions,
     ) -> Result<SendableRecordBatchStream> {
         Ok(SendableRecordBatchStream::from(
-            self.base.parent.clone().vector_query(self, options).await?,
+            DatasetRecordBatchStream::new(execute_plan(
+                self.create_plan(options).await?,
+                Default::default(),
+            )?),
         ))
     }
 }
@@ -972,6 +998,30 @@ mod tests {
         }
     }
 
+    fn assert_plan_exists(plan: &Arc<dyn ExecutionPlan>, name: &str) -> bool {
+        if plan.name() == name {
+            return true;
+        }
+        plan.children()
+            .iter()
+            .any(|child| assert_plan_exists(child, name))
+    }
+
+    #[tokio::test]
+    async fn test_create_execute_plan() {
+        let tmp_dir = tempdir().unwrap();
+        let table = make_test_table(&tmp_dir).await;
+        let plan = table
+            .query()
+            .nearest_to(vec![0.1, 0.2, 0.3, 0.4])
+            .unwrap()
+            .create_plan(QueryExecutionOptions::default())
+            .await
+            .unwrap();
+        assert_plan_exists(&plan, "KNNFlatSearch");
+        assert_plan_exists(&plan, "ProjectionExec");
+    }
+
     #[tokio::test]
     async fn query_base_methods_on_vector_query() {
         // Make sure VectorQuery can be used as a QueryBase
@@ -989,5 +1039,18 @@ mod tests {
         let first_batch = results.next().await.unwrap().unwrap();
         assert_eq!(first_batch.num_rows(), 1);
         assert!(results.next().await.is_none());
+
+        // query with wrong vector dimension
+        let error_result = table
+            .vector_search(&[1.0, 2.0, 3.0])
+            .unwrap()
+            .limit(1)
+            .execute()
+            .await;
+        assert!(error_result
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("No vector column found to match with the query vector dimension: 3"));
     }
 }
