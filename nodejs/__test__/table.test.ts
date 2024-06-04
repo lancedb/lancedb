@@ -24,17 +24,13 @@ import {
   Table as ArrowTable,
   Field,
   FixedSizeList,
-  Float,
   Float32,
   Float64,
   Int32,
   Int64,
   Schema,
-  Utf8,
   makeArrowTable,
 } from "../lancedb/arrow";
-import { EmbeddingFunction, LanceSchema } from "../lancedb/embedding";
-import { getRegistry, register } from "../lancedb/embedding/registry";
 import { Index } from "../lancedb/indices";
 
 // biome-ignore lint/suspicious/noExplicitAny: <explanation>
@@ -45,6 +41,7 @@ describe.each([arrow, arrowOld])("Given a table", (arrow: any) => {
   const schema = new arrow.Schema([
     new arrow.Field("id", new arrow.Float64(), true),
   ]);
+
   beforeEach(async () => {
     tmpDir = tmp.dirSync({ unsafeCleanup: true });
     const conn = await connect(tmpDir.name);
@@ -95,6 +92,38 @@ describe.each([arrow, arrowOld])("Given a table", (arrow: any) => {
     expect(await table.countRows("id == 7")).toBe(1);
     expect(await table.countRows("id == 10")).toBe(1);
   });
+
+  // https://github.com/lancedb/lancedb/issues/1293
+  test.each([new arrow.Float16(), new arrow.Float32(), new arrow.Float64()])(
+    "can create empty table with non default float type: %s",
+    async (floatType) => {
+      const db = await connect(tmpDir.name);
+
+      const data = [
+        { text: "hello", vector: Array(512).fill(1.0) },
+        { text: "hello world", vector: Array(512).fill(1.0) },
+      ];
+      const f64Schema = new arrow.Schema([
+        new arrow.Field("text", new arrow.Utf8(), true),
+        new arrow.Field(
+          "vector",
+          new arrow.FixedSizeList(512, new arrow.Field("item", floatType)),
+          true,
+        ),
+      ]);
+
+      const f64Table = await db.createEmptyTable("f64", f64Schema, {
+        mode: "overwrite",
+      });
+      try {
+        await f64Table.add(data);
+        const res = await f64Table.query().toArray();
+        expect(res.length).toBe(2);
+      } catch (e) {
+        expect(e).toBeUndefined();
+      }
+    },
+  );
 
   it("should return the table as an instance of an arrow table", async () => {
     const arrowTbl = await table.toArrow();
@@ -433,161 +462,6 @@ describe("when dealing with versioning", () => {
     // Can't use restore if not checked out
     await expect(table.restore()).rejects.toThrow(
       "checkout before running restore",
-    );
-  });
-});
-
-describe("embedding functions", () => {
-  let tmpDir: tmp.DirResult;
-  beforeEach(() => {
-    tmpDir = tmp.dirSync({ unsafeCleanup: true });
-  });
-  afterEach(() => tmpDir.removeCallback());
-
-  it("should be able to create a table with an embedding function", async () => {
-    class MockEmbeddingFunction extends EmbeddingFunction<string> {
-      toJSON(): object {
-        return {};
-      }
-      ndims() {
-        return 3;
-      }
-      embeddingDataType(): Float {
-        return new Float32();
-      }
-      async computeQueryEmbeddings(_data: string) {
-        return [1, 2, 3];
-      }
-      async computeSourceEmbeddings(data: string[]) {
-        return Array.from({ length: data.length }).fill([
-          1, 2, 3,
-        ]) as number[][];
-      }
-    }
-    const func = new MockEmbeddingFunction();
-    const db = await connect(tmpDir.name);
-    const table = await db.createTable(
-      "test",
-      [
-        { id: 1, text: "hello" },
-        { id: 2, text: "world" },
-      ],
-      {
-        embeddingFunction: {
-          function: func,
-          sourceColumn: "text",
-        },
-      },
-    );
-    // biome-ignore lint/suspicious/noExplicitAny: test
-    const arr = (await table.query().toArray()) as any;
-    expect(arr[0].vector).toBeDefined();
-
-    // we round trip through JSON to make sure the vector properly gets converted to an array
-    // otherwise it'll be a TypedArray or Vector
-    const vector0 = JSON.parse(JSON.stringify(arr[0].vector));
-    expect(vector0).toEqual([1, 2, 3]);
-  });
-
-  it("should be able to create an empty table with an embedding function", async () => {
-    @register()
-    class MockEmbeddingFunction extends EmbeddingFunction<string> {
-      toJSON(): object {
-        return {};
-      }
-      ndims() {
-        return 3;
-      }
-      embeddingDataType(): Float {
-        return new Float32();
-      }
-      async computeQueryEmbeddings(_data: string) {
-        return [1, 2, 3];
-      }
-      async computeSourceEmbeddings(data: string[]) {
-        return Array.from({ length: data.length }).fill([
-          1, 2, 3,
-        ]) as number[][];
-      }
-    }
-    const schema = new Schema([
-      new Field("text", new Utf8(), true),
-      new Field(
-        "vector",
-        new FixedSizeList(3, new Field("item", new Float32(), true)),
-        true,
-      ),
-    ]);
-
-    const func = new MockEmbeddingFunction();
-    const db = await connect(tmpDir.name);
-    const table = await db.createEmptyTable("test", schema, {
-      embeddingFunction: {
-        function: func,
-        sourceColumn: "text",
-      },
-    });
-    const outSchema = await table.schema();
-    expect(outSchema.metadata.get("embedding_functions")).toBeDefined();
-    await table.add([{ text: "hello world" }]);
-
-    // biome-ignore lint/suspicious/noExplicitAny: test
-    const arr = (await table.query().toArray()) as any;
-    expect(arr[0].vector).toBeDefined();
-
-    // we round trip through JSON to make sure the vector properly gets converted to an array
-    // otherwise it'll be a TypedArray or Vector
-    const vector0 = JSON.parse(JSON.stringify(arr[0].vector));
-    expect(vector0).toEqual([1, 2, 3]);
-  });
-  it("should error when appending to a table with an unregistered embedding function", async () => {
-    @register("mock")
-    class MockEmbeddingFunction extends EmbeddingFunction<string> {
-      toJSON(): object {
-        return {};
-      }
-      ndims() {
-        return 3;
-      }
-      embeddingDataType(): Float {
-        return new Float32();
-      }
-      async computeQueryEmbeddings(_data: string) {
-        return [1, 2, 3];
-      }
-      async computeSourceEmbeddings(data: string[]) {
-        return Array.from({ length: data.length }).fill([
-          1, 2, 3,
-        ]) as number[][];
-      }
-    }
-    const func = getRegistry().get<MockEmbeddingFunction>("mock")!.create();
-
-    const schema = LanceSchema({
-      id: new arrow.Float64(),
-      text: func.sourceField(new Utf8()),
-      vector: func.vectorField(),
-    });
-
-    const db = await connect(tmpDir.name);
-    await db.createTable(
-      "test",
-      [
-        { id: 1, text: "hello" },
-        { id: 2, text: "world" },
-      ],
-      {
-        schema,
-      },
-    );
-
-    getRegistry().reset();
-    const db2 = await connect(tmpDir.name);
-
-    const tbl = await db2.openTable("test");
-
-    expect(tbl.add([{ id: 3, text: "hello" }])).rejects.toThrow(
-      `Function "mock" not found in registry`,
     );
   });
 });

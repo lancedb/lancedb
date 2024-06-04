@@ -176,11 +176,10 @@ export class QueryBase<
   }
 
   /** Collect the results as an array of objects. */
-  // biome-ignore lint/suspicious/noExplicitAny: arrow.toArray() returns any[]
+  // biome-ignore lint/suspicious/noExplicitAny: arrow.toArrow() returns any[]
   async toArray(): Promise<any[]> {
     const tbl = await this.toArrow();
 
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-return
     return tbl.toArray();
   }
 }
