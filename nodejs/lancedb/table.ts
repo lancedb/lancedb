@@ -135,6 +135,7 @@ export class Table {
     const buffer = await fromDataToBuffer(
       data,
       functions.values().next().value,
+      schema,
     );
     await this.inner.add(buffer, mode);
   }

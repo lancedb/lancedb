@@ -31,7 +31,7 @@ import {
   Schema,
   Struct,
   Utf8,
-  type Vector,
+  Vector,
   makeBuilder,
   makeData,
   type makeTable,
@@ -182,6 +182,7 @@ export class MakeArrowTableOptions {
     vector: new VectorColumnOptions(),
   };
   embeddings?: EmbeddingFunction<unknown>;
+  embeddingFunction?: EmbeddingFunctionConfig;
 
   /**
    * If true then string columns will be encoded with dictionary encoding
@@ -306,7 +307,11 @@ export function makeArrowTable(
   const opt = new MakeArrowTableOptions(options !== undefined ? options : {});
   if (opt.schema !== undefined && opt.schema !== null) {
     opt.schema = sanitizeSchema(opt.schema);
-    opt.schema = validateSchemaEmbeddings(opt.schema, data, opt.embeddings);
+    opt.schema = validateSchemaEmbeddings(
+      opt.schema,
+      data,
+      options?.embeddingFunction,
+    );
   }
   const columns: Record<string, Vector> = {};
   // TODO: sample dataset to find missing columns
@@ -545,7 +550,6 @@ async function applyEmbeddingsFromMetadata(
           dtype,
       );
     }
-
     const vector = makeVector(vectors, destType);
     columns[destColumn] = vector;
   }
@@ -835,7 +839,7 @@ export function createEmptyTable(schema: Schema): ArrowTable {
 function validateSchemaEmbeddings(
   schema: Schema,
   data: Array<Record<string, unknown>>,
-  embeddings: EmbeddingFunction<unknown> | undefined,
+  embeddings: EmbeddingFunctionConfig | undefined,
 ) {
   const fields = [];
   const missingEmbeddingFields = [];
