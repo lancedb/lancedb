@@ -57,10 +57,15 @@ tests = [
     "duckdb",
     "pytz",
     "polars>=0.19",
-    "tantivy",
+    "tantivy"
 ]
 dev = ["ruff", "pre-commit"]
-docs = ["mkdocs", "mkdocs-jupyter", "mkdocs-material", "mkdocstrings[python]"]
+docs = [
+    "mkdocs",
+    "mkdocs-jupyter",
+    "mkdocs-material",
+    "mkdocstrings[python]",
+]
 clip = ["torch", "pillow", "open-clip"]
 embeddings = [
     "openai>=1.6.1",
@@ -95,5 +100,5 @@ addopts = "--strict-markers --ignore-glob=lancedb/embeddings/*.py"
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "asyncio",
-    "s3_test",
+    "s3_test"
 ]
