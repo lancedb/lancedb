@@ -19,6 +19,7 @@ import {
   FixedSizeList,
   Float,
   Float32,
+  type IntoVector,
   isDataType,
   isFixedSizeList,
   isFloat,
@@ -169,9 +170,7 @@ export abstract class EmbeddingFunction<
   /**
   Compute the embeddings for a single query
  */
-  async computeQueryEmbeddings(
-    data: T,
-  ): Promise<number[] | Float32Array | Float64Array> {
+  async computeQueryEmbeddings(data: T): Promise<IntoVector> {
     return this.computeSourceEmbeddings([data]).then(
       (embeddings) => embeddings[0],
     );

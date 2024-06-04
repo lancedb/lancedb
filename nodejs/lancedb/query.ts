@@ -12,7 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { Table as ArrowTable, RecordBatch, tableFromIPC } from "./arrow";
+import {
+  Table as ArrowTable,
+  type IntoVector,
+  RecordBatch,
+  tableFromIPC,
+} from "./arrow";
 import { type IvfPqOptions } from "./indices";
 import {
   RecordBatchIterator as NativeBatchIterator,
@@ -108,9 +113,12 @@ export class QueryBase<
    * object insertion order is easy to get wrong and `Map` is more foolproof.
    */
   select(
-    columns: string[] | Map<string, string> | Record<string, string>,
+    columns: string[] | Map<string, string> | Record<string, string> | string,
   ): QueryType {
     let columnTuples: [string, string][];
+    if (typeof columns === "string") {
+      columns = [columns];
+    }
     if (Array.isArray(columns)) {
       columnTuples = columns.map((c) => [c, c]);
     } else if (columns instanceof Map) {
@@ -370,9 +378,8 @@ export class Query extends QueryBase<NativeQuery, Query> {
    * Vector searches always have a `limit`.  If `limit` has not been called then
    * a default `limit` of 10 will be used.  @see {@link Query#limit}
    */
-  nearestTo(vector: unknown): VectorQuery {
-    // biome-ignore lint/suspicious/noExplicitAny: skip
-    const vectorQuery = this.inner.nearestTo(Float32Array.from(vector as any));
+  nearestTo(vector: IntoVector): VectorQuery {
+    const vectorQuery = this.inner.nearestTo(Float32Array.from(vector));
     return new VectorQuery(vectorQuery);
   }
 }
