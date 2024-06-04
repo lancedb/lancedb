@@ -31,6 +31,7 @@ import {
   Schema,
   makeArrowTable,
 } from "../lancedb/arrow";
+import { EmbeddingFunction, LanceSchema, register } from "../lancedb/embedding";
 import { Index } from "../lancedb/indices";
 
 // biome-ignore lint/suspicious/noExplicitAny: <explanation>
@@ -510,7 +511,7 @@ describe("table.search", () => {
       ndims() {
         return 1;
       }
-      embeddingDataType(): Float {
+      embeddingDataType(): arrow.Float {
         return new Float32();
       }
 
@@ -543,7 +544,7 @@ describe("table.search", () => {
 
     const func = new MockEmbeddingFunction();
     const schema = LanceSchema({
-      text: func.sourceField(new Utf8()),
+      text: func.sourceField(new arrow.Utf8()),
       vector: func.vectorField(),
     });
     const db = await connect(tmpDir.name);
