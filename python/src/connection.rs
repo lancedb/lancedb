@@ -91,6 +91,7 @@ impl Connection {
         mode: &str,
         data: &PyAny,
         storage_options: Option<HashMap<String, String>>,
+        use_legacy_format: Option<bool>,
     ) -> PyResult<&'a PyAny> {
         let inner = self_.get_inner()?.clone();
 
@@ -101,6 +102,10 @@ impl Connection {
 
         if let Some(storage_options) = storage_options {
             builder = builder.storage_options(storage_options);
+        }
+
+        if let Some(use_legacy_format) = use_legacy_format {
+            builder = builder.use_legacy_format(use_legacy_format);
         }
 
         future_into_py(self_.py(), async move {
@@ -115,6 +120,7 @@ impl Connection {
         mode: &str,
         schema: &PyAny,
         storage_options: Option<HashMap<String, String>>,
+        use_legacy_format: Option<bool>,
     ) -> PyResult<&'a PyAny> {
         let inner = self_.get_inner()?.clone();
 
@@ -126,6 +132,10 @@ impl Connection {
 
         if let Some(storage_options) = storage_options {
             builder = builder.storage_options(storage_options);
+        }
+
+        if let Some(use_legacy_format) = use_legacy_format {
+            builder = builder.use_legacy_format(use_legacy_format);
         }
 
         future_into_py(self_.py(), async move {

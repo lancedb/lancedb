@@ -140,6 +140,7 @@ pub struct CreateTableBuilder<const HAS_DATA: bool, T: IntoArrow> {
     pub(crate) write_options: WriteOptions,
     pub(crate) table_definition: Option<TableDefinition>,
     pub(crate) embeddings: Vec<(EmbeddingDefinition, Arc<dyn EmbeddingFunction>)>,
+    pub(crate) use_legacy_format: bool,
 }
 
 // Builder methods that only apply when we have initial data
@@ -153,6 +154,7 @@ impl<T: IntoArrow> CreateTableBuilder<true, T> {
             write_options: WriteOptions::default(),
             table_definition: None,
             embeddings: Vec::new(),
+            use_legacy_format: true,
         }
     }
 
@@ -184,6 +186,7 @@ impl<T: IntoArrow> CreateTableBuilder<true, T> {
             mode: self.mode,
             write_options: self.write_options,
             embeddings: self.embeddings,
+            use_legacy_format: self.use_legacy_format,
         };
         Ok((data, builder))
     }
@@ -217,6 +220,7 @@ impl CreateTableBuilder<false, NoData> {
             mode: CreateTableMode::default(),
             write_options: WriteOptions::default(),
             embeddings: Vec::new(),
+            use_legacy_format: false,
         }
     }
 
@@ -276,6 +280,20 @@ impl<const HAS_DATA: bool, T: IntoArrow> CreateTableBuilder<HAS_DATA, T> {
         for (key, value) in pairs {
             store_options.insert(key.into(), value.into());
         }
+        self
+    }
+
+    /// Set to true to use the v1 format for data files
+    ///
+    /// This is currently defaulted to true and can be set to false to opt-in
+    /// to the new format.  This should only be used for experimentation and
+    /// evaluation.  The new format is still in beta and may change in ways that
+    /// are not backwards compatible.
+    ///
+    /// Once the new format is stable, the default will change to `false` for
+    /// several releases and then eventually this option will be removed.
+    pub fn use_legacy_format(mut self, use_legacy_format: bool) -> Self {
+        self.use_legacy_format = use_legacy_format;
         self
     }
 }
@@ -943,6 +961,7 @@ impl ConnectionInternal for Database {
         if matches!(&options.mode, CreateTableMode::Overwrite) {
             write_params.mode = WriteMode::Overwrite;
         }
+        write_params.use_legacy_format = options.use_legacy_format;
 
         match NativeTable::create(
             &table_uri,
@@ -1040,7 +1059,11 @@ impl ConnectionInternal for Database {
 #[cfg(test)]
 mod tests {
     use arrow_schema::{DataType, Field, Schema};
+    use futures::TryStreamExt;
+    use lance_testing::datagen::{BatchGenerator, IncrementingInt32};
     use tempfile::tempdir;
+
+    use crate::query::{ExecutableQuery, QueryExecutionOptions};
 
     use super::*;
 
@@ -1144,6 +1167,58 @@ mod tests {
         db.open_table("table1").execute().await.unwrap();
         let tables = db.table_names().execute().await.unwrap();
         assert_eq!(tables, vec!["table1".to_owned()]);
+    }
+
+    fn make_data() -> impl RecordBatchReader + Send + 'static {
+        let id = Box::new(IncrementingInt32::new().named("id".to_string()));
+        BatchGenerator::new().col(id).batches(10, 2000)
+    }
+
+    #[tokio::test]
+    async fn test_create_table_v2() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+        let db = connect(uri).execute().await.unwrap();
+
+        let tbl = db
+            .create_table("v1_test", make_data())
+            .execute()
+            .await
+            .unwrap();
+
+        // In v1 the row group size will trump max_batch_length
+        let batches = tbl
+            .query()
+            .execute_with_options(QueryExecutionOptions {
+                max_batch_length: 50000,
+            })
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(batches.len(), 20);
+
+        let tbl = db
+            .create_table("v2_test", make_data())
+            .use_legacy_format(false)
+            .execute()
+            .await
+            .unwrap();
+
+        // In v2 the page size is much bigger than 50k so we should get a single batch
+        let batches = tbl
+            .query()
+            .execute_with_options(QueryExecutionOptions {
+                max_batch_length: 50000,
+            })
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+
+        assert_eq!(batches.len(), 1);
     }
 
     #[tokio::test]

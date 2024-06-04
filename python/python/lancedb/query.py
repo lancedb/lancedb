@@ -1113,11 +1113,22 @@ class AsyncQueryBase(object):
         self._inner.limit(limit)
         return self
 
-    async def to_batches(self) -> AsyncRecordBatchReader:
+    async def to_batches(
+        self, *, max_batch_length: Optional[int] = None
+    ) -> AsyncRecordBatchReader:
         """
         Execute the query and return the results as an Apache Arrow RecordBatchReader.
+
+        Parameters
+        ----------
+
+        max_batch_length: Optional[int]
+            The maximum number of selected records in a single RecordBatch object.
+            If not specified, a default batch length is used.
+            It is possible for batches to be smaller than the provided length if the
+            underlying data is stored in smaller chunks.
         """
-        return AsyncRecordBatchReader(await self._inner.execute())
+        return AsyncRecordBatchReader(await self._inner.execute(max_batch_length))
 
     async def to_arrow(self) -> pa.Table:
         """

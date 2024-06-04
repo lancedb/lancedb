@@ -507,6 +507,52 @@ def test_empty_or_nonexistent_table(tmp_path):
     assert test.schema == test2.schema
 
 
+@pytest.mark.asyncio
+async def test_create_in_v2_mode(tmp_path):
+    def make_data():
+        for i in range(10):
+            yield pa.record_batch([pa.array([x for x in range(1024)])], names=["x"])
+
+    def make_table():
+        return pa.table([pa.array([x for x in range(10 * 1024)])], names=["x"])
+
+    schema = pa.schema([pa.field("x", pa.int64())])
+
+    db = await lancedb.connect_async(tmp_path)
+
+    # Create table in v1 mode
+    tbl = await db.create_table("test", data=make_data(), schema=schema)
+
+    async def is_in_v2_mode(tbl):
+        batches = await tbl.query().to_batches(max_batch_length=1024 * 10)
+        num_batches = 0
+        async for batch in batches:
+            num_batches += 1
+        return num_batches < 10
+
+    assert not await is_in_v2_mode(tbl)
+
+    # Create table in v2 mode
+    tbl = await db.create_table(
+        "test_v2", data=make_data(), schema=schema, use_legacy_format=False
+    )
+
+    assert await is_in_v2_mode(tbl)
+
+    # Add data (should remain in v2 mode)
+    await tbl.add(make_table())
+
+    assert await is_in_v2_mode(tbl)
+
+    # Create empty table in v2 mode and add data
+    tbl = await db.create_table(
+        "test_empty_v2", data=None, schema=schema, use_legacy_format=False
+    )
+    await tbl.add(make_table())
+
+    assert await is_in_v2_mode(tbl)
+
+
 def test_replace_index(tmp_path):
     db = lancedb.connect(uri=tmp_path)
     table = db.create_table(
