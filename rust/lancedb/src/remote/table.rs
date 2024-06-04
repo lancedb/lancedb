@@ -1,6 +1,9 @@
+use std::sync::Arc;
+
 use arrow_array::RecordBatchReader;
 use arrow_schema::SchemaRef;
 use async_trait::async_trait;
+use datafusion_physical_plan::ExecutionPlan;
 use lance::dataset::{scanner::DatasetRecordBatchStream, ColumnAlteration, NewColumnTransform};
 
 use crate::{
@@ -71,16 +74,16 @@ impl TableInternal for RemoteTable {
     ) -> Result<()> {
         todo!()
     }
+    async fn create_plan(
+        &self,
+        _query: &VectorQuery,
+        _options: QueryExecutionOptions,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        unimplemented!()
+    }
     async fn plain_query(
         &self,
         _query: &Query,
-        _options: QueryExecutionOptions,
-    ) -> Result<DatasetRecordBatchStream> {
-        todo!()
-    }
-    async fn vector_query(
-        &self,
-        _query: &VectorQuery,
         _options: QueryExecutionOptions,
     ) -> Result<DatasetRecordBatchStream> {
         todo!()

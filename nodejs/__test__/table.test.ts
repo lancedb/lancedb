@@ -21,6 +21,7 @@ import * as arrowOld from "apache-arrow-old";
 
 import { Table, connect } from "../lancedb";
 import {
+  Table as ArrowTable,
   Field,
   FixedSizeList,
   Float,
@@ -93,6 +94,11 @@ describe.each([arrow, arrowOld])("Given a table", (arrow: any) => {
     expect(await table.countRows("id == 2")).toBe(0);
     expect(await table.countRows("id == 7")).toBe(1);
     expect(await table.countRows("id == 10")).toBe(1);
+  });
+
+  it("should return the table as an instance of an arrow table", async () => {
+    const arrowTbl = await table.toArrow();
+    expect(arrowTbl).toBeInstanceOf(ArrowTable);
   });
 });
 

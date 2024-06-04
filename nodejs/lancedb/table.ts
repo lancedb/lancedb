@@ -13,13 +13,13 @@
 // limitations under the License.
 
 import {
+  Table as ArrowTable,
   Data,
   IntoVector,
   Schema,
   fromDataToBuffer,
   tableFromIPC,
 } from "./arrow";
-import { EmbeddingFunction } from "./embedding";
 
 import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
 import { IndexOptions } from "./indices";
@@ -31,8 +31,8 @@ import {
   Table as _NativeTable,
 } from "./native";
 import { Query, VectorQuery } from "./query";
-
 export { IndexConfig } from "./native";
+
 /**
  * Options for adding data to a table.
  */
@@ -469,5 +469,10 @@ export class Table {
   /** List all indices that have been created with {@link Table.createIndex} */
   async listIndices(): Promise<IndexConfig[]> {
     return await this.inner.listIndices();
+  }
+
+  /** Return the table as an arrow table */
+  async toArrow(): Promise<ArrowTable> {
+    return await this.query().toArrow();
   }
 }

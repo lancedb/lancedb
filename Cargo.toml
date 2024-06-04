@@ -1,5 +1,11 @@
 [workspace]
-members = ["rust/ffi/node", "rust/lancedb", "nodejs", "python", "java/core/lancedb-jni"]
+members = [
+    "rust/ffi/node",
+    "rust/lancedb",
+    "nodejs",
+    "python",
+    "java/core/lancedb-jni"
+]
 # Python package needs to be built by maturin.
 exclude = ["python"]
 resolver = "2"
@@ -18,6 +24,7 @@ lance = { "version" = "=0.11.1", "features" = ["dynamodb"] }
 lance-index = { "version" = "=0.11.1" }
 lance-linalg = { "version" = "=0.11.1" }
 lance-testing = { "version" = "=0.11.1" }
+lance-datafusion = { "version" = "=0.11.1" }
 # Note that this one does not include pyarrow
 arrow = { version = "51.0", optional = false }
 arrow-array = "51.0"
@@ -29,6 +36,7 @@ arrow-arith = "51.0"
 arrow-cast = "51.0"
 async-trait = "0"
 chrono = "0.4.35"
+datafusion-physical-plan = "37.1"
 half = { "version" = "=2.4.1", default-features = false, features = [
     "num-traits",
 ] }
