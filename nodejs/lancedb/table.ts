@@ -138,7 +138,9 @@ export class Table {
    */
   async add(data: Data, options?: Partial<AddDataOptions>): Promise<void> {
     const mode = options?.mode ?? "append";
-    const functions = await this.#getEmbeddingFunctions();
+    const schema = await this.schema();
+    const registry = getRegistry();
+    const functions = registry.parseFunctions(schema.metadata);
 
     const buffer = await fromDataToBuffer(
       data,
