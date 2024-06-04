@@ -19,6 +19,7 @@ import {
   FixedSizeList,
   Float,
   Float32,
+  type IntoVector,
   isDataType,
   isFixedSizeList,
   isFloat,
@@ -100,33 +101,55 @@ export abstract class EmbeddingFunction<
    * @see {@link lancedb.LanceSchema}
    */
   vectorField(
-    options?: Partial<FieldOptions>,
+    optionsOrDatatype?: Partial<FieldOptions> | DataType,
   ): [DataType, Map<string, EmbeddingFunction>] {
-    let dtype: DataType;
-    const dims = this.ndims() ?? options?.dims;
-    if (!options?.datatype) {
-      if (dims === undefined) {
-        throw new Error("ndims is required for vector field");
-      }
-      dtype = new FixedSizeList(dims, new Field("item", new Float32(), true));
+    let dtype: DataType | undefined;
+    let vectorType: DataType;
+    let dims: number | undefined = this.ndims();
+
+    // `func.vectorField(new Float32())`
+    if (isDataType(optionsOrDatatype)) {
+      dtype = optionsOrDatatype;
     } else {
-      if (isFixedSizeList(options.datatype)) {
-        dtype = options.datatype;
-      } else if (isFloat(options.datatype)) {
+      // `func.vectorField({
+      //  datatype: new Float32(),
+      //  dims: 10
+      // })`
+      dims = dims ?? optionsOrDatatype?.dims;
+      dtype = optionsOrDatatype?.datatype;
+    }
+
+    if (dtype !== undefined) {
+      // `func.vectorField(new FixedSizeList(dims, new Field("item", new Float32(), true)))`
+      // or `func.vectorField({datatype: new FixedSizeList(dims, new Field("item", new Float32(), true))})`
+      if (isFixedSizeList(dtype)) {
+        vectorType = dtype;
+        // `func.vectorField(new Float32())`
+        // or `func.vectorField({datatype: new Float32()})`
+      } else if (isFloat(dtype)) {
+        // No `ndims` impl and no `{dims: n}` provided;
         if (dims === undefined) {
           throw new Error("ndims is required for vector field");
         }
-        dtype = newVectorType(dims, options.datatype);
+        vectorType = newVectorType(dims, dtype);
       } else {
         throw new Error(
           "Expected FixedSizeList or Float as datatype for vector field",
         );
       }
+    } else {
+      if (dims === undefined) {
+        throw new Error("ndims is required for vector field");
+      }
+      vectorType = new FixedSizeList(
+        dims,
+        new Field("item", new Float32(), true),
+      );
     }
     const metadata = new Map<string, EmbeddingFunction>();
     metadata.set("vector_column_for", this);
 
-    return [dtype, metadata];
+    return [vectorType, metadata];
   }
 
   /** The number of dimensions of the embeddings */
@@ -147,9 +170,7 @@ export abstract class EmbeddingFunction<
   /**
   Compute the embeddings for a single query
  */
-  async computeQueryEmbeddings(
-    data: T,
-  ): Promise<number[] | Float32Array | Float64Array> {
+  async computeQueryEmbeddings(data: T): Promise<IntoVector> {
     return this.computeSourceEmbeddings([data]).then(
       (embeddings) => embeddings[0],
     );

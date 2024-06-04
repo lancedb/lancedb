@@ -42,6 +42,7 @@ export class EmbeddingFunctionRegistry {
    * Register an embedding function
    * @param name The name of the function
    * @param func The function to register
+   * @throws Error if the function is already registered
    */
   register<T extends EmbeddingFunctionFactory = EmbeddingFunctionFactory>(
     this: EmbeddingFunctionRegistry,
@@ -89,6 +90,9 @@ export class EmbeddingFunctionRegistry {
     this.#functions.clear();
   }
 
+  /**
+   * @ignore
+   */
   parseFunctions(
     this: EmbeddingFunctionRegistry,
     metadata: Map<string, string>,
