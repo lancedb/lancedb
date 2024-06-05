@@ -3,7 +3,7 @@ name: NPM Publish
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
 
 jobs:
   node:
@@ -111,12 +111,11 @@ jobs:
             runner: ubuntu-latest
           - arch: aarch64
             # For successful fat LTO builds, we need a large runner to avoid OOM errors.
-            runner: buildjet-16vcpu-ubuntu-2204-arm
+            runner: warp-ubuntu-latest-arm64-4x
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      # Buildjet aarch64 runners have only 1.5 GB RAM per core, vs 3.5 GB per core for
-      # x86_64 runners. To avoid OOM errors on ARM, we create a swap file.
+      # To avoid OOM errors on ARM, we create a swap file.
       - name: Configure aarch64 build
         if: ${{ matrix.config.arch == 'aarch64' }}
         run: |
@@ -323,7 +322,7 @@ jobs:
       - name: Publish to NPM
         env:
           NODE_AUTH_TOKEN: ${{ secrets.LANCEDB_NPM_REGISTRY_TOKEN }}
-        # By default, things are published to the latest tag. This is what is 
+        # By default, things are published to the latest tag. This is what is
         # installed by default if the user does not specify a version. This is
         # good for stable releases, but for pre-releases, we want to publish to
         # the "preview" tag so they can install with `npm install lancedb@preview`.
@@ -368,7 +367,7 @@ jobs:
       - uses: ./.github/workflows/update_package_lock_nodejs
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-  
+
   gh-release:
     runs-on: ubuntu-latest
     permissions:
