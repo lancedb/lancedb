@@ -434,7 +434,8 @@ export class Table {
   async toArrow(): Promise<ArrowTable> {
     return await this.query().toArrow();
   }
-  mergeInsert(on: string): MergeInsertBuilder {
-    return new MergeInsertBuilder(this.inner.mergeInsert([on]));
+  mergeInsert(on: string | string[]): MergeInsertBuilder {
+    on = Array.isArray(on) ? on : [on];
+    return new MergeInsertBuilder(this.inner.mergeInsert(on));
   }
 }

@@ -148,7 +148,7 @@ describe("merge insert", () => {
     ];
     await table
       .mergeInsert("a")
-      .whenMatchedUpdateAll("target.b = 'b'")
+      .whenMatchedUpdateAll({ where: "target.b = 'b'" })
       .execute(newData);
 
     const expected = [
@@ -195,7 +195,7 @@ describe("merge insert", () => {
       .mergeInsert("a")
       .whenMatchedUpdateAll()
       .whenNotMatchedInsertAll()
-      .whenNotMatchedBySourceDelete("a > 2")
+      .whenNotMatchedBySourceDelete({ where: "a > 2" })
       .execute(newData);
 
     const expected = [

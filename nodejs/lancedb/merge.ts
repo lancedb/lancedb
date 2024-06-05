@@ -32,8 +32,10 @@ export class MergeInsertBuilder {
    *
    * For example, "target.last_update < source.last_update"
    */
-  whenMatchedUpdateAll(condition?: string): MergeInsertBuilder {
-    return new MergeInsertBuilder(this.#native.whenMatchedUpdateAll(condition));
+  whenMatchedUpdateAll(options?: { where: string }): MergeInsertBuilder {
+    return new MergeInsertBuilder(
+      this.#native.whenMatchedUpdateAll(options?.where),
+    );
   }
   /**
    * Rows that exist only in the source table (new data) should
@@ -47,13 +49,13 @@ export class MergeInsertBuilder {
    * deleted.  An optional condition can be provided to limit what
    * data is deleted.
    *
-   * @param filter - If None then all such rows will be deleted.
-   *   Otherwise the condition will be used as an SQL filter to
-   *   limit what rows are deleted.
+   * @param options.where - An optional condition to limit what data is deleted
    */
-  whenNotMatchedBySourceDelete(condition?: string): MergeInsertBuilder {
+  whenNotMatchedBySourceDelete(options?: {
+    where: string;
+  }): MergeInsertBuilder {
     return new MergeInsertBuilder(
-      this.#native.whenNotMatchedBySourceDelete(condition),
+      this.#native.whenNotMatchedBySourceDelete(options?.where),
     );
   }
   /**
