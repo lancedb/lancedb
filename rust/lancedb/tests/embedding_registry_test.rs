@@ -318,6 +318,7 @@ impl EmbeddingFunction for MockEmbed {
         Ok(Arc::new(arr))
     }
 
+    #[allow(unused_variables)]
     fn compute_query_embeddings(&self, input: Arc<dyn Array>) -> Result<Arc<dyn Array>> {
         unimplemented!()
     }

@@ -56,6 +56,7 @@ pub enum WriteMode {
 /// Write options when creating a Table.
 #[napi(object)]
 pub struct WriteOptions {
+    /// Write mode for writing to a table.
     pub mode: Option<WriteMode>,
 }
 

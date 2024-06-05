@@ -126,6 +126,7 @@ impl Connection {
         buf: Buffer,
         mode: String,
         storage_options: Option<HashMap<String, String>>,
+        use_legacy_format: Option<bool>,
     ) -> napi::Result<Table> {
         let batches = ipc_file_to_batches(buf.to_vec())
             .map_err(|e| napi::Error::from_reason(format!("Failed to read IPC file: {}", e)))?;
@@ -135,6 +136,9 @@ impl Connection {
             for (key, value) in storage_options {
                 builder = builder.storage_option(key, value);
             }
+        }
+        if let Some(use_legacy_format) = use_legacy_format {
+            builder = builder.use_legacy_format(use_legacy_format);
         }
         let tbl = builder
             .execute()
@@ -150,6 +154,7 @@ impl Connection {
         schema_buf: Buffer,
         mode: String,
         storage_options: Option<HashMap<String, String>>,
+        use_legacy_format: Option<bool>,
     ) -> napi::Result<Table> {
         let schema = ipc_file_to_schema(schema_buf.to_vec()).map_err(|e| {
             napi::Error::from_reason(format!("Failed to marshal schema from JS to Rust: {}", e))
@@ -163,6 +168,9 @@ impl Connection {
             for (key, value) in storage_options {
                 builder = builder.storage_option(key, value);
             }
+        }
+        if let Some(use_legacy_format) = use_legacy_format {
+            builder = builder.use_legacy_format(use_legacy_format);
         }
         let tbl = builder
             .execute()

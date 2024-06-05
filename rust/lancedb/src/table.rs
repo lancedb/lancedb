@@ -233,7 +233,8 @@ pub struct WriteOptions {
     // pub on_bad_vectors: BadVectorHandling,
     /// Advanced parameters that can be used to customize table creation
     ///
-    /// If set, these will take precedence over any overlapping `OpenTableBuilder` options
+    /// Overlapping `OpenTableBuilder` options (e.g. [AddDataBuilder::mode]) will take
+    /// precedence over their counterparts in `WriteOptions` (e.g. [WriteParams::mode]).
     pub lance_write_params: Option<WriteParams>,
 }
 
