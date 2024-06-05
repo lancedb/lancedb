@@ -431,7 +431,7 @@ Use the `drop_table()` method on the database to remove a table.
     ```
 
 ## Using Embedding API
-You can use embedding API when working with embedding models. The embedding API allows you to automatically vectorize the data at ingestion and query time.  Embedding API comes with built-in integrations with popular embedding models like Openai, Hugging Face, Sentence Transformers, CLIP and more.
+You can use embedding API when working with embedding models. IT automatically vectorizes the data at ingestion and query time and comes with built-in integrations with popular embedding models like Openai, Hugging Face, Sentence Transformers, CLIP and more.
 
 === "Python"
 
