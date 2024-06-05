@@ -66,6 +66,10 @@ impl DatasetRef {
         Ok(())
     }
 
+    fn is_latest(&self) -> bool {
+        matches!(self, Self::Latest { .. })
+    }
+
     async fn need_reload(&self) -> Result<bool> {
         Ok(match self {
             Self::Latest { dataset, .. } => {
@@ -172,11 +176,16 @@ impl DatasetConsistencyWrapper {
 
     /// Convert into a wrapper in latest version mode
     pub async fn as_latest(&self, read_consistency_interval: Option<Duration>) -> Result<()> {
-        self.0
-            .write()
-            .await
-            .as_latest(read_consistency_interval)
-            .await
+        if self.0.read().await.is_latest() {
+            return Ok(());
+        }
+
+        let mut write_guard = self.0.write().await;
+        if write_guard.is_latest() {
+            return Ok(());
+        }
+
+        write_guard.as_latest(read_consistency_interval).await
     }
 
     pub async fn as_time_travel(&self, target_version: u64) -> Result<()> {
