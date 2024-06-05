@@ -1175,6 +1175,7 @@ class LanceTable(Table):
         *,
         replace: bool = False,
         writer_heap_size: Optional[int] = 1024 * 1024 * 1024,
+        tokenizer_name: str = "default",
     ):
         """Create a full-text search index on the table.
 
@@ -1193,6 +1194,10 @@ class LanceTable(Table):
         ordering_field_names:
             A list of unsigned type fields to index to optionally order
             results on at search time
+        tokenizer_name: str, default "default"
+            The tokenizer to use for the index. Can be "raw", "default" or the 2 letter
+            language code followed by "_stem". So for english it would be "en_stem".
+            For available languages see: https://docs.rs/tantivy/latest/tantivy/tokenizer/enum.Language.html
         """
         from .fts import create_index, populate_index
 
@@ -1218,6 +1223,7 @@ class LanceTable(Table):
             self._get_fts_index_path(),
             field_names,
             ordering_fields=ordering_field_names,
+            tokenizer_name=tokenizer_name,
         )
         populate_index(
             index,
