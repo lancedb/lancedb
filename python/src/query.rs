@@ -120,10 +120,14 @@ impl VectorQuery {
         self.inner = self.inner.clone().bypass_vector_index()
     }
 
-    pub fn execute(self_: PyRef<'_, Self>) -> PyResult<&PyAny> {
+    pub fn execute(self_: PyRef<'_, Self>, max_batch_length: Option<u32>) -> PyResult<&PyAny> {
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
-            let inner_stream = inner.execute().await.infer_error()?;
+            let mut opts = QueryExecutionOptions::default();
+            if let Some(max_batch_length) = max_batch_length {
+                opts.max_batch_length = max_batch_length;
+            }
+            let inner_stream = inner.execute_with_options(opts).await.infer_error()?;
             Ok(RecordBatchStream::new(inner_stream))
         })
     }

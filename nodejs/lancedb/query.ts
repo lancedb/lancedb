@@ -56,7 +56,7 @@ export class RecordBatchIterator implements AsyncIterator<RecordBatch> {
 /* eslint-enable */
 
 class RecordBatchIterable<
-  NativeQueryType extends NativeQuery | NativeVectorQuery
+  NativeQueryType extends NativeQuery | NativeVectorQuery,
 > implements AsyncIterable<RecordBatch>
 {
   private inner: NativeQueryType;
@@ -70,7 +70,7 @@ class RecordBatchIterable<
   // biome-ignore lint/suspicious/noExplicitAny: skip
   [Symbol.asyncIterator](): AsyncIterator<RecordBatch<any>, any, undefined> {
     return new RecordBatchIterator(
-      this.inner.execute(this.options?.maxBatchLength)
+      this.inner.execute(this.options?.maxBatchLength),
     );
   }
 }
@@ -91,7 +91,7 @@ export interface QueryExecutionOptions {
 /** Common methods supported by all query types */
 export class QueryBase<
   NativeQueryType extends NativeQuery | NativeVectorQuery,
-  QueryType
+  QueryType,
 > implements AsyncIterable<RecordBatch>
 {
   protected constructor(protected inner: NativeQueryType) {
@@ -146,7 +146,7 @@ export class QueryBase<
    * object insertion order is easy to get wrong and `Map` is more foolproof.
    */
   select(
-    columns: string[] | Map<string, string> | Record<string, string> | string
+    columns: string[] | Map<string, string> | Record<string, string> | string,
   ): QueryType {
     let columnTuples: [string, string][];
     if (typeof columns === "string") {
@@ -175,7 +175,7 @@ export class QueryBase<
   }
 
   protected nativeExecute(
-    options?: Partial<QueryExecutionOptions>
+    options?: Partial<QueryExecutionOptions>,
   ): Promise<NativeBatchIterator> {
     return this.inner.execute(options?.maxBatchLength);
   }
@@ -192,7 +192,7 @@ export class QueryBase<
    *
    */
   protected execute(
-    options?: Partial<QueryExecutionOptions>
+    options?: Partial<QueryExecutionOptions>,
   ): RecordBatchIterator {
     return new RecordBatchIterator(this.nativeExecute(options));
   }
