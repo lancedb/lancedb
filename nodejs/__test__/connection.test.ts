@@ -12,8 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+import { Field, Float64, Schema } from "apache-arrow";
 import * as tmp from "tmp";
-import { Connection, connect } from "../lancedb";
+import { Connection, Table, connect } from "../lancedb";
 
 describe("when connecting", () => {
   let tmpDir: tmp.DirResult;
@@ -85,5 +86,40 @@ describe("given a connection", () => {
 
     tables = await db.tableNames({ startAfter: "a" });
     expect(tables).toEqual(["b", "c"]);
+  });
+
+  it("should create tables in v2 mode", async () => {
+    const db = await connect(tmpDir.name);
+    const data = [...Array(10000).keys()].map((i) => ({ id: i }));
+
+    // Create in v1 mode
+    let table = await db.createTable("test", data);
+
+    const isV2 = async (table: Table) => {
+      const data = await table.query().toArrow({ maxBatchLength: 100000 });
+      console.log(data.batches.length);
+      return data.batches.length < 5;
+    };
+
+    await expect(isV2(table)).resolves.toBe(false);
+
+    // Create in v2 mode
+    table = await db.createTable("test_v2", data, { useLegacyFormat: false });
+
+    await expect(isV2(table)).resolves.toBe(true);
+
+    await table.add(data);
+
+    await expect(isV2(table)).resolves.toBe(true);
+
+    // Create empty in v2 mode
+    const schema = new Schema([new Field("id", new Float64(), true)]);
+
+    table = await db.createEmptyTable("test_v2_empty", schema, {
+      useLegacyFormat: false,
+    });
+
+    await table.add(data);
+    await expect(isV2(table)).resolves.toBe(true);
   });
 });

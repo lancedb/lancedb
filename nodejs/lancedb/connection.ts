@@ -71,6 +71,12 @@ export interface CreateTableOptions {
    * The available options are described at https://lancedb.github.io/lancedb/guides/storage/
    */
   storageOptions?: Record<string, string>;
+  /**
+   * If true then data files will be written with the legacy format
+   *
+   * The default is true while the new format is in beta
+   */
+  useLegacyFormat?: boolean;
   schema?: Schema;
   embeddingFunction?: EmbeddingFunctionConfig;
 }
@@ -221,6 +227,7 @@ export class Connection {
       buf,
       mode,
       cleanseStorageOptions(options?.storageOptions),
+      options?.useLegacyFormat,
     );
 
     return new Table(innerTable);
@@ -256,6 +263,7 @@ export class Connection {
       buf,
       mode,
       cleanseStorageOptions(options?.storageOptions),
+      options?.useLegacyFormat,
     );
     return new Table(innerTable);
   }
