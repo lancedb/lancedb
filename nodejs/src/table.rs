@@ -334,8 +334,8 @@ impl Table {
         &self,
         index_uuid: String,
     ) -> napi::Result<Either<IndexStatistics, ()>> {
-        // We use Either instead of `Option` to avoid returning null. We'd rather return 'undefined'
-        let tbl = self.inner_ref().and_then(|tbl| Ok(tbl.as_native()))?;
+        // We use Either<T, ()> instead of `Option` to avoid returning null. We'd rather return 'undefined'
+        let tbl = self.inner_ref()?.as_native();
         if let Some(tbl) = tbl {
             let stats = tbl.load_index_stats(&index_uuid).await.default_error()?;
             match stats {
