@@ -229,6 +229,18 @@ describe("When creating an index", () => {
     }
   });
 
+  test("should be able to list index and stats", async function () {
+    await tbl.createIndex("id");
+
+    const indices = await tbl.listIndices();
+    expect(indices.length).toEqual(1);
+
+    const stats = await tbl.indexStats(indices[0].indexId);
+    expect(stats).toBeDefined();
+    expect(stats?.numIndexedRows).toEqual(300);
+    expect(stats?.numUnindexedRows).toEqual(0);
+  });
+
   // TODO: Move this test to the query API test (making sure we can reject queries
   // when the dimension is incorrect)
   test("two columns with different dimensions", async () => {

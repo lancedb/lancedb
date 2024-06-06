@@ -1249,7 +1249,7 @@ impl NativeTable {
             .collect())
     }
 
-    async fn load_index_stats(&self, index_uuid: &str) -> Result<Option<IndexStatistics>> {
+    pub async fn load_index_stats(&self, index_uuid: &str) -> Result<Option<IndexStatistics>> {
         let index = self
             .load_indices()
             .await?
@@ -1860,7 +1860,13 @@ impl TableInternal for NativeTable {
                 }
                 columns.push(field.name.clone());
             }
-            Ok(IndexConfig { index_type: if is_vector { crate::index::IndexType::IvfPq } else { crate::index::IndexType::BTree }, columns })
+            let index_type = if is_vector {
+                crate::index::IndexType::IvfPq
+            } else {
+                crate::index::IndexType::BTree
+            };
+
+            Ok(IndexConfig { index_type, columns, index_id: idx.uuid.to_string() })
         }).collect::<Result<Vec<_>>>()
     }
 }

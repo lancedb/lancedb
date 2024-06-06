@@ -328,16 +328,36 @@ impl Table {
             .map(IndexConfig::from)
             .collect::<Vec<_>>())
     }
+
+    #[napi]
+    pub async fn index_stats(
+        &self,
+        index_uuid: String,
+    ) -> napi::Result<Either<IndexStatistics, ()>> {
+        // We use Either instead of `Option` to avoid returning null. We'd rather return 'undefined'
+        let tbl = self.inner_ref().and_then(|tbl| Ok(tbl.as_native()))?;
+        if let Some(tbl) = tbl {
+            let stats = tbl.load_index_stats(&index_uuid).await.default_error()?;
+            match stats {
+                Some(stats) => Ok(Either::A(stats.into())),
+                None => Ok(Either::B(())),
+            }
+        } else {
+            Ok(Either::B(()))
+        }
+    }
 }
 
 #[napi(object)]
 /// A description of an index currently configured on a column
 pub struct IndexConfig {
+    /// The unique identifier for the index
+    pub index_id: String,
     /// The type of the index
     pub index_type: String,
     /// The columns in the index
     ///
-    /// Currently this is always an array of size 1.  In the future there may
+    /// Currently this is always an array of size 1. In the future there may
     /// be more columns to represent composite indices.
     pub columns: Vec<String>,
 }
@@ -346,6 +366,7 @@ impl From<lancedb::index::IndexConfig> for IndexConfig {
     fn from(value: lancedb::index::IndexConfig) -> Self {
         let index_type = format!("{:?}", value.index_type);
         Self {
+            index_id: value.index_id,
             index_type,
             columns: value.columns,
         }
@@ -429,4 +450,41 @@ pub struct AddColumnsSql {
     /// The values to populate the new column with, as a SQL expression.
     /// The expression can reference other columns in the table.
     pub value_sql: String,
+}
+
+#[napi(object)]
+pub struct IndexStatistics {
+    /// The number of rows indexed by the index
+    pub num_indexed_rows: f64,
+    /// The number of rows not indexed
+    pub num_unindexed_rows: f64,
+    /// The type of the index
+    pub index_type: Option<String>,
+    /// The metadata for each index
+    pub indices: Vec<IndexMetadata>,
+}
+impl From<lancedb::index::IndexStatistics> for IndexStatistics {
+    fn from(value: lancedb::index::IndexStatistics) -> Self {
+        Self {
+            num_indexed_rows: value.num_indexed_rows as f64,
+            num_unindexed_rows: value.num_unindexed_rows as f64,
+            index_type: value.index_type.map(|t| format!("{:?}", t)),
+            indices: value.indices.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+#[napi(object)]
+pub struct IndexMetadata {
+    pub metric_type: Option<String>,
+    pub index_type: Option<String>,
+}
+
+impl From<lancedb::index::IndexMetadata> for IndexMetadata {
+    fn from(value: lancedb::index::IndexMetadata) -> Self {
+        Self {
+            metric_type: value.metric_type,
+            index_type: value.index_type,
+        }
+    }
 }

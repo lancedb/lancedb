@@ -27,6 +27,7 @@ import {
   AddColumnsSql,
   ColumnAlteration,
   IndexConfig,
+  IndexStatistics,
   OptimizeStats,
   Table as _NativeTable,
 } from "./native";
@@ -477,5 +478,13 @@ export class Table {
   /** Return the table as an arrow table */
   async toArrow(): Promise<ArrowTable> {
     return await this.query().toArrow();
+  }
+  /** List all the stats of a specified index
+   * @param {string} indexUUID The UUID of the index to get stats for
+   * @returns {IndexStatistics | undefined} The stats of the index
+   * If the index does not exist, `undefined` is returned
+   */
+  async indexStats(indexUUID: string): Promise<IndexStatistics | undefined> {
+    return await this.inner.indexStats(indexUUID);
   }
 }
