@@ -18,6 +18,9 @@ export {
   AddColumnsSql,
   ColumnAlteration,
   ConnectionOptions,
+  IndexStatistics,
+  IndexMetadata,
+  IndexConfig,
 } from "./native.js";
 export {
   makeArrowTable,
@@ -39,5 +42,5 @@ export {
   RecordBatchIterator,
 } from "./query";
 export { Index, IndexOptions, IvfPqOptions } from "./indices";
-export { Table, AddDataOptions, IndexConfig, UpdateOptions } from "./table";
+export { Table, AddDataOptions, UpdateOptions } from "./table";
 export * as embedding from "./embedding";

@@ -32,7 +32,6 @@ import {
   Table as _NativeTable,
 } from "./native";
 import { Query, VectorQuery } from "./query";
-export { IndexConfig } from "./native";
 
 /**
  * Options for adding data to a table.
