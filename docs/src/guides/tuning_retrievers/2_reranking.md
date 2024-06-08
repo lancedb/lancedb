@@ -1,4 +1,4 @@
-Continuing from the previous example, we can now rerank the results using a more complex rerankers.
+Continuing from the previous example, we can now rerank the results using more complex rerankers.
 
 ## Reranking search results
 You can rerank any search results using a reranker. The syntax for reranking is as follows:
