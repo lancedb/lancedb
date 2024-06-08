@@ -181,7 +181,7 @@ table.
 !!! info "Under the hood, LanceDB reads in the Apache Arrow data and persists it to disk using the [Lance format](https://www.github.com/lancedb/lance)."
 
 !!! info "Automatic vectorization with Embedding API"
-    When working with embedding models, it is recommended to use LanceDB embedding API to automatically vectorize the data and queries in the background. See the [quickstart example](#using-embedding-api) or the embedding API [guide](./embeddings/)
+    When working with embedding models, it is recommended to use the LanceDB embedding API to automatically vectorize the data and queries in the background. See the [quickstart example](#using-embedding-api) or the embedding API [guide](./embeddings/)
 
 ### Create an empty table
 
