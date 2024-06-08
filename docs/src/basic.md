@@ -436,8 +436,8 @@ You can use the embedding API when working with embedding models. It automatical
 === "Python"
 
     ```python
-    --8<-- "python/python/tests/docs/test_embeddings_slow.py:imports"
-    --8<-- "python/python/tests/docs/test_embeddings_slow.py:openai_embeddings"
+    --8<-- "python/python/tests/docs/test_embeddings_optional.py:imports"
+    --8<-- "python/python/tests/docs/test_embeddings_optional.py:openai_embeddings"
     ```
 
 Learn about using the existing integrations and creating custom embedding functions in the [embedding API guide](./embeddings/).
