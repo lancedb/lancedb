@@ -105,7 +105,7 @@ Here are the hit-rate results for the dataset:
 
 ### Evaluation results on other datasets
 
-The hit-rate results can vary based on the dataset and the query type. Here are the hit-rate results for the same dataset using the same embedding function.
+The hit-rate results can vary based on the dataset and the query type. Here are the hit-rate results for the other datasets using the same embedding function.
 
 * <b> SQuAD Dataset: </b>
 
