@@ -442,7 +442,7 @@ You can use the embedding API when working with embedding models. It automatical
 
 Learn about using the existing integrations and creating custom embedding functions in the [embedding API guide](./embeddings/).
 
-!!! note "Using Embedding API in Rust & Typescript"
+!!! note "Using the Embedding API in Rust & Typescript"
     The Embedding API is currently only available in Python. Support for Rust and Typescript is being worked on.
 
 ## What's next
