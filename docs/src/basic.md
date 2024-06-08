@@ -180,6 +180,9 @@ table.
 
 !!! info "Under the hood, LanceDB reads in the Apache Arrow data and persists it to disk using the [Lance format](https://www.github.com/lancedb/lance)."
 
+!!! info "Automatic embedding generation with Embedding API"
+    When working with embedding models, it is recommended to use the LanceDB embedding API to automatically create vector representation of the data and queries in the background. See the [quickstart example](#using-the-embedding-api) or the embedding API [guide](./embeddings/)
+
 ### Create an empty table
 
 Sometimes you may not have the data to insert into the table at creation time.
@@ -193,6 +196,9 @@ similar to a `CREATE TABLE` statement in SQL.
       --8<-- "python/python/tests/docs/test_basic.py:create_empty_table"
       --8<-- "python/python/tests/docs/test_basic.py:create_empty_table_async"
       ```
+
+    !!! note "You can define schema in Pydantic"
+        LanceDB comes with Pydantic support, which allows you to define the schema of your data using Pydantic models. This makes it easy to work with LanceDB tables and data. Learn more about all supported types in [tables guide](./guides/tables.md).
 
 === "Typescript"
 
@@ -423,6 +429,19 @@ Use the `drop_table()` method on the database to remove a table.
     }
     })
     ```
+
+## Using the Embedding API
+You can use the embedding API when working with embedding models. It automatically vectorizes the data at ingestion and query time and comes with built-in integrations with popular embedding models like Openai, Hugging Face, Sentence Transformers, CLIP and more.
+
+=== "Python"
+
+    ```python
+    --8<-- "python/python/tests/docs/test_embeddings_slow.py:imports"
+    --8<-- "python/python/tests/docs/test_embeddings_slow.py:openai_embeddings"
+    ```
+
+Learn about using the existing integrations and creating custom embedding functions in the [embedding API guide](./embeddings/).
+
 
 ## What's next
 
