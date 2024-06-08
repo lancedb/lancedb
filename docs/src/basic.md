@@ -180,8 +180,8 @@ table.
 
 !!! info "Under the hood, LanceDB reads in the Apache Arrow data and persists it to disk using the [Lance format](https://www.github.com/lancedb/lance)."
 
-!!! info "Automatic vectorization with Embedding API"
-    When working with embedding models, it is recommended to use the LanceDB embedding API to automatically vectorize the data and queries in the background. See the [quickstart example](#using-embedding-api) or the embedding API [guide](./embeddings/)
+!!! info "Automatic embedding generation with Embedding API"
+    When working with embedding models, it is recommended to use the LanceDB embedding API to automatically create vector representation of the data and queries in the background. See the [quickstart example](#using-the-embedding-api) or the embedding API [guide](./embeddings/)
 
 ### Create an empty table
 
@@ -442,8 +442,6 @@ You can use the embedding API when working with embedding models. It automatical
 
 Learn about using the existing integrations and creating custom embedding functions in the [embedding API guide](./embeddings/).
 
-!!! note "Using the Embedding API in Rust & Typescript"
-    The Embedding API is currently only available in Python. Support for Rust and Typescript is being worked on.
 
 ## What's next
 

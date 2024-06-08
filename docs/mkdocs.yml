@@ -155,7 +155,7 @@ nav:
           - Overview: cloud/index.md
           - API reference:
               - 🐍 Python: python/saas-python.md
-              - 👾 JavaScript: javascript/saas-modules.md
+              - 👾 JavaScript: javascript/modules.md
 
   - Quick start: basic.md
   - Concepts:
@@ -225,7 +225,7 @@ nav:
       - Overview: cloud/index.md
       - API reference:
           - 🐍 Python: python/saas-python.md
-          - 👾 JavaScript: javascript/saas-modules.md
+          - 👾 JavaScript: javascript/modules.md
 
 extra_css:
   - styles/global.css
