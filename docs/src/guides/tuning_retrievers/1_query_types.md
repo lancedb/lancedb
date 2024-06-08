@@ -16,7 +16,7 @@ Using different embedding models is something that's very specific to the use ca
 
 
 ## The dataset
-We'll be using a QA dataset generated using LLama2 review paper. The dataset contains 221 query, context and answer triplets. The queries and answers are generated using GPT-4 based on a given query. Full script used to generate the dataset can be found on this [repo](https://github.com/lancedb/ragged). It can be downloaded from [here](https://github.com/AyushExel/assets/blob/main/data_qa.csv)
+We'll be using a QA dataset generated using a LLama2 review paper. The dataset contains 221 query, context and answer triplets. The queries and answers are generated using GPT-4 based on a given query. Full script used to generate the dataset can be found on this [repo](https://github.com/lancedb/ragged). It can be downloaded from [here](https://github.com/AyushExel/assets/blob/main/data_qa.csv)
 
 ### Using different query types
 Let's setup the embeddings and the dataset first. We'll use the LanceDB's `huggingface` embeddings integration for this guide. 
