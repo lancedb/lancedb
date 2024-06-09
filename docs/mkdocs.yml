@@ -124,7 +124,9 @@ nav:
           - LangChain:
             - LangChain 🔗: integrations/langchain.md
             - LangChain JS/TS 🔗: https://js.langchain.com/docs/integrations/vectorstores/lancedb
-          - LlamaIndex 🦙: https://docs.llamaindex.ai/en/stable/examples/vector_stores/LanceDBIndexDemo/
+          - LlamaIndex 🦙:
+            - LlamaIndex docs: integrations/llamaIndex.md
+            - LlamaIndex demo:  https://docs.llamaindex.ai/en/stable/examples/vector_stores/LanceDBIndexDemo/
           - Pydantic: python/pydantic.md
           - Voxel51: integrations/voxel51.md
           - PromptTools: integrations/prompttools.md
