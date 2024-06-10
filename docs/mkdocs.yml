@@ -106,6 +106,9 @@ nav:
           - Versioning & Reproducibility: notebooks/reproducibility.ipynb
           - Configuring Storage: guides/storage.md
           - Sync -> Async Migration Guide: migration.md
+          - Tuning retrieval performance:
+              - Choosing right query type: guides/tuning_retrievers/1_query_types.md
+              - Reranking: guides/tuning_retrievers/2_reranking.md
       - 🧬 Managing embeddings:
           - Overview: embeddings/index.md
           - Embedding functions: embeddings/embedding_functions.md
@@ -121,7 +124,9 @@ nav:
           - LangChain:
             - LangChain 🔗: integrations/langchain.md
             - LangChain JS/TS 🔗: https://js.langchain.com/docs/integrations/vectorstores/lancedb
-          - LlamaIndex 🦙: https://docs.llamaindex.ai/en/stable/examples/vector_stores/LanceDBIndexDemo/
+          - LlamaIndex 🦙:
+            - LlamaIndex docs: integrations/llamaIndex.md
+            - LlamaIndex demo:  https://docs.llamaindex.ai/en/stable/examples/vector_stores/LanceDBIndexDemo/
           - Pydantic: python/pydantic.md
           - Voxel51: integrations/voxel51.md
           - PromptTools: integrations/prompttools.md
@@ -152,7 +157,7 @@ nav:
           - Overview: cloud/index.md
           - API reference:
               - 🐍 Python: python/saas-python.md
-              - 👾 JavaScript: javascript/saas-modules.md
+              - 👾 JavaScript: javascript/modules.md
 
   - Quick start: basic.md
   - Concepts:
@@ -181,6 +186,9 @@ nav:
       - Versioning & Reproducibility: notebooks/reproducibility.ipynb
       - Configuring Storage: guides/storage.md
       - Sync -> Async Migration Guide: migration.md
+      - Tuning retrieval performance:
+          - Choosing right query type: guides/tuning_retrievers/1_query_types.md
+          - Reranking: guides/tuning_retrievers/2_reranking.md
   - Managing Embeddings:
       - Overview: embeddings/index.md
       - Embedding functions: embeddings/embedding_functions.md
@@ -219,7 +227,7 @@ nav:
       - Overview: cloud/index.md
       - API reference:
           - 🐍 Python: python/saas-python.md
-          - 👾 JavaScript: javascript/saas-modules.md
+          - 👾 JavaScript: javascript/modules.md
 
 extra_css:
   - styles/global.css

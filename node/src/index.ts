@@ -695,10 +695,18 @@ export interface MergeInsertArgs {
   whenNotMatchedBySourceDelete?: string | boolean
 }
 
+export enum IndexStatus {
+  Pending = "pending",
+  Indexing = "indexing",
+  Done = "done",
+  Failed = "failed"
+}
+
 export interface VectorIndex {
   columns: string[]
   name: string
   uuid: string
+  status: IndexStatus
 }
 
 export interface IndexStats {

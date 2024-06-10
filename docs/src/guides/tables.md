@@ -452,6 +452,27 @@ After a table has been created, you can always add more data to it using the var
     tbl.add(pydantic_model_items)
     ```
 
+    ??? "Ingesting Pydantic models with LanceDB embedding API"
+        When using LanceDB's embedding API, you can add Pydantic models directly to the table. LanceDB will automatically convert the `vector` field to a vector before adding it to the table. You need to specify the default value of `vector` feild as None to allow LanceDB to automatically vectorize the data.
+
+        ```python
+        import lancedb
+        from lancedb.pydantic import LanceModel, Vector
+        from lancedb.embeddings import get_registry
+
+        db = lancedb.connect("~/tmp")
+        embed_fcn = get_registry().get("huggingface").create(name="BAAI/bge-small-en-v1.5")
+
+        class Schema(LanceModel):
+            text: str = embed_fcn.SourceField()
+            vector: Vector(embed_fcn.ndims()) = embed_fcn.VectorField(default=None)
+
+        tbl = db.create_table("my_table", schema=Schema, mode="overwrite")
+        models = [Schema(text="hello"), Schema(text="world")]
+        tbl.add(models)
+        ```
+
+
 
 === "JavaScript"
 
@@ -635,6 +656,31 @@ The `values` parameter is used to provide the new values for the columns as lite
 !!! info "Note"
 
     When rows are updated, they are moved out of the index. The row will still show up in ANN queries, but the query will not be as fast as it would be if the row was in the index. If you update a large proportion of rows, consider rebuilding the index afterwards.
+
+## Drop a table
+
+Use the `drop_table()` method on the database to remove a table.
+
+=== "Python"
+
+      ```python
+      --8<-- "python/python/tests/docs/test_basic.py:drop_table"
+      --8<-- "python/python/tests/docs/test_basic.py:drop_table_async"
+      ```
+
+      This permanently removes the table and is not recoverable, unlike deleting rows.
+      By default, if the table does not exist an exception is raised. To suppress this,
+      you can pass in `ignore_missing=True`.
+
+=== "Javascript/Typescript"
+
+      ```typescript
+      --8<-- "docs/src/basic_legacy.ts:drop_table"
+      ```
+
+      This permanently removes the table and is not recoverable, unlike deleting rows.
+      If the table does not exist an exception is raised.
+
 
 ## Consistency
 
