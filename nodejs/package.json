@@ -53,6 +53,7 @@
     "build:debug": "napi build --platform --dts ../lancedb/native.d.ts --js ../lancedb/native.js lancedb",
     "build:release": "napi build --platform --release --dts ../lancedb/native.d.ts --js ../lancedb/native.js dist/",
     "build": "npm run build:debug && tsc -b && shx cp lancedb/native.d.ts dist/native.d.ts && shx cp lancedb/*.node dist/",
+    "ts:build": "tsc -b && shx cp lancedb/native.d.ts dist/native.d.ts && shx cp lancedb/*.node dist/",
     "build-release": "npm run build:release && tsc -b && shx cp lancedb/native.d.ts dist/native.d.ts",
     "lint-ci": "biome ci .",
     "docs": "typedoc --plugin typedoc-plugin-markdown --out ../docs/src/js lancedb/index.ts",
@@ -65,7 +66,9 @@
     "version": "napi version"
   },
   "dependencies": {
+    "@types/axios": "^0.14.0",
     "apache-arrow": "^15.0.0",
+    "axios": "^1.7.2",
     "openai": "^4.29.2",
     "reflect-metadata": "^0.2.2"
   }

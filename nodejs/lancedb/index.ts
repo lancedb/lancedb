@@ -12,6 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+import {
+  Connection,
+  LocalConnection,
+  cleanseStorageOptions,
+} from "./connection";
+import {
+  ConnectionOptions,
+  Connection as LanceDbConnection,
+} from "./native.js";
+import {
+  RemoteConnection,
+  RemoteConnectionOptions,
+} from "./remote/connection.js";
+
 export {
   WriteOptions,
   WriteMode,
@@ -26,8 +40,7 @@ export {
   VectorColumnOptions,
 } from "./arrow";
 export {
-  connect,
-  Connection,
+  LocalConnection as Connection,
   CreateTableOptions,
   TableNamesOptions,
 } from "./connection";
@@ -39,5 +52,38 @@ export {
   RecordBatchIterator,
 } from "./query";
 export { Index, IndexOptions, IvfPqOptions } from "./indices";
-export { Table, AddDataOptions, IndexConfig, UpdateOptions } from "./table";
+export {
+  LocalTable as Table,
+  AddDataOptions,
+  IndexConfig,
+  UpdateOptions,
+} from "./table";
 export * as embedding from "./embedding";
+
+/**
+ * Connect to a LanceDB instance at the given URI.
+ *
+ * Accepted formats:
+ *
+ * - `/path/to/database` - local database
+ * - `s3://bucket/path/to/database` or `gs://bucket/path/to/database` - database on cloud storage
+ * - `db://host:port` - remote database (LanceDB cloud)
+ * @param {string} uri - The uri of the database. If the database uri starts
+ * with `db://` then it connects to a remote database.
+ * @see {@link ConnectionOptions} for more details on the URI format.
+ */
+export async function connect(
+  uri: string,
+  opts?: Partial<ConnectionOptions | RemoteConnectionOptions>,
+): Promise<Connection> {
+  opts = opts ?? {};
+  if (uri.startsWith("db://")) {
+    return new RemoteConnection(uri, opts as RemoteConnectionOptions);
+  }
+  opts = (opts as ConnectionOptions) ?? {};
+  (<ConnectionOptions>opts).storageOptions = cleanseStorageOptions(
+    (<ConnectionOptions>opts).storageOptions,
+  );
+  const nativeConn = await LanceDbConnection.new(uri, opts);
+  return new LocalConnection(nativeConn);
+}
