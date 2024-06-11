@@ -23,6 +23,7 @@ use napi_derive::napi;
 
 use crate::error::NapiErrorExt;
 use crate::index::Index;
+use crate::merge::NativeMergeInsertBuilder;
 use crate::query::{Query, VectorQuery};
 
 #[napi]
@@ -327,6 +328,12 @@ impl Table {
             .into_iter()
             .map(IndexConfig::from)
             .collect::<Vec<_>>())
+    }
+
+    #[napi]
+    pub fn merge_insert(&self, on: Vec<String>) -> napi::Result<NativeMergeInsertBuilder> {
+        let on: Vec<_> = on.iter().map(String::as_str).collect();
+        Ok(self.inner_ref()?.merge_insert(on.as_slice()).into())
     }
 }
 
