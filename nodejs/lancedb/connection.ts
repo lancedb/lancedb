@@ -12,16 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { Table as ArrowTable, Schema, fromTableToStreamBuffer } from "./arrow";
-import {
-  fromTableToBuffer,
-  isArrowTable,
-  makeArrowTable,
-  makeEmptyTable,
-} from "./arrow";
+import { Table as ArrowTable, Schema } from "./arrow";
+import { fromTableToBuffer, makeEmptyTable } from "./arrow";
 import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
 import { Connection as LanceDbConnection } from "./native";
-// import { RemoteConnection, RemoteConnectionOptions } from "./remote/connection";
 import { LocalTable, Table } from "./table";
 
 export interface CreateTableOptions {

@@ -10,27 +10,21 @@ import { Table } from "../table";
 import { TTLCache } from "../util";
 import { RestfulLanceDBClient } from "./client";
 import { RemoteTable } from "./table";
+
 export interface RemoteConnectionOptions {
   apiKey?: string;
-  region: string;
+  region?: string;
   hostOverride?: string;
   connectionTimeout?: number;
   readTimeout?: number;
 }
+
 export class RemoteConnection extends Connection {
   #dbName: string;
   #apiKey: string;
-  #region?: string;
-  #client!: RestfulLanceDBClient;
+  #region: string;
+  #client: RestfulLanceDBClient;
   #tableCache = new TTLCache(300_000);
-
-  [Symbol.toStringTag] = "--RemoteConnection--";
-  [Symbol.for("Jupyter.display")](): string {
-    return this.display();
-  }
-  [Symbol.for("nodejs.util.inspect.custom")](): string {
-    return this.display();
-  }
 
   constructor(
     url: string,
@@ -44,10 +38,14 @@ export class RemoteConnection extends Connection {
   ) {
     super();
     apiKey = apiKey ?? process.env.LANCEDB_API_KEY;
-    region = region ?? process.env.LANCEDB_REGION ?? "us-east-1";
+    region = region ?? process.env.LANCEDB_REGION;
 
     if (!apiKey) {
       throw new Error("apiKey is required when connecting to LanceDB Cloud");
+    }
+
+    if (!region) {
+      throw new Error("region is required when connecting to LanceDB Cloud");
     }
 
     const parsed = new URL(url);

@@ -133,8 +133,7 @@
             "noImportAssign": "off",
             "noRedeclare": "off",
             "noUnsafeNegation": "off",
-            "useGetterReturn": "off",
-            "noUnsafeDeclarationMerging": "off"
+            "useGetterReturn": "off"
           }
         }
       }
