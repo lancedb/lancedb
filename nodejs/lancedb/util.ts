@@ -33,22 +33,3 @@ export class TTLCache {
     this.cache.delete(key);
   }
 }
-
-// biome-ignore lint/suspicious/noExplicitAny: <explanation>
-export function cachedProperty(_target: any, _name: any, descriptor: any) {
-  const originalMethod = descriptor.value;
-  const cache = new Map();
-
-  // biome-ignore lint/suspicious/noExplicitAny: <explanation>
-  descriptor.value = function (...args: any[]) {
-    const key = JSON.stringify(args);
-    if (cache.has(key)) {
-      return cache.get(key);
-    }
-    const result = originalMethod.apply(this, args);
-    cache.set(key, result);
-    return result;
-  };
-
-  return descriptor;
-}

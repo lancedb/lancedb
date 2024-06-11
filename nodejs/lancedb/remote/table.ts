@@ -20,7 +20,6 @@ import { CreateTableOptions } from "../connection";
 import { IndexOptions } from "../indices";
 import { VectorQuery } from "../query";
 import { AddDataOptions, Table, UpdateOptions } from "../table";
-import { cachedProperty } from "../util";
 import { RestfulLanceDBClient } from "./client";
 
 export class RemoteTable extends Table {
@@ -57,7 +56,6 @@ export class RemoteTable extends Table {
     return `RemoteTable(${this.#dbName}; ${this.#name})`;
   }
 
-  @cachedProperty
   async schema(): Promise<import("apache-arrow").Schema> {
     const resp = await this.#client.post(`${this.#tablePrefix}/describe/`);
     // TODO: parse this into a valid arrow schema
@@ -78,6 +76,7 @@ export class RemoteTable extends Table {
       },
     });
   }
+
   async update(
     updates: Map<string, string> | Record<string, string>,
     options?: Partial<UpdateOptions>,
