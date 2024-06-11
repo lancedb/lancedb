@@ -94,6 +94,10 @@ export interface OptimizeOptions {
  * collected.
  */
 export abstract class Table {
+  [Symbol.for("nodejs.util.inspect.custom")](): string {
+    return this.display();
+  }
+
   /** Return true if the table has not been closed */
   abstract isOpen(): boolean;
   /**

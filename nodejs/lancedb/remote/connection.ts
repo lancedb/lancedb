@@ -1,5 +1,5 @@
-import { Schema } from "apache-arrow";
-import { Data } from "../arrow";
+import { Table as ArrowTable, Schema } from "apache-arrow";
+import { Data, fromTableToStreamBuffer, makeEmptyTable } from "../arrow";
 import {
   Connection,
   CreateTableOptions,
@@ -24,6 +24,14 @@ export class RemoteConnection extends Connection {
   #client!: RestfulLanceDBClient;
   #tableCache = new TTLCache(300_000);
 
+  [Symbol.toStringTag] = "--RemoteConnection--";
+  [Symbol.for("Jupyter.display")](): string {
+    return this.display();
+  }
+  [Symbol.for("nodejs.util.inspect.custom")](): string {
+    return this.display();
+  }
+
   constructor(
     url: string,
     {
@@ -35,20 +43,18 @@ export class RemoteConnection extends Connection {
     }: RemoteConnectionOptions,
   ) {
     super();
+    apiKey = apiKey ?? process.env.LANCEDB_API_KEY;
+    region = region ?? process.env.LANCEDB_REGION ?? "us-east-1";
 
-    // super();
-    // super();
+    if (!apiKey) {
+      throw new Error("apiKey is required when connecting to LanceDB Cloud");
+    }
+
     const parsed = new URL(url);
     if (parsed.protocol !== "db:") {
       throw new Error(
         `invalid protocol: ${parsed.protocol}, only accepts db://`,
       );
-    }
-    apiKey = apiKey ?? process.env.LANCEDB_API_KEY;
-    region = region ?? process.env.LANCEDB_REGION ?? "us-east-1";
-
-    if (apiKey === undefined) {
-      throw new Error("apiKey is required");
     }
 
     this.#dbName = parsed.hostname;
@@ -70,8 +76,9 @@ export class RemoteConnection extends Connection {
   close(): void {
     return this.#client.close();
   }
+
   display(): string {
-    throw new Error("Method not implemented.");
+    return `RemoteConnection(${this.#dbName})`;
   }
 
   async tableNames(options?: Partial<TableNamesOptions>): Promise<string[]> {
@@ -97,7 +104,7 @@ export class RemoteConnection extends Connection {
       );
       this.#tableCache.set(name, true);
     }
-    return new RemoteTable(this.#client, name);
+    return new RemoteTable(this.#client, name, this.#dbName);
   }
 
   async createTable(
@@ -107,6 +114,13 @@ export class RemoteConnection extends Connection {
   ): Promise<Table> {
     if (options?.mode) {
       console.warn(`mode is not supported in remote connection, ignoring.`);
+    }
+    if (options?.embeddingFunction) {
+      console.warn(
+        "embedding_functions is not yet supported on LanceDB Cloud.",
+        "Please vote https://github.com/lancedb/lancedb/issues/626 ",
+        "for this feature.",
+      );
     }
 
     const { buf } = await Table.parseTableData(
@@ -126,15 +140,41 @@ export class RemoteConnection extends Connection {
       },
     );
     this.#tableCache.set(tableName, true);
-    return new RemoteTable(this.#client, tableName);
+    return new RemoteTable(this.#client, tableName, this.#dbName);
   }
 
-  createEmptyTable(
-    _name: string,
-    _schema: Schema,
-    _options?: Partial<CreateTableOptions> | undefined,
+  async createEmptyTable(
+    name: string,
+    schema: Schema,
+    options?: Partial<CreateTableOptions> | undefined,
   ): Promise<Table> {
-    throw new Error("createEmptyTable() is not supported in remote connection");
+    if (options?.mode) {
+      console.warn(`mode is not supported on LanceDB Cloud`);
+    }
+
+    if (options?.embeddingFunction) {
+      console.warn(
+        "embeddingFunction is not yet supported on LanceDB Cloud.",
+        "Please vote https://github.com/lancedb/lancedb/issues/626 ",
+        "for this feature.",
+      );
+    }
+    const emptyTable = makeEmptyTable(schema);
+    const buf = await fromTableToStreamBuffer(emptyTable);
+
+    await this.#client.post(
+      `/v1/table/${encodeURIComponent(name)}/create/`,
+      buf,
+      {
+        config: {
+          responseType: "arraybuffer",
+        },
+        headers: { "Content-Type": "application/vnd.apache.arrow.stream" },
+      },
+    );
+
+    this.#tableCache.set(name, true);
+    return new RemoteTable(this.#client, name, this.#dbName);
   }
 
   async dropTable(name: string): Promise<void> {

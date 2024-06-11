@@ -20,9 +20,6 @@ import axios, {
 import { Table as ArrowTable } from "../arrow";
 import { tableFromIPC } from "../arrow";
 import { VectorQuery } from "../query";
-// import { tableFromIPC, type Table as ArrowTable } from 'apache-arrow'
-
-// import { type RemoteResponse, type RemoteRequest, Method } from '../middleware'
 
 export class RestfulLanceDBClient {
   #dbName: string;
@@ -30,8 +27,8 @@ export class RestfulLanceDBClient {
   #apiKey: string;
   #hostOverride?: string;
   #closed: boolean = false;
-  #connectionTimeout: number = 120 * 1000; // 120 seconds;
-  #readTimeout: number = 300 * 1000; // 300 seconds;
+  #connectionTimeout: number = 12 * 1000; // 12 seconds;
+  #readTimeout: number = 30 * 1000; // 30 seconds;
   #session?: import("axios").AxiosInstance;
 
   constructor(
@@ -125,11 +122,11 @@ export class RestfulLanceDBClient {
     return response!.data;
   }
 
-  // biome-ignore lint/suspicious/noExplicitAny: <explanation>
-  async post(uri: string, body?: any): Promise<Record<string, any>>;
+  // biome-ignore lint/suspicious/noExplicitAny: api response
+  async post(uri: string, body?: any): Promise<any>;
   async post(
     uri: string,
-    // biome-ignore lint/suspicious/noExplicitAny: <explanation>
+    // biome-ignore lint/suspicious/noExplicitAny: api request
     body: any,
     additional: {
       config?: { responseType: "arraybuffer" };
@@ -139,15 +136,15 @@ export class RestfulLanceDBClient {
   ): Promise<Buffer>;
   async post(
     uri: string,
-    // biome-ignore lint/suspicious/noExplicitAny: <explanation>
+    // biome-ignore lint/suspicious/noExplicitAny: api request
     body?: any,
     additional?: {
       config?: { responseType: ResponseType };
       headers?: Record<string, string>;
       params?: Record<string, string>;
     },
-    // biome-ignore lint/suspicious/noExplicitAny: <explanation>
-  ): Promise<Record<string, any> | Buffer> {
+    // biome-ignore lint/suspicious/noExplicitAny: api response
+  ): Promise<any> {
     this.checkNotClosed();
     uri = new URL(uri, this.url).toString();
     additional = Object.assign(

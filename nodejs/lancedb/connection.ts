@@ -115,6 +115,10 @@ export interface TableNamesOptions {
  * the underlying connection has been closed.
  */
 export abstract class Connection {
+  [Symbol.for("nodejs.util.inspect.custom")](): string {
+    return this.display();
+  }
+
   /**
    * Return true if the connection has not been closed
    */

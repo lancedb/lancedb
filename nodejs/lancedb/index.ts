@@ -76,8 +76,12 @@ export async function connect(
   uri: string,
   opts?: Partial<ConnectionOptions | RemoteConnectionOptions>,
 ): Promise<Connection> {
+  if (!uri) {
+    throw new Error("uri is required");
+  }
   opts = opts ?? {};
-  if (uri.startsWith("db://")) {
+
+  if (uri?.startsWith("db://")) {
     return new RemoteConnection(uri, opts as RemoteConnectionOptions);
   }
   opts = (opts as ConnectionOptions) ?? {};
