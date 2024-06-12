@@ -364,7 +364,7 @@ describe("When creating an index", () => {
   test("should be able to get index stats", async () => {
     await tbl.createIndex("id");
 
-    const stats = await tbl.indexStats("id");
+    const stats = await tbl.indexStats("id_idx");
     expect(stats).toBeDefined();
     expect(stats?.numIndexedRows).toEqual(300);
     expect(stats?.numUnindexedRows).toEqual(0);

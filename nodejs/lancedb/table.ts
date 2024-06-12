@@ -207,6 +207,9 @@ export class Table {
    * Indices on vector columns will speed up vector searches.
    * Indices on scalar columns will speed up filtering (in both
    * vector and non-vector searches)
+   *
+   * @note We currently don't support custom named indexes,
+   * The index name will always be `${column}_idx`
    * @example
    * // If the column has a vector (fixed size list) data type then
    * // an IvfPq vector index will be created.
@@ -480,12 +483,13 @@ export class Table {
     return await this.query().toArrow();
   }
   /** List all the stats of a specified index
-   * @param {string} indexUUID The UUID of the index to get stats for
+   *
+   * @param {string} name The name of the index. The index name should always be `${column}_idx`
    * @returns {IndexStatistics | undefined} The stats of the index
-   * If the index does not exist, `undefined` is returned
+   * @throws {Error} If the index does not exist, an error will be thrown
    */
-  async indexStats(indexUUID: string): Promise<IndexStatistics | undefined> {
-    return await this.inner.indexStats(indexUUID);
+  async indexStats(name: string): Promise<IndexStatistics> {
+    return await this.inner.indexStats(name);
   }
   mergeInsert(on: string | string[]): MergeInsertBuilder {
     on = Array.isArray(on) ? on : [on];
