@@ -228,16 +228,18 @@ describe("When creating an index", () => {
     }
   });
 
-  test("should be able to list index and stats", async function () {
+  test("should be able to get index stats", async () => {
     await tbl.createIndex("id");
 
-    const indices = await tbl.listIndices();
-    expect(indices.length).toEqual(1);
-
-    const stats = await tbl.indexStats(indices[0].indexId);
+    const stats = await tbl.indexStats("id");
     expect(stats).toBeDefined();
     expect(stats?.numIndexedRows).toEqual(300);
     expect(stats?.numUnindexedRows).toEqual(0);
+  });
+
+  test("errors when getting stats on non-existent index", async () => {
+    const statsPromise = tbl.indexStats("some non-existent index");
+    expect(statsPromise).rejects.toThrow();
   });
 
   // TODO: Move this test to the query API test (making sure we can reject queries

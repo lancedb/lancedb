@@ -1206,28 +1206,36 @@ impl NativeTable {
             .await)
     }
 
+    #[deprecated(since = "0.5.2", note = "Please use `index_stats` instead")]
     pub async fn count_indexed_rows(&self, index_uuid: &str) -> Result<Option<usize>> {
+        #[allow(deprecated)]
         match self.load_index_stats(index_uuid).await? {
             Some(stats) => Ok(Some(stats.num_indexed_rows)),
             None => Ok(None),
         }
     }
 
+    #[deprecated(since = "0.5.2", note = "Please use `index_stats` instead")]
     pub async fn count_unindexed_rows(&self, index_uuid: &str) -> Result<Option<usize>> {
+        #[allow(deprecated)]
         match self.load_index_stats(index_uuid).await? {
             Some(stats) => Ok(Some(stats.num_unindexed_rows)),
             None => Ok(None),
         }
     }
 
+    #[deprecated(since = "0.5.2", note = "Please use `index_stats` instead")]
     pub async fn get_index_type(&self, index_uuid: &str) -> Result<Option<String>> {
+        #[allow(deprecated)]
         match self.load_index_stats(index_uuid).await? {
             Some(stats) => Ok(Some(stats.index_type.unwrap_or_default())),
             None => Ok(None),
         }
     }
 
+    #[deprecated(since = "0.5.2", note = "Please use `index_stats` instead")]
     pub async fn get_distance_type(&self, index_uuid: &str) -> Result<Option<String>> {
+        #[allow(deprecated)]
         match self.load_index_stats(index_uuid).await? {
             Some(stats) => Ok(Some(
                 stats
@@ -1240,15 +1248,7 @@ impl NativeTable {
         }
     }
 
-    pub async fn load_indices(&self) -> Result<Vec<VectorIndex>> {
-        let dataset = self.dataset.get().await?;
-        let (indices, mf) = futures::try_join!(dataset.load_indices(), dataset.latest_manifest())?;
-        Ok(indices
-            .iter()
-            .map(|i| VectorIndex::new_from_format(&mf, i))
-            .collect())
-    }
-
+    #[deprecated(since = "0.5.2", note = "Please use `index_stats` instead")]
     pub async fn load_index_stats(&self, index_uuid: &str) -> Result<Option<IndexStatistics>> {
         let index = self
             .load_indices()
@@ -1266,6 +1266,31 @@ impl NativeTable {
         );
 
         Ok(Some(index_stats))
+    }
+
+    /// Get statistics about an index.
+    /// Returns an error if the index does not exist.
+    pub async fn index_stats<S: AsRef<str>>(&self, index_name: S) -> Result<IndexStatistics> {
+        let dataset = self.dataset.get().await?;
+
+        dataset
+            .index_statistics(index_name.as_ref())
+            .await
+            .map_err(|e| e.into())
+            .and_then(|stats| {
+                serde_json::from_str(&stats).map_err(|e| Error::InvalidInput {
+                    message: format!("error deserializing index statistics: {}", e),
+                })
+            })
+    }
+
+    pub async fn load_indices(&self) -> Result<Vec<VectorIndex>> {
+        let dataset = self.dataset.get().await?;
+        let (indices, mf) = futures::try_join!(dataset.load_indices(), dataset.latest_manifest())?;
+        Ok(indices
+            .iter()
+            .map(|i| VectorIndex::new_from_format(&mf, i))
+            .collect())
     }
 
     async fn create_ivf_pq_index(

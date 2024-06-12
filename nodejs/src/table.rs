@@ -330,21 +330,10 @@ impl Table {
     }
 
     #[napi]
-    pub async fn index_stats(
-        &self,
-        index_uuid: String,
-    ) -> napi::Result<Either<IndexStatistics, ()>> {
-        // We use Either<T, ()> instead of `Option` to avoid returning null. We'd rather return 'undefined'
-        let tbl = self.inner_ref()?.as_native();
-        if let Some(tbl) = tbl {
-            let stats = tbl.load_index_stats(&index_uuid).await.default_error()?;
-            match stats {
-                Some(stats) => Ok(Either::A(stats.into())),
-                None => Ok(Either::B(())),
-            }
-        } else {
-            Ok(Either::B(()))
-        }
+    pub async fn index_stats(&self, index_name: String) -> napi::Result<IndexStatistics> {
+        let tbl = self.inner_ref()?.as_native().unwrap();
+        let stats = tbl.index_stats(&index_name).await.default_error()?;
+        Ok(stats.into())
     }
 }
 
