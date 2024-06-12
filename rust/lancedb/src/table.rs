@@ -1891,12 +1891,13 @@ impl TableInternal for NativeTable {
                 crate::index::IndexType::BTree
             };
 
-            Ok(IndexConfig { index_type, columns, index_id: idx.uuid.to_string() })
+            Ok(IndexConfig { index_type, columns})
         }).collect::<Result<Vec<_>>>()
     }
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use std::iter;
     use std::sync::atomic::{AtomicBool, Ordering};

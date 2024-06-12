@@ -347,8 +347,6 @@ impl Table {
 #[napi(object)]
 /// A description of an index currently configured on a column
 pub struct IndexConfig {
-    /// The unique identifier for the index
-    pub index_id: String,
     /// The type of the index
     pub index_type: String,
     /// The columns in the index
@@ -362,7 +360,6 @@ impl From<lancedb::index::IndexConfig> for IndexConfig {
     fn from(value: lancedb::index::IndexConfig) -> Self {
         let index_type = format!("{:?}", value.index_type);
         Self {
-            index_id: value.index_id,
             index_type,
             columns: value.columns,
         }
