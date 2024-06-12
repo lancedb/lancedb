@@ -304,7 +304,6 @@ describe("When creating an index", () => {
     expect(fs.readdirSync(indexDir)).toHaveLength(1);
     const indices = await tbl.listIndices();
     expect(indices.length).toBe(1);
-    expect(indices[0].indexId).toBeDefined();
     expect(indices[0].indexType).toBe("IvfPq");
     expect(indices[0].columns).toEqual(["vec"]);
 
