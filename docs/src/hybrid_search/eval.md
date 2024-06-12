@@ -5,7 +5,9 @@ Hybrid Search is a broad (often misused) term. It can mean anything from combini
 ## The challenge of (re)ranking search results
 Once you have a group of the most relevant search results from multiple search sources, you'd likely standardize the score and rank them accordingly. This process can also be seen as another independent step - reranking.
 There are two approaches for reranking search results from multiple sources.
+
 * <b>Score-based</b>: Calculate final relevance scores based on a weighted linear combination of individual search algorithm scores. Example - Weighted linear combination of semantic search & keyword-based search results.
+
 * <b>Relevance-based</b>: Discards the existing scores and calculates the relevance of each search result - query pair. Example - Cross Encoder models
 
 Even though there are many strategies for reranking search results, none works for all cases. Moreover, evaluating them itself is a challenge. Also, reranking can be dataset, application specific so it's hard to generalize.

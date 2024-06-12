@@ -7,8 +7,7 @@ excluded_globs = [
     "../src/fts.md",
     "../src/embedding.md",
     "../src/examples/*.md",
-    "../src/integrations/voxel51.md",
-    "../src/integrations/langchain.md",
+    "../src/integrations/*.md",
     "../src/guides/tables.md",
     "../src/python/duckdb.md",
     "../src/embeddings/*.md",
@@ -17,6 +16,7 @@ excluded_globs = [
     "../src/basic.md",
     "../src/hybrid_search/hybrid_search.md",
     "../src/reranking/*.md",
+    "../src/guides/tuning_retrievers/*.md",
 ]
 
 python_prefix = "py"

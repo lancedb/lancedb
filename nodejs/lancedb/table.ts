@@ -23,6 +23,7 @@ import {
 
 import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
 import { IndexOptions } from "./indices";
+import { MergeInsertBuilder } from "./merge";
 import {
   AddColumnsSql,
   ColumnAlteration,
@@ -485,5 +486,9 @@ export class Table {
    */
   async indexStats(indexUUID: string): Promise<IndexStatistics | undefined> {
     return await this.inner.indexStats(indexUUID);
+  }
+  mergeInsert(on: string | string[]): MergeInsertBuilder {
+    on = Array.isArray(on) ? on : [on];
+    return new MergeInsertBuilder(this.inner.mergeInsert(on));
   }
 }
