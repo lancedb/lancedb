@@ -18,6 +18,7 @@ import { Data, IntoVector } from "../arrow";
 
 import { CreateTableOptions } from "../connection";
 import { IndexOptions } from "../indices";
+import { MergeInsertBuilder } from "../merge";
 import { VectorQuery } from "../query";
 import { AddDataOptions, Table, UpdateOptions } from "../table";
 import { RestfulLanceDBClient } from "./client";
@@ -156,5 +157,8 @@ export class RemoteTable extends Table {
   }
   toArrow(): Promise<ArrowTable> {
     throw new Error("toArrow() is not yet supported on the LanceDB cloud");
+  }
+  mergeInsert(_on: string | string[]): MergeInsertBuilder {
+    throw new Error("mergeInsert() is not yet supported on the LanceDB cloud");
   }
 }

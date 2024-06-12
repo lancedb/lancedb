@@ -1,4 +1,4 @@
-import { Table as ArrowTable, Schema } from "apache-arrow";
+import { Schema } from "apache-arrow";
 import { Data, fromTableToStreamBuffer, makeEmptyTable } from "../arrow";
 import {
   Connection,

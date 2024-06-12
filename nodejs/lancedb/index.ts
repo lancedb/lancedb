@@ -17,14 +17,13 @@ import {
   LocalConnection,
   cleanseStorageOptions,
 } from "./connection";
+
 import {
   ConnectionOptions,
   Connection as LanceDbConnection,
 } from "./native.js";
-import {
-  RemoteConnection,
-  RemoteConnectionOptions,
-} from "./remote/connection.js";
+
+import { RemoteConnection, RemoteConnectionOptions } from "./remote";
 
 export {
   WriteOptions,
@@ -33,17 +32,20 @@ export {
   ColumnAlteration,
   ConnectionOptions,
 } from "./native.js";
+
 export {
   makeArrowTable,
   MakeArrowTableOptions,
   Data,
   VectorColumnOptions,
 } from "./arrow";
+
 export {
-  LocalConnection as Connection,
+  Connection,
   CreateTableOptions,
   TableNamesOptions,
 } from "./connection";
+
 export {
   ExecutableQuery,
   Query,
@@ -51,13 +53,16 @@ export {
   VectorQuery,
   RecordBatchIterator,
 } from "./query";
+
 export { Index, IndexOptions, IvfPqOptions } from "./indices";
+
 export {
-  LocalTable as Table,
+  Table,
   AddDataOptions,
   IndexConfig,
   UpdateOptions,
 } from "./table";
+
 export * as embedding from "./embedding";
 
 /**
