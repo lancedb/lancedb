@@ -28,6 +28,7 @@ import { CreateTableOptions } from "./connection";
 
 import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
 import { IndexOptions } from "./indices";
+import { MergeInsertBuilder } from "./merge";
 import {
   AddColumnsSql,
   ColumnAlteration,
@@ -560,5 +561,9 @@ export class LocalTable extends Table {
 
   async toArrow(): Promise<ArrowTable> {
     return await this.query().toArrow();
+  }
+  mergeInsert(on: string | string[]): MergeInsertBuilder {
+    on = Array.isArray(on) ? on : [on];
+    return new MergeInsertBuilder(this.inner.mergeInsert(on));
   }
 }

@@ -712,9 +712,9 @@ export interface VectorIndex {
 export interface IndexStats {
   numIndexedRows: number | null
   numUnindexedRows: number | null
-  index_type: string | null
-  distance_type: string | null
-  completed_at: string | null
+  indexType: string | null
+  distanceType: string | null
+  completedAt: string | null
 }
 
 /**
