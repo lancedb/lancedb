@@ -20,6 +20,7 @@ mod connection;
 mod error;
 mod index;
 mod iterator;
+pub mod merge;
 mod query;
 mod table;
 mod util;

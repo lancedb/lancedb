@@ -337,7 +337,6 @@ class Table(ABC):
         For example, the following scan will be faster if the column ``my_col`` has
         a scalar index:
 
-        .. code-block:: python
 
             import lancedb
 
@@ -347,8 +346,6 @@ class Table(ABC):
 
         Scalar indices can also speed up scans containing a vector search and a
         prefilter:
-
-        .. code-block::python
 
             import lancedb
 
@@ -385,7 +382,6 @@ class Table(ABC):
         Examples
         --------
 
-        .. code-block:: python
 
             import lance
 
