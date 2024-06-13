@@ -17,11 +17,10 @@ runs:
       run: |
         brew install protobuf
     - name: Build wheel
-      env:
-        PIP_EXTRA_INDEX_URL: https://pypi.fury.io/lancedb/
       uses: PyO3/maturin-action@v1
       with:
         command: build
         args: ${{ inputs.args }}
+        docker-options: "-e PIP_EXTRA_INDEX_URL=https://pypi.fury.io/lancedb/"
         working-directory: python
         interpreter: 3.${{ inputs.python-minor-version }}
