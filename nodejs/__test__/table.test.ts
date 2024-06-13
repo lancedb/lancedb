@@ -370,9 +370,9 @@ describe("When creating an index", () => {
     expect(stats?.numUnindexedRows).toEqual(0);
   });
 
-  test("errors when getting stats on non-existent index", async () => {
-    const statsPromise = tbl.indexStats("some non-existent index");
-    expect(statsPromise).rejects.toThrow();
+  test("when getting stats on non-existent index", async () => {
+    const stats = await tbl.indexStats("some non-existent index");
+    expect(stats).toBeUndefined();
   });
 
   // TODO: Move this test to the query API test (making sure we can reject queries
