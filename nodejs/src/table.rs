@@ -331,10 +331,10 @@ impl Table {
     }
 
     #[napi]
-    pub async fn index_stats(&self, index_name: String) -> napi::Result<IndexStatistics> {
+    pub async fn index_stats(&self, index_name: String) -> napi::Result<Option<IndexStatistics>> {
         let tbl = self.inner_ref()?.as_native().unwrap();
         let stats = tbl.index_stats(&index_name).await.default_error()?;
-        Ok(stats.into())
+        Ok(stats.map(IndexStatistics::from))
     }
 
     #[napi]

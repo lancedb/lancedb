@@ -485,11 +485,14 @@ export class Table {
   /** List all the stats of a specified index
    *
    * @param {string} name The name of the index. The index name should always be `${column}_idx`
-   * @returns {IndexStatistics | undefined} The stats of the index
-   * @throws {Error} If the index does not exist, an error will be thrown
+   * @returns {IndexStatistics | undefined} The stats of the index. If the index does not exist, it will return undefined
    */
-  async indexStats(name: string): Promise<IndexStatistics> {
-    return await this.inner.indexStats(name);
+  async indexStats(name: string): Promise<IndexStatistics | undefined> {
+    const stats = await this.inner.indexStats(name);
+    if (stats === null) {
+      return undefined;
+    }
+    return stats;
   }
   mergeInsert(on: string | string[]): MergeInsertBuilder {
     on = Array.isArray(on) ? on : [on];
