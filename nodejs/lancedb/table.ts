@@ -98,6 +98,8 @@ export abstract class Table {
   [Symbol.for("nodejs.util.inspect.custom")](): string {
     return this.display();
   }
+  /** Returns the name of the table */
+  abstract get name(): string;
 
   /** Return true if the table has not been closed */
   abstract isOpen(): boolean;
@@ -407,7 +409,9 @@ export abstract class Table {
 
 export class LocalTable extends Table {
   private readonly inner: _NativeTable;
-
+  get name(): string {
+    return this.inner.name;
+  }
   constructor(inner: _NativeTable) {
     super();
     this.inner = inner;

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { Table as ArrowTable, Schema } from "./arrow";
+import { Table as ArrowTable, Data, Schema } from "./arrow";
 import { fromTableToBuffer, makeEmptyTable } from "./arrow";
 import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
 import { Connection as LanceDbConnection } from "./native";

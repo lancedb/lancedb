@@ -30,7 +30,7 @@ use crate::query::{Query, VectorQuery};
 pub struct Table {
     // We keep a duplicate of the table name so we can use it for error
     // messages even if the table has been closed
-    name: String,
+    pub name: String,
     pub(crate) inner: Option<LanceDbTable>,
 }
 
