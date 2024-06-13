@@ -1280,12 +1280,10 @@ impl NativeTable {
             .index_statistics(index_name.as_ref())
             .await
             .ok()
-            .and_then(|stats| {
-                Some(
-                    serde_json::from_str(&stats).map_err(|e| Error::InvalidInput {
-                        message: format!("error deserializing index statistics: {}", e),
-                    }),
-                )
+            .map(|stats| {
+                serde_json::from_str(&stats).map_err(|e| Error::InvalidInput {
+                    message: format!("error deserializing index statistics: {}", e),
+                })
             })
             .transpose()
     }
