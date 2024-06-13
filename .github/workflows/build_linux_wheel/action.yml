@@ -43,6 +43,8 @@ runs:
     - name: Build Arm Manylinux Wheel
       if: ${{ inputs.arm-build == 'true' }}
       uses: PyO3/maturin-action@v1
+      env:
+        PIP_EXTRA_INDEX_URL: https://pypi.fury.io/lancedb/
       with:
         command: build
         working-directory: python
