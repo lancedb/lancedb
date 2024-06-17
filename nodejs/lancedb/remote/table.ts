@@ -100,7 +100,6 @@ export class RemoteTable extends Table {
     const payload = { predicate };
     await this.#client.post(`${this.#tablePrefix}/delete/`, payload);
   }
-
   async createIndex(
     column: string,
     options?: Partial<IndexOptions>,
@@ -119,11 +118,9 @@ export class RemoteTable extends Table {
     };
     await this.#client.post(`${this.#tablePrefix}/create_index`, data);
   }
-
   query(): import("..").Query {
     throw new Error("query() is not yet supported on the LanceDB cloud");
   }
-
   search(query: IntoVector): VectorQuery;
   search(query: string): Promise<VectorQuery>;
   search(_query: string | IntoVector): VectorQuery | Promise<VectorQuery> {

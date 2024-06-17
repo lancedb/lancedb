@@ -409,14 +409,14 @@ export abstract class Table {
 
 export class LocalTable extends Table {
   private readonly inner: _NativeTable;
-  get name(): string {
-    return this.inner.name;
-  }
+
   constructor(inner: _NativeTable) {
     super();
     this.inner = inner;
   }
-
+  get name(): string {
+    return this.inner.name;
+  }
   isOpen(): boolean {
     return this.inner.isOpen();
   }
