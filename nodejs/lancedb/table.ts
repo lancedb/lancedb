@@ -484,7 +484,7 @@ export class Table {
   }
   /** List all the stats of a specified index
    *
-   * @param {string} name The name of the index. The index name should always be `${column}_idx`
+   * @param {string} name The name of the index.
    * @returns {IndexStatistics | undefined} The stats of the index. If the index does not exist, it will return undefined
    */
   async indexStats(name: string): Promise<IndexStatistics | undefined> {
