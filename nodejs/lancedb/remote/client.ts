@@ -166,7 +166,6 @@ export class RestfulLanceDBClient {
       });
     } catch (e) {
       if (e instanceof AxiosError) {
-        ``;
         response = e.response;
       } else {
         throw e;
