@@ -106,10 +106,19 @@ export class RemoteConnection extends Connection {
   }
 
   async createTable(
-    tableName: string,
-    data: Data,
+    nameOrOptions:
+      | string
+      | ({ name: string; data: Data } & Partial<CreateTableOptions>),
+    data?: Data,
     options?: Partial<CreateTableOptions> | undefined,
   ): Promise<Table> {
+    if (typeof nameOrOptions !== "string" && "name" in nameOrOptions) {
+      const { name, data, ...options } = nameOrOptions;
+      return this.createTable(name, data, options);
+    }
+    if (data === undefined) {
+      throw new Error("data is required");
+    }
     if (options?.mode) {
       console.warn(`mode is not supported in remote connection, ignoring.`);
     }
@@ -128,7 +137,7 @@ export class RemoteConnection extends Connection {
     );
 
     await this.#client.post(
-      `/v1/table/${encodeURIComponent(tableName)}/create/`,
+      `/v1/table/${encodeURIComponent(nameOrOptions)}/create/`,
       buf,
       {
         config: {
@@ -137,8 +146,8 @@ export class RemoteConnection extends Connection {
         headers: { "Content-Type": "application/vnd.apache.arrow.stream" },
       },
     );
-    this.#tableCache.set(tableName, true);
-    return new RemoteTable(this.#client, tableName, this.#dbName);
+    this.#tableCache.set(nameOrOptions, true);
+    return new RemoteTable(this.#client, nameOrOptions, this.#dbName);
   }
 
   async createEmptyTable(
