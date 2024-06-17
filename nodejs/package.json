@@ -65,7 +65,9 @@
     "version": "napi version"
   },
   "dependencies": {
+    "@types/axios": "^0.14.0",
     "apache-arrow": "^15.0.0",
+    "axios": "^1.7.2",
     "openai": "^4.29.2",
     "reflect-metadata": "^0.2.2"
   }
