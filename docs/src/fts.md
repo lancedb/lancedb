@@ -56,7 +56,7 @@ This returns the result as a list of dictionaries as follows.
     LanceDB automatically searches on the existing FTS index if the input to the search is of type `str`. If you provide a vector as input, LanceDB will search the ANN index instead.
 
 ## Tokenization
-By default the text is tokenized by splitting on punctuation and whitespaces and then removing tokens that are longer than 40 chars. For more language specific tokenization then provide the argument tokenizer_name with the 2 letter language code followed by "en_stem". So for english it would be "en_stem".
+By default the text is tokenized by splitting on punctuation and whitespaces and then removing tokens that are longer than 40 chars. For more language specific tokenization then provide the argument tokenizer_name with the 2 letter language code followed by "_stem". So for english it would be "en_stem".
 
 ```python
 table.create_fts_index("text", tokenizer_name="en_stem")
