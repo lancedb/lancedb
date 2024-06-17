@@ -111,7 +111,11 @@ export class RemoteConnection extends Connection {
     options?: Partial<CreateTableOptions> | undefined,
   ): Promise<Table> {
     if (options?.mode) {
-      console.warn(`mode is not supported in remote connection, ignoring.`);
+      console.warn(
+        "option 'mode' is not supported in LanceDB Cloud",
+        "LanceDB Cloud only supports the default 'create' mode.",
+        "If the table already exists, an error will be thrown.",
+      );
     }
     if (options?.embeddingFunction) {
       console.warn(
