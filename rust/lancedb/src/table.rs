@@ -379,6 +379,12 @@ pub(crate) trait TableInternal: std::fmt::Display + std::fmt::Debug + Send + Syn
         query: &Query,
         options: QueryExecutionOptions,
     ) -> Result<DatasetRecordBatchStream>;
+    async fn vector_query(
+        &self,
+        query: &VectorQuery,
+        options: QueryExecutionOptions,
+    ) -> Result<DatasetRecordBatchStream>;
+    async fn explain_plan(&self, query: &VectorQuery, verbose: bool) -> Result<String>;
     async fn add(
         &self,
         add: AddDataBuilder<NoData>,
@@ -1754,6 +1760,45 @@ impl TableInternal for NativeTable {
     ) -> Result<DatasetRecordBatchStream> {
         self.generic_query(&query.clone().into_vector(), options)
             .await
+    }
+
+    async fn vector_query(
+        &self,
+        query: &VectorQuery,
+        options: QueryExecutionOptions,
+    ) -> Result<DatasetRecordBatchStream> {
+        self.generic_query(query, options).await
+    }
+
+    async fn explain_plan(&self, query: &VectorQuery, verbose: bool) -> Result<String> {
+        let ds_ref = self.dataset.get().await?;
+        let mut scanner: Scanner = ds_ref.scan();
+
+        let query_vector = query
+            .query_vector
+            .as_ref()
+            .unwrap()
+            .as_primitive::<Float32Type>();
+
+        let column = if let Some(col) = query.column.as_ref() {
+            col.clone()
+        } else {
+            // Infer a vector column with the same dimension of the query vector.
+            let arrow_schema = Schema::from(ds_ref.schema());
+            default_vector_column(&arrow_schema, Some(query_vector.len() as i32))?
+        };
+
+        let plan = scanner
+            .nearest(
+                &column,
+                query_vector,
+                query.base.limit.unwrap_or(DEFAULT_TOP_K),
+            )
+            .unwrap()
+            .explain_plan(verbose)
+            .await?;
+
+        Ok(plan)
     }
 
     async fn merge_insert(
