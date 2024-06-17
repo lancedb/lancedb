@@ -15,7 +15,7 @@ runs:
     - name: Install lancedb
       shell: bash
       run: |
-        pip3 install $(ls target/wheels/lancedb-*.whl)[tests,dev]
+        pip3 install --extra-index-url https://pypi.fury.io/lancedb/ $(ls target/wheels/lancedb-*.whl)[tests,dev]
     - name: Setup localstack for integration tests
       if: ${{ inputs.integration == 'true' }}
       shell: bash

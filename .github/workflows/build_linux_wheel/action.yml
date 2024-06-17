@@ -46,6 +46,7 @@ runs:
       with:
         command: build
         working-directory: python
+        docker-options: "-e PIP_EXTRA_INDEX_URL=https://pypi.fury.io/lancedb/"
         target: aarch64-unknown-linux-gnu
         manylinux: ${{ inputs.manylinux }}
         args: ${{ inputs.args }}
