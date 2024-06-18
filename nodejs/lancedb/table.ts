@@ -376,7 +376,7 @@ export abstract class Table {
    * @param {string} name The name of the index.
    * @returns {IndexStatistics | undefined} The stats of the index. If the index does not exist, it will return undefined
    */
-  async indexStats(name: string): Promise<IndexStatistics | undefined>;
+  abstract indexStats(name: string): Promise<IndexStatistics | undefined>;
 
   static async parseTableData(
     // biome-ignore lint/suspicious/noExplicitAny: <explanation>
