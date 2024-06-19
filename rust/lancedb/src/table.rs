@@ -35,7 +35,7 @@ use lance::dataset::{
     Dataset, UpdateBuilder as LanceUpdateBuilder, WhenMatched, WriteMode, WriteParams,
 };
 use lance::dataset::{MergeInsertBuilder as LanceMergeInsertBuilder, WhenNotMatchedBySource};
-use lance::io::WrappingObjectStore;
+use lance::io::{ObjectStoreRegistry, WrappingObjectStore};
 use lance_datafusion::exec::execute_plan;
 use lance_index::vector::hnsw::builder::HnswBuildParams;
 use lance_index::vector::ivf::IvfBuildParams;
@@ -923,6 +923,8 @@ pub struct NativeTable {
     // This comes from the connection options. We store here so we can pass down
     // to the dataset when we recreate it (for example, in checkout_latest).
     read_consistency_interval: Option<std::time::Duration>,
+
+    object_store_registry: Arc<ObjectStoreRegistry>,
 }
 
 impl std::fmt::Display for NativeTable {
@@ -985,6 +987,8 @@ impl NativeTable {
             None => params,
         };
 
+        let object_store_registry = params.object_store_registry.clone();
+
         let storage_options = params
             .store_options
             .clone()
@@ -1012,6 +1016,7 @@ impl NativeTable {
             store_wrapper: write_store_wrapper,
             storage_options,
             read_consistency_interval,
+            object_store_registry,
         })
     }
 
@@ -1078,6 +1083,9 @@ impl NativeTable {
             Some(wrapper) => params.patch_with_store_wrapper(wrapper)?,
             None => params,
         };
+
+        let object_store_registry = params.object_store_registry.clone();
+
         let storage_options = params
             .store_params
             .clone()
@@ -1093,6 +1101,7 @@ impl NativeTable {
                 },
                 source => Error::Lance { source },
             })?;
+
         Ok(Self {
             name: name.to_string(),
             uri: uri.to_string(),
@@ -1100,6 +1109,7 @@ impl NativeTable {
             store_wrapper: write_store_wrapper,
             storage_options,
             read_consistency_interval,
+            object_store_registry,
         })
     }
 
@@ -1182,9 +1192,16 @@ impl NativeTable {
         &self,
         options: CompactionOptions,
         remap_options: Option<Arc<dyn IndexRemapperOptions>>,
+        object_store_registry: Arc<ObjectStoreRegistry>,
     ) -> Result<CompactionMetrics> {
         let mut dataset_mut = self.dataset.get_mut().await?;
-        let metrics = compact_files(&mut dataset_mut, options, remap_options).await?;
+        let metrics = compact_files(
+            &mut dataset_mut,
+            options,
+            remap_options,
+            object_store_registry,
+        )
+        .await?;
         Ok(metrics)
     }
 
@@ -1826,7 +1843,10 @@ impl TableInternal for NativeTable {
                 options,
                 remap_options,
             } => {
-                stats.compaction = Some(self.compact_files(options, remap_options).await?);
+                stats.compaction = Some(
+                    self.compact_files(options, remap_options, self.object_store_registry.clone())
+                        .await?,
+                );
             }
             OptimizeAction::Prune {
                 older_than,

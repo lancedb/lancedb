@@ -26,6 +26,7 @@ half = { workspace = true }
 lazy_static.workspace = true
 lance = { workspace = true }
 lance-datafusion.workspace = true
+lance-io = { workspace = true }
 lance-index = { workspace = true }
 lance-linalg = { workspace = true }
 lance-testing = { workspace = true }

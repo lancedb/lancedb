@@ -22,7 +22,7 @@ use std::sync::Arc;
 use arrow_array::{RecordBatchIterator, RecordBatchReader};
 use arrow_schema::SchemaRef;
 use lance::dataset::{ReadParams, WriteMode};
-use lance::io::{ObjectStore, ObjectStoreParams, WrappingObjectStore};
+use lance::io::{ObjectStore, ObjectStoreParams, ObjectStoreRegistry, WrappingObjectStore};
 use object_store::{aws::AwsCredential, local::LocalFileSystem};
 use snafu::prelude::*;
 
@@ -537,6 +537,7 @@ pub struct ConnectBuilder {
     /// always consistent.
     read_consistency_interval: Option<std::time::Duration>,
     embedding_registry: Option<Arc<dyn EmbeddingRegistry>>,
+    object_store_registry: Arc<ObjectStoreRegistry>,
 }
 
 impl ConnectBuilder {
@@ -550,6 +551,7 @@ impl ConnectBuilder {
             read_consistency_interval: None,
             storage_options: HashMap::new(),
             embedding_registry: None,
+            object_store_registry: Arc::new(ObjectStoreRegistry::default()),
         }
     }
 
@@ -606,6 +608,11 @@ impl ConnectBuilder {
         for (key, value) in pairs {
             self.storage_options.insert(key.into(), value.into());
         }
+        self
+    }
+
+    pub fn object_store_registry(mut self, registry: Arc<ObjectStoreRegistry>) -> Self {
+        self.object_store_registry = registry;
         self
     }
 
@@ -790,12 +797,14 @@ impl Database {
                 let plain_uri = url.to_string();
 
                 let storage_options = options.storage_options.clone();
+                let object_store_registry = options.object_store_registry.clone();
                 let os_params = ObjectStoreParams {
                     storage_options: Some(storage_options.clone()),
                     ..Default::default()
                 };
                 let (object_store, base_path) =
-                    ObjectStore::from_uri_and_params(&plain_uri, &os_params).await?;
+                    ObjectStore::from_uri_and_params(object_store_registry, &plain_uri, &os_params)
+                        .await?;
                 if object_store.is_local() {
                     Self::try_create_dir(&plain_uri).context(CreateDirSnafu { path: plain_uri })?;
                 }
