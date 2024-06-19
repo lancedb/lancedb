@@ -23,6 +23,7 @@ rust-version = "1.80.0" # TODO: lower this once we upgrade Lance again.
 [workspace.dependencies]
 lance = { "version" = "=0.19.1", "features" = ["dynamodb"] }
 lance-index = { "version" = "=0.19.1" }
+lance-io = { "version" = "=0.19.1" }
 lance-linalg = { "version" = "=0.19.1" }
 lance-table = { "version" = "=0.19.1" }
 lance-testing = { "version" = "=0.19.1" }
