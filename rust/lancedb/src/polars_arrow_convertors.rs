@@ -84,7 +84,8 @@ pub fn convert_polars_arrow_array_to_arrow_rs_array(
     arrow_datatype: arrow_schema::DataType,
 ) -> std::result::Result<arrow_array::ArrayRef, arrow_schema::ArrowError> {
     let polars_c_array = polars_arrow::ffi::export_array_to_c(polars_array);
-    let arrow_c_array = unsafe { mem::transmute(polars_c_array) };
+    // Safety: `polars_arrow::ffi::ArrowArray` has the same memory layout as `arrow::ffi::FFI_ArrowArray`.
+    let arrow_c_array: arrow_data::ffi::FFI_ArrowArray = unsafe { mem::transmute(polars_c_array) };
     Ok(arrow_array::make_array(unsafe {
         arrow::ffi::from_ffi_and_data_type(arrow_c_array, arrow_datatype)
     }?))
@@ -96,7 +97,8 @@ fn convert_arrow_rs_array_to_polars_arrow_array(
     polars_arrow_dtype: polars::datatypes::ArrowDataType,
 ) -> Result<Box<dyn polars_arrow::array::Array>> {
     let arrow_c_array = arrow::ffi::FFI_ArrowArray::new(&arrow_rs_array.to_data());
-    let polars_c_array = unsafe { mem::transmute(arrow_c_array) };
+    // Safety: `polars_arrow::ffi::ArrowArray` has the same memory layout as `arrow::ffi::FFI_ArrowArray`.
+    let polars_c_array: polars_arrow::ffi::ArrowArray = unsafe { mem::transmute(arrow_c_array) };
     Ok(unsafe { polars_arrow::ffi::import_array_from_c(polars_c_array, polars_arrow_dtype) }?)
 }
 
@@ -104,7 +106,9 @@ fn convert_polars_arrow_field_to_arrow_rs_field(
     polars_arrow_field: polars_arrow::datatypes::Field,
 ) -> Result<arrow_schema::Field> {
     let polars_c_schema = polars_arrow::ffi::export_field_to_c(&polars_arrow_field);
-    let arrow_c_schema: arrow::ffi::FFI_ArrowSchema = unsafe { mem::transmute(polars_c_schema) };
+    // Safety: `polars_arrow::ffi::ArrowSchema` has the same memory layout as `arrow::ffi::FFI_ArrowSchema`.
+    let arrow_c_schema: arrow::ffi::FFI_ArrowSchema =
+        unsafe { mem::transmute::<_, _>(polars_c_schema) };
     let arrow_rs_dtype = arrow_schema::DataType::try_from(&arrow_c_schema)?;
     Ok(arrow_schema::Field::new(
         polars_arrow_field.name,
@@ -118,6 +122,8 @@ fn convert_arrow_rs_field_to_polars_arrow_field(
 ) -> Result<polars_arrow::datatypes::Field> {
     let arrow_rs_dtype = arrow_rs_field.data_type();
     let arrow_c_schema = arrow::ffi::FFI_ArrowSchema::try_from(arrow_rs_dtype)?;
-    let polars_c_schema: polars_arrow::ffi::ArrowSchema = unsafe { mem::transmute(arrow_c_schema) };
+    // Safety: `polars_arrow::ffi::ArrowSchema` has the same memory layout as `arrow::ffi::FFI_ArrowSchema`.
+    let polars_c_schema: polars_arrow::ffi::ArrowSchema =
+        unsafe { mem::transmute::<_, _>(arrow_c_schema) };
     Ok(unsafe { polars_arrow::ffi::import_field_from_c(&polars_c_schema) }?)
 }
