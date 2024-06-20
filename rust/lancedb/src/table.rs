@@ -1860,7 +1860,9 @@ impl TableInternal for NativeTable {
                 }
                 columns.push(field.name.clone());
             }
-            Ok(IndexConfig { index_type: if is_vector { crate::index::IndexType::IvfPq } else { crate::index::IndexType::BTree }, columns })
+            let name = idx.name.clone();
+            let index_type = if is_vector { crate::index::IndexType::IvfPq } else { crate::index::IndexType::BTree };
+            Ok(IndexConfig { index_type, columns, name })
         }).collect::<Result<Vec<_>>>()
     }
 }
