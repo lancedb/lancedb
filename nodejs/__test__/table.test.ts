@@ -362,6 +362,10 @@ describe("When creating an index", () => {
     for await (const r of tbl.query().where("id > 1").select(["id"])) {
       expect(r.numRows).toBe(298);
     }
+    // should also work with 'filter' alias
+    for await (const r of tbl.query().filter("id > 1").select(["id"])) {
+      expect(r.numRows).toBe(298);
+    }
   });
 
   // TODO: Move this test to the query API test (making sure we can reject queries
