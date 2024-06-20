@@ -300,7 +300,9 @@ export class VectorQuery extends QueryBase<NativeVectorQuery, VectorQuery> {
    *
    * By default "l2" is used.
    */
-  distanceType(distanceType: string): VectorQuery {
+  distanceType(
+    distanceType: Required<IvfPqOptions>["distanceType"],
+  ): VectorQuery {
     this.inner.distanceType(distanceType);
     return this;
   }

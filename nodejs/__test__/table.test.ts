@@ -39,7 +39,9 @@ describe.each([arrow, arrowOld])("Given a table", (arrow: any) => {
   let tmpDir: tmp.DirResult;
   let table: Table;
 
-  const schema = new arrow.Schema([
+  const schema:
+    | import("apache-arrow").Schema
+    | import("apache-arrow-old").Schema = new arrow.Schema([
     new arrow.Field("id", new arrow.Float64(), true),
   ]);
 
@@ -315,7 +317,7 @@ describe("When creating an index", () => {
       .query()
       .limit(2)
       .nearestTo(queryVec)
-      .distanceType("DoT")
+      .distanceType("dot")
       .toArrow();
     expect(rst.numRows).toBe(2);
 

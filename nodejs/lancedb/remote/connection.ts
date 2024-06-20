@@ -1,5 +1,10 @@
 import { Schema } from "apache-arrow";
-import { Data, fromTableToStreamBuffer, makeEmptyTable } from "../arrow";
+import {
+  Data,
+  SchemaLike,
+  fromTableToStreamBuffer,
+  makeEmptyTable,
+} from "../arrow";
 import {
   Connection,
   CreateTableOptions,
@@ -156,7 +161,7 @@ export class RemoteConnection extends Connection {
 
   async createEmptyTable(
     name: string,
-    schema: Schema,
+    schema: SchemaLike,
     options?: Partial<CreateTableOptions> | undefined,
   ): Promise<Table> {
     if (options?.mode) {
