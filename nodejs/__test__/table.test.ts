@@ -305,6 +305,7 @@ describe("When creating an index", () => {
     const indices = await tbl.listIndices();
     expect(indices.length).toBe(1);
     expect(indices[0]).toEqual({
+      name: "vec_idx",
       indexType: "IvfPq",
       columns: ["vec"],
     });
