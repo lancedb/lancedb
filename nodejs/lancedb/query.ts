@@ -114,6 +114,14 @@ export class QueryBase<
     this.inner.onlyIf(predicate);
     return this as unknown as QueryType;
   }
+  /**
+   * A filter statement to be applied to this query.
+   * @alias where
+   * @deprecated Use `where` instead
+   */
+  filter(predicate: string): QueryType {
+    return this.where(predicate);
+  }
 
   /**
    * Return only the specified columns.
