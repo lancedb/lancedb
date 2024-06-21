@@ -368,6 +368,20 @@ describe("When creating an index", () => {
     }
   });
 
+  test("should be able to get index stats", async () => {
+    await tbl.createIndex("id");
+
+    const stats = await tbl.indexStats("id_idx");
+    expect(stats).toBeDefined();
+    expect(stats?.numIndexedRows).toEqual(300);
+    expect(stats?.numUnindexedRows).toEqual(0);
+  });
+
+  test("when getting stats on non-existent index", async () => {
+    const stats = await tbl.indexStats("some non-existent index");
+    expect(stats).toBeUndefined();
+  });
+
   // TODO: Move this test to the query API test (making sure we can reject queries
   // when the dimension is incorrect)
   test("two columns with different dimensions", async () => {

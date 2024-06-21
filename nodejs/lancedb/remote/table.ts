@@ -16,6 +16,7 @@ import { Table as ArrowTable } from "apache-arrow";
 
 import { Data, IntoVector } from "../arrow";
 
+import { IndexStatistics } from "..";
 import { CreateTableOptions } from "../connection";
 import { IndexOptions } from "../indices";
 import { MergeInsertBuilder } from "../merge";
@@ -164,5 +165,8 @@ export class RemoteTable extends Table {
   }
   mergeInsert(_on: string | string[]): MergeInsertBuilder {
     throw new Error("mergeInsert() is not yet supported on the LanceDB cloud");
+  }
+  async indexStats(_name: string): Promise<IndexStatistics | undefined> {
+    throw new Error("indexStats() is not yet supported on the LanceDB cloud");
   }
 }
