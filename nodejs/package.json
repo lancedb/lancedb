@@ -1,5 +1,15 @@
 {
   "name": "@lancedb/lancedb",
+  "description": "LanceDB: A serverless, low-latency vector database for AI applications",
+  "keywords": [
+    "database",
+    "lance",
+    "lancedb",
+    "search",
+    "vector",
+    "vector database",
+    "ann"
+  ],
   "version": "0.5.2",
   "main": "dist/index.js",
   "exports": {
