@@ -28,8 +28,6 @@ mod util;
 #[napi(object)]
 #[derive(Debug)]
 pub struct ConnectionOptions {
-    pub api_key: Option<String>,
-    pub host_override: Option<String>,
     /// (For LanceDB OSS only): The interval, in seconds, at which to check for
     /// updates to the table from other processes. If None, then consistency is not
     /// checked. For performance reasons, this is the default. For strong
