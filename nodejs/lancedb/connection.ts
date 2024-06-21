@@ -153,6 +153,19 @@ export abstract class Connection {
 
   /**
    * Creates a new Table and initialize it with new data.
+   * @param {object} options - The options object.
+   * @param {string} options.name - The name of the table.
+   * @param {Data} options.data - Non-empty Array of Records to be inserted into the table
+   *
+   */
+  abstract createTable(
+    options: {
+      name: string;
+      data: Data;
+    } & Partial<CreateTableOptions>,
+  ): Promise<Table>;
+  /**
+   * Creates a new Table and initialize it with new data.
    * @param {string} name - The name of the table.
    * @param {Record<string, unknown>[] | ArrowTable} data - Non-empty Array of Records
    * to be inserted into the table
@@ -219,13 +232,22 @@ export class LocalConnection extends Connection {
   }
 
   async createTable(
-    name: string,
-    data: Record<string, unknown>[] | ArrowTable,
+    nameOrOptions:
+      | string
+      | ({ name: string; data: Data } & Partial<CreateTableOptions>),
+    data?: Record<string, unknown>[] | ArrowTable,
     options?: Partial<CreateTableOptions>,
   ): Promise<Table> {
+    if (typeof nameOrOptions !== "string" && "name" in nameOrOptions) {
+      const { name, data, ...options } = nameOrOptions;
+      return this.createTable(name, data, options);
+    }
+    if (data === undefined) {
+      throw new Error("data is required");
+    }
     const { buf, mode } = await Table.parseTableData(data, options);
     const innerTable = await this.inner.createTable(
-      name,
+      nameOrOptions,
       buf,
       mode,
       cleanseStorageOptions(options?.storageOptions),

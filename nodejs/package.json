@@ -38,7 +38,8 @@
     "typedoc": "^0.25.7",
     "typedoc-plugin-markdown": "^3.17.1",
     "typescript": "^5.3.3",
-    "typescript-eslint": "^7.1.0"
+    "typescript-eslint": "^7.1.0",
+    "@types/axios": "^0.14.0"
   },
   "ava": {
     "timeout": "3m"
@@ -65,7 +66,6 @@
     "version": "napi version"
   },
   "dependencies": {
-    "@types/axios": "^0.14.0",
     "apache-arrow": "^15.0.0",
     "axios": "^1.7.2",
     "openai": "^4.29.2",
