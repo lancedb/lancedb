@@ -29,7 +29,10 @@ from .table import LanceTable
 
 
 def create_index(
-    index_path: str, text_fields: List[str], ordering_fields: List[str] = None
+    index_path: str,
+    text_fields: List[str],
+    ordering_fields: List[str] = None,
+    tokenizer_name: str = "default",
 ) -> tantivy.Index:
     """
     Create a new Index (not populated)
@@ -42,6 +45,8 @@ def create_index(
         List of text fields to index
     ordering_fields: List[str]
         List of unsigned type fields to order by at search time
+    tokenizer_name : str, default "default"
+        The tokenizer to use
 
     Returns
     -------
@@ -56,7 +61,7 @@ def create_index(
     schema_builder.add_integer_field("doc_id", stored=True)
     # data fields
     for name in text_fields:
-        schema_builder.add_text_field(name, stored=True)
+        schema_builder.add_text_field(name, stored=True, tokenizer_name=tokenizer_name)
     if ordering_fields:
         for name in ordering_fields:
             schema_builder.add_unsigned_field(name, fast=True)
