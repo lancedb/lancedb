@@ -56,12 +56,6 @@ impl Connection {
     #[napi(factory)]
     pub async fn new(uri: String, options: ConnectionOptions) -> napi::Result<Self> {
         let mut builder = ConnectBuilder::new(&uri);
-        if let Some(api_key) = options.api_key {
-            builder = builder.api_key(&api_key);
-        }
-        if let Some(host_override) = options.host_override {
-            builder = builder.host_override(&host_override);
-        }
         if let Some(interval) = options.read_consistency_interval {
             builder =
                 builder.read_consistency_interval(std::time::Duration::from_secs_f64(interval));

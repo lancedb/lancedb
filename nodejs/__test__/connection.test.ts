@@ -57,6 +57,18 @@ describe("given a connection", () => {
     expect(db.isOpen()).toBe(false);
     await expect(db.tableNames()).rejects.toThrow("Connection is closed");
   });
+  it("should be able to create a table from an object arg `createTable(options)`, or args `createTable(name, data, options)`", async () => {
+    let tbl = await db.createTable("test", [{ id: 1 }, { id: 2 }]);
+    await expect(tbl.countRows()).resolves.toBe(2);
+
+    tbl = await db.createTable({
+      name: "test",
+      data: [{ id: 3 }],
+      mode: "overwrite",
+    });
+
+    await expect(tbl.countRows()).resolves.toBe(1);
+  });
 
   it("should fail if creating table twice, unless overwrite is true", async () => {
     let tbl = await db.createTable("test", [{ id: 1 }, { id: 2 }]);

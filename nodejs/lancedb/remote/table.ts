@@ -35,6 +35,10 @@ export class RemoteTable extends Table {
     return `/v1/table/${encodeURIComponent(this.#name)}/`;
   }
 
+  get name(): string {
+    return this.#name;
+  }
+
   public constructor(
     client: RestfulLanceDBClient,
     tableName: string,
