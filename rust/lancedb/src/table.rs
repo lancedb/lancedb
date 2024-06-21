@@ -1895,7 +1895,7 @@ impl TableInternal for NativeTable {
                 crate::index::IndexType::BTree
             };
 
-            Ok(IndexConfig { index_type, columns})
+            Ok(IndexConfig { index_type, columns, name })
         }).collect::<Result<Vec<_>>>()
     }
 }

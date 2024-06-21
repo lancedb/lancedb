@@ -347,6 +347,8 @@ impl Table {
 #[napi(object)]
 /// A description of an index currently configured on a column
 pub struct IndexConfig {
+    /// The name of the index
+    pub name: String,
     /// The type of the index
     pub index_type: String,
     /// The columns in the index
@@ -362,6 +364,7 @@ impl From<lancedb::index::IndexConfig> for IndexConfig {
         Self {
             index_type,
             columns: value.columns,
+            name: value.name,
         }
     }
 }

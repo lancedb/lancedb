@@ -304,8 +304,11 @@ describe("When creating an index", () => {
     expect(fs.readdirSync(indexDir)).toHaveLength(1);
     const indices = await tbl.listIndices();
     expect(indices.length).toBe(1);
-    expect(indices[0].indexType).toBe("IvfPq");
-    expect(indices[0].columns).toEqual(["vec"]);
+    expect(indices[0]).toEqual({
+      name: "vec_idx",
+      indexType: "IvfPq",
+      columns: ["vec"],
+    });
 
     // Search without specifying the column
     let rst = await tbl
