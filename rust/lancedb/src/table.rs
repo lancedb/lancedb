@@ -1895,6 +1895,7 @@ impl TableInternal for NativeTable {
                 crate::index::IndexType::BTree
             };
 
+            let name = idx.name.clone();
             Ok(IndexConfig { index_type, columns, name })
         }).collect::<Result<Vec<_>>>()
     }
