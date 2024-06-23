@@ -226,6 +226,10 @@ export class QueryBase<
     const tbl = await this.toArrow(options);
     return tbl.toArray();
   }
+
+  async explainPlan(verbose = false): Promise<string> {
+    return await this.inner.explainPlan(verbose);
+  }
 }
 
 /**

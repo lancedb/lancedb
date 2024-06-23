@@ -743,3 +743,27 @@ describe("table.search", () => {
     expect(results[0].text).toBe(data[1].text);
   });
 });
+
+describe("when calling explainPlan", () => {
+  let tmpDir: tmp.DirResult;
+  let table: Table;
+  let queryVec: number[];
+  beforeEach(async () => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+    const con = await connect(tmpDir.name);
+    table = await con.createTable("vectors", [{ id: 1, vector: [0.1, 0.2] }]);
+  });
+
+  afterEach(() => {
+    tmpDir.removeCallback();
+  });
+
+  it("retrieves query plan", async () => {
+    queryVec = Array(2)
+      .fill(1)
+      .map(() => Math.random());
+    const plan = await table.query().nearestTo(queryVec).explainPlan(true);
+
+    expect(plan).toMatch("KNN");
+  });
+});
