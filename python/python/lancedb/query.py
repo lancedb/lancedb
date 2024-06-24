@@ -1198,6 +1198,9 @@ class AsyncQueryBase(object):
         """
         return (await self.to_arrow()).to_pandas()
 
+    async def explain_plan(self, verbose: Optional[bool] = False):
+        return await self._inner.explain_plan(verbose)
+
 
 class AsyncQuery(AsyncQueryBase):
     def __init__(self, inner: LanceQuery):
