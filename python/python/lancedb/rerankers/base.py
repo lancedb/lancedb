@@ -120,9 +120,8 @@ class Reranker(ABC):
             The results from the FTS search
         """
         combined = pa.concat_tables(
-            [vector_results, fts_results],
-            promote_options=u"default"
-            )
+            [vector_results, fts_results], promote_options="default"
+        )
         row_id = combined.column("_rowid")
 
         # deduplicate
