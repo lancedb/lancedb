@@ -227,6 +227,20 @@ export class QueryBase<
     return tbl.toArray();
   }
 
+  /**
+   * Generates an explanation of the query execution plan.
+   *
+   * @example
+   * import * as lancedb from "@lancedb/lancedb"
+   * const db = await lancedb.connect("./.lancedb");
+   * const table = await db.createTable("my_table", [
+   *   { vector: [1.1, 0.9], id: "1" },
+   * ]);
+   * const plan = await table.query().nearestTo([0.5, 0.2]).explainPlan();
+   *
+   * @param verbose - If true, provides a more detailed explanation. Defaults to false.
+   * @returns A Promise that resolves to a string containing the query execution plan explanation.
+   */
   async explainPlan(verbose = false): Promise<string> {
     return await this.inner.explainPlan(verbose);
   }
