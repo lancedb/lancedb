@@ -58,7 +58,7 @@ class RemoteTable(Table):
         """Get the current version of the table"""
         resp = self._conn._client.post(f"/v1/table/{self._name}/describe/")
         return resp["version"]
-    
+
     @cached_property
     def embedding_functions(self) -> dict:
         """
@@ -371,9 +371,9 @@ class RemoteTable(Table):
         params["on"] = merge._on[0]
         params["when_matched_update_all"] = str(merge._when_matched_update_all).lower()
         if merge._when_matched_update_all_condition is not None:
-            params[
-                "when_matched_update_all_filt"
-            ] = merge._when_matched_update_all_condition
+            params["when_matched_update_all_filt"] = (
+                merge._when_matched_update_all_condition
+            )
         params["when_not_matched_insert_all"] = str(
             merge._when_not_matched_insert_all
         ).lower()
@@ -381,9 +381,9 @@ class RemoteTable(Table):
             merge._when_not_matched_by_source_delete
         ).lower()
         if merge._when_not_matched_by_source_condition is not None:
-            params[
-                "when_not_matched_by_source_delete_filt"
-            ] = merge._when_not_matched_by_source_condition
+            params["when_not_matched_by_source_delete_filt"] = (
+                merge._when_not_matched_by_source_condition
+            )
 
         self._conn._client.post(
             f"/v1/table/{self._name}/merge_insert/",
