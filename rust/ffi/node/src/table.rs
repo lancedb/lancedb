@@ -463,6 +463,7 @@ impl JsTable {
         Ok(promise)
     }
 
+    #[allow(deprecated)]
     pub(crate) fn js_index_stats(mut cx: FunctionContext) -> JsResult<JsPromise> {
         let js_table = cx.this().downcast_or_throw::<JsBox<Self>, _>(&mut cx)?;
         let rt = runtime(&mut cx)?;

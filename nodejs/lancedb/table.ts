@@ -34,6 +34,7 @@ import {
   AddColumnsSql,
   ColumnAlteration,
   IndexConfig,
+  IndexStatistics,
   OptimizeStats,
   Table as _NativeTable,
 } from "./native";
@@ -162,6 +163,9 @@ export abstract class Table {
    * Indices on vector columns will speed up vector searches.
    * Indices on scalar columns will speed up filtering (in both
    * vector and non-vector searches)
+   *
+   * @note We currently don't support custom named indexes,
+   * The index name will always be `${column}_idx`
    * @example
    * // If the column has a vector (fixed size list) data type then
    * // an IvfPq vector index will be created.
@@ -372,6 +376,13 @@ export abstract class Table {
 
   abstract mergeInsert(on: string | string[]): MergeInsertBuilder;
 
+  /** List all the stats of a specified index
+   *
+   * @param {string} name The name of the index.
+   * @returns {IndexStatistics | undefined} The stats of the index. If the index does not exist, it will return undefined
+   */
+  abstract indexStats(name: string): Promise<IndexStatistics | undefined>;
+
   static async parseTableData(
     data: Record<string, unknown>[] | TableLike,
     options?: Partial<CreateTableOptions>,
@@ -570,6 +581,13 @@ export class LocalTable extends Table {
     return await this.query().toArrow();
   }
 
+  async indexStats(name: string): Promise<IndexStatistics | undefined> {
+    const stats = await this.inner.indexStats(name);
+    if (stats === null) {
+      return undefined;
+    }
+    return stats;
+  }
   mergeInsert(on: string | string[]): MergeInsertBuilder {
     on = Array.isArray(on) ? on : [on];
     return new MergeInsertBuilder(this.inner.mergeInsert(on));

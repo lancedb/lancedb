@@ -6,3 +6,12 @@
 LanceDB Rust SDK, a serverless vector database.
 
 Read more at: https://lancedb.com/
+
+> [!TIP]
+> A transitive dependency of `lancedb` is `lzma-sys`, which uses dynamic linking
+> by default. If you want to statically link `lzma-sys`, you should activate it's
+> `static` feature by adding the following to your dependencies:
+>
+> ```toml
+> lzma-sys = { version = "*", features = ["static"] }
+> ```

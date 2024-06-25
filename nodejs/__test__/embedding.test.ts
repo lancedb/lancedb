@@ -230,7 +230,7 @@ describe("embedding functions", () => {
     },
   );
 
-  test.only.each([new Float16(), new Float32(), new Float64()])(
+  test.each([new Float16(), new Float32(), new Float64()])(
     "should be able to provide auto embeddings with multiple float datatypes",
     async (floatType) => {
       @register("test1")
