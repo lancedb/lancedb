@@ -17,6 +17,7 @@ import {
   Data,
   IntoVector,
   Schema,
+  TableLike,
   fromDataToBuffer,
   fromTableToBuffer,
   fromTableToStreamBuffer,
@@ -38,6 +39,8 @@ import {
   Table as _NativeTable,
 } from "./native";
 import { Query, VectorQuery } from "./query";
+import { sanitizeTable } from "./sanitize";
+export { IndexConfig } from "./native";
 
 /**
  * Options for adding data to a table.
@@ -381,8 +384,7 @@ export abstract class Table {
   abstract indexStats(name: string): Promise<IndexStatistics | undefined>;
 
   static async parseTableData(
-    // biome-ignore lint/suspicious/noExplicitAny: <explanation>
-    data: Record<string, unknown>[] | ArrowTable<any>,
+    data: Record<string, unknown>[] | TableLike,
     options?: Partial<CreateTableOptions>,
     streaming = false,
   ) {
@@ -395,9 +397,9 @@ export abstract class Table {
 
     let table: ArrowTable;
     if (isArrowTable(data)) {
-      table = data;
+      table = sanitizeTable(data);
     } else {
-      table = makeArrowTable(data, options);
+      table = makeArrowTable(data as Record<string, unknown>[], options);
     }
     if (streaming) {
       const buf = await fromTableToStreamBuffer(

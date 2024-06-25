@@ -1889,6 +1889,7 @@ impl TableInternal for NativeTable {
                 }
                 columns.push(field.name.clone());
             }
+
             let index_type = if is_vector {
                 crate::index::IndexType::IvfPq
             } else {

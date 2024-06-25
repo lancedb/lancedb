@@ -20,10 +20,12 @@
 // comes from the exact same library instance.  This is not always the case
 // and so we must sanitize the input to ensure that it is compatible.
 
+import { BufferType, Data } from "apache-arrow";
 import type { IntBitWidth, TKeys, TimeBitWidth } from "apache-arrow/type";
 import {
   Binary,
   Bool,
+  DataLike,
   DataType,
   DateDay,
   DateMillisecond,
@@ -56,9 +58,14 @@ import {
   Map_,
   Null,
   type Precision,
+  RecordBatch,
+  RecordBatchLike,
   Schema,
+  SchemaLike,
   SparseUnion,
   Struct,
+  Table,
+  TableLike,
   Time,
   TimeMicrosecond,
   TimeMillisecond,
@@ -488,7 +495,7 @@ export function sanitizeField(fieldLike: unknown): Field {
  * instance because they might be using a different instance of apache-arrow
  * than lancedb is using.
  */
-export function sanitizeSchema(schemaLike: unknown): Schema {
+export function sanitizeSchema(schemaLike: SchemaLike): Schema {
   if (schemaLike instanceof Schema) {
     return schemaLike;
   }
@@ -513,4 +520,69 @@ export function sanitizeSchema(schemaLike: unknown): Schema {
     sanitizeField(field),
   );
   return new Schema(sanitizedFields, metadata);
+}
+
+export function sanitizeTable(tableLike: TableLike): Table {
+  if (tableLike instanceof Table) {
+    return tableLike;
+  }
+  if (typeof tableLike !== "object" || tableLike === null) {
+    throw Error("Expected a Table but object was null/undefined");
+  }
+  if (!("schema" in tableLike)) {
+    throw Error(
+      "The table passed in does not appear to be a table (no 'schema' property)",
+    );
+  }
+  if (!("batches" in tableLike)) {
+    throw Error(
+      "The table passed in does not appear to be a table (no 'columns' property)",
+    );
+  }
+  const schema = sanitizeSchema(tableLike.schema);
+
+  const batches = tableLike.batches.map(sanitizeRecordBatch);
+  return new Table(schema, batches);
+}
+
+function sanitizeRecordBatch(batchLike: RecordBatchLike): RecordBatch {
+  if (batchLike instanceof RecordBatch) {
+    return batchLike;
+  }
+  if (typeof batchLike !== "object" || batchLike === null) {
+    throw Error("Expected a RecordBatch but object was null/undefined");
+  }
+  if (!("schema" in batchLike)) {
+    throw Error(
+      "The record batch passed in does not appear to be a record batch (no 'schema' property)",
+    );
+  }
+  if (!("data" in batchLike)) {
+    throw Error(
+      "The record batch passed in does not appear to be a record batch (no 'data' property)",
+    );
+  }
+  const schema = sanitizeSchema(batchLike.schema);
+  const data = sanitizeData(batchLike.data);
+  return new RecordBatch(schema, data);
+}
+function sanitizeData(
+  dataLike: DataLike,
+  // biome-ignore lint/suspicious/noExplicitAny: <explanation>
+): import("apache-arrow").Data<Struct<any>> {
+  if (dataLike instanceof Data) {
+    return dataLike;
+  }
+  return new Data(
+    dataLike.type,
+    dataLike.offset,
+    dataLike.length,
+    dataLike.nullCount,
+    {
+      [BufferType.OFFSET]: dataLike.valueOffsets,
+      [BufferType.DATA]: dataLike.values,
+      [BufferType.VALIDITY]: dataLike.nullBitmap,
+      [BufferType.TYPE]: dataLike.typeIds,
+    },
+  );
 }
