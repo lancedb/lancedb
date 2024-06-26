@@ -18,20 +18,23 @@ import { EmbeddingFunction } from "./embedding_function";
 import { register } from "./registry";
 
 export type OpenAIOptions = {
-  apiKey?: string;
-  model?: string;
+  apiKey: string;
+  model:
+    | "text-embedding-ada-002"
+    | "text-embedding-3-large"
+    | "text-embedding-3-small";
 };
 
 @register("openai")
 export class OpenAIEmbeddingFunction extends EmbeddingFunction<
   string,
-  OpenAIOptions
+  Partial<OpenAIOptions>
 > {
   #openai: OpenAI;
-  #modelName: string;
+  #modelName: OpenAIOptions["model"];
 
   constructor(
-    options: OpenAIOptions = {
+    options: Partial<OpenAIOptions> = {
       model: "text-embedding-ada-002",
     },
   ) {
@@ -76,8 +79,6 @@ export class OpenAIEmbeddingFunction extends EmbeddingFunction<
         return 3072;
       case "text-embedding-3-small":
         return 1536;
-      default:
-        return null as never;
     }
   }
 
