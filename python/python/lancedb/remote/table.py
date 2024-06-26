@@ -111,6 +111,7 @@ class RemoteTable(Table):
         num_sub_vectors: Optional[int] = None,
         replace: Optional[bool] = None,
         accelerator: Optional[str] = None,
+        index_type="IVF_PQ",
     ):
         """Create an index on the table.
         Currently, the only parameters that matter are
@@ -166,7 +167,6 @@ class RemoteTable(Table):
                 "replace is not supported on LanceDB cloud."
                 "Existing indexes will always be replaced."
             )
-        index_type = "vector"
 
         data = {
             "column": vector_column_name,
