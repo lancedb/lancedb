@@ -30,7 +30,11 @@ export class OpenAIEmbeddingFunction extends EmbeddingFunction<
   #openai: OpenAI;
   #modelName: string;
 
-  constructor(options: OpenAIOptions = { model: "text-embedding-ada-002" }) {
+  constructor(
+    options: OpenAIOptions = {
+      model: "text-embedding-ada-002",
+    },
+  ) {
     super();
     const openAIKey = options?.apiKey ?? process.env.OPENAI_API_KEY;
     if (!openAIKey) {

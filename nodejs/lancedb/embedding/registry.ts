@@ -12,21 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import type { EmbeddingFunction } from "./embedding_function";
+import {
+  type EmbeddingFunction,
+  type EmbeddingFunctionConstructor,
+} from "./embedding_function";
 import "reflect-metadata";
-
-export interface EmbeddingFunctionOptions {
-  [key: string]: unknown;
-}
-
-export interface EmbeddingFunctionFactory<
-  T extends EmbeddingFunction = EmbeddingFunction,
-> {
-  new (modelOptions?: EmbeddingFunctionOptions): T;
-}
+import { OpenAIEmbeddingFunction } from "./openai";
 
 interface EmbeddingFunctionCreate<T extends EmbeddingFunction> {
-  create(options?: EmbeddingFunctionOptions): T;
+  create(options?: T["TOptions"]): T;
 }
 
 /**
@@ -36,7 +30,7 @@ interface EmbeddingFunctionCreate<T extends EmbeddingFunction> {
  * or TextEmbeddingFunction and registering it with the registry
  */
 export class EmbeddingFunctionRegistry {
-  #functions: Map<string, EmbeddingFunctionFactory> = new Map();
+  #functions = new Map<string, EmbeddingFunctionConstructor>();
 
   /**
    * Register an embedding function
@@ -44,7 +38,9 @@ export class EmbeddingFunctionRegistry {
    * @param func The function to register
    * @throws Error if the function is already registered
    */
-  register<T extends EmbeddingFunctionFactory = EmbeddingFunctionFactory>(
+  register<
+    T extends EmbeddingFunctionConstructor = EmbeddingFunctionConstructor,
+  >(
     this: EmbeddingFunctionRegistry,
     alias?: string,
     // biome-ignore lint/suspicious/noExplicitAny: <explanation>
@@ -69,18 +65,28 @@ export class EmbeddingFunctionRegistry {
    * Fetch an embedding function by name
    * @param name The name of the function
    */
-  get<T extends EmbeddingFunction<unknown> = EmbeddingFunction>(
-    name: string,
-  ): EmbeddingFunctionCreate<T> | undefined {
+  get<
+    T extends EmbeddingFunction<unknown> = EmbeddingFunction,
+    Name extends string = "",
+  >(
+    name: Name,
+  ): Name extends "openai"
+    ? EmbeddingFunctionCreate<OpenAIEmbeddingFunction>
+    : EmbeddingFunctionCreate<T> | undefined {
+    type Output = Name extends "openai"
+      ? EmbeddingFunctionCreate<OpenAIEmbeddingFunction>
+      : EmbeddingFunctionCreate<T> | undefined;
+
     const factory = this.#functions.get(name);
     if (!factory) {
-      return undefined;
+      return undefined as Output;
     }
+
     return {
-      create: function (options: EmbeddingFunctionOptions) {
-        return new factory(options) as unknown as T;
+      create: function (options?: T["TOptions"]) {
+        return new factory(options);
       },
-    };
+    } as Output;
   }
 
   /**
@@ -104,7 +110,7 @@ export class EmbeddingFunctionRegistry {
         name: string;
         sourceColumn: string;
         vectorColumn: string;
-        model: EmbeddingFunctionOptions;
+        model: EmbeddingFunction["TOptions"];
       };
       const functions = <FunctionConfig[]>(
         JSON.parse(metadata.get("embedding_functions")!)
