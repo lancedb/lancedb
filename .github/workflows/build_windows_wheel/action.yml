@@ -26,6 +26,7 @@ runs:
       with:
         command: build
         args: ${{ inputs.args }}
+        docker-options: "-e PIP_EXTRA_INDEX_URL=https://pypi.fury.io/lancedb/"
         working-directory: python
     - uses: actions/upload-artifact@v3
       with:

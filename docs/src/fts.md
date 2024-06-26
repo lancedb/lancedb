@@ -2,7 +2,6 @@
 
 LanceDB provides support for full-text search via [Tantivy](https://github.com/quickwit-oss/tantivy) (currently Python only), allowing you to incorporate keyword-based search (based on BM25) in your retrieval solutions. Our goal is to push the FTS integration down to the Rust level in the future, so that it's available for Rust and JavaScript users as well.  Follow along at [this Github issue](https://github.com/lancedb/lance/issues/1195)
 
-A hybrid search solution combining vector and full-text search is also on the way.
 
 ## Installation
 
@@ -54,6 +53,16 @@ This returns the result as a list of dictionaries as follows.
 
 !!! note
     LanceDB automatically searches on the existing FTS index if the input to the search is of type `str`. If you provide a vector as input, LanceDB will search the ANN index instead.
+
+## Tokenization
+By default the text is tokenized by splitting on punctuation and whitespaces and then removing tokens that are longer than 40 chars. For more language specific tokenization then provide the argument tokenizer_name with the 2 letter language code followed by "_stem". So for english it would be "en_stem".
+
+```python
+table.create_fts_index("text", tokenizer_name="en_stem")
+```
+
+The following [languages](https://docs.rs/tantivy/latest/tantivy/tokenizer/enum.Language.html) are currently supported.
+
 
 ## Index multiple columns
 
@@ -139,6 +148,7 @@ is treated as a phrase query.
 
 In general, a query that's declared as a phrase query will be wrapped in double quotes during parsing, with nested
 double quotes replaced by single quotes.
+
 
 ## Configurations
 

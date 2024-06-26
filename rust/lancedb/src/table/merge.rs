@@ -23,6 +23,7 @@ use super::TableInternal;
 /// A builder used to create and run a merge insert operation
 ///
 /// See [`super::Table::merge_insert`] for more context
+#[derive(Debug, Clone)]
 pub struct MergeInsertBuilder {
     table: Arc<dyn TableInternal>,
     pub(super) on: Vec<String>,

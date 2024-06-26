@@ -12,20 +12,36 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { Data, Schema, fromDataToBuffer, tableFromIPC } from "./arrow";
+import {
+  Table as ArrowTable,
+  Data,
+  IntoVector,
+  Schema,
+  TableLike,
+  fromDataToBuffer,
+  fromTableToBuffer,
+  fromTableToStreamBuffer,
+  isArrowTable,
+  makeArrowTable,
+  tableFromIPC,
+} from "./arrow";
+import { CreateTableOptions } from "./connection";
 
-import { getRegistry } from "./embedding/registry";
+import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
 import { IndexOptions } from "./indices";
+import { MergeInsertBuilder } from "./merge";
 import {
   AddColumnsSql,
   ColumnAlteration,
   IndexConfig,
+  IndexStatistics,
   OptimizeStats,
   Table as _NativeTable,
 } from "./native";
 import { Query, VectorQuery } from "./query";
-
+import { sanitizeTable } from "./sanitize";
 export { IndexConfig } from "./native";
+
 /**
  * Options for adding data to a table.
  */
@@ -81,19 +97,15 @@ export interface OptimizeOptions {
  * Closing a table is optional.  It not closed, it will be closed when it is garbage
  * collected.
  */
-export class Table {
-  private readonly inner: _NativeTable;
-
-  /** Construct a Table. Internal use only. */
-  constructor(inner: _NativeTable) {
-    this.inner = inner;
+export abstract class Table {
+  [Symbol.for("nodejs.util.inspect.custom")](): string {
+    return this.display();
   }
+  /** Returns the name of the table */
+  abstract get name(): string;
 
   /** Return true if the table has not been closed */
-  isOpen(): boolean {
-    return this.inner.isOpen();
-  }
-
+  abstract isOpen(): boolean;
   /**
    * Close the table, releasing any underlying resources.
    *
@@ -101,39 +113,16 @@ export class Table {
    *
    * Any attempt to use the table after it is closed will result in an error.
    */
-  close(): void {
-    this.inner.close();
-  }
-
+  abstract close(): void;
   /** Return a brief description of the table */
-  display(): string {
-    return this.inner.display();
-  }
-
+  abstract display(): string;
   /** Get the schema of the table. */
-  async schema(): Promise<Schema> {
-    const schemaBuf = await this.inner.schema();
-    const tbl = tableFromIPC(schemaBuf);
-    return tbl.schema;
-  }
-
+  abstract schema(): Promise<Schema>;
   /**
    * Insert records into this Table.
    * @param {Data} data Records to be inserted into the Table
    */
-  async add(data: Data, options?: Partial<AddDataOptions>): Promise<void> {
-    const mode = options?.mode ?? "append";
-    const schema = await this.schema();
-    const registry = getRegistry();
-    const functions = registry.parseFunctions(schema.metadata);
-
-    const buffer = await fromDataToBuffer(
-      data,
-      functions.values().next().value,
-    );
-    await this.inner.add(buffer, mode);
-  }
-
+  abstract add(data: Data, options?: Partial<AddDataOptions>): Promise<void>;
   /**
    * Update existing records in the Table
    *
@@ -159,30 +148,14 @@ export class Table {
    * @param {Partial<UpdateOptions>} options - additional options to control
    * the update behavior
    */
-  async update(
+  abstract update(
     updates: Map<string, string> | Record<string, string>,
     options?: Partial<UpdateOptions>,
-  ) {
-    const onlyIf = options?.where;
-    let columns: [string, string][];
-    if (updates instanceof Map) {
-      columns = Array.from(updates.entries());
-    } else {
-      columns = Object.entries(updates);
-    }
-    await this.inner.update(onlyIf, columns);
-  }
-
+  ): Promise<void>;
   /** Count the total number of rows in the dataset. */
-  async countRows(filter?: string): Promise<number> {
-    return await this.inner.countRows(filter);
-  }
-
+  abstract countRows(filter?: string): Promise<number>;
   /** Delete the rows that satisfy the predicate. */
-  async delete(predicate: string): Promise<void> {
-    await this.inner.delete(predicate);
-  }
-
+  abstract delete(predicate: string): Promise<void>;
   /**
    * Create an index to speed up queries.
    *
@@ -190,6 +163,9 @@ export class Table {
    * Indices on vector columns will speed up vector searches.
    * Indices on scalar columns will speed up filtering (in both
    * vector and non-vector searches)
+   *
+   * @note We currently don't support custom named indexes,
+   * The index name will always be `${column}_idx`
    * @example
    * // If the column has a vector (fixed size list) data type then
    * // an IvfPq vector index will be created.
@@ -209,13 +185,10 @@ export class Table {
    * // Or create a Scalar index
    * await table.createIndex("my_float_col");
    */
-  async createIndex(column: string, options?: Partial<IndexOptions>) {
-    // Bit of a hack to get around the fact that TS has no package-scope.
-    // biome-ignore lint/suspicious/noExplicitAny: skip
-    const nativeIndex = (options?.config as any)?.inner;
-    await this.inner.createIndex(nativeIndex, column, options?.replace);
-  }
-
+  abstract createIndex(
+    column: string,
+    options?: Partial<IndexOptions>,
+  ): Promise<void>;
   /**
    * Create a {@link Query} Builder.
    *
@@ -266,10 +239,20 @@ export class Table {
    * }
    * @returns {Query} A builder that can be used to parameterize the query
    */
-  query(): Query {
-    return new Query(this.inner);
-  }
-
+  abstract query(): Query;
+  /**
+   * Create a search query to find the nearest neighbors
+   * of the given query vector
+   * @param {string} query - the query. This will be converted to a vector using the table's provided embedding function
+   * @rejects {Error} If no embedding functions are defined in the table
+   */
+  abstract search(query: string): Promise<VectorQuery>;
+  /**
+   * Create a search query to find the nearest neighbors
+   * of the given query vector
+   * @param {IntoVector} query - the query vector
+   */
+  abstract search(query: IntoVector): VectorQuery;
   /**
    * Search the table with a given query vector.
    *
@@ -277,11 +260,7 @@ export class Table {
    * is the same thing as calling `nearestTo` on the builder returned
    * by `query`.  @see {@link Query#nearestTo} for more details.
    */
-  vectorSearch(vector: unknown): VectorQuery {
-    return this.query().nearestTo(vector);
-  }
-
-  // TODO: Support BatchUDF
+  abstract vectorSearch(vector: IntoVector): VectorQuery;
   /**
    * Add new columns with defined values.
    * @param {AddColumnsSql[]} newColumnTransforms pairs of column names and
@@ -289,19 +268,14 @@ export class Table {
    * expressions will be evaluated for each row in the table, and can
    * reference existing columns in the table.
    */
-  async addColumns(newColumnTransforms: AddColumnsSql[]): Promise<void> {
-    await this.inner.addColumns(newColumnTransforms);
-  }
+  abstract addColumns(newColumnTransforms: AddColumnsSql[]): Promise<void>;
 
   /**
    * Alter the name or nullability of columns.
    * @param {ColumnAlteration[]} columnAlterations One or more alterations to
    * apply to columns.
    */
-  async alterColumns(columnAlterations: ColumnAlteration[]): Promise<void> {
-    await this.inner.alterColumns(columnAlterations);
-  }
-
+  abstract alterColumns(columnAlterations: ColumnAlteration[]): Promise<void>;
   /**
    * Drop one or more columns from the dataset
    *
@@ -313,15 +287,10 @@ export class Table {
    * be nested column references (e.g. "a.b.c") or top-level column names
    * (e.g. "a").
    */
-  async dropColumns(columnNames: string[]): Promise<void> {
-    await this.inner.dropColumns(columnNames);
-  }
-
+  abstract dropColumns(columnNames: string[]): Promise<void>;
   /** Retrieve the version of the table */
-  async version(): Promise<number> {
-    return await this.inner.version();
-  }
 
+  abstract version(): Promise<number>;
   /**
    * Checks out a specific version of the table _This is an in-place operation._
    *
@@ -347,19 +316,14 @@ export class Table {
    * console.log(await table.version()); // 2
    * ```
    */
-  async checkout(version: number): Promise<void> {
-    await this.inner.checkout(version);
-  }
-
+  abstract checkout(version: number): Promise<void>;
   /**
    * Checkout the latest version of the table. _This is an in-place operation._
    *
    * The table will be set back into standard mode, and will track the latest
    * version of the table.
    */
-  async checkoutLatest(): Promise<void> {
-    await this.inner.checkoutLatest();
-  }
+  abstract checkoutLatest(): Promise<void>;
 
   /**
    * Restore the table to the currently checked out version
@@ -373,10 +337,7 @@ export class Table {
    * Once the operation concludes the table will no longer be in a checked
    * out state and the read_consistency_interval, if any, will apply.
    */
-  async restore(): Promise<void> {
-    await this.inner.restore();
-  }
-
+  abstract restore(): Promise<void>;
   /**
    * Optimize the on-disk data and indices for better performance.
    *
@@ -407,6 +368,199 @@ export class Table {
    *  you have added or modified 100,000 or more records or run more than 20 data
    *  modification operations.
    */
+  abstract optimize(options?: Partial<OptimizeOptions>): Promise<OptimizeStats>;
+  /** List all indices that have been created with {@link Table.createIndex} */
+  abstract listIndices(): Promise<IndexConfig[]>;
+  /** Return the table as an arrow table */
+  abstract toArrow(): Promise<ArrowTable>;
+
+  abstract mergeInsert(on: string | string[]): MergeInsertBuilder;
+
+  /** List all the stats of a specified index
+   *
+   * @param {string} name The name of the index.
+   * @returns {IndexStatistics | undefined} The stats of the index. If the index does not exist, it will return undefined
+   */
+  abstract indexStats(name: string): Promise<IndexStatistics | undefined>;
+
+  static async parseTableData(
+    data: Record<string, unknown>[] | TableLike,
+    options?: Partial<CreateTableOptions>,
+    streaming = false,
+  ) {
+    let mode: string = options?.mode ?? "create";
+    const existOk = options?.existOk ?? false;
+
+    if (mode === "create" && existOk) {
+      mode = "exist_ok";
+    }
+
+    let table: ArrowTable;
+    if (isArrowTable(data)) {
+      table = sanitizeTable(data);
+    } else {
+      table = makeArrowTable(data as Record<string, unknown>[], options);
+    }
+    if (streaming) {
+      const buf = await fromTableToStreamBuffer(
+        table,
+        options?.embeddingFunction,
+        options?.schema,
+      );
+      return { buf, mode };
+    } else {
+      const buf = await fromTableToBuffer(
+        table,
+        options?.embeddingFunction,
+        options?.schema,
+      );
+      return { buf, mode };
+    }
+  }
+}
+
+export class LocalTable extends Table {
+  private readonly inner: _NativeTable;
+
+  constructor(inner: _NativeTable) {
+    super();
+    this.inner = inner;
+  }
+  get name(): string {
+    return this.inner.name;
+  }
+  isOpen(): boolean {
+    return this.inner.isOpen();
+  }
+
+  close(): void {
+    this.inner.close();
+  }
+
+  display(): string {
+    return this.inner.display();
+  }
+
+  private async getEmbeddingFunctions(): Promise<
+    Map<string, EmbeddingFunctionConfig>
+  > {
+    const schema = await this.schema();
+    const registry = getRegistry();
+    return registry.parseFunctions(schema.metadata);
+  }
+
+  /** Get the schema of the table. */
+  async schema(): Promise<Schema> {
+    const schemaBuf = await this.inner.schema();
+    const tbl = tableFromIPC(schemaBuf);
+    return tbl.schema;
+  }
+
+  async add(data: Data, options?: Partial<AddDataOptions>): Promise<void> {
+    const mode = options?.mode ?? "append";
+    const schema = await this.schema();
+    const registry = getRegistry();
+    const functions = registry.parseFunctions(schema.metadata);
+
+    const buffer = await fromDataToBuffer(
+      data,
+      functions.values().next().value,
+      schema,
+    );
+    await this.inner.add(buffer, mode);
+  }
+
+  async update(
+    updates: Map<string, string> | Record<string, string>,
+    options?: Partial<UpdateOptions>,
+  ) {
+    const onlyIf = options?.where;
+    let columns: [string, string][];
+    if (updates instanceof Map) {
+      columns = Array.from(updates.entries());
+    } else {
+      columns = Object.entries(updates);
+    }
+    await this.inner.update(onlyIf, columns);
+  }
+
+  async countRows(filter?: string): Promise<number> {
+    return await this.inner.countRows(filter);
+  }
+
+  async delete(predicate: string): Promise<void> {
+    await this.inner.delete(predicate);
+  }
+
+  async createIndex(column: string, options?: Partial<IndexOptions>) {
+    // Bit of a hack to get around the fact that TS has no package-scope.
+    // biome-ignore lint/suspicious/noExplicitAny: skip
+    const nativeIndex = (options?.config as any)?.inner;
+    await this.inner.createIndex(nativeIndex, column, options?.replace);
+  }
+
+  query(): Query {
+    return new Query(this.inner);
+  }
+
+  search(query: string): Promise<VectorQuery>;
+
+  search(query: IntoVector): VectorQuery;
+  search(query: string | IntoVector): Promise<VectorQuery> | VectorQuery {
+    if (typeof query !== "string") {
+      return this.vectorSearch(query);
+    } else {
+      return this.getEmbeddingFunctions().then(async (functions) => {
+        // TODO: Support multiple embedding functions
+        const embeddingFunc: EmbeddingFunctionConfig | undefined = functions
+          .values()
+          .next().value;
+        if (!embeddingFunc) {
+          return Promise.reject(
+            new Error("No embedding functions are defined in the table"),
+          );
+        }
+        const embeddings =
+          await embeddingFunc.function.computeQueryEmbeddings(query);
+        return this.query().nearestTo(embeddings);
+      });
+    }
+  }
+
+  vectorSearch(vector: IntoVector): VectorQuery {
+    return this.query().nearestTo(vector);
+  }
+
+  // TODO: Support BatchUDF
+
+  async addColumns(newColumnTransforms: AddColumnsSql[]): Promise<void> {
+    await this.inner.addColumns(newColumnTransforms);
+  }
+
+  async alterColumns(columnAlterations: ColumnAlteration[]): Promise<void> {
+    await this.inner.alterColumns(columnAlterations);
+  }
+
+  async dropColumns(columnNames: string[]): Promise<void> {
+    await this.inner.dropColumns(columnNames);
+  }
+
+  async version(): Promise<number> {
+    return await this.inner.version();
+  }
+
+  async checkout(version: number): Promise<void> {
+    await this.inner.checkout(version);
+  }
+
+  async checkoutLatest(): Promise<void> {
+    await this.inner.checkoutLatest();
+  }
+
+  async restore(): Promise<void> {
+    await this.inner.restore();
+  }
+
   async optimize(options?: Partial<OptimizeOptions>): Promise<OptimizeStats> {
     let cleanupOlderThanMs;
     if (
@@ -419,8 +573,23 @@ export class Table {
     return await this.inner.optimize(cleanupOlderThanMs);
   }
 
-  /** List all indices that have been created with {@link Table.createIndex} */
   async listIndices(): Promise<IndexConfig[]> {
     return await this.inner.listIndices();
+  }
+
+  async toArrow(): Promise<ArrowTable> {
+    return await this.query().toArrow();
+  }
+
+  async indexStats(name: string): Promise<IndexStatistics | undefined> {
+    const stats = await this.inner.indexStats(name);
+    if (stats === null) {
+      return undefined;
+    }
+    return stats;
+  }
+  mergeInsert(on: string | string[]): MergeInsertBuilder {
+    on = Array.isArray(on) ? on : [on];
+    return new MergeInsertBuilder(this.inner.mergeInsert(on));
   }
 }

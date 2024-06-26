@@ -1,6 +1,16 @@
 {
   "name": "@lancedb/lancedb",
-  "version": "0.5.1",
+  "description": "LanceDB: A serverless, low-latency vector database for AI applications",
+  "keywords": [
+    "database",
+    "lance",
+    "lancedb",
+    "search",
+    "vector",
+    "vector database",
+    "ann"
+  ],
+  "version": "0.6.0",
   "main": "dist/index.js",
   "exports": {
     ".": "./dist/index.js",
@@ -38,7 +48,8 @@
     "typedoc": "^0.25.7",
     "typedoc-plugin-markdown": "^3.17.1",
     "typescript": "^5.3.3",
-    "typescript-eslint": "^7.1.0"
+    "typescript-eslint": "^7.1.0",
+    "@types/axios": "^0.14.0"
   },
   "ava": {
     "timeout": "3m"
@@ -66,6 +77,7 @@
   },
   "dependencies": {
     "apache-arrow": "^15.0.0",
+    "axios": "^1.7.2",
     "openai": "^4.29.2",
     "reflect-metadata": "^0.2.2"
   }

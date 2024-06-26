@@ -20,6 +20,7 @@ mod connection;
 mod error;
 mod index;
 mod iterator;
+pub mod merge;
 mod query;
 mod table;
 mod util;
@@ -27,8 +28,6 @@ mod util;
 #[napi(object)]
 #[derive(Debug)]
 pub struct ConnectionOptions {
-    pub api_key: Option<String>,
-    pub host_override: Option<String>,
     /// (For LanceDB OSS only): The interval, in seconds, at which to check for
     /// updates to the table from other processes. If None, then consistency is not
     /// checked. For performance reasons, this is the default. For strong
@@ -56,6 +55,7 @@ pub enum WriteMode {
 /// Write options when creating a Table.
 #[napi(object)]
 pub struct WriteOptions {
+    /// Write mode for writing to a table.
     pub mode: Option<WriteMode>,
 }
 

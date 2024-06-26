@@ -16,6 +16,7 @@ excluded_globs = [
     "../src/basic.md",
     "../src/hybrid_search/hybrid_search.md",
     "../src/reranking/*.md",
+    "../src/guides/tuning_retrievers/*.md",
 ]
 
 python_prefix = "py"

@@ -509,7 +509,8 @@ export class RemoteTable<T = number[]> implements Table<T> {
     return (await results.body()).indexes?.map((index: any) => ({
       columns: index.columns,
       name: index.index_name,
-      uuid: index.index_uuid
+      uuid: index.index_uuid,
+      status: index.status
     }))
   }
 
@@ -520,7 +521,10 @@ export class RemoteTable<T = number[]> implements Table<T> {
     const body = await results.body()
     return {
       numIndexedRows: body?.num_indexed_rows,
-      numUnindexedRows: body?.num_unindexed_rows
+      numUnindexedRows: body?.num_unindexed_rows,
+      indexType: body?.index_type,
+      distanceType: body?.distance_type,
+      completedAt: body?.completed_at
     }
   }
 

@@ -12,7 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { Table as ArrowTable, RecordBatch, tableFromIPC } from "./arrow";
+import {
+  Table as ArrowTable,
+  type IntoVector,
+  RecordBatch,
+  tableFromIPC,
+} from "./arrow";
 import { type IvfPqOptions } from "./indices";
 import {
   RecordBatchIterator as NativeBatchIterator,
@@ -50,6 +55,39 @@ export class RecordBatchIterator implements AsyncIterator<RecordBatch> {
 }
 /* eslint-enable */
 
+class RecordBatchIterable<
+  NativeQueryType extends NativeQuery | NativeVectorQuery,
+> implements AsyncIterable<RecordBatch>
+{
+  private inner: NativeQueryType;
+  private options?: QueryExecutionOptions;
+
+  constructor(inner: NativeQueryType, options?: QueryExecutionOptions) {
+    this.inner = inner;
+    this.options = options;
+  }
+
+  // biome-ignore lint/suspicious/noExplicitAny: skip
+  [Symbol.asyncIterator](): AsyncIterator<RecordBatch<any>, any, undefined> {
+    return new RecordBatchIterator(
+      this.inner.execute(this.options?.maxBatchLength),
+    );
+  }
+}
+
+/**
+ * Options that control the behavior of a particular query execution
+ */
+export interface QueryExecutionOptions {
+  /**
+   * The maximum number of rows to return in a single batch
+   *
+   * Batches may have fewer rows if the underlying data is stored
+   * in smaller chunks.
+   */
+  maxBatchLength?: number;
+}
+
 /** Common methods supported by all query types */
 export class QueryBase<
   NativeQueryType extends NativeQuery | NativeVectorQuery,
@@ -75,6 +113,14 @@ export class QueryBase<
   where(predicate: string): QueryType {
     this.inner.onlyIf(predicate);
     return this as unknown as QueryType;
+  }
+  /**
+   * A filter statement to be applied to this query.
+   * @alias where
+   * @deprecated Use `where` instead
+   */
+  filter(predicate: string): QueryType {
+    return this.where(predicate);
   }
 
   /**
@@ -108,9 +154,12 @@ export class QueryBase<
    * object insertion order is easy to get wrong and `Map` is more foolproof.
    */
   select(
-    columns: string[] | Map<string, string> | Record<string, string>,
+    columns: string[] | Map<string, string> | Record<string, string> | string,
   ): QueryType {
     let columnTuples: [string, string][];
+    if (typeof columns === "string") {
+      columns = [columns];
+    }
     if (Array.isArray(columns)) {
       columnTuples = columns.map((c) => [c, c]);
     } else if (columns instanceof Map) {
@@ -133,8 +182,10 @@ export class QueryBase<
     return this as unknown as QueryType;
   }
 
-  protected nativeExecute(): Promise<NativeBatchIterator> {
-    return this.inner.execute();
+  protected nativeExecute(
+    options?: Partial<QueryExecutionOptions>,
+  ): Promise<NativeBatchIterator> {
+    return this.inner.execute(options?.maxBatchLength);
   }
 
   /**
@@ -148,8 +199,10 @@ export class QueryBase<
    * single query)
    *
    */
-  protected execute(): RecordBatchIterator {
-    return new RecordBatchIterator(this.nativeExecute());
+  protected execute(
+    options?: Partial<QueryExecutionOptions>,
+  ): RecordBatchIterator {
+    return new RecordBatchIterator(this.nativeExecute(options));
   }
 
   // biome-ignore lint/suspicious/noExplicitAny: skip
@@ -159,19 +212,18 @@ export class QueryBase<
   }
 
   /** Collect the results as an Arrow @see {@link ArrowTable}. */
-  async toArrow(): Promise<ArrowTable> {
+  async toArrow(options?: Partial<QueryExecutionOptions>): Promise<ArrowTable> {
     const batches = [];
-    for await (const batch of this) {
+    for await (const batch of new RecordBatchIterable(this.inner, options)) {
       batches.push(batch);
     }
     return new ArrowTable(batches);
   }
 
   /** Collect the results as an array of objects. */
-  async toArray(): Promise<unknown[]> {
-    const tbl = await this.toArrow();
-
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-return
+  // biome-ignore lint/suspicious/noExplicitAny: arrow.toArrow() returns any[]
+  async toArray(options?: Partial<QueryExecutionOptions>): Promise<any[]> {
+    const tbl = await this.toArrow(options);
     return tbl.toArray();
   }
 }
@@ -248,7 +300,9 @@ export class VectorQuery extends QueryBase<NativeVectorQuery, VectorQuery> {
    *
    * By default "l2" is used.
    */
-  distanceType(distanceType: string): VectorQuery {
+  distanceType(
+    distanceType: Required<IvfPqOptions>["distanceType"],
+  ): VectorQuery {
     this.inner.distanceType(distanceType);
     return this;
   }
@@ -370,9 +424,8 @@ export class Query extends QueryBase<NativeQuery, Query> {
    * Vector searches always have a `limit`.  If `limit` has not been called then
    * a default `limit` of 10 will be used.  @see {@link Query#limit}
    */
-  nearestTo(vector: unknown): VectorQuery {
-    // biome-ignore lint/suspicious/noExplicitAny: skip
-    const vectorQuery = this.inner.nearestTo(Float32Array.from(vector as any));
+  nearestTo(vector: IntoVector): VectorQuery {
+    const vectorQuery = this.inner.nearestTo(Float32Array.from(vector));
     return new VectorQuery(vectorQuery);
   }
 }

@@ -15,6 +15,7 @@
 import {
   Table as ArrowTable,
   Binary,
+  BufferType,
   DataType,
   Field,
   FixedSizeBinary,
@@ -31,18 +32,74 @@ import {
   Schema,
   Struct,
   Utf8,
-  type Vector,
+  Vector,
   makeBuilder,
   makeData,
   type makeTable,
   vectorFromArray,
 } from "apache-arrow";
+import { Buffers } from "apache-arrow/data";
 import { type EmbeddingFunction } from "./embedding/embedding_function";
 import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
-import { sanitizeField, sanitizeSchema, sanitizeType } from "./sanitize";
+import {
+  sanitizeField,
+  sanitizeSchema,
+  sanitizeTable,
+  sanitizeType,
+} from "./sanitize";
 export * from "apache-arrow";
+export type SchemaLike =
+  | Schema
+  | {
+      fields: FieldLike[];
+      metadata: Map<string, string>;
+      get names(): unknown[];
+    };
+export type FieldLike =
+  | Field
+  | {
+      type: string;
+      name: string;
+      nullable?: boolean;
+      metadata?: Map<string, string>;
+    };
 
-export function isArrowTable(value: object): value is ArrowTable {
+export type DataLike =
+  // biome-ignore lint/suspicious/noExplicitAny: <explanation>
+  | import("apache-arrow").Data<Struct<any>>
+  | {
+      // biome-ignore lint/suspicious/noExplicitAny: <explanation>
+      type: any;
+      length: number;
+      offset: number;
+      stride: number;
+      nullable: boolean;
+      children: DataLike[];
+      get nullCount(): number;
+      // biome-ignore lint/suspicious/noExplicitAny: <explanation>
+      values: Buffers<any>[BufferType.DATA];
+      // biome-ignore lint/suspicious/noExplicitAny: <explanation>
+      typeIds: Buffers<any>[BufferType.TYPE];
+      // biome-ignore lint/suspicious/noExplicitAny: <explanation>
+      nullBitmap: Buffers<any>[BufferType.VALIDITY];
+      // biome-ignore lint/suspicious/noExplicitAny: <explanation>
+      valueOffsets: Buffers<any>[BufferType.OFFSET];
+    };
+
+export type RecordBatchLike =
+  | RecordBatch
+  | {
+      schema: SchemaLike;
+      data: DataLike;
+    };
+
+export type TableLike =
+  | ArrowTable
+  | { schema: SchemaLike; batches: RecordBatchLike[] };
+
+export type IntoVector = Float32Array | Float64Array | number[];
+
+export function isArrowTable(value: object): value is TableLike {
   if (value instanceof ArrowTable) return true;
   return "schema" in value && "batches" in value;
 }
@@ -133,7 +190,7 @@ export function isFixedSizeList(value: unknown): value is FixedSizeList {
 }
 
 /** Data type accepted by NodeJS SDK */
-export type Data = Record<string, unknown>[] | ArrowTable;
+export type Data = Record<string, unknown>[] | TableLike;
 
 /*
  * Options to control how a column should be converted to a vector array
@@ -160,7 +217,7 @@ export class MakeArrowTableOptions {
    * The schema must be specified if there are no records (e.g. to make
    * an empty table)
    */
-  schema?: Schema;
+  schema?: SchemaLike;
 
   /*
    * Mapping from vector column name to expected type
@@ -182,6 +239,7 @@ export class MakeArrowTableOptions {
     vector: new VectorColumnOptions(),
   };
   embeddings?: EmbeddingFunction<unknown>;
+  embeddingFunction?: EmbeddingFunctionConfig;
 
   /**
    * If true then string columns will be encoded with dictionary encoding
@@ -306,7 +364,11 @@ export function makeArrowTable(
   const opt = new MakeArrowTableOptions(options !== undefined ? options : {});
   if (opt.schema !== undefined && opt.schema !== null) {
     opt.schema = sanitizeSchema(opt.schema);
-    opt.schema = validateSchemaEmbeddings(opt.schema, data, opt.embeddings);
+    opt.schema = validateSchemaEmbeddings(
+      opt.schema as Schema,
+      data,
+      options?.embeddingFunction,
+    );
   }
   const columns: Record<string, Vector> = {};
   // TODO: sample dataset to find missing columns
@@ -387,7 +449,7 @@ export function makeArrowTable(
     // `new ArrowTable(schema, batches)` which does not do any schema inference
     const firstTable = new ArrowTable(columns);
     const batchesFixed = firstTable.batches.map(
-      (batch) => new RecordBatch(opt.schema!, batch.data),
+      (batch) => new RecordBatch(opt.schema as Schema, batch.data),
     );
     let schema: Schema;
     if (metadata !== undefined) {
@@ -400,9 +462,9 @@ export function makeArrowTable(
         }
       }
 
-      schema = new Schema(opt.schema.fields, schemaMetadata);
+      schema = new Schema(opt.schema.fields as Field[], schemaMetadata);
     } else {
-      schema = opt.schema;
+      schema = opt.schema as Schema;
     }
     return new ArrowTable(schema, batchesFixed);
   }
@@ -418,7 +480,7 @@ export function makeArrowTable(
  * Create an empty Arrow table with the provided schema
  */
 export function makeEmptyTable(
-  schema: Schema,
+  schema: SchemaLike,
   metadata?: Map<string, string>,
 ): ArrowTable {
   return makeArrowTable([], { schema }, metadata);
@@ -545,7 +607,6 @@ async function applyEmbeddingsFromMetadata(
           dtype,
       );
     }
-
     const vector = makeVector(vectors, destType);
     columns[destColumn] = vector;
   }
@@ -557,16 +618,15 @@ async function applyEmbeddingsFromMetadata(
 async function applyEmbeddings<T>(
   table: ArrowTable,
   embeddings?: EmbeddingFunctionConfig,
-  schema?: Schema,
+  schema?: SchemaLike,
 ): Promise<ArrowTable> {
-  if (schema?.metadata.has("embedding_functions")) {
-    return applyEmbeddingsFromMetadata(table, schema!);
-  } else if (embeddings == null || embeddings === undefined) {
-    return table;
-  }
-
   if (schema !== undefined && schema !== null) {
     schema = sanitizeSchema(schema);
+  }
+  if (schema?.metadata.has("embedding_functions")) {
+    return applyEmbeddingsFromMetadata(table, schema! as Schema);
+  } else if (embeddings == null || embeddings === undefined) {
+    return table;
   }
 
   // Convert from ArrowTable to Record<String, Vector>
@@ -644,7 +704,7 @@ async function applyEmbeddings<T>(
         `When using embedding functions and specifying a schema the schema should include the embedding column but the column ${destColumn} was missing`,
       );
     }
-    return alignTable(newTable, schema);
+    return alignTable(newTable, schema as Schema);
   }
   return newTable;
 }
@@ -738,7 +798,7 @@ export async function fromRecordsToStreamBuffer(
 export async function fromTableToBuffer(
   table: ArrowTable,
   embeddings?: EmbeddingFunctionConfig,
-  schema?: Schema,
+  schema?: SchemaLike,
 ): Promise<Buffer> {
   if (schema !== undefined && schema !== null) {
     schema = sanitizeSchema(schema);
@@ -765,7 +825,7 @@ export async function fromDataToBuffer(
     schema = sanitizeSchema(schema);
   }
   if (isArrowTable(data)) {
-    return fromTableToBuffer(data, embeddings, schema);
+    return fromTableToBuffer(sanitizeTable(data), embeddings, schema);
   } else {
     const table = await convertToTable(data, embeddings, { schema });
     return fromTableToBuffer(table);
@@ -783,7 +843,7 @@ export async function fromDataToBuffer(
 export async function fromTableToStreamBuffer(
   table: ArrowTable,
   embeddings?: EmbeddingFunctionConfig,
-  schema?: Schema,
+  schema?: SchemaLike,
 ): Promise<Buffer> {
   const tableWithEmbeddings = await applyEmbeddings(table, embeddings, schema);
   const writer = RecordBatchStreamWriter.writeAll(tableWithEmbeddings);
@@ -835,7 +895,7 @@ export function createEmptyTable(schema: Schema): ArrowTable {
 function validateSchemaEmbeddings(
   schema: Schema,
   data: Array<Record<string, unknown>>,
-  embeddings: EmbeddingFunction<unknown> | undefined,
+  embeddings: EmbeddingFunctionConfig | undefined,
 ) {
   const fields = [];
   const missingEmbeddingFields = [];
@@ -848,7 +908,6 @@ function validateSchemaEmbeddings(
   for (let field of schema.fields) {
     if (isFixedSizeList(field.type)) {
       field = sanitizeField(field);
-
       if (data.length !== 0 && data?.[0]?.[field.name] === undefined) {
         if (schema.metadata.has("embedding_functions")) {
           const embeddings = JSON.parse(

@@ -15,6 +15,7 @@
 use lancedb::query::ExecutableQuery;
 use lancedb::query::Query as LanceDbQuery;
 use lancedb::query::QueryBase;
+use lancedb::query::QueryExecutionOptions;
 use lancedb::query::Select;
 use lancedb::query::VectorQuery as LanceDbVectorQuery;
 use napi::bindgen_prelude::*;
@@ -62,10 +63,21 @@ impl Query {
     }
 
     #[napi]
-    pub async fn execute(&self) -> napi::Result<RecordBatchIterator> {
-        let inner_stream = self.inner.execute().await.map_err(|e| {
-            napi::Error::from_reason(format!("Failed to execute query stream: {}", e))
-        })?;
+    pub async fn execute(
+        &self,
+        max_batch_length: Option<u32>,
+    ) -> napi::Result<RecordBatchIterator> {
+        let mut execution_opts = QueryExecutionOptions::default();
+        if let Some(max_batch_length) = max_batch_length {
+            execution_opts.max_batch_length = max_batch_length;
+        }
+        let inner_stream = self
+            .inner
+            .execute_with_options(execution_opts)
+            .await
+            .map_err(|e| {
+                napi::Error::from_reason(format!("Failed to execute query stream: {}", e))
+            })?;
         Ok(RecordBatchIterator::new(inner_stream))
     }
 }
@@ -125,10 +137,21 @@ impl VectorQuery {
     }
 
     #[napi]
-    pub async fn execute(&self) -> napi::Result<RecordBatchIterator> {
-        let inner_stream = self.inner.execute().await.map_err(|e| {
-            napi::Error::from_reason(format!("Failed to execute query stream: {}", e))
-        })?;
+    pub async fn execute(
+        &self,
+        max_batch_length: Option<u32>,
+    ) -> napi::Result<RecordBatchIterator> {
+        let mut execution_opts = QueryExecutionOptions::default();
+        if let Some(max_batch_length) = max_batch_length {
+            execution_opts.max_batch_length = max_batch_length;
+        }
+        let inner_stream = self
+            .inner
+            .execute_with_options(execution_opts)
+            .await
+            .map_err(|e| {
+                napi::Error::from_reason(format!("Failed to execute query stream: {}", e))
+            })?;
         Ok(RecordBatchIterator::new(inner_stream))
     }
 }

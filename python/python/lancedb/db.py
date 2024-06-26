@@ -558,6 +558,8 @@ class AsyncConnection(object):
         on_bad_vectors: Optional[str] = None,
         fill_value: Optional[float] = None,
         storage_options: Optional[Dict[str, str]] = None,
+        *,
+        use_legacy_format: Optional[bool] = None,
     ) -> AsyncTable:
         """Create an [AsyncTable][lancedb.table.AsyncTable] in the database.
 
@@ -600,6 +602,9 @@ class AsyncConnection(object):
             connection will be inherited by the table, but can be overridden here.
             See available options at
             https://lancedb.github.io/lancedb/guides/storage/
+        use_legacy_format: bool, optional, default True
+            If True, use the legacy format for the table. If False, use the new format.
+            The default is True while the new format is in beta.
 
 
         Returns
@@ -761,7 +766,11 @@ class AsyncConnection(object):
 
         if data is None:
             new_table = await self._inner.create_empty_table(
-                name, mode, schema, storage_options=storage_options
+                name,
+                mode,
+                schema,
+                storage_options=storage_options,
+                use_legacy_format=use_legacy_format,
             )
         else:
             data = data_to_reader(data, schema)
@@ -770,6 +779,7 @@ class AsyncConnection(object):
                 mode,
                 data,
                 storage_options=storage_options,
+                use_legacy_format=use_legacy_format,
             )
 
         return AsyncTable(new_table)

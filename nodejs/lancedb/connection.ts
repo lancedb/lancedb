@@ -12,38 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { Table as ArrowTable, Schema } from "./arrow";
-import {
-  fromTableToBuffer,
-  isArrowTable,
-  makeArrowTable,
-  makeEmptyTable,
-} from "./arrow";
+import { Data, Schema, SchemaLike, TableLike } from "./arrow";
+import { fromTableToBuffer, makeEmptyTable } from "./arrow";
 import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
-import { ConnectionOptions, Connection as LanceDbConnection } from "./native";
-import { Table } from "./table";
-
-/**
- * Connect to a LanceDB instance at the given URI.
- *
- * Accepted formats:
- *
- * - `/path/to/database` - local database
- * - `s3://bucket/path/to/database` or `gs://bucket/path/to/database` - database on cloud storage
- * - `db://host:port` - remote database (LanceDB cloud)
- * @param {string} uri - The uri of the database. If the database uri starts
- * with `db://` then it connects to a remote database.
- * @see {@link ConnectionOptions} for more details on the URI format.
- */
-export async function connect(
-  uri: string,
-  opts?: Partial<ConnectionOptions>,
-): Promise<Connection> {
-  opts = opts ?? {};
-  opts.storageOptions = cleanseStorageOptions(opts.storageOptions);
-  const nativeConn = await LanceDbConnection.new(uri, opts);
-  return new Connection(nativeConn);
-}
+import { Connection as LanceDbConnection } from "./native";
+import { LocalTable, Table } from "./table";
 
 export interface CreateTableOptions {
   /**
@@ -71,7 +44,13 @@ export interface CreateTableOptions {
    * The available options are described at https://lancedb.github.io/lancedb/guides/storage/
    */
   storageOptions?: Record<string, string>;
-  schema?: Schema;
+  /**
+   * If true then data files will be written with the legacy format
+   *
+   * The default is true while the new format is in beta
+   */
+  useLegacyFormat?: boolean;
+  schema?: SchemaLike;
   embeddingFunction?: EmbeddingFunctionConfig;
 }
 
@@ -111,7 +90,6 @@ export interface TableNamesOptions {
   /** An optional limit to the number of results to return. */
   limit?: number;
 }
-
 /**
  * A LanceDB Connection that allows you to open tables and create new ones.
  *
@@ -130,17 +108,15 @@ export interface TableNamesOptions {
  * Any created tables are independent and will continue to work even if
  * the underlying connection has been closed.
  */
-export class Connection {
-  readonly inner: LanceDbConnection;
-
-  constructor(inner: LanceDbConnection) {
-    this.inner = inner;
+export abstract class Connection {
+  [Symbol.for("nodejs.util.inspect.custom")](): string {
+    return this.display();
   }
 
-  /** Return true if the connection has not been closed */
-  isOpen(): boolean {
-    return this.inner.isOpen();
-  }
+  /**
+   * Return true if the connection has not been closed
+   */
+  abstract isOpen(): boolean;
 
   /**
    * Close the connection, releasing any underlying resources.
@@ -149,14 +125,12 @@ export class Connection {
    *
    * Any attempt to use the connection after it is closed will result in an error.
    */
-  close(): void {
-    this.inner.close();
-  }
+  abstract close(): void;
 
-  /** Return a brief description of the connection */
-  display(): string {
-    return this.inner.display();
-  }
+  /**
+   * Return a brief description of the connection
+   */
+  abstract display(): string;
 
   /**
    * List all the table names in this database.
@@ -164,15 +138,86 @@ export class Connection {
    * Tables will be returned in lexicographical order.
    * @param {Partial<TableNamesOptions>} options - options to control the
    * paging / start point
+   *
    */
-  async tableNames(options?: Partial<TableNamesOptions>): Promise<string[]> {
-    return this.inner.tableNames(options?.startAfter, options?.limit);
-  }
+  abstract tableNames(options?: Partial<TableNamesOptions>): Promise<string[]>;
 
   /**
    * Open a table in the database.
    * @param {string} name - The name of the table
    */
+  abstract openTable(
+    name: string,
+    options?: Partial<OpenTableOptions>,
+  ): Promise<Table>;
+
+  /**
+   * Creates a new Table and initialize it with new data.
+   * @param {object} options - The options object.
+   * @param {string} options.name - The name of the table.
+   * @param {Data} options.data - Non-empty Array of Records to be inserted into the table
+   *
+   */
+  abstract createTable(
+    options: {
+      name: string;
+      data: Data;
+    } & Partial<CreateTableOptions>,
+  ): Promise<Table>;
+  /**
+   * Creates a new Table and initialize it with new data.
+   * @param {string} name - The name of the table.
+   * @param {Record<string, unknown>[] | TableLike} data - Non-empty Array of Records
+   * to be inserted into the table
+   */
+  abstract createTable(
+    name: string,
+    data: Record<string, unknown>[] | TableLike,
+    options?: Partial<CreateTableOptions>,
+  ): Promise<Table>;
+
+  /**
+   * Creates a new empty Table
+   * @param {string} name - The name of the table.
+   * @param {Schema} schema - The schema of the table
+   */
+  abstract createEmptyTable(
+    name: string,
+    schema: import("./arrow").SchemaLike,
+    options?: Partial<CreateTableOptions>,
+  ): Promise<Table>;
+
+  /**
+   * Drop an existing table.
+   * @param {string} name The name of the table to drop.
+   */
+  abstract dropTable(name: string): Promise<void>;
+}
+
+export class LocalConnection extends Connection {
+  readonly inner: LanceDbConnection;
+
+  constructor(inner: LanceDbConnection) {
+    super();
+    this.inner = inner;
+  }
+
+  isOpen(): boolean {
+    return this.inner.isOpen();
+  }
+
+  close(): void {
+    this.inner.close();
+  }
+
+  display(): string {
+    return this.inner.display();
+  }
+
+  async tableNames(options?: Partial<TableNamesOptions>): Promise<string[]> {
+    return this.inner.tableNames(options?.startAfter, options?.limit);
+  }
+
   async openTable(
     name: string,
     options?: Partial<OpenTableOptions>,
@@ -183,57 +228,38 @@ export class Connection {
       options?.indexCacheSize,
     );
 
-    return new Table(innerTable);
+    return new LocalTable(innerTable);
   }
 
-  /**
-   * Creates a new Table and initialize it with new data.
-   * @param {string} name - The name of the table.
-   * @param {Record<string, unknown>[] | ArrowTable} data - Non-empty Array of Records
-   * to be inserted into the table
-   */
   async createTable(
-    name: string,
-    data: Record<string, unknown>[] | ArrowTable,
+    nameOrOptions:
+      | string
+      | ({ name: string; data: Data } & Partial<CreateTableOptions>),
+    data?: Record<string, unknown>[] | TableLike,
     options?: Partial<CreateTableOptions>,
   ): Promise<Table> {
-    let mode: string = options?.mode ?? "create";
-    const existOk = options?.existOk ?? false;
-
-    if (mode === "create" && existOk) {
-      mode = "exist_ok";
+    if (typeof nameOrOptions !== "string" && "name" in nameOrOptions) {
+      const { name, data, ...options } = nameOrOptions;
+      return this.createTable(name, data, options);
     }
-
-    let table: ArrowTable;
-    if (isArrowTable(data)) {
-      table = data;
-    } else {
-      table = makeArrowTable(data, options);
+    if (data === undefined) {
+      throw new Error("data is required");
     }
-
-    const buf = await fromTableToBuffer(
-      table,
-      options?.embeddingFunction,
-      options?.schema,
-    );
+    const { buf, mode } = await Table.parseTableData(data, options);
     const innerTable = await this.inner.createTable(
-      name,
+      nameOrOptions,
       buf,
       mode,
       cleanseStorageOptions(options?.storageOptions),
+      options?.useLegacyFormat,
     );
 
-    return new Table(innerTable);
+    return new LocalTable(innerTable);
   }
 
-  /**
-   * Creates a new empty Table
-   * @param {string} name - The name of the table.
-   * @param {Schema} schema - The schema of the table
-   */
   async createEmptyTable(
     name: string,
-    schema: Schema,
+    schema: import("./arrow").SchemaLike,
     options?: Partial<CreateTableOptions>,
   ): Promise<Table> {
     let mode: string = options?.mode ?? "create";
@@ -256,14 +282,11 @@ export class Connection {
       buf,
       mode,
       cleanseStorageOptions(options?.storageOptions),
+      options?.useLegacyFormat,
     );
-    return new Table(innerTable);
+    return new LocalTable(innerTable);
   }
 
-  /**
-   * Drop an existing table.
-   * @param {string} name The name of the table to drop.
-   */
   async dropTable(name: string): Promise<void> {
     return this.inner.dropTable(name);
   }
@@ -272,7 +295,7 @@ export class Connection {
 /**
  * Takes storage options and makes all the keys snake case.
  */
-function cleanseStorageOptions(
+export function cleanseStorageOptions(
   options?: Record<string, string>,
 ): Record<string, string> | undefined {
   if (options === undefined) {

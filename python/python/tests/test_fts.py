@@ -66,6 +66,17 @@ def test_create_index(tmp_path):
     assert os.path.exists(str(tmp_path / "index"))
 
 
+def test_create_index_with_stemming(tmp_path, table):
+    index = ldb.fts.create_index(
+        str(tmp_path / "index"), ["text"], tokenizer_name="en_stem"
+    )
+    assert isinstance(index, tantivy.Index)
+    assert os.path.exists(str(tmp_path / "index"))
+
+    # Check stemming by running tokenizer on non empty table
+    table.create_fts_index("text", tokenizer_name="en_stem")
+
+
 def test_populate_index(tmp_path, table):
     index = ldb.fts.create_index(str(tmp_path / "index"), ["text"])
     assert ldb.fts.populate_index(index, table, ["text"]) == len(table)
