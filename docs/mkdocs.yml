@@ -13,6 +13,7 @@ theme:
     # Palette toggle for light mode
     - scheme: lancedb
       primary: custom
+      accent: custom
       toggle:
         icon: material/weather-night
         name: Switch to dark mode
