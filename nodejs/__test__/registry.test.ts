@@ -63,6 +63,7 @@ describe("Registry", () => {
         return data.map(() => [1, 2, 3]);
       }
     }
+
     const func = getRegistry()
       .get<MockEmbeddingFunction>("mock-embedding")!
       .create();

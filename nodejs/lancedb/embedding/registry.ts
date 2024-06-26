@@ -45,6 +45,8 @@ export class EmbeddingFunctionRegistry {
     alias?: string,
     // biome-ignore lint/suspicious/noExplicitAny: <explanation>
   ): (ctor: T) => any {
+    console.log("registering", name);
+
     const self = this;
     return function (ctor: T) {
       if (!alias) {
@@ -65,11 +67,8 @@ export class EmbeddingFunctionRegistry {
    * Fetch an embedding function by name
    * @param name The name of the function
    */
-  get<
-    T extends EmbeddingFunction<unknown> = EmbeddingFunction,
-    Name extends string = "",
-  >(
-    name: Name,
+  get<T extends EmbeddingFunction<unknown>, Name extends string = "">(
+    name: Name extends "openai" ? "openai" : string,
   ): Name extends "openai"
     ? EmbeddingFunctionCreate<OpenAIEmbeddingFunction>
     : EmbeddingFunctionCreate<T> | undefined {
