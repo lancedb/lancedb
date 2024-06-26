@@ -45,8 +45,6 @@ export class EmbeddingFunctionRegistry {
     alias?: string,
     // biome-ignore lint/suspicious/noExplicitAny: <explanation>
   ): (ctor: T) => any {
-    console.log("registering", name);
-
     const self = this;
     return function (ctor: T) {
       if (!alias) {
