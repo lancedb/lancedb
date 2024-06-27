@@ -1,19 +1,16 @@
 {
   "name": "examples",
   "version": "1.0.0",
-  "description": "",
+  "description": "Examples for LanceDB",
   "main": "index.js",
   "type": "module",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "author": "",
-  "license": "ISC",
+  "author": "Lance Devs",
+  "license": "Apache-2.0",
   "dependencies": {
     "@lancedb/lancedb": "file:../"
-  },
-  "devDependencies": {
-    "@types/bun": "latest"
   },
   "peerDependencies": {
     "typescript": "^5.0.0"
