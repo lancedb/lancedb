@@ -14,6 +14,7 @@
 import asyncio
 import copy
 from datetime import timedelta
+import threading
 
 import pytest
 import pyarrow as pa
@@ -201,10 +202,61 @@ def test_s3_dynamodb(s3_bucket: str, commit_table: str):
         table = await db.create_table("test", data)
 
         # Five concurrent writers
-        tasks = [table.add(data, mode="append") for _ in range(5)]
+        async def insert():
+            # independent table refs for true concurrent writes.
+            table = await db.open_table("test")
+            await table.add(data, mode="append")
+
+        tasks = [insert() for _ in range(5)]
         await asyncio.gather(*tasks)
 
         row_count = await table.count_rows()
         assert row_count == 3 * 6
 
     asyncio.run(test())
+
+
+@pytest.mark.s3_test
+def test_s3_dynamodb_sync(s3_bucket: str, commit_table: str, monkeypatch):
+    # Sync API doesn't support storage_options, so we have to provide as env vars
+    for key, value in CONFIG.items():
+        monkeypatch.setenv(key.upper(), value)
+
+    uri = f"s3+ddb://{s3_bucket}/test2?ddbTableName={commit_table}"
+    data = pa.table({"x": ["a", "b", "c"]})
+
+    db = lancedb.connect(
+        uri,
+        read_consistency_interval=timedelta(0),
+    )
+
+    table = db.create_table("test_ddb_sync", data)
+
+    # Five concurrent writers
+    def insert():
+        table = db.open_table("test_ddb_sync")
+        table.add(data, mode="append")
+
+    threads = []
+    for _ in range(5):
+        thread = threading.Thread(target=insert)
+        threads.append(thread)
+        thread.start()
+
+    for thread in threads:
+        thread.join()
+
+    row_count = table.count_rows()
+    assert row_count == 3 * 6
+
+    # FTS indices should error since they are not supported yet.
+    with pytest.raises(
+        NotImplementedError, match="Full-text search is not supported on object stores."
+    ):
+        table.create_fts_index("x")
+
+    # make sure list tables still works
+    assert db.table_names() == ["test_ddb_sync"]
+    db.drop_table("test_ddb_sync")
+    assert db.table_names() == []
+    db.drop_database()
