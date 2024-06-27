@@ -25,7 +25,9 @@ const CONFIG: &[(&str, &str)] = &[
     ("access_key_id", "ACCESS_KEY"),
     ("secret_access_key", "SECRET_KEY"),
     ("endpoint", "http://127.0.0.1:4566"),
+    ("dynamodb_endpoint", "http://127.0.0.1:4566"),
     ("allow_http", "true"),
+    ("region", "us-east-1"),
 ];
 
 async fn aws_config() -> SdkConfig {
@@ -287,4 +289,127 @@ async fn test_encryption() -> Result<()> {
     validate_objects_encrypted(&bucket.0, "test_table", &key.0).await;
 
     Ok(())
+}
+
+struct DynamoDBCommitTable(String);
+
+impl DynamoDBCommitTable {
+    async fn new(name: &str) -> Self {
+        let config = aws_config().await;
+        let client = aws_sdk_dynamodb::Client::new(&config);
+
+        // In case it wasn't deleted earlier
+        Self::delete_table(client.clone(), name).await;
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        use aws_sdk_dynamodb::types::*;
+
+        client
+            .create_table()
+            .table_name(name)
+            .attribute_definitions(
+                AttributeDefinition::builder()
+                    .attribute_name("base_uri")
+                    .attribute_type(ScalarAttributeType::S)
+                    .build()
+                    .unwrap(),
+            )
+            .attribute_definitions(
+                AttributeDefinition::builder()
+                    .attribute_name("version")
+                    .attribute_type(ScalarAttributeType::N)
+                    .build()
+                    .unwrap(),
+            )
+            .key_schema(
+                KeySchemaElement::builder()
+                    .attribute_name("base_uri")
+                    .key_type(KeyType::Hash)
+                    .build()
+                    .unwrap(),
+            )
+            .key_schema(
+                KeySchemaElement::builder()
+                    .attribute_name("version")
+                    .key_type(KeyType::Range)
+                    .build()
+                    .unwrap(),
+            )
+            .provisioned_throughput(
+                ProvisionedThroughput::builder()
+                    .read_capacity_units(1)
+                    .write_capacity_units(1)
+                    .build()
+                    .unwrap(),
+            )
+            .send()
+            .await
+            .unwrap();
+
+        Self(name.to_string())
+    }
+
+    async fn delete_table(client: aws_sdk_dynamodb::Client, name: &str) {
+        match client
+            .delete_table()
+            .table_name(name)
+            .send()
+            .await
+            .map_err(|err| err.into_service_error())
+        {
+            Ok(_) => {}
+            Err(e) if e.is_resource_not_found_exception() => {}
+            Err(e) => panic!("Failed to delete table: {}", e),
+        };
+    }
+}
+
+impl Drop for DynamoDBCommitTable {
+    fn drop(&mut self) {
+        let table_name = self.0.clone();
+        tokio::task::spawn(async move {
+            let config = aws_config().await;
+            let client = aws_sdk_dynamodb::Client::new(&config);
+            Self::delete_table(client, &table_name).await;
+        });
+    }
+}
+
+#[tokio::test]
+async fn test_concurrent_dynamodb_commit() {
+    // test concurrent commit on dynamodb
+    let bucket = S3Bucket::new("test-dynamodb").await;
+    let table = DynamoDBCommitTable::new("test_table").await;
+
+    let uri = format!("s3+ddb://{}?ddbTableName={}", bucket.0, table.0);
+    let db = lancedb::connect(&uri)
+        .storage_options(CONFIG.iter().cloned())
+        .execute()
+        .await
+        .unwrap();
+
+    let data = test_data();
+    let data = RecordBatchIterator::new(vec![Ok(data.clone())], data.schema());
+
+    let table = db.create_table("test_table", data).execute().await.unwrap();
+
+    let data = test_data();
+
+    let mut tasks = vec![];
+    for _ in 0..5 {
+        let table = db.open_table("test_table").execute().await.unwrap();
+        let data = data.clone();
+        tasks.push(tokio::spawn(async move {
+            let data = RecordBatchIterator::new(vec![Ok(data.clone())], data.schema());
+            table.add(data).execute().await.unwrap();
+        }));
+    }
+
+    for task in tasks {
+        task.await.unwrap();
+    }
+
+    table.checkout_latest().await.unwrap();
+    let row_count = table.count_rows(None).await.unwrap();
+    assert_eq!(row_count, 18);
 }

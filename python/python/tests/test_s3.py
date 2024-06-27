@@ -13,6 +13,7 @@
 
 import asyncio
 import copy
+from datetime import timedelta
 
 import pytest
 import pyarrow as pa
@@ -25,6 +26,7 @@ CONFIG = {
     "aws_access_key_id": "ACCESSKEY",
     "aws_secret_access_key": "SECRETKEY",
     "aws_endpoint": "http://localhost:4566",
+    "dynamodb_endpoint": "http://localhost:4566",
     "aws_region": "us-east-1",
 }
 
@@ -154,5 +156,55 @@ def test_s3_sse(s3_bucket: str, kms_key: str):
 
         path = "test_lifecycle/table2.lance"
         validate_objects_encrypted(s3_bucket, path, kms_key)
+
+    asyncio.run(test())
+
+
+@pytest.fixture(scope="module")
+def commit_table():
+    ddb = get_boto3_client("dynamodb", endpoint_url=CONFIG["dynamodb_endpoint"])
+    table_name = "lance-integtest"
+    try:
+        ddb.delete_table(TableName=table_name)
+    except ddb.exceptions.ResourceNotFoundException:
+        pass
+    ddb.create_table(
+        TableName=table_name,
+        KeySchema=[
+            {"AttributeName": "base_uri", "KeyType": "HASH"},
+            {"AttributeName": "version", "KeyType": "RANGE"},
+        ],
+        AttributeDefinitions=[
+            {"AttributeName": "base_uri", "AttributeType": "S"},
+            {"AttributeName": "version", "AttributeType": "N"},
+        ],
+        ProvisionedThroughput={"ReadCapacityUnits": 1, "WriteCapacityUnits": 1},
+    )
+    yield table_name
+    ddb.delete_table(TableName=table_name)
+
+
+@pytest.mark.s3_test
+def test_s3_dynamodb(s3_bucket: str, commit_table: str):
+    storage_options = copy.copy(CONFIG)
+
+    uri = f"s3+ddb://{s3_bucket}/test?ddbTableName={commit_table}"
+    data = pa.table({"x": [1, 2, 3]})
+
+    async def test():
+        db = await lancedb.connect_async(
+            uri,
+            storage_options=storage_options,
+            read_consistency_interval=timedelta(0),
+        )
+
+        table = await db.create_table("test", data)
+
+        # Five concurrent writers
+        tasks = [table.add(data, mode="append") for _ in range(5)]
+        await asyncio.gather(*tasks)
+
+        row_count = await table.count_rows()
+        assert row_count == 3 * 6
 
     asyncio.run(test())

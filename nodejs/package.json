@@ -24,6 +24,7 @@
   "devDependencies": {
     "@aws-sdk/client-kms": "^3.33.0",
     "@aws-sdk/client-s3": "^3.33.0",
+    "@aws-sdk/client-dynamodb": "^3.33.0",
     "@biomejs/biome": "^1.7.3",
     "@jest/globals": "^29.7.0",
     "@napi-rs/cli": "^2.18.0",

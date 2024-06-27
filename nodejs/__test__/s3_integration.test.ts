@@ -15,6 +15,11 @@
 /* eslint-disable @typescript-eslint/naming-convention */
 
 import {
+  CreateTableCommand,
+  DeleteTableCommand,
+  DynamoDBClient,
+} from "@aws-sdk/client-dynamodb";
+import {
   CreateKeyCommand,
   KMSClient,
   ScheduleKeyDeletionCommand,
@@ -38,6 +43,7 @@ const CONFIG = {
   awsAccessKeyId: "ACCESSKEY",
   awsSecretAccessKey: "SECRETKEY",
   awsEndpoint: "http://127.0.0.1:4566",
+  dynamodbEndpoint: "http://127.0.0.1:4566",
   awsRegion: "us-east-1",
 };
 
@@ -222,5 +228,106 @@ maybeDescribe("storage_options", () => {
     await table.add([{ a: 2, b: 3 }]);
 
     await bucket.assertAllEncrypted("test/table2.lance", kmsKey.keyId);
+  });
+});
+
+class DynamoDBCommitTable {
+  name: string;
+  constructor(name: string) {
+    this.name = name;
+  }
+
+  static dynamoClient() {
+    return new DynamoDBClient({
+      region: CONFIG.awsRegion,
+      credentials: {
+        accessKeyId: CONFIG.awsAccessKeyId,
+        secretAccessKey: CONFIG.awsSecretAccessKey,
+      },
+      endpoint: CONFIG.awsEndpoint,
+    });
+  }
+
+  public static async create(name: string): Promise<DynamoDBCommitTable> {
+    const client = this.dynamoClient();
+    const command = new CreateTableCommand({
+      // biome-ignore lint/style/useNamingConvention: we dont control s3's api
+      TableName: name,
+      // biome-ignore lint/style/useNamingConvention: we dont control s3's api
+      AttributeDefinitions: [
+        {
+          // biome-ignore lint/style/useNamingConvention: we dont control s3's api
+          AttributeName: "base_uri",
+          // biome-ignore lint/style/useNamingConvention: we dont control s3's api
+          AttributeType: "S",
+        },
+        {
+          // biome-ignore lint/style/useNamingConvention: we dont control s3's api
+          AttributeName: "version",
+          // biome-ignore lint/style/useNamingConvention: we dont control s3's api
+          AttributeType: "N",
+        },
+      ],
+      // biome-ignore lint/style/useNamingConvention: we dont control s3's api
+      KeySchema: [
+        // biome-ignore lint/style/useNamingConvention: we dont control s3's api
+        { AttributeName: "base_uri", KeyType: "HASH" },
+        // biome-ignore lint/style/useNamingConvention: we dont control s3's api
+        { AttributeName: "version", KeyType: "RANGE" },
+      ],
+      // biome-ignore lint/style/useNamingConvention: we dont control s3's api
+      ProvisionedThroughput: {
+        // biome-ignore lint/style/useNamingConvention: we dont control s3's api
+        ReadCapacityUnits: 1,
+        // biome-ignore lint/style/useNamingConvention: we dont control s3's api
+        WriteCapacityUnits: 1,
+      },
+    });
+    await client.send(command);
+    return new DynamoDBCommitTable(name);
+  }
+
+  public async delete() {
+    const client = DynamoDBCommitTable.dynamoClient();
+    // biome-ignore lint/style/useNamingConvention: we dont control s3's api
+    await client.send(new DeleteTableCommand({ TableName: this.name }));
+  }
+}
+
+maybeDescribe("DynamoDB Lock", () => {
+  let bucket: S3Bucket;
+  let commitTable: DynamoDBCommitTable;
+
+  beforeAll(async () => {
+    bucket = await S3Bucket.create("lancedb2");
+    commitTable = await DynamoDBCommitTable.create("commitTable");
+  });
+
+  afterAll(async () => {
+    await commitTable.delete();
+    await bucket.delete();
+  });
+
+  it("can be used to configure a DynamoDB table for commit log", async () => {
+    const uri = `s3+ddb://${bucket.name}/test?ddbTableName=${commitTable.name}`;
+    const db = await connect(uri, {
+      storageOptions: CONFIG,
+      readConsistencyInterval: 0,
+    });
+
+    const table = await db.createTable("test", [{ a: 1, b: 2 }]);
+
+    // 5 concurrent appends
+    const futs = Array.from({ length: 5 }, async () => {
+      // Open a table so each append has a separate table reference. Otherwise
+      // they will share the same table reference and the internal ReadWriteLock
+      // will prevent any real concurrency.
+      const table = await db.openTable("test");
+      await table.add([{ a: 2, b: 3 }]);
+    });
+    await Promise.all(futs);
+
+    const rowCount = await table.countRows();
+    expect(rowCount).toBe(6);
   });
 });
