@@ -18,4 +18,4 @@ repos:
       language: system
       types: [text]
       files: "nodejs/.*"
-      exclude: nodejs/lancedb/native.d.ts|nodejs/dist/.*
+      exclude: nodejs/lancedb/native.d.ts|nodejs/dist/.*|nodejs/examples/.*

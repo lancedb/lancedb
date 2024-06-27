@@ -32,28 +32,54 @@ LanceDB OSS supports object stores such as AWS S3 (and compatible stores), Azure
     db = lancedb.connect("az://bucket/path")
     ```
 
-=== "JavaScript"
+=== "Typescript"
 
-    AWS S3:
+    === "@lancedb/lancedb"
 
-    ```javascript
-    const lancedb = require("lancedb");
-    const db = await lancedb.connect("s3://bucket/path");
-    ```
+        AWS S3:
 
-    Google Cloud Storage:
+        ```ts
+        import * as lancedb from "@lancedb/lancedb";
+        const db = await lancedb.connect("s3://bucket/path");
+        ```
 
-    ```javascript
-    const lancedb = require("lancedb");
-    const db = await lancedb.connect("gs://bucket/path");
-    ```
+        Google Cloud Storage:
 
-    Azure Blob Storage:
+        ```ts
+        import * as lancedb from "@lancedb/lancedb";
+        const db = await lancedb.connect("gs://bucket/path");
+        ```
 
-    ```javascript
-    const lancedb = require("lancedb");
-    const db = await lancedb.connect("az://bucket/path");
-    ```
+        Azure Blob Storage:
+
+        ```ts
+        import * as lancedb from "@lancedb/lancedb";
+        const db = await lancedb.connect("az://bucket/path");
+        ```
+
+
+    === "vectordb (deprecated)"
+
+        AWS S3:
+
+        ```ts
+        const lancedb = require("lancedb");
+        const db = await lancedb.connect("s3://bucket/path");
+        ```
+
+        Google Cloud Storage:
+
+        ```ts
+        const lancedb = require("lancedb");
+        const db = await lancedb.connect("gs://bucket/path");
+        ```
+
+        Azure Blob Storage:
+
+        ```ts
+        const lancedb = require("lancedb");
+        const db = await lancedb.connect("az://bucket/path");
+        ```
 
 In most cases, when running in the respective cloud and permissions are set up correctly, no additional configuration is required. When running outside of the respective cloud, authentication credentials must be provided. Credentials and other configuration options can be set in two ways: first, by setting environment variables. And second, by passing a `storage_options` object to the `connect` function. For example, to increase the request timeout to 60 seconds, you can set the `TIMEOUT` environment variable to `60s`:
 
@@ -78,13 +104,26 @@ If you only want this to apply to one particular connection, you can pass the `s
     )
     ```
 
-=== "JavaScript"
+=== "Typescript"
 
-    ```javascript
-    const lancedb = require("lancedb");
-    const db = await lancedb.connect("s3://bucket/path",
-                                     {storageOptions: {timeout: "60s"}});
-    ```
+    === "@lancedb/lancedb"
+
+        ```ts
+        import * as lancedb from "@lancedb/lancedb";
+
+        const db = await lancedb.connect("s3://bucket/path", {
+            storageOptions: {timeout: "60s"}
+        });
+        ```
+
+    === "vectordb (deprecated)"
+
+        ```ts
+        const lancedb = require("lancedb");
+        const db = await lancedb.connect("s3://bucket/path", {
+            storageOptions: {timeout: "60s"}
+        });
+        ```
 
 Getting even more specific, you can set the `timeout` for only a particular table:
 
@@ -101,18 +140,33 @@ Getting even more specific, you can set the `timeout` for only a particular tabl
     )
     ```
 
-=== "JavaScript"
+=== "Typescript"
 
-    <!-- skip-test -->
-    ```javascript
-    const lancedb = require("lancedb");
-    const db = await lancedb.connect("s3://bucket/path");
-    const table = db.createTable(
-        "table",
-        [{ a: 1, b: 2}],
-        {storageOptions: {timeout: "60s"}}
-    );
-    ```
+    === "@lancedb/lancedb"
+
+        <!-- skip-test -->
+        ```ts
+        import * as lancedb from "@lancedb/lancedb";
+        const db = await lancedb.connect("s3://bucket/path");
+        const table = db.createTable(
+            "table",
+            [{ a: 1, b: 2}],
+            {storageOptions: {timeout: "60s"}}
+        );
+        ```
+
+    === "vectordb (deprecated)"
+
+        <!-- skip-test -->
+        ```ts
+        const lancedb = require("lancedb");
+        const db = await lancedb.connect("s3://bucket/path");
+        const table = db.createTable(
+            "table",
+            [{ a: 1, b: 2}],
+            {storageOptions: {timeout: "60s"}}
+        );
+        ```
 
 !!! info "Storage option casing"
 
@@ -155,21 +209,39 @@ These can be set as environment variables or passed in the `storage_options` par
     )
     ```
 
-=== "JavaScript"
+=== "Typescript"
 
-    ```javascript
-    const lancedb = require("lancedb");
-    const db = await lancedb.connect(
-        "s3://bucket/path",
-        {
-            storageOptions: {
-                awsAccessKeyId: "my-access-key",
-                awsSecretAccessKey: "my-secret-key",
-                awsSessionToken: "my-session-token",
+    === "@lancedb/lancedb"
+
+        ```ts
+        import * as lancedb from "@lancedb/lancedb";
+        const db = await lancedb.connect(
+            "s3://bucket/path",
+            {
+                storageOptions: {
+                    awsAccessKeyId: "my-access-key",
+                    awsSecretAccessKey: "my-secret-key",
+                    awsSessionToken: "my-session-token",
+                }
             }
-        }
-    );
-    ```
+        );
+        ```
+
+    === "vectordb (deprecated)"
+
+        ```ts
+        const lancedb = require("lancedb");
+        const db = await lancedb.connect(
+            "s3://bucket/path",
+            {
+                storageOptions: {
+                    awsAccessKeyId: "my-access-key",
+                    awsSecretAccessKey: "my-secret-key",
+                    awsSessionToken: "my-session-token",
+                }
+            }
+        );
+        ```
 
 Alternatively, if you are using AWS SSO, you can use the `AWS_PROFILE` and `AWS_DEFAULT_REGION` environment variables.
 

@@ -81,13 +81,13 @@ This guide will show how to create tables, insert data into them, and update the
     === "@lancedb/lancedb"
 
         ```ts
-        --8<-- "nodejs/__test__/docs/basic.test.ts:create_table"
+        --8<-- "nodejs/examples/basic.ts:create_table"
         ```
         !!! info "Note"
         If the table already exists, LanceDB will raise an error by default. If you want to overwrite the table, you need to specify the `WriteMode` in the createTable function.
 
         ```ts
-        --8<-- "nodejs/__test__/docs/basic.test.ts:create_table_overwrite"
+        --8<-- "nodejs/examples/basic.ts:create_table_overwrite"
         ```
 
     === "vectordb (deprecated)"
@@ -180,20 +180,21 @@ table = db.create_table("pl_table", data=data)
     ```
 
 === "Typescript[^1]"
+
     You can also create LanceDB tables directly from Arrow tables.
     LanceDB supports Float16 data type!
 
     === "@lancedb/lancedb"
 
-    ```typescript
-    --8<-- "nodejs/__test__/docs/table.test.ts:create_f16_table"
-    ```
+        ```typescript
+        --8<-- "nodejs/examples/basic.ts:create_f16_table"
+        ```
 
     === "vectordb (deprecated)"
 
-    ```typescript
-    --8<-- "docs/src/basic_legacy.ts:create_f16_table"
-    ```
+        ```typescript
+        --8<-- "docs/src/basic_legacy.ts:create_f16_table"
+        ```
 
 ### From Pydantic Models
 
@@ -415,7 +416,7 @@ You can create an empty table for scenarios where you want to add data to the ta
     === "@lancedb/lancedb"
 
         ```typescript
-        --8<-- "nodejs/__test__/docs/basic.test.ts:create_empty_table"
+        --8<-- "nodejs/examples/basic.ts:create_empty_table"
         ```
 
     === "vectordb (deprecated)"
