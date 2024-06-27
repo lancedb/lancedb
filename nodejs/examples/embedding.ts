@@ -22,5 +22,7 @@ const tbl = await db.createEmptyTable("words", wordsSchema, {
 await tbl.add([{ text: "hello world" }, { text: "goodbye world" }]);
 
 const query = "greetings";
-const _actual = (await (await tbl.search(query)).limit(1).toArray())[0];
+const actual = (await (await tbl.search(query)).limit(1).toArray())[0];
+
 // --8<-- [end:openai_embeddings]
+console.log("result = ", actual.text);
