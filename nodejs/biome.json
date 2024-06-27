@@ -1,5 +1,5 @@
 {
-  "$schema": "https://biomejs.dev/schemas/1.7.3/schema.json",
+  "$schema": "https://biomejs.dev/schemas/1.8.3/schema.json",
   "organizeImports": {
     "enabled": true
   },
@@ -100,6 +100,16 @@
     "globals": []
   },
   "overrides": [
+    {
+      "include": ["__test__/s3_integration.test.ts"],
+      "linter": {
+        "rules": {
+          "style": {
+            "useNamingConvention": "off"
+          }
+        }
+      }
+    },
     {
       "include": [
         "**/*.ts",
