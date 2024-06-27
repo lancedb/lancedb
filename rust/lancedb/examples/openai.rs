@@ -1,3 +1,5 @@
+// --8<-- [start:imports]
+
 use std::{iter::once, sync::Arc};
 
 use arrow_array::{Float64Array, Int32Array, RecordBatch, RecordBatchIterator, StringArray};
@@ -11,6 +13,9 @@ use lancedb::{
     Result,
 };
 
+// --8<-- [end:imports]
+
+// --8<-- [start:openai_embeddings]
 #[tokio::main]
 async fn main() -> Result<()> {
     let tempdir = tempfile::tempdir().unwrap();
@@ -35,7 +40,6 @@ async fn main() -> Result<()> {
         .execute()
         .await?;
 
-    // there is no equivalent to '.search(<query>)' yet
     let query = Arc::new(StringArray::from_iter_values(once("something warm")));
     let query_vector = embedding.compute_query_embeddings(query)?;
     let mut results = table
@@ -53,9 +57,9 @@ async fn main() -> Result<()> {
         .unwrap();
     let text = out.iter().next().unwrap().unwrap();
     println!("Closest match: {}", text);
-
     Ok(())
 }
+// --8<-- [end:openai_embeddings]
 
 fn make_data() -> impl IntoArrow {
     let schema = Schema::new(vec![

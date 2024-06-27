@@ -24,6 +24,7 @@ const example = async () => {
   );
   // --8<-- [end:create_table]
 
+
   // --8<-- [start:add]
   const newData = Array.from({ length: 500 }, (_, i) => ({
     vector: [i, i + 1],
