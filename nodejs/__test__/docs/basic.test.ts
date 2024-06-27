@@ -15,8 +15,25 @@ describe("Basic", () => {
         { vector: [3.1, 4.1], item: "foo", price: 10.0 },
         { vector: [5.9, 26.5], item: "bar", price: 20.0 },
       ];
-      const _tbl = await db.createTable("myTable", data, { mode: "overwrite" });
+      const tbl = await db.createTable("myTable", data, { mode: "overwrite" });
       // --8<-- [end:create_table]
+    }
+
+    {
+      // --8<-- [start:create_table]
+      const data = [
+        { vector: [3.1, 4.1], item: "foo", price: 10.0 },
+        { vector: [5.9, 26.5], item: "bar", price: 20.0 },
+      ];
+      const tbl = await db.createTable("myTable", data);
+      // --8<-- [end:create_table]
+      {
+        // --8<-- [start:create_table_overwrite]
+        const tbl = await db.createTable("myTable", data, {
+          mode: "overwrite",
+        });
+        // --8<-- [end:create_table_overwrite]
+      }
     }
 
     {
@@ -30,12 +47,12 @@ describe("Basic", () => {
           ),
         ),
       ]);
-      const _tbl = await db.createEmptyTable("empty_table", schema);
+      const tbl = await db.createEmptyTable("empty_table", schema);
       // --8<-- [end:create_empty_table]
     }
     {
       // --8<-- [start:open_table]
-      const _tbl = await db.openTable("myTable");
+      const tbl = await db.openTable("myTable");
       // --8<-- [end:open_table]
     }
 
@@ -58,7 +75,7 @@ describe("Basic", () => {
     }
     {
       // --8<-- [start:vector_search]
-      const _res = tbl.search([100, 100]).limit(2).toArray();
+      const res = tbl.search([100, 100]).limit(2).toArray();
       // --8<-- [end:vector_search]
     }
     {
