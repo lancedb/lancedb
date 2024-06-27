@@ -111,7 +111,7 @@ class RemoteTable(Table):
         num_sub_vectors: Optional[int] = None,
         replace: Optional[bool] = None,
         accelerator: Optional[str] = None,
-        index_type="IVF_PQ",
+        index_type="vector",
     ):
         """Create an index on the table.
         Currently, the only parameters that matter are
