@@ -37,7 +37,7 @@
     "@aws-sdk/client-dynamodb": "^3.33.0",
     "@biomejs/biome": "^1.7.3",
     "@jest/globals": "^29.7.0",
-    "@napi-rs/cli": "^2.18.0",
+    "@napi-rs/cli": "^2.18.3",
     "@types/jest": "^29.1.2",
     "@types/tmp": "^0.2.6",
     "apache-arrow-old": "npm:apache-arrow@13.0.0",

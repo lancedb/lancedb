@@ -30,7 +30,7 @@ impl RecordBatchIterator {
         Self { inner }
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub async unsafe fn next(&mut self) -> napi::Result<Option<Buffer>> {
         if let Some(rst) = self.inner.next().await {
             let batch = rst.map_err(|e| {
