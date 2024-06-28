@@ -30,6 +30,7 @@ from typing import (
     Tuple,
     Union,
 )
+from urllib.parse import urlparse
 
 import lance
 import numpy as np
@@ -47,6 +48,7 @@ from .pydantic import LanceModel, model_to_dict
 from .query import AsyncQuery, AsyncVectorQuery, LanceQueryBuilder, Query
 from .util import (
     fs_from_uri,
+    get_uri_scheme,
     inf_vector_column_query,
     join_uri,
     safe_import_pandas,
@@ -206,6 +208,26 @@ def _to_record_batch_generator(
         batch = _sanitize_data(batch, schema, metadata, on_bad_vectors, fill_value)
         for b in batch.to_batches():
             yield b
+
+
+def _table_path(base: str, table_name: str) -> str:
+    """
+    Get a table path that can be used in PyArrow FS.
+
+    Removes any weird schemes (such as "s3+ddb") and drops any query params.
+    """
+    uri = _table_uri(base, table_name)
+    # Parse as URL
+    parsed = urlparse(uri)
+    # If scheme is s3+ddb, convert to s3
+    if parsed.scheme == "s3+ddb":
+        parsed = parsed._replace(scheme="s3")
+    # Remove query parameters
+    return parsed._replace(query=None).geturl()
+
+
+def _table_uri(base: str, table_name: str) -> str:
+    return join_uri(base, f"{table_name}.lance")
 
 
 class Table(ABC):
@@ -908,7 +930,7 @@ class LanceTable(Table):
     @classmethod
     def open(cls, db, name, **kwargs):
         tbl = cls(db, name, **kwargs)
-        fs, path = fs_from_uri(tbl._dataset_uri)
+        fs, path = fs_from_uri(tbl._dataset_path)
         file_info = fs.get_file_info(path)
         if file_info.type != pa.fs.FileType.Directory:
             raise FileNotFoundError(
@@ -918,9 +940,14 @@ class LanceTable(Table):
 
         return tbl
 
-    @property
+    @cached_property
+    def _dataset_path(self) -> str:
+        # Cacheable since it's deterministic
+        return _table_path(self._conn.uri, self.name)
+
+    @cached_property
     def _dataset_uri(self) -> str:
-        return join_uri(self._conn.uri, f"{self.name}.lance")
+        return _table_uri(self._conn.uri, self.name)
 
     @property
     def _dataset(self) -> LanceDataset:
@@ -1230,6 +1257,10 @@ class LanceTable(Table):
         )
 
     def _get_fts_index_path(self):
+        if get_uri_scheme(self._dataset_uri) != "file":
+            raise NotImplementedError(
+                "Full-text search is not supported on object stores."
+            )
         return join_uri(self._dataset_uri, "_indices", "tantivy")
 
     def add(

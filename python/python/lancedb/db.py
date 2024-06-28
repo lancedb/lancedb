@@ -28,12 +28,11 @@ from lancedb.common import data_to_reader, validate_schema
 
 from ._lancedb import connect as lancedb_connect
 from .pydantic import LanceModel
-from .table import AsyncTable, LanceTable, Table, _sanitize_data
+from .table import AsyncTable, LanceTable, Table, _sanitize_data, _table_path
 from .util import (
     fs_from_uri,
     get_uri_location,
     get_uri_scheme,
-    join_uri,
     validate_table_name,
 )
 
@@ -457,16 +456,18 @@ class LanceDBConnection(DBConnection):
             If True, ignore if the table does not exist.
         """
         try:
-            filesystem, path = fs_from_uri(self.uri)
-            table_path = join_uri(path, name + ".lance")
-            filesystem.delete_dir(table_path)
+            table_uri = _table_path(self.uri, name)
+            filesystem, path = fs_from_uri(table_uri)
+            filesystem.delete_dir(path)
         except FileNotFoundError:
             if not ignore_missing:
                 raise
 
     @override
     def drop_database(self):
-        filesystem, path = fs_from_uri(self.uri)
+        dummy_table_uri = _table_path(self.uri, "dummy")
+        uri = dummy_table_uri.removesuffix("dummy.lance")
+        filesystem, path = fs_from_uri(uri)
         filesystem.delete_dir(path)
 
 

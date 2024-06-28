@@ -13,6 +13,8 @@
 
 import asyncio
 import copy
+from datetime import timedelta
+import threading
 
 import pytest
 import pyarrow as pa
@@ -25,6 +27,7 @@ CONFIG = {
     "aws_access_key_id": "ACCESSKEY",
     "aws_secret_access_key": "SECRETKEY",
     "aws_endpoint": "http://localhost:4566",
+    "dynamodb_endpoint": "http://localhost:4566",
     "aws_region": "us-east-1",
 }
 
@@ -156,3 +159,104 @@ def test_s3_sse(s3_bucket: str, kms_key: str):
         validate_objects_encrypted(s3_bucket, path, kms_key)
 
     asyncio.run(test())
+
+
+@pytest.fixture(scope="module")
+def commit_table():
+    ddb = get_boto3_client("dynamodb", endpoint_url=CONFIG["dynamodb_endpoint"])
+    table_name = "lance-integtest"
+    try:
+        ddb.delete_table(TableName=table_name)
+    except ddb.exceptions.ResourceNotFoundException:
+        pass
+    ddb.create_table(
+        TableName=table_name,
+        KeySchema=[
+            {"AttributeName": "base_uri", "KeyType": "HASH"},
+            {"AttributeName": "version", "KeyType": "RANGE"},
+        ],
+        AttributeDefinitions=[
+            {"AttributeName": "base_uri", "AttributeType": "S"},
+            {"AttributeName": "version", "AttributeType": "N"},
+        ],
+        ProvisionedThroughput={"ReadCapacityUnits": 1, "WriteCapacityUnits": 1},
+    )
+    yield table_name
+    ddb.delete_table(TableName=table_name)
+
+
+@pytest.mark.s3_test
+def test_s3_dynamodb(s3_bucket: str, commit_table: str):
+    storage_options = copy.copy(CONFIG)
+
+    uri = f"s3+ddb://{s3_bucket}/test?ddbTableName={commit_table}"
+    data = pa.table({"x": [1, 2, 3]})
+
+    async def test():
+        db = await lancedb.connect_async(
+            uri,
+            storage_options=storage_options,
+            read_consistency_interval=timedelta(0),
+        )
+
+        table = await db.create_table("test", data)
+
+        # Five concurrent writers
+        async def insert():
+            # independent table refs for true concurrent writes.
+            table = await db.open_table("test")
+            await table.add(data, mode="append")
+
+        tasks = [insert() for _ in range(5)]
+        await asyncio.gather(*tasks)
+
+        row_count = await table.count_rows()
+        assert row_count == 3 * 6
+
+    asyncio.run(test())
+
+
+@pytest.mark.s3_test
+def test_s3_dynamodb_sync(s3_bucket: str, commit_table: str, monkeypatch):
+    # Sync API doesn't support storage_options, so we have to provide as env vars
+    for key, value in CONFIG.items():
+        monkeypatch.setenv(key.upper(), value)
+
+    uri = f"s3+ddb://{s3_bucket}/test2?ddbTableName={commit_table}"
+    data = pa.table({"x": ["a", "b", "c"]})
+
+    db = lancedb.connect(
+        uri,
+        read_consistency_interval=timedelta(0),
+    )
+
+    table = db.create_table("test_ddb_sync", data)
+
+    # Five concurrent writers
+    def insert():
+        table = db.open_table("test_ddb_sync")
+        table.add(data, mode="append")
+
+    threads = []
+    for _ in range(5):
+        thread = threading.Thread(target=insert)
+        threads.append(thread)
+        thread.start()
+
+    for thread in threads:
+        thread.join()
+
+    row_count = table.count_rows()
+    assert row_count == 3 * 6
+
+    # FTS indices should error since they are not supported yet.
+    with pytest.raises(
+        NotImplementedError, match="Full-text search is not supported on object stores."
+    ):
+        table.create_fts_index("x")
+
+    # make sure list tables still works
+    assert db.table_names() == ["test_ddb_sync"]
+    db.drop_table("test_ddb_sync")
+    assert db.table_names() == []
+    db.drop_database()
