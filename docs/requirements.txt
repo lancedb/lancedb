@@ -2,4 +2,5 @@ mkdocs==1.5.3
 mkdocs-jupyter==0.24.1
 mkdocs-material==9.5.3
 mkdocstrings[python]==0.20.0
+mkdocs-render-swagger-plugin
 pydantic
