@@ -340,8 +340,8 @@ def test_explain_plan(table):
     plan = q.explain_plan(verbose=True)
     assert "KNN" in plan
 
+
 @pytest.mark.asyncio
 async def test_explain_plan_async(table_async: AsyncTable):
     plan = await table_async.query().nearest_to(pa.array([1, 2])).explain_plan(True)
     assert "KNN" in plan
-
