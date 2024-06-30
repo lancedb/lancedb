@@ -65,7 +65,7 @@ use crate::query::{
 };
 use crate::utils::{default_vector_column, PatchReadParam, PatchWriteParam};
 
-use self::dataset::DatasetConsistencyWrapper;
+use self::dataset::{DatasetConsistencyWrapper, DatasetReadGuard};
 use self::merge::MergeInsertBuilder;
 
 pub(crate) mod dataset;
@@ -369,6 +369,12 @@ pub(crate) trait TableInternal: std::fmt::Display + std::fmt::Debug + Send + Syn
     async fn schema(&self) -> Result<SchemaRef>;
     /// Count the number of rows in this table.
     async fn count_rows(&self, filter: Option<String>) -> Result<usize>;
+    async fn build_plan(
+        &self,
+        ds_ref: &DatasetReadGuard,
+        query: &VectorQuery,
+        options: Option<QueryExecutionOptions>,
+    ) -> Result<Scanner>;
     async fn create_plan(
         &self,
         query: &VectorQuery,
@@ -1668,12 +1674,12 @@ impl TableInternal for NativeTable {
         Ok(())
     }
 
-    async fn create_plan(
+    async fn build_plan(
         &self,
+        ds_ref: &DatasetReadGuard,
         query: &VectorQuery,
-        options: QueryExecutionOptions,
-    ) -> Result<Arc<dyn ExecutionPlan>> {
-        let ds_ref = self.dataset.get().await?;
+        options: Option<QueryExecutionOptions>,
+    ) -> Result<Scanner> {
         let mut scanner: Scanner = ds_ref.scan();
 
         if let Some(query_vector) = query.query_vector.as_ref() {
@@ -1685,9 +1691,11 @@ impl TableInternal for NativeTable {
                 let arrow_schema = Schema::from(ds_ref.schema());
                 default_vector_column(&arrow_schema, Some(query_vector.len() as i32))?
             };
+
             let field = ds_ref.schema().field(&column).ok_or(Error::Schema {
                 message: format!("Column {} not found in dataset schema", column),
             })?;
+
             if let arrow_schema::DataType::FixedSizeList(f, dim) = field.data_type() {
                 if !f.data_type().is_floating() {
                     return Err(Error::InvalidInput {
@@ -1699,16 +1707,17 @@ impl TableInternal for NativeTable {
                 }
                 if dim != query_vector.len() as i32 {
                     return Err(Error::InvalidInput {
-                        message: format!(
-                            "The dimension of the query vector does not match with the dimension of the vector column '{}': \
-                                query dim={}, expected vector dim={}",
-                            column,
-                            query_vector.len(),
-                            dim,
-                        ),
-                    });
+                    message: format!(
+                        "The dimension of the query vector does not match with the dimension of the vector column '{}': \
+                            query dim={}, expected vector dim={}",
+                        column,
+                        query_vector.len(),
+                        dim,
+                    ),
+                });
                 }
             }
+
             let query_vector = query_vector.as_primitive::<Float32Type>();
             scanner.nearest(
                 &column,
@@ -1719,10 +1728,26 @@ impl TableInternal for NativeTable {
             // If there is no vector query, it's ok to not have a limit
             scanner.limit(query.base.limit.map(|limit| limit as i64), None)?;
         }
+
         scanner.nprobs(query.nprobes);
         scanner.use_index(query.use_index);
         scanner.prefilter(query.prefilter);
-        scanner.batch_size(options.max_batch_length as usize);
+
+        if let Some(opts) = options {
+            scanner.batch_size(opts.max_batch_length as usize);
+        }
+
+        Ok(scanner)
+    }
+
+    async fn create_plan(
+        &self,
+        query: &VectorQuery,
+        options: QueryExecutionOptions,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        let ds_ref = self.dataset.get().await?;
+
+        let mut scanner = self.build_plan(&ds_ref, query, Some(options)).await?;
 
         match &query.base.select {
             Select::Columns(select) => {
@@ -1759,31 +1784,10 @@ impl TableInternal for NativeTable {
 
     async fn explain_plan(&self, query: &VectorQuery, verbose: bool) -> Result<String> {
         let ds_ref = self.dataset.get().await?;
-        let mut scanner: Scanner = ds_ref.scan();
 
-        let query_vector = query
-            .query_vector
-            .as_ref()
-            .unwrap()
-            .as_primitive::<Float32Type>();
+        let scanner = self.build_plan(&ds_ref, query, None).await?;
 
-        let column = if let Some(col) = query.column.as_ref() {
-            col.clone()
-        } else {
-            // Infer a vector column with the same dimension of the query vector.
-            let arrow_schema = Schema::from(ds_ref.schema());
-            default_vector_column(&arrow_schema, Some(query_vector.len() as i32))?
-        };
-
-        let plan = scanner
-            .nearest(
-                &column,
-                query_vector,
-                query.base.limit.unwrap_or(DEFAULT_TOP_K),
-            )
-            .unwrap()
-            .explain_plan(verbose)
-            .await?;
+        let plan = scanner.explain_plan(verbose).await?;
 
         Ok(plan)
     }
