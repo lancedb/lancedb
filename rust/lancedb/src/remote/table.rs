@@ -81,6 +81,9 @@ impl TableInternal for RemoteTable {
     ) -> Result<Arc<dyn ExecutionPlan>> {
         unimplemented!()
     }
+
+    async fn explain_plan(&self, query: &VectorQuery, verbose: bool) -> Result<String>;
+
     async fn plain_query(
         &self,
         _query: &Query,
