@@ -1214,7 +1214,7 @@ class AsyncQueryBase(object):
         >>> asyncio.run(doctest_example()) # doctest: +ELLIPSIS, +NORMALIZE_WHITESPACE
         Projection: fields=[vector, _distance]
           KNNFlat: k=10 metric=l2
-            LanceScan: uri=..., projection=[vector], row_id=true, ordered=false
+            LanceScan: uri=..., projection=[vector], row_id=true, row_addr=false, ordered=false
 
         Parameters
         ----------
