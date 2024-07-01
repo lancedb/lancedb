@@ -193,13 +193,13 @@ from lancedb.pydantic import LanceModel, Vector
 
 model = get_registry().get("huggingface").create(name='facebook/bart-base')
 
-class TextModel(LanceModel):
+class Words(LanceModel):
     text: str = model.SourceField()
     vector: Vector(model.ndims()) = model.VectorField()
 
 df = pd.DataFrame({"text": ["hi hello sayonara", "goodbye world"]})
 table = db.create_table("greets", schema=Words)
-table.add()
+table.add(df)
 query = "old greeting"
 actual = table.search(query).limit(1).to_pydantic(Words)[0]
 print(actual.text)
