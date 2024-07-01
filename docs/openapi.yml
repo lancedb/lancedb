@@ -297,6 +297,15 @@ paths:
             type: string
       requestBody:
         $ref: "#/components/requestBodies/arrow_stream_buffer"
+      responses:
+        "200":
+          description: Merge Insert successful
+        "400":
+          $ref: "#/components/responses/invalid_request"
+        "401":
+          $ref: "#/components/responses/unauthorized"
+        "404":
+          $ref: "#/components/responses/not_found"
   /v1/table/{name}/delete/:
     post:
       description: Delete rows from a table.
@@ -399,6 +408,70 @@ paths:
                           type: string
                         index_uuid:
                           type: string
+        "401":
+          $ref: "#/components/responses/unauthorized"
+        "404":
+          $ref: "#/components/responses/not_found"
+  /v1/table/{name}/create_index/:
+    post:
+      description: Create vector index on a Table
+      tags:
+        - Tables
+      summary: Create vector index on a Table
+      operationId: createIndex
+      parameters:
+        - $ref: "#/components/parameters/table_name"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                column:
+                  type: string
+                metric_type:
+                  type: string
+                  nullable: false
+                  description: |
+                    The metric type to use for the index. L2, Cosine, Dot are supported.
+                index_type:
+                  type: string
+      responses:
+        "200":
+          description: Index successfully created
+        "400":
+          $ref: "#/components/responses/invalid_request"
+        "401":
+          $ref: "#/components/responses/unauthorized"
+        "404":
+          $ref: "#/components/responses/not_found"
+  /v1/table/{name}/create_scalar_index/:
+    post:
+      description: Create a scalar index on a table
+      tags:
+        - Tables
+      summary: Create a scalar index on a table
+      operationId: createScalarIndex
+      parameters:
+        - $ref: "#/components/parameters/table_name"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                column:
+                  type: string
+                index_type:
+                  type: string
+                  required: false
+      responses:
+        "200":
+          description: Scalar Index successfully created
+        "400":
+          $ref: "#/components/responses/invalid_request"
         "401":
           $ref: "#/components/responses/unauthorized"
         "404":
