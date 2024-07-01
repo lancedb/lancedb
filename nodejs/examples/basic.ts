@@ -123,5 +123,5 @@ const table = await db.createTable("vectors", data, {
     function: func,
     sourceField: "text",
     vectorField: "vector",
-  }
-})
+  },
+});
