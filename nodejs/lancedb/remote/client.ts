@@ -55,7 +55,7 @@ export class RestfulLanceDBClient {
       return axios.create({
         baseURL: this.url,
         headers: {
-          // biome-ignore lint/style/useNamingConvention: external api
+          // biome-ignore lint: external API
           Authorization: `Bearer ${this.#apiKey}`,
         },
         transformResponse: decodeErrorData,

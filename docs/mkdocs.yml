@@ -57,6 +57,8 @@ plugins:
             - https://arrow.apache.org/docs/objects.inv
             - https://pandas.pydata.org/docs/objects.inv
   - mkdocs-jupyter
+  - render_swagger:
+      allow_arbitrary_locations : true
 
 markdown_extensions:
   - admonition
@@ -158,6 +160,7 @@ nav:
           - API reference:
               - 🐍 Python: python/saas-python.md
               - 👾 JavaScript: javascript/modules.md
+              - REST API: cloud/rest.md
 
   - Quick start: basic.md
   - Concepts:
@@ -228,6 +231,7 @@ nav:
       - API reference:
           - 🐍 Python: python/saas-python.md
           - 👾 JavaScript: javascript/modules.md
+          - REST API: cloud/rest.md
 
 extra_css:
   - styles/global.css
