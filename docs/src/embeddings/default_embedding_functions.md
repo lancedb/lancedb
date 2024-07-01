@@ -199,7 +199,7 @@ class TextModel(LanceModel):
 
 df = pd.DataFrame({"text": ["hi hello sayonara", "goodbye world"]})
 table = db.create_table("greets", schema=Words)
-table.add()
+table.add(df)
 query = "old greeting"
 actual = table.search(query).limit(1).to_pydantic(Words)[0]
 print(actual.text)
