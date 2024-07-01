@@ -244,7 +244,7 @@ export abstract class Table {
    * Create a search query to find the nearest neighbors
    * of the given query vector
    * @param {string} query - the query. This will be converted to a vector using the table's provided embedding function
-   * @rejects {Error} If no embedding functions are defined in the table
+   * @note  If no embedding functions are defined in the table, this will error when collecting the results.
    */
   abstract search(query: string): VectorQuery;
   /**
