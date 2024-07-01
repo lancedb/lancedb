@@ -91,24 +91,24 @@ the embeddings at all:
 
 === "Typescript"
 
-  === "@lancedb/lancedb"
+    === "@lancedb/lancedb"
 
-      ```ts
-      --8<-- "nodejs/examples/embedding.ts:imports"
-      --8<-- "nodejs/examples/embedding.ts:embedding_function"
-      ```
+        ```ts
+        --8<-- "nodejs/examples/embedding.ts:imports"
+        --8<-- "nodejs/examples/embedding.ts:embedding_function"
+        ```
 
-  === "vectordb (deprecated)"
+    === "vectordb (deprecated)"
 
-      ```ts
-      const db = await lancedb.connect("data/sample-lancedb");
-      const data = [
-        { text: "pepperoni"},
-        { text: "pineapple"}
-      ]
+        ```ts
+        const db = await lancedb.connect("data/sample-lancedb");
+        const data = [
+            { text: "pepperoni"},
+            { text: "pineapple"}
+        ]
 
-      const table = await db.createTable("vectors", data, embedding)
-      ```
+        const table = await db.createTable("vectors", data, embedding)
+        ```
 
 ## 4. Querying your table
 Not only can you forget about the embeddings during ingestion, you also don't
