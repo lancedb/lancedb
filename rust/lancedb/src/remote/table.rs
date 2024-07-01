@@ -74,6 +74,14 @@ impl TableInternal for RemoteTable {
     ) -> Result<()> {
         todo!()
     }
+    async fn build_plan(
+        &self,
+        ds_ref: &DatasetReadGuard,
+        query: &VectorQuery,
+        options: Option<QueryExecutionOptions>,
+    ) -> Result<Scanner> {
+        todo!()
+    }
     async fn create_plan(
         &self,
         _query: &VectorQuery,
@@ -81,9 +89,9 @@ impl TableInternal for RemoteTable {
     ) -> Result<Arc<dyn ExecutionPlan>> {
         unimplemented!()
     }
-
-    async fn explain_plan(&self, query: &VectorQuery, verbose: bool) -> Result<String>;
-
+    async fn explain_plan(&self, query: &VectorQuery, verbose: bool) -> Result<String> {
+        todo!()
+    }
     async fn plain_query(
         &self,
         _query: &Query,
