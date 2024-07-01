@@ -252,7 +252,7 @@ paths:
           in: query
           description: |
             The column to use as the primary key for the merge operation.
-          required: false
+          required: true
           schema:
             type: string
         - name: when_matched_update_all
