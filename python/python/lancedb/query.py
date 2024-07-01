@@ -430,7 +430,7 @@ class LanceQueryBuilder(ABC):
         >>> print(plan) # doctest: +ELLIPSIS, +NORMALIZE_WHITESPACE
         Projection: fields=[vector, _distance]
           KNNFlat: k=10 metric=l2
-            LanceScan: uri=..., projection=[vector], row_id=true, ordered=false
+            LanceScan: uri=..., projection=[vector], row_id=true, row_addr=false, ordered=false
 
         Parameters
         ----------
@@ -440,7 +440,7 @@ class LanceQueryBuilder(ABC):
         Returns
         -------
         plan : str
-        """
+        """ # noqa: E501
         ds = self._table.to_lance()
         return ds.scanner(
             nearest={
@@ -1224,7 +1224,7 @@ class AsyncQueryBase(object):
         Returns
         -------
         plan : str
-        """
+        """ # noqa: E501
         return await self._inner.explain_plan(verbose)
 
 
