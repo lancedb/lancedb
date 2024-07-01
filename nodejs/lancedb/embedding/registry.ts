@@ -67,6 +67,15 @@ export class EmbeddingFunctionRegistry {
    */
   get<T extends EmbeddingFunction<unknown>, Name extends string = "">(
     name: Name extends "openai" ? "openai" : string,
+    //This makes it so that you can use string constants as "types", or use an explicitly supplied type
+    // ex:
+    // `registry.get("openai") -> EmbeddingFunctionCreate<OpenAIEmbeddingFunction>`
+    // `registry.get<MyCustomEmbeddingFunction>("my_func") -> EmbeddingFunctionCreate<MyCustomEmbeddingFunction> | undefined`
+    //
+    // the reason this is important is that we always know our built in functions are defined so the user isnt forced to do a non null/undefined
+    // ```ts
+    // const openai: OpenAIEmbeddingFunction = registry.get("openai").create()
+    // ```
   ): Name extends "openai"
     ? EmbeddingFunctionCreate<OpenAIEmbeddingFunction>
     : EmbeddingFunctionCreate<T> | undefined {

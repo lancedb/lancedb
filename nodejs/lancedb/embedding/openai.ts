@@ -13,16 +13,14 @@
 // limitations under the License.
 
 import type OpenAI from "openai";
+import { type EmbeddingCreateParams } from "openai/resources";
 import { Float, Float32 } from "../arrow";
 import { EmbeddingFunction } from "./embedding_function";
 import { register } from "./registry";
 
 export type OpenAIOptions = {
   apiKey: string;
-  model:
-    | "text-embedding-ada-002"
-    | "text-embedding-3-large"
-    | "text-embedding-3-small";
+  model: EmbeddingCreateParams["model"];
 };
 
 @register("openai")
@@ -45,11 +43,8 @@ export class OpenAIEmbeddingFunction extends EmbeddingFunction<
     }
     const modelName = options?.model ?? "text-embedding-ada-002";
 
-    /**
-     * @type {import("openai").default}
-     */
     // eslint-disable-next-line @typescript-eslint/naming-convention
-    let Openai;
+    let Openai: import("openai").default;
     try {
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       Openai = require("openai");
@@ -79,6 +74,8 @@ export class OpenAIEmbeddingFunction extends EmbeddingFunction<
         return 3072;
       case "text-embedding-3-small":
         return 1536;
+      default:
+        throw new Error(`Unknown model: ${this.#modelName}`);
     }
   }
 
