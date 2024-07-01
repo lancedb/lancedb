@@ -43,8 +43,11 @@ export class OpenAIEmbeddingFunction extends EmbeddingFunction<
     }
     const modelName = options?.model ?? "text-embedding-ada-002";
 
+    /**
+     * @type {import("openai").default}
+     */
     // eslint-disable-next-line @typescript-eslint/naming-convention
-    let Openai: import("openai").default;
+    let Openai;
     try {
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       Openai = require("openai");
