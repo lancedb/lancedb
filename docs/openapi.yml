@@ -12,7 +12,7 @@ info:
 
 servers:
   - url: https://{db}.{region}.api.lancedb.com
-    description: LanceDB
+    description: LanceDB Cloud REST endpoint.
     variables:
       db:
         default: ""
@@ -219,16 +219,15 @@ paths:
 
   /v1/table/{name}/insert/:
     post:
-      description: Insert data to a table
+      description: Insert new data to the Table.
       tags:
         - Data
       operationId: insertData
-      summary: Insert data to a table
+      summary: Insert new data.
       parameters:
         - $ref: "#/components/parameters/table_name"
       requestBody:
         $ref: "#/components/requestBodies/arrow_stream_buffer"
-
       responses:
         "200":
           description: Insert successful
@@ -242,7 +241,7 @@ paths:
     post:
       description: Create a "merge insert" operation
         This operation can add rows, update rows, and remove rows all in a single
-        transaction. See `lancedb.table.merge_insert` for details.
+        transaction. See `lancedb.table.merge_insert` for examples.
       tags:
         - Data
       summary: Merge Insert
