@@ -193,7 +193,7 @@ from lancedb.pydantic import LanceModel, Vector
 
 model = get_registry().get("huggingface").create(name='facebook/bart-base')
 
-class TextModel(LanceModel):
+class Words(LanceModel):
     text: str = model.SourceField()
     vector: Vector(model.ndims()) = model.VectorField()
 
