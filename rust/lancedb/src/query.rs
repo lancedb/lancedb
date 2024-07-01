@@ -762,7 +762,7 @@ impl ExecutableQuery for VectorQuery {
     }
 
     async fn explain_plan(&self, verbose: bool) -> Result<String> {
-        self.base.parent.explain_plan(&self, verbose).await
+        self.base.parent.explain_plan(self, verbose).await
     }
 }
 

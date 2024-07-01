@@ -4,7 +4,10 @@ use arrow_array::RecordBatchReader;
 use arrow_schema::SchemaRef;
 use async_trait::async_trait;
 use datafusion_physical_plan::ExecutionPlan;
-use lance::dataset::{scanner::DatasetRecordBatchStream, ColumnAlteration, NewColumnTransform};
+use lance::dataset::{
+    scanner::DatasetRecordBatchStream, scanner::Scanner, ColumnAlteration, DatasetReadGuard,
+    NewColumnTransform,
+};
 
 use crate::{
     connection::NoData,
@@ -89,7 +92,7 @@ impl TableInternal for RemoteTable {
     ) -> Result<Arc<dyn ExecutionPlan>> {
         unimplemented!()
     }
-    async fn explain_plan(&self, query: &VectorQuery, verbose: bool) -> Result<String> {
+    async fn explain_plan(&self, _query: &VectorQuery, _verbose: bool) -> Result<String> {
         todo!()
     }
     async fn plain_query(
