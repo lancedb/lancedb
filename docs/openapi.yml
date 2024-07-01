@@ -267,7 +267,8 @@ paths:
         - name: when_matched_update_all_filt
           in: query
           description: |
-            The filter expression that specifies the rows to update.
+            If present then only rows that satisfy the filter expression will
+            be updated
           required: false
           schema:
             type: string
