@@ -89,7 +89,7 @@ impl Connection {
     }
 
     /// List all tables in the dataset.
-    #[napi]
+    #[napi(catch_unwind)]
     pub async fn table_names(
         &self,
         start_after: Option<String>,
@@ -113,7 +113,7 @@ impl Connection {
     /// - name: The name of the table.
     /// - buf: The buffer containing the IPC file.
     ///
-    #[napi]
+    #[napi(catch_unwind)]
     pub async fn create_table(
         &self,
         name: String,
@@ -141,7 +141,7 @@ impl Connection {
         Ok(Table::new(tbl))
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub async fn create_empty_table(
         &self,
         name: String,
@@ -173,7 +173,7 @@ impl Connection {
         Ok(Table::new(tbl))
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub async fn open_table(
         &self,
         name: String,
@@ -197,7 +197,7 @@ impl Connection {
     }
 
     /// Drop table with the name. Or raise an error if the table does not exist.
-    #[napi]
+    #[napi(catch_unwind)]
     pub async fn drop_table(&self, name: String) -> napi::Result<()> {
         self.get_inner()?
             .drop_table(&name)

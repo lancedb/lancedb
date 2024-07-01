@@ -31,7 +31,7 @@ impl NativeMergeInsertBuilder {
         this
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub async fn execute(&self, buf: Buffer) -> napi::Result<()> {
         let data = ipc_file_to_batches(buf.to_vec())
             .and_then(IntoArrow::into_arrow)

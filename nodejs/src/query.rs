@@ -62,7 +62,7 @@ impl Query {
         Ok(VectorQuery { inner })
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub async fn execute(
         &self,
         max_batch_length: Option<u32>,
@@ -136,7 +136,7 @@ impl VectorQuery {
         self.inner = self.inner.clone().limit(limit as usize);
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub async fn execute(
         &self,
         max_batch_length: Option<u32>,
