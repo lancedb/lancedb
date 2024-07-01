@@ -246,7 +246,7 @@ export abstract class Table {
    * @param {string} query - the query. This will be converted to a vector using the table's provided embedding function
    * @rejects {Error} If no embedding functions are defined in the table
    */
-  abstract search(query: string): Promise<VectorQuery>;
+  abstract search(query: string): VectorQuery;
   /**
    * Create a search query to find the nearest neighbors
    * of the given query vector
@@ -502,28 +502,26 @@ export class LocalTable extends Table {
   query(): Query {
     return new Query(this.inner);
   }
-
-  search(query: string): Promise<VectorQuery>;
-
-  search(query: IntoVector): VectorQuery;
-  search(query: string | IntoVector): Promise<VectorQuery> | VectorQuery {
+  search(query: string | IntoVector): VectorQuery {
     if (typeof query !== "string") {
       return this.vectorSearch(query);
     } else {
-      return this.getEmbeddingFunctions().then(async (functions) => {
-        // TODO: Support multiple embedding functions
-        const embeddingFunc: EmbeddingFunctionConfig | undefined = functions
-          .values()
-          .next().value;
-        if (!embeddingFunc) {
-          return Promise.reject(
-            new Error("No embedding functions are defined in the table"),
-          );
-        }
-        const embeddings =
-          await embeddingFunc.function.computeQueryEmbeddings(query);
-        return this.query().nearestTo(embeddings);
-      });
+      const queryPromise = this.getEmbeddingFunctions().then(
+        async (functions) => {
+          // TODO: Support multiple embedding functions
+          const embeddingFunc: EmbeddingFunctionConfig | undefined = functions
+            .values()
+            .next().value;
+          if (!embeddingFunc) {
+            return Promise.reject(
+              new Error("No embedding functions are defined in the table"),
+            );
+          }
+          return await embeddingFunc.function.computeQueryEmbeddings(query);
+        },
+      );
+
+      return this.query().nearestTo(queryPromise);
     }
   }
 
