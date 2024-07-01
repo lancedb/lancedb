@@ -77,9 +77,13 @@
     "version": "napi version"
   },
   "dependencies": {
-    "apache-arrow": "^15.0.0",
     "axios": "^1.7.2",
-    "openai": "^4.29.2",
     "reflect-metadata": "^0.2.2"
+  },
+  "optionalDependencies": {
+    "openai": "^4.29.2"
+  },
+  "peerDependencies": {
+    "apache-arrow": "^15.0.0"
   }
 }
