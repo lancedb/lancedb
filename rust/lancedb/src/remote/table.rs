@@ -1,10 +1,12 @@
 use std::sync::Arc;
 
+use crate::table::dataset::DatasetReadGuard;
 use arrow_array::RecordBatchReader;
 use arrow_schema::SchemaRef;
 use async_trait::async_trait;
 use datafusion_physical_plan::ExecutionPlan;
-use lance::dataset::{scanner::DatasetRecordBatchStream, ColumnAlteration, NewColumnTransform};
+use lance::dataset::scanner::{DatasetRecordBatchStream, Scanner};
+use lance::dataset::{ColumnAlteration, NewColumnTransform};
 
 use crate::{
     connection::NoData,
@@ -74,12 +76,23 @@ impl TableInternal for RemoteTable {
     ) -> Result<()> {
         todo!()
     }
+    async fn build_plan(
+        &self,
+        _ds_ref: &DatasetReadGuard,
+        _query: &VectorQuery,
+        _options: Option<QueryExecutionOptions>,
+    ) -> Result<Scanner> {
+        todo!()
+    }
     async fn create_plan(
         &self,
         _query: &VectorQuery,
         _options: QueryExecutionOptions,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         unimplemented!()
+    }
+    async fn explain_plan(&self, _query: &VectorQuery, _verbose: bool) -> Result<String> {
+        todo!()
     }
     async fn plain_query(
         &self,
