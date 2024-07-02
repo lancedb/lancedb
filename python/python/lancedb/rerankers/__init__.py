@@ -4,6 +4,7 @@ from .colbert import ColbertReranker
 from .cross_encoder import CrossEncoderReranker
 from .linear_combination import LinearCombinationReranker
 from .openai import OpenaiReranker
+from .jina import JinaReranker
 
 __all__ = [
     "Reranker",
@@ -12,4 +13,5 @@ __all__ = [
     "LinearCombinationReranker",
     "OpenaiReranker",
     "ColbertReranker",
+    "JinaReranker",
 ]
