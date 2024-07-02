@@ -97,7 +97,11 @@ export type TableLike =
   | ArrowTable
   | { schema: SchemaLike; batches: RecordBatchLike[] };
 
-export type IntoVector = Float32Array | Float64Array | number[];
+export type IntoVector =
+  | Float32Array
+  | Float64Array
+  | number[]
+  | Promise<Float32Array | Float64Array | number[]>;
 
 export function isArrowTable(value: object): value is TableLike {
   if (value instanceof ArrowTable) return true;

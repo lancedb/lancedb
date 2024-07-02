@@ -122,9 +122,8 @@ export class RemoteTable extends Table {
   query(): import("..").Query {
     throw new Error("query() is not yet supported on the LanceDB cloud");
   }
-  search(query: IntoVector): VectorQuery;
-  search(query: string): Promise<VectorQuery>;
-  search(_query: string | IntoVector): VectorQuery | Promise<VectorQuery> {
+
+  search(_query: string | IntoVector): VectorQuery {
     throw new Error("search() is not yet supported on the LanceDB cloud");
   }
   vectorSearch(_vector: unknown): import("..").VectorQuery {
