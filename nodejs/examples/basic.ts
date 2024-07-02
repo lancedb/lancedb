@@ -117,11 +117,3 @@ await db.dropTable("empty_table");
   // --8<-- [end:create_f16_table]
   await db.dropTable("f16_tbl");
 }
-
-const table = await db.createTable("vectors", data, {
-  embeddingFunction: {
-    function: func,
-    sourceField: "text",
-    vectorField: "vector",
-  },
-});
