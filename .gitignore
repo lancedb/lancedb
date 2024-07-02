@@ -4,6 +4,7 @@
 **/__pycache__
 .DS_Store
 venv
+.venv
 
 .vscode
 .zed

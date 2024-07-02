@@ -145,7 +145,7 @@ need to worry about it when you query the table:
     === "@lancedb/lancedb"
 
         ```ts
-        const results = await (await table.search("What's the best pizza topping?"))
+        const results = await table.search("What's the best pizza topping?")
         .limit(10)
         .toArray()
         ```
