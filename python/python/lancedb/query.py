@@ -440,7 +440,7 @@ class LanceQueryBuilder(ABC):
         Returns
         -------
         plan : str
-        """ # noqa: E501
+        """  # noqa: E501
         ds = self._table.to_lance()
         return ds.scanner(
             nearest={
@@ -1224,7 +1224,7 @@ class AsyncQueryBase(object):
         Returns
         -------
         plan : str
-        """ # noqa: E501
+        """  # noqa: E501
         return await self._inner.explain_plan(verbose)
 
 
