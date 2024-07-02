@@ -181,7 +181,7 @@ export abstract class EmbeddingFunction<
   /**
   Compute the embeddings for a single query
  */
-  async computeQueryEmbeddings(data: T): Promise<IntoVector> {
+  async computeQueryEmbeddings(data: T): Promise<Awaited<IntoVector>> {
     return this.computeSourceEmbeddings([data]).then(
       (embeddings) => embeddings[0],
     );

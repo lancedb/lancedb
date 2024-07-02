@@ -706,10 +706,10 @@ describe("table.search", () => {
     const data = [{ text: "hello world" }, { text: "goodbye world" }];
     const table = await db.createTable("test", data, { schema });
 
-    const results = await table.search("greetings").then((r) => r.toArray());
+    const results = await table.search("greetings").toArray();
     expect(results[0].text).toBe(data[0].text);
 
-    const results2 = await table.search("farewell").then((r) => r.toArray());
+    const results2 = await table.search("farewell").toArray();
     expect(results2[0].text).toBe(data[1].text);
   });
 
@@ -721,7 +721,7 @@ describe("table.search", () => {
     ];
     const table = await db.createTable("test", data);
 
-    expect(table.search("hello")).rejects.toThrow(
+    expect(table.search("hello").toArray()).rejects.toThrow(
       "No embedding functions are defined in the table",
     );
   });
