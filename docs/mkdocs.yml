@@ -125,10 +125,11 @@ nav:
           - DuckDB: python/duckdb.md
           - LangChain:
             - LangChain 🔗: integrations/langchain.md
+            - LangChain demo: notebooks/langchain_demo.ipynb
             - LangChain JS/TS 🔗: https://js.langchain.com/docs/integrations/vectorstores/lancedb
           - LlamaIndex 🦙:
             - LlamaIndex docs: integrations/llamaIndex.md
-            - LlamaIndex demo:  https://docs.llamaindex.ai/en/stable/examples/vector_stores/LanceDBIndexDemo/
+            - LlamaIndex demo: notebooks/llamaIndex_demo.ipynb
           - Pydantic: python/pydantic.md
           - Voxel51: integrations/voxel51.md
           - PromptTools: integrations/prompttools.md
@@ -204,9 +205,9 @@ nav:
       - Pandas and PyArrow: python/pandas_and_pyarrow.md
       - Polars: python/polars_arrow.md
       - DuckDB: python/duckdb.md
-      - LangChain 🦜️🔗↗: https://python.langchain.com/docs/integrations/vectorstores/lancedb
+      - LangChain 🦜️🔗↗: integrations/langchain.md
       - LangChain.js 🦜️🔗↗: https://js.langchain.com/docs/integrations/vectorstores/lancedb
-      - LlamaIndex 🦙↗: https://gpt-index.readthedocs.io/en/latest/examples/vector_stores/LanceDBIndexDemo.html
+      - LlamaIndex 🦙↗: integrations/llamaIndex.md
       - Pydantic: python/pydantic.md
       - Voxel51: integrations/voxel51.md
       - PromptTools: integrations/prompttools.md
