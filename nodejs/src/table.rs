@@ -70,7 +70,7 @@ impl Table {
     }
 
     /// Return Schema as empty Arrow IPC file.
-    #[napi]
+    #[napi(catch_unwind)]
     pub async fn schema(&self) -> napi::Result<Buffer> {
         let schema =
             self.inner_ref()?.schema().await.map_err(|e| {
@@ -86,7 +86,7 @@ impl Table {
         })?))
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub async fn add(&self, buf: Buffer, mode: String) -> napi::Result<()> {
         let batches = ipc_file_to_batches(buf.to_vec())
             .map_err(|e| napi::Error::from_reason(format!("Failed to read IPC file: {}", e)))?;
@@ -108,7 +108,7 @@ impl Table {
         })
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub async fn count_rows(&self, filter: Option<String>) -> napi::Result<i64> {
         self.inner_ref()?
             .count_rows(filter)
@@ -122,7 +122,7 @@ impl Table {
             })
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub async fn delete(&self, predicate: String) -> napi::Result<()> {
         self.inner_ref()?.delete(&predicate).await.map_err(|e| {
             napi::Error::from_reason(format!(
@@ -132,7 +132,7 @@ impl Table {
         })
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub async fn create_index(
         &self,
         index: Option<&Index>,
@@ -151,7 +151,7 @@ impl Table {
         builder.execute().await.default_error()
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub async fn update(
         &self,
         only_if: Option<String>,
@@ -167,17 +167,17 @@ impl Table {
         op.execute().await.default_error()
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn query(&self) -> napi::Result<Query> {
         Ok(Query::new(self.inner_ref()?.query()))
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn vector_search(&self, vector: Float32Array) -> napi::Result<VectorQuery> {
         self.query()?.nearest_to(vector)
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub async fn add_columns(&self, transforms: Vec<AddColumnsSql>) -> napi::Result<()> {
         let transforms = transforms
             .into_iter()
@@ -196,7 +196,7 @@ impl Table {
         Ok(())
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub async fn alter_columns(&self, alterations: Vec<ColumnAlteration>) -> napi::Result<()> {
         for alteration in &alterations {
             if alteration.rename.is_none() && alteration.nullable.is_none() {
@@ -222,7 +222,7 @@ impl Table {
         Ok(())
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub async fn drop_columns(&self, columns: Vec<String>) -> napi::Result<()> {
         let col_refs = columns.iter().map(String::as_str).collect::<Vec<_>>();
         self.inner_ref()?
@@ -237,7 +237,7 @@ impl Table {
         Ok(())
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub async fn version(&self) -> napi::Result<i64> {
         self.inner_ref()?
             .version()
@@ -246,7 +246,7 @@ impl Table {
             .default_error()
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub async fn checkout(&self, version: i64) -> napi::Result<()> {
         self.inner_ref()?
             .checkout(version as u64)
@@ -254,17 +254,17 @@ impl Table {
             .default_error()
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub async fn checkout_latest(&self) -> napi::Result<()> {
         self.inner_ref()?.checkout_latest().await.default_error()
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub async fn restore(&self) -> napi::Result<()> {
         self.inner_ref()?.restore().await.default_error()
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub async fn optimize(&self, older_than_ms: Option<i64>) -> napi::Result<OptimizeStats> {
         let inner = self.inner_ref()?;
 
@@ -318,7 +318,7 @@ impl Table {
         })
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub async fn list_indices(&self) -> napi::Result<Vec<IndexConfig>> {
         Ok(self
             .inner_ref()?
@@ -330,14 +330,14 @@ impl Table {
             .collect::<Vec<_>>())
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub async fn index_stats(&self, index_name: String) -> napi::Result<Option<IndexStatistics>> {
         let tbl = self.inner_ref()?.as_native().unwrap();
         let stats = tbl.index_stats(&index_name).await.default_error()?;
         Ok(stats.map(IndexStatistics::from))
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn merge_insert(&self, on: Vec<String>) -> napi::Result<NativeMergeInsertBuilder> {
         let on: Vec<_> = on.iter().map(String::as_str).collect();
         Ok(self.inner_ref()?.merge_insert(on.as_slice()).into())

@@ -19,6 +19,7 @@ use lancedb::query::QueryExecutionOptions;
 use lancedb::query::{
     ExecutableQuery, Query as LanceDbQuery, QueryBase, Select, VectorQuery as LanceDbVectorQuery,
 };
+use pyo3::exceptions::PyRuntimeError;
 use pyo3::pyclass;
 use pyo3::pymethods;
 use pyo3::PyAny;
@@ -71,6 +72,16 @@ impl Query {
             }
             let inner_stream = inner.execute_with_options(opts).await.infer_error()?;
             Ok(RecordBatchStream::new(inner_stream))
+        })
+    }
+
+    fn explain_plan(self_: PyRef<'_, Self>, verbose: bool) -> PyResult<&PyAny> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            inner
+                .explain_plan(verbose)
+                .await
+                .map_err(|e| PyRuntimeError::new_err(e.to_string()))
         })
     }
 }
@@ -129,6 +140,16 @@ impl VectorQuery {
             }
             let inner_stream = inner.execute_with_options(opts).await.infer_error()?;
             Ok(RecordBatchStream::new(inner_stream))
+        })
+    }
+
+    fn explain_plan(self_: PyRef<'_, Self>, verbose: bool) -> PyResult<&PyAny> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            inner
+                .explain_plan(verbose)
+                .await
+                .map_err(|e| PyRuntimeError::new_err(e.to_string()))
         })
     }
 }

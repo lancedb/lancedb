@@ -35,6 +35,11 @@ export interface FunctionOptions {
   [key: string]: any;
 }
 
+export interface EmbeddingFunctionConstructor<
+  T extends EmbeddingFunction = EmbeddingFunction,
+> {
+  new (modelOptions?: T["TOptions"]): T;
+}
 /**
  * An embedding function that automatically creates vector representation for a given column.
  */
@@ -43,6 +48,12 @@ export abstract class EmbeddingFunction<
   T = any,
   M extends FunctionOptions = FunctionOptions,
 > {
+  /**
+   * @ignore
+   *  This is only used for associating the options type with the class for type checking
+   */
+  // biome-ignore lint/style/useNamingConvention: we want to keep the name as it is
+  readonly TOptions!: M;
   /**
    * Convert the embedding function to a JSON object
    * It is used to serialize the embedding function to the schema
@@ -170,7 +181,7 @@ export abstract class EmbeddingFunction<
   /**
   Compute the embeddings for a single query
  */
-  async computeQueryEmbeddings(data: T): Promise<IntoVector> {
+  async computeQueryEmbeddings(data: T): Promise<Awaited<IntoVector>> {
     return this.computeSourceEmbeddings([data]).then(
       (embeddings) => embeddings[0],
     );

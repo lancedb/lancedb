@@ -62,7 +62,7 @@ impl Query {
         Ok(VectorQuery { inner })
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub async fn execute(
         &self,
         max_batch_length: Option<u32>,
@@ -79,6 +79,13 @@ impl Query {
                 napi::Error::from_reason(format!("Failed to execute query stream: {}", e))
             })?;
         Ok(RecordBatchIterator::new(inner_stream))
+    }
+
+    #[napi]
+    pub async fn explain_plan(&self, verbose: bool) -> napi::Result<String> {
+        self.inner.explain_plan(verbose).await.map_err(|e| {
+            napi::Error::from_reason(format!("Failed to retrieve the query plan: {}", e))
+        })
     }
 }
 
@@ -136,7 +143,7 @@ impl VectorQuery {
         self.inner = self.inner.clone().limit(limit as usize);
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub async fn execute(
         &self,
         max_batch_length: Option<u32>,
@@ -153,5 +160,12 @@ impl VectorQuery {
                 napi::Error::from_reason(format!("Failed to execute query stream: {}", e))
             })?;
         Ok(RecordBatchIterator::new(inner_stream))
+    }
+
+    #[napi]
+    pub async fn explain_plan(&self, verbose: bool) -> napi::Result<String> {
+        self.inner.explain_plan(verbose).await.map_err(|e| {
+            napi::Error::from_reason(format!("Failed to retrieve the query plan: {}", e))
+        })
     }
 }

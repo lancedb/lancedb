@@ -139,8 +139,11 @@ def join_uri(base: Union[str, pathlib.Path], *parts: str) -> str:
         # using pathlib for local paths make this windows compatible
         # `get_uri_scheme` returns `file` for windows drive names (e.g. `c:\path`)
         return str(pathlib.Path(base, *parts))
-    # for remote paths, just use os.path.join
-    return "/".join([p.rstrip("/") for p in [base, *parts]])
+    else:
+        # there might be query parameters in the base URI
+        url = urlparse(base)
+        new_path = "/".join([p.rstrip("/") for p in [url.path, *parts]])
+        return url._replace(path=new_path).geturl()
 
 
 def attempt_import_or_raise(module: str, mitigation=None):

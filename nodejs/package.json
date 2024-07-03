@@ -34,9 +34,10 @@
   "devDependencies": {
     "@aws-sdk/client-kms": "^3.33.0",
     "@aws-sdk/client-s3": "^3.33.0",
+    "@aws-sdk/client-dynamodb": "^3.33.0",
     "@biomejs/biome": "^1.7.3",
     "@jest/globals": "^29.7.0",
-    "@napi-rs/cli": "^2.18.0",
+    "@napi-rs/cli": "^2.18.3",
     "@types/jest": "^29.1.2",
     "@types/tmp": "^0.2.6",
     "apache-arrow-old": "npm:apache-arrow@13.0.0",
@@ -68,7 +69,7 @@
     "lint-ci": "biome ci .",
     "docs": "typedoc --plugin typedoc-plugin-markdown --out ../docs/src/js lancedb/index.ts",
     "lint": "biome check . && biome format .",
-    "lint-fix": "biome check --apply-unsafe  . && biome format --write .",
+    "lint-fix": "biome check --write . && biome format --write .",
     "prepublishOnly": "napi prepublish -t npm",
     "test": "jest --verbose",
     "integration": "S3_TEST=1 npm run test",
@@ -76,9 +77,13 @@
     "version": "napi version"
   },
   "dependencies": {
-    "apache-arrow": "^15.0.0",
     "axios": "^1.7.2",
-    "openai": "^4.29.2",
     "reflect-metadata": "^0.2.2"
+  },
+  "optionalDependencies": {
+    "openai": "^4.29.2"
+  },
+  "peerDependencies": {
+    "apache-arrow": "^15.0.0"
   }
 }

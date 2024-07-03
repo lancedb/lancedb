@@ -417,6 +417,38 @@ class LanceQueryBuilder(ABC):
         self._with_row_id = with_row_id
         return self
 
+    def explain_plan(self, verbose: Optional[bool] = False) -> str:
+        """Return the execution plan for this query.
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> db = lancedb.connect("./.lancedb")
+        >>> table = db.create_table("my_table", [{"vector": [99, 99]}])
+        >>> query = [100, 100]
+        >>> plan = table.search(query).explain_plan(True)
+        >>> print(plan) # doctest: +ELLIPSIS, +NORMALIZE_WHITESPACE
+        Projection: fields=[vector, _distance]
+          KNNFlat: k=10 metric=l2
+            LanceScan: uri=..., projection=[vector], row_id=true, row_addr=false, ordered=false
+
+        Parameters
+        ----------
+        verbose : bool, default False
+            Use a verbose output format.
+
+        Returns
+        -------
+        plan : str
+        """  # noqa: E501
+        ds = self._table.to_lance()
+        return ds.scanner(
+            nearest={
+                "column": self._vector_column,
+                "q": self._query,
+            },
+        ).explain_plan(verbose)
+
 
 class LanceVectorQueryBuilder(LanceQueryBuilder):
     """
@@ -1165,6 +1197,35 @@ class AsyncQueryBase(object):
         >>> asyncio.run(doctest_example())
         """
         return (await self.to_arrow()).to_pandas()
+
+    async def explain_plan(self, verbose: Optional[bool] = False):
+        """Return the execution plan for this query.
+
+        Examples
+        --------
+        >>> import asyncio
+        >>> from lancedb import connect_async
+        >>> async def doctest_example():
+        ...     conn = await connect_async("./.lancedb")
+        ...     table = await conn.create_table("my_table", [{"vector": [99, 99]}])
+        ...     query = [100, 100]
+        ...     plan = await table.query().nearest_to([1, 2]).explain_plan(True)
+        ...     print(plan)
+        >>> asyncio.run(doctest_example()) # doctest: +ELLIPSIS, +NORMALIZE_WHITESPACE
+        Projection: fields=[vector, _distance]
+          KNNFlat: k=10 metric=l2
+            LanceScan: uri=..., projection=[vector], row_id=true, row_addr=false, ordered=false
+
+        Parameters
+        ----------
+        verbose : bool, default False
+            Use a verbose output format.
+
+        Returns
+        -------
+        plan : str
+        """  # noqa: E501
+        return await self._inner.explain_plan(verbose)
 
 
 class AsyncQuery(AsyncQueryBase):

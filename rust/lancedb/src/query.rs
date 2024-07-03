@@ -465,6 +465,8 @@ pub trait ExecutableQuery {
         &self,
         options: QueryExecutionOptions,
     ) -> impl Future<Output = Result<SendableRecordBatchStream>> + Send;
+
+    fn explain_plan(&self, verbose: bool) -> impl Future<Output = Result<String>> + Send;
 }
 
 /// A builder for LanceDB queries.
@@ -571,6 +573,12 @@ impl ExecutableQuery for Query {
         Ok(SendableRecordBatchStream::from(
             self.parent.clone().plain_query(self, options).await?,
         ))
+    }
+
+    async fn explain_plan(&self, verbose: bool) -> Result<String> {
+        self.parent
+            .explain_plan(&self.clone().into_vector(), verbose)
+            .await
     }
 }
 
@@ -751,6 +759,10 @@ impl ExecutableQuery for VectorQuery {
                 Default::default(),
             )?),
         ))
+    }
+
+    async fn explain_plan(&self, verbose: bool) -> Result<String> {
+        self.base.parent.explain_plan(self, verbose).await
     }
 }
 
