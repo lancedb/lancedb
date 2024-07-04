@@ -72,3 +72,36 @@ query = "greetings"
 actual = table.search(query).limit(1).to_pydantic(Words)[0]
 print(actual.text)
 ```
+
+### Jina Embeddings
+LanceDB registers the JinaAI embeddings function in the registry as `jina`. You can pass any supported model name to the `create`. By default it uses `"jina-clip-v1"`.
+`jina-clip-v1` can handle both text and images and other models only support `text`.
+
+You need to pass `JINA_API_KEY` in the environment variable or pass it as `api_key` to `create` method.
+
+```python
+import os
+import lancedb
+from lancedb.pydantic import LanceModel, Vector
+from lancedb.embeddings import get_registry
+os.environ['JINA_API_KEY'] = "jina_*"
+
+db = lancedb.connect("/tmp/db")
+func = get_registry().get("jina").create(name="jina-clip-v1")
+
+class Words(LanceModel):
+    text: str = func.SourceField()
+    vector: Vector(func.ndims()) = func.VectorField()
+
+table = db.create_table("words", schema=Words, mode="overwrite")
+table.add(
+    [
+        {"text": "hello world"},
+        {"text": "goodbye world"}
+    ]
+    )
+
+query = "greetings"
+actual = table.search(query).limit(1).to_pydantic(Words)[0]
+print(actual.text)
+```

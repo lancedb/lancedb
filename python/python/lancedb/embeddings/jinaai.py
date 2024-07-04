@@ -41,10 +41,12 @@ class JinaEmbeddings(EmbeddingFunction):
 
     Parameters
     ----------
-    name: str, default "jina-clip-v1". Note that some models support both image and text embeddings and some just text embedding
+    name: str, default "jina-clip-v1". Note that some models support both image
+        and text embeddings and some just text embedding
 
-    api_key : str, default None
-        The api key to access Jina API. If you pass None, you can set JINA_API_KEY environment variable
+    api_key: str, default None
+        The api key to access Jina API. If you pass None, you can set JINA_API_KEY
+        environment variable
 
     """
 
@@ -145,13 +147,10 @@ class JinaEmbeddings(EmbeddingFunction):
         texts: list[str] or np.ndarray (of str)
             The texts to embed
         """
-        print(f"input is {input}")
         self._init_client()
-        print(f"hey joan here")
         resp = JinaEmbeddings._session.post(  # type: ignore
             API_URL, json={"input": input, "model": self.name}
         ).json()
-        print(f"resp is {resp}")
         if "data" not in resp:
             raise RuntimeError(resp["detail"])
 

@@ -24,7 +24,8 @@ class JinaReranker(Reranker):
     top_n : str, default None
         The number of results to return. If None, will return all results.
     api_key : str, default None
-        The api key to access Jina API. If you pass None, you can set JINA_API_KEY environment variable
+        The api key to access Jina API. If you pass None, you can set JINA_API_KEY
+        environment variable
     """
 
     def __init__(
