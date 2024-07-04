@@ -1277,22 +1277,25 @@ impl NativeTable {
 
     /// Get statistics about an index.
     /// Returns an error if the index does not exist.
-    pub async fn index_stats<S: AsRef<str>>(
+    pub async fn index_stats(
         &self,
-        index_name: S,
+        index_name: impl AsRef<str>,
     ) -> Result<Option<IndexStatistics>> {
-        self.dataset
+        let stats = match self
+            .dataset
             .get()
             .await?
             .index_statistics(index_name.as_ref())
             .await
-            .ok()
-            .map(|stats| {
-                serde_json::from_str(&stats).map_err(|e| Error::InvalidInput {
-                    message: format!("error deserializing index statistics: {}", e),
-                })
-            })
-            .transpose()
+        {
+            Ok(stats) => stats,
+            Err(lance::error::Error::IndexNotFound { .. }) => return Ok(None),
+            Err(e) => return Err(Error::from(e)),
+        };
+
+        serde_json::from_str(&stats).map_err(|e| Error::InvalidInput {
+            message: format!("error deserializing index statistics: {}", e),
+        })
     }
 
     pub async fn load_indices(&self) -> Result<Vec<VectorIndex>> {
