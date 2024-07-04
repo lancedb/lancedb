@@ -25,3 +25,4 @@ from .gte import GteEmbeddings
 from .transformers import TransformersEmbeddingFunction, ColbertEmbeddings
 from .imagebind import ImageBindEmbeddings
 from .utils import with_embeddings
+from .jinaai import JinaEmbeddings
