@@ -15,7 +15,6 @@ LanceDB comes with some built-in rerankers. Some of the rerankers that are avail
 Using rerankers is optional for vector and FTS. However, for hybrid search, rerankers are required. To use a reranker, you need to create an instance of the reranker and pass it to the `rerank` method of the query builder.
 
 ```python
-import numpy
 import lancedb
 from lancedb.embeddings import get_registry
 from lancedb.pydantic import LanceModel, Vector
@@ -54,6 +53,7 @@ LanceDB comes with some built-in rerankers. Here are some of the rerankers that 
 - [ColBERT Reranker](./colbert.md)
 - [OpenAI Reranker](./openai.md)
 - [Linear Combination Reranker](./linear_combination.md)
+- [Jina Reranker](./jina.md)
 
 ## Creating Custom Rerankers
 
