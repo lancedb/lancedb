@@ -1735,9 +1735,21 @@ impl TableInternal for NativeTable {
         scanner.nprobs(query.nprobes);
         scanner.use_index(query.use_index);
         scanner.prefilter(query.prefilter);
+        match query.base.select {
+            Select::Columns(ref columns) => {
+                scanner.project(columns.as_slice())?;
+            }
+            Select::Dynamic(ref select_with_transform) => {
+                scanner.project_with_transform(select_with_transform.as_slice())?;
+            }
+            Select::All => {}
+        }
 
         if let Some(opts) = options {
             scanner.batch_size(opts.max_batch_length as usize);
+        }
+        if query.base.fast_search {
+            scanner.fast_search();
         }
 
         Ok(scanner)
@@ -1773,6 +1785,7 @@ impl TableInternal for NativeTable {
         if let Some(distance_type) = query.distance_type {
             scanner.distance_metric(distance_type.into());
         }
+
         Ok(scanner.create_plan().await?)
     }
 
