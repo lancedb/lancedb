@@ -29,7 +29,7 @@ For this purpose, LanceDB introduces an **embedding functions API**, that allow 
     You can also define your own embedding function by implementing the `EmbeddingFunction`
     abstract base interface. It subclasses Pydantic Model which can be utilized to write complex schemas simply as we'll see next!
 
-=== "Typescript"
+=== "TypeScript"
     In the TypeScript SDK, the choices are more limited. For now, only the OpenAI
     embedding function is available.
 
@@ -70,7 +70,7 @@ For this purpose, LanceDB introduces an **embedding functions API**, that allow 
 
     `VectorField` tells LanceDB to use the clip embedding function to generate query embeddings for the `vector` column and `SourceField` ensures that when adding data, we automatically use the specified embedding function to encode `image_uri`.
 
-=== "Typescript"
+=== "TypeScript"
 
     For the TypeScript SDK, a schema can be inferred from input data, or an explicit
     Arrow schema can be provided.
@@ -89,7 +89,7 @@ the embeddings at all:
     table.add([{"image_uri": u} for u in uris])
     ```
 
-=== "Typescript"
+=== "TypeScript"
 
     === "@lancedb/lancedb"
 
@@ -121,8 +121,8 @@ need to worry about it when you query the table:
     ```python
     results = (
         table.search("dog")
-        .limit(10)
-        .to_pandas()
+            .limit(10)
+            .to_pandas()
     )
     ```
 
@@ -133,30 +133,30 @@ need to worry about it when you query the table:
     query_image = Image.open(p)
     results = (
         table.search(query_image)
-        .limit(10)
-        .to_pandas()
+            .limit(10)
+            .to_pandas()
     )
     ```
 
     Both of the above snippet returns a pandas DataFrame with the 10 closest vectors to the query.
 
-=== "Typescript"
+=== "TypeScript"
 
     === "@lancedb/lancedb"
 
         ```ts
         const results = await table.search("What's the best pizza topping?")
-        .limit(10)
-        .toArray()
+            .limit(10)
+            .toArray()
         ```
 
     === "vectordb (deprecated)
 
         ```ts
         const results = await table
-        .search("What's the best pizza topping?")
-        .limit(10)
-        .execute()
+            .search("What's the best pizza topping?")
+            .limit(10)
+            .execute()
         ```
 
     The above snippet returns an array of records with the top 10 nearest neighbors to the query.

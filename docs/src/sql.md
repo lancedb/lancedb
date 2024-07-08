@@ -44,7 +44,7 @@ const tbl = await db.createTable('myVectors', data)
     )
     ```
 
-=== "Typescript"
+=== "TypeScript"
 
     === "@lancedb/lancedb"
 
@@ -86,7 +86,7 @@ For example, the following filter string is acceptable:
        .to_arrow()
     ```
 
-=== "Typescript"
+=== "TypeScript"
 
     === "@lancedb/lancedb"
 
@@ -164,7 +164,7 @@ You can also filter your data without search.
     tbl.search().where("id = 10").limit(10).to_arrow()
     ```
 
-=== "Typescript"
+=== "TypeScript"
 
     === "@lancedb/lancedb"
 

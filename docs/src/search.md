@@ -53,7 +53,7 @@ db.create_table("my_vectors", data=data)
         .to_list()
     ```
 
-=== "Typescript"
+=== "TypeScript"
 
     === "@lancedb/lancedb"
 
@@ -84,7 +84,7 @@ By default, `l2` will be used as metric type. You can specify the metric type as
         .to_list()
     ```
 
-=== "Typescript"
+=== "TypeScript"
 
     === "@lancedb/lancedb"
 

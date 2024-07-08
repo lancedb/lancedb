@@ -38,7 +38,7 @@ Lance supports `IVF_PQ` index type by default.
     tbl.create_index(num_partitions=256, num_sub_vectors=96)
     ```
 
-=== "Typescript"
+=== "TypeScript"
 
     === "@lancedb/lancedb"
 
@@ -160,7 +160,7 @@ There are a couple of parameters that can be used to fine-tune the search:
     1  [0.48587373, 0.269207, 0.15095535, 0.65531915,...  item 3953  108.393867
     ```
 
-=== "Typescript"
+=== "TypeScript"
 
     === "@lancedb/lancedb"
 
@@ -194,7 +194,7 @@ You can further filter the elements returned by a search using a where clause.
     tbl.search(np.random.random((1536))).where("item != 'item 1141'").to_pandas()
     ```
 
-=== "Typescript"
+=== "TypeScript"
 
     === "@lancedb/lancedb"
 
@@ -226,7 +226,7 @@ You can select the columns returned by the query using a select clause.
     ...
     ```
 
-=== "Typescript"
+=== "TypeScript"
 
     === "@lancedb/lancedb"
 

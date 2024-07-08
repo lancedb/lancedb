@@ -32,7 +32,7 @@ LanceDB OSS supports object stores such as AWS S3 (and compatible stores), Azure
     db = lancedb.connect("az://bucket/path")
     ```
 
-=== "Typescript"
+=== "TypeScript"
 
     === "@lancedb/lancedb"
 
@@ -104,7 +104,7 @@ If you only want this to apply to one particular connection, you can pass the `s
     )
     ```
 
-=== "Typescript"
+=== "TypeScript"
 
     === "@lancedb/lancedb"
 
@@ -140,7 +140,7 @@ Getting even more specific, you can set the `timeout` for only a particular tabl
     )
     ```
 
-=== "Typescript"
+=== "TypeScript"
 
     === "@lancedb/lancedb"
 
@@ -208,7 +208,7 @@ These can be set as environment variables or passed in the `storage_options` par
     )
     ```
 
-=== "Typescript"
+=== "TypeScript"
 
     === "@lancedb/lancedb"
 
@@ -454,7 +454,7 @@ LanceDB can also connect to S3-compatible stores, such as MinIO. To do so, you m
     )
     ```
 
-=== "Typescript"
+=== "TypeScript"
 
     === "@lancedb/lancedb"
 
@@ -515,7 +515,7 @@ To configure LanceDB to use an S3 Express endpoint, you must set the storage opt
     )
     ```
 
-=== "Typescript"
+=== "TypeScript"
 
     === "@lancedb/lancedb"
 
@@ -564,7 +564,7 @@ GCS credentials are configured by setting the `GOOGLE_SERVICE_ACCOUNT` environme
     )
     ```
 
-=== "Typescript"
+=== "TypeScript"
 
     === "@lancedb/lancedb"
 
@@ -625,7 +625,7 @@ Azure Blob Storage credentials can be configured by setting the `AZURE_STORAGE_A
     )
     ```
 
-=== "Typescript"
+=== "TypeScript"
 
     === "@lancedb/lancedb"
 

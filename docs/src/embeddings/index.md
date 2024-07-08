@@ -47,7 +47,7 @@ LanceDB registers the OpenAI embeddings function in the registry as `openai`. Yo
     print(actual.text)
     ```
 
-=== "Typescript"
+=== "TypeScript"
 
     ```typescript
     --8<--- "nodejs/examples/embedding.ts:imports"
@@ -90,7 +90,7 @@ LanceDB registers the Sentence Transformers embeddings function in the registry 
     print(actual.text)
     ```
 
-=== "Typescript"
+=== "TypeScript"
 
     Coming Soon!
 

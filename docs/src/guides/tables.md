@@ -57,6 +57,7 @@ This guide will show how to create tables, insert data into them, and update the
 
     db["my_table"].head()
     ```
+
     !!! info "Note"
         If the table already exists, LanceDB will raise an error by default.
 
@@ -64,16 +65,16 @@ This guide will show how to create tables, insert data into them, and update the
         and the table exists, then it simply opens the existing table. The data you
         passed in will NOT be appended to the table in that case.
 
-        ```python
-        db.create_table("name", data, exist_ok=True)
-        ```
+    ```python
+    db.create_table("name", data, exist_ok=True)
+    ```
 
-        Sometimes you want to make sure that you start fresh. If you want to
-        overwrite the table, you can pass in mode="overwrite" to the createTable function.
+    Sometimes you want to make sure that you start fresh. If you want to
+    overwrite the table, you can pass in mode="overwrite" to the createTable function.
 
-        ```python
-        db.create_table("name", data, mode="overwrite")
-        ```
+    ```python
+    db.create_table("name", data, mode="overwrite")
+    ```
 
 === "Typescript[^1]"
     You can create a LanceDB table in JavaScript using an array of records as follows.
@@ -84,7 +85,7 @@ This guide will show how to create tables, insert data into them, and update the
         --8<-- "nodejs/examples/basic.ts:create_table"
         ```
         !!! info "Note"
-        If the table already exists, LanceDB will raise an error by default. If you want to overwrite the table, you need to specify the `WriteMode` in the createTable function.
+            If the table already exists, LanceDB will raise an error by default. If you want to overwrite the table, you need to specify the `WriteMode` in the createTable function.
 
         ```ts
         --8<-- "nodejs/examples/basic.ts:create_table_overwrite"
@@ -97,7 +98,7 @@ This guide will show how to create tables, insert data into them, and update the
         ```
 
         !!! info "Note"
-        If the table already exists, LanceDB will raise an error by default. If you want to overwrite the table, you need to specify the `WriteMode` in the createTable function.
+            If the table already exists, LanceDB will raise an error by default. If you want to overwrite the table, you need to specify the `WriteMode` in the createTable function.
 
         ```ts
         const table = await con.createTable(tableName, data, { writeMode: WriteMode.Overwrite })
@@ -118,8 +119,9 @@ db.create_table("my_table", data)
 
 db["my_table"].head()
 ```
+
 !!! info "Note"
-Data is converted to Arrow before being written to disk. For maximum control over how data is saved, either provide the PyArrow schema to convert to or else provide a PyArrow Table directly.
+    Data is converted to Arrow before being written to disk. For maximum control over how data is saved, either provide the PyArrow schema to convert to or else provide a PyArrow Table directly.
 
 The **`vector`** column needs to be a [Vector](../python/pydantic.md#vector-field) (defined as [pyarrow.FixedSizeList](https://arrow.apache.org/docs/python/generated/pyarrow.list_.html)) type.
 
