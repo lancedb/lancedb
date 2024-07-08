@@ -265,7 +265,11 @@ export class QueryBase<NativeQueryType extends NativeQuery | NativeVectorQuery>
    * @returns A Promise that resolves to a string containing the query execution plan explanation.
    */
   async explainPlan(verbose = false): Promise<string> {
-    return await this.inner.explainPlan(verbose);
+    if (this.inner instanceof Promise) {
+      return this.inner.then((inner) => inner.explainPlan(verbose));
+    } else {
+      return this.inner.explainPlan(verbose);
+    }
   }
 }
 
