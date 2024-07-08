@@ -712,7 +712,9 @@ This can be used to update zero to all rows depending on how many rows match the
         await tbl.update({ where: "x = 2", values: {vector: [10, 10]} })
         ```
 
-The `values` parameter is used to provide the new values for the columns as literal values. You can also use the `values_sql` / `valuesSql` parameter to provide SQL expressions for the new values. For example, you can use `values_sql="x + 1"` to increment the value of the `x` column by 1.
+#### Updating using a sql query
+
+  The `values` parameter is used to provide the new values for the columns as literal values. You can also use the `values_sql` / `valuesSql` parameter to provide SQL expressions for the new values. For example, you can use `values_sql="x + 1"` to increment the value of the `x` column by 1.
 
 === "Python"
 
@@ -733,9 +735,15 @@ The `values` parameter is used to provide the new values for the columns as lite
 
 === "Typescript[^1]"
 
-    ```ts
-    await tbl.update({ valuesSql: { x: "x + 1" } })
-    ```
+    === "@lancedb/lancedb"
+
+        Coming Soon!
+
+    === "vectordb (deprecated)"
+
+        ```ts
+        await tbl.update({ valuesSql: { x: "x + 1" } })
+        ```
 
 !!! info "Note"
 
@@ -756,7 +764,7 @@ Use the `drop_table()` method on the database to remove a table.
       By default, if the table does not exist an exception is raised. To suppress this,
       you can pass in `ignore_missing=True`.
 
-=== "Javascript/Typescript"
+=== "TypeScript"
 
       ```typescript
       --8<-- "docs/src/basic_legacy.ts:drop_table"
