@@ -102,6 +102,7 @@ nav:
               - Linear Combination Reranker: reranking/linear_combination.md
               - Cross Encoder Reranker: reranking/cross_encoder.md
               - ColBERT Reranker: reranking/colbert.md
+              - Jina Reranker: reranking/jina.md
               - OpenAI Reranker: reranking/openai.md
               - Building Custom Rerankers: reranking/custom_reranker.md
           - Filtering: sql.md
@@ -184,6 +185,7 @@ nav:
           - Linear Combination Reranker: reranking/linear_combination.md
           - Cross Encoder Reranker: reranking/cross_encoder.md
           - ColBERT Reranker: reranking/colbert.md
+          - Jina Reranker: reranking/jina.md
           - OpenAI Reranker: reranking/openai.md
           - Building Custom Rerankers: reranking/custom_reranker.md
       - Filtering: sql.md

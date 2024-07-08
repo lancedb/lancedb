@@ -427,6 +427,45 @@ Usage Example:
         tbl.add(data)
     ```
 
+### Jina Embeddings
+Jina embeddings are used to generate embeddings for text and image data.
+You also need to set the `JINA_API_KEY` environment variable to use the Jina API.
+
+You can find a list of supported models under [https://jina.ai/embeddings/](https://jina.ai/embeddings/)
+
+Supported parameters (to be passed in `create` method) are:
+
+| Parameter | Type | Default Value | Description |
+|---|---|---|---|
+| `name` | `str` | `"jina-clip-v1"` | The model ID of the jina model to use |
+
+Usage Example:
+
+```python
+    import os
+    import lancedb
+    from lancedb.pydantic import LanceModel, Vector
+    from lancedb.embeddings import EmbeddingFunctionRegistry
+    os.environ['JINA_API_KEY'] = 'jina_*'
+
+    jina_embed = EmbeddingFunctionRegistry
+            .get_instance()
+            .get("jina")
+            .create(name="jina-clip-v1")
+
+    class TextModel(LanceModel):
+        text: str = jina_embed.SourceField()
+        vector: Vector(cohere.ndims()) = jina_embed.VectorField()
+
+    data = [ { "text": "hello world" },
+            { "text": "goodbye world" }]
+
+    db = lancedb.connect("~/.lancedb")
+    tbl = db.create_table("test", schema=TextModel, mode="overwrite")
+
+    tbl.add(data)
+```
+
 ### AWS Bedrock Text Embedding Functions
 AWS Bedrock supports multiple base models for generating text embeddings. You need to setup the AWS credentials to use this embedding function.
 You can do so by using `awscli` and also add your session_token:
@@ -630,3 +669,53 @@ print(actual.text == "bird")
 ```
 
 If you have any questions about the embeddings API, supported models, or see a relevant model missing, please raise an issue [on GitHub](https://github.com/lancedb/lancedb/issues).
+
+### Jina Embeddings
+Jina embeddings can also be used to embed both text and image data, only some of the models support image data and you can check the list
+under [https://jina.ai/embeddings/](https://jina.ai/embeddings/)
+
+Supported parameters (to be passed in `create` method) are:
+
+| Parameter | Type | Default Value | Description |
+|---|---|---|---|
+| `name` | `str` | `"jina-clip-v1"` | The model ID of the jina model to use |
+
+Usage Example:
+
+```python
+    import os
+    import requests
+    import lancedb
+    from lancedb.pydantic import LanceModel, Vector
+    from lancedb.embeddings import get_registry
+
+    os.environ['JINA_API_KEY'] = 'jina_*'
+
+    db = lancedb.connect("~/.lancedb")
+    func = get_registry().get("jina").create()
+
+
+    class Images(LanceModel):
+        label: str
+        image_uri: str = func.SourceField()  # image uri as the source
+        image_bytes: bytes = func.SourceField()  # image bytes as the source
+        vector: Vector(func.ndims()) = func.VectorField()  # vector column
+        vec_from_bytes: Vector(func.ndims()) = func.VectorField()  # Another vector column
+
+
+    table = db.create_table("images", schema=Images)
+    labels = ["cat", "cat", "dog", "dog", "horse", "horse"]
+    uris = [
+        "http://farm1.staticflickr.com/53/167798175_7c7845bbbd_z.jpg",
+        "http://farm1.staticflickr.com/134/332220238_da527d8140_z.jpg",
+        "http://farm9.staticflickr.com/8387/8602747737_2e5c2a45d4_z.jpg",
+        "http://farm5.staticflickr.com/4092/5017326486_1f46057f5f_z.jpg",
+        "http://farm9.staticflickr.com/8216/8434969557_d37882c42d_z.jpg",
+        "http://farm6.staticflickr.com/5142/5835678453_4f3a4edb45_z.jpg",
+    ]
+    # get each uri as bytes
+    image_bytes = [requests.get(uri).content for uri in uris]
+    table.add(
+        [{"label": labels, "image_uri": uris, "image_bytes": image_bytes}]
+    )
+```
