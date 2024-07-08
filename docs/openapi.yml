@@ -187,6 +187,14 @@ paths:
                   type: integer
                   description: |
                     The refine factor to use for search. Optional.
+                  default: null
+                fast_search:
+                  type: boolean
+                  description: |
+                    Whether to use fast search. Optional.
+                  default: false
+              required:
+                - vector
 
       responses:
         "200":
