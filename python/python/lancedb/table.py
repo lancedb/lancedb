@@ -1173,11 +1173,12 @@ class LanceTable(Table):
         replace: bool = True,
         accelerator: Optional[str] = None,
         index_cache_size: Optional[int] = None,
+        index_type="IVF_PQ",
     ):
         """Create an index on the table."""
         self._dataset_mut.create_index(
             column=vector_column_name,
-            index_type="IVF_PQ",
+            index_type=index_type,
             metric=metric,
             num_partitions=num_partitions,
             num_sub_vectors=num_sub_vectors,

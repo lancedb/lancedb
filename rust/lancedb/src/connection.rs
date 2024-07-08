@@ -1191,6 +1191,7 @@ mod tests {
             .query()
             .execute_with_options(QueryExecutionOptions {
                 max_batch_length: 50000,
+                ..Default::default()
             })
             .await
             .unwrap()
@@ -1211,6 +1212,7 @@ mod tests {
             .query()
             .execute_with_options(QueryExecutionOptions {
                 max_batch_length: 50000,
+                ..Default::default()
             })
             .await
             .unwrap()

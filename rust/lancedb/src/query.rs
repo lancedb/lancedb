@@ -374,6 +374,16 @@ pub trait QueryBase {
     /// Columns will always be returned in the order given, even if that order is different than
     /// the order used when adding the data.
     fn select(self, selection: Select) -> Self;
+
+    /// Only execute the query over indexed data.
+    ///
+    /// This allows weak-consistent fast path for queries that only need to access the indexed data.
+    ///
+    /// Users can use [`crate::Table::optimize`] to merge new data into the index, and make the
+    /// new data available for fast search.
+    ///
+    /// By default, it is false.
+    fn fast_search(self) -> Self;
 }
 
 pub trait HasQuery {
@@ -393,6 +403,11 @@ impl<T: HasQuery> QueryBase for T {
 
     fn select(mut self, select: Select) -> Self {
         self.mut_query().select = select;
+        self
+    }
+
+    fn fast_search(mut self) -> Self {
+        self.mut_query().fast_search = true;
         self
     }
 }
@@ -465,6 +480,8 @@ pub trait ExecutableQuery {
         &self,
         options: QueryExecutionOptions,
     ) -> impl Future<Output = Result<SendableRecordBatchStream>> + Send;
+
+    fn explain_plan(&self, verbose: bool) -> impl Future<Output = Result<String>> + Send;
 }
 
 /// A builder for LanceDB queries.
@@ -489,6 +506,12 @@ pub struct Query {
     pub(crate) filter: Option<String>,
     /// Select column projection.
     pub(crate) select: Select,
+
+    /// If set to true, the query is executed only on the indexed data,
+    /// and yields faster results.
+    ///
+    /// By default, this is false.
+    pub(crate) fast_search: bool,
 }
 
 impl Query {
@@ -498,6 +521,7 @@ impl Query {
             limit: None,
             filter: None,
             select: Select::All,
+            fast_search: false,
         }
     }
 
@@ -571,6 +595,12 @@ impl ExecutableQuery for Query {
         Ok(SendableRecordBatchStream::from(
             self.parent.clone().plain_query(self, options).await?,
         ))
+    }
+
+    async fn explain_plan(&self, verbose: bool) -> Result<String> {
+        self.parent
+            .explain_plan(&self.clone().into_vector(), verbose)
+            .await
     }
 }
 
@@ -751,6 +781,10 @@ impl ExecutableQuery for VectorQuery {
                 Default::default(),
             )?),
         ))
+    }
+
+    async fn explain_plan(&self, verbose: bool) -> Result<String> {
+        self.base.parent.explain_plan(self, verbose).await
     }
 }
 
@@ -989,6 +1023,7 @@ mod tests {
             .query()
             .execute_with_options(QueryExecutionOptions {
                 max_batch_length: 10,
+                ..Default::default()
             })
             .await
             .unwrap();
@@ -1052,5 +1087,21 @@ mod tests {
             .unwrap()
             .to_string()
             .contains("No vector column found to match with the query vector dimension: 3"));
+    }
+
+    #[tokio::test]
+    async fn test_fast_search_plan() {
+        let tmp_dir = tempdir().unwrap();
+        let table = make_test_table(&tmp_dir).await;
+        let plan = table
+            .query()
+            .select(Select::columns(&["_distance"]))
+            .nearest_to(vec![0.1, 0.2, 0.3, 0.4])
+            .unwrap()
+            .fast_search()
+            .explain_plan(true)
+            .await
+            .unwrap();
+        assert!(!plan.contains("Take"));
     }
 }

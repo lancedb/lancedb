@@ -706,10 +706,10 @@ describe("table.search", () => {
     const data = [{ text: "hello world" }, { text: "goodbye world" }];
     const table = await db.createTable("test", data, { schema });
 
-    const results = await table.search("greetings").then((r) => r.toArray());
+    const results = await table.search("greetings").toArray();
     expect(results[0].text).toBe(data[0].text);
 
-    const results2 = await table.search("farewell").then((r) => r.toArray());
+    const results2 = await table.search("farewell").toArray();
     expect(results2[0].text).toBe(data[1].text);
   });
 
@@ -721,7 +721,7 @@ describe("table.search", () => {
     ];
     const table = await db.createTable("test", data);
 
-    expect(table.search("hello")).rejects.toThrow(
+    expect(table.search("hello").toArray()).rejects.toThrow(
       "No embedding functions are defined in the table",
     );
   });
@@ -743,5 +743,29 @@ describe("table.search", () => {
 
     expect(results.length).toBe(2);
     expect(results[0].text).toBe(data[1].text);
+  });
+});
+
+describe("when calling explainPlan", () => {
+  let tmpDir: tmp.DirResult;
+  let table: Table;
+  let queryVec: number[];
+  beforeEach(async () => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+    const con = await connect(tmpDir.name);
+    table = await con.createTable("vectors", [{ id: 1, vector: [0.1, 0.2] }]);
+  });
+
+  afterEach(() => {
+    tmpDir.removeCallback();
+  });
+
+  it("retrieves query plan", async () => {
+    queryVec = Array(2)
+      .fill(1)
+      .map(() => Math.random());
+    const plan = await table.query().nearestTo(queryVec).explainPlan(true);
+
+    expect(plan).toMatch("KNN");
   });
 });

@@ -12,7 +12,7 @@ info:
 
 servers:
   - url: https://{db}.{region}.api.lancedb.com
-    description: LanceDB
+    description: LanceDB Cloud REST endpoint.
     variables:
       db:
         default: ""
@@ -219,20 +219,88 @@ paths:
 
   /v1/table/{name}/insert/:
     post:
-      description: Insert data to a table
+      description: Insert new data to the Table.
       tags:
         - Data
       operationId: insertData
-      summary: Insert data to a table
+      summary: Insert new data.
       parameters:
         - $ref: "#/components/parameters/table_name"
       requestBody:
         $ref: "#/components/requestBodies/arrow_stream_buffer"
-
       responses:
         "200":
           description: Insert successful
-
+        "400":
+          $ref: "#/components/responses/invalid_request"
+        "401":
+          $ref: "#/components/responses/unauthorized"
+        "404":
+          $ref: "#/components/responses/not_found"
+  /v1/table/{name}/merge_insert/:
+    post:
+      description: Create a "merge insert" operation
+        This operation can add rows, update rows, and remove rows all in a single
+        transaction. See python method `lancedb.table.Table.merge_insert` for examples.
+      tags:
+        - Data
+      summary: Merge Insert
+      operationId: mergeInsert
+      parameters:
+        - $ref: "#/components/parameters/table_name"
+        - name: on
+          in: query
+          description: |
+            The column to use as the primary key for the merge operation.
+          required: true
+          schema:
+            type: string
+        - name: when_matched_update_all
+          in: query
+          description: |
+            Rows that exist in both the source table (new data) and
+            the target table (old data) will be updated, replacing
+            the old row with the corresponding matching row.
+          required: false
+          schema:
+            type: boolean
+        - name: when_matched_update_all_filt
+          in: query
+          description: |
+            If present then only rows that satisfy the filter expression will
+            be updated
+          required: false
+          schema:
+            type: string
+        - name: when_not_matched_insert_all
+          in: query
+          description: |
+            Rows that exist only in the source table (new data) will be
+            inserted into the target table (old data).
+          required: false
+          schema:
+            type: boolean
+        - name: when_not_matched_by_source_delete
+          in: query
+          description: |
+            Rows that exist only in the target table (old data) will be
+            deleted. An optional condition (`when_not_matched_by_source_delete_filt`)
+            can be provided to limit what data is deleted.
+          required: false
+          schema:
+            type: boolean
+        - name: when_not_matched_by_source_delete_filt
+          in: query
+          description: |
+            The filter expression that specifies the rows to delete.
+          required: false
+          schema:
+            type: string
+      requestBody:
+        $ref: "#/components/requestBodies/arrow_stream_buffer"
+      responses:
+        "200":
+          description: Merge Insert successful
         "400":
           $ref: "#/components/responses/invalid_request"
         "401":
@@ -341,6 +409,70 @@ paths:
                           type: string
                         index_uuid:
                           type: string
+        "401":
+          $ref: "#/components/responses/unauthorized"
+        "404":
+          $ref: "#/components/responses/not_found"
+  /v1/table/{name}/create_index/:
+    post:
+      description: Create vector index on a Table
+      tags:
+        - Tables
+      summary: Create vector index on a Table
+      operationId: createIndex
+      parameters:
+        - $ref: "#/components/parameters/table_name"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                column:
+                  type: string
+                metric_type:
+                  type: string
+                  nullable: false
+                  description: |
+                    The metric type to use for the index. L2, Cosine, Dot are supported.
+                index_type:
+                  type: string
+      responses:
+        "200":
+          description: Index successfully created
+        "400":
+          $ref: "#/components/responses/invalid_request"
+        "401":
+          $ref: "#/components/responses/unauthorized"
+        "404":
+          $ref: "#/components/responses/not_found"
+  /v1/table/{name}/create_scalar_index/:
+    post:
+      description: Create a scalar index on a table
+      tags:
+        - Tables
+      summary: Create a scalar index on a table
+      operationId: createScalarIndex
+      parameters:
+        - $ref: "#/components/parameters/table_name"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                column:
+                  type: string
+                index_type:
+                  type: string
+                  required: false
+      responses:
+        "200":
+          description: Scalar Index successfully created
+        "400":
+          $ref: "#/components/responses/invalid_request"
         "401":
           $ref: "#/components/responses/unauthorized"
         "404":
