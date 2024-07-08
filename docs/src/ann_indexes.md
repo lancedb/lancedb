@@ -42,6 +42,8 @@ Lance supports `IVF_PQ` index type by default.
 
     === "@lancedb/lancedb"
 
+        Creating indexes is done via the [lancedb.Table.createIndex](../js/classes/Table.md/#createIndex) method.
+
         ```typescript
         --8<--- "nodejs/examples/ann_indexes.ts:import"
 
@@ -49,6 +51,8 @@ Lance supports `IVF_PQ` index type by default.
         ```
 
     === "vectordb (deprecated)"
+
+        Creating indexes is done via the [lancedb.Table.createIndex](../javascript/interfaces/Table.md/#createIndex) method.
 
         ```typescript
         --8<--- "docs/src/ann_indexes.ts:import"

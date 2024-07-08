@@ -18,12 +18,42 @@ const db = await lancedb.connect(uri);
   const _tbl = await db.createTable("myTable", data);
   // --8<-- [end:create_table]
   {
+    // --8<-- [start:create_table_exists_ok]
+    const _tbl = await db.createTable("myTable", data, {
+      existsOk: true,
+    });
+    // --8<-- [end:create_table_exists_ok]
+  }
+  {
     // --8<-- [start:create_table_overwrite]
     const _tbl = await db.createTable("myTable", data, {
       mode: "overwrite",
     });
     // --8<-- [end:create_table_overwrite]
   }
+}
+
+{
+  // --8<-- [start:create_table_with_schema]
+  const schema = new arrow.Schema([
+    new arrow.Field(
+      "vector",
+      new arrow.FixedSizeList(
+        2,
+        new arrow.Field("item", new arrow.Float32(), true),
+      ),
+    ),
+    new arrow.Field("item", new arrow.Utf8(), true),
+    new arrow.Field("price", new arrow.Float32(), true),
+  ]);
+  const data = [
+    { vector: [3.1, 4.1], item: "foo", price: 10.0 },
+    { vector: [5.9, 26.5], item: "bar", price: 20.0 },
+  ];
+  const _tbl = await db.createTable("myTable", data, {
+    schema,
+  });
+  // --8<-- [end:create_table_with_schema]
 }
 
 {

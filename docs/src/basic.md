@@ -22,13 +22,37 @@
         ```shell
         npm install @lancedb/lancedb
         ```
+        !!! note "Bundling `@lancedb/lancedb` apps with Webpack"
 
+            If you're using the `@lancedb/lancedb` module in JavaScript, since LanceDB contains a prebuilt Node binary, you must configure `next.config.js` to exclude it from webpack. This is required for both using Next.js and deploying a LanceDB app on Vercel.
+
+            ```javascript
+            /** @type {import('next').NextConfig} */
+            module.exports = ({
+            webpack(config) {
+                config.externals.push({ '@lancedb/lancedb': '@lancedb/lancedb' })
+                return config;
+            }
+            })
+            ```
     === "vectordb (deprecated)"
 
         ```shell
         npm install vectordb
         ```
+        !!! note "Bundling `vectordb` apps with Webpack"
 
+            If you're using the `vectordb` module in JavaScript, since LanceDB contains a prebuilt Node binary, you must configure `next.config.js` to exclude it from webpack. This is required for both using Next.js and deploying a LanceDB app on Vercel.
+
+            ```javascript
+            /** @type {import('next').NextConfig} */
+            module.exports = ({
+            webpack(config) {
+                config.externals.push({ vectordb: 'vectordb' })
+                return config;
+            }
+            })
+            ```
 === "Rust"
 
     ```shell
@@ -503,19 +527,6 @@ Use the `drop_table()` method on the database to remove a table.
     --8<-- "rust/lancedb/examples/simple.rs:drop_table"
     ```
 
-!!! note "Bundling `vectordb` apps with Webpack"
-
-    If you're using the `vectordb` module in JavaScript, since LanceDB contains a prebuilt Node binary, you must configure `next.config.js` to exclude it from webpack. This is required for both using Next.js and deploying a LanceDB app on Vercel.
-
-    ```javascript
-    /** @type {import('next').NextConfig} */
-    module.exports = ({
-    webpack(config) {
-        config.externals.push({ vectordb: 'vectordb' })
-        return config;
-    }
-    })
-    ```
 
 ## Using the Embedding API
 You can use the embedding API when working with embedding models. It automatically vectorizes the data at ingestion and query time and comes with built-in integrations with popular embedding models like Openai, Hugging Face, Sentence Transformers, CLIP and more.

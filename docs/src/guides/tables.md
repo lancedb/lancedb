@@ -8,9 +8,9 @@ This guide will show how to create tables, insert data into them, and update the
 
 ## Creating a LanceDB Table
 
-=== "Python"
+Initialize a LanceDB connection and create a table
 
-    Initialize a LanceDB connection and create a table using one of the many methods listed below.
+=== "Python"
 
     ```python
     import lancedb
@@ -25,6 +25,7 @@ This guide will show how to create tables, insert data into them, and update the
 
         ```typescript
         import * as lancedb from "@lancedb/lancedb";
+        import * as arrow from "apache-arrow";
 
         const uri = "data/sample-lancedb";
         const db = await lancedb.connect(uri);
@@ -81,11 +82,29 @@ This guide will show how to create tables, insert data into them, and update the
 
     === "@lancedb/lancedb"
 
+
         ```ts
         --8<-- "nodejs/examples/basic.ts:create_table"
         ```
+
+        This will infer the schema from the provided data. If you want to explicitly provide a schema, you can use `apache-arrow` to declare a schema
+
+        ```ts
+        --8<-- "nodejs/examples/basic.ts:create_table_with_schema"
+        ```
+
         !!! info "Note"
-            If the table already exists, LanceDB will raise an error by default. If you want to overwrite the table, you need to specify the `WriteMode` in the createTable function.
+            `createTable` supports an optional `existsOk` parameter. When set to true
+            and the table exists, then it simply opens the existing table. The data you
+            passed in will NOT be appended to the table in that case.
+
+
+        ```ts
+        --8<-- "nodejs/examples/basic.ts:create_table_exists_ok"
+        ```
+
+        Sometimes you want to make sure that you start fresh. If you want to
+        overwrite the table, you can pass in mode: "overwrite" to the createTable function.
 
         ```ts
         --8<-- "nodejs/examples/basic.ts:create_table_overwrite"
@@ -97,8 +116,11 @@ This guide will show how to create tables, insert data into them, and update the
         --8<-- "docs/src/basic_legacy.ts:create_table"
         ```
 
-        !!! info "Note"
-            If the table already exists, LanceDB will raise an error by default. If you want to overwrite the table, you need to specify the `WriteMode` in the createTable function.
+        !!! warning
+            `existsOk` option is not supported in `vectordb`
+
+        Sometimes you want to make sure that you start fresh. If you want to
+        overwrite the table, you can pass in mode: "overwrite" to the createTable function.
 
         ```ts
         const table = await con.createTable(tableName, data, { writeMode: WriteMode.Overwrite })
@@ -154,9 +176,10 @@ table = db.create_table("pl_table", data=data)
 ```
 
 ### From an Arrow Table
+You can also create LanceDB tables directly from Arrow tables.
+LanceDB supports float16 data type!
+
 === "Python"
-    You can also create LanceDB tables directly from Arrow tables.
-    LanceDB supports float16 data type!
 
     ```python
     import pyarrows as pa
@@ -182,9 +205,6 @@ table = db.create_table("pl_table", data=data)
     ```
 
 === "Typescript[^1]"
-
-    You can also create LanceDB tables directly from Arrow tables.
-    LanceDB supports Float16 data type!
 
     === "@lancedb/lancedb"
 
@@ -429,7 +449,7 @@ You can create an empty table for scenarios where you want to add data to the ta
 
 ## Adding to a table
 
-After a table has been created, you can always add more data to it using the various methods available.
+After a table has been created, you can always add more data to it usind the `add` method
 
 === "Python"
     You can add any of the valid data structures accepted by LanceDB table, i.e, `dict`, `list[dict]`, `pd.DataFrame`, or `Iterator[pa.RecordBatch]`. Below are some examples.
@@ -655,6 +675,8 @@ This can be used to update zero to all rows depending on how many rows match the
 === "Typescript[^1]"
 
     === "@lancedb/lancedb"
+
+        API Reference: [lancedb.Table.update](../js/classes/Table.md/#update)
 
         ```ts
         import * as lancedb from "@lancedb/lancedb";
