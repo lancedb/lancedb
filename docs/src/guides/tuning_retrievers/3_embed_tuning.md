@@ -72,11 +72,11 @@ On performing the same hit-rate evaluation as before, we see a significant impro
 | Reranked Full-text Search | 0.672 |
 | Hybrid Search (w/ CohereReranker) | 0.759|
 
-### Fine-tuned model
+### Fine-tuned model ( 2 iterations )
 | Query Type | Hit-rate@5 |
 | --- | --- |
-| Vector Search | 0.668 |
+| Vector Search | 0.672 |
 | Full-text Search | 0.595 |
-| Reranked Vector Search | 0.722 |
+| Reranked Vector Search | 0.754 |
 | Reranked Full-text Search | 0.672|
-| Hybrid Search (w/ CohereReranker) | 0.781|
+| Hybrid Search (w/ CohereReranker) | 0.768 |
