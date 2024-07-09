@@ -1,32 +1,24 @@
 export type IntoSql = string | number | boolean | null | Date | IntoSql[];
 
 export function toSQL(value: IntoSql): string {
-  if (typeof value === "string") {
-    return `'${value}'`;
+  switch (true) {
+    case typeof value === "string":
+      return `'${value}'`;
+    case typeof value === "number":
+      return value.toString();
+    case typeof value === "boolean":
+      return value ? "TRUE" : "FALSE";
+    case value === null:
+      return "NULL";
+    case value instanceof Date:
+      return `'${value.toISOString()}'`;
+    case Array.isArray(value):
+      return `[${value.map(toSQL).join(", ")}]`;
+    default:
+      throw new Error(
+        `Unsupported value type: ${typeof value} value: (${value})`,
+      );
   }
-
-  if (typeof value === "number") {
-    return value.toString();
-  }
-
-  if (typeof value === "boolean") {
-    return value ? "TRUE" : "FALSE";
-  }
-
-  if (value === null) {
-    return "NULL";
-  }
-
-  if (value instanceof Date) {
-    return `'${value.toISOString()}'`;
-  }
-
-  if (Array.isArray(value)) {
-    return `[${value.map(toSQL).join(", ")}]`;
-  }
-
-  // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
-  throw new Error(`Unsupported value type: ${typeof value} value: (${value})`);
 }
 
 export class TTLCache {
