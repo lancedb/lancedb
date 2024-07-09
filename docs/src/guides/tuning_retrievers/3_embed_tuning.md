@@ -79,4 +79,4 @@ On performing the same hit-rate evaluation as before, we see a significant impro
 | Full-text Search | 0.595 |
 | Reranked Vector Search | 0.722 |
 | Reranked Full-text Search | 0.672|
-| Hybrid Search (w/ CohereReranker) | 0.763|
+| Hybrid Search (w/ CohereReranker) | 0.781|
