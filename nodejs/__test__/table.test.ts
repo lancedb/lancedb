@@ -96,6 +96,50 @@ describe.each([arrow, arrowOld])("Given a table", (arrow: any) => {
     expect(await table.countRows("id == 10")).toBe(1);
   });
 
+  it("should let me update values with `values`", async () => {
+    await table.add([{ id: 1 }]);
+    expect(await table.countRows("id == 1")).toBe(1);
+    expect(await table.countRows("id == 7")).toBe(0);
+    await table.update({ values: { id: 7 } });
+    expect(await table.countRows("id == 1")).toBe(0);
+    expect(await table.countRows("id == 7")).toBe(1);
+    await table.add([{ id: 2 }]);
+    // Test Map as input
+    await table.update({
+      values: {
+        id: "10",
+      },
+      where: "id % 2 == 0",
+    });
+    expect(await table.countRows("id == 2")).toBe(0);
+    expect(await table.countRows("id == 7")).toBe(1);
+    expect(await table.countRows("id == 10")).toBe(1);
+  });
+
+  it("should let me update values with `valuesSql`", async () => {
+    await table.add([{ id: 1 }]);
+    expect(await table.countRows("id == 1")).toBe(1);
+    expect(await table.countRows("id == 7")).toBe(0);
+    await table.update({
+      valuesSql: {
+        id: "7",
+      },
+    });
+    expect(await table.countRows("id == 1")).toBe(0);
+    expect(await table.countRows("id == 7")).toBe(1);
+    await table.add([{ id: 2 }]);
+    // Test Map as input
+    await table.update({
+      valuesSql: {
+        id: "10",
+      },
+      where: "id % 2 == 0",
+    });
+    expect(await table.countRows("id == 2")).toBe(0);
+    expect(await table.countRows("id == 7")).toBe(1);
+    expect(await table.countRows("id == 10")).toBe(1);
+  });
+
   // https://github.com/lancedb/lancedb/issues/1293
   test.each([new arrow.Float16(), new arrow.Float32(), new arrow.Float64()])(
     "can create empty table with non default float type: %s",

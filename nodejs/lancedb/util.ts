@@ -1,3 +1,34 @@
+export type IntoSql = string | number | boolean | null | Date | IntoSql[];
+
+export function toSQL(value: IntoSql): string {
+  if (typeof value === "string") {
+    return `'${value}'`;
+  }
+
+  if (typeof value === "number") {
+    return value.toString();
+  }
+
+  if (typeof value === "boolean") {
+    return value ? "TRUE" : "FALSE";
+  }
+
+  if (value === null) {
+    return "NULL";
+  }
+
+  if (value instanceof Date) {
+    return `'${value.toISOString()}'`;
+  }
+
+  if (Array.isArray(value)) {
+    return `[${value.map(toSQL).join(", ")}]`;
+  }
+
+  // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
+  throw new Error(`Unsupported value type: ${typeof value} value: (${value})`);
+}
+
 export class TTLCache {
   // biome-ignore lint/suspicious/noExplicitAny: <explanation>
   private readonly cache: Map<string, { value: any; expires: number }>;

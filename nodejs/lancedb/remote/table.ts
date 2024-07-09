@@ -22,6 +22,7 @@ import { IndexOptions } from "../indices";
 import { MergeInsertBuilder } from "../merge";
 import { VectorQuery } from "../query";
 import { AddDataOptions, Table, UpdateOptions } from "../table";
+import { IntoSql, toSQL } from "../util";
 import { RestfulLanceDBClient } from "./client";
 
 export class RemoteTable extends Table {
@@ -84,12 +85,66 @@ export class RemoteTable extends Table {
   }
 
   async update(
-    updates: Map<string, string> | Record<string, string>,
+    optsOrUpdates:
+      | (Map<string, string> | Record<string, string>)
+      | ({
+          values: Map<string, IntoSql> | Record<string, IntoSql>;
+        } & Partial<UpdateOptions>)
+      | ({
+          valuesSql: Map<string, string> | Record<string, string>;
+        } & Partial<UpdateOptions>),
     options?: Partial<UpdateOptions>,
   ): Promise<void> {
+    const isValues =
+      "values" in optsOrUpdates && typeof optsOrUpdates.values !== "string";
+    const isValuesSql =
+      "valuesSql" in optsOrUpdates &&
+      typeof optsOrUpdates.valuesSql !== "string";
+    const isMap = (obj: unknown): obj is Map<string, string> => {
+      return obj instanceof Map;
+    };
+
+    let predicate;
+    let columns: [string, string][];
+    switch (true) {
+      case isMap(optsOrUpdates):
+        columns = Array.from(optsOrUpdates.entries());
+        predicate = options?.where;
+        break;
+      case isValues && isMap(optsOrUpdates.values):
+        columns = Array.from(optsOrUpdates.values.entries()).map(([k, v]) => [
+          k,
+          toSQL(v),
+        ]);
+        predicate = optsOrUpdates.where;
+        break;
+      case isValues && !isMap(optsOrUpdates.values):
+        columns = Object.entries(optsOrUpdates.values).map(([k, v]) => [
+          k,
+          toSQL(v),
+        ]);
+        predicate = optsOrUpdates.where;
+        break;
+
+      case isValuesSql && isMap(optsOrUpdates.valuesSql):
+        columns = Array.from(optsOrUpdates.valuesSql.entries());
+        predicate = optsOrUpdates.where;
+        break;
+      case isValuesSql && !isMap(optsOrUpdates.valuesSql):
+        columns = Object.entries(optsOrUpdates.valuesSql).map(([k, v]) => [
+          k,
+          v,
+        ]);
+        predicate = optsOrUpdates.where;
+        break;
+      default:
+        columns = Object.entries(optsOrUpdates as Record<string, string>);
+        predicate = options?.where;
+    }
+
     await this.#client.post(`${this.#tablePrefix}/update/`, {
-      predicate: options?.where ?? null,
-      updates: Object.entries(updates).map(([key, value]) => [key, value]),
+      predicate: predicate ?? null,
+      updates: columns,
     });
   }
   async countRows(filter?: unknown): Promise<number> {
