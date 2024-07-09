@@ -104,6 +104,7 @@ nav:
               - ColBERT Reranker: reranking/colbert.md
               - OpenAI Reranker: reranking/openai.md
               - Building Custom Rerankers: reranking/custom_reranker.md
+              - Example: notebooks/lancedb_reranking.ipynb
           - Filtering: sql.md
           - Versioning & Reproducibility: notebooks/reproducibility.ipynb
           - Configuring Storage: guides/storage.md
@@ -111,6 +112,7 @@ nav:
           - Tuning retrieval performance:
               - Choosing right query type: guides/tuning_retrievers/1_query_types.md
               - Reranking: guides/tuning_retrievers/2_reranking.md
+              - Embedding fine-tuning: guides/tuning_retrievers/3_embed_tuning.md
       - 🧬 Managing embeddings:
           - Overview: embeddings/index.md
           - Embedding functions: embeddings/embedding_functions.md
@@ -186,6 +188,7 @@ nav:
           - ColBERT Reranker: reranking/colbert.md
           - OpenAI Reranker: reranking/openai.md
           - Building Custom Rerankers: reranking/custom_reranker.md
+          - Example: notebooks/lancedb_reranking.ipynb
       - Filtering: sql.md
       - Versioning & Reproducibility: notebooks/reproducibility.ipynb
       - Configuring Storage: guides/storage.md
@@ -193,6 +196,7 @@ nav:
       - Tuning retrieval performance:
           - Choosing right query type: guides/tuning_retrievers/1_query_types.md
           - Reranking: guides/tuning_retrievers/2_reranking.md
+          - Embedding fine-tuning: guides/tuning_retrievers/3_embed_tuning.md
   - Managing Embeddings:
       - Overview: embeddings/index.md
       - Embedding functions: embeddings/embedding_functions.md

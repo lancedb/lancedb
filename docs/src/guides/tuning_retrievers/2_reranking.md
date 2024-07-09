@@ -1,4 +1,6 @@
-Continuing from the previous example, we can now rerank the results using more complex rerankers.
+Continuing from the previous section, we can now rerank the results using more complex rerankers.
+
+Try it yourself - <a href="https://colab.research.google.com/github/lancedb/lancedb/blob/main/docs/src/notebooks/lancedb_reranking.ipynb"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"></a><br/>
 
 ## Reranking search results
 You can rerank any search results using a reranker. The syntax for reranking is as follows:
