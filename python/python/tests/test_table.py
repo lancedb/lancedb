@@ -489,6 +489,7 @@ def test_update_types(db):
                 "date": date(2021, 1, 1),
                 "vector1": [1.0, 0.0],
                 "vector2": [1.0, 1.0],
+                "binary": b"abc",
             }
         ],
     )
@@ -502,6 +503,7 @@ def test_update_types(db):
             date="DATE '2021-01-02'",
             vector1="[2.0, 2.0]",
             vector2="[3.0, 3.0]",
+            binary="X'626566'",
         )
     )
     actual = table.to_arrow().to_pylist()[0]
@@ -513,6 +515,7 @@ def test_update_types(db):
         date=date(2021, 1, 2),
         vector1=[2.0, 2.0],
         vector2=[3.0, 3.0],
+        binary=b"def",
     )
     assert actual == expected
 
@@ -526,6 +529,7 @@ def test_update_types(db):
             date=date(2021, 1, 3),
             vector1=[3.0, 3.0],
             vector2=np.array([4.0, 4.0]),
+            binary=b"def",
         )
     )
     actual = table.to_arrow().to_pylist()[0]
@@ -537,6 +541,7 @@ def test_update_types(db):
         date=date(2021, 1, 3),
         vector1=[3.0, 3.0],
         vector2=[4.0, 4.0],
+        binary=b"def",
     )
     assert actual == expected
 
