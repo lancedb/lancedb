@@ -24,7 +24,7 @@
         ```
         !!! note "Bundling `@lancedb/lancedb` apps with Webpack"
 
-            If you're using the `@lancedb/lancedb` module in JavaScript, since LanceDB contains a prebuilt Node binary, you must configure `next.config.js` to exclude it from webpack. This is required for both using Next.js and deploying a LanceDB app on Vercel.
+            Since LanceDB contains a prebuilt Node binary, you must configure `next.config.js` to exclude it from webpack. This is required for both using Next.js and deploying a LanceDB app on Vercel.
 
             ```javascript
             /** @type {import('next').NextConfig} */
@@ -42,7 +42,7 @@
         ```
         !!! note "Bundling `vectordb` apps with Webpack"
 
-            If you're using the `vectordb` module in JavaScript, since LanceDB contains a prebuilt Node binary, you must configure `next.config.js` to exclude it from webpack. This is required for both using Next.js and deploying a LanceDB app on Vercel.
+            Since LanceDB contains a prebuilt Node binary, you must configure `next.config.js` to exclude it from webpack. This is required for both using Next.js and deploying a LanceDB app on Vercel.
 
             ```javascript
             /** @type {import('next').NextConfig} */
