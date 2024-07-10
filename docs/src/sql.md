@@ -44,11 +44,19 @@ const tbl = await db.createTable('myVectors', data)
     )
     ```
 
-=== "JavaScript"
+=== "TypeScript"
 
-    ```javascript
-    --8<-- "docs/src/sql_legacy.ts:search"
-    ```
+    === "@lancedb/lancedb"
+
+        ```ts
+        --8<-- "nodejs/examples/filtering.ts:search"
+        ```
+
+    === "vectordb (deprecated)"
+
+        ```ts
+        --8<-- "docs/src/sql_legacy.ts:search"
+        ```
 
 ## SQL filters
 
@@ -78,11 +86,19 @@ For example, the following filter string is acceptable:
        .to_arrow()
     ```
 
-=== "Javascript"
+=== "TypeScript"
 
-    ```javascript
-    --8<-- "docs/src/sql_legacy.ts:vec_search"
-    ```
+    === "@lancedb/lancedb"
+
+        ```ts
+        --8<-- "nodejs/examples/filtering.ts:vec_search"
+        ```
+
+    === "vectordb (deprecated)"
+
+        ```ts
+        --8<-- "docs/src/sql_legacy.ts:vec_search"
+        ```
 
 If your column name contains special characters or is a [SQL Keyword](https://docs.rs/sqlparser/latest/sqlparser/keywords/index.html),
 you can use backtick (`` ` ``) to escape it. For nested fields, each segment of the
@@ -148,10 +164,18 @@ You can also filter your data without search.
     tbl.search().where("id = 10").limit(10).to_arrow()
     ```
 
-=== "JavaScript"
+=== "TypeScript"
 
-    ```javascript
-    --8<---- "docs/src/sql_legacy.ts:sql_search"
-    ```
+    === "@lancedb/lancedb"
+
+        ```ts
+        --8<-- "nodejs/examples/filtering.ts:sql_search"
+        ```
+
+    === "vectordb (deprecated)"
+
+        ```ts
+        --8<---- "docs/src/sql_legacy.ts:sql_search"
+        ```
 
 !!!warning "If your table is large, this could potentially return a very large amount of data. Please be sure to use a `limit` clause unless you're sure you want to return the whole result set."

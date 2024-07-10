@@ -38,13 +38,27 @@ Lance supports `IVF_PQ` index type by default.
     tbl.create_index(num_partitions=256, num_sub_vectors=96)
     ```
 
-=== "Typescript"
+=== "TypeScript"
 
-    ```typescript
-    --8<--- "docs/src/ann_indexes.ts:import"
+    === "@lancedb/lancedb"
 
-    --8<-- "docs/src/ann_indexes.ts:ingest"
-    ```
+        Creating indexes is done via the [lancedb.Table.createIndex](../js/classes/Table.md/#createIndex) method.
+
+        ```typescript
+        --8<--- "nodejs/examples/ann_indexes.ts:import"
+
+        --8<-- "nodejs/examples/ann_indexes.ts:ingest"
+        ```
+
+    === "vectordb (deprecated)"
+
+        Creating indexes is done via the [lancedb.Table.createIndex](../javascript/interfaces/Table.md/#createIndex) method.
+
+        ```typescript
+        --8<--- "docs/src/ann_indexes.ts:import"
+
+        --8<-- "docs/src/ann_indexes.ts:ingest"
+        ```
 
 === "Rust"
 
@@ -91,27 +105,27 @@ You can specify the GPU device to train IVF partitions via
 
 === "Linux"
 
-     <!-- skip-test -->
-     ``` { .python .copy }
-     # Create index using CUDA on Nvidia GPUs.
-     tbl.create_index(
-          num_partitions=256,
-          num_sub_vectors=96,
-          accelerator="cuda"
-     )
-     ```
+    <!-- skip-test -->
+    ``` { .python .copy }
+    # Create index using CUDA on Nvidia GPUs.
+    tbl.create_index(
+        num_partitions=256,
+        num_sub_vectors=96,
+        accelerator="cuda"
+    )
+    ```
 
 === "MacOS"
 
-     <!-- skip-test -->
-     ```python
-     # Create index using MPS on Apple Silicon.
-     tbl.create_index(
-          num_partitions=256,
-          num_sub_vectors=96,
-          accelerator="mps"
-     )
-     ```
+    <!-- skip-test -->
+    ```python
+    # Create index using MPS on Apple Silicon.
+    tbl.create_index(
+        num_partitions=256,
+        num_sub_vectors=96,
+        accelerator="mps"
+    )
+    ```
 
 Troubleshooting:
 
@@ -150,11 +164,19 @@ There are a couple of parameters that can be used to fine-tune the search:
     1  [0.48587373, 0.269207, 0.15095535, 0.65531915,...  item 3953  108.393867
     ```
 
-=== "Typescript"
+=== "TypeScript"
 
-    ```typescript
-    --8<-- "docs/src/ann_indexes.ts:search1"
-    ```
+    === "@lancedb/lancedb"
+
+        ```typescript
+        --8<-- "nodejs/examples/ann_indexes.ts:search1"
+        ```
+
+    === "vectordb (deprecated)"
+
+        ```typescript
+        --8<-- "docs/src/ann_indexes.ts:search1"
+        ```
 
 === "Rust"
 
@@ -172,15 +194,23 @@ You can further filter the elements returned by a search using a where clause.
 
 === "Python"
 
-     ```python
-     tbl.search(np.random.random((1536))).where("item != 'item 1141'").to_pandas()
-     ```
+    ```python
+    tbl.search(np.random.random((1536))).where("item != 'item 1141'").to_pandas()
+    ```
 
-=== "Typescript"
+=== "TypeScript"
 
-     ```javascript
-     --8<-- "docs/src/ann_indexes.ts:search2"
-     ```
+    === "@lancedb/lancedb"
+
+        ```typescript
+        --8<-- "nodejs/examples/ann_indexes.ts:search2"
+        ```
+
+    === "vectordb (deprecated)"
+
+        ```javascript
+        --8<-- "docs/src/ann_indexes.ts:search2"
+        ```
 
 ### Projections (select clause)
 
@@ -188,23 +218,31 @@ You can select the columns returned by the query using a select clause.
 
 === "Python"
 
-     ```python
-     tbl.search(np.random.random((1536))).select(["vector"]).to_pandas()
-     ```
+    ```python
+    tbl.search(np.random.random((1536))).select(["vector"]).to_pandas()
+    ```
 
 
-     ```text
-                                                   vector _distance
-     0  [0.30928212, 0.022668175, 0.1756372, 0.4911822...  93.971092
-     1  [0.2525465, 0.01723831, 0.261568, 0.002007689,...  95.173485
-     ...
-     ```
+    ```text
+                                                vector _distance
+    0  [0.30928212, 0.022668175, 0.1756372, 0.4911822...  93.971092
+    1  [0.2525465, 0.01723831, 0.261568, 0.002007689,...  95.173485
+    ...
+    ```
 
-=== "Typescript"
+=== "TypeScript"
 
-     ```typescript
-     --8<-- "docs/src/ann_indexes.ts:search3"
-     ```
+    === "@lancedb/lancedb"
+
+        ```typescript
+        --8<-- "nodejs/examples/ann_indexes.ts:search3"
+        ```
+
+    === "vectordb (deprecated)"
+
+        ```typescript
+        --8<-- "docs/src/ann_indexes.ts:search3"
+        ```
 
 ## FAQ
 

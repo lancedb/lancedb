@@ -6,8 +6,8 @@ For this purpose, LanceDB introduces an **embedding functions API**, that allow 
     LanceDB Cloud does not support embedding functions yet. You need to generate embeddings before ingesting into the table or querying.
 
 !!! warning
-    Using the embedding function registry means that you don't have to explicitly generate the embeddings yourself. 
-    However, if your embedding function changes, you'll have to re-configure your table with the new embedding function 
+    Using the embedding function registry means that you don't have to explicitly generate the embeddings yourself.
+    However, if your embedding function changes, you'll have to re-configure your table with the new embedding function
     and regenerate the embeddings. In the future, we plan to support the ability to change the embedding function via
     table metadata and have LanceDB automatically take care of regenerating the embeddings.
 
@@ -16,7 +16,7 @@ For this purpose, LanceDB introduces an **embedding functions API**, that allow 
 
 === "Python"
     In the LanceDB python SDK, we define a global embedding function registry with
-    many different embedding models and even more coming soon. 
+    many different embedding models and even more coming soon.
     Here's let's an implementation of CLIP as example.
 
     ```python
@@ -26,20 +26,35 @@ For this purpose, LanceDB introduces an **embedding functions API**, that allow 
     clip = registry.get("open-clip").create()
     ```
 
-    You can also define your own embedding function by implementing the `EmbeddingFunction` 
+    You can also define your own embedding function by implementing the `EmbeddingFunction`
     abstract base interface. It subclasses Pydantic Model which can be utilized to write complex schemas simply as we'll see next!
 
-=== "JavaScript""
+=== "TypeScript"
     In the TypeScript SDK, the choices are more limited. For now, only the OpenAI
     embedding function is available.
 
     ```javascript
-    const lancedb = require("vectordb");
+    import * as lancedb from '@lancedb/lancedb'
+    import { getRegistry } from '@lancedb/lancedb/embeddings'
 
     // You need to provide an OpenAI API key
     const apiKey = "sk-..."
     // The embedding function will create embeddings for the 'text' column
-    const embedding = new lancedb.OpenAIEmbeddingFunction('text', apiKey)
+    const func = getRegistry().get("openai").create({apiKey})
+    ```
+=== "Rust"
+    In the Rust SDK, the choices are more limited. For now, only the OpenAI
+    embedding function is available. But unlike the Python and TypeScript SDKs, you need manually register the OpenAI embedding function.
+
+    ```toml
+    // Make sure to include the `openai` feature
+    [dependencies]
+    lancedb = {version = "*", features = ["openai"]}
+    ```
+
+    ```rust
+    --8<-- "rust/lancedb/examples/openai.rs:imports"
+    --8<-- "rust/lancedb/examples/openai.rs:openai_embeddings"
     ```
 
 ## 2. Define the data model or schema
@@ -55,14 +70,14 @@ For this purpose, LanceDB introduces an **embedding functions API**, that allow 
 
     `VectorField` tells LanceDB to use the clip embedding function to generate query embeddings for the `vector` column and `SourceField` ensures that when adding data, we automatically use the specified embedding function to encode `image_uri`.
 
-=== "JavaScript"
+=== "TypeScript"
 
     For the TypeScript SDK, a schema can be inferred from input data, or an explicit
     Arrow schema can be provided.
 
 ## 3. Create table and add data
 
-Now that we have chosen/defined our embedding function and the schema, 
+Now that we have chosen/defined our embedding function and the schema,
 we can create the table and ingest data without needing to explicitly generate
 the embeddings at all:
 
@@ -74,17 +89,26 @@ the embeddings at all:
     table.add([{"image_uri": u} for u in uris])
     ```
 
-=== "JavaScript"
+=== "TypeScript"
 
-    ```javascript
-    const db = await lancedb.connect("data/sample-lancedb");
-    const data = [
-    { text: "pepperoni"},
-    { text: "pineapple"}
-    ]
+    === "@lancedb/lancedb"
 
-    const table = await db.createTable("vectors", data, embedding)
-    ```
+        ```ts
+        --8<-- "nodejs/examples/embedding.ts:imports"
+        --8<-- "nodejs/examples/embedding.ts:embedding_function"
+        ```
+
+    === "vectordb (deprecated)"
+
+        ```ts
+        const db = await lancedb.connect("data/sample-lancedb");
+        const data = [
+            { text: "pepperoni"},
+            { text: "pineapple"}
+        ]
+
+        const table = await db.createTable("vectors", data, embedding)
+        ```
 
 ## 4. Querying your table
 Not only can you forget about the embeddings during ingestion, you also don't
@@ -97,8 +121,8 @@ need to worry about it when you query the table:
     ```python
     results = (
         table.search("dog")
-        .limit(10)
-        .to_pandas()
+            .limit(10)
+            .to_pandas()
     )
     ```
 
@@ -109,22 +133,32 @@ need to worry about it when you query the table:
     query_image = Image.open(p)
     results = (
         table.search(query_image)
-        .limit(10)
-        .to_pandas()
+            .limit(10)
+            .to_pandas()
     )
     ```
 
     Both of the above snippet returns a pandas DataFrame with the 10 closest vectors to the query.
 
-=== "JavaScript"
+=== "TypeScript"
 
-    ```javascript
-    const results = await table
-    .search("What's the best pizza topping?")
-    .limit(10)
-    .execute()
-    ```    
-    
+    === "@lancedb/lancedb"
+
+        ```ts
+        const results = await table.search("What's the best pizza topping?")
+            .limit(10)
+            .toArray()
+        ```
+
+    === "vectordb (deprecated)
+
+        ```ts
+        const results = await table
+            .search("What's the best pizza topping?")
+            .limit(10)
+            .execute()
+        ```
+
     The above snippet returns an array of records with the top 10 nearest neighbors to the query.
 
 ---

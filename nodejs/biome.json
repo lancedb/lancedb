@@ -94,7 +94,13 @@
         "useValidTypeof": "error"
       }
     },
-    "ignore": ["**/dist/**/*", "**/native.js", "**/native.d.ts"]
+    "ignore": [
+      "**/dist/**/*",
+      "**/native.js",
+      "**/native.d.ts",
+      "__test__/docs/**/*",
+      "examples/**/*"
+    ]
   },
   "javascript": {
     "globals": []

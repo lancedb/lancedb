@@ -53,13 +53,24 @@ db.create_table("my_vectors", data=data)
         .to_list()
     ```
 
-=== "JavaScript"
+=== "TypeScript"
 
-    ```javascript
-    --8<-- "docs/src/search_legacy.ts:import"
+    === "@lancedb/lancedb"
 
-    --8<-- "docs/src/search_legacy.ts:search1"
-    ```
+        ```ts
+        --8<-- "nodejs/examples/search.ts:import"
+
+        --8<-- "nodejs/examples/search.ts:search1"
+        ```
+
+
+    === "vectordb (deprecated)"
+
+        ```ts
+        --8<-- "docs/src/search_legacy.ts:import"
+
+        --8<-- "docs/src/search_legacy.ts:search1"
+        ```
 
 By default, `l2` will be used as metric type. You can specify the metric type as
 `cosine` or `dot` if required.
@@ -73,11 +84,19 @@ By default, `l2` will be used as metric type. You can specify the metric type as
         .to_list()
     ```
 
-=== "JavaScript"
+=== "TypeScript"
 
-    ```javascript
-    --8<-- "docs/src/search_legacy.ts:search2"
-    ```
+    === "@lancedb/lancedb"
+
+        ```ts
+        --8<-- "nodejs/examples/search.ts:search2"
+        ```
+
+    === "vectordb (deprecated)"
+
+        ```javascript
+        --8<-- "docs/src/search_legacy.ts:search2"
+        ```
 
 ## Approximate nearest neighbor (ANN) search
 

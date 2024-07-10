@@ -6,5 +6,5 @@
     "target": "es2022",
     "types": ["jest", "node"]
   },
-  "include": ["**/*"]
+  "include": ["**/*", "../examples/ann_indexes.ts"]
 }
