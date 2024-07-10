@@ -2,7 +2,7 @@ export type IntoSql = string | number | boolean | null | Date | IntoSql[];
 
 export function toSQL(value: IntoSql): string {
   if (typeof value === "string") {
-    return `'${value}'`;
+    return `'${value.replace(/'/g, "''")}'`;
   } else if (typeof value === "number") {
     return value.toString();
   } else if (typeof value === "boolean") {
