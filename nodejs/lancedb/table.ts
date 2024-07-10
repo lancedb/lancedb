@@ -40,6 +40,7 @@ import {
 } from "./native";
 import { Query, VectorQuery } from "./query";
 import { sanitizeTable } from "./sanitize";
+import { IntoSql, toSQL } from "./util";
 export { IndexConfig } from "./native";
 
 /**
@@ -125,6 +126,34 @@ export abstract class Table {
   abstract add(data: Data, options?: Partial<AddDataOptions>): Promise<void>;
   /**
    * Update existing records in the Table
+   * @param opts.values The values to update. The keys are the column names and the values
+   * are the values to set.
+   * @example
+   * ```ts
+   * table.update({where:"x = 2", values:{"vector": [10, 10]}})
+   * ```
+   */
+  abstract update(
+    opts: {
+      values: Map<string, IntoSql> | Record<string, IntoSql>;
+    } & Partial<UpdateOptions>,
+  ): Promise<void>;
+  /**
+   * Update existing records in the Table
+   * @param opts.valuesSql The values to update. The keys are the column names and the values
+   * are the values to set. The values are SQL expressions.
+   * @example
+   * ```ts
+   * table.update({where:"x = 2", valuesSql:{"x": "x + 1"}})
+   * ```
+   */
+  abstract update(
+    opts: {
+      valuesSql: Map<string, string> | Record<string, string>;
+    } & Partial<UpdateOptions>,
+  ): Promise<void>;
+  /**
+   * Update existing records in the Table
    *
    * An update operation can be used to adjust existing values.  Use the
    * returned builder to specify which columns to update.  The new value
@@ -152,6 +181,7 @@ export abstract class Table {
     updates: Map<string, string> | Record<string, string>,
     options?: Partial<UpdateOptions>,
   ): Promise<void>;
+
   /** Count the total number of rows in the dataset. */
   abstract countRows(filter?: string): Promise<number>;
   /** Delete the rows that satisfy the predicate. */
@@ -471,17 +501,63 @@ export class LocalTable extends Table {
   }
 
   async update(
-    updates: Map<string, string> | Record<string, string>,
+    optsOrUpdates:
+      | (Map<string, string> | Record<string, string>)
+      | ({
+          values: Map<string, IntoSql> | Record<string, IntoSql>;
+        } & Partial<UpdateOptions>)
+      | ({
+          valuesSql: Map<string, string> | Record<string, string>;
+        } & Partial<UpdateOptions>),
     options?: Partial<UpdateOptions>,
   ) {
-    const onlyIf = options?.where;
+    const isValues =
+      "values" in optsOrUpdates && typeof optsOrUpdates.values !== "string";
+    const isValuesSql =
+      "valuesSql" in optsOrUpdates &&
+      typeof optsOrUpdates.valuesSql !== "string";
+    const isMap = (obj: unknown): obj is Map<string, string> => {
+      return obj instanceof Map;
+    };
+
+    let predicate;
     let columns: [string, string][];
-    if (updates instanceof Map) {
-      columns = Array.from(updates.entries());
-    } else {
-      columns = Object.entries(updates);
+    switch (true) {
+      case isMap(optsOrUpdates):
+        columns = Array.from(optsOrUpdates.entries());
+        predicate = options?.where;
+        break;
+      case isValues && isMap(optsOrUpdates.values):
+        columns = Array.from(optsOrUpdates.values.entries()).map(([k, v]) => [
+          k,
+          toSQL(v),
+        ]);
+        predicate = optsOrUpdates.where;
+        break;
+      case isValues && !isMap(optsOrUpdates.values):
+        columns = Object.entries(optsOrUpdates.values).map(([k, v]) => [
+          k,
+          toSQL(v),
+        ]);
+        predicate = optsOrUpdates.where;
+        break;
+
+      case isValuesSql && isMap(optsOrUpdates.valuesSql):
+        columns = Array.from(optsOrUpdates.valuesSql.entries());
+        predicate = optsOrUpdates.where;
+        break;
+      case isValuesSql && !isMap(optsOrUpdates.valuesSql):
+        columns = Object.entries(optsOrUpdates.valuesSql).map(([k, v]) => [
+          k,
+          v,
+        ]);
+        predicate = optsOrUpdates.where;
+        break;
+      default:
+        columns = Object.entries(optsOrUpdates as Record<string, string>);
+        predicate = options?.where;
     }
-    await this.inner.update(onlyIf, columns);
+    await this.inner.update(predicate, columns);
   }
 
   async countRows(filter?: string): Promise<number> {
