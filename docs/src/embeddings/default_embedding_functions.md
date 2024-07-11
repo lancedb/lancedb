@@ -563,7 +563,7 @@ uris = [
 # get each uri as bytes
 image_bytes = [requests.get(uri).content for uri in uris]
 table.add(
-    [{"label": labels, "image_uri": uris, "image_bytes": image_bytes}]
+    pd.DataFrame({"label": labels, "image_uri": uris, "image_bytes": image_bytes})
 )
 ```
 Now we can search using text from both the default vector column and the custom vector column

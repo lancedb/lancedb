@@ -1,4 +1,7 @@
 ## Improving retriever performance
+
+Try it yourself - <a href="https://colab.research.google.com/github/lancedb/lancedb/blob/main/docs/src/notebooks/lancedb_reranking.ipynb"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"></a><br/>
+
 VectorDBs are used as retreivers in recommender or chatbot-based systems for retrieving relevant data based on user queries. For example, retriever is a critical component of Retrieval Augmented Generation (RAG) acrhitectures. In this section, we will discuss how to improve the performance of retrievers.
 
 There are serveral ways to improve the performance of retrievers. Some of the common techniques are:
