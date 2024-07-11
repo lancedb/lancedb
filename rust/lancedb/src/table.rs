@@ -35,6 +35,7 @@ use lance::dataset::{
     Dataset, UpdateBuilder as LanceUpdateBuilder, WhenMatched, WriteMode, WriteParams,
 };
 use lance::dataset::{MergeInsertBuilder as LanceMergeInsertBuilder, WhenNotMatchedBySource};
+use lance::index::scalar::ScalarIndexType;
 use lance::io::WrappingObjectStore;
 use lance_datafusion::exec::execute_plan;
 use lance_index::vector::hnsw::builder::HnswBuildParams;
@@ -1503,7 +1504,9 @@ impl NativeTable {
         }
 
         let mut dataset = self.dataset.get_mut().await?;
-        let lance_idx_params = lance::index::scalar::ScalarIndexParams {};
+        let lance_idx_params = lance::index::scalar::ScalarIndexParams {
+            force_index_type: Some(ScalarIndexType::BTree),
+        };
         dataset
             .create_index(
                 &[field.name()],
