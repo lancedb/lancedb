@@ -1503,7 +1503,7 @@ impl NativeTable {
         }
 
         let mut dataset = self.dataset.get_mut().await?;
-        let lance_idx_params = lance::index::scalar::ScalarIndexParams {};
+        let lance_idx_params = lance::index::scalar::ScalarIndexParams::default();
         dataset
             .create_index(
                 &[field.name()],
