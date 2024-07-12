@@ -1,15 +1,5 @@
-#  Copyright 2023 LanceDB Developers
-#
-#  Licensed under the Apache License, Version 2.0 (the "License");
-#  you may not use this file except in compliance with the License.
-#  You may obtain a copy of the License at
-#      http://www.apache.org/licenses/LICENSE-2.0
-#
-#  Unless required by applicable law or agreed to in writing, software
-#  distributed under the License is distributed on an "AS IS" BASIS,
-#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-#  See the License for the specific language governing permissions and
-#  limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright The Lance Authors
 
 import functools
 from copy import copy
@@ -499,6 +489,7 @@ def test_update_types(db):
                 "date": date(2021, 1, 1),
                 "vector1": [1.0, 0.0],
                 "vector2": [1.0, 1.0],
+                "binary": b"abc",
             }
         ],
     )
@@ -512,6 +503,7 @@ def test_update_types(db):
             date="DATE '2021-01-02'",
             vector1="[2.0, 2.0]",
             vector2="[3.0, 3.0]",
+            binary="X'646566'",
         )
     )
     actual = table.to_arrow().to_pylist()[0]
@@ -523,6 +515,7 @@ def test_update_types(db):
         date=date(2021, 1, 2),
         vector1=[2.0, 2.0],
         vector2=[3.0, 3.0],
+        binary=b"def",
     )
     assert actual == expected
 
@@ -536,6 +529,7 @@ def test_update_types(db):
             date=date(2021, 1, 3),
             vector1=[3.0, 3.0],
             vector2=np.array([4.0, 4.0]),
+            binary=b"def",
         )
     )
     actual = table.to_arrow().to_pylist()[0]
@@ -547,6 +541,7 @@ def test_update_types(db):
         date=date(2021, 1, 3),
         vector1=[3.0, 3.0],
         vector2=[4.0, 4.0],
+        binary=b"def",
     )
     assert actual == expected
 
