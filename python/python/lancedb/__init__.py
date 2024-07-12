@@ -15,7 +15,7 @@ import importlib.metadata
 import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
-from typing import Dict, Optional, Union
+from typing import Dict, Optional, Union, Any
 
 __version__ = importlib.metadata.version("lancedb")
 
@@ -35,7 +35,7 @@ def connect(
     host_override: Optional[str] = None,
     read_consistency_interval: Optional[timedelta] = None,
     request_thread_pool: Optional[Union[int, ThreadPoolExecutor]] = None,
-    **kwargs,
+    **kwargs: Any,
 ) -> DBConnection:
     """Connect to a LanceDB database.
 
