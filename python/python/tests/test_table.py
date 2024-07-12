@@ -503,7 +503,7 @@ def test_update_types(db):
             date="DATE '2021-01-02'",
             vector1="[2.0, 2.0]",
             vector2="[3.0, 3.0]",
-            binary="X'626566'",
+            binary="X'646566'",
         )
     )
     actual = table.to_arrow().to_pylist()[0]
