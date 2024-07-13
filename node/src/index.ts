@@ -62,6 +62,8 @@ export {
 
 const defaultAwsRegion = "us-west-2";
 
+const defaultRequestTimeout = 10_000
+
 export interface AwsCredentials {
   accessKeyId: string
 
@@ -118,6 +120,11 @@ export interface ConnectionOptions {
    * This is useful for local testing.
    */
   hostOverride?: string
+
+  /**
+   * Duration in milliseconds for request timeout. Default = 10,000 (10 seconds)
+   */
+  timeout?: number
 
   /**
    * (For LanceDB OSS only): The interval, in seconds, at which to check for
@@ -204,7 +211,8 @@ export async function connect(
           awsCredentials: undefined,
           awsRegion: defaultAwsRegion,
           apiKey: undefined,
-          region: defaultAwsRegion
+          region: defaultAwsRegion,
+          timeout: defaultRequestTimeout 
         },
         arg
       );
