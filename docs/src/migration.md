@@ -9,7 +9,8 @@ around the asynchronous client.
 This guide describes the differences between the two APIs and will hopefully assist users
 that would like to migrate to the new API.
 
-## Closeable Connections
+## Python
+### Closeable Connections
 
 The Connection now has a `close` method. You can call this when
 you are done with the connection to eagerly free resources. Currently
@@ -32,20 +33,20 @@ async def my_async_fn():
 It is not mandatory to call the `close` method. If you do not call it
 then the connection will be closed when the object is garbage collected.
 
-## Closeable Table
+### Closeable Table
 
 The Table now also has a `close` method, similar to the connection. This
 can be used to eagerly free the cache used by a Table object. Similar to
 the connection, it can be used as a context manager and it is not mandatory
 to call the `close` method.
 
-### Changes to Table APIs
+#### Changes to Table APIs
 
 - Previously `Table.schema` was a property. Now it is an async method.
 - The method `Table.__len__` was removed and `len(table)` will no longer
   work. Use `Table.count_rows` instead.
 
-### Creating Indices
+#### Creating Indices
 
 The `Table.create_index` method is now used for creating both vector indices
 and scalar indices. It currently requires a column name to be specified (the
@@ -55,12 +56,12 @@ the size of the data.
 To specify index configuration details you will need to specify which kind of
 index you are using.
 
-### Querying
+#### Querying
 
 The `Table.search` method has been renamed to `AsyncTable.vector_search` for
 clarity.
 
-## Features not yet supported
+### Features not yet supported
 
 The following features are not yet supported by the asynchronous API. However,
 we plan to support them soon.
@@ -74,3 +75,22 @@ we plan to support them soon.
   search
 - Remote connections to LanceDb Cloud are not yet supported.
 - The method Table.head is not yet supported.
+
+## TypeScript/JavaScript
+
+For JS/TS users, we offer a brand new SDK [@lancedb/lancedb](https://www.npmjs.com/package/@lancedb/lancedb)
+
+### Changes to Table APIs
+
+Previously `Table.schema` was a property. Now it is an async method.
+
+
+#### Creating Indices
+
+The `Table.createIndex` method is now used for creating both vector indices
+and scalar indices. It currently requires a column name to be specified (the
+column to index). Vector index defaults are now smarter and scale better with
+the size of the data.
+
+To specify index configuration details you will need to specify which kind of
+index you are using.
