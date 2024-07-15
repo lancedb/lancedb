@@ -72,6 +72,7 @@ export class RemoteConnection implements Connection {
     this._client = new HttpLancedbClient(
       server,
       opts.apiKey,
+      opts.timeout,
       opts.hostOverride === undefined ? undefined : this._dbName
     )
   }
