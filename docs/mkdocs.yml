@@ -109,7 +109,7 @@ nav:
           - Filtering: sql.md
           - Versioning & Reproducibility: notebooks/reproducibility.ipynb
           - Configuring Storage: guides/storage.md
-          - Sync -> Async Migration Guide: migration.md
+          - Migration Guide: migration.md
           - Tuning retrieval performance:
               - Choosing right query type: guides/tuning_retrievers/1_query_types.md
               - Reranking: guides/tuning_retrievers/2_reranking.md
@@ -194,7 +194,7 @@ nav:
       - Filtering: sql.md
       - Versioning & Reproducibility: notebooks/reproducibility.ipynb
       - Configuring Storage: guides/storage.md
-      - Sync -> Async Migration Guide: migration.md
+      - Migration Guide: migration.md
       - Tuning retrieval performance:
           - Choosing right query type: guides/tuning_retrievers/1_query_types.md
           - Reranking: guides/tuning_retrievers/2_reranking.md
