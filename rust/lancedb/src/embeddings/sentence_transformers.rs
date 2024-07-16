@@ -56,6 +56,12 @@ impl std::fmt::Debug for SentenceTransformersEmbeddings {
     }
 }
 
+impl Default for SentenceTransformersEmbeddingsBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SentenceTransformersEmbeddingsBuilder {
     pub fn new() -> Self {
         Self {
@@ -245,7 +251,7 @@ impl SentenceTransformersEmbeddings {
             }
             _ => panic!("unsupported device"),
         };
-        Ok((n_dims as usize, dtype))
+        Ok((n_dims, dtype))
     }
 
     fn compute_inner(&self, source: Arc<dyn Array>) -> crate::Result<(Arc<dyn Array>, DataType)> {
