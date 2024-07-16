@@ -176,6 +176,7 @@ impl EmbeddingFunction for OpenAIEmbeddingFunction {
         Ok(Arc::new(arr))
     }
 }
+
 impl OpenAIEmbeddingFunction {
     fn compute_inner(&self, source: Arc<dyn Array>) -> Result<Float32Array> {
         // OpenAI only supports non-nullable string arrays
