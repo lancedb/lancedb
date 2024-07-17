@@ -7,6 +7,7 @@ on:
 
 jobs:
   node:
+    name: vectordb Typescript
     runs-on: ubuntu-latest
     # Only runs on tags that matches the make-release action
     if: startsWith(github.ref, 'refs/tags/v')
@@ -39,6 +40,7 @@ jobs:
             node/vectordb-*.tgz
 
   node-macos:
+    name: vectordb ${{ matrix.config.arch }}
     strategy:
       matrix:
         config:
@@ -69,6 +71,7 @@ jobs:
             node/dist/lancedb-vectordb-darwin*.tgz
 
   nodejs-macos:
+    name: lancedb ${{ matrix.config.arch }}
     strategy:
       matrix:
         config:
@@ -99,7 +102,7 @@ jobs:
             nodejs/dist/*.node
 
   node-linux:
-    name: node-linux (${{ matrix.config.arch}}-unknown-linux-gnu
+    name: vectordb (${{ matrix.config.arch}}-unknown-linux-gnu)
     runs-on: ${{ matrix.config.runner }}
     # Only runs on tags that matches the make-release action
     if: startsWith(github.ref, 'refs/tags/v')
@@ -139,7 +142,7 @@ jobs:
             node/dist/lancedb-vectordb-linux*.tgz
 
   nodejs-linux:
-    name: nodejs-linux (${{ matrix.config.arch}}-unknown-linux-gnu
+    name: lancedb (${{ matrix.config.arch}}-unknown-linux-gnu
     runs-on: ${{ matrix.config.runner }}
     # Only runs on tags that matches the make-release action
     if: startsWith(github.ref, 'refs/tags/v')
@@ -190,6 +193,7 @@ jobs:
             !nodejs/dist/*.node
 
   node-windows:
+    name: vectordb ${{ matrix.target }}
     runs-on: windows-2022
     # Only runs on tags that matches the make-release action
     if: startsWith(github.ref, 'refs/tags/v')
@@ -223,6 +227,7 @@ jobs:
             node/dist/lancedb-vectordb-win32*.tgz
 
   nodejs-windows:
+    name: lancedb ${{ matrix.target }}
     runs-on: windows-2022
     # Only runs on tags that matches the make-release action
     if: startsWith(github.ref, 'refs/tags/v')
@@ -256,6 +261,7 @@ jobs:
             nodejs/dist/*.node
 
   release:
+    name: vectordb NPM Publish
     needs: [node, node-macos, node-linux, node-windows]
     runs-on: ubuntu-latest
     # Only runs on tags that matches the make-release action
@@ -284,8 +290,18 @@ jobs:
           for filename in *.tgz; do
             npm publish $PUBLISH_ARGS $filename
           done
+      - name: Notify Slack Action
+        uses: ravsamhq/notify-slack-action@2.3.0
+        if: ${{ always() }}
+        with:
+          status: ${{ job.status }}
+          notify_when: "failure"
+          notification_title: "{workflow} is failing"
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.ACTION_MONITORING_SLACK }}
 
   release-nodejs:
+    name: lancedb NPM Publish
     needs: [nodejs-macos, nodejs-linux, nodejs-windows]
     runs-on: ubuntu-latest
     # Only runs on tags that matches the make-release action
@@ -333,6 +349,15 @@ jobs:
           else
             npm publish --access public
           fi
+      - name: Notify Slack Action
+        uses: ravsamhq/notify-slack-action@2.3.0
+        if: ${{ always() }}
+        with:
+          status: ${{ job.status }}
+          notify_when: "failure"
+          notification_title: "{workflow} is failing"
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.ACTION_MONITORING_SLACK }}
 
   update-package-lock:
     needs: [release]

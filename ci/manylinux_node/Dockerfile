@@ -18,8 +18,8 @@ COPY install_protobuf.sh install_protobuf.sh
 RUN ./install_protobuf.sh ${ARCH}
 
 ENV DOCKER_USER=${DOCKER_USER}
-# Create a group and user
-RUN echo ${ARCH} && adduser --user-group --create-home --uid ${DOCKER_USER} build_user
+# Create a group and user, but only if it doesn't exist
+RUN echo ${ARCH} && id -u ${DOCKER_USER} >/dev/null 2>&1 || adduser --user-group --create-home --uid ${DOCKER_USER} build_user
 
 # We switch to the user to install Rust and Node, since those like to be 
 # installed at the user level.
