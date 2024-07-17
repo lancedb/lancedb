@@ -25,6 +25,43 @@ env:
   RUST_BACKTRACE: "1"
 
 jobs:
+  node-linux-release-test:
+    name: node-linux (${{ matrix.config.arch}}-unknown-linux-gnu
+    runs-on: ${{ matrix.config.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        config:
+          # - arch: x86_64
+          #   runner: ubuntu-latest
+          - arch: aarch64
+            # For successful fat LTO builds, we need a large runner to avoid OOM errors.
+            runner: warp-ubuntu-latest-arm64-4x
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      # To avoid OOM errors on ARM, we create a swap file.
+      - name: Configure aarch64 build
+        if: ${{ matrix.config.arch == 'aarch64' }}
+        run: |
+          free -h
+          sudo fallocate -l 16G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          echo "/swapfile swap swap defaults 0 0" >> sudo /etc/fstab
+          # print info
+          swapon --show
+          free -h
+      - name: Build Linux Artifacts
+        run: |
+          bash ci/build_linux_artifacts.sh ${{ matrix.config.arch }}
+      # - name: Upload Linux Artifacts
+      #   uses: actions/upload-artifact@v4
+      #   with:
+      #     name: node-native-linux-${{ matrix.config.arch }}
+      #     path: |
+      #       node/dist/lancedb-vectordb-linux*.tgz
   linux:
     name: Linux (Node ${{ matrix.node-version }})
     timeout-minutes: 30
