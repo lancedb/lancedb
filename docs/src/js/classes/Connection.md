@@ -25,10 +25,6 @@ the underlying connection has been closed.
 
 - [constructor](Connection.md#constructor)
 
-### Properties
-
-- [inner](Connection.md#inner)
-
 ### Methods
 
 - [close](Connection.md#close)
@@ -44,31 +40,11 @@ the underlying connection has been closed.
 
 ### constructor
 
-• **new Connection**(`inner`): [`Connection`](Connection.md)
-
-#### Parameters
-
-| Name | Type |
-| :------ | :------ |
-| `inner` | `Connection` |
+• **new Connection**(): [`Connection`](Connection.md)
 
 #### Returns
 
 [`Connection`](Connection.md)
-
-#### Defined in
-
-[connection.ts:72](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/connection.ts#L72)
-
-## Properties
-
-### inner
-
-• `Readonly` **inner**: `Connection`
-
-#### Defined in
-
-[connection.ts:70](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/connection.ts#L70)
 
 ## Methods
 
@@ -88,7 +64,7 @@ Any attempt to use the connection after it is closed will result in an error.
 
 #### Defined in
 
-[connection.ts:88](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/connection.ts#L88)
+[connection.ts:128](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/connection.ts#L128)
 
 ___
 
@@ -103,7 +79,7 @@ Creates a new empty Table
 | Name | Type | Description |
 | :------ | :------ | :------ |
 | `name` | `string` | The name of the table. |
-| `schema` | `Schema`\<`any`\> | The schema of the table |
+| `schema` | `SchemaLike` | The schema of the table |
 | `options?` | `Partial`\<[`CreateTableOptions`](../interfaces/CreateTableOptions.md)\> | - |
 
 #### Returns
@@ -112,11 +88,29 @@ Creates a new empty Table
 
 #### Defined in
 
-[connection.ts:151](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/connection.ts#L151)
+[connection.ts:184](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/connection.ts#L184)
 
 ___
 
 ### createTable
+
+▸ **createTable**(`options`): `Promise`\<[`Table`](Table.md)\>
+
+Creates a new Table and initialize it with new data.
+
+#### Parameters
+
+| Name | Type | Description |
+| :------ | :------ | :------ |
+| `options` | \{ `data`: [`Data`](../modules.md#data) ; `name`: `string`  } & `Partial`\<[`CreateTableOptions`](../interfaces/CreateTableOptions.md)\> | The options object. |
+
+#### Returns
+
+`Promise`\<[`Table`](Table.md)\>
+
+#### Defined in
+
+[connection.ts:161](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/connection.ts#L161)
 
 ▸ **createTable**(`name`, `data`, `options?`): `Promise`\<[`Table`](Table.md)\>
 
@@ -127,7 +121,7 @@ Creates a new Table and initialize it with new data.
 | Name | Type | Description |
 | :------ | :------ | :------ |
 | `name` | `string` | The name of the table. |
-| `data` | `Table`\<`any`\> \| `Record`\<`string`, `unknown`\>[] | Non-empty Array of Records to be inserted into the table |
+| `data` | `TableLike` \| `Record`\<`string`, `unknown`\>[] | Non-empty Array of Records to be inserted into the table |
 | `options?` | `Partial`\<[`CreateTableOptions`](../interfaces/CreateTableOptions.md)\> | - |
 
 #### Returns
@@ -136,7 +130,7 @@ Creates a new Table and initialize it with new data.
 
 #### Defined in
 
-[connection.ts:123](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/connection.ts#L123)
+[connection.ts:173](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/connection.ts#L173)
 
 ___
 
@@ -152,7 +146,7 @@ Return a brief description of the connection
 
 #### Defined in
 
-[connection.ts:93](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/connection.ts#L93)
+[connection.ts:133](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/connection.ts#L133)
 
 ___
 
@@ -174,7 +168,7 @@ Drop an existing table.
 
 #### Defined in
 
-[connection.ts:173](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/connection.ts#L173)
+[connection.ts:194](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/connection.ts#L194)
 
 ___
 
@@ -190,13 +184,13 @@ Return true if the connection has not been closed
 
 #### Defined in
 
-[connection.ts:77](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/connection.ts#L77)
+[connection.ts:119](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/connection.ts#L119)
 
 ___
 
 ### openTable
 
-▸ **openTable**(`name`): `Promise`\<[`Table`](Table.md)\>
+▸ **openTable**(`name`, `options?`): `Promise`\<[`Table`](Table.md)\>
 
 Open a table in the database.
 
@@ -205,6 +199,7 @@ Open a table in the database.
 | Name | Type | Description |
 | :------ | :------ | :------ |
 | `name` | `string` | The name of the table |
+| `options?` | `Partial`\<`OpenTableOptions`\> | - |
 
 #### Returns
 
@@ -212,7 +207,7 @@ Open a table in the database.
 
 #### Defined in
 
-[connection.ts:112](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/connection.ts#L112)
+[connection.ts:149](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/connection.ts#L149)
 
 ___
 
@@ -236,4 +231,4 @@ Tables will be returned in lexicographical order.
 
 #### Defined in
 
-[connection.ts:104](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/connection.ts#L104)
+[connection.ts:143](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/connection.ts#L143)

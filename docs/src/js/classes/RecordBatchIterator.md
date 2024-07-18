@@ -39,7 +39,7 @@
 
 #### Defined in
 
-[query.ts:27](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/query.ts#L27)
+[query.ts:32](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/query.ts#L32)
 
 ## Properties
 
@@ -49,7 +49,7 @@
 
 #### Defined in
 
-[query.ts:25](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/query.ts#L25)
+[query.ts:30](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/query.ts#L30)
 
 ___
 
@@ -59,7 +59,7 @@ ___
 
 #### Defined in
 
-[query.ts:24](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/query.ts#L24)
+[query.ts:29](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/query.ts#L29)
 
 ## Methods
 
@@ -77,4 +77,4 @@ AsyncIterator.next
 
 #### Defined in
 
-[query.ts:33](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/query.ts#L33)
+[query.ts:38](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/query.ts#L38)

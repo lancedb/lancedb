@@ -21,7 +21,7 @@ The name of the new column.
 
 #### Defined in
 
-native.d.ts:43
+native.d.ts:70
 
 ___
 
@@ -34,4 +34,4 @@ The expression can reference other columns in the table.
 
 #### Defined in
 
-native.d.ts:48
+native.d.ts:75

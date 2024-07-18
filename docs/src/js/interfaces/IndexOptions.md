@@ -27,7 +27,7 @@ will be used to determine the most useful kind of index to create.
 
 #### Defined in
 
-[indices.ts:192](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/indices.ts#L192)
+[indices.ts:192](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/indices.ts#L192)
 
 ___
 
@@ -45,4 +45,4 @@ The default is true
 
 #### Defined in
 
-[indices.ts:202](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/indices.ts#L202)
+[indices.ts:202](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/indices.ts#L202)

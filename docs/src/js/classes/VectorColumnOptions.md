@@ -30,7 +30,7 @@
 
 #### Defined in
 
-[arrow.ts:49](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/arrow.ts#L49)
+[arrow.ts:206](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/arrow.ts#L206)
 
 ## Properties
 
@@ -42,4 +42,4 @@ Vector column type.
 
 #### Defined in
 
-[arrow.ts:47](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/arrow.ts#L47)
+[arrow.ts:204](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/arrow.ts#L204)

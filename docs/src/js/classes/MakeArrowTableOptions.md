@@ -13,6 +13,8 @@ Options to control the makeArrowTable call.
 ### Properties
 
 - [dictionaryEncodeStrings](MakeArrowTableOptions.md#dictionaryencodestrings)
+- [embeddingFunction](MakeArrowTableOptions.md#embeddingfunction)
+- [embeddings](MakeArrowTableOptions.md#embeddings)
 - [schema](MakeArrowTableOptions.md#schema)
 - [vectorColumns](MakeArrowTableOptions.md#vectorcolumns)
 
@@ -34,7 +36,7 @@ Options to control the makeArrowTable call.
 
 #### Defined in
 
-[arrow.ts:100](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/arrow.ts#L100)
+[arrow.ts:259](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/arrow.ts#L259)
 
 ## Properties
 
@@ -52,17 +54,37 @@ If `schema` is provided then this property is ignored.
 
 #### Defined in
 
-[arrow.ts:98](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/arrow.ts#L98)
+[arrow.ts:257](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/arrow.ts#L257)
+
+___
+
+### embeddingFunction
+
+• `Optional` **embeddingFunction**: [`EmbeddingFunctionConfig`](../interfaces/embedding.EmbeddingFunctionConfig.md)
+
+#### Defined in
+
+[arrow.ts:246](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/arrow.ts#L246)
+
+___
+
+### embeddings
+
+• `Optional` **embeddings**: [`EmbeddingFunction`](embedding.EmbeddingFunction.md)\<`unknown`, `FunctionOptions`\>
+
+#### Defined in
+
+[arrow.ts:245](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/arrow.ts#L245)
 
 ___
 
 ### schema
 
-• `Optional` **schema**: `Schema`\<`any`\>
+• `Optional` **schema**: `SchemaLike`
 
 #### Defined in
 
-[arrow.ts:67](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/arrow.ts#L67)
+[arrow.ts:224](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/arrow.ts#L224)
 
 ___
 
@@ -72,4 +94,4 @@ ___
 
 #### Defined in
 
-[arrow.ts:85](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/arrow.ts#L85)
+[arrow.ts:242](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/arrow.ts#L242)

@@ -25,7 +25,7 @@ Set the new nullability. Note that a nullable column cannot be made non-nullable
 
 #### Defined in
 
-native.d.ts:38
+native.d.ts:65
 
 ___
 
@@ -40,7 +40,7 @@ a nested column then it is the path to the column, e.g. "a.b.c" for a column
 
 #### Defined in
 
-native.d.ts:31
+native.d.ts:58
 
 ___
 
@@ -53,4 +53,4 @@ This must be distinct from the names of all other columns in the table.
 
 #### Defined in
 
-native.d.ts:36
+native.d.ts:63

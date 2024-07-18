@@ -135,7 +135,7 @@ the size of the data.
 
 ### Embedding Functions
 
-The embedding api has been completely reworked, and it now more closely resembles the python API, including the new embedding registry
+The embedding api has been completely reworked, and it now more closely resembles the python API, including the new [embedding registry](./js/classes/embedding.EmbeddingFunctionRegistry.md)
 
 === "vectordb (deprecated)"
 
@@ -172,7 +172,7 @@ The embedding api has been completely reworked, and it now more closely resemble
 
     ```
 
-You can also use a schema driven approach that should be familiar to python users
+You can also use a schema driven approach, which parallels the Pydantic integration in our Python SDK:
 
 ```ts
 const func = getRegistry().get("openai").create({apiKey: API_KEY});

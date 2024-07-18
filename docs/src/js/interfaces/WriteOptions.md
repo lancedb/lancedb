@@ -16,6 +16,8 @@ Write options when creating a Table.
 
 • `Optional` **mode**: [`WriteMode`](../enums/WriteMode.md)
 
+Write mode for writing to a table.
+
 #### Defined in
 
-native.d.ts:74
+native.d.ts:120

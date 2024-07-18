@@ -6,31 +6,10 @@
 
 ### Properties
 
-- [apiKey](ConnectionOptions.md#apikey)
-- [hostOverride](ConnectionOptions.md#hostoverride)
 - [readConsistencyInterval](ConnectionOptions.md#readconsistencyinterval)
+- [storageOptions](ConnectionOptions.md#storageoptions)
 
 ## Properties
-
-### apiKey
-
-• `Optional` **apiKey**: `string`
-
-#### Defined in
-
-native.d.ts:51
-
-___
-
-### hostOverride
-
-• `Optional` **hostOverride**: `string`
-
-#### Defined in
-
-native.d.ts:52
-
-___
 
 ### readConsistencyInterval
 
@@ -48,4 +27,18 @@ always consistent.
 
 #### Defined in
 
-native.d.ts:64
+native.d.ts:103
+
+___
+
+### storageOptions
+
+• `Optional` **storageOptions**: `Record`\<`string`, `string`\>
+
+(For LanceDB OSS only): configuration for object storage.
+
+The available options are described at https://lancedb.github.io/lancedb/guides/storage/
+
+#### Defined in
+
+native.d.ts:109

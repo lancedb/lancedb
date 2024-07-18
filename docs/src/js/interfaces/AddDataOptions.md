@@ -22,4 +22,4 @@ If "overwrite" then the new data will replace the existing data in the table.
 
 #### Defined in
 
-[table.ts:36](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/table.ts#L36)
+[table.ts:55](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/table.ts#L55)

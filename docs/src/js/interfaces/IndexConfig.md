@@ -10,6 +10,7 @@ A description of an index currently configured on a column
 
 - [columns](IndexConfig.md#columns)
 - [indexType](IndexConfig.md#indextype)
+- [name](IndexConfig.md#name)
 
 ## Properties
 
@@ -19,12 +20,12 @@ A description of an index currently configured on a column
 
 The columns in the index
 
-Currently this is always an array of size 1.  In the future there may
+Currently this is always an array of size 1. In the future there may
 be more columns to represent composite indices.
 
 #### Defined in
 
-native.d.ts:16
+native.d.ts:18
 
 ___
 
@@ -33,6 +34,18 @@ ___
 • **indexType**: `string`
 
 The type of the index
+
+#### Defined in
+
+native.d.ts:11
+
+___
+
+### name
+
+• **name**: `string`
+
+The name of the index
 
 #### Defined in
 

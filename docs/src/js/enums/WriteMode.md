@@ -20,7 +20,7 @@ Write mode for writing a table.
 
 #### Defined in
 
-native.d.ts:69
+native.d.ts:114
 
 ___
 
@@ -30,7 +30,7 @@ ___
 
 #### Defined in
 
-native.d.ts:68
+native.d.ts:113
 
 ___
 
@@ -40,4 +40,4 @@ ___
 
 #### Defined in
 
-native.d.ts:70
+native.d.ts:115

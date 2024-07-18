@@ -25,4 +25,4 @@ of 0 in a column with some other default value.
 
 #### Defined in
 
-[table.ts:50](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/table.ts#L50)
+[table.ts:69](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/table.ts#L69)

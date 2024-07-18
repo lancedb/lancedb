@@ -19,7 +19,7 @@ An optional limit to the number of results to return.
 
 #### Defined in
 
-[connection.ts:48](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/connection.ts#L48)
+[connection.ts:91](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/connection.ts#L91)
 
 ___
 
@@ -35,4 +35,4 @@ the last table name from the previous page.
 
 #### Defined in
 
-[connection.ts:46](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/connection.ts#L46)
+[connection.ts:89](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/connection.ts#L89)

@@ -35,7 +35,7 @@
 
 #### Defined in
 
-[indices.ts:118](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/indices.ts#L118)
+[indices.ts:118](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/indices.ts#L118)
 
 ## Properties
 
@@ -45,7 +45,7 @@
 
 #### Defined in
 
-[indices.ts:117](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/indices.ts#L117)
+[indices.ts:117](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/indices.ts#L117)
 
 ## Methods
 
@@ -77,7 +77,7 @@ block size may be added in the future.
 
 #### Defined in
 
-[indices.ts:175](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/indices.ts#L175)
+[indices.ts:175](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/indices.ts#L175)
 
 ___
 
@@ -118,4 +118,4 @@ currently is also a memory intensive operation.
 
 #### Defined in
 
-[indices.ts:144](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/indices.ts#L144)
+[indices.ts:144](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/indices.ts#L144)

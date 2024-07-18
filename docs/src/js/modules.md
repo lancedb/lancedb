@@ -33,7 +33,9 @@
 - [CreateTableOptions](interfaces/CreateTableOptions.md)
 - [ExecutableQuery](interfaces/ExecutableQuery.md)
 - [IndexConfig](interfaces/IndexConfig.md)
+- [IndexMetadata](interfaces/IndexMetadata.md)
 - [IndexOptions](interfaces/IndexOptions.md)
+- [IndexStatistics](interfaces/IndexStatistics.md)
 - [IvfPqOptions](interfaces/IvfPqOptions.md)
 - [TableNamesOptions](interfaces/TableNamesOptions.md)
 - [UpdateOptions](interfaces/UpdateOptions.md)
@@ -52,13 +54,13 @@
 
 ### Data
 
-Ƭ **Data**: `Record`\<`string`, `unknown`\>[] \| `ArrowTable`
+Ƭ **Data**: `Record`\<`string`, `unknown`\>[] \| `TableLike`
 
 Data type accepted by NodeJS SDK
 
 #### Defined in
 
-[arrow.ts:40](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/arrow.ts#L40)
+[arrow.ts:197](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/arrow.ts#L197)
 
 ## Functions
 
@@ -68,7 +70,7 @@ Data type accepted by NodeJS SDK
 
 Connect to a LanceDB instance at the given URI.
 
-Accpeted formats:
+Accepted formats:
 
 - `/path/to/database` - local database
 - `s3://bucket/path/to/database` or `gs://bucket/path/to/database` - database on cloud storage
@@ -79,7 +81,7 @@ Accpeted formats:
 | Name | Type | Description |
 | :------ | :------ | :------ |
 | `uri` | `string` | The uri of the database. If the database uri starts with `db://` then it connects to a remote database. |
-| `opts?` | `Partial`\<[`ConnectionOptions`](interfaces/ConnectionOptions.md)\> | - |
+| `opts?` | `Partial`\<[`ConnectionOptions`](interfaces/ConnectionOptions.md) \| `RemoteConnectionOptions`\> | - |
 
 #### Returns
 
@@ -89,15 +91,67 @@ Accpeted formats:
 
 [ConnectionOptions](interfaces/ConnectionOptions.md) for more details on the URI format.
 
+**`Example`**
+
+```ts
+const conn = await connect("/path/to/database");
+```
+
+**`Example`**
+
+```ts
+const conn = await connect(
+  "s3://bucket/path/to/database",
+  {storageOptions: {timeout: "60s"}
+});
+```
+
 #### Defined in
 
-[index.ts:62](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/index.ts#L62)
+[index.ts:89](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/index.ts#L89)
+
+▸ **connect**(`opts`): `Promise`\<[`Connection`](classes/Connection.md)\>
+
+Connect to a LanceDB instance at the given URI.
+
+Accepted formats:
+
+- `/path/to/database` - local database
+- `s3://bucket/path/to/database` or `gs://bucket/path/to/database` - database on cloud storage
+- `db://host:port` - remote database (LanceDB cloud)
+
+#### Parameters
+
+| Name | Type |
+| :------ | :------ |
+| `opts` | `Partial`\<[`ConnectionOptions`](interfaces/ConnectionOptions.md) \| `RemoteConnectionOptions`\> & \{ `uri`: `string`  } |
+
+#### Returns
+
+`Promise`\<[`Connection`](classes/Connection.md)\>
+
+**`See`**
+
+[ConnectionOptions](interfaces/ConnectionOptions.md) for more details on the URI format.
+
+**`Example`**
+
+```ts
+const conn = await connect({
+  uri: "/path/to/database",
+  storageOptions: {timeout: "60s"}
+});
+```
+
+#### Defined in
+
+[index.ts:111](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/index.ts#L111)
 
 ___
 
 ### makeArrowTable
 
-▸ **makeArrowTable**(`data`, `options?`): `ArrowTable`
+▸ **makeArrowTable**(`data`, `options?`, `metadata?`): `ArrowTable`
 
 An enhanced version of the makeTable function from Apache Arrow
 that supports nested fields and embeddings columns.
@@ -135,6 +189,7 @@ rules are as follows:
 | :------ | :------ |
 | `data` | `Record`\<`string`, `unknown`\>[] |
 | `options?` | `Partial`\<[`MakeArrowTableOptions`](classes/MakeArrowTableOptions.md)\> |
+| `metadata?` | `Map`\<`string`, `string`\> |
 
 #### Returns
 
@@ -142,7 +197,6 @@ rules are as follows:
 
 **`Example`**
 
-```ts
 import { fromTableToBuffer, makeArrowTable } from "../arrow";
 import { Field, FixedSizeList, Float16, Float32, Int32, Schema } from "apache-arrow";
 
@@ -206,4 +260,4 @@ assert.deepEqual(table.schema, schema)
 
 #### Defined in
 
-[arrow.ts:197](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/arrow.ts#L197)
+[arrow.ts:356](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/arrow.ts#L356)

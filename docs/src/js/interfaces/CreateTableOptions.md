@@ -6,10 +6,24 @@
 
 ### Properties
 
+- [embeddingFunction](CreateTableOptions.md#embeddingfunction)
 - [existOk](CreateTableOptions.md#existok)
 - [mode](CreateTableOptions.md#mode)
+- [schema](CreateTableOptions.md#schema)
+- [storageOptions](CreateTableOptions.md#storageoptions)
+- [useLegacyFormat](CreateTableOptions.md#uselegacyformat)
 
 ## Properties
+
+### embeddingFunction
+
+• `Optional` **embeddingFunction**: [`EmbeddingFunctionConfig`](embedding.EmbeddingFunctionConfig.md)
+
+#### Defined in
+
+[connection.ts:54](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/connection.ts#L54)
+
+___
 
 ### existOk
 
@@ -20,7 +34,7 @@ then no error will be raised.
 
 #### Defined in
 
-[connection.ts:35](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/connection.ts#L35)
+[connection.ts:36](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/connection.ts#L36)
 
 ___
 
@@ -38,4 +52,45 @@ If this is set to "overwrite" then any existing table will be replaced.
 
 #### Defined in
 
-[connection.ts:30](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/connection.ts#L30)
+[connection.ts:31](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/connection.ts#L31)
+
+___
+
+### schema
+
+• `Optional` **schema**: `SchemaLike`
+
+#### Defined in
+
+[connection.ts:53](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/connection.ts#L53)
+
+___
+
+### storageOptions
+
+• `Optional` **storageOptions**: `Record`\<`string`, `string`\>
+
+Configuration for object storage.
+
+Options already set on the connection will be inherited by the table,
+but can be overridden here.
+
+The available options are described at https://lancedb.github.io/lancedb/guides/storage/
+
+#### Defined in
+
+[connection.ts:46](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/connection.ts#L46)
+
+___
+
+### useLegacyFormat
+
+• `Optional` **useLegacyFormat**: `boolean`
+
+If true then data files will be written with the legacy format
+
+The default is true while the new format is in beta
+
+#### Defined in
+
+[connection.ts:52](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/connection.ts#L52)

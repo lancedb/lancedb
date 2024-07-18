@@ -54,7 +54,7 @@ L2 norm is 1), then dot distance is equivalent to the cosine distance.
 
 #### Defined in
 
-[indices.ts:83](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/indices.ts#L83)
+[indices.ts:83](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/indices.ts#L83)
 
 ___
 
@@ -74,7 +74,7 @@ The default value is 50.
 
 #### Defined in
 
-[indices.ts:96](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/indices.ts#L96)
+[indices.ts:96](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/indices.ts#L96)
 
 ___
 
@@ -94,7 +94,7 @@ part of the search (searching within a partition) will be slow.
 
 #### Defined in
 
-[indices.ts:32](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/indices.ts#L32)
+[indices.ts:32](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/indices.ts#L32)
 
 ___
 
@@ -117,7 +117,7 @@ will likely result in poor performance.
 
 #### Defined in
 
-[indices.ts:48](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/indices.ts#L48)
+[indices.ts:48](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/indices.ts#L48)
 
 ___
 
@@ -141,4 +141,4 @@ The default value is 256.
 
 #### Defined in
 
-[indices.ts:113](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/indices.ts#L113)
+[indices.ts:113](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/indices.ts#L113)
