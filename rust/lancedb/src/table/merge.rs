@@ -18,7 +18,7 @@ use arrow_array::RecordBatchReader;
 
 use crate::Result;
 
-use super::TableInternal;
+use super::{TableInternal, WriteOptions};
 
 /// A builder used to create and run a merge insert operation
 ///
@@ -32,6 +32,8 @@ pub struct MergeInsertBuilder {
     pub(super) when_not_matched_insert_all: bool,
     pub(super) when_not_matched_by_source_delete: bool,
     pub(super) when_not_matched_by_source_delete_filt: Option<String>,
+    pub(crate) write_options: Option<WriteOptions>
+
 }
 
 impl MergeInsertBuilder {
@@ -44,6 +46,7 @@ impl MergeInsertBuilder {
             when_not_matched_insert_all: false,
             when_not_matched_by_source_delete: false,
             when_not_matched_by_source_delete_filt: None,
+            write_options: None,
         }
     }
 
@@ -92,6 +95,12 @@ impl MergeInsertBuilder {
     pub fn when_not_matched_by_source_delete(&mut self, filter: Option<String>) -> &mut Self {
         self.when_not_matched_by_source_delete = true;
         self.when_not_matched_by_source_delete_filt = filter;
+        self
+    }
+
+    /// Apply the given write options when updating the dataset
+    pub fn write_options(&mut self, write_options: Option<WriteOptions>) -> &mut Self {
+        self.write_options = write_options;
         self
     }
 
