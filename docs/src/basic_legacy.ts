@@ -81,27 +81,28 @@ const example = async () => {
 
   const empty_tbl = await db.createTable({ name: "empty_table", schema });
   // --8<-- [end:create_empty_table]
-
-  // --8<-- [start:create_f16_table]
-  const dim = 16;
-  const total = 10;
-  const f16_schema = new Schema([
-    new Field("id", new Int32()),
-    new Field(
-      "vector",
-      new FixedSizeList(dim, new Field("item", new Float16(), true)),
-      false,
-    ),
-  ]);
-  const data = lancedb.makeArrowTable(
-    Array.from(Array(total), (_, i) => ({
-      id: i,
-      vector: Array.from(Array(dim), Math.random),
-    })),
-    { f16_schema },
-  );
-  const table = await db.createTable("f16_tbl", data);
-  // --8<-- [end:create_f16_table]
+  {
+    // --8<-- [start:create_f16_table]
+    const dim = 16;
+    const total = 10;
+    const schema = new Schema([
+      new Field("id", new Int32()),
+      new Field(
+        "vector",
+        new FixedSizeList(dim, new Field("item", new Float16(), true)),
+        false,
+      ),
+    ]);
+    const data = lancedb.makeArrowTable(
+      Array.from(Array(total), (_, i) => ({
+        id: i,
+        vector: Array.from(Array(dim), Math.random),
+      })),
+      { schema },
+    );
+    const table = await db.createTable("f16_tbl", data);
+    // --8<-- [end:create_f16_table]
+  }
 
   // --8<-- [start:search]
   const query = await tbl.search([100, 100]).limit(2).execute();
