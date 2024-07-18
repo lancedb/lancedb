@@ -50,7 +50,7 @@ async fn main() -> Result<()> {
     create_empty_table(&db).await.unwrap();
 
     // --8<-- [start:delete]
-    tbl.delete("id > 24").await.unwrap();
+    tbl.delete("id > 24", None).await.unwrap();
     // --8<-- [end:delete]
 
     // --8<-- [start:drop_table]
