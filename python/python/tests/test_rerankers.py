@@ -11,13 +11,13 @@ from lancedb.rerankers import (
     ColbertReranker,
     CrossEncoderReranker,
     OpenaiReranker,
-    JinaReranker
+    JinaReranker,
 )
 from lancedb.table import LanceTable
 
 # Tests rely on FTS index
 pytest.importorskip("lancedb.fts")
-    
+
 
 def get_test_table(tmp_path):
     db = lancedb.connect(tmp_path)
@@ -82,6 +82,7 @@ def get_test_table(tmp_path):
 
     return table, MyTable
 
+
 def _run_test_reranker(reranker, table, query, query_vector, schema):
     # Hybrid search setting
     result1 = (
@@ -138,6 +139,7 @@ def _run_test_reranker(reranker, table, query, query_vector, schema):
     assert len(result) > 0
     assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), err
 
+
 def test_linear_combination(tmp_path):
     table, schema = get_test_table(tmp_path)
     # The default reranker
@@ -185,7 +187,6 @@ def test_cohere_reranker(tmp_path):
     _run_test_reranker(reranker, table, "single player experience", None, schema)
 
 
-
 def test_cross_encoder_reranker(tmp_path):
     pytest.importorskip("sentence_transformers")
     reranker = CrossEncoderReranker()
@@ -199,6 +200,7 @@ def test_colbert_reranker(tmp_path):
     table, schema = get_test_table(tmp_path)
     _run_test_reranker(reranker, table, "single player experience", None, schema)
 
+
 @pytest.mark.skipif(
     os.environ.get("OPENAI_API_KEY") is None, reason="OPENAI_API_KEY not set"
 )
@@ -207,6 +209,7 @@ def test_openai_reranker(tmp_path):
     table, schema = get_test_table(tmp_path)
     reranker = OpenaiReranker()
     _run_test_reranker(reranker, table, "single player experience", None, schema)
+
 
 @pytest.mark.skipif(
     os.environ.get("JINA_API_KEY") is None, reason="JINA_API_KEY not set"
