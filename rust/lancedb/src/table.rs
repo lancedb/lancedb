@@ -298,6 +298,7 @@ pub struct UpdateBuilder {
     parent: Arc<dyn TableInternal>,
     pub(crate) filter: Option<String>,
     pub(crate) columns: Vec<(String, String)>,
+    pub(crate) write_options: Option<WriteOptions>
 }
 
 impl UpdateBuilder {
@@ -306,6 +307,7 @@ impl UpdateBuilder {
             parent,
             filter: None,
             columns: Vec::new(),
+            write_options: None,
         }
     }
 
@@ -342,6 +344,12 @@ impl UpdateBuilder {
         update_expr: impl Into<String>,
     ) -> Self {
         self.columns.push((column_name.into(), update_expr.into()));
+        self
+    }
+
+    /// Apply the given write options when updating the dataset
+    pub fn write_options(mut self, write_options: Option<WriteOptions>) -> Self {
+        self.write_options = write_options;
         self
     }
 
@@ -1671,6 +1679,12 @@ impl TableInternal for NativeTable {
 
         for (column, value) in update.columns {
             builder = builder.set(column, &value)?;
+        }
+
+        if let Some(write_options) = update.write_options {
+            if let Some(write_params) = write_options.lance_write_params {
+                builder = builder.with_write_params(write_params);
+            }
         }
 
         let operation = builder.build()?;
