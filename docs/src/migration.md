@@ -114,7 +114,8 @@ the size of the data.
 === "vectordb (deprecated)"
 
     ```ts
-    await tbl.createIndex(/* defaulted to "vector" */, {
+    await tbl.createIndex({
+      column: "vector", // default
       type: "ivf_pq",
       num_partitions: 2,
       num_sub_vectors: 2,
