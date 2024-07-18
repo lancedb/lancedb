@@ -1,7 +1,10 @@
 from abc import ABC, abstractmethod
+from packaging.version import Version
 
 import numpy as np
 import pyarrow as pa
+
+ARROW_VERSION = Version(pa.__version__)
 
 
 class Reranker(ABC):
@@ -23,6 +26,11 @@ class Reranker(ABC):
         if return_score not in ["relevance", "all"]:
             raise ValueError("score must be either 'relevance' or 'all'")
         self.score = return_score
+        # Set the merge args based on the arrow version here to avoid checking it at
+        # each query
+        self._concat_tables_args = {"promote_options": "default"}
+        if ARROW_VERSION.major <= 13:
+            self._concat_tables_args = {"promote": True}
 
     def rerank_vector(
         self,
@@ -119,7 +127,9 @@ class Reranker(ABC):
         fts_results : pa.Table
             The results from the FTS search
         """
-        combined = pa.concat_tables([vector_results, fts_results], promote=True)
+        combined = pa.concat_tables(
+            [vector_results, fts_results], **self._concat_tables_args
+        )
         row_id = combined.column("_rowid")
 
         # deduplicate
