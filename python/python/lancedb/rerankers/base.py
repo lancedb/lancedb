@@ -4,7 +4,6 @@ from packaging.version import Version
 import numpy as np
 import pyarrow as pa
 
-# PYDANTIC_VERSION = Version(pydantic.__version__)
 ARROW_VERSION = Version(pa.__version__)
 
 
