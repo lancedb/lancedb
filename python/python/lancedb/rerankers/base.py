@@ -26,7 +26,7 @@ class Reranker(ABC):
         if return_score not in ["relevance", "all"]:
             raise ValueError("score must be either 'relevance' or 'all'")
         self.score = return_score
-        # Set the merge function based on the arrow version here to avoid checking it at
+        # Set the merge args based on the arrow version here to avoid checking it at
         # each query
         self._concat_tables_args = {"promote_options": "default"}
         if ARROW_VERSION.major <= 13:
