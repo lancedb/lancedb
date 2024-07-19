@@ -17,6 +17,7 @@ Allows you to set parameters when registering a `sentence-transformers` object.
 | `name` | `str` | `all-MiniLM-L6-v2` | The name of the model |
 | `device` | `str` | `cpu` | The device to run the model on (can be `cpu` or `gpu`) |
 | `normalize` | `bool` | `True` | Whether to normalize the input text before feeding it to the model |
+| `trust_remote_code` | `bool` | `False` | Whether to trust and execute remote code from the model's Huggingface repository |
 
 
 ??? "Check out available sentence-transformer models here!"

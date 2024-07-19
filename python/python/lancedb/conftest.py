@@ -35,7 +35,7 @@ class MockTextEmbeddingFunction(TextEmbeddingFunction):
     def _compute_one_embedding(self, row):
         emb = np.array([float(hash(c)) for c in row[:10]])
         emb /= np.linalg.norm(emb)
-        return emb
+        return emb if len(emb) == 10 else [0] * 10
 
     def ndims(self):
         return 10
