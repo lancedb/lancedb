@@ -1,6 +1,10 @@
-[@lancedb/lancedb](../README.md) / [Exports](../modules.md) / Table
+[**@lancedb/lancedb**](../README.md) • **Docs**
 
-# Class: Table
+***
+
+[@lancedb/lancedb](../globals.md) / Table
+
+# Class: `abstract` Table
 
 A Table is a collection of Records in a LanceDB Database.
 
@@ -13,49 +17,11 @@ further operations.
 Closing a table is optional.  It not closed, it will be closed when it is garbage
 collected.
 
-## Table of contents
-
-### Constructors
-
-- [constructor](Table.md#constructor)
-
-### Accessors
-
-- [name](Table.md#name)
-
-### Methods
-
-- [add](Table.md#add)
-- [addColumns](Table.md#addcolumns)
-- [alterColumns](Table.md#altercolumns)
-- [checkout](Table.md#checkout)
-- [checkoutLatest](Table.md#checkoutlatest)
-- [close](Table.md#close)
-- [countRows](Table.md#countrows)
-- [createIndex](Table.md#createindex)
-- [delete](Table.md#delete)
-- [display](Table.md#display)
-- [dropColumns](Table.md#dropcolumns)
-- [indexStats](Table.md#indexstats)
-- [isOpen](Table.md#isopen)
-- [listIndices](Table.md#listindices)
-- [mergeInsert](Table.md#mergeinsert)
-- [optimize](Table.md#optimize)
-- [query](Table.md#query)
-- [restore](Table.md#restore)
-- [schema](Table.md#schema)
-- [search](Table.md#search)
-- [toArrow](Table.md#toarrow)
-- [update](Table.md#update)
-- [vectorSearch](Table.md#vectorsearch)
-- [version](Table.md#version)
-- [parseTableData](Table.md#parsetabledata)
-
 ## Constructors
 
-### constructor
+### new Table()
 
-• **new Table**(): [`Table`](Table.md)
+> **new Table**(): [`Table`](Table.md)
 
 #### Returns
 
@@ -65,7 +31,7 @@ collected.
 
 ### name
 
-• `get` **name**(): `string`
+> `get` `abstract` **name**(): `string`
 
 Returns the name of the table
 
@@ -73,82 +39,71 @@ Returns the name of the table
 
 `string`
 
-#### Defined in
-
-[table.ts:106](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/table.ts#L106)
-
 ## Methods
 
-### add
+### add()
 
-▸ **add**(`data`, `options?`): `Promise`\<`void`\>
+> `abstract` **add**(`data`, `options`?): `Promise`&lt;`void`&gt;
 
 Insert records into this Table.
 
 #### Parameters
 
-| Name | Type | Description |
-| :------ | :------ | :------ |
-| `data` | [`Data`](../modules.md#data) | Records to be inserted into the Table |
-| `options?` | `Partial`\<[`AddDataOptions`](../interfaces/AddDataOptions.md)\> | - |
+• **data**: [`Data`](../type-aliases/Data.md)
+
+Records to be inserted into the Table
+
+• **options?**: `Partial`&lt;[`AddDataOptions`](../interfaces/AddDataOptions.md)&gt;
 
 #### Returns
 
-`Promise`\<`void`\>
+`Promise`&lt;`void`&gt;
 
-#### Defined in
+***
 
-[table.ts:126](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/table.ts#L126)
+### addColumns()
 
-___
-
-### addColumns
-
-▸ **addColumns**(`newColumnTransforms`): `Promise`\<`void`\>
+> `abstract` **addColumns**(`newColumnTransforms`): `Promise`&lt;`void`&gt;
 
 Add new columns with defined values.
 
 #### Parameters
 
-| Name | Type | Description |
-| :------ | :------ | :------ |
-| `newColumnTransforms` | [`AddColumnsSql`](../interfaces/AddColumnsSql.md)[] | pairs of column names and the SQL expression to use to calculate the value of the new column. These expressions will be evaluated for each row in the table, and can reference existing columns in the table. |
+• **newColumnTransforms**: [`AddColumnsSql`](../interfaces/AddColumnsSql.md)[]
+
+pairs of column names and
+the SQL expression to use to calculate the value of the new column. These
+expressions will be evaluated for each row in the table, and can
+reference existing columns in the table.
 
 #### Returns
 
-`Promise`\<`void`\>
+`Promise`&lt;`void`&gt;
 
-#### Defined in
+***
 
-[table.ts:301](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/table.ts#L301)
+### alterColumns()
 
-___
-
-### alterColumns
-
-▸ **alterColumns**(`columnAlterations`): `Promise`\<`void`\>
+> `abstract` **alterColumns**(`columnAlterations`): `Promise`&lt;`void`&gt;
 
 Alter the name or nullability of columns.
 
 #### Parameters
 
-| Name | Type | Description |
-| :------ | :------ | :------ |
-| `columnAlterations` | [`ColumnAlteration`](../interfaces/ColumnAlteration.md)[] | One or more alterations to apply to columns. |
+• **columnAlterations**: [`ColumnAlteration`](../interfaces/ColumnAlteration.md)[]
+
+One or more alterations to
+apply to columns.
 
 #### Returns
 
-`Promise`\<`void`\>
+`Promise`&lt;`void`&gt;
 
-#### Defined in
+***
 
-[table.ts:308](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/table.ts#L308)
+### checkout()
 
-___
-
-### checkout
-
-▸ **checkout**(`version`): `Promise`\<`void`\>
+> `abstract` **checkout**(`version`): `Promise`&lt;`void`&gt;
 
 Checks out a specific version of the table _This is an in-place operation._
 
@@ -161,15 +116,15 @@ wish to return to standard mode, call `checkoutLatest`.
 
 #### Parameters
 
-| Name | Type | Description |
-| :------ | :------ | :------ |
-| `version` | `number` | The version to checkout |
+• **version**: `number`
+
+The version to checkout
 
 #### Returns
 
-`Promise`\<`void`\>
+`Promise`&lt;`void`&gt;
 
-**`Example`**
+#### Example
 
 ```typescript
 import * as lancedb from "@lancedb/lancedb"
@@ -185,15 +140,11 @@ await table.checkout(1);
 console.log(await table.version()); // 2
 ```
 
-#### Defined in
+***
 
-[table.ts:349](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/table.ts#L349)
+### checkoutLatest()
 
-___
-
-### checkoutLatest
-
-▸ **checkoutLatest**(): `Promise`\<`void`\>
+> `abstract` **checkoutLatest**(): `Promise`&lt;`void`&gt;
 
 Checkout the latest version of the table. _This is an in-place operation._
 
@@ -202,17 +153,13 @@ version of the table.
 
 #### Returns
 
-`Promise`\<`void`\>
+`Promise`&lt;`void`&gt;
 
-#### Defined in
+***
 
-[table.ts:356](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/table.ts#L356)
+### close()
 
-___
-
-### close
-
-▸ **close**(): `void`
+> `abstract` **close**(): `void`
 
 Close the table, releasing any underlying resources.
 
@@ -224,37 +171,27 @@ Any attempt to use the table after it is closed will result in an error.
 
 `void`
 
-#### Defined in
+***
 
-[table.ts:117](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/table.ts#L117)
+### countRows()
 
-___
-
-### countRows
-
-▸ **countRows**(`filter?`): `Promise`\<`number`\>
+> `abstract` **countRows**(`filter`?): `Promise`&lt;`number`&gt;
 
 Count the total number of rows in the dataset.
 
 #### Parameters
 
-| Name | Type |
-| :------ | :------ |
-| `filter?` | `string` |
+• **filter?**: `string`
 
 #### Returns
 
-`Promise`\<`number`\>
+`Promise`&lt;`number`&gt;
 
-#### Defined in
+***
 
-[table.ts:186](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/table.ts#L186)
+### createIndex()
 
-___
-
-### createIndex
-
-▸ **createIndex**(`column`, `options?`): `Promise`\<`void`\>
+> `abstract` **createIndex**(`column`, `options`?): `Promise`&lt;`void`&gt;
 
 Create an index to speed up queries.
 
@@ -265,21 +202,20 @@ vector and non-vector searches)
 
 #### Parameters
 
-| Name | Type |
-| :------ | :------ |
-| `column` | `string` |
-| `options?` | `Partial`\<[`IndexOptions`](../interfaces/IndexOptions.md)\> |
+• **column**: `string`
+
+• **options?**: `Partial`&lt;[`IndexOptions`](../interfaces/IndexOptions.md)&gt;
 
 #### Returns
 
-`Promise`\<`void`\>
+`Promise`&lt;`void`&gt;
 
-**`Note`**
+#### Note
 
 We currently don't support custom named indexes,
 The index name will always be `${column}_idx`
 
-**`Example`**
+#### Examples
 
 ```ts
 // If the column has a vector (fixed size list) data type then
@@ -287,8 +223,6 @@ The index name will always be `${column}_idx`
 const table = await conn.openTable("my_table");
 await table.createIndex("vector");
 ```
-
-**`Example`**
 
 ```ts
 // For advanced control over vector index creation you can specify
@@ -302,44 +236,32 @@ await table.createIndex("vector", {
 });
 ```
 
-**`Example`**
-
 ```ts
 // Or create a Scalar index
 await table.createIndex("my_float_col");
 ```
 
-#### Defined in
+***
 
-[table.ts:218](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/table.ts#L218)
+### delete()
 
-___
-
-### delete
-
-▸ **delete**(`predicate`): `Promise`\<`void`\>
+> `abstract` **delete**(`predicate`): `Promise`&lt;`void`&gt;
 
 Delete the rows that satisfy the predicate.
 
 #### Parameters
 
-| Name | Type |
-| :------ | :------ |
-| `predicate` | `string` |
+• **predicate**: `string`
 
 #### Returns
 
-`Promise`\<`void`\>
+`Promise`&lt;`void`&gt;
 
-#### Defined in
+***
 
-[table.ts:188](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/table.ts#L188)
+### display()
 
-___
-
-### display
-
-▸ **display**(): `string`
+> `abstract` **display**(): `string`
 
 Return a brief description of the table
 
@@ -347,15 +269,11 @@ Return a brief description of the table
 
 `string`
 
-#### Defined in
+***
 
-[table.ts:119](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/table.ts#L119)
+### dropColumns()
 
-___
-
-### dropColumns
-
-▸ **dropColumns**(`columnNames`): `Promise`\<`void`\>
+> `abstract` **dropColumns**(`columnNames`): `Promise`&lt;`void`&gt;
 
 Drop one or more columns from the dataset
 
@@ -366,47 +284,41 @@ then call ``cleanup_files`` to remove the old files.
 
 #### Parameters
 
-| Name | Type | Description |
-| :------ | :------ | :------ |
-| `columnNames` | `string`[] | The names of the columns to drop. These can be nested column references (e.g. "a.b.c") or top-level column names (e.g. "a"). |
+• **columnNames**: `string`[]
+
+The names of the columns to drop. These can
+be nested column references (e.g. "a.b.c") or top-level column names
+(e.g. "a").
 
 #### Returns
 
-`Promise`\<`void`\>
+`Promise`&lt;`void`&gt;
 
-#### Defined in
+***
 
-[table.ts:320](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/table.ts#L320)
+### indexStats()
 
-___
-
-### indexStats
-
-▸ **indexStats**(`name`): `Promise`\<`undefined` \| [`IndexStatistics`](../interfaces/IndexStatistics.md)\>
+> `abstract` **indexStats**(`name`): `Promise`&lt;`undefined` \| [`IndexStatistics`](../interfaces/IndexStatistics.md)&gt;
 
 List all the stats of a specified index
 
 #### Parameters
 
-| Name | Type | Description |
-| :------ | :------ | :------ |
-| `name` | `string` | The name of the index. |
+• **name**: `string`
+
+The name of the index.
 
 #### Returns
 
-`Promise`\<`undefined` \| [`IndexStatistics`](../interfaces/IndexStatistics.md)\>
+`Promise`&lt;`undefined` \| [`IndexStatistics`](../interfaces/IndexStatistics.md)&gt;
 
 The stats of the index. If the index does not exist, it will return undefined
 
-#### Defined in
+***
 
-[table.ts:414](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/table.ts#L414)
+### isOpen()
 
-___
-
-### isOpen
-
-▸ **isOpen**(): `boolean`
+> `abstract` **isOpen**(): `boolean`
 
 Return true if the table has not been closed
 
@@ -414,51 +326,37 @@ Return true if the table has not been closed
 
 `boolean`
 
-#### Defined in
+***
 
-[table.ts:109](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/table.ts#L109)
+### listIndices()
 
-___
-
-### listIndices
-
-▸ **listIndices**(): `Promise`\<[`IndexConfig`](../interfaces/IndexConfig.md)[]\>
+> `abstract` **listIndices**(): `Promise`&lt;[`IndexConfig`](../interfaces/IndexConfig.md)[]&gt;
 
 List all indices that have been created with [Table.createIndex](Table.md#createindex)
 
 #### Returns
 
-`Promise`\<[`IndexConfig`](../interfaces/IndexConfig.md)[]\>
+`Promise`&lt;[`IndexConfig`](../interfaces/IndexConfig.md)[]&gt;
 
-#### Defined in
+***
 
-[table.ts:403](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/table.ts#L403)
+### mergeInsert()
 
-___
-
-### mergeInsert
-
-▸ **mergeInsert**(`on`): `MergeInsertBuilder`
+> `abstract` **mergeInsert**(`on`): `MergeInsertBuilder`
 
 #### Parameters
 
-| Name | Type |
-| :------ | :------ |
-| `on` | `string` \| `string`[] |
+• **on**: `string` \| `string`[]
 
 #### Returns
 
 `MergeInsertBuilder`
 
-#### Defined in
+***
 
-[table.ts:407](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/table.ts#L407)
+### optimize()
 
-___
-
-### optimize
-
-▸ **optimize**(`options?`): `Promise`\<`OptimizeStats`\>
+> `abstract` **optimize**(`options`?): `Promise`&lt;`OptimizeStats`&gt;
 
 Optimize the on-disk data and indices for better performance.
 
@@ -490,23 +388,17 @@ Modeled after ``VACUUM`` in PostgreSQL.
 
 #### Parameters
 
-| Name | Type |
-| :------ | :------ |
-| `options?` | `Partial`\<`OptimizeOptions`\> |
+• **options?**: `Partial`&lt;`OptimizeOptions`&gt;
 
 #### Returns
 
-`Promise`\<`OptimizeStats`\>
+`Promise`&lt;`OptimizeStats`&gt;
 
-#### Defined in
+***
 
-[table.ts:401](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/table.ts#L401)
+### query()
 
-___
-
-### query
-
-▸ **query**(): [`Query`](Query.md)
+> `abstract` **query**(): [`Query`](Query.md)
 
 Create a [Query](Query.md) Builder.
 
@@ -527,7 +419,7 @@ accelerate the query.
 
 A builder that can be used to parameterize the query
 
-**`Example`**
+#### Examples
 
 ```ts
 // SQL-style filtering
@@ -542,8 +434,6 @@ for await (const batch of table
   console.log(batch);
 }
 ```
-
-**`Example`**
 
 ```ts
 // Vector Similarity Search
@@ -563,8 +453,6 @@ for await (const batch of table
 }
 ```
 
-**`Example`**
-
 ```ts
 // Scan the full dataset
 //
@@ -574,15 +462,11 @@ for await (const batch of table.query()) {
 }
 ```
 
-#### Defined in
+***
 
-[table.ts:272](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/table.ts#L272)
+### restore()
 
-___
-
-### restore
-
-▸ **restore**(): `Promise`\<`void`\>
+> `abstract` **restore**(): `Promise`&lt;`void`&gt;
 
 Restore the table to the currently checked out version
 
@@ -597,143 +481,121 @@ out state and the read_consistency_interval, if any, will apply.
 
 #### Returns
 
-`Promise`\<`void`\>
+`Promise`&lt;`void`&gt;
 
-#### Defined in
+***
 
-[table.ts:370](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/table.ts#L370)
+### schema()
 
-___
-
-### schema
-
-▸ **schema**(): `Promise`\<`Schema`\<`any`\>\>
+> `abstract` **schema**(): `Promise`&lt;`Schema`&lt;`any`&gt;&gt;
 
 Get the schema of the table.
 
 #### Returns
 
-`Promise`\<`Schema`\<`any`\>\>
+`Promise`&lt;`Schema`&lt;`any`&gt;&gt;
 
-#### Defined in
+***
 
-[table.ts:121](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/table.ts#L121)
+### search()
 
-___
+#### search(query)
 
-### search
-
-▸ **search**(`query`): [`VectorQuery`](VectorQuery.md)
+> `abstract` **search**(`query`): [`VectorQuery`](VectorQuery.md)
 
 Create a search query to find the nearest neighbors
 of the given query vector
 
-#### Parameters
+##### Parameters
 
-| Name | Type | Description |
-| :------ | :------ | :------ |
-| `query` | `string` | the query. This will be converted to a vector using the table's provided embedding function |
+• **query**: `string`
 
-#### Returns
+the query. This will be converted to a vector using the table's provided embedding function
+
+##### Returns
 
 [`VectorQuery`](VectorQuery.md)
 
-**`Note`**
+##### Note
 
 If no embedding functions are defined in the table, this will error when collecting the results.
 
-#### Defined in
+#### search(query)
 
-[table.ts:279](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/table.ts#L279)
-
-▸ **search**(`query`): [`VectorQuery`](VectorQuery.md)
+> `abstract` **search**(`query`): [`VectorQuery`](VectorQuery.md)
 
 Create a search query to find the nearest neighbors
 of the given query vector
 
-#### Parameters
+##### Parameters
 
-| Name | Type | Description |
-| :------ | :------ | :------ |
-| `query` | `IntoVector` | the query vector |
+• **query**: `IntoVector`
 
-#### Returns
+the query vector
+
+##### Returns
 
 [`VectorQuery`](VectorQuery.md)
 
-#### Defined in
+***
 
-[table.ts:285](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/table.ts#L285)
+### toArrow()
 
-___
-
-### toArrow
-
-▸ **toArrow**(): `Promise`\<`Table`\<`any`\>\>
+> `abstract` **toArrow**(): `Promise`&lt;`Table`&lt;`any`&gt;&gt;
 
 Return the table as an arrow table
 
 #### Returns
 
-`Promise`\<`Table`\<`any`\>\>
+`Promise`&lt;`Table`&lt;`any`&gt;&gt;
 
-#### Defined in
+***
 
-[table.ts:405](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/table.ts#L405)
+### update()
 
-___
+#### update(opts)
 
-### update
-
-▸ **update**(`opts`): `Promise`\<`void`\>
+> `abstract` **update**(`opts`): `Promise`&lt;`void`&gt;
 
 Update existing records in the Table
 
-#### Parameters
+##### Parameters
 
-| Name | Type |
-| :------ | :------ |
-| `opts` | \{ `values`: `Map`\<`string`, `IntoSql`\> \| `Record`\<`string`, `IntoSql`\>  } & `Partial`\<[`UpdateOptions`](../interfaces/UpdateOptions.md)\> |
+• **opts**: `object` & `Partial`&lt;[`UpdateOptions`](../interfaces/UpdateOptions.md)&gt;
 
-#### Returns
+##### Returns
 
-`Promise`\<`void`\>
+`Promise`&lt;`void`&gt;
 
-**`Example`**
+##### Example
 
 ```ts
 table.update({where:"x = 2", values:{"vector": [10, 10]}})
 ```
 
-#### Defined in
+#### update(opts)
 
-[table.ts:136](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/table.ts#L136)
-
-▸ **update**(`opts`): `Promise`\<`void`\>
+> `abstract` **update**(`opts`): `Promise`&lt;`void`&gt;
 
 Update existing records in the Table
 
-#### Parameters
+##### Parameters
 
-| Name | Type |
-| :------ | :------ |
-| `opts` | \{ `valuesSql`: `Record`\<`string`, `string`\> \| `Map`\<`string`, `string`\>  } & `Partial`\<[`UpdateOptions`](../interfaces/UpdateOptions.md)\> |
+• **opts**: `object` & `Partial`&lt;[`UpdateOptions`](../interfaces/UpdateOptions.md)&gt;
 
-#### Returns
+##### Returns
 
-`Promise`\<`void`\>
+`Promise`&lt;`void`&gt;
 
-**`Example`**
+##### Example
 
 ```ts
 table.update({where:"x = 2", valuesSql:{"x": "x + 1"}})
 ```
 
-#### Defined in
+#### update(updates, options)
 
-[table.ts:150](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/table.ts#L150)
-
-▸ **update**(`updates`, `options?`): `Promise`\<`void`\>
+> `abstract` **update**(`updates`, `options`?): `Promise`&lt;`void`&gt;
 
 Update existing records in the Table
 
@@ -750,26 +612,32 @@ you are updating many rows (with different ids) then you will get
 better performance with a single [`merge_insert`] call instead of
 repeatedly calilng this method.
 
-#### Parameters
+##### Parameters
 
-| Name | Type | Description |
-| :------ | :------ | :------ |
-| `updates` | `Record`\<`string`, `string`\> \| `Map`\<`string`, `string`\> | the columns to update Keys in the map should specify the name of the column to update. Values in the map provide the new value of the column. These can be SQL literal strings (e.g. "7" or "'foo'") or they can be expressions based on the row being updated (e.g. "my_col + 1") |
-| `options?` | `Partial`\<[`UpdateOptions`](../interfaces/UpdateOptions.md)\> | additional options to control the update behavior |
+• **updates**: `Record`&lt;`string`, `string`&gt; \| `Map`&lt;`string`, `string`&gt;
 
-#### Returns
+the
+columns to update
 
-`Promise`\<`void`\>
+Keys in the map should specify the name of the column to update.
+Values in the map provide the new value of the column.  These can
+be SQL literal strings (e.g. "7" or "'foo'") or they can be expressions
+based on the row being updated (e.g. "my_col + 1")
 
-#### Defined in
+• **options?**: `Partial`&lt;[`UpdateOptions`](../interfaces/UpdateOptions.md)&gt;
 
-[table.ts:180](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/table.ts#L180)
+additional options to control
+the update behavior
 
-___
+##### Returns
 
-### vectorSearch
+`Promise`&lt;`void`&gt;
 
-▸ **vectorSearch**(`vector`): [`VectorQuery`](VectorQuery.md)
+***
+
+### vectorSearch()
+
+> `abstract` **vectorSearch**(`vector`): [`VectorQuery`](VectorQuery.md)
 
 Search the table with a given query vector.
 
@@ -779,56 +647,50 @@ by `query`.
 
 #### Parameters
 
-| Name | Type |
-| :------ | :------ |
-| `vector` | `IntoVector` |
+• **vector**: `IntoVector`
 
 #### Returns
 
 [`VectorQuery`](VectorQuery.md)
 
-**`See`**
+#### See
 
 [Query#nearestTo](Query.md#nearestto) for more details.
 
-#### Defined in
+***
 
-[table.ts:293](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/table.ts#L293)
+### version()
 
-___
-
-### version
-
-▸ **version**(): `Promise`\<`number`\>
+> `abstract` **version**(): `Promise`&lt;`number`&gt;
 
 Retrieve the version of the table
 
 #### Returns
 
-`Promise`\<`number`\>
+`Promise`&lt;`number`&gt;
 
-#### Defined in
+***
 
-[table.ts:323](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/table.ts#L323)
+### parseTableData()
 
-___
-
-### parseTableData
-
-▸ **parseTableData**(`data`, `options?`, `streaming?`): `Promise`\<\{ `buf`: `Buffer` ; `mode`: `string`  }\>
+> `static` **parseTableData**(`data`, `options`?, `streaming`?): `Promise`&lt;`object`&gt;
 
 #### Parameters
 
-| Name | Type | Default value |
-| :------ | :------ | :------ |
-| `data` | `TableLike` \| `Record`\<`string`, `unknown`\>[] | `undefined` |
-| `options?` | `Partial`\<[`CreateTableOptions`](../interfaces/CreateTableOptions.md)\> | `undefined` |
-| `streaming` | `boolean` | `false` |
+• **data**: `TableLike` \| `Record`&lt;`string`, `unknown`&gt;[]
+
+• **options?**: `Partial`&lt;[`CreateTableOptions`](../interfaces/CreateTableOptions.md)&gt;
+
+• **streaming?**: `boolean` = `false`
 
 #### Returns
 
-`Promise`\<\{ `buf`: `Buffer` ; `mode`: `string`  }\>
+`Promise`&lt;`object`&gt;
 
-#### Defined in
+##### buf
 
-[table.ts:416](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/table.ts#L416)
+> **buf**: `Buffer`
+
+##### mode
+
+> **mode**: `string`

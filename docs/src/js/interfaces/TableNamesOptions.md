@@ -1,38 +1,27 @@
-[@lancedb/lancedb](../README.md) / [Exports](../modules.md) / TableNamesOptions
+[**@lancedb/lancedb**](../README.md) • **Docs**
+
+***
+
+[@lancedb/lancedb](../globals.md) / TableNamesOptions
 
 # Interface: TableNamesOptions
 
-## Table of contents
-
-### Properties
-
-- [limit](TableNamesOptions.md#limit)
-- [startAfter](TableNamesOptions.md#startafter)
-
 ## Properties
 
-### limit
+### limit?
 
-• `Optional` **limit**: `number`
+> `optional` **limit**: `number`
 
 An optional limit to the number of results to return.
 
-#### Defined in
+***
 
-[connection.ts:91](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/connection.ts#L91)
+### startAfter?
 
-___
-
-### startAfter
-
-• `Optional` **startAfter**: `string`
+> `optional` **startAfter**: `string`
 
 If present, only return names that come lexicographically after the
 supplied value.
 
 This can be combined with limit to implement pagination by setting this to
 the last table name from the previous page.
-
-#### Defined in
-
-[connection.ts:89](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/connection.ts#L89)

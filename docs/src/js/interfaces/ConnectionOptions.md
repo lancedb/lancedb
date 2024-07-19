@@ -1,19 +1,16 @@
-[@lancedb/lancedb](../README.md) / [Exports](../modules.md) / ConnectionOptions
+[**@lancedb/lancedb**](../README.md) • **Docs**
+
+***
+
+[@lancedb/lancedb](../globals.md) / ConnectionOptions
 
 # Interface: ConnectionOptions
 
-## Table of contents
-
-### Properties
-
-- [readConsistencyInterval](ConnectionOptions.md#readconsistencyinterval)
-- [storageOptions](ConnectionOptions.md#storageoptions)
-
 ## Properties
 
-### readConsistencyInterval
+### readConsistencyInterval?
 
-• `Optional` **readConsistencyInterval**: `number`
+> `optional` **readConsistencyInterval**: `number`
 
 (For LanceDB OSS only): The interval, in seconds, at which to check for
 updates to the table from other processes. If None, then consistency is not
@@ -25,20 +22,12 @@ has passed since the last check, then the table will be checked for updates.
 Note: this consistency only applies to read operations. Write operations are
 always consistent.
 
-#### Defined in
+***
 
-native.d.ts:103
+### storageOptions?
 
-___
-
-### storageOptions
-
-• `Optional` **storageOptions**: `Record`\<`string`, `string`\>
+> `optional` **storageOptions**: `Record`&lt;`string`, `string`&gt;
 
 (For LanceDB OSS only): configuration for object storage.
 
 The available options are described at https://lancedb.github.io/lancedb/guides/storage/
-
-#### Defined in
-
-native.d.ts:109

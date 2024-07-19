@@ -1,6 +1,10 @@
-[@lancedb/lancedb](../README.md) / [Exports](../modules.md) / Connection
+[**@lancedb/lancedb**](../README.md) • **Docs**
 
-# Class: Connection
+***
+
+[@lancedb/lancedb](../globals.md) / Connection
+
+# Class: `abstract` Connection
 
 A LanceDB Connection that allows you to open tables and create new ones.
 
@@ -19,28 +23,11 @@ be closed when they are garbage collected.
 Any created tables are independent and will continue to work even if
 the underlying connection has been closed.
 
-## Table of contents
-
-### Constructors
-
-- [constructor](Connection.md#constructor)
-
-### Methods
-
-- [close](Connection.md#close)
-- [createEmptyTable](Connection.md#createemptytable)
-- [createTable](Connection.md#createtable)
-- [display](Connection.md#display)
-- [dropTable](Connection.md#droptable)
-- [isOpen](Connection.md#isopen)
-- [openTable](Connection.md#opentable)
-- [tableNames](Connection.md#tablenames)
-
 ## Constructors
 
-### constructor
+### new Connection()
 
-• **new Connection**(): [`Connection`](Connection.md)
+> **new Connection**(): [`Connection`](Connection.md)
 
 #### Returns
 
@@ -48,9 +35,9 @@ the underlying connection has been closed.
 
 ## Methods
 
-### close
+### close()
 
-▸ **close**(): `void`
+> `abstract` **close**(): `void`
 
 Close the connection, releasing any underlying resources.
 
@@ -62,81 +49,78 @@ Any attempt to use the connection after it is closed will result in an error.
 
 `void`
 
-#### Defined in
+***
 
-[connection.ts:128](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/connection.ts#L128)
+### createEmptyTable()
 
-___
-
-### createEmptyTable
-
-▸ **createEmptyTable**(`name`, `schema`, `options?`): `Promise`\<[`Table`](Table.md)\>
+> `abstract` **createEmptyTable**(`name`, `schema`, `options`?): `Promise`&lt;[`Table`](Table.md)&gt;
 
 Creates a new empty Table
 
 #### Parameters
 
-| Name | Type | Description |
-| :------ | :------ | :------ |
-| `name` | `string` | The name of the table. |
-| `schema` | `SchemaLike` | The schema of the table |
-| `options?` | `Partial`\<[`CreateTableOptions`](../interfaces/CreateTableOptions.md)\> | - |
+• **name**: `string`
+
+The name of the table.
+
+• **schema**: `SchemaLike`
+
+The schema of the table
+
+• **options?**: `Partial`&lt;[`CreateTableOptions`](../interfaces/CreateTableOptions.md)&gt;
 
 #### Returns
 
-`Promise`\<[`Table`](Table.md)\>
+`Promise`&lt;[`Table`](Table.md)&gt;
 
-#### Defined in
+***
 
-[connection.ts:184](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/connection.ts#L184)
+### createTable()
 
-___
+#### createTable(options)
 
-### createTable
-
-▸ **createTable**(`options`): `Promise`\<[`Table`](Table.md)\>
+> `abstract` **createTable**(`options`): `Promise`&lt;[`Table`](Table.md)&gt;
 
 Creates a new Table and initialize it with new data.
 
-#### Parameters
+##### Parameters
 
-| Name | Type | Description |
-| :------ | :------ | :------ |
-| `options` | \{ `data`: [`Data`](../modules.md#data) ; `name`: `string`  } & `Partial`\<[`CreateTableOptions`](../interfaces/CreateTableOptions.md)\> | The options object. |
+• **options**: `object` & `Partial`&lt;[`CreateTableOptions`](../interfaces/CreateTableOptions.md)&gt;
 
-#### Returns
+The options object.
 
-`Promise`\<[`Table`](Table.md)\>
+##### Returns
 
-#### Defined in
+`Promise`&lt;[`Table`](Table.md)&gt;
 
-[connection.ts:161](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/connection.ts#L161)
+#### createTable(name, data, options)
 
-▸ **createTable**(`name`, `data`, `options?`): `Promise`\<[`Table`](Table.md)\>
+> `abstract` **createTable**(`name`, `data`, `options`?): `Promise`&lt;[`Table`](Table.md)&gt;
 
 Creates a new Table and initialize it with new data.
 
-#### Parameters
+##### Parameters
 
-| Name | Type | Description |
-| :------ | :------ | :------ |
-| `name` | `string` | The name of the table. |
-| `data` | `TableLike` \| `Record`\<`string`, `unknown`\>[] | Non-empty Array of Records to be inserted into the table |
-| `options?` | `Partial`\<[`CreateTableOptions`](../interfaces/CreateTableOptions.md)\> | - |
+• **name**: `string`
 
-#### Returns
+The name of the table.
 
-`Promise`\<[`Table`](Table.md)\>
+• **data**: `TableLike` \| `Record`&lt;`string`, `unknown`&gt;[]
 
-#### Defined in
+Non-empty Array of Records
+to be inserted into the table
 
-[connection.ts:173](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/connection.ts#L173)
+• **options?**: `Partial`&lt;[`CreateTableOptions`](../interfaces/CreateTableOptions.md)&gt;
 
-___
+##### Returns
 
-### display
+`Promise`&lt;[`Table`](Table.md)&gt;
 
-▸ **display**(): `string`
+***
+
+### display()
+
+> `abstract` **display**(): `string`
 
 Return a brief description of the connection
 
@@ -144,37 +128,29 @@ Return a brief description of the connection
 
 `string`
 
-#### Defined in
+***
 
-[connection.ts:133](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/connection.ts#L133)
+### dropTable()
 
-___
-
-### dropTable
-
-▸ **dropTable**(`name`): `Promise`\<`void`\>
+> `abstract` **dropTable**(`name`): `Promise`&lt;`void`&gt;
 
 Drop an existing table.
 
 #### Parameters
 
-| Name | Type | Description |
-| :------ | :------ | :------ |
-| `name` | `string` | The name of the table to drop. |
+• **name**: `string`
+
+The name of the table to drop.
 
 #### Returns
 
-`Promise`\<`void`\>
+`Promise`&lt;`void`&gt;
 
-#### Defined in
+***
 
-[connection.ts:194](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/connection.ts#L194)
+### isOpen()
 
-___
-
-### isOpen
-
-▸ **isOpen**(): `boolean`
+> `abstract` **isOpen**(): `boolean`
 
 Return true if the connection has not been closed
 
@@ -182,38 +158,31 @@ Return true if the connection has not been closed
 
 `boolean`
 
-#### Defined in
+***
 
-[connection.ts:119](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/connection.ts#L119)
+### openTable()
 
-___
-
-### openTable
-
-▸ **openTable**(`name`, `options?`): `Promise`\<[`Table`](Table.md)\>
+> `abstract` **openTable**(`name`, `options`?): `Promise`&lt;[`Table`](Table.md)&gt;
 
 Open a table in the database.
 
 #### Parameters
 
-| Name | Type | Description |
-| :------ | :------ | :------ |
-| `name` | `string` | The name of the table |
-| `options?` | `Partial`\<`OpenTableOptions`\> | - |
+• **name**: `string`
+
+The name of the table
+
+• **options?**: `Partial`&lt;`OpenTableOptions`&gt;
 
 #### Returns
 
-`Promise`\<[`Table`](Table.md)\>
+`Promise`&lt;[`Table`](Table.md)&gt;
 
-#### Defined in
+***
 
-[connection.ts:149](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/connection.ts#L149)
+### tableNames()
 
-___
-
-### tableNames
-
-▸ **tableNames**(`options?`): `Promise`\<`string`[]\>
+> `abstract` **tableNames**(`options`?): `Promise`&lt;`string`[]&gt;
 
 List all the table names in this database.
 
@@ -221,14 +190,11 @@ Tables will be returned in lexicographical order.
 
 #### Parameters
 
-| Name | Type | Description |
-| :------ | :------ | :------ |
-| `options?` | `Partial`\<[`TableNamesOptions`](../interfaces/TableNamesOptions.md)\> | options to control the paging / start point |
+• **options?**: `Partial`&lt;[`TableNamesOptions`](../interfaces/TableNamesOptions.md)&gt;
+
+options to control the
+paging / start point
 
 #### Returns
 
-`Promise`\<`string`[]\>
-
-#### Defined in
-
-[connection.ts:143](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/connection.ts#L143)
+`Promise`&lt;`string`[]&gt;

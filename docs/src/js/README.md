@@ -1,4 +1,6 @@
-@lancedb/lancedb / [Exports](modules.md)
+**@lancedb/lancedb** • [**Docs**](globals.md)
+
+***
 
 # LanceDB JavaScript SDK
 

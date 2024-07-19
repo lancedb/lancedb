@@ -1,144 +1,91 @@
-[@lancedb/lancedb](../README.md) / [Exports](../modules.md) / QueryBase
+[**@lancedb/lancedb**](../README.md) • **Docs**
 
-# Class: QueryBase\<NativeQueryType\>
+***
+
+[@lancedb/lancedb](../globals.md) / QueryBase
+
+# Class: QueryBase&lt;NativeQueryType&gt;
 
 Common methods supported by all query types
 
-## Type parameters
+## Extended by
 
-| Name | Type |
-| :------ | :------ |
-| `NativeQueryType` | extends `NativeQuery` \| `NativeVectorQuery` |
+- [`Query`](Query.md)
+- [`VectorQuery`](VectorQuery.md)
 
-## Hierarchy
+## Type Parameters
 
-- **`QueryBase`**
-
-  ↳ [`Query`](Query.md)
-
-  ↳ [`VectorQuery`](VectorQuery.md)
+• **NativeQueryType** *extends* `NativeQuery` \| `NativeVectorQuery`
 
 ## Implements
 
-- `AsyncIterable`\<`RecordBatch`\>
-
-## Table of contents
-
-### Constructors
-
-- [constructor](QueryBase.md#constructor)
-
-### Properties
-
-- [inner](QueryBase.md#inner)
-
-### Methods
-
-- [[asyncIterator]](QueryBase.md#[asynciterator])
-- [doCall](QueryBase.md#docall)
-- [execute](QueryBase.md#execute)
-- [explainPlan](QueryBase.md#explainplan)
-- [filter](QueryBase.md#filter)
-- [limit](QueryBase.md#limit)
-- [nativeExecute](QueryBase.md#nativeexecute)
-- [select](QueryBase.md#select)
-- [toArray](QueryBase.md#toarray)
-- [toArrow](QueryBase.md#toarrow)
-- [where](QueryBase.md#where)
+- `AsyncIterable`&lt;`RecordBatch`&gt;
 
 ## Constructors
 
-### constructor
+### new QueryBase()
 
-• **new QueryBase**\<`NativeQueryType`\>(`inner`): [`QueryBase`](QueryBase.md)\<`NativeQueryType`\>
-
-#### Type parameters
-
-| Name | Type |
-| :------ | :------ |
-| `NativeQueryType` | extends `Query` \| `VectorQuery` |
+> `protected` **new QueryBase**&lt;`NativeQueryType`&gt;(`inner`): [`QueryBase`](QueryBase.md)&lt;`NativeQueryType`&gt;
 
 #### Parameters
 
-| Name | Type |
-| :------ | :------ |
-| `inner` | `NativeQueryType` \| `Promise`\<`NativeQueryType`\> |
+• **inner**: `NativeQueryType` \| `Promise`&lt;`NativeQueryType`&gt;
 
 #### Returns
 
-[`QueryBase`](QueryBase.md)\<`NativeQueryType`\>
-
-#### Defined in
-
-[query.ts:95](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/query.ts#L95)
+[`QueryBase`](QueryBase.md)&lt;`NativeQueryType`&gt;
 
 ## Properties
 
 ### inner
 
-• `Protected` **inner**: `NativeQueryType` \| `Promise`\<`NativeQueryType`\>
-
-#### Defined in
-
-[query.ts:96](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/query.ts#L96)
+> `protected` **inner**: `NativeQueryType` \| `Promise`&lt;`NativeQueryType`&gt;
 
 ## Methods
 
-### [asyncIterator]
+### \[asyncIterator\]()
 
-▸ **[asyncIterator]**(): `AsyncIterator`\<`RecordBatch`\<`any`\>, `any`, `undefined`\>
+> **\[asyncIterator\]**(): `AsyncIterator`&lt;`RecordBatch`&lt;`any`&gt;, `any`, `undefined`&gt;
 
 #### Returns
 
-`AsyncIterator`\<`RecordBatch`\<`any`\>, `any`, `undefined`\>
+`AsyncIterator`&lt;`RecordBatch`&lt;`any`&gt;, `any`, `undefined`&gt;
 
 #### Implementation of
 
-AsyncIterable.[asyncIterator]
+`AsyncIterable.[asyncIterator]`
 
-#### Defined in
+***
 
-[query.ts:226](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/query.ts#L226)
+### doCall()
 
-___
-
-### doCall
-
-▸ **doCall**(`fn`): `void`
+> `protected` **doCall**(`fn`): `void`
 
 #### Parameters
 
-| Name | Type |
-| :------ | :------ |
-| `fn` | (`inner`: `NativeQueryType`) => `void` |
+• **fn**
 
 #### Returns
 
 `void`
 
-#### Defined in
+***
 
-[query.ts:102](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/query.ts#L102)
+### execute()
 
-___
-
-### execute
-
-▸ **execute**(`options?`): [`RecordBatchIterator`](RecordBatchIterator.md)
+> `protected` **execute**(`options`?): [`RecordBatchIterator`](RecordBatchIterator.md)
 
 Execute the query and return the results as an
 
 #### Parameters
 
-| Name | Type |
-| :------ | :------ |
-| `options?` | `Partial`\<`QueryExecutionOptions`\> |
+• **options?**: `Partial`&lt;`QueryExecutionOptions`&gt;
 
 #### Returns
 
 [`RecordBatchIterator`](RecordBatchIterator.md)
 
-**`See`**
+#### See
 
  - AsyncIterator
 of
@@ -150,31 +97,27 @@ This readahead is limited however and backpressure will be applied if this
 stream is consumed slowly (this constrains the maximum memory used by a
 single query)
 
-#### Defined in
+***
 
-[query.ts:219](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/query.ts#L219)
+### explainPlan()
 
-___
-
-### explainPlan
-
-▸ **explainPlan**(`verbose?`): `Promise`\<`string`\>
+> **explainPlan**(`verbose`): `Promise`&lt;`string`&gt;
 
 Generates an explanation of the query execution plan.
 
 #### Parameters
 
-| Name | Type | Default value | Description |
-| :------ | :------ | :------ | :------ |
-| `verbose` | `boolean` | `false` | If true, provides a more detailed explanation. Defaults to false. |
+• **verbose**: `boolean` = `false`
+
+If true, provides a more detailed explanation. Defaults to false.
 
 #### Returns
 
-`Promise`\<`string`\>
+`Promise`&lt;`string`&gt;
 
 A Promise that resolves to a string containing the query execution plan explanation.
 
-**`Example`**
+#### Example
 
 ```ts
 import * as lancedb from "@lancedb/lancedb"
@@ -185,45 +128,35 @@ const table = await db.createTable("my_table", [
 const plan = await table.query().nearestTo([0.5, 0.2]).explainPlan();
 ```
 
-#### Defined in
+***
 
-[query.ts:267](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/query.ts#L267)
+### ~~filter()~~
 
-___
-
-### filter
-
-▸ **filter**(`predicate`): `this`
+> **filter**(`predicate`): `this`
 
 A filter statement to be applied to this query.
 
 #### Parameters
 
-| Name | Type |
-| :------ | :------ |
-| `predicate` | `string` |
+• **predicate**: `string`
 
 #### Returns
 
 `this`
 
-**`Alias`**
+#### Alias
 
 where
 
-**`Deprecated`**
+#### Deprecated
 
 Use `where` instead
 
-#### Defined in
+***
 
-[query.ts:133](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/query.ts#L133)
+### limit()
 
-___
-
-### limit
-
-▸ **limit**(`limit`): `this`
+> **limit**(`limit`): `this`
 
 Set the maximum number of results to return.
 
@@ -232,43 +165,31 @@ called then every valid row from the table will be returned.
 
 #### Parameters
 
-| Name | Type |
-| :------ | :------ |
-| `limit` | `number` |
+• **limit**: `number`
 
 #### Returns
 
 `this`
 
-#### Defined in
+***
 
-[query.ts:193](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/query.ts#L193)
+### nativeExecute()
 
-___
-
-### nativeExecute
-
-▸ **nativeExecute**(`options?`): `Promise`\<`RecordBatchIterator`\>
+> `protected` **nativeExecute**(`options`?): `Promise`&lt;`RecordBatchIterator`&gt;
 
 #### Parameters
 
-| Name | Type |
-| :------ | :------ |
-| `options?` | `Partial`\<`QueryExecutionOptions`\> |
+• **options?**: `Partial`&lt;`QueryExecutionOptions`&gt;
 
 #### Returns
 
-`Promise`\<`RecordBatchIterator`\>
+`Promise`&lt;`RecordBatchIterator`&gt;
 
-#### Defined in
+***
 
-[query.ts:198](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/query.ts#L198)
+### select()
 
-___
-
-### select
-
-▸ **select**(`columns`): `this`
+> **select**(`columns`): `this`
 
 Return only the specified columns.
 
@@ -292,15 +213,13 @@ input to this method would be:
 
 #### Parameters
 
-| Name | Type |
-| :------ | :------ |
-| `columns` | `string` \| `string`[] \| `Record`\<`string`, `string`\> \| `Map`\<`string`, `string`\> |
+• **columns**: `string` \| `string`[] \| `Record`&lt;`string`, `string`&gt; \| `Map`&lt;`string`, `string`&gt;
 
 #### Returns
 
 `this`
 
-**`Example`**
+#### Example
 
 ```ts
 new Map([["combined", "a + b"], ["c", "c"]])
@@ -313,63 +232,47 @@ uses `Object.entries` which should preserve the insertion order of the object.  
 object insertion order is easy to get wrong and `Map` is more foolproof.
 ```
 
-#### Defined in
+***
 
-[query.ts:167](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/query.ts#L167)
+### toArray()
 
-___
-
-### toArray
-
-▸ **toArray**(`options?`): `Promise`\<`any`[]\>
+> **toArray**(`options`?): `Promise`&lt;`any`[]&gt;
 
 Collect the results as an array of objects.
 
 #### Parameters
 
-| Name | Type |
-| :------ | :------ |
-| `options?` | `Partial`\<`QueryExecutionOptions`\> |
+• **options?**: `Partial`&lt;`QueryExecutionOptions`&gt;
 
 #### Returns
 
-`Promise`\<`any`[]\>
+`Promise`&lt;`any`[]&gt;
 
-#### Defined in
+***
 
-[query.ts:248](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/query.ts#L248)
+### toArrow()
 
-___
-
-### toArrow
-
-▸ **toArrow**(`options?`): `Promise`\<`Table`\<`any`\>\>
+> **toArrow**(`options`?): `Promise`&lt;`Table`&lt;`any`&gt;&gt;
 
 Collect the results as an Arrow
 
 #### Parameters
 
-| Name | Type |
-| :------ | :------ |
-| `options?` | `Partial`\<`QueryExecutionOptions`\> |
+• **options?**: `Partial`&lt;`QueryExecutionOptions`&gt;
 
 #### Returns
 
-`Promise`\<`Table`\<`any`\>\>
+`Promise`&lt;`Table`&lt;`any`&gt;&gt;
 
-**`See`**
+#### See
 
 ArrowTable.
 
-#### Defined in
+***
 
-[query.ts:232](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/query.ts#L232)
+### where()
 
-___
-
-### where
-
-▸ **where**(`predicate`): `this`
+> **where**(`predicate`): `this`
 
 A filter statement to be applied to this query.
 
@@ -377,15 +280,13 @@ The filter should be supplied as an SQL query string.  For example:
 
 #### Parameters
 
-| Name | Type |
-| :------ | :------ |
-| `predicate` | `string` |
+• **predicate**: `string`
 
 #### Returns
 
 `this`
 
-**`Example`**
+#### Example
 
 ```ts
 x > 10
@@ -395,7 +296,3 @@ x > 5 OR y = 'test'
 Filtering performance can often be improved by creating a scalar index
 on the filter column(s).
 ```
-
-#### Defined in
-
-[query.ts:124](https://github.com/universalmind303/lancedb/blob/833b375/nodejs/lancedb/query.ts#L124)

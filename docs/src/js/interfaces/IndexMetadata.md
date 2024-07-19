@@ -1,30 +1,19 @@
-[@lancedb/lancedb](../README.md) / [Exports](../modules.md) / IndexMetadata
+[**@lancedb/lancedb**](../README.md) • **Docs**
+
+***
+
+[@lancedb/lancedb](../globals.md) / IndexMetadata
 
 # Interface: IndexMetadata
 
-## Table of contents
-
-### Properties
-
-- [indexType](IndexMetadata.md#indextype)
-- [metricType](IndexMetadata.md#metrictype)
-
 ## Properties
 
-### indexType
+### indexType?
 
-• `Optional` **indexType**: `string`
+> `optional` **indexType**: `string`
 
-#### Defined in
+***
 
-native.d.ts:89
+### metricType?
 
-___
-
-### metricType
-
-• `Optional` **metricType**: `string`
-
-#### Defined in
-
-native.d.ts:88
+> `optional` **metricType**: `string`
