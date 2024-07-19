@@ -834,3 +834,25 @@ describe("when calling explainPlan", () => {
     expect(plan).toMatch("KNN");
   });
 });
+
+describe("column name options", () => {
+  let tmpDir: tmp.DirResult;
+  let table: Table;
+  beforeEach(async () => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+    const con = await connect(tmpDir.name);
+    table = await con.createTable("vectors", [
+      { camelCase: 1, vector: [0.1, 0.2] },
+    ]);
+  });
+
+  test("can select columns with different names", async () => {
+    const results = await table.query().select(["camelCase"]).toArray();
+    expect(results[0].camelCase).toBe(1);
+  });
+
+  test("can filter on columns with different names", async () => {
+    const results = await table.query().where("`camelCase` = 1").toArray();
+    expect(results[0].camelCase).toBe(1);
+  });
+});
