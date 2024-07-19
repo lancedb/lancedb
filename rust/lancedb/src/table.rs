@@ -1840,12 +1840,6 @@ impl TableInternal for NativeTable {
         } else {
             builder.when_not_matched_by_source(WhenNotMatchedBySource::Keep);
         }
-
-        if let Some(write_options) = params.write_options {
-            if let Some(write_params) = &write_options.lance_write_params {
-                builder.with_write_params(write_params.clone());
-            }
-        }
         let job = builder.try_build()?;
         let (new_dataset, _stats) = job.execute_reader(new_data).await?;
         self.dataset.set_latest(new_dataset.as_ref().clone()).await;
