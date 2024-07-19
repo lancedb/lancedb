@@ -35,6 +35,15 @@
             }
             })
             ```
+
+        !!! note "Yarn users"
+
+            Unlike other package managers, Yarn does not automatically resolve peer dependencies. If you are using Yarn, you will need to manually install 'apache-arrow':
+
+            ```shell
+            yarn add apache-arrow
+            ```
+
     === "vectordb (deprecated)"
 
         ```shell
@@ -53,6 +62,15 @@
             }
             })
             ```
+
+        !!! note "Yarn users"
+
+            Unlike other package managers, Yarn does not automatically resolve peer dependencies. If you are using Yarn, you will need to manually install 'apache-arrow':
+
+            ```shell
+            yarn add apache-arrow
+            ```
+
 === "Rust"
 
     ```shell
