@@ -18,6 +18,7 @@ import {
 } from "./embedding_function";
 import "reflect-metadata";
 import { OpenAIEmbeddingFunction } from "./openai";
+import { XenovaTransformer } from "./transformers";
 
 interface EmbeddingFunctionCreate<T extends EmbeddingFunction> {
   create(options?: T["TOptions"]): T;
@@ -61,12 +62,15 @@ export class EmbeddingFunctionRegistry {
     };
   }
 
+  get(name: "openai"): EmbeddingFunctionCreate<OpenAIEmbeddingFunction>;
+  get(name: "xenova"): EmbeddingFunctionCreate<XenovaTransformer>;
+  get<T extends EmbeddingFunction<unknown>>(name: string): EmbeddingFunctionCreate<T> | undefined;
   /**
    * Fetch an embedding function by name
    * @param name The name of the function
    */
-  get<T extends EmbeddingFunction<unknown>, Name extends string = "">(
-    name: Name extends "openai" ? "openai" : string,
+  get(
+    name: string,
     //This makes it so that you can use string constants as "types", or use an explicitly supplied type
     // ex:
     // `registry.get("openai") -> EmbeddingFunctionCreate<OpenAIEmbeddingFunction>`
@@ -76,23 +80,18 @@ export class EmbeddingFunctionRegistry {
     // ```ts
     // const openai: OpenAIEmbeddingFunction = registry.get("openai").create()
     // ```
-  ): Name extends "openai"
-    ? EmbeddingFunctionCreate<OpenAIEmbeddingFunction>
-    : EmbeddingFunctionCreate<T> | undefined {
-    type Output = Name extends "openai"
-      ? EmbeddingFunctionCreate<OpenAIEmbeddingFunction>
-      : EmbeddingFunctionCreate<T> | undefined;
+  ): EmbeddingFunctionCreate<EmbeddingFunction<unknown>> | undefined {
 
     const factory = this.#functions.get(name);
     if (!factory) {
-      return undefined as Output;
+      return undefined as any;
     }
 
     return {
-      create: function (options?: T["TOptions"]) {
+      create: function (options?: any) {
         return new factory(options);
       },
-    } as Output;
+    } as any;
   }
 
   /**

@@ -22,6 +22,7 @@ export { EmbeddingFunction } from "./embedding_function";
 
 // We need to explicitly export '*' so that the `register` decorator actually registers the class.
 export * from "./openai";
+export * from "./transformers";
 export * from "./registry";
 
 /**
