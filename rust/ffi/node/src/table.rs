@@ -168,7 +168,7 @@ impl JsTable {
         let table = js_table.table.clone();
 
         rt.spawn(async move {
-            let delete_result = table.delete(&predicate, None).await;
+            let delete_result = table.delete(&predicate).await;
 
             deferred.settle_with(&channel, move |mut cx| {
                 delete_result.or_throw(&mut cx)?;

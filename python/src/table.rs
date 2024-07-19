@@ -119,7 +119,7 @@ impl Table {
     pub fn delete(self_: PyRef<'_, Self>, condition: String) -> PyResult<&PyAny> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
-            inner.delete(&condition, None).await.infer_error()
+            inner.delete(&condition).await.infer_error()
         })
     }
 

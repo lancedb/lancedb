@@ -124,7 +124,7 @@ impl Table {
 
     #[napi(catch_unwind)]
     pub async fn delete(&self, predicate: String) -> napi::Result<()> {
-        self.inner_ref()?.delete(&predicate, None).await.map_err(|e| {
+        self.inner_ref()?.delete(&predicate).await.map_err(|e| {
             napi::Error::from_reason(format!(
                 "Failed to delete rows in table {}: predicate={}",
                 self.name, e

@@ -391,7 +391,7 @@ pub(crate) trait TableInternal: std::fmt::Display + std::fmt::Debug + Send + Syn
         add: AddDataBuilder<NoData>,
         data: Box<dyn arrow_array::RecordBatchReader + Send>,
     ) -> Result<()>;
-    async fn delete(&self, predicate: &str, write_options: Option<WriteOptions>) -> Result<()>;
+    async fn delete(&self, predicate: &str) -> Result<()>;
     async fn update(&self, update: UpdateBuilder) -> Result<()>;
     async fn create_index(&self, index: IndexBuilder) -> Result<()>;
     async fn list_indices(&self) -> Result<Vec<IndexConfig>>;
@@ -558,8 +558,8 @@ impl Table {
     /// tbl.delete("id > 5").await.unwrap();
     /// # });
     /// ```
-    pub async fn delete(&self, predicate: &str, write_options: Option<WriteOptions>) -> Result<()> {
-        self.inner.delete(predicate, write_options).await
+    pub async fn delete(&self, predicate: &str) -> Result<()> {
+        self.inner.delete(predicate).await
     }
 
     /// Create an index on the provided column(s).
@@ -1853,9 +1853,8 @@ impl TableInternal for NativeTable {
     }
 
     /// Delete rows from the table
-    async fn delete(&self, predicate: &str, write_options: Option<WriteOptions>) -> Result<()> {
-        let write_params = write_options.and_then(|e| e.lance_write_params);
-        self.dataset.get_mut().await?.delete(predicate, write_params).await?;
+    async fn delete(&self, predicate: &str) -> Result<()> {
+        self.dataset.get_mut().await?.delete(predicate).await?;
         Ok(())
     }
 
