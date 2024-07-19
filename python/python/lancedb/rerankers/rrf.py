@@ -23,9 +23,7 @@ class RRFReranker(Reranker):
         with the relevance score.
     """
 
-    def __init__(
-        self, K: int = 60, return_score="relevance"
-    ):
+    def __init__(self, K: int = 60, return_score="relevance"):
         if K <= 0:
             raise ValueError("K must be greater than 0")
         super().__init__(return_score)
@@ -45,12 +43,14 @@ class RRFReranker(Reranker):
         for result in [vector_list, fts_list]:
             for i, result in enumerate(result, 1):
                 rrf_score_map[result["_rowid"]] += 1 / (i + self.K)
-        
+
         # Sort the results based on RRF score
         combined_results = self.merge_results(vector_results, fts_results)
         combined_row_ids = combined_results["_rowid"].to_pylist()
         relevance_scores = [rrf_score_map[row_id] for row_id in combined_row_ids]
-        combined_results = combined_results.append_column("_relevance_score", pa.array(relevance_scores, type=pa.float32()))
+        combined_results = combined_results.append_column(
+            "_relevance_score", pa.array(relevance_scores, type=pa.float32())
+        )
         combined_results.sort_by([("_relevance_score", "descending")])
 
         if self.score == "relevance":

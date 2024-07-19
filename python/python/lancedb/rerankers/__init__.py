@@ -15,5 +15,5 @@ __all__ = [
     "OpenaiReranker",
     "ColbertReranker",
     "JinaReranker",
-    "RRFReranker"
+    "RRFReranker",
 ]

@@ -178,13 +178,16 @@ def _run_test_hybrid_reranker(reranker, tmp_path):
         "be descending."
     )
 
+
 def test_linear_combination(tmp_path):
     reranker = LinearCombinationReranker()
     _run_test_hybrid_reranker(reranker, tmp_path)
 
+
 def test_rrf_reranker(tmp_path):
     reranker = RRFReranker()
     _run_test_hybrid_reranker(reranker, tmp_path)
+
 
 @pytest.mark.skipif(
     os.environ.get("COHERE_API_KEY") is None, reason="COHERE_API_KEY not set"
