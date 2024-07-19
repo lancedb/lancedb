@@ -103,12 +103,25 @@ export type IntoVector =
   | number[]
   | Promise<Float32Array | Float64Array | number[]>;
 
+export type FloatLike =
+  | import("apache-arrow-13").Float
+  | import("apache-arrow-14").Float
+  | import("apache-arrow-15").Float
+  | import("apache-arrow-16").Float
+  | import("apache-arrow-17").Float;
+export type DataTypeLike =
+  | import("apache-arrow-13").DataType
+  | import("apache-arrow-14").DataType
+  | import("apache-arrow-15").DataType
+  | import("apache-arrow-16").DataType
+  | import("apache-arrow-17").DataType;
+
 export function isArrowTable(value: object): value is TableLike {
   if (value instanceof ArrowTable) return true;
   return "schema" in value && "batches" in value;
 }
 
-export function isDataType(value: unknown): value is DataType {
+export function isDataType(value: unknown): value is DataTypeLike {
   return (
     value instanceof DataType ||
     DataType.isNull(value) ||
@@ -743,7 +756,7 @@ export async function convertToTable(
 /** Creates the Arrow Type for a Vector column with dimension `dim` */
 export function newVectorType<T extends Float>(
   dim: number,
-  innerType: T,
+  innerType: unknown,
 ): FixedSizeList<T> {
   // in Lance we always default to have the elements nullable, so we need to set it to true
   // otherwise we often get schema mismatches because the stored data always has schema with nullable elements

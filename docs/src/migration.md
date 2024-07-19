@@ -82,7 +82,7 @@ For JS/TS users, we offer a brand new SDK [@lancedb/lancedb](https://www.npmjs.c
 
 ### Changes to DB APIs
 
-We tried to keep the API as similar as possible to the previous version, but there are a few small changes.
+We tried to keep the API as similar as possible to the previous version, but there are a few small changes
 
 ### Creating Tables
 
