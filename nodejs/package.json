@@ -84,6 +84,6 @@
     "openai": "^4.29.2"
   },
   "peerDependencies": {
-    "apache-arrow": "^15.0.0"
+    "apache-arrow": ">=13.0.0 <=16.0.0"
   }
 }
