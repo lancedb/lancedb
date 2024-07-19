@@ -49,7 +49,7 @@ const example = async () => {
       { vector: [5.9, 26.5], item: "bar", price: 20.0 },
     ];
     const tbl = await db.createTable({
-      name: "myTable",
+      name: "myTableWithSchema",
       data,
       schema,
     });
