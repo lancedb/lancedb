@@ -46,8 +46,8 @@
     "shx": "^0.3.4",
     "tmp": "^0.2.3",
     "ts-jest": "^29.1.2",
-    "typedoc": "^0.25.7",
-    "typedoc-plugin-markdown": "^3.17.1",
+    "typedoc": "^0.26.4",
+    "typedoc-plugin-markdown": "^4.2.1",
     "typescript": "^5.3.3",
     "typescript-eslint": "^7.1.0",
     "@types/axios": "^0.14.0"
