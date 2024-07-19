@@ -1127,14 +1127,14 @@ class AsyncQueryBase(object):
         Columns will always be returned in the order given, even if that order is
         different than the order used when adding the data.
         """
-        if isinstance(columns, dict):
-            column_tuples = list(columns.items())
+        if isinstance(columns, list) and all(isinstance(c, str) for c in columns):
+            self._inner.select_columns(columns)
+        elif isinstance(columns, dict) and all(
+            isinstance(k, str) and isinstance(v, str) for k, v in columns.items()
+        ):
+            self._inner.select(list(columns.items()))
         else:
-            try:
-                column_tuples = [(c, c) for c in columns]
-            except TypeError:
-                raise TypeError("columns must be a list of column names or a dict")
-        self._inner.select(column_tuples)
+            raise TypeError("columns must be a list of column names or a dict")
         return self
 
     def limit(self, limit: int) -> AsyncQuery:
