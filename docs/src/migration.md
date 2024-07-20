@@ -80,9 +80,7 @@ we plan to support them soon.
 
 For JS/TS users, we offer a brand new SDK [@lancedb/lancedb](https://www.npmjs.com/package/@lancedb/lancedb)
 
-### Changes to DB APIs
-
-We tried to keep the API as similar as possible to the previous version, but there are a few small changes
+We tried to keep the API as similar as possible to the previous version, but there are a few small changes. Here are the most important ones:
 
 ### Creating Tables
 
