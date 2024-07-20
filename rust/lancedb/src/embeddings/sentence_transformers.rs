@@ -1,16 +1,18 @@
 use std::{borrow::Cow, sync::Arc};
 
 use super::EmbeddingFunction;
-use arrow::array::{
-    AsArray, Float16Builder, Float32Builder, Float64Builder, Int64Builder, UInt32Builder,
-    UInt8Builder,
+use arrow::{
+    array::{AsArray, PrimitiveBuilder},
+    datatypes::{
+        ArrowPrimitiveType, Float16Type, Float32Type, Float64Type, Int64Type, UInt32Type, UInt8Type,
+    },
 };
-use arrow_array::{Array, FixedSizeListArray};
+use arrow_array::{Array, FixedSizeListArray, PrimitiveArray};
 use arrow_data::ArrayData;
 use arrow_schema::DataType;
-use candle_core::{CpuStorage, Device, Storage, Tensor};
+use candle_core::{CpuStorage, Device, Layout, Storage, Tensor};
 use candle_nn::VarBuilder;
-use candle_transformers::models::bert::{BertModel, Config, DTYPE};
+use candle_transformers::models::bert::{BertModel, DTYPE};
 use hf_hub::{api::sync::Api, Repo, RepoType};
 use tokenizers::{tokenizer::Tokenizer, PaddingParams};
 
@@ -134,7 +136,7 @@ impl SentenceTransformersEmbeddingsBuilder {
         self
     }
 
-    pub fn build(mut self) -> SentenceTransformersEmbeddings {
+    pub fn build(mut self) -> crate::Result<SentenceTransformersEmbeddings> {
         let model_id = self.model.as_deref().unwrap_or("all-MiniLM-L6-v2");
         let model_id = format!("sentence-transformers/{}", model_id);
         let config = self.config_path.as_deref().unwrap_or("config.json");
@@ -147,62 +149,46 @@ impl SentenceTransformersEmbeddingsBuilder {
         } else {
             Repo::new(model_id, RepoType::Model)
         };
+
         let (config_filename, tokenizer_filename, weights_filename) = {
-            let api = Api::new().expect("failed to create api");
+            let api = Api::new()?;
             let api = api.repo(repo);
-            let config = api.get(config).expect("failed to get config");
-            let tokenizer = api.get(tokenizer).expect("failed to get tokenizer");
-            let weights = api.get(model_path).expect("failed to get weights");
+            let config = api.get(config)?;
+            let tokenizer = api.get(tokenizer)?;
+            let weights = api.get(model_path)?;
 
             (config, tokenizer, weights)
         };
 
-        let config = std::fs::read_to_string(config_filename).expect("failed to read config");
-        let config: Config = serde_json::from_str(&config).expect("failed to parse config");
-
+        let config = std::fs::read_to_string(config_filename)
+            .map_err(|e| crate::Error::Runtime {
+                message: format!("Error reading config file: {}", e),
+            })
+            .and_then(|s| {
+                serde_json::from_str(&s).map_err(|e| crate::Error::Runtime {
+                    message: format!("Error deserializing config file: {}", e),
+                })
+            })?;
         let mut tokenizer =
-            Tokenizer::from_file(tokenizer_filename).expect("failed to load tokenizer");
+            Tokenizer::from_file(tokenizer_filename).map_err(|e| crate::Error::Runtime {
+                message: format!("Error loading tokenizer: {}", e),
+            })?;
         if self.padding.is_some() {
             tokenizer.with_padding(self.padding.take());
         }
 
-        let vb = unsafe {
-            VarBuilder::from_mmaped_safetensors(&[weights_filename], DTYPE, &device)
-                .expect("failed to load weights")
-        };
-        let model = BertModel::load(vb, &config).expect("failed to load model");
-        SentenceTransformersEmbeddings {
+        let vb =
+            unsafe { VarBuilder::from_mmaped_safetensors(&[weights_filename], DTYPE, &device)? };
+        let model = BertModel::load(vb, &config)?;
+        Ok(SentenceTransformersEmbeddings {
             model,
             tokenizer,
             device,
             n_dims: self.n_dims,
-        }
+        })
     }
 }
 
-macro_rules! from_cpu_storage {
-    ($cpu_storage:ident, $data:ident, $builder:ident, $layout:ident, $embeddings:ident, $d1:ident, $d2:ident) => {{
-        let mut builder = $builder::new();
-        match $layout.contiguous_offsets() {
-            Some((o1, o2)) => {
-                let $data = &$data[o1..o2];
-                builder.append_slice($data);
-                builder.finish()
-            }
-            None => {
-                let mut src_index = $embeddings.strided_index();
-
-                for _idx_row in 0..$d1 {
-                    let row = (0..$d2)
-                        .map(|_| $data[src_index.next().unwrap()])
-                        .collect::<Vec<_>>();
-                    builder.append_slice(&row);
-                }
-                builder.finish()
-            }
-        }
-    }};
-}
 impl SentenceTransformersEmbeddings {
     pub fn builder() -> SentenceTransformersEmbeddingsBuilder {
         SentenceTransformersEmbeddingsBuilder::new()
@@ -219,21 +205,15 @@ impl SentenceTransformersEmbeddings {
     fn compute_ndims_and_dtype(&self) -> crate::Result<(usize, DataType)> {
         let token = self.tokenizer.encode("hello", true).unwrap();
         let token = token.get_ids().to_vec();
-        let input_ids =
-            Tensor::new(vec![token], &self.device).map_err(|e| crate::Error::Runtime {
-                message: format!("failed to create token ids: {}", e),
-            })?;
+        let input_ids = Tensor::new(vec![token], &self.device)?;
 
-        let token_type_ids = input_ids.zeros_like().map_err(|e| crate::Error::Runtime {
-            message: format!("failed to create token ids: {}", e),
-        })?;
+        let token_type_ids = input_ids.zeros_like()?;
 
         let embeddings = self
             .model
             .forward(&input_ids, &token_type_ids)
-            .map_err(|e| crate::Error::Runtime {
-                message: format!("failed to compute embeddings: {}", e),
-            })?;
+            // TODO: it'd be nice to support other devices
+            .and_then(|output| output.to_device(&Device::Cpu))?;
 
         let (_, _, n_dims) = embeddings.dims3().unwrap();
         let (storage, _) = embeddings.storage_and_layout();
@@ -249,7 +229,7 @@ impl SentenceTransformersEmbeddings {
                     message: "unsupported data type".to_string(),
                 })
             }
-            _ => panic!("unsupported device"),
+            _ => unreachable!("we already moved the tensor to the CPU device"),
         };
         Ok((n_dims, dtype))
     }
@@ -265,29 +245,57 @@ impl SentenceTransformersEmbeddings {
                 message: "Expected Utf8 data type".to_string(),
             });
         }
-
+        let check_nulls = |source: &dyn Array| {
+            if source.null_count() > 0 {
+                return Err(crate::Error::Runtime {
+                    message: "null values not supported".to_string(),
+                });
+            }
+            Ok(())
+        };
         let tokens = match source.data_type() {
             DataType::Utf8 => {
-                if source.null_count() > 0 {
-                    return Err(crate::Error::Runtime {
-                        message: "null values not supported".to_string(),
-                    });
-                }
+                check_nulls(&*source)?;
                 source
                     .as_string::<i32>()
                     // TODO: should we do this in parallel? (e.g. using rayon)
                     .into_iter()
                     .map(|v| {
                         let value = v.unwrap();
-                        let token = self.tokenizer.encode(value, true).unwrap();
-                        let token = token.get_ids().to_vec();
-                        Tensor::new(token.as_slice(), &self.device).map_err(|e| {
+                        let token = self.tokenizer.encode(value, true).map_err(|e| {
                             crate::Error::Runtime {
-                                message: format!("failed to create token ids: {}", e),
+                                message: format!("failed to encode value: {}", e),
                             }
-                        })
+                        })?;
+                        let token = token.get_ids().to_vec();
+                        Ok(Tensor::new(token.as_slice(), &self.device)?)
                     })
                     .collect::<crate::Result<Vec<_>>>()?
+            }
+            DataType::LargeUtf8 => {
+                check_nulls(&*source)?;
+
+                source
+                    .as_string::<i64>()
+                    // TODO: should we do this in parallel? (e.g. using rayon)
+                    .into_iter()
+                    .map(|v| {
+                        let value = v.unwrap();
+                        let token = self.tokenizer.encode(value, true).map_err(|e| {
+                            crate::Error::Runtime {
+                                message: format!("failed to encode value: {}", e),
+                            }
+                        })?;
+
+                        let token = token.get_ids().to_vec();
+                        Ok(Tensor::new(token.as_slice(), &self.device)?)
+                    })
+                    .collect::<crate::Result<Vec<_>>>()?
+            }
+            DataType::Utf8View => {
+                return Err(crate::Error::Runtime {
+                    message: "Utf8View not yet implemented".to_string(),
+                })
             }
             _ => {
                 return Err(crate::Error::Runtime {
@@ -301,6 +309,8 @@ impl SentenceTransformersEmbeddings {
                 let token_type_ids = tokens.zeros_like()?;
                 self.model.forward(&tokens, &token_type_ids)
             })
+            // TODO: it'd be nice to support other devices
+            .and_then(|tokens| tokens.to_device(&Device::Cpu))
             .map_err(|e| crate::Error::Runtime {
                 message: format!("failed to compute embeddings: {}", e),
             })?;
@@ -321,75 +331,59 @@ impl SentenceTransformersEmbeddings {
                 })?;
                 let (storage, layout) = embeddings.storage_and_layout();
                 match &*storage {
-                    Storage::Cpu(CpuStorage::U8(data)) => (
-                        Arc::new(from_cpu_storage!(
-                            u8,
-                            data,
-                            UInt8Builder,
-                            layout,
-                            embeddings,
-                            d1,
-                            d2
-                        )),
-                        DataType::UInt8,
-                    ),
+                    Storage::Cpu(CpuStorage::U8(data)) => {
+                        let data: &[u8] = data.as_slice();
+                        let arr = from_cpu_storage::<UInt8Type>(data, layout, &embeddings, d1, d2);
+
+                        (Arc::new(arr), DataType::UInt8)
+                    }
                     Storage::Cpu(CpuStorage::U32(data)) => (
-                        Arc::new(from_cpu_storage!(
-                            u32,
+                        Arc::new(from_cpu_storage::<UInt32Type>(
                             data,
-                            UInt32Builder,
                             layout,
-                            embeddings,
+                            &embeddings,
                             d1,
-                            d2
+                            d2,
                         )),
                         DataType::UInt32,
                     ),
                     Storage::Cpu(CpuStorage::I64(data)) => (
-                        Arc::new(from_cpu_storage!(
-                            i64,
+                        Arc::new(from_cpu_storage::<Int64Type>(
                             data,
-                            Int64Builder,
                             layout,
-                            embeddings,
+                            &embeddings,
                             d1,
-                            d2
+                            d2,
                         )),
                         DataType::Int64,
                     ),
                     Storage::Cpu(CpuStorage::F16(data)) => (
-                        Arc::new(from_cpu_storage!(
-                            f16,
+                        Arc::new(from_cpu_storage::<Float16Type>(
                             data,
-                            Float16Builder,
                             layout,
-                            embeddings,
+                            &embeddings,
                             d1,
-                            d2
+                            d2,
                         )),
                         DataType::Float16,
                     ),
                     Storage::Cpu(CpuStorage::F32(data)) => (
-                        Arc::new(from_cpu_storage!(
-                            f32,
+                        Arc::new(from_cpu_storage::<Float32Type>(
                             data,
-                            Float32Builder,
                             layout,
-                            embeddings,
+                            &embeddings,
                             d1,
-                            d2
+                            d2,
                         )),
                         DataType::Float32,
                     ),
                     Storage::Cpu(CpuStorage::F64(data)) => (
-                        Arc::new(from_cpu_storage!(
-                            f64,
+                        Arc::new(from_cpu_storage::<Float64Type>(
                             data,
-                            Float64Builder,
                             layout,
-                            embeddings,
+                            &embeddings,
                             d1,
-                            d2
+                            d2,
                         )),
                         DataType::Float64,
                     ),
@@ -443,5 +437,34 @@ impl EmbeddingFunction for SentenceTransformersEmbeddings {
     fn compute_query_embeddings(&self, input: Arc<dyn Array>) -> crate::Result<Arc<dyn Array>> {
         let (arr, _) = self.compute_inner(input)?;
         Ok(arr)
+    }
+}
+
+fn from_cpu_storage<T: ArrowPrimitiveType>(
+    buffer: &[T::Native],
+    layout: &Layout,
+    embeddings: &Tensor,
+    dim1: usize,
+    dim2: usize,
+) -> PrimitiveArray<T> {
+    let mut builder = PrimitiveBuilder::<T>::with_capacity(dim1 * dim2);
+
+    match layout.contiguous_offsets() {
+        Some((o1, o2)) => {
+            let data = &buffer[o1..o2];
+            builder.append_slice(data);
+            builder.finish()
+        }
+        None => {
+            let mut src_index = embeddings.strided_index();
+
+            for _idx_row in 0..dim1 {
+                let row = (0..dim2)
+                    .map(|_| buffer[src_index.next().unwrap()])
+                    .collect::<Vec<_>>();
+                builder.append_slice(&row);
+            }
+            builder.finish()
+        }
     }
 }

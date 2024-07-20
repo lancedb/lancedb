@@ -18,7 +18,7 @@ use lancedb::{
 async fn main() -> Result<()> {
     let tempdir = tempfile::tempdir().unwrap();
     let tempdir = tempdir.path().to_str().unwrap();
-    let embedding = SentenceTransformersEmbeddings::builder().build();
+    let embedding = SentenceTransformersEmbeddings::builder().build()?;
     let embedding = Arc::new(embedding);
     let db = connect(tempdir).execute().await?;
     db.embedding_registry()
