@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { DataType, Field, Schema } from "../arrow";
+import { Field, Schema } from "../arrow";
 import { isDataType } from "../arrow";
 import { sanitizeType } from "../sanitize";
 import { EmbeddingFunction } from "./embedding_function";

@@ -40,6 +40,7 @@ export interface EmbeddingFunctionConstructor<
 > {
   new (modelOptions?: T["TOptions"]): T;
 }
+
 /**
  * An embedding function that automatically creates vector representation for a given column.
  */
@@ -80,6 +81,8 @@ export abstract class EmbeddingFunction<
    * ```
    */
   abstract toJSON(): Partial<M>;
+
+  async init?(): Promise<void>;
 
   /**
    * sourceField is used in combination with `LanceSchema` to provide a declarative data model
