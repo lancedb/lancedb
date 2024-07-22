@@ -214,13 +214,13 @@ def _pydantic_to_arrow_type(field: FieldInfo) -> pa.DataType:
             child = args[0]
             return pa.list_(_py_type_to_arrow_type(child, field))
         elif origin == Union:
-            if len(args) == 2 and args[1] is None:
+            if len(args) == 2 and args[1] is type(None):
                 return _py_type_to_arrow_type(args[0], field)
     elif sys.version_info >= (3, 10) and isinstance(field.annotation, types.UnionType):
         args = field.annotation.__args__
         if len(args) == 2:
             for typ in args:
-                if typ is None:
+                if typ is type(None):
                     continue
                 return _py_type_to_arrow_type(typ, field)
     elif inspect.isclass(field.annotation):
@@ -239,11 +239,13 @@ def is_nullable(field: FieldInfo) -> bool:
         origin = field.annotation.__origin__
         args = field.annotation.__args__
         if origin == Union:
-            if len(args) == 2 and args[1] is None:
+            if len(args) == 2 and args[1] is type(None):
                 return True
     elif sys.version_info >= (3, 10) and isinstance(field.annotation, types.UnionType):
         args = field.annotation.__args__
-        return any(typ is None for typ in args)
+        for typ in args:
+            if typ is type(None):
+                return True
     return False
 
 
