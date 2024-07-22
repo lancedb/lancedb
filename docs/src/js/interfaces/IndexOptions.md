@@ -1,19 +1,16 @@
-[@lancedb/lancedb](../README.md) / [Exports](../modules.md) / IndexOptions
+[**@lancedb/lancedb**](../README.md) • **Docs**
+
+***
+
+[@lancedb/lancedb](../globals.md) / IndexOptions
 
 # Interface: IndexOptions
 
-## Table of contents
-
-### Properties
-
-- [config](IndexOptions.md#config)
-- [replace](IndexOptions.md#replace)
-
 ## Properties
 
-### config
+### config?
 
-• `Optional` **config**: [`Index`](../classes/Index.md)
+> `optional` **config**: [`Index`](../classes/Index.md)
 
 Advanced index configuration
 
@@ -25,15 +22,11 @@ See the static methods on Index for details on the various index types.
 If this is not supplied then column data type(s) and column statistics
 will be used to determine the most useful kind of index to create.
 
-#### Defined in
+***
 
-[indices.ts:192](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/indices.ts#L192)
+### replace?
 
-___
-
-### replace
-
-• `Optional` **replace**: `boolean`
+> `optional` **replace**: `boolean`
 
 Whether to replace the existing index
 
@@ -42,7 +35,3 @@ and the same name, then an error will be returned.  This is true even if
 that index is out of date.
 
 The default is true
-
-#### Defined in
-
-[indices.ts:202](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/indices.ts#L202)

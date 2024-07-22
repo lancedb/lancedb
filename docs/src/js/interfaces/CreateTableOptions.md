@@ -1,32 +1,31 @@
-[@lancedb/lancedb](../README.md) / [Exports](../modules.md) / CreateTableOptions
+[**@lancedb/lancedb**](../README.md) • **Docs**
+
+***
+
+[@lancedb/lancedb](../globals.md) / CreateTableOptions
 
 # Interface: CreateTableOptions
 
-## Table of contents
-
-### Properties
-
-- [existOk](CreateTableOptions.md#existok)
-- [mode](CreateTableOptions.md#mode)
-
 ## Properties
+
+### embeddingFunction?
+
+> `optional` **embeddingFunction**: [`EmbeddingFunctionConfig`](../namespaces/embedding/interfaces/EmbeddingFunctionConfig.md)
+
+***
 
 ### existOk
 
-• **existOk**: `boolean`
+> **existOk**: `boolean`
 
 If this is true and the table already exists and the mode is "create"
 then no error will be raised.
 
-#### Defined in
-
-[connection.ts:35](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/connection.ts#L35)
-
-___
+***
 
 ### mode
 
-• **mode**: ``"overwrite"`` \| ``"create"``
+> **mode**: `"overwrite"` \| `"create"`
 
 The mode to use when creating the table.
 
@@ -36,6 +35,31 @@ happen.  Any provided data will be ignored.
 
 If this is set to "overwrite" then any existing table will be replaced.
 
-#### Defined in
+***
 
-[connection.ts:30](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/connection.ts#L30)
+### schema?
+
+> `optional` **schema**: `SchemaLike`
+
+***
+
+### storageOptions?
+
+> `optional` **storageOptions**: `Record`&lt;`string`, `string`&gt;
+
+Configuration for object storage.
+
+Options already set on the connection will be inherited by the table,
+but can be overridden here.
+
+The available options are described at https://lancedb.github.io/lancedb/guides/storage/
+
+***
+
+### useLegacyFormat?
+
+> `optional` **useLegacyFormat**: `boolean`
+
+If true then data files will be written with the legacy format
+
+The default is true while the new format is in beta

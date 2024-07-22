@@ -1,103 +1,12 @@
-[@lancedb/lancedb](README.md) / Exports
+[**@lancedb/lancedb**](../README.md) • **Docs**
 
-# @lancedb/lancedb
+***
 
-## Table of contents
+[@lancedb/lancedb](../globals.md) / makeArrowTable
 
-### Namespaces
+# Function: makeArrowTable()
 
-- [embedding](modules/embedding.md)
-
-### Enumerations
-
-- [WriteMode](enums/WriteMode.md)
-
-### Classes
-
-- [Connection](classes/Connection.md)
-- [Index](classes/Index.md)
-- [MakeArrowTableOptions](classes/MakeArrowTableOptions.md)
-- [Query](classes/Query.md)
-- [QueryBase](classes/QueryBase.md)
-- [RecordBatchIterator](classes/RecordBatchIterator.md)
-- [Table](classes/Table.md)
-- [VectorColumnOptions](classes/VectorColumnOptions.md)
-- [VectorQuery](classes/VectorQuery.md)
-
-### Interfaces
-
-- [AddColumnsSql](interfaces/AddColumnsSql.md)
-- [AddDataOptions](interfaces/AddDataOptions.md)
-- [ColumnAlteration](interfaces/ColumnAlteration.md)
-- [ConnectionOptions](interfaces/ConnectionOptions.md)
-- [CreateTableOptions](interfaces/CreateTableOptions.md)
-- [ExecutableQuery](interfaces/ExecutableQuery.md)
-- [IndexConfig](interfaces/IndexConfig.md)
-- [IndexOptions](interfaces/IndexOptions.md)
-- [IvfPqOptions](interfaces/IvfPqOptions.md)
-- [TableNamesOptions](interfaces/TableNamesOptions.md)
-- [UpdateOptions](interfaces/UpdateOptions.md)
-- [WriteOptions](interfaces/WriteOptions.md)
-
-### Type Aliases
-
-- [Data](modules.md#data)
-
-### Functions
-
-- [connect](modules.md#connect)
-- [makeArrowTable](modules.md#makearrowtable)
-
-## Type Aliases
-
-### Data
-
-Ƭ **Data**: `Record`\<`string`, `unknown`\>[] \| `ArrowTable`
-
-Data type accepted by NodeJS SDK
-
-#### Defined in
-
-[arrow.ts:40](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/arrow.ts#L40)
-
-## Functions
-
-### connect
-
-▸ **connect**(`uri`, `opts?`): `Promise`\<[`Connection`](classes/Connection.md)\>
-
-Connect to a LanceDB instance at the given URI.
-
-Accpeted formats:
-
-- `/path/to/database` - local database
-- `s3://bucket/path/to/database` or `gs://bucket/path/to/database` - database on cloud storage
-- `db://host:port` - remote database (LanceDB cloud)
-
-#### Parameters
-
-| Name | Type | Description |
-| :------ | :------ | :------ |
-| `uri` | `string` | The uri of the database. If the database uri starts with `db://` then it connects to a remote database. |
-| `opts?` | `Partial`\<[`ConnectionOptions`](interfaces/ConnectionOptions.md)\> | - |
-
-#### Returns
-
-`Promise`\<[`Connection`](classes/Connection.md)\>
-
-**`See`**
-
-[ConnectionOptions](interfaces/ConnectionOptions.md) for more details on the URI format.
-
-#### Defined in
-
-[index.ts:62](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/index.ts#L62)
-
-___
-
-### makeArrowTable
-
-▸ **makeArrowTable**(`data`, `options?`): `ArrowTable`
+> **makeArrowTable**(`data`, `options`?, `metadata`?): `ArrowTable`
 
 An enhanced version of the makeTable function from Apache Arrow
 that supports nested fields and embeddings columns.
@@ -129,20 +38,20 @@ rules are as follows:
  - Record<String, any> => Struct
  - Array<any> => List
 
-#### Parameters
+## Parameters
 
-| Name | Type |
-| :------ | :------ |
-| `data` | `Record`\<`string`, `unknown`\>[] |
-| `options?` | `Partial`\<[`MakeArrowTableOptions`](classes/MakeArrowTableOptions.md)\> |
+• **data**: `Record`&lt;`string`, `unknown`&gt;[]
 
-#### Returns
+• **options?**: `Partial`&lt;[`MakeArrowTableOptions`](../classes/MakeArrowTableOptions.md)&gt;
+
+• **metadata?**: `Map`&lt;`string`, `string`&gt;
+
+## Returns
 
 `ArrowTable`
 
-**`Example`**
+## Example
 
-```ts
 import { fromTableToBuffer, makeArrowTable } from "../arrow";
 import { Field, FixedSizeList, Float16, Float32, Int32, Schema } from "apache-arrow";
 
@@ -203,7 +112,3 @@ const table = makeArrowTable([
  }
 assert.deepEqual(table.schema, schema)
 ```
-
-#### Defined in
-
-[arrow.ts:197](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/arrow.ts#L197)

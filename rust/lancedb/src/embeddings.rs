@@ -14,6 +14,9 @@
 #[cfg(feature = "openai")]
 pub mod openai;
 
+#[cfg(feature = "sentence-transformers")]
+pub mod sentence_transformers;
+
 use lance::arrow::RecordBatchExt;
 use std::{
     borrow::Cow,

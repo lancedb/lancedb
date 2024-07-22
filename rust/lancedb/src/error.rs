@@ -125,3 +125,22 @@ impl From<polars::prelude::PolarsError> for Error {
         }
     }
 }
+
+#[cfg(feature = "sentence-transformers")]
+impl From<hf_hub::api::sync::ApiError> for Error {
+    fn from(source: hf_hub::api::sync::ApiError) -> Self {
+        Self::Other {
+            message: "Error in Sentence Transformers integration.".to_string(),
+            source: Some(Box::new(source)),
+        }
+    }
+}
+#[cfg(feature = "sentence-transformers")]
+impl From<candle_core::Error> for Error {
+    fn from(source: candle_core::Error) -> Self {
+        Self::Other {
+            message: "Error in 'candle_core'.".to_string(),
+            source: Some(Box::new(source)),
+        }
+    }
+}

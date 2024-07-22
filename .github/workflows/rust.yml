@@ -53,7 +53,10 @@ jobs:
       run: cargo clippy --all --all-features -- -D warnings
   linux:
     timeout-minutes: 30
-    runs-on: ubuntu-22.04
+    # To build all features, we need more disk space than is available
+    # on the GitHub-provided runner. This is mostly due to the the
+    # sentence-transformers feature.
+    runs-on: warp-ubuntu-latest-x64-4x
     defaults:
       run:
         shell: bash
@@ -131,4 +134,3 @@ jobs:
           $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
           cargo build
           cargo test
-  

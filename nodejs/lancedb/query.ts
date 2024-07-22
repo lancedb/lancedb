@@ -167,20 +167,27 @@ export class QueryBase<NativeQueryType extends NativeQuery | NativeVectorQuery>
   select(
     columns: string[] | Map<string, string> | Record<string, string> | string,
   ): this {
-    let columnTuples: [string, string][];
+    const selectColumns = (columnArray: string[]) => {
+      this.doCall((inner: NativeQueryType) => {
+        inner.selectColumns(columnArray);
+      });
+    };
+    const selectMapping = (columnTuples: [string, string][]) => {
+      this.doCall((inner: NativeQueryType) => {
+        inner.select(columnTuples);
+      });
+    };
+
     if (typeof columns === "string") {
-      columns = [columns];
-    }
-    if (Array.isArray(columns)) {
-      columnTuples = columns.map((c) => [c, c]);
+      selectColumns([columns]);
+    } else if (Array.isArray(columns)) {
+      selectColumns(columns);
     } else if (columns instanceof Map) {
-      columnTuples = Array.from(columns.entries());
+      selectMapping(Array.from(columns.entries()));
     } else {
-      columnTuples = Object.entries(columns);
+      selectMapping(Object.entries(columns));
     }
-    this.doCall((inner: NativeQueryType) => {
-      inner.select(columnTuples);
-    });
+
     return this;
   }
 

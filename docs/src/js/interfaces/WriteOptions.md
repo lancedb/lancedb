@@ -1,21 +1,17 @@
-[@lancedb/lancedb](../README.md) / [Exports](../modules.md) / WriteOptions
+[**@lancedb/lancedb**](../README.md) • **Docs**
+
+***
+
+[@lancedb/lancedb](../globals.md) / WriteOptions
 
 # Interface: WriteOptions
 
 Write options when creating a Table.
 
-## Table of contents
-
-### Properties
-
-- [mode](WriteOptions.md#mode)
-
 ## Properties
 
-### mode
+### mode?
 
-• `Optional` **mode**: [`WriteMode`](../enums/WriteMode.md)
+> `optional` **mode**: [`WriteMode`](../enumerations/WriteMode.md)
 
-#### Defined in
-
-native.d.ts:74
+Write mode for writing to a table.

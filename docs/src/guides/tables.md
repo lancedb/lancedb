@@ -35,6 +35,7 @@ Initialize a LanceDB connection and create a table
 
         ```typescript
         const lancedb = require("vectordb");
+        const arrow = require("apache-arrow");
 
         const uri = "data/sample-lancedb";
         const db = await lancedb.connect(uri);
@@ -98,7 +99,6 @@ Initialize a LanceDB connection and create a table
             and the table exists, then it simply opens the existing table. The data you
             passed in will NOT be appended to the table in that case.
 
-
         ```ts
         --8<-- "nodejs/examples/basic.ts:create_table_exists_ok"
         ```
@@ -116,14 +116,32 @@ Initialize a LanceDB connection and create a table
         --8<-- "docs/src/basic_legacy.ts:create_table"
         ```
 
-        !!! warning
-            `existsOk` option is not supported in `vectordb`
+        This will infer the schema from the provided data. If you want to explicitly provide a schema, you can use apache-arrow to declare a schema
 
-        Sometimes you want to make sure that you start fresh. If you want to
-        overwrite the table, you can pass in mode: "overwrite" to the createTable function.
+
 
         ```ts
-        const table = await con.createTable(tableName, data, { writeMode: WriteMode.Overwrite })
+        --8<-- "docs/src/basic_legacy.ts:create_table_with_schema"
+        ```
+
+        !!! warning
+            `existsOk` is not available in `vectordb`
+
+
+
+            If the table already exists, vectordb will raise an error by default.
+            You can use `writeMode: WriteMode.Overwrite` to overwrite the table.
+            But this will delete the existing table and create a new one with the same name.
+
+
+        Sometimes you want to make sure that you start fresh.
+
+        If you want to overwrite the table, you can pass in `writeMode: lancedb.WriteMode.Overwrite` to the createTable function.
+
+        ```ts
+        const table = await con.createTable(tableName, data, {
+            writeMode: WriteMode.Overwrite
+        })
         ```
 
 ### From a Pandas DataFrame

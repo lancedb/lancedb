@@ -52,6 +52,10 @@ impl Query {
         self.inner = self.inner.clone().select(Select::dynamic(&columns));
     }
 
+    pub fn select_columns(&mut self, columns: Vec<String>) {
+        self.inner = self.inner.clone().select(Select::columns(&columns));
+    }
+
     pub fn limit(&mut self, limit: u32) {
         self.inner = self.inner.clone().limit(limit as usize);
     }
@@ -99,6 +103,10 @@ impl VectorQuery {
 
     pub fn select(&mut self, columns: Vec<(String, String)>) {
         self.inner = self.inner.clone().select(Select::dynamic(&columns));
+    }
+
+    pub fn select_columns(&mut self, columns: Vec<String>) {
+        self.inner = self.inner.clone().select(Select::columns(&columns));
     }
 
     pub fn limit(&mut self, limit: u32) {

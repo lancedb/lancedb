@@ -1,4 +1,8 @@
-[@lancedb/lancedb](../README.md) / [Exports](../modules.md) / VectorQuery
+[**@lancedb/lancedb**](../README.md) • **Docs**
+
+***
+
+[@lancedb/lancedb](../globals.md) / VectorQuery
 
 # Class: VectorQuery
 
@@ -6,50 +10,19 @@ A builder used to construct a vector search
 
 This builder can be reused to execute the query many times.
 
-## Hierarchy
+## Extends
 
-- [`QueryBase`](QueryBase.md)\<`NativeVectorQuery`, [`VectorQuery`](VectorQuery.md)\>
-
-  ↳ **`VectorQuery`**
-
-## Table of contents
-
-### Constructors
-
-- [constructor](VectorQuery.md#constructor)
-
-### Properties
-
-- [inner](VectorQuery.md#inner)
-
-### Methods
-
-- [[asyncIterator]](VectorQuery.md#[asynciterator])
-- [bypassVectorIndex](VectorQuery.md#bypassvectorindex)
-- [column](VectorQuery.md#column)
-- [distanceType](VectorQuery.md#distancetype)
-- [execute](VectorQuery.md#execute)
-- [limit](VectorQuery.md#limit)
-- [nativeExecute](VectorQuery.md#nativeexecute)
-- [nprobes](VectorQuery.md#nprobes)
-- [postfilter](VectorQuery.md#postfilter)
-- [refineFactor](VectorQuery.md#refinefactor)
-- [select](VectorQuery.md#select)
-- [toArray](VectorQuery.md#toarray)
-- [toArrow](VectorQuery.md#toarrow)
-- [where](VectorQuery.md#where)
+- [`QueryBase`](QueryBase.md)&lt;`NativeVectorQuery`&gt;
 
 ## Constructors
 
-### constructor
+### new VectorQuery()
 
-• **new VectorQuery**(`inner`): [`VectorQuery`](VectorQuery.md)
+> **new VectorQuery**(`inner`): [`VectorQuery`](VectorQuery.md)
 
 #### Parameters
 
-| Name | Type |
-| :------ | :------ |
-| `inner` | `VectorQuery` |
+• **inner**: `VectorQuery` \| `Promise`&lt;`VectorQuery`&gt;
 
 #### Returns
 
@@ -57,49 +30,37 @@ This builder can be reused to execute the query many times.
 
 #### Overrides
 
-[QueryBase](QueryBase.md).[constructor](QueryBase.md#constructor)
-
-#### Defined in
-
-[query.ts:189](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/query.ts#L189)
+[`QueryBase`](QueryBase.md).[`constructor`](QueryBase.md#constructors)
 
 ## Properties
 
 ### inner
 
-• `Protected` **inner**: `VectorQuery`
+> `protected` **inner**: `VectorQuery` \| `Promise`&lt;`VectorQuery`&gt;
 
 #### Inherited from
 
-[QueryBase](QueryBase.md).[inner](QueryBase.md#inner)
-
-#### Defined in
-
-[query.ts:59](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/query.ts#L59)
+[`QueryBase`](QueryBase.md).[`inner`](QueryBase.md#inner)
 
 ## Methods
 
-### [asyncIterator]
+### \[asyncIterator\]()
 
-▸ **[asyncIterator]**(): `AsyncIterator`\<`RecordBatch`\<`any`\>, `any`, `undefined`\>
+> **\[asyncIterator\]**(): `AsyncIterator`&lt;`RecordBatch`&lt;`any`&gt;, `any`, `undefined`&gt;
 
 #### Returns
 
-`AsyncIterator`\<`RecordBatch`\<`any`\>, `any`, `undefined`\>
+`AsyncIterator`&lt;`RecordBatch`&lt;`any`&gt;, `any`, `undefined`&gt;
 
 #### Inherited from
 
-[QueryBase](QueryBase.md).[[asyncIterator]](QueryBase.md#[asynciterator])
+[`QueryBase`](QueryBase.md).[`[asyncIterator]`](QueryBase.md#%5Basynciterator%5D)
 
-#### Defined in
+***
 
-[query.ts:154](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/query.ts#L154)
+### bypassVectorIndex()
 
-___
-
-### bypassVectorIndex
-
-▸ **bypassVectorIndex**(): [`VectorQuery`](VectorQuery.md)
+> **bypassVectorIndex**(): [`VectorQuery`](VectorQuery.md)
 
 If this is called then any vector index is skipped
 
@@ -113,15 +74,11 @@ calculate your recall to select an appropriate value for nprobes.
 
 [`VectorQuery`](VectorQuery.md)
 
-#### Defined in
+***
 
-[query.ts:321](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/query.ts#L321)
+### column()
 
-___
-
-### column
-
-▸ **column**(`column`): [`VectorQuery`](VectorQuery.md)
+> **column**(`column`): [`VectorQuery`](VectorQuery.md)
 
 Set the vector column to query
 
@@ -130,30 +87,24 @@ the call to
 
 #### Parameters
 
-| Name | Type |
-| :------ | :------ |
-| `column` | `string` |
+• **column**: `string`
 
 #### Returns
 
 [`VectorQuery`](VectorQuery.md)
 
-**`See`**
+#### See
 
 [Query#nearestTo](Query.md#nearestto)
 
 This parameter must be specified if the table has more than one column
 whose data type is a fixed-size-list of floats.
 
-#### Defined in
+***
 
-[query.ts:229](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/query.ts#L229)
+### distanceType()
 
-___
-
-### distanceType
-
-▸ **distanceType**(`distanceType`): [`VectorQuery`](VectorQuery.md)
+> **distanceType**(`distanceType`): [`VectorQuery`](VectorQuery.md)
 
 Set the distance metric to use
 
@@ -163,15 +114,13 @@ use.  See
 
 #### Parameters
 
-| Name | Type |
-| :------ | :------ |
-| `distanceType` | `string` |
+• **distanceType**: `"l2"` \| `"cosine"` \| `"dot"`
 
 #### Returns
 
 [`VectorQuery`](VectorQuery.md)
 
-**`See`**
+#### See
 
 [IvfPqOptions.distanceType](../interfaces/IvfPqOptions.md#distancetype) for more details on the different
 distance metrics available.
@@ -182,23 +131,41 @@ invalid.
 
 By default "l2" is used.
 
-#### Defined in
+***
 
-[query.ts:248](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/query.ts#L248)
+### doCall()
 
-___
+> `protected` **doCall**(`fn`): `void`
 
-### execute
+#### Parameters
 
-▸ **execute**(): [`RecordBatchIterator`](RecordBatchIterator.md)
+• **fn**
+
+#### Returns
+
+`void`
+
+#### Inherited from
+
+[`QueryBase`](QueryBase.md).[`doCall`](QueryBase.md#docall)
+
+***
+
+### execute()
+
+> `protected` **execute**(`options`?): [`RecordBatchIterator`](RecordBatchIterator.md)
 
 Execute the query and return the results as an
+
+#### Parameters
+
+• **options?**: `Partial`&lt;`QueryExecutionOptions`&gt;
 
 #### Returns
 
 [`RecordBatchIterator`](RecordBatchIterator.md)
 
-**`See`**
+#### See
 
  - AsyncIterator
 of
@@ -212,17 +179,76 @@ single query)
 
 #### Inherited from
 
-[QueryBase](QueryBase.md).[execute](QueryBase.md#execute)
+[`QueryBase`](QueryBase.md).[`execute`](QueryBase.md#execute)
 
-#### Defined in
+***
 
-[query.ts:149](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/query.ts#L149)
+### explainPlan()
 
-___
+> **explainPlan**(`verbose`): `Promise`&lt;`string`&gt;
 
-### limit
+Generates an explanation of the query execution plan.
 
-▸ **limit**(`limit`): [`VectorQuery`](VectorQuery.md)
+#### Parameters
+
+• **verbose**: `boolean` = `false`
+
+If true, provides a more detailed explanation. Defaults to false.
+
+#### Returns
+
+`Promise`&lt;`string`&gt;
+
+A Promise that resolves to a string containing the query execution plan explanation.
+
+#### Example
+
+```ts
+import * as lancedb from "@lancedb/lancedb"
+const db = await lancedb.connect("./.lancedb");
+const table = await db.createTable("my_table", [
+  { vector: [1.1, 0.9], id: "1" },
+]);
+const plan = await table.query().nearestTo([0.5, 0.2]).explainPlan();
+```
+
+#### Inherited from
+
+[`QueryBase`](QueryBase.md).[`explainPlan`](QueryBase.md#explainplan)
+
+***
+
+### ~~filter()~~
+
+> **filter**(`predicate`): `this`
+
+A filter statement to be applied to this query.
+
+#### Parameters
+
+• **predicate**: `string`
+
+#### Returns
+
+`this`
+
+#### Alias
+
+where
+
+#### Deprecated
+
+Use `where` instead
+
+#### Inherited from
+
+[`QueryBase`](QueryBase.md).[`filter`](QueryBase.md#filter)
+
+***
+
+### limit()
+
+> **limit**(`limit`): `this`
 
 Set the maximum number of results to return.
 
@@ -231,45 +257,39 @@ called then every valid row from the table will be returned.
 
 #### Parameters
 
-| Name | Type |
-| :------ | :------ |
-| `limit` | `number` |
+• **limit**: `number`
 
 #### Returns
 
-[`VectorQuery`](VectorQuery.md)
+`this`
 
 #### Inherited from
 
-[QueryBase](QueryBase.md).[limit](QueryBase.md#limit)
+[`QueryBase`](QueryBase.md).[`limit`](QueryBase.md#limit)
 
-#### Defined in
+***
 
-[query.ts:129](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/query.ts#L129)
+### nativeExecute()
 
-___
+> `protected` **nativeExecute**(`options`?): `Promise`&lt;`RecordBatchIterator`&gt;
 
-### nativeExecute
+#### Parameters
 
-▸ **nativeExecute**(): `Promise`\<`RecordBatchIterator`\>
+• **options?**: `Partial`&lt;`QueryExecutionOptions`&gt;
 
 #### Returns
 
-`Promise`\<`RecordBatchIterator`\>
+`Promise`&lt;`RecordBatchIterator`&gt;
 
 #### Inherited from
 
-[QueryBase](QueryBase.md).[nativeExecute](QueryBase.md#nativeexecute)
+[`QueryBase`](QueryBase.md).[`nativeExecute`](QueryBase.md#nativeexecute)
 
-#### Defined in
+***
 
-[query.ts:134](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/query.ts#L134)
+### nprobes()
 
-___
-
-### nprobes
-
-▸ **nprobes**(`nprobes`): [`VectorQuery`](VectorQuery.md)
+> **nprobes**(`nprobes`): [`VectorQuery`](VectorQuery.md)
 
 Set the number of partitions to search (probe)
 
@@ -294,23 +314,17 @@ you the desired recall.
 
 #### Parameters
 
-| Name | Type |
-| :------ | :------ |
-| `nprobes` | `number` |
+• **nprobes**: `number`
 
 #### Returns
 
 [`VectorQuery`](VectorQuery.md)
 
-#### Defined in
+***
 
-[query.ts:215](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/query.ts#L215)
+### postfilter()
 
-___
-
-### postfilter
-
-▸ **postfilter**(): [`VectorQuery`](VectorQuery.md)
+> **postfilter**(): [`VectorQuery`](VectorQuery.md)
 
 If this is called then filtering will happen after the vector search instead of
 before.
@@ -333,20 +347,16 @@ Post filtering happens during the "refine stage" (described in more detail in
 
 [`VectorQuery`](VectorQuery.md)
 
-**`See`**
+#### See
 
 [VectorQuery#refineFactor](VectorQuery.md#refinefactor)).  This means that setting a higher refine
 factor can often help restore some of the results lost by post filtering.
 
-#### Defined in
+***
 
-[query.ts:307](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/query.ts#L307)
+### refineFactor()
 
-___
-
-### refineFactor
-
-▸ **refineFactor**(`refineFactor`): [`VectorQuery`](VectorQuery.md)
+> **refineFactor**(`refineFactor`): [`VectorQuery`](VectorQuery.md)
 
 A multiplier to control how many additional rows are taken during the refine step
 
@@ -378,23 +388,17 @@ distance between the query vector and the actual uncompressed vector.
 
 #### Parameters
 
-| Name | Type |
-| :------ | :------ |
-| `refineFactor` | `number` |
+• **refineFactor**: `number`
 
 #### Returns
 
 [`VectorQuery`](VectorQuery.md)
 
-#### Defined in
+***
 
-[query.ts:282](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/query.ts#L282)
+### select()
 
-___
-
-### select
-
-▸ **select**(`columns`): [`VectorQuery`](VectorQuery.md)
+> **select**(`columns`): `this`
 
 Return only the specified columns.
 
@@ -418,15 +422,13 @@ input to this method would be:
 
 #### Parameters
 
-| Name | Type |
-| :------ | :------ |
-| `columns` | `string`[] \| `Record`\<`string`, `string`\> \| `Map`\<`string`, `string`\> |
+• **columns**: `string` \| `string`[] \| `Record`&lt;`string`, `string`&gt; \| `Map`&lt;`string`, `string`&gt;
 
 #### Returns
 
-[`VectorQuery`](VectorQuery.md)
+`this`
 
-**`Example`**
+#### Example
 
 ```ts
 new Map([["combined", "a + b"], ["c", "c"]])
@@ -441,61 +443,57 @@ object insertion order is easy to get wrong and `Map` is more foolproof.
 
 #### Inherited from
 
-[QueryBase](QueryBase.md).[select](QueryBase.md#select)
+[`QueryBase`](QueryBase.md).[`select`](QueryBase.md#select)
 
-#### Defined in
+***
 
-[query.ts:108](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/query.ts#L108)
+### toArray()
 
-___
-
-### toArray
-
-▸ **toArray**(): `Promise`\<`unknown`[]\>
+> **toArray**(`options`?): `Promise`&lt;`any`[]&gt;
 
 Collect the results as an array of objects.
 
+#### Parameters
+
+• **options?**: `Partial`&lt;`QueryExecutionOptions`&gt;
+
 #### Returns
 
-`Promise`\<`unknown`[]\>
+`Promise`&lt;`any`[]&gt;
 
 #### Inherited from
 
-[QueryBase](QueryBase.md).[toArray](QueryBase.md#toarray)
+[`QueryBase`](QueryBase.md).[`toArray`](QueryBase.md#toarray)
 
-#### Defined in
+***
 
-[query.ts:169](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/query.ts#L169)
+### toArrow()
 
-___
-
-### toArrow
-
-▸ **toArrow**(): `Promise`\<`Table`\<`any`\>\>
+> **toArrow**(`options`?): `Promise`&lt;`Table`&lt;`any`&gt;&gt;
 
 Collect the results as an Arrow
 
+#### Parameters
+
+• **options?**: `Partial`&lt;`QueryExecutionOptions`&gt;
+
 #### Returns
 
-`Promise`\<`Table`\<`any`\>\>
+`Promise`&lt;`Table`&lt;`any`&gt;&gt;
 
-**`See`**
+#### See
 
 ArrowTable.
 
 #### Inherited from
 
-[QueryBase](QueryBase.md).[toArrow](QueryBase.md#toarrow)
+[`QueryBase`](QueryBase.md).[`toArrow`](QueryBase.md#toarrow)
 
-#### Defined in
+***
 
-[query.ts:160](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/query.ts#L160)
+### where()
 
-___
-
-### where
-
-▸ **where**(`predicate`): [`VectorQuery`](VectorQuery.md)
+> **where**(`predicate`): `this`
 
 A filter statement to be applied to this query.
 
@@ -503,15 +501,13 @@ The filter should be supplied as an SQL query string.  For example:
 
 #### Parameters
 
-| Name | Type |
-| :------ | :------ |
-| `predicate` | `string` |
+• **predicate**: `string`
 
 #### Returns
 
-[`VectorQuery`](VectorQuery.md)
+`this`
 
-**`Example`**
+#### Example
 
 ```ts
 x > 10
@@ -524,8 +520,4 @@ on the filter column(s).
 
 #### Inherited from
 
-[QueryBase](QueryBase.md).[where](QueryBase.md#where)
-
-#### Defined in
-
-[query.ts:73](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/query.ts#L73)
+[`QueryBase`](QueryBase.md).[`where`](QueryBase.md#where)

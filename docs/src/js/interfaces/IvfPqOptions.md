@@ -1,24 +1,18 @@
-[@lancedb/lancedb](../README.md) / [Exports](../modules.md) / IvfPqOptions
+[**@lancedb/lancedb**](../README.md) • **Docs**
+
+***
+
+[@lancedb/lancedb](../globals.md) / IvfPqOptions
 
 # Interface: IvfPqOptions
 
 Options to create an `IVF_PQ` index
 
-## Table of contents
-
-### Properties
-
-- [distanceType](IvfPqOptions.md#distancetype)
-- [maxIterations](IvfPqOptions.md#maxiterations)
-- [numPartitions](IvfPqOptions.md#numpartitions)
-- [numSubVectors](IvfPqOptions.md#numsubvectors)
-- [sampleRate](IvfPqOptions.md#samplerate)
-
 ## Properties
 
-### distanceType
+### distanceType?
 
-• `Optional` **distanceType**: ``"l2"`` \| ``"cosine"`` \| ``"dot"``
+> `optional` **distanceType**: `"l2"` \| `"cosine"` \| `"dot"`
 
 Distance type to use to build the index.
 
@@ -52,15 +46,11 @@ never be returned from a vector search.
 distance has a range of (-∞, ∞). If the vectors are normalized (i.e. their
 L2 norm is 1), then dot distance is equivalent to the cosine distance.
 
-#### Defined in
+***
 
-[indices.ts:83](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/indices.ts#L83)
+### maxIterations?
 
-___
-
-### maxIterations
-
-• `Optional` **maxIterations**: `number`
+> `optional` **maxIterations**: `number`
 
 Max iteration to train IVF kmeans.
 
@@ -72,15 +62,11 @@ iterations have diminishing returns.
 
 The default value is 50.
 
-#### Defined in
+***
 
-[indices.ts:96](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/indices.ts#L96)
+### numPartitions?
 
-___
-
-### numPartitions
-
-• `Optional` **numPartitions**: `number`
+> `optional` **numPartitions**: `number`
 
 The number of IVF partitions to create.
 
@@ -92,15 +78,11 @@ If this value is too large then the first part of the search (picking the
 right partition) will be slow.  If this value is too small then the second
 part of the search (searching within a partition) will be slow.
 
-#### Defined in
+***
 
-[indices.ts:32](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/indices.ts#L32)
+### numSubVectors?
 
-___
-
-### numSubVectors
-
-• `Optional` **numSubVectors**: `number`
+> `optional` **numSubVectors**: `number`
 
 Number of sub-vectors of PQ.
 
@@ -115,15 +97,11 @@ us to use efficient SIMD instructions.
 If the dimension is not visible by 8 then we use 1 subvector.  This is not ideal and
 will likely result in poor performance.
 
-#### Defined in
+***
 
-[indices.ts:48](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/indices.ts#L48)
+### sampleRate?
 
-___
-
-### sampleRate
-
-• `Optional` **sampleRate**: `number`
+> `optional` **sampleRate**: `number`
 
 The number of vectors, per partition, to sample when training IVF kmeans.
 
@@ -138,7 +116,3 @@ Increasing this value might improve the quality of the index but in most cases t
 default should be sufficient.
 
 The default value is 256.
-
-#### Defined in
-
-[indices.ts:113](https://github.com/lancedb/lancedb/blob/9d178c7/nodejs/lancedb/indices.ts#L113)

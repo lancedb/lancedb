@@ -1,4 +1,6 @@
-@lancedb/lancedb / [Exports](modules.md)
+**@lancedb/lancedb** • [**Docs**](globals.md)
+
+***
 
 # LanceDB JavaScript SDK
 
@@ -45,29 +47,20 @@ npm run test
 
 ### Running lint / format
 
-LanceDb uses eslint for linting. VSCode does not need any plugins to use eslint. However, it
-may need some additional configuration. Make sure that eslint.experimental.useFlatConfig is
-set to true. Also, if your vscode root folder is the repo root then you will need to set
-the eslint.workingDirectories to ["nodejs"]. To manually lint your code you can run:
+LanceDb uses [biome](https://biomejs.dev/) for linting and formatting. if you are using VSCode you will need to install the official [Biome](https://marketplace.visualstudio.com/items?itemName=biomejs.biome) extension.
+To manually lint your code you can run:
 
 ```sh
 npm run lint
 ```
 
-LanceDb uses prettier for formatting. If you are using VSCode you will need to install the
-"Prettier - Code formatter" extension. You should then configure it to be the default formatter
-for typescript and you should enable format on save. To manually check your code's format you
-can run:
+to automatically fix all fixable issues:
 
 ```sh
-npm run chkformat
+npm run lint-fix
 ```
 
-If you need to manually format your code you can run:
-
-```sh
-npx prettier --write .
-```
+If you do not have your workspace root set to the `nodejs` directory, unfortunately the extension will not work. You can still run the linting and formatting commands manually.
 
 ### Generating docs
 

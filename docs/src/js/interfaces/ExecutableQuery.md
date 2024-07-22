@@ -1,4 +1,8 @@
-[@lancedb/lancedb](../README.md) / [Exports](../modules.md) / ExecutableQuery
+[**@lancedb/lancedb**](../README.md) • **Docs**
+
+***
+
+[@lancedb/lancedb](../globals.md) / ExecutableQuery
 
 # Interface: ExecutableQuery
 
