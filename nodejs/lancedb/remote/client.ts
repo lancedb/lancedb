@@ -27,8 +27,7 @@ export class RestfulLanceDBClient {
   #apiKey: string;
   #hostOverride?: string;
   #closed: boolean = false;
-  #connectionTimeout: number = 12 * 1000; // 12 seconds;
-  #readTimeout: number = 30 * 1000; // 30 seconds;
+  #timeout: number = 12 * 1000; // 12 seconds;
   #session?: import("axios").AxiosInstance;
 
   constructor(
@@ -36,15 +35,13 @@ export class RestfulLanceDBClient {
     apiKey: string,
     region: string,
     hostOverride?: string,
-    connectionTimeout?: number,
-    readTimeout?: number,
+    timeout?: number,
   ) {
     this.#dbName = dbName;
     this.#apiKey = apiKey;
     this.#region = region;
     this.#hostOverride = hostOverride ?? this.#hostOverride;
-    this.#connectionTimeout = connectionTimeout ?? this.#connectionTimeout;
-    this.#readTimeout = readTimeout ?? this.#readTimeout;
+    this.#timeout = timeout ?? this.#timeout;
   }
 
   // todo: cache the session.
@@ -59,7 +56,7 @@ export class RestfulLanceDBClient {
           Authorization: `Bearer ${this.#apiKey}`,
         },
         transformResponse: decodeErrorData,
-        timeout: this.#connectionTimeout,
+        timeout: this.#timeout,
       });
     }
   }
