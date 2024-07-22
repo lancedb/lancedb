@@ -37,7 +37,7 @@ jobs:
       - name: Format check
         run: ruff format --check .
       - name: Lint
-        run: ruff .
+        run: ruff check .
   doctest:
     name: "Doctest"
     timeout-minutes: 30
