@@ -13,3 +13,5 @@ __test__
 renovate.json
 .idea
 src
+lancedb
+examples
