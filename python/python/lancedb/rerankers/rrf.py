@@ -7,8 +7,7 @@ from .base import Reranker
 class RRFReranker(Reranker):
     """
     Reranks the results using Reciprocal Rank Fusion(RRF) algorithm based
-    on the scores of vector and FTS search. For missing scores,
-    fill with `fill` value.
+    on the scores of vector and FTS search.
     Parameters
     ----------
     K : int, default 60
