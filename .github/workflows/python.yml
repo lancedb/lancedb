@@ -33,11 +33,11 @@ jobs:
           python-version: "3.11"
       - name: Install ruff
         run: |
-          pip install ruff==0.2.2
+          pip install ruff==0.5.4
       - name: Format check
         run: ruff format --check .
       - name: Lint
-        run: ruff .
+        run: ruff check .
   doctest:
     name: "Doctest"
     timeout-minutes: 30

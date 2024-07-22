@@ -330,6 +330,14 @@ class RemoteTable(Table):
             result = self._conn._client.query(self._name, query)
             return result.to_arrow().to_reader()
 
+    def merge_insert(self, on: Union[str, Iterable[str]]) -> LanceMergeInsertBuilder:
+        """Returns a [`LanceMergeInsertBuilder`][lancedb.merge.LanceMergeInsertBuilder]
+        that can be used to create a "merge insert" operation.
+
+        See [`Table.merge_insert`][lancedb.table.Table.merge_insert] for more details.
+        """
+        super().merge_insert(on)
+
     def _do_merge(
         self,
         merge: LanceMergeInsertBuilder,
@@ -354,9 +362,9 @@ class RemoteTable(Table):
         params["on"] = merge._on[0]
         params["when_matched_update_all"] = str(merge._when_matched_update_all).lower()
         if merge._when_matched_update_all_condition is not None:
-            params[
-                "when_matched_update_all_filt"
-            ] = merge._when_matched_update_all_condition
+            params["when_matched_update_all_filt"] = (
+                merge._when_matched_update_all_condition
+            )
         params["when_not_matched_insert_all"] = str(
             merge._when_not_matched_insert_all
         ).lower()
@@ -364,9 +372,9 @@ class RemoteTable(Table):
             merge._when_not_matched_by_source_delete
         ).lower()
         if merge._when_not_matched_by_source_condition is not None:
-            params[
-                "when_not_matched_by_source_delete_filt"
-            ] = merge._when_not_matched_by_source_condition
+            params["when_not_matched_by_source_delete_filt"] = (
+                merge._when_not_matched_by_source_condition
+            )
 
         self._conn._client.post(
             f"/v1/table/{self._name}/merge_insert/",

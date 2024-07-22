@@ -163,19 +163,19 @@ def _py_type_to_arrow_type(py_type: Type[Any], field: FieldInfo) -> pa.DataType:
     TypeError
         If the type is not supported.
     """
-    if py_type == int:
+    if py_type is int:
         return pa.int64()
-    elif py_type == float:
+    elif py_type is float:
         return pa.float64()
-    elif py_type == str:
+    elif py_type is str:
         return pa.utf8()
-    elif py_type == bool:
+    elif py_type is bool:
         return pa.bool_()
-    elif py_type == bytes:
+    elif py_type is bytes:
         return pa.binary()
-    elif py_type == date:
+    elif py_type is date:
         return pa.date32()
-    elif py_type == datetime:
+    elif py_type is datetime:
         tz = get_extras(field, "tz")
         return pa.timestamp("us", tz=tz)
     elif getattr(py_type, "__origin__", None) in (list, tuple):
@@ -210,17 +210,17 @@ def _pydantic_to_arrow_type(field: FieldInfo) -> pa.DataType:
     ):
         origin = field.annotation.__origin__
         args = field.annotation.__args__
-        if origin == list:
+        if origin is list:
             child = args[0]
             return pa.list_(_py_type_to_arrow_type(child, field))
         elif origin == Union:
-            if len(args) == 2 and args[1] == type(None):
+            if len(args) == 2 and args[1] is type(None):
                 return _py_type_to_arrow_type(args[0], field)
     elif sys.version_info >= (3, 10) and isinstance(field.annotation, types.UnionType):
         args = field.annotation.__args__
         if len(args) == 2:
             for typ in args:
-                if typ == type(None):
+                if typ is type(None):
                     continue
                 return _py_type_to_arrow_type(typ, field)
     elif inspect.isclass(field.annotation):
@@ -239,12 +239,12 @@ def is_nullable(field: FieldInfo) -> bool:
         origin = field.annotation.__origin__
         args = field.annotation.__args__
         if origin == Union:
-            if len(args) == 2 and args[1] == type(None):
+            if len(args) == 2 and args[1] is type(None):
                 return True
     elif sys.version_info >= (3, 10) and isinstance(field.annotation, types.UnionType):
         args = field.annotation.__args__
         for typ in args:
-            if typ == type(None):
+            if typ is type(None):
                 return True
     return False
 
