@@ -243,9 +243,7 @@ def is_nullable(field: FieldInfo) -> bool:
                 return True
     elif sys.version_info >= (3, 10) and isinstance(field.annotation, types.UnionType):
         args = field.annotation.__args__
-        for typ in args:
-            if typ is None:
-                return True
+        return any(typ is None for typ in args)
     return False
 
 
