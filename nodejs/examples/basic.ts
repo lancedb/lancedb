@@ -1,7 +1,14 @@
 // --8<--  [start:imports]
 import * as lancedb from "@lancedb/lancedb";
 import * as arrow from "apache-arrow";
-import { Field, FixedSizeList, Float16, Int32, Schema } from "apache-arrow";
+import {
+  Field,
+  FixedSizeList,
+  Float16,
+  Int32,
+  Schema,
+  Utf8,
+} from "apache-arrow";
 
 // --8<-- [end:imports]
 
@@ -11,15 +18,24 @@ const db = await lancedb.connect(uri);
 // --8<-- [end:connect]
 {
   // --8<-- [start:create_table]
+  const tbl = await db.createTable(
+    "myTable",
+    [
+      { vector: [3.1, 4.1], item: "foo", price: 10.0 },
+      { vector: [5.9, 26.5], item: "bar", price: 20.0 },
+    ],
+    { mode: "overwrite" },
+  );
+  // --8<-- [end:create_table]
+
   const data = [
     { vector: [3.1, 4.1], item: "foo", price: 10.0 },
     { vector: [5.9, 26.5], item: "bar", price: 20.0 },
   ];
-  const _tbl = await db.createTable("myTable", data);
-  // --8<-- [end:create_table]
+
   {
     // --8<-- [start:create_table_exists_ok]
-    const _tbl = await db.createTable("myTable", data, {
+    const tbl = await db.createTable("myTable", data, {
       existsOk: true,
     });
     // --8<-- [end:create_table_exists_ok]
@@ -58,16 +74,13 @@ const db = await lancedb.connect(uri);
 
 {
   // --8<-- [start:create_empty_table]
+
   const schema = new arrow.Schema([
-    new arrow.Field(
-      "vector",
-      new arrow.FixedSizeList(
-        2,
-        new arrow.Field("item", new arrow.Float32(), true),
-      ),
-    ),
+    new arrow.Field("id", new arrow.Int32()),
+    new arrow.Field("name", new arrow.Utf8()),
   ]);
-  const _tbl = await db.createEmptyTable("empty_table", schema);
+
+  const empty_tbl = await db.createEmptyTable("empty_table", schema);
   // --8<-- [end:create_empty_table]
 }
 {

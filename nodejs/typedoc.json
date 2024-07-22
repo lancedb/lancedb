@@ -6,5 +6,7 @@
     "lancedb/native.d.ts:VectorQuery",
     "lancedb/native.d.ts:RecordBatchIterator",
     "lancedb/native.d.ts:Table"
-  ]
+  ],
+  "useHTMLEncodedBrackets": true,
+  "disableSources": true
 }
