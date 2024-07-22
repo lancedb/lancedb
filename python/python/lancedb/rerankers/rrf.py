@@ -56,8 +56,5 @@ class RRFReranker(Reranker):
 
         if self.score == "relevance":
             combined_results = combined_results.drop_columns(["score", "_distance"])
-        elif self.score == "all":
-            raise NotImplementedError(
-                "return_score='all' not implemented for cohere reranker"
-            )
+
         return combined_results
