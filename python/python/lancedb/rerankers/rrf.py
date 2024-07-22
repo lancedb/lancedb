@@ -35,14 +35,14 @@ class RRFReranker(Reranker):
         vector_results: pa.Table,
         fts_results: pa.Table,
     ):
-        vector_list = vector_results.to_pylist()
-        fts_list = fts_results.to_pylist()
+        vector_ids = vector_results["_rowid"].to_pylist() if vector_results else []
+        fts_ids = fts_results["_rowid"].to_pylist() if fts_results else []
         rrf_score_map = defaultdict(float)
 
         # Calculate RRF score of each result
-        for result in [vector_list, fts_list]:
-            for i, result in enumerate(result, 1):
-                rrf_score_map[result["_rowid"]] += 1 / (i + self.K)
+        for ids in [vector_ids, fts_ids]:
+            for i, result_id in enumerate(ids, 1):
+                rrf_score_map[result_id] += 1 / (i + self.K)
 
         # Sort the results based on RRF score
         combined_results = self.merge_results(vector_results, fts_results)
