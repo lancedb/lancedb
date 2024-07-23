@@ -5,6 +5,7 @@ from .cross_encoder import CrossEncoderReranker
 from .linear_combination import LinearCombinationReranker
 from .openai import OpenaiReranker
 from .jinaai import JinaReranker
+from .rrf import RRFReranker
 
 __all__ = [
     "Reranker",
@@ -14,4 +15,5 @@ __all__ = [
     "OpenaiReranker",
     "ColbertReranker",
     "JinaReranker",
+    "RRFReranker",
 ]

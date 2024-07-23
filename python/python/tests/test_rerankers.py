@@ -7,6 +7,8 @@ from lancedb.conftest import MockTextEmbeddingFunction  # noqa
 from lancedb.embeddings import EmbeddingFunctionRegistry
 from lancedb.pydantic import LanceModel, Vector
 from lancedb.rerankers import (
+    LinearCombinationReranker,
+    RRFReranker,
     CohereReranker,
     ColbertReranker,
     CrossEncoderReranker,
@@ -140,7 +142,7 @@ def _run_test_reranker(reranker, table, query, query_vector, schema):
     assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), err
 
 
-def test_linear_combination(tmp_path):
+def _run_test_hybrid_reranker(reranker, tmp_path):
     table, schema = get_test_table(tmp_path)
     # The default reranker
     result1 = (
@@ -175,6 +177,16 @@ def test_linear_combination(tmp_path):
         "represents the relevance of the result to the query & should "
         "be descending."
     )
+
+
+def test_linear_combination(tmp_path):
+    reranker = LinearCombinationReranker()
+    _run_test_hybrid_reranker(reranker, tmp_path)
+
+
+def test_rrf_reranker(tmp_path):
+    reranker = RRFReranker()
+    _run_test_hybrid_reranker(reranker, tmp_path)
 
 
 @pytest.mark.skipif(
