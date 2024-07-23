@@ -245,7 +245,7 @@ class RemoteDBConnection(DBConnection):
             schema = schema.to_arrow_schema()
 
         if data is not None:
-            data = _sanitize_data(
+            data, schema = _sanitize_data(
                 data,
                 schema,
                 metadata=None,

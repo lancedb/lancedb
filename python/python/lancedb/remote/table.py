@@ -210,7 +210,7 @@ class RemoteTable(Table):
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
 
         """
-        data = _sanitize_data(
+        data, _ = _sanitize_data(
             data,
             self.schema,
             metadata=None,
@@ -345,7 +345,7 @@ class RemoteTable(Table):
         on_bad_vectors: str,
         fill_value: float,
     ):
-        data = _sanitize_data(
+        data, _ = _sanitize_data(
             new_data,
             self.schema,
             metadata=None,
