@@ -275,12 +275,15 @@ export abstract class Table {
    * of the given query vector
    * @param {string} query - the query. This will be converted to a vector using the table's provided embedding function
    * @note  If no embedding functions are defined in the table, this will error when collecting the results.
+   *
+   * This is just a convenience method for calling `.query().nearestTo(await myEmbeddingFunction(query))`
    */
   abstract search(query: string): VectorQuery;
   /**
    * Create a search query to find the nearest neighbors
    * of the given query vector
    * @param {IntoVector} query - the query vector
+   * This is just a convenience method for calling `.query().nearestTo(query)`
    */
   abstract search(query: IntoVector): VectorQuery;
   /**
