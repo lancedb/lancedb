@@ -58,7 +58,7 @@ jobs:
         run: mvn clean test
   linux-build-java-17:
     runs-on: ubuntu-22.04
-    name: ubuntu-22.04 + Java 11
+    name: ubuntu-22.04 + Java 17
     defaults:
       run:
         working-directory: ./java
