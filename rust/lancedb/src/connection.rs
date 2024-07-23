@@ -220,7 +220,7 @@ impl CreateTableBuilder<false, NoData> {
             mode: CreateTableMode::default(),
             write_options: WriteOptions::default(),
             embeddings: Vec::new(),
-            use_legacy_format: false,
+            use_legacy_format: true,
         }
     }
 
