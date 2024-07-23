@@ -108,7 +108,7 @@ export class RestfulLanceDBClient {
         params,
       });
     } catch (e) {
-      if (e instanceof AxiosError) {
+      if (e instanceof AxiosError && e.response) {
         response = e.response;
       } else {
         throw e;
@@ -162,7 +162,7 @@ export class RestfulLanceDBClient {
         params: new Map(Object.entries(additional.params ?? {})),
       });
     } catch (e) {
-      if (e instanceof AxiosError) {
+      if (e instanceof AxiosError && e.response) {
         response = e.response;
       } else {
         throw e;
