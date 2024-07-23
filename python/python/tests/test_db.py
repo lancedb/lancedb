@@ -552,6 +552,12 @@ async def test_create_in_v2_mode(tmp_path):
 
     assert await is_in_v2_mode(tbl)
 
+    # Create empty table uses v1 mode by default
+    tbl = await db.create_table("test_empty_v2_default", data=None, schema=schema)
+    await tbl.add(make_table())
+
+    assert not await is_in_v2_mode(tbl)
+
 
 def test_replace_index(tmp_path):
     db = lancedb.connect(uri=tmp_path)
