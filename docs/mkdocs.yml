@@ -100,6 +100,7 @@ nav:
               - Quickstart: reranking/index.md
               - Cohere Reranker: reranking/cohere.md
               - Linear Combination Reranker: reranking/linear_combination.md
+              - Reciprocal Rank Fusion Reranker: reranking/rrf.md
               - Cross Encoder Reranker: reranking/cross_encoder.md
               - ColBERT Reranker: reranking/colbert.md
               - Jina Reranker: reranking/jina.md
@@ -185,6 +186,7 @@ nav:
           - Quickstart: reranking/index.md
           - Cohere Reranker: reranking/cohere.md
           - Linear Combination Reranker: reranking/linear_combination.md
+          - Reciprocal Rank Fusion Reranker: reranking/rrf.md
           - Cross Encoder Reranker: reranking/cross_encoder.md
           - ColBERT Reranker: reranking/colbert.md
           - Jina Reranker: reranking/jina.md
