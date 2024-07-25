@@ -49,5 +49,5 @@ You can specify the type of scores you want the reranker to return. The followin
 ### Hybrid Search
 |`return_score`| Status | Description |
 | --- | --- | --- |
-| `relevance` | ✅ Supported | Returns only have the `_relevance_score` column |
-| `all` | ✅ Supported | Returns have vector(`_distance`) and FTS(`score`) along with Hybrid Search score(`_distance`) |
+| `relevance` | ✅ Supported | Returned rows only have the `_relevance_score` column |
+| `all` | ✅ Supported | Returned rows have vector(`_distance`) and FTS(`score`) along with Hybrid Search score(`_relevance_score`) |
