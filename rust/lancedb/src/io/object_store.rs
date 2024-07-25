@@ -14,26 +14,16 @@
 
 //! A mirroring object store that mirror writes to a secondary object store
 
-use std::{
-    fmt::Formatter,
-    pin::Pin,
-    sync::Arc,
-    task::{Context, Poll},
-};
+use std::{fmt::Formatter, sync::Arc};
 
-use bytes::Bytes;
-use futures::{stream::BoxStream, FutureExt, StreamExt};
+use futures::{stream::BoxStream, TryFutureExt};
 use lance::io::WrappingObjectStore;
 use object_store::{
-    path::Path, Error, GetOptions, GetResult, ListResult, MultipartId, ObjectMeta, ObjectStore,
-    PutOptions, PutResult, Result,
+    path::Path, Error, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore,
+    PutMultipartOpts, PutOptions, PutPayload, PutResult, Result, UploadPart,
 };
 
 use async_trait::async_trait;
-use tokio::{
-    io::{AsyncWrite, AsyncWriteExt},
-    task::JoinHandle,
-};
 
 #[derive(Debug)]
 struct MirroringObjectStore {
@@ -72,19 +62,10 @@ impl PrimaryOnly for Path {
 /// Note: this object store does not mirror writes to *.manifest files
 #[async_trait]
 impl ObjectStore for MirroringObjectStore {
-    async fn put(&self, location: &Path, bytes: Bytes) -> Result<PutResult> {
-        if location.primary_only() {
-            self.primary.put(location, bytes).await
-        } else {
-            self.secondary.put(location, bytes.clone()).await?;
-            self.primary.put(location, bytes).await
-        }
-    }
-
     async fn put_opts(
         &self,
         location: &Path,
-        bytes: Bytes,
+        bytes: PutPayload,
         options: PutOptions,
     ) -> Result<PutResult> {
         if location.primary_only() {
@@ -97,32 +78,22 @@ impl ObjectStore for MirroringObjectStore {
         }
     }
 
-    async fn put_multipart(
+    async fn put_multipart_opts(
         &self,
         location: &Path,
-    ) -> Result<(MultipartId, Box<dyn AsyncWrite + Unpin + Send>)> {
+        opts: PutMultipartOpts,
+    ) -> Result<Box<dyn MultipartUpload>> {
         if location.primary_only() {
-            return self.primary.put_multipart(location).await;
+            return self.primary.put_multipart_opts(location, opts).await;
         }
 
-        let (id, stream) = self.secondary.put_multipart(location).await?;
+        let secondary = self
+            .secondary
+            .put_multipart_opts(location, opts.clone())
+            .await?;
+        let primary = self.primary.put_multipart_opts(location, opts).await?;
 
-        let mirroring_upload = MirroringUpload::new(
-            Pin::new(stream),
-            self.primary.clone(),
-            self.secondary.clone(),
-            location.clone(),
-        );
-
-        Ok((id, Box::new(mirroring_upload)))
-    }
-
-    async fn abort_multipart(&self, location: &Path, multipart_id: &MultipartId) -> Result<()> {
-        if location.primary_only() {
-            return self.primary.abort_multipart(location, multipart_id).await;
-        }
-
-        self.secondary.abort_multipart(location, multipart_id).await
+        Ok(Box::new(MirroringUpload { primary, secondary }))
     }
 
     // Reads are routed to primary only
@@ -170,144 +141,28 @@ impl ObjectStore for MirroringObjectStore {
     }
 }
 
-struct MirroringUpload {
-    secondary_stream: Pin<Box<dyn AsyncWrite + Unpin + Send>>,
-
-    primary_store: Arc<dyn ObjectStore>,
-    secondary_store: Arc<dyn ObjectStore>,
-    location: Path,
-
-    state: MirroringUploadShutdown,
-}
-
-// The state goes from
-// None
-// -> (secondary)ShutingDown
-// -> (secondary)ShutdownDone
-// -> Uploading(to primary)
-// -> Done
 #[derive(Debug)]
-enum MirroringUploadShutdown {
-    None,
-    ShutingDown,
-    ShutdownDone,
-    Uploading(Pin<Box<JoinHandle<()>>>),
-    Completed,
+struct MirroringUpload {
+    primary: Box<dyn MultipartUpload>,
+    secondary: Box<dyn MultipartUpload>,
 }
 
-impl MirroringUpload {
-    pub fn new(
-        secondary_stream: Pin<Box<dyn AsyncWrite + Unpin + Send>>,
-        primary_store: Arc<dyn ObjectStore>,
-        secondary_store: Arc<dyn ObjectStore>,
-        location: Path,
-    ) -> Self {
-        Self {
-            secondary_stream,
-            primary_store,
-            secondary_store,
-            location,
-            state: MirroringUploadShutdown::None,
-        }
-    }
-}
-
-impl AsyncWrite for MirroringUpload {
-    fn poll_write(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<Result<usize, std::io::Error>> {
-        if !matches!(self.state, MirroringUploadShutdown::None) {
-            return Poll::Ready(Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "already shutdown",
-            )));
-        }
-        // Write to secondary first
-        let mut_self = self.get_mut();
-        mut_self.secondary_stream.as_mut().poll_write(cx, buf)
+#[async_trait]
+impl MultipartUpload for MirroringUpload {
+    fn put_part(&mut self, data: PutPayload) -> UploadPart {
+        let put_primary = self.primary.put_part(data.clone());
+        let put_secondary = self.secondary.put_part(data);
+        Box::pin(put_secondary.and_then(|_| put_primary))
     }
 
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), std::io::Error>> {
-        if !matches!(self.state, MirroringUploadShutdown::None) {
-            return Poll::Ready(Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "already shutdown",
-            )));
-        }
-
-        let mut_self = self.get_mut();
-        mut_self.secondary_stream.as_mut().poll_flush(cx)
+    async fn complete(&mut self) -> Result<PutResult> {
+        self.secondary.complete().await?;
+        self.primary.complete().await
     }
 
-    fn poll_shutdown(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<(), std::io::Error>> {
-        let mut_self = self.get_mut();
-
-        loop {
-            // try to shutdown secondary first
-            match &mut mut_self.state {
-                MirroringUploadShutdown::None | MirroringUploadShutdown::ShutingDown => {
-                    match mut_self.secondary_stream.as_mut().poll_shutdown(cx) {
-                        Poll::Ready(Ok(())) => {
-                            mut_self.state = MirroringUploadShutdown::ShutdownDone;
-                            // don't return, no waker is setup
-                        }
-                        Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
-                        Poll::Pending => {
-                            mut_self.state = MirroringUploadShutdown::ShutingDown;
-                            return Poll::Pending;
-                        }
-                    }
-                }
-                MirroringUploadShutdown::ShutdownDone => {
-                    let primary_store = mut_self.primary_store.clone();
-                    let secondary_store = mut_self.secondary_store.clone();
-                    let location = mut_self.location.clone();
-
-                    let upload_future =
-                        Box::pin(tokio::runtime::Handle::current().spawn(async move {
-                            let mut source =
-                                secondary_store.get(&location).await.unwrap().into_stream();
-                            let upload_stream = primary_store.put_multipart(&location).await;
-                            let (_, mut stream) = upload_stream.unwrap();
-
-                            while let Some(buf) = source.next().await {
-                                let buf = buf.unwrap();
-                                stream.write_all(&buf).await.unwrap();
-                            }
-
-                            stream.shutdown().await.unwrap();
-                        }));
-                    mut_self.state = MirroringUploadShutdown::Uploading(upload_future);
-                    // don't return, no waker is setup
-                }
-                MirroringUploadShutdown::Uploading(ref mut join_handle) => {
-                    match join_handle.poll_unpin(cx) {
-                        Poll::Ready(Ok(())) => {
-                            mut_self.state = MirroringUploadShutdown::Completed;
-                            return Poll::Ready(Ok(()));
-                        }
-                        Poll::Ready(Err(e)) => {
-                            mut_self.state = MirroringUploadShutdown::Completed;
-                            return Poll::Ready(Err(e.into()));
-                        }
-                        Poll::Pending => {
-                            return Poll::Pending;
-                        }
-                    }
-                }
-                MirroringUploadShutdown::Completed => {
-                    return Poll::Ready(Err(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        "shutdown already completed",
-                    )))
-                }
-            }
-        }
+    async fn abort(&mut self) -> Result<()> {
+        self.secondary.abort().await?;
+        self.primary.abort().await
     }
 }
 

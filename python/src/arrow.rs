@@ -9,8 +9,8 @@ use arrow::{
 };
 use futures::stream::StreamExt;
 use lancedb::arrow::SendableRecordBatchStream;
-use pyo3::{pyclass, pymethods, PyAny, PyObject, PyRef, PyResult, Python};
-use pyo3_asyncio::tokio::future_into_py;
+use pyo3::{pyclass, pymethods, Bound, PyAny, PyObject, PyRef, PyResult, Python};
+use pyo3_asyncio_0_21::tokio::future_into_py;
 
 use crate::error::PythonErrorExt;
 
@@ -36,7 +36,7 @@ impl RecordBatchStream {
         (*self.schema).clone().into_pyarrow(py)
     }
 
-    pub fn next(self_: PyRef<'_, Self>) -> PyResult<&PyAny> {
+    pub fn next(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
             let inner_next = inner.lock().await.next().await;
