@@ -493,7 +493,7 @@ export class LocalTable extends Table {
     const mode = options?.mode ?? "append";
     const schema = await this.schema();
     const registry = getRegistry();
-    const functions = registry.parseFunctions(schema.metadata);
+    const functions = await registry.parseFunctions(schema.metadata);
 
     const buffer = await fromDataToBuffer(
       data,

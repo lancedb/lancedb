@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { DataType, Field, Schema } from "../arrow";
+import { Field, Schema } from "../arrow";
 import { isDataType } from "../arrow";
 import { sanitizeType } from "../sanitize";
 import { EmbeddingFunction } from "./embedding_function";
@@ -22,6 +22,7 @@ export { EmbeddingFunction } from "./embedding_function";
 
 // We need to explicitly export '*' so that the `register` decorator actually registers the class.
 export * from "./openai";
+export * from "./transformers";
 export * from "./registry";
 
 /**

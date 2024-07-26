@@ -240,6 +240,7 @@ export class LocalConnection extends Connection {
   ): Promise<Table> {
     if (typeof nameOrOptions !== "string" && "name" in nameOrOptions) {
       const { name, data, ...options } = nameOrOptions;
+
       return this.createTable(name, data, options);
     }
     if (data === undefined) {

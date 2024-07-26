@@ -18,9 +18,14 @@ import {
 } from "./embedding_function";
 import "reflect-metadata";
 import { OpenAIEmbeddingFunction } from "./openai";
+import { TransformersEmbeddingFunction } from "./transformers";
+
+type CreateReturnType<T> = T extends { init: () => Promise<void> }
+  ? Promise<T>
+  : T;
 
 interface EmbeddingFunctionCreate<T extends EmbeddingFunction> {
-  create(options?: T["TOptions"]): T;
+  create(options?: T["TOptions"]): CreateReturnType<T>;
 }
 
 /**
@@ -61,38 +66,43 @@ export class EmbeddingFunctionRegistry {
     };
   }
 
+  get(name: "openai"): EmbeddingFunctionCreate<OpenAIEmbeddingFunction>;
+  get(
+    name: "huggingface",
+  ): EmbeddingFunctionCreate<TransformersEmbeddingFunction>;
+  get<T extends EmbeddingFunction<unknown>>(
+    name: string,
+  ): EmbeddingFunctionCreate<T> | undefined;
   /**
    * Fetch an embedding function by name
    * @param name The name of the function
    */
-  get<T extends EmbeddingFunction<unknown>, Name extends string = "">(
-    name: Name extends "openai" ? "openai" : string,
-    //This makes it so that you can use string constants as "types", or use an explicitly supplied type
-    // ex:
-    // `registry.get("openai") -> EmbeddingFunctionCreate<OpenAIEmbeddingFunction>`
-    // `registry.get<MyCustomEmbeddingFunction>("my_func") -> EmbeddingFunctionCreate<MyCustomEmbeddingFunction> | undefined`
-    //
-    // the reason this is important is that we always know our built in functions are defined so the user isnt forced to do a non null/undefined
-    // ```ts
-    // const openai: OpenAIEmbeddingFunction = registry.get("openai").create()
-    // ```
-  ): Name extends "openai"
-    ? EmbeddingFunctionCreate<OpenAIEmbeddingFunction>
-    : EmbeddingFunctionCreate<T> | undefined {
-    type Output = Name extends "openai"
-      ? EmbeddingFunctionCreate<OpenAIEmbeddingFunction>
-      : EmbeddingFunctionCreate<T> | undefined;
-
+  get(name: string) {
     const factory = this.#functions.get(name);
     if (!factory) {
-      return undefined as Output;
+      // biome-ignore lint/suspicious/noExplicitAny: <explanation>
+      return undefined as any;
+    }
+    // biome-ignore lint/suspicious/noExplicitAny: <explanation>
+    let create: any;
+    if (factory.prototype.init) {
+      // biome-ignore lint/suspicious/noExplicitAny: <explanation>
+      create = async function (options?: any) {
+        const instance = new factory(options);
+        await instance.init!();
+        return instance;
+      };
+    } else {
+      // biome-ignore lint/suspicious/noExplicitAny: <explanation>
+      create = function (options?: any) {
+        const instance = new factory(options);
+        return instance;
+      };
     }
 
     return {
-      create: function (options?: T["TOptions"]) {
-        return new factory(options);
-      },
-    } as Output;
+      create,
+    };
   }
 
   /**
@@ -105,10 +115,10 @@ export class EmbeddingFunctionRegistry {
   /**
    * @ignore
    */
-  parseFunctions(
+  async parseFunctions(
     this: EmbeddingFunctionRegistry,
     metadata: Map<string, string>,
-  ): Map<string, EmbeddingFunctionConfig> {
+  ): Promise<Map<string, EmbeddingFunctionConfig>> {
     if (!metadata.has("embedding_functions")) {
       return new Map();
     } else {
@@ -118,25 +128,30 @@ export class EmbeddingFunctionRegistry {
         vectorColumn: string;
         model: EmbeddingFunction["TOptions"];
       };
+
       const functions = <FunctionConfig[]>(
         JSON.parse(metadata.get("embedding_functions")!)
       );
-      return new Map(
-        functions.map((f) => {
+
+      const items: [string, EmbeddingFunctionConfig][] = await Promise.all(
+        functions.map(async (f) => {
           const fn = this.get(f.name);
           if (!fn) {
             throw new Error(`Function "${f.name}" not found in registry`);
           }
+          const func = await this.get(f.name)!.create(f.model);
           return [
             f.name,
             {
               sourceColumn: f.sourceColumn,
               vectorColumn: f.vectorColumn,
-              function: this.get(f.name)!.create(f.model),
+              function: func,
             },
           ];
         }),
       );
+
+      return new Map(items);
     }
   }
   // biome-ignore lint/suspicious/noExplicitAny: <explanation>
