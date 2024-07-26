@@ -74,8 +74,6 @@ export class TransformersEmbeddingFunction extends EmbeddingFunction<
     // biome-ignore lint/suspicious/noExplicitAny: <explanation>
     const obj: Record<string, any> = {
       model: this.#modelName,
-      // tokenizerOptions: this.#tokenizerOptions,
-      // ndims: this.#ndims,
     };
     if (this.#ndims) {
       obj["ndims"] = this.#ndims;
