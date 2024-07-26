@@ -20,8 +20,7 @@ export interface RemoteConnectionOptions {
   apiKey?: string;
   region?: string;
   hostOverride?: string;
-  connectionTimeout?: number;
-  readTimeout?: number;
+  timeout?: number;
 }
 
 export class RemoteConnection extends Connection {
@@ -33,13 +32,7 @@ export class RemoteConnection extends Connection {
 
   constructor(
     url: string,
-    {
-      apiKey,
-      region,
-      hostOverride,
-      connectionTimeout,
-      readTimeout,
-    }: RemoteConnectionOptions,
+    { apiKey, region, hostOverride, timeout }: RemoteConnectionOptions,
   ) {
     super();
     apiKey = apiKey ?? process.env.LANCEDB_API_KEY;
@@ -68,8 +61,7 @@ export class RemoteConnection extends Connection {
       this.#apiKey,
       this.#region,
       hostOverride,
-      connectionTimeout,
-      readTimeout,
+      timeout,
     );
   }
 

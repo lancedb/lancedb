@@ -18,9 +18,9 @@ use arrow::{datatypes::Schema, ffi_stream::ArrowArrayStreamReader, pyarrow::From
 use lancedb::connection::{Connection as LanceConnection, CreateTableMode};
 use pyo3::{
     exceptions::{PyRuntimeError, PyValueError},
-    pyclass, pyfunction, pymethods, PyAny, PyRef, PyResult, Python,
+    pyclass, pyfunction, pymethods, Bound, PyAny, PyRef, PyResult, Python,
 };
-use pyo3_asyncio::tokio::future_into_py;
+use pyo3_asyncio_0_21::tokio::future_into_py;
 
 use crate::{error::PythonErrorExt, table::Table};
 
@@ -73,7 +73,7 @@ impl Connection {
         self_: PyRef<'_, Self>,
         start_after: Option<String>,
         limit: Option<u32>,
-    ) -> PyResult<&PyAny> {
+    ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
         let mut op = inner.table_names();
         if let Some(start_after) = start_after {
@@ -89,15 +89,15 @@ impl Connection {
         self_: PyRef<'a, Self>,
         name: String,
         mode: &str,
-        data: &PyAny,
+        data: Bound<'_, PyAny>,
         storage_options: Option<HashMap<String, String>>,
         use_legacy_format: Option<bool>,
-    ) -> PyResult<&'a PyAny> {
+    ) -> PyResult<Bound<'a, PyAny>> {
         let inner = self_.get_inner()?.clone();
 
         let mode = Self::parse_create_mode_str(mode)?;
 
-        let batches = ArrowArrayStreamReader::from_pyarrow(data)?;
+        let batches = ArrowArrayStreamReader::from_pyarrow_bound(&data)?;
         let mut builder = inner.create_table(name, batches).mode(mode);
 
         if let Some(storage_options) = storage_options {
@@ -118,15 +118,15 @@ impl Connection {
         self_: PyRef<'a, Self>,
         name: String,
         mode: &str,
-        schema: &PyAny,
+        schema: Bound<'_, PyAny>,
         storage_options: Option<HashMap<String, String>>,
         use_legacy_format: Option<bool>,
-    ) -> PyResult<&'a PyAny> {
+    ) -> PyResult<Bound<'a, PyAny>> {
         let inner = self_.get_inner()?.clone();
 
         let mode = Self::parse_create_mode_str(mode)?;
 
-        let schema = Schema::from_pyarrow(schema)?;
+        let schema = Schema::from_pyarrow_bound(&schema)?;
 
         let mut builder = inner.create_empty_table(name, Arc::new(schema)).mode(mode);
 
@@ -150,7 +150,7 @@ impl Connection {
         name: String,
         storage_options: Option<HashMap<String, String>>,
         index_cache_size: Option<u32>,
-    ) -> PyResult<&PyAny> {
+    ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
         let mut builder = inner.open_table(name);
         if let Some(storage_options) = storage_options {
@@ -165,14 +165,14 @@ impl Connection {
         })
     }
 
-    pub fn drop_table(self_: PyRef<'_, Self>, name: String) -> PyResult<&PyAny> {
+    pub fn drop_table(self_: PyRef<'_, Self>, name: String) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
         future_into_py(self_.py(), async move {
             inner.drop_table(name).await.infer_error()
         })
     }
 
-    pub fn drop_db(self_: PyRef<'_, Self>) -> PyResult<&PyAny> {
+    pub fn drop_db(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
         future_into_py(
             self_.py(),
@@ -190,7 +190,7 @@ pub fn connect(
     host_override: Option<String>,
     read_consistency_interval: Option<f64>,
     storage_options: Option<HashMap<String, String>>,
-) -> PyResult<&PyAny> {
+) -> PyResult<Bound<'_, PyAny>> {
     future_into_py(py, async move {
         let mut builder = lancedb::connect(&uri);
         if let Some(api_key) = api_key {

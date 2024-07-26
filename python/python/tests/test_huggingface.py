@@ -124,3 +124,17 @@ def test_bad_hf_dataset(tmp_path: Path, mock_embedding_function, hf_dataset_with
     # this should still work because we don't add the split column
     # if it already exists
     train_table.add(hf_dataset_with_split)
+
+
+def test_generator(tmp_path: Path):
+    db = lancedb.connect(tmp_path)
+
+    def gen():
+        yield {"pokemon": "bulbasaur", "type": "grass"}
+        yield {"pokemon": "squirtle", "type": "water"}
+
+    ds = datasets.Dataset.from_generator(gen)
+    tbl = db.create_table("pokemon", ds)
+
+    assert len(tbl) == 2
+    assert tbl.schema == ds.features.arrow_schema

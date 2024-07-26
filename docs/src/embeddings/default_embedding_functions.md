@@ -390,6 +390,7 @@ Supported parameters (to be passed in `create` method) are:
 | `query_input_type` | `str` | `"search_query"` | The type of input data to be used for the query. |
 
 Cohere supports following input types:
+
 | Input Type               | Description                          |
 |-------------------------|---------------------------------------|
 | "`search_document`"     | Used for embeddings stored in a vector|

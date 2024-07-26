@@ -732,7 +732,7 @@ class AsyncConnection(object):
             fill_value = 0.0
 
         if data is not None:
-            data = _sanitize_data(
+            data, schema = _sanitize_data(
                 data,
                 schema,
                 metadata=metadata,

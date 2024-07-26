@@ -9,9 +9,9 @@ use pyo3::{
     exceptions::{PyRuntimeError, PyValueError},
     pyclass, pymethods,
     types::{PyDict, PyString},
-    PyAny, PyRef, PyResult, Python,
+    Bound, PyAny, PyRef, PyResult, Python,
 };
-use pyo3_asyncio::tokio::future_into_py;
+use pyo3_asyncio_0_21::tokio::future_into_py;
 
 use crate::{
     error::PythonErrorExt,
@@ -91,7 +91,7 @@ impl Table {
         self.inner.take();
     }
 
-    pub fn schema(self_: PyRef<'_, Self>) -> PyResult<&PyAny> {
+    pub fn schema(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             let schema = inner.schema().await.infer_error()?;
@@ -99,8 +99,12 @@ impl Table {
         })
     }
 
-    pub fn add<'a>(self_: PyRef<'a, Self>, data: &PyAny, mode: String) -> PyResult<&'a PyAny> {
-        let batches = ArrowArrayStreamReader::from_pyarrow(data)?;
+    pub fn add<'a>(
+        self_: PyRef<'a, Self>,
+        data: Bound<'_, PyAny>,
+        mode: String,
+    ) -> PyResult<Bound<'a, PyAny>> {
+        let batches = ArrowArrayStreamReader::from_pyarrow_bound(&data)?;
         let mut op = self_.inner_ref()?.add(batches);
         if mode == "append" {
             op = op.mode(AddDataMode::Append);
@@ -116,7 +120,7 @@ impl Table {
         })
     }
 
-    pub fn delete(self_: PyRef<'_, Self>, condition: String) -> PyResult<&PyAny> {
+    pub fn delete(self_: PyRef<'_, Self>, condition: String) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             inner.delete(&condition).await.infer_error()
@@ -127,7 +131,7 @@ impl Table {
         self_: PyRef<'a, Self>,
         updates: &PyDict,
         r#where: Option<String>,
-    ) -> PyResult<&'a PyAny> {
+    ) -> PyResult<Bound<'a, PyAny>> {
         let mut op = self_.inner_ref()?.update();
         if let Some(only_if) = r#where {
             op = op.only_if(only_if);
@@ -145,7 +149,10 @@ impl Table {
         })
     }
 
-    pub fn count_rows(self_: PyRef<'_, Self>, filter: Option<String>) -> PyResult<&PyAny> {
+    pub fn count_rows(
+        self_: PyRef<'_, Self>,
+        filter: Option<String>,
+    ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             inner.count_rows(filter).await.infer_error()
@@ -157,7 +164,7 @@ impl Table {
         column: String,
         index: Option<&Index>,
         replace: Option<bool>,
-    ) -> PyResult<&'a PyAny> {
+    ) -> PyResult<Bound<'a, PyAny>> {
         let index = if let Some(index) = index {
             index.consume()?
         } else {
@@ -174,7 +181,7 @@ impl Table {
         })
     }
 
-    pub fn list_indices(self_: PyRef<'_, Self>) -> PyResult<&PyAny> {
+    pub fn list_indices(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             Ok(inner
@@ -194,7 +201,7 @@ impl Table {
         }
     }
 
-    pub fn version(self_: PyRef<'_, Self>) -> PyResult<&PyAny> {
+    pub fn version(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(
             self_.py(),
@@ -202,21 +209,21 @@ impl Table {
         )
     }
 
-    pub fn checkout(self_: PyRef<'_, Self>, version: u64) -> PyResult<&PyAny> {
+    pub fn checkout(self_: PyRef<'_, Self>, version: u64) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             inner.checkout(version).await.infer_error()
         })
     }
 
-    pub fn checkout_latest(self_: PyRef<'_, Self>) -> PyResult<&PyAny> {
+    pub fn checkout_latest(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             inner.checkout_latest().await.infer_error()
         })
     }
 
-    pub fn restore(self_: PyRef<'_, Self>) -> PyResult<&PyAny> {
+    pub fn restore(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(
             self_.py(),
@@ -228,7 +235,10 @@ impl Table {
         Query::new(self.inner_ref().unwrap().query())
     }
 
-    pub fn optimize(self_: PyRef<'_, Self>, cleanup_since_ms: Option<u64>) -> PyResult<&PyAny> {
+    pub fn optimize(
+        self_: PyRef<'_, Self>,
+        cleanup_since_ms: Option<u64>,
+    ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         let older_than = if let Some(ms) = cleanup_since_ms {
             if ms > i64::MAX as u64 {

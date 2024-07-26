@@ -22,10 +22,11 @@ use lancedb::query::{
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::pyclass;
 use pyo3::pymethods;
+use pyo3::Bound;
 use pyo3::PyAny;
 use pyo3::PyRef;
 use pyo3::PyResult;
-use pyo3_asyncio::tokio::future_into_py;
+use pyo3_asyncio_0_21::tokio::future_into_py;
 
 use crate::arrow::RecordBatchStream;
 use crate::error::PythonErrorExt;
@@ -60,14 +61,17 @@ impl Query {
         self.inner = self.inner.clone().limit(limit as usize);
     }
 
-    pub fn nearest_to(&mut self, vector: &PyAny) -> PyResult<VectorQuery> {
-        let data: ArrayData = ArrayData::from_pyarrow(vector)?;
+    pub fn nearest_to(&mut self, vector: Bound<'_, PyAny>) -> PyResult<VectorQuery> {
+        let data: ArrayData = ArrayData::from_pyarrow_bound(&vector)?;
         let array = make_array(data);
         let inner = self.inner.clone().nearest_to(array).infer_error()?;
         Ok(VectorQuery { inner })
     }
 
-    pub fn execute(self_: PyRef<'_, Self>, max_batch_length: Option<u32>) -> PyResult<&PyAny> {
+    pub fn execute(
+        self_: PyRef<'_, Self>,
+        max_batch_length: Option<u32>,
+    ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
             let mut opts = QueryExecutionOptions::default();
@@ -79,7 +83,7 @@ impl Query {
         })
     }
 
-    fn explain_plan(self_: PyRef<'_, Self>, verbose: bool) -> PyResult<&PyAny> {
+    fn explain_plan(self_: PyRef<'_, Self>, verbose: bool) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
             inner
@@ -139,7 +143,10 @@ impl VectorQuery {
         self.inner = self.inner.clone().bypass_vector_index()
     }
 
-    pub fn execute(self_: PyRef<'_, Self>, max_batch_length: Option<u32>) -> PyResult<&PyAny> {
+    pub fn execute(
+        self_: PyRef<'_, Self>,
+        max_batch_length: Option<u32>,
+    ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
             let mut opts = QueryExecutionOptions::default();
@@ -151,7 +158,7 @@ impl VectorQuery {
         })
     }
 
-    fn explain_plan(self_: PyRef<'_, Self>, verbose: bool) -> PyResult<&PyAny> {
+    fn explain_plan(self_: PyRef<'_, Self>, verbose: bool) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
             inner
