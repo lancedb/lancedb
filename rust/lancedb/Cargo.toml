@@ -57,14 +57,11 @@ tempfile = "3.5.0"
 rand = { version = "0.8.3", features = ["small_rng"] }
 uuid = { version = "1.7.0", features = ["v4"] }
 walkdir = "2"
-# For s3 integration tests (dev deps aren't allowed to be optional atm)
-# We pin these because the content-length check breaks with localstack
-# https://github.com/smithy-lang/smithy-rs/releases/tag/release-2024-05-21
-aws-sdk-dynamodb = { version = "=1.23.0" }
-aws-sdk-s3 = { version = "=1.23.0" }
-aws-sdk-kms = { version = "=1.21.0" }
+aws-sdk-dynamodb = { version = "1.38.0" }
+aws-sdk-s3 = { version = "1.38.0" }
+aws-sdk-kms = { version = "1.37" }
 aws-config = { version = "1.0" }
-aws-smithy-runtime = { version = "=1.3.1" }
+aws-smithy-runtime = { version = "1.3" }
 
 [features]
 default = []
