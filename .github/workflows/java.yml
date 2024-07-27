@@ -3,6 +3,8 @@ on:
   push:
     branches:
       - main
+    paths:
+      - java/**
   pull_request:
     paths:
       - java/**
@@ -21,9 +23,42 @@ env:
   CARGO_INCREMENTAL: "0"
   CARGO_BUILD_JOBS: "1"
 jobs:
-  linux-build:
+  linux-build-java-11:
     runs-on: ubuntu-22.04
-    name: ubuntu-22.04 + Java 11 & 17
+    name: ubuntu-22.04 + Java 11
+    defaults:
+      run:
+        working-directory: ./java
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: java/core/lancedb-jni
+      - name: Run cargo fmt
+        run: cargo fmt --check
+        working-directory: ./java/core/lancedb-jni
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y protobuf-compiler libssl-dev
+      - name: Install Java 11
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 11
+          cache: "maven"
+      - name: Java Style Check
+        run: mvn checkstyle:check
+      # Disable because of issues in lancedb rust core code
+      # - name: Rust Clippy
+      #   working-directory: java/core/lancedb-jni
+      #   run: cargo clippy --all-targets -- -D warnings
+      - name: Running tests with Java 11
+        run: mvn clean test
+  linux-build-java-17:
+    runs-on: ubuntu-22.04
+    name: ubuntu-22.04 + Java 17
     defaults:
       run:
         working-directory: ./java
@@ -47,20 +82,12 @@ jobs:
           java-version: 17
           cache: "maven"
       - run: echo "JAVA_17=$JAVA_HOME" >> $GITHUB_ENV
-      - name: Install Java 11
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 11
-          cache: "maven"
       - name: Java Style Check
         run: mvn checkstyle:check
       # Disable because of issues in lancedb rust core code
       # - name: Rust Clippy
       #   working-directory: java/core/lancedb-jni
       #   run: cargo clippy --all-targets -- -D warnings
-      - name: Running tests with Java 11
-        run: mvn clean test
       - name: Running tests with Java 17
         run: |
           export JAVA_TOOL_OPTIONS="$JAVA_TOOL_OPTIONS \
@@ -83,3 +110,4 @@ jobs:
           -Djdk.reflect.useDirectMethodHandle=false \
           -Dio.netty.tryReflectionSetAccessible=true"
           JAVA_HOME=$JAVA_17 mvn clean test
+  
