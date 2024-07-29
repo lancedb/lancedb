@@ -42,7 +42,7 @@ class CrossEncoderReranker(Reranker):
     @cached_property
     def model(self):
         sbert = attempt_import_or_raise("sentence_transformers")
-        cross_encoder = sbert.CrossEncoder(self.model_name)
+        cross_encoder = sbert.CrossEncoder(self.model_name).to(self.device)
 
         return cross_encoder
 
