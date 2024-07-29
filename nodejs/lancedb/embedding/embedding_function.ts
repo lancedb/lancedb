@@ -21,6 +21,7 @@ import {
   Float32,
   FloatLike,
   type IntoVector,
+  Utf8,
   isDataType,
   isFixedSizeList,
   isFloat,
@@ -189,6 +190,38 @@ export abstract class EmbeddingFunction<
     return this.computeSourceEmbeddings([data]).then(
       (embeddings) => embeddings[0],
     );
+  }
+}
+
+/**
+ * an abstract class for implementing embedding functions that take text as input
+ */
+export abstract class TextEmbeddingFunction<
+  M extends FunctionOptions = FunctionOptions,
+> extends EmbeddingFunction<string, M> {
+  //** Generate the embeddings for the given texts */
+  abstract generateEmbeddings(
+    texts: string[],
+    // biome-ignore lint/suspicious/noExplicitAny: we don't know what the implementor will do
+    ...args: any[]
+  ): Promise<number[][] | Float32Array[] | Float64Array[]>;
+
+  async computeQueryEmbeddings(data: string): Promise<Awaited<IntoVector>> {
+    return this.generateEmbeddings([data]).then((data) => data[0]);
+  }
+
+  embeddingDataType(): FloatLike {
+    return new Float32();
+  }
+
+  override sourceField(): [DataTypeLike, Map<string, EmbeddingFunction>] {
+    return super.sourceField(new Utf8());
+  }
+
+  computeSourceEmbeddings(
+    data: string[],
+  ): Promise<number[][] | Float32Array[] | Float64Array[]> {
+    return this.generateEmbeddings(data);
   }
 }
 
