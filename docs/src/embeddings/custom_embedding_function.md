@@ -48,6 +48,7 @@ Let's implement `SentenceTransformerEmbeddings` class. All you need to do is imp
 
     ```ts
     --8<--- "nodejs/examples/custom_embedding_function.ts:imports"
+
     --8<--- "nodejs/examples/custom_embedding_function.ts:embedding_impl"
     ```
 
@@ -80,9 +81,9 @@ Now you can use this embedding function to create your table schema and that's i
     --8<--- "nodejs/examples/custom_embedding_function.ts:call_custom_function"
     ```
 
-NOTE:
+!!! note
 
-You can always implement the `EmbeddingFunction` interface directly if you want or need to, `TextEmbeddingFunction` just makes it much simpler and faster for you to do so, by setting up the boiler plat for text-specific use case
+    You can always implement the `EmbeddingFunction` interface directly if you want or need to, `TextEmbeddingFunction` just makes it much simpler and faster for you to do so, by setting up the boiler plat for text-specific use case
 
 ## Multi-modal embedding function example
 You can also use the `EmbeddingFunction` interface to implement more complex workflows such as multi-modal embedding function support.
@@ -236,4 +237,4 @@ You can also use the `EmbeddingFunction` interface to implement more complex wor
 
 === "TypeScript"
 
-    Coming Soon!
+    Coming Soon! See this [issue](https://github.com/lancedb/lancedb/issues/1482) to track the status!

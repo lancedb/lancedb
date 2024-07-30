@@ -59,5 +59,6 @@ const table = await db.createEmptyTable("table", schema, { mode: "overwrite" });
 
 await table.add([{ text: "hello" }, { text: "world" }]);
 
-const results = await table.search("hello").limit(1).toArray();
+const results = await table.search("greeting").limit(1).toArray();
+console.log(results[0].text);
 // -8<-- [end:call_custom_function]
