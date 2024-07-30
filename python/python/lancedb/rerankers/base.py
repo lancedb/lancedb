@@ -1,8 +1,10 @@
 from abc import ABC, abstractmethod
 from packaging.version import Version
+from typing import Union, List, Any
 
 import numpy as np
 import pyarrow as pa
+
 
 ARROW_VERSION = Version(pa.__version__)
 
@@ -31,6 +33,8 @@ class Reranker(ABC):
         self._concat_tables_args = {"promote_options": "default"}
         if ARROW_VERSION.major <= 13:
             self._concat_tables_args = {"promote": True}
+
+        self.deduplicator = lambda x, y: x if x["_distance"] < y["_distance"] else y
 
     def rerank_vector(
         self,
@@ -130,12 +134,88 @@ class Reranker(ABC):
         combined = pa.concat_tables(
             [vector_results, fts_results], **self._concat_tables_args
         )
-        row_id = combined.column("_rowid")
 
         # deduplicate
-        mask = np.full((combined.shape[0]), False)
-        _, mask_indices = np.unique(np.array(row_id), return_index=True)
-        mask[mask_indices] = True
-        combined = combined.filter(mask=mask)
+        combined = self._deduplicate(combined)
 
         return combined
+
+    def rerank_multivector(
+        self,
+        vector_results: Union[List[pa.Table], List[Any]],
+        query: Union[str, None] = None,
+        deduplicate: bool = False,
+        deduplicator: callable = None,
+    ):
+        """
+        This is a rerank function that receives the results from multiple vector searches.
+        Could be using different vector columns
+
+        Parameters
+        ----------
+        query : str
+            The
+        vector_results : pa.Table
+            The results from the vector search
+
+        Returns
+        -------
+        pa.Table
+            The reranked results
+        """
+        from ..table import LanceQueryBuilder
+
+        vector_results = (
+            [vector_results] if not isinstance(vector_results, list) else vector_results
+        )
+
+        # Make sure all elements are of the same type
+        if not all(isinstance(v, type(vector_results[0])) for v in vector_results):
+            raise ValueError(
+                "All elements in vector_results should be of the same type"
+            )
+
+        if not isinstance(vector_results[0], (pa.Table, LanceQueryBuilder)):
+            raise ValueError(
+                "vector_results should be a list of pa.Table or LanceQueryBuilder"
+            )
+
+        if isinstance(vector_results[0], LanceQueryBuilder):
+            vector_results = [result.to_arrow() for result in vector_results]
+
+        combined = pa.concat_tables(vector_results, **self._concat_tables_args)
+
+        combined = self.rerank_vector(query, combined)
+
+        # TODO: Allow custom deduplicators here. currently, this'll just keep the first instance
+        if deduplicate:
+            if "_rowid" not in combined.column_names:
+                raise ValueError(
+                    "'_rowid' is required for deduplication. \
+                                    include _rowid by passing `with_row_id=True` to search()"
+                )
+            combined = self._deduplicate(combined)
+
+        return combined
+
+    def _deduplicate(self, table: pa.Table):
+        """
+        Deduplicate the table based on the `_rowid` column.
+        """
+        row_id = table.column("_rowid")
+
+        # deduplicate
+        mask = np.full((table.shape[0]), False)
+        _, mask_indices = np.unique(np.array(row_id), return_index=True)
+        mask[mask_indices] = True
+        deduped_table = table.filter(mask=mask)
+
+        return deduped_table
+
+    def _keep_relevance_score(self, combined_results: pa.Table):
+        if self.score == "relevance":
+            if "score" in combined_results.column_names:
+                combined_results = combined_results.drop_columns(["score"])
+            if "_distance" in combined_results.column_names:
+                combined_results = combined_results.drop_columns(["_distance"])
+        return combined_results

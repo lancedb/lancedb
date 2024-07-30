@@ -1,3 +1,4 @@
+from typing import Any, List
 import pyarrow as pa
 
 from collections import defaultdict
@@ -55,6 +56,41 @@ class RRFReranker(Reranker):
         )
 
         if self.score == "relevance":
-            combined_results = combined_results.drop_columns(["score", "_distance"])
+            combined_results = self._keep_relevance_score(combined_results)
 
         return combined_results
+
+    def rerank_multivector(
+        self,
+        vector_results: List[Any],
+        query: str | None = None,
+        deduplicate: bool = False, # noqa: F821 # TODO: This is not used
+    ):
+        from ..table import LanceQueryBuilder
+
+        # Make sure all elements are of the same type
+        if not all(isinstance(v, type(vector_results[0])) for v in vector_results):
+            raise ValueError(
+                "All elements in vector_results should be of the same type"
+            )
+
+        if not isinstance(vector_results[0], (pa.Table, LanceQueryBuilder)):
+            raise ValueError(
+                "vector_results should be a list of pa.Table or LanceQueryBuilder"
+            )
+
+        if isinstance(vector_results[0], LanceQueryBuilder):
+            vector_results = [result.to_arrow() for result in vector_results]
+
+        # _rowid is required for RRF reranking
+        if not all("_rowid" in result.column_names for result in vector_results):
+            raise ValueError(
+                "'_rowid' is required for RRF reranking. \
+                            include _rowid by passing `with_row_id=True` to search()"
+            )
+
+        combined = pa.concat_tables(vector_results, **self._concat_tables_args)
+        empty_table = pa.Table.from_arrays([], names=[])
+        reranked = self.rerank_hybrid(query, combined, empty_table)
+
+        return reranked
