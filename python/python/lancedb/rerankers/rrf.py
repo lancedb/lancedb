@@ -1,8 +1,11 @@
-from typing import Any, List
+from typing import Union, List, TYPE_CHECKING
 import pyarrow as pa
 
 from collections import defaultdict
 from .base import Reranker
+
+if TYPE_CHECKING:
+    from ..table import LanceQueryBuilder
 
 
 class RRFReranker(Reranker):
@@ -62,25 +65,28 @@ class RRFReranker(Reranker):
 
     def rerank_multivector(
         self,
-        vector_results: List[Any],
-        query: str | None = None,
-        deduplicate: bool = False, # noqa: F821 # TODO: This is not used
+        vector_results: Union[List[pa.Table], List["LanceQueryBuilder"]],
+        query: str = None,
+        deduplicate: bool = False,  # noqa: F821 # TODO: This is not used
     ):
-        from ..table import LanceQueryBuilder
-
+        """
+        Overridden method to rerank the results from multiple vector searches.
+        This leverages the RRF hybrid reranking algorithm to combine the
+        results from multiple vector searches.
+        """
         # Make sure all elements are of the same type
         if not all(isinstance(v, type(vector_results[0])) for v in vector_results):
             raise ValueError(
                 "All elements in vector_results should be of the same type"
             )
 
-        if not isinstance(vector_results[0], (pa.Table, LanceQueryBuilder)):
+        # avoid circular import
+        if type(vector_results[0]).__name__ == "LanceQueryBuilder":
+            vector_results = [result.to_arrow() for result in vector_results]
+        elif not isinstance(vector_results[0], pa.Table):
             raise ValueError(
                 "vector_results should be a list of pa.Table or LanceQueryBuilder"
             )
-
-        if isinstance(vector_results[0], LanceQueryBuilder):
-            vector_results = [result.to_arrow() for result in vector_results]
 
         # _rowid is required for RRF reranking
         if not all("_rowid" in result.column_names for result in vector_results):
