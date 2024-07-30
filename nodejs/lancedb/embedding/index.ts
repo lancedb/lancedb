@@ -18,7 +18,7 @@ import { sanitizeType } from "../sanitize";
 import { EmbeddingFunction } from "./embedding_function";
 import { EmbeddingFunctionConfig, getRegistry } from "./registry";
 
-export { EmbeddingFunction } from "./embedding_function";
+export { EmbeddingFunction, TextEmbeddingFunction } from "./embedding_function";
 
 // We need to explicitly export '*' so that the `register` decorator actually registers the class.
 export * from "./openai";
