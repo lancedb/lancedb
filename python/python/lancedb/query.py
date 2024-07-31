@@ -99,6 +99,9 @@ class Query(pydantic.BaseModel):
     # if True then apply the filter before vector search
     prefilter: bool = False
 
+    # full text search query
+    full_text_query: Optional[Union[str, dict]] = None
+
     # top k results to return
     k: int
 
@@ -689,87 +692,22 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         return self
 
     def to_arrow(self) -> pa.Table:
-        try:
-            import tantivy
-        except ImportError:
-            raise ImportError(
-                "Please install tantivy-py `pip install tantivy` to use the full text search feature."  # noqa: E501
-            )
-
-        from .fts import search_index
-
-        # get the index path
-        index_path = self._table._get_fts_index_path()
-
-        # Check that we are on local filesystem
-        fs, _path = fs_from_uri(index_path)
-        if not isinstance(fs, pa_fs.LocalFileSystem):
-            raise NotImplementedError(
-                "Full-text search is only supported on the local filesystem"
-            )
-
-        # check if the index exist
-        if not Path(index_path).exists():
-            raise FileNotFoundError(
-                "Fts index does not exist. "
-                "Please first call table.create_fts_index(['<field_names>']) to "
-                "create the fts index."
-            )
-        # open the index
-        index = tantivy.Index.open(index_path)
         # get the scores and doc ids
         query = self._query
         if self._phrase_query:
-            query = query.replace('"', "'")
-            query = f'"{query}"'
-        row_ids, scores = search_index(
-            index, query, self._limit, ordering_field=self.ordering_field_name
+            raise NotImplementedError("Phrase query is not yet supported.")
+
+        query = Query(
+            filter=self._where,
+            prefilter=self._prefilter,
+            k=self._limit,
+            columns=self._columns,
+            full_text_query=query,
+            with_row_id=self._with_row_id,
         )
-        if len(row_ids) == 0:
-            empty_schema = pa.schema([pa.field("score", pa.float32())])
-            return pa.Table.from_pylist([], schema=empty_schema)
-        scores = pa.array(scores)
-        output_tbl = self._table.to_lance().take(row_ids, columns=self._columns)
-        output_tbl = output_tbl.append_column("score", scores)
-        # this needs to match vector search results which are uint64
-        row_ids = pa.array(row_ids, type=pa.uint64())
 
-        if self._where is not None:
-            tmp_name = "__lancedb__duckdb__indexer__"
-            output_tbl = output_tbl.append_column(
-                tmp_name, pa.array(range(len(output_tbl)))
-            )
-            try:
-                # TODO would be great to have Substrait generate pyarrow compute
-                # expressions or conversely have pyarrow support SQL expressions
-                # using Substrait
-                import duckdb
-
-                indexer = duckdb.sql(
-                    f"SELECT {tmp_name} FROM output_tbl WHERE {self._where}"
-                ).to_arrow_table()[tmp_name]
-                output_tbl = output_tbl.take(indexer).drop([tmp_name])
-                row_ids = row_ids.take(indexer)
-
-            except ImportError:
-                import tempfile
-
-                import lance
-
-                # TODO Use "memory://" instead once that's supported
-                with tempfile.TemporaryDirectory() as tmp:
-                    ds = lance.write_dataset(output_tbl, tmp)
-                    output_tbl = ds.to_table(filter=self._where)
-                    indexer = output_tbl[tmp_name]
-                    row_ids = row_ids.take(indexer)
-                    output_tbl = output_tbl.drop([tmp_name])
-
-        if self._with_row_id:
-            output_tbl = output_tbl.append_column("_rowid", row_ids)
-
-        if self._reranker is not None:
-            output_tbl = self._reranker.rerank_fts(self._query, output_tbl)
-        return output_tbl
+        result = self._table._execute_query(query)
+        return result.read_all()
 
     def rerank(self, reranker: Reranker) -> LanceFtsQueryBuilder:
         """Rerank the results using the specified reranker.
@@ -784,8 +722,7 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         LanceFtsQueryBuilder
             The LanceQueryBuilder object.
         """
-        self._reranker = reranker
-        return self
+        raise NotImplementedError("Reranking is not yet supported for FTS queries.")
 
 
 class LanceEmptyQueryBuilder(LanceQueryBuilder):
@@ -856,13 +793,13 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         # convert to ranks first if needed
         if self._norm == "rank":
             vector_results = self._rank(vector_results, "_distance")
-            fts_results = self._rank(fts_results, "score")
+            fts_results = self._rank(fts_results, "_score")
         # normalize the scores to be between 0 and 1, 0 being most relevant
         vector_results = self._normalize_scores(vector_results, "_distance")
 
         # In fts higher scores represent relevance. Not inverting them here as
         # rerankers might need to preserve this score to support `return_score="all"`
-        fts_results = self._normalize_scores(fts_results, "score")
+        fts_results = self._normalize_scores(fts_results, "_score")
 
         results = self._reranker.rerank_hybrid(
             self._fts_query._query, vector_results, fts_results

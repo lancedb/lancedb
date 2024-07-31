@@ -1188,9 +1188,15 @@ class LanceTable(Table):
             index_cache_size=index_cache_size,
         )
 
-    def create_scalar_index(self, column: str, *, replace: bool = True):
+    def create_scalar_index(
+        self,
+        column: str,
+        index_type: Literal["BTREE", "BITMAP", "LABEL_LIST", "INVERTED"] = "BTREE",
+        *,
+        replace: bool = True,
+    ):
         self._dataset_mut.create_scalar_index(
-            column, index_type="BTREE", replace=replace
+            column, index_type=index_type, replace=replace
         )
 
     def create_fts_index(
@@ -1665,6 +1671,7 @@ class LanceTable(Table):
                 "nprobes": query.nprobes,
                 "refine_factor": query.refine_factor,
             },
+            full_text_query=query.full_text_query,
             with_row_id=query.with_row_id,
             batch_size=batch_size,
         ).to_reader()
