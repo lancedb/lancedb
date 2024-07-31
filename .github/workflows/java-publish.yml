@@ -10,7 +10,7 @@ jobs:
   macos-arm64:
     name: Build on MacOS Arm64
     runs-on: macos-14
-    timeout-minutes: 30
+    timeout-minutes: 45
     defaults:
       run:
         working-directory: ./java
@@ -33,7 +33,7 @@ jobs:
   linux-arm64:
     name: Build on Linux Arm64
     runs-on: warp-ubuntu-2204-arm64-8x
-    timeout-minutes: 30
+    timeout-minutes: 45
     defaults:
       run:
         working-directory: ./java
