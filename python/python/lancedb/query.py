@@ -15,7 +15,6 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 from typing import (
     TYPE_CHECKING,
     Dict,
@@ -30,7 +29,6 @@ from typing import (
 import deprecation
 import numpy as np
 import pyarrow as pa
-import pyarrow.fs as pa_fs
 import pydantic
 
 from . import __version__
@@ -38,7 +36,7 @@ from .arrow import AsyncRecordBatchReader
 from .common import VEC
 from .rerankers.base import Reranker
 from .rerankers.linear_combination import LinearCombinationReranker
-from .util import fs_from_uri, safe_import_pandas
+from .util import safe_import_pandas
 
 if TYPE_CHECKING:
     import PIL
@@ -229,6 +227,7 @@ class LanceQueryBuilder(ABC):
         self._limit = 10
         self._columns = None
         self._where = None
+        self._prefilter = False
         self._with_row_id = False
 
     @deprecation.deprecated(
