@@ -696,17 +696,15 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         if self._phrase_query:
             raise NotImplementedError("Phrase query is not yet supported.")
 
-        query = Query(
-            filter=self._where,
-            prefilter=self._prefilter,
-            k=self._limit,
+        ds = self._table.to_lance()
+        return ds.to_table(
             columns=self._columns,
-            full_text_query=query,
+            filter=self._where,
+            limit=self._limit,
+            prefilter=self._prefilter,
             with_row_id=self._with_row_id,
+            full_text_query=query,
         )
-
-        result = self._table._execute_query(query)
-        return result.read_all()
 
     def rerank(self, reranker: Reranker) -> LanceFtsQueryBuilder:
         """Rerank the results using the specified reranker.

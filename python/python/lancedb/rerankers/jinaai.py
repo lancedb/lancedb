@@ -92,7 +92,7 @@ class JinaReranker(Reranker):
         combined_results = self.merge_results(vector_results, fts_results)
         combined_results = self._rerank(combined_results, query)
         if self.score == "relevance":
-            combined_results = combined_results.drop_columns(["score", "_distance"])
+            combined_results = combined_results.drop_columns(["_score", "_distance"])
         elif self.score == "all":
             raise NotImplementedError(
                 "return_score='all' not implemented for JinaReranker"
@@ -117,6 +117,6 @@ class JinaReranker(Reranker):
     ):
         result_set = self._rerank(fts_results, query)
         if self.score == "relevance":
-            result_set = result_set.drop_columns(["score"])
+            result_set = result_set.drop_columns(["_score"])
 
         return result_set

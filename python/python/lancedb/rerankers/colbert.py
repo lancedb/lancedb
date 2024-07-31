@@ -73,7 +73,7 @@ class ColbertReranker(Reranker):
         combined_results = self.merge_results(vector_results, fts_results)
         combined_results = self._rerank(combined_results, query)
         if self.score == "relevance":
-            combined_results = combined_results.drop_columns(["score", "_distance"])
+            combined_results = combined_results.drop_columns(["_score", "_distance"])
         elif self.score == "all":
             raise NotImplementedError(
                 "OpenAI Reranker does not support score='all' yet"
@@ -105,7 +105,7 @@ class ColbertReranker(Reranker):
     ):
         result_set = self._rerank(fts_results, query)
         if self.score == "relevance":
-            result_set = result_set.drop_columns(["score"])
+            result_set = result_set.drop_columns(["_score"])
 
         result_set = result_set.sort_by([("_relevance_score", "descending")])
 

@@ -55,6 +55,6 @@ class RRFReranker(Reranker):
         )
 
         if self.score == "relevance":
-            combined_results = combined_results.drop_columns(["score", "_distance"])
+            combined_results = combined_results.drop_columns(["_score", "_distance"])
 
         return combined_results
