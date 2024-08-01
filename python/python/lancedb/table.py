@@ -47,6 +47,7 @@ from .merge import LanceMergeInsertBuilder
 from .pydantic import LanceModel, model_to_dict
 from .query import AsyncQuery, AsyncVectorQuery, LanceQueryBuilder, Query
 from .util import (
+    deprecated,
     fs_from_uri,
     get_uri_scheme,
     inf_vector_column_query,
@@ -1206,6 +1207,7 @@ class LanceTable(Table):
             column, index_type=index_type, replace=replace
         )
 
+    @deprecated
     def create_fts_index(
         self,
         field_names: Union[str, List[str]],
