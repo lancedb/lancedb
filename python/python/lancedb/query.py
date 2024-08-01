@@ -750,11 +750,11 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
             index, query, self._limit, ordering_field=self.ordering_field_name
         )
         if len(row_ids) == 0:
-            empty_schema = pa.schema([pa.field("score", pa.float32())])
+            empty_schema = pa.schema([pa.field("_score", pa.float32())])
             return pa.Table.from_pylist([], schema=empty_schema)
         scores = pa.array(scores)
         output_tbl = self._table.to_lance().take(row_ids, columns=self._columns)
-        output_tbl = output_tbl.append_column("score", scores)
+        output_tbl = output_tbl.append_column("_score", scores)
         # this needs to match vector search results which are uint64
         row_ids = pa.array(row_ids, type=pa.uint64())
 
