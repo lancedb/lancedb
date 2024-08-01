@@ -10,17 +10,13 @@
 #  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
-import os
 from functools import cached_property
 from enum import Enum
-from typing import TYPE_CHECKING, List, Optional, Dict
+from typing import List, Optional, Dict
 
 from ..util import attempt_import_or_raise
 from .base import TextEmbeddingFunction
 from .registry import register
-
-if TYPE_CHECKING:
-    import numpy as np
 
 
 class WatsonxEnv(str, Enum):
