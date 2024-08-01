@@ -51,10 +51,6 @@ class WatsonxEmbeddings(TextEmbeddingFunction):
         ]
 
     def ndims(self):
-        return self._ndims
-
-    @cached_property
-    def _ndims(self):
         if self.name == "ibm/slate-125m-english-rtrvr":
             return 768
         elif self.name == "ibm/slate-30m-english-rtrvr":
