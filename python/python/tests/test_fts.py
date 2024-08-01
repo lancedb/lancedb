@@ -60,20 +60,6 @@ def table(tmp_path) -> ldb.table.LanceTable:
     return table
 
 
-@pytest.fixture
-def legacy_indexed_table(tmp_path):
-    tbl = table(tmp_path)
-    tbl.create_fts_index("text")
-    return tbl
-
-
-@pytest.fixture
-def indexed_table(tmp_path):
-    tbl = table(tmp_path)
-    tbl.create_scalar_index("text", "INVERTED")
-    return tbl
-
-
 def test_create_index(tmp_path):
     index = ldb.fts.create_index(str(tmp_path / "index"), ["text"])
     assert isinstance(index, tantivy.Index)
@@ -100,10 +86,19 @@ def test_populate_index(tmp_path, table):
     assert ldb.fts.populate_index(index, table, ["text"]) == len(table)
 
 
-@pytest.mark.parametrize("table", [indexed_table, legacy_indexed_table], indirect=True)
-def test_search_index(table):
+def test_search_index(tmp_path, table):
+    index = ldb.fts.create_index(str(tmp_path / "index"), ["text"])
+    ldb.fts.populate_index(index, table, ["text"])
+    index.reload()
+    results = ldb.fts.search_index(index, query="puppy", limit=10)
+    assert len(results) == 2
+    assert len(results[0]) == 10  # row_ids
+    assert len(results[1]) == 10  # _distance
+
+
+def test_search_fts(table):
+    table.create_scalar_index("text", "INVERTED")
     results = table.search("puppy").limit(10).to_list()
-    assert len(results[0]) == 2
     assert len(results) == 10
 
 
