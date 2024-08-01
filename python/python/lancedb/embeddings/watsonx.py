@@ -10,6 +10,7 @@
 #  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
+import os
 from functools import cached_property
 from typing import List, Optional, Dict, Union
 
@@ -83,18 +84,23 @@ class WatsonxEmbeddings(TextEmbeddingFunction):
         )
 
         kwargs = {"model_id": self.name}
-        if self.project_id:
-            kwargs["project_id"] = self.project_id
+        creds_kwargs = {}
         if self.params:
             kwargs["params"] = self.params
-
-        creds_kwargs = {}
+        if self.project_id:
+            kwargs["project_id"] = self.project_id
+        elif "WATSONX_PROJECT_ID" in os.environ:
+            creds_kwargs["project_id"] = os.environ["WATSONX_PROJECT_ID"]
+        else:
+            raise ValueError("WATSONX_PROJECT_ID must be set or passed")
         if self.api_key:
             creds_kwargs["api_key"] = self.api_key
+        elif "WATSONX_API_KEY" in os.environ:
+            creds_kwargs["api_key"] = os.environ["WATSONX_API_KEY"]
+        else:
+            raise ValueError("WATSONX_API_KEY must be set or passed")
         if self.url:
             creds_kwargs["url"] = self.url
-
-        if creds_kwargs:
-            kwargs["credentials"] = ibm_watsonx_ai.Credentials(**creds_kwargs)
+        kwargs["credentials"] = ibm_watsonx_ai.Credentials(**creds_kwargs)
 
         return ibm_watsonx_ai_foundation_models.Embeddings(**kwargs)
