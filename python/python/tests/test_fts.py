@@ -186,7 +186,7 @@ def test_search_index_with_filter(table):
     with mock.patch("builtins.__import__", side_effect=import_mock):
         rs = table.search("puppy").where("id=1").limit(10)
         # test schema
-        assert rs.to_arrow().drop("score").schema.equals(table.schema)
+        assert rs.to_arrow().drop("_score").schema.equals(table.schema)
 
         rs = rs.to_list()
         for r in rs:
