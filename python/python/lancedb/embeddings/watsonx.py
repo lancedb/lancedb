@@ -20,6 +20,7 @@ from .registry import register
 
 import numpy as np
 
+DEFAULT_WATSONX_URL = "https://us-south.ml.cloud.ibm.com"
 
 @register("watsonx")
 class WatsonxEmbeddings(TextEmbeddingFunction):
@@ -102,6 +103,8 @@ class WatsonxEmbeddings(TextEmbeddingFunction):
             raise ValueError("WATSONX_API_KEY must be set or passed")
         if self.url:
             creds_kwargs["url"] = self.url
+        else:
+            creds_kwargs["url"] = DEFAULT_WATSONX_URL
         kwargs["credentials"] = ibm_watsonx_ai.Credentials(**creds_kwargs)
 
         return ibm_watsonx_ai_foundation_models.Embeddings(**kwargs)
