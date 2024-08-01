@@ -1195,6 +1195,13 @@ class LanceTable(Table):
         *,
         replace: bool = True,
     ):
+        # drop the tantivy FTS index if it exists
+        if replace and index_type == "INVERTED":
+            fs, path = fs_from_uri(self._get_fts_index_path())
+            index_exists = fs.get_file_info(path).type != pa_fs.FileType.NotFound
+            if index_exists:
+                fs.delete_dir(path)
+
         self._dataset_mut.create_scalar_index(
             column, index_type=index_type, replace=replace
         )

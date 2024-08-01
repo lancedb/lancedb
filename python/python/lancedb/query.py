@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import (
     TYPE_CHECKING,
     Dict,
@@ -29,6 +30,7 @@ from typing import (
 import deprecation
 import numpy as np
 import pyarrow as pa
+import pyarrow.fs as pa_fs
 import pydantic
 
 from . import __version__
@@ -36,7 +38,7 @@ from .arrow import AsyncRecordBatchReader
 from .common import VEC
 from .rerankers.base import Reranker
 from .rerankers.linear_combination import LinearCombinationReranker
-from .util import safe_import_pandas
+from .util import fs_from_uri, safe_import_pandas
 
 if TYPE_CHECKING:
     import PIL
@@ -691,6 +693,10 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         return self
 
     def to_arrow(self) -> pa.Table:
+        tantivy_index_path = self._table._get_fts_index_path()
+        if Path(tantivy_index_path).exists():
+            return self.tantivy_to_arrow()
+
         # get the scores and doc ids
         query = self._query
         if self._phrase_query:
@@ -705,6 +711,89 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
             with_row_id=self._with_row_id,
             full_text_query=query,
         )
+
+    def tantivy_to_arrow(self) -> pa.Table:
+        try:
+            import tantivy
+        except ImportError:
+            raise ImportError(
+                "Please install tantivy-py `pip install tantivy` to use the full text search feature."  # noqa: E501
+            )
+
+        from .fts import search_index
+
+        # get the index path
+        index_path = self._table._get_fts_index_path()
+
+        # Check that we are on local filesystem
+        fs, _path = fs_from_uri(index_path)
+        if not isinstance(fs, pa_fs.LocalFileSystem):
+            raise NotImplementedError(
+                "Full-text search is only supported on the local filesystem"
+            )
+
+        # check if the index exist
+        if not Path(index_path).exists():
+            raise FileNotFoundError(
+                "Fts index does not exist. "
+                "Please first call table.create_fts_index(['<field_names>']) to "
+                "create the fts index."
+            )
+        # open the index
+        index = tantivy.Index.open(index_path)
+        # get the scores and doc ids
+        query = self._query
+        if self._phrase_query:
+            query = query.replace('"', "'")
+            query = f'"{query}"'
+        row_ids, scores = search_index(
+            index, query, self._limit, ordering_field=self.ordering_field_name
+        )
+        if len(row_ids) == 0:
+            empty_schema = pa.schema([pa.field("score", pa.float32())])
+            return pa.Table.from_pylist([], schema=empty_schema)
+        scores = pa.array(scores)
+        output_tbl = self._table.to_lance().take(row_ids, columns=self._columns)
+        output_tbl = output_tbl.append_column("score", scores)
+        # this needs to match vector search results which are uint64
+        row_ids = pa.array(row_ids, type=pa.uint64())
+
+        if self._where is not None:
+            tmp_name = "__lancedb__duckdb__indexer__"
+            output_tbl = output_tbl.append_column(
+                tmp_name, pa.array(range(len(output_tbl)))
+            )
+            try:
+                # TODO would be great to have Substrait generate pyarrow compute
+                # expressions or conversely have pyarrow support SQL expressions
+                # using Substrait
+                import duckdb
+
+                indexer = duckdb.sql(
+                    f"SELECT {tmp_name} FROM output_tbl WHERE {self._where}"
+                ).to_arrow_table()[tmp_name]
+                output_tbl = output_tbl.take(indexer).drop([tmp_name])
+                row_ids = row_ids.take(indexer)
+
+            except ImportError:
+                import tempfile
+
+                import lance
+
+                # TODO Use "memory://" instead once that's supported
+                with tempfile.TemporaryDirectory() as tmp:
+                    ds = lance.write_dataset(output_tbl, tmp)
+                    output_tbl = ds.to_table(filter=self._where)
+                    indexer = output_tbl[tmp_name]
+                    row_ids = row_ids.take(indexer)
+                    output_tbl = output_tbl.drop([tmp_name])
+
+        if self._with_row_id:
+            output_tbl = output_tbl.append_column("_rowid", row_ids)
+
+        if self._reranker is not None:
+            output_tbl = self._reranker.rerank_fts(self._query, output_tbl)
+        return output_tbl
 
     def rerank(self, reranker: Reranker) -> LanceFtsQueryBuilder:
         """Rerank the results using the specified reranker.

@@ -1,9 +1,9 @@
 # Full-text search
 
-LanceDB provides support for full-text search via [Tantivy](https://github.com/quickwit-oss/tantivy) (currently Python only), allowing you to incorporate keyword-based search (based on BM25) in your retrieval solutions. Our goal is to push the FTS integration down to the Rust level in the future, so that it's available for Rust and JavaScript users as well.  Follow along at [this Github issue](https://github.com/lancedb/lance/issues/1195)
+LanceDB provides support for full-text search via Lance (before via [Tantivy](https://github.com/quickwit-oss/tantivy) (Python only)), allowing you to incorporate keyword-based search (based on BM25) in your retrieval solutions.
 
 
-## Installation
+## Installation (For only version <= 0.11.0)
 
 To use full-text search, install the dependency [`tantivy-py`](https://github.com/quickwit-oss/tantivy-py):
 
@@ -35,9 +35,18 @@ table = db.create_table(
 
 The FTS index must be created before you can search via keywords.
 
-```python
-table.create_fts_index("text")
-```
+=== “Create FTS index[^1]"
+    === "> 0.11.0"
+
+        ```python
+        table.create_scalar_index("text")
+        ```
+    
+    === "<= 0.11.0"
+
+        ```python
+        table.create_scalar_index("text", "INVERTED")
+        ```
 
 To search an FTS index via keywords, LanceDB's `table.search` accepts a string as input:
 
@@ -47,9 +56,18 @@ table.search("puppy").limit(10).select(["text"]).to_list()
 
 This returns the result as a list of dictionaries as follows.
 
-```python
-[{'text': 'Frodo was a happy puppy', 'score': 0.6931471824645996}]
-```
+=== “Result[^1]"
+    === "> 0.11.0"
+
+        ```python
+        [{'text': 'Frodo was a happy puppy', '_score': 0.6931471824645996}]
+        ```
+    
+    === "<= 0.11.0"
+
+        ```python
+        [{'text': 'Frodo was a happy puppy', 'score': 0.6931471824645996}]
+        ```
 
 !!! note
     LanceDB automatically searches on the existing FTS index if the input to the search is of type `str`. If you provide a vector as input, LanceDB will search the ANN index instead.
@@ -57,20 +75,38 @@ This returns the result as a list of dictionaries as follows.
 ## Tokenization
 By default the text is tokenized by splitting on punctuation and whitespaces and then removing tokens that are longer than 40 chars. For more language specific tokenization then provide the argument tokenizer_name with the 2 letter language code followed by "_stem". So for english it would be "en_stem".
 
-```python
-table.create_fts_index("text", tokenizer_name="en_stem")
-```
+=== Tokenization[^1]"
+    === "> 0.11.0"
 
-The following [languages](https://docs.rs/tantivy/latest/tantivy/tokenizer/enum.Language.html) are currently supported.
+        ```python
+        not support yet
+        ```
+    
+    === "<= 0.11.0"
+
+        ```python
+        table.create_fts_index("text", tokenizer_name="en_stem")
+        ```
+
+For `<= 0.11.0`, the following [languages](https://docs.rs/tantivy/latest/tantivy/tokenizer/enum.Language.html) are currently supported.
 
 
 ## Index multiple columns
 
 If you have multiple string columns to index, there's no need to combine them manually -- simply pass them all as a list to `create_fts_index`:
 
-```python
-table.create_fts_index(["text1", "text2"])
-```
+=== Index multiple columns[^1]"
+    === "> 0.11.0"
+
+        ```python
+        not support yet
+        ```
+    
+    === "<= 0.11.0"
+
+        ```python
+        table.create_fts_index(["text1", "text2"])
+        ```
 
 Note that the search API call does not change - you can search over all indexed columns at once.
 
@@ -84,7 +120,7 @@ applied on top of the full text search results. This can be invoked via the fami
 table.search("puppy").limit(10).where("meta='foo'").to_list()
 ```
 
-## Sorting
+## Sorting (Only <= 0.11.0)
 
 You can pre-sort the documents by specifying `ordering_field_names` when
 creating the full-text search index. Once pre-sorted, you can then specify
@@ -115,6 +151,9 @@ table.create_fts_index(["text_field"], ordering_field_names=["sort_by_field"])
 
 
 ## Phrase queries vs. terms queries
+
+!!! tip "Warn"
+    For the new version (> 0.11.0), phrase query isn't supported yet
 
 For full-text search you can specify either a **phrase** query like `"the old man and the sea"`,
 or a **terms** search query like `"(Old AND Man) AND Sea"`. For more details on the terms
