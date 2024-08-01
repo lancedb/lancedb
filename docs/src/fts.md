@@ -35,18 +35,17 @@ table = db.create_table(
 
 The FTS index must be created before you can search via keywords.
 
-=== “Create FTS index[^1]"
-    === "> 0.11.0"
+=== "> 0.11.0"
 
-        ```python
-        table.create_scalar_index("text")
-        ```
-    
-    === "<= 0.11.0"
+    ```python
+    table.create_scalar_index("text", "INVERTED")
+    ```
 
-        ```python
-        table.create_scalar_index("text", "INVERTED")
-        ```
+=== "<= 0.11.0"
+
+    ```python
+    table.create_fts_index("text")
+    ```
 
 To search an FTS index via keywords, LanceDB's `table.search` accepts a string as input:
 
@@ -56,18 +55,17 @@ table.search("puppy").limit(10).select(["text"]).to_list()
 
 This returns the result as a list of dictionaries as follows.
 
-=== “Result[^1]"
-    === "> 0.11.0"
+=== "> 0.11.0"
 
-        ```python
-        [{'text': 'Frodo was a happy puppy', '_score': 0.6931471824645996}]
-        ```
-    
-    === "<= 0.11.0"
+    ```python
+    [{'text': 'Frodo was a happy puppy', '_score': 0.6931471824645996}]
+    ```
 
-        ```python
-        [{'text': 'Frodo was a happy puppy', 'score': 0.6931471824645996}]
-        ```
+=== "<= 0.11.0"
+
+    ```python
+    [{'text': 'Frodo was a happy puppy', 'score': 0.6931471824645996}]
+    ```
 
 !!! note
     LanceDB automatically searches on the existing FTS index if the input to the search is of type `str`. If you provide a vector as input, LanceDB will search the ANN index instead.
@@ -75,38 +73,35 @@ This returns the result as a list of dictionaries as follows.
 ## Tokenization
 By default the text is tokenized by splitting on punctuation and whitespaces and then removing tokens that are longer than 40 chars. For more language specific tokenization then provide the argument tokenizer_name with the 2 letter language code followed by "_stem". So for english it would be "en_stem".
 
-=== Tokenization[^1]"
-    === "> 0.11.0"
+=== "> 0.11.0"
 
-        ```python
-        not support yet
-        ```
-    
-    === "<= 0.11.0"
+    ```python
+    not support yet
+    ```
 
-        ```python
-        table.create_fts_index("text", tokenizer_name="en_stem")
-        ```
+=== "<= 0.11.0"
+
+    ```python
+    table.create_fts_index("text", tokenizer_name="en_stem")
+    ```
 
 For `<= 0.11.0`, the following [languages](https://docs.rs/tantivy/latest/tantivy/tokenizer/enum.Language.html) are currently supported.
-
 
 ## Index multiple columns
 
 If you have multiple string columns to index, there's no need to combine them manually -- simply pass them all as a list to `create_fts_index`:
 
-=== Index multiple columns[^1]"
-    === "> 0.11.0"
+=== "> 0.11.0"
 
-        ```python
-        not support yet
-        ```
-    
-    === "<= 0.11.0"
+    ```python
+    not support yet
+    ```
 
-        ```python
-        table.create_fts_index(["text1", "text2"])
-        ```
+=== "<= 0.11.0"
+
+    ```python
+    table.create_fts_index(["text1", "text2"])
+    ```
 
 Note that the search API call does not change - you can search over all indexed columns at once.
 
@@ -189,7 +184,7 @@ In general, a query that's declared as a phrase query will be wrapped in double 
 double quotes replaced by single quotes.
 
 
-## Configurations
+## Configurations (deprecated)
 
 By default, LanceDB configures a 1GB heap size limit for creating the index. You can
 reduce this if running on a smaller node, or increase this for faster performance while
@@ -203,6 +198,8 @@ table.create_fts_index(["text1", "text2"], writer_heap_size=heap, replace=True)
 
 ## Current limitations
 
+For that deprecated FTS:
+
 1. Currently we do not yet support incremental writes.
    If you add data after FTS index creation, it won't be reflected
    in search results until you do a full reindex.
@@ -210,3 +207,5 @@ table.create_fts_index(["text1", "text2"], writer_heap_size=heap, replace=True)
 2. We currently only support local filesystem paths for the FTS index.
    This is a tantivy limitation. We've implemented an object store plugin
    but there's no way in tantivy-py to specify to use it.
+
+[^1]: The `create_fts_index` method is deprecated, and we switched to lance's FTS implementation to replace the tantivy.
