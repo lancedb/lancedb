@@ -178,7 +178,7 @@ class Reranker(ABC):
             vector_results = [result.to_arrow() for result in vector_results]
         elif not isinstance(vector_results[0], pa.Table):
             raise ValueError(
-                "vector_results should be a list of pa.Table or LanceQueryBuilder"
+                "vector_results should be a list of pa.Table or LanceVectorQueryBuilder"
             )
 
         combined = pa.concat_tables(vector_results, **self._concat_tables_args)

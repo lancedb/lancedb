@@ -5,7 +5,7 @@ from collections import defaultdict
 from .base import Reranker
 
 if TYPE_CHECKING:
-    from ..table import LanceQueryBuilder
+    from ..table import LanceVectorQueryBuilder
 
 
 class RRFReranker(Reranker):
@@ -65,7 +65,7 @@ class RRFReranker(Reranker):
 
     def rerank_multivector(
         self,
-        vector_results: Union[List[pa.Table], List["LanceQueryBuilder"]],
+        vector_results: Union[List[pa.Table], List["LanceVectorQueryBuilder"]],
         query: str = None,
         deduplicate: bool = True,  # noqa: F821 # TODO: automatically deduplicates
     ):
@@ -81,11 +81,11 @@ class RRFReranker(Reranker):
             )
 
         # avoid circular import
-        if type(vector_results[0]).__name__ == "LanceQueryBuilder":
+        if type(vector_results[0]).__name__ == "LanceVectorQueryBuilder":
             vector_results = [result.to_arrow() for result in vector_results]
         elif not isinstance(vector_results[0], pa.Table):
             raise ValueError(
-                "vector_results should be a list of pa.Table or LanceQueryBuilder"
+                "vector_results should be a list of pa.Table or LanceVectorQueryBuilder"
             )
 
         # _rowid is required for RRF reranking
