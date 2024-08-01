@@ -22,6 +22,7 @@ import numpy as np
 
 DEFAULT_WATSONX_URL = "https://us-south.ml.cloud.ibm.com"
 
+
 @register("watsonx")
 class WatsonxEmbeddings(TextEmbeddingFunction):
     """
