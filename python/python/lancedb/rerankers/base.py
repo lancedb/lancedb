@@ -6,7 +6,7 @@ import numpy as np
 import pyarrow as pa
 
 if TYPE_CHECKING:
-    from ..table import LanceQueryBuilder
+    from ..table import LanceVectorQueryBuilder
 
 ARROW_VERSION = Version(pa.__version__)
 
@@ -142,7 +142,7 @@ class Reranker(ABC):
 
     def rerank_multivector(
         self,
-        vector_results: Union[List[pa.Table], List["LanceQueryBuilder"]],
+        vector_results: Union[List[pa.Table], List["LanceVectorQueryBuilder"]],
         query: Union[str, None] = None,  # Some rerankers might not need the query
         deduplicate: bool = False,
         # deduplicator: callable = None,
@@ -173,8 +173,8 @@ class Reranker(ABC):
                 "All elements in vector_results should be of the same type"
             )
 
-        # avoid circular import
-        if type(vector_results[0]).__name__ == "LanceQueryBuilder":
+        # avoids circular import
+        if type(vector_results[0]).__name__ == "LanceVectorQueryBuilder":
             vector_results = [result.to_arrow() for result in vector_results]
         elif not isinstance(vector_results[0], pa.Table):
             raise ValueError(
@@ -183,7 +183,7 @@ class Reranker(ABC):
 
         combined = pa.concat_tables(vector_results, **self._concat_tables_args)
 
-        combined = self.rerank_vector(query, combined)
+        reranked = self.rerank_vector(query, combined)
 
         # TODO: Allow custom deduplicators here.
         # currently, this'll just keep the first instance.
@@ -193,9 +193,9 @@ class Reranker(ABC):
                     "'_rowid' is required for deduplication. \
                     include _rowid by passing `with_row_id=True` to search()"
                 )
-            combined = self._deduplicate(combined)
+            reranked = self._deduplicate(reranked)
 
-        return combined
+        return reranked
 
     def _deduplicate(self, table: pa.Table):
         """
