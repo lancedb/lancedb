@@ -84,15 +84,16 @@ class WatsonxEmbeddings(TextEmbeddingFunction):
         )
 
         kwargs = {"model_id": self.name}
-        creds_kwargs = {}
         if self.params:
             kwargs["params"] = self.params
         if self.project_id:
             kwargs["project_id"] = self.project_id
         elif "WATSONX_PROJECT_ID" in os.environ:
-            creds_kwargs["project_id"] = os.environ["WATSONX_PROJECT_ID"]
+            kwargs["project_id"] = os.environ["WATSONX_PROJECT_ID"]
         else:
             raise ValueError("WATSONX_PROJECT_ID must be set or passed")
+
+        creds_kwargs = {}
         if self.api_key:
             creds_kwargs["api_key"] = self.api_key
         elif "WATSONX_API_KEY" in os.environ:
