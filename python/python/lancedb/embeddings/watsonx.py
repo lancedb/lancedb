@@ -22,6 +22,13 @@ import numpy as np
 
 DEFAULT_WATSONX_URL = "https://us-south.ml.cloud.ibm.com"
 
+MODELS_DIMS = {
+    "ibm/slate-125m-english-rtrvr": 768,
+    "ibm/slate-30m-english-rtrvr": 384,
+    "sentence-transformers/all-minilm-l12-v2": 384,
+    "intfloat/multilingual-e5-large": 1024,
+}
+
 
 @register("watsonx")
 class WatsonxEmbeddings(TextEmbeddingFunction):
@@ -51,16 +58,13 @@ class WatsonxEmbeddings(TextEmbeddingFunction):
         ]
 
     def ndims(self):
-        if self.name == "ibm/slate-125m-english-rtrvr":
-            return 768
-        elif self.name == "ibm/slate-30m-english-rtrvr":
-            return self.dim or 384
-        elif self.name == "sentence-transformers/all-minilm-l12-v2":
-            return self.dim or 384
-        elif self.name == "intfloat/multilingual-e5-large":
-            return self.dim or 1024
-        else:
+        return self._ndims
+
+    @cached_property
+    def _ndims(self):
+        if self.name not in MODELS_DIMS:
             raise ValueError(f"Unknown model name {self.name}")
+        return MODELS_DIMS[self.name]
 
     def generate_embeddings(
         self,
