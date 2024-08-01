@@ -78,6 +78,9 @@ class WatsonxEmbeddings(TextEmbeddingFunction):
     @cached_property
     def _watsonx_client(self):
         ibm_watsonx_ai = attempt_import_or_raise("ibm_watsonx_ai")
+        ibm_watsonx_ai_foundation_models = attempt_import_or_raise(
+            "ibm_watsonx_ai.foundation_models"
+        )
 
         kwargs = {"model_id": self.name}
         if self.project_id:
@@ -94,4 +97,4 @@ class WatsonxEmbeddings(TextEmbeddingFunction):
         if creds_kwargs:
             kwargs["credentials"] = ibm_watsonx_ai.Credentials(**creds_kwargs)
 
-        return ibm_watsonx_ai.foundation_models.Embeddings(**kwargs)
+        return ibm_watsonx_ai_foundation_models.Embeddings(**kwargs)
