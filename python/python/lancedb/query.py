@@ -134,6 +134,7 @@ class LanceQueryBuilder(ABC):
         query_type: str,
         vector_column_name: str,
         ordering_field_name: str = None,
+        fts_columns: Union[str, List[str]] = None,
     ) -> LanceQueryBuilder:
         """
         Create a query builder based on the given query and query type.
@@ -668,12 +669,19 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
 class LanceFtsQueryBuilder(LanceQueryBuilder):
     """A builder for full text search for LanceDB."""
 
-    def __init__(self, table: "Table", query: str, ordering_field_name: str = None):
+    def __init__(
+        self,
+        table: "Table",
+        query: str,
+        ordering_field_name: str = None,
+        fts_columns: Union[str, List[str]] = None,
+    ):
         super().__init__(table)
         self._query = query
         self._phrase_query = False
         self.ordering_field_name = ordering_field_name
         self._reranker = None
+        self._fts_columns = fts_columns
 
     def phrase_query(self, phrase_query: bool = True) -> LanceFtsQueryBuilder:
         """Set whether to use phrase query.
@@ -709,7 +717,10 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
             limit=self._limit,
             prefilter=self._prefilter,
             with_row_id=self._with_row_id,
-            full_text_query=query,
+            full_text_query={
+                "query": query,
+                "columns": self._fts_columns,
+            },
         )
 
     def tantivy_to_arrow(self) -> pa.Table:

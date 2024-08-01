@@ -1405,6 +1405,7 @@ class LanceTable(Table):
         vector_column_name: Optional[str] = None,
         query_type: str = "auto",
         ordering_field_name: Optional[str] = None,
+        fts_columns: Union[str, List[str]] = None,
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support [vector search][search]
@@ -1459,6 +1460,10 @@ class LanceTable(Table):
             or raise an error if no corresponding embedding function is found.
             If the `query` is a string, then the query type is "vector" if the
             table has embedding functions, else the query type is "fts"
+        fts_columns: str or list of str, default None
+            The column(s) to search in for full-text search.
+            If None then the search is performed on all indexed columns.
+            For now, only one column can be searched at a time.
 
         Returns
         -------

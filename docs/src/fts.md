@@ -53,6 +53,16 @@ To search an FTS index via keywords, LanceDB's `table.search` accepts a string a
 table.search("puppy").limit(10).select(["text"]).to_list()
 ```
 
+For version > 0.11.0, you can specify the column(s) to search:
+
+```python
+table.search("puppy", fts_columns="text").limit(10).select(["text"]).to_list()
+```
+
+It would search on all indexed columns by default, so it's useful when there are multiple indexed columns.
+For now, only one column can be searched at a time. 
+
+
 This returns the result as a list of dictionaries as follows.
 
 === "> 0.11.0"
