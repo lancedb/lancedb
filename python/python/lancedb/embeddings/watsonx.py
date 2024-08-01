@@ -11,18 +11,14 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 from functools import cached_property
-from enum import Enum
-from typing import List, Optional, Dict
+from typing import TYPE_CHECKING, List, Optional, Dict, Union
 
 from ..util import attempt_import_or_raise
 from .base import TextEmbeddingFunction
 from .registry import register
 
-
-class WatsonxEnv(str, Enum):
-    API_KEY = "WATSONX_API_KEY"
-    PROJECT_ID = "WATSONX_PROJECT_ID"
-    URL = "WATSONX_URL"
+if TYPE_CHECKING:
+    import numpy as np
 
 
 @register("watsonx")
@@ -68,8 +64,17 @@ class WatsonxEmbeddings(TextEmbeddingFunction):
         else:
             raise ValueError(f"Unknown model name {self.name}")
 
-    def generate_embeddings(self, texts: List[str]) -> List[List[float]]:
-        return self._watsonx_client.embed_documents(texts=texts)
+    def generate_embeddings(
+        self,
+        texts: Union[List[str], np.ndarray],
+        *args,
+        **kwargs,
+    ) -> List[List[float]]:
+        return self._watsonx_client.embed_documents(
+            texts=list(texts),
+            *args,
+            **kwargs,
+        )
 
     @cached_property
     def _watsonx_client(self):
