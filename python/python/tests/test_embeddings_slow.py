@@ -429,7 +429,7 @@ def test_watsonx_embedding(tmp_path):
     from lancedb.embeddings import WatsonxEmbeddings
 
     for name in WatsonxEmbeddings.model_names():
-        model = get_registry().get("watsonx").create(name=name)
+        model = get_registry().get("watsonx").create(max_retries=0, name=name)
 
         class TextModel(LanceModel):
             text: str = model.SourceField()
