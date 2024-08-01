@@ -1,83 +1,97 @@
+#  Copyright (c) 2023. LanceDB Developers
+#
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
 import os
+from functools import cached_property
 from enum import Enum
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional, Dict
 
-from ibm_watsonx_ai import Credentials
-from ibm_watsonx_ai.foundation_models import Embeddings
-from lancedb.embeddings import EmbeddingFunctionRegistry, TextEmbeddingFunction
+from ..util import attempt_import_or_raise
+from .base import TextEmbeddingFunction
+from .registry import register
 
-registry = EmbeddingFunctionRegistry.get_instance()
+if TYPE_CHECKING:
+    import numpy as np
 
 
 class WatsonxEnv(str, Enum):
     API_KEY = "WATSONX_API_KEY"
     PROJECT_ID = "WATSONX_PROJECT_ID"
     URL = "WATSONX_URL"
-    EMBEDDINGS_MODEL = "WATSONX_EMBEDDINGS_MODEL"
-    NUM_DIMS = "WATSONX_EMBEDDINGS_MODEL_NUM_DIMS"
-
-    def __str__(self):
-        return self.value
 
 
-@registry.register("watsonx")
+@register("watsonx")
 class WatsonxEmbeddings(TextEmbeddingFunction):
-    _client: Optional[Embeddings] = None
-    _ndims: Optional[int] = None
+    """
+    API Docs:
+    ---------
+    https://cloud.ibm.com/apidocs/watsonx-ai#text-embeddings
 
-    url: str
-    model: str
+    Supported embedding models:
+    ---------------------------
+    https://dataplatform.cloud.ibm.com/docs/content/wsj/analyze-data/fm-models-embed.html?context=wx
+    """
 
-    def __init__(
-        self,
-        url: Optional[str] = None,
-        model: Optional[str] = None,
-        ndims: Optional[int] = None,
-        **kwargs,
-    ):
-        api_key = os.getenv(WatsonxEnv.API_KEY, None)
-        if api_key is None:
-            raise ValueError(f"{WatsonxEnv.API_KEY.value} must be set")
+    name: str = "ibm/slate-125m-english-rtrvr"
+    api_key: Optional[str] = None
+    project_id: Optional[str] = None
+    url: Optional[str] = None
+    params: Optional[Dict] = None
 
-        project_id = os.getenv(WatsonxEnv.PROJECT_ID, None)
-        if project_id is None:
-            raise ValueError(f"{WatsonxEnv.PROJECT_ID.value} must be set")
+    @staticmethod
+    def model_names():
+        return [
+            "ibm/slate-125m-english-rtrvr",
+            "ibm/slate-30m-english-rtrvr",
+            "sentence-transformers/all-minilm-l12-v2",
+            "intfloat/multilingual-e5-large",
+        ]
 
-        url = os.getenv(WatsonxEnv.URL, None)
-        if url is None:
-            raise ValueError(f"{WatsonxEnv.URL.value} must be set")
+    def ndims(self):
+        return self._ndims
 
-        model = os.getenv(WatsonxEnv.EMBEDDINGS_MODEL, None)
-        if model is None:
-            raise ValueError(f"{WatsonxEnv.EMBEDDINGS_MODEL.value} must be set")
-
-        super().__init__(
-            model=model,
-            url=url,
-            **kwargs,
-        )
-        self._client = Embeddings(
-            model_id=model,
-            params={},
-            credentials=Credentials(
-                api_key=api_key,
-                url=url,
-            ),
-            project_id=project_id,
-        )
-
-        if ndims is None:
-            ndims = os.getenv(WatsonxEnv.NUM_DIMS, None)
-        if ndims is not None:
-            self._ndims = self.ndims
+    @cached_property
+    def _ndims(self):
+        if self.name == "ibm/slate-125m-english-rtrvr":
+            return 768
+        elif self.name == "ibm/slate-30m-english-rtrvr":
+            return self.dim or 384
+        elif self.name == "sentence-transformers/all-minilm-l12-v2":
+            return self.dim or 384
+        elif self.name == "intfloat/multilingual-e5-large":
+            return self.dim or 1024
+        else:
+            raise ValueError(f"Unknown model name {self.name}")
 
     def generate_embeddings(self, texts: List[str]) -> List[List[float]]:
-        assert self._client is not None
-        return self._client.embed_documents(texts=texts)
+        return self._watsonx_client.embed_documents(texts=texts)
 
-    @property
-    def ndims(self) -> int:
-        if self._ndims is None:
-            vector = self.generate_embeddings(["foo"])[0]
-            self._ndims = len(vector)
-        return self._ndims
+    @cached_property
+    def _watsonx_client(self):
+        ibm_watsonx_ai = attempt_import_or_raise("ibm_watsonx_ai")
+
+        kwargs = {"model_id": self.name}
+        if self.project_id:
+            kwargs["project_id"] = self.project_id
+        if self.params:
+            kwargs["params"] = self.params
+
+        creds_kwargs = {}
+        if self.api_key:
+            creds_kwargs["api_key"] = self.api_key
+        if self.url:
+            creds_kwargs["url"] = self.url
+
+        if creds_kwargs:
+            kwargs["credentials"] = ibm_watsonx_ai.Credentials(**creds_kwargs)
+
+        return ibm_watsonx_ai.foundation_models.Embeddings(**kwargs)
