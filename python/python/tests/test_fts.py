@@ -102,10 +102,9 @@ def test_populate_index(tmp_path, table):
 
 @pytest.mark.parametrize("table", [indexed_table, legacy_indexed_table], indirect=True)
 def test_search_index(table):
-    results = table.search("puppy").limit(10).to_dict()
-    assert len(results) == 2
-    assert len(results["_rowid"]) == 10  # row_ids
-    assert len(results["_score"]) == 10  # _score
+    results = table.search("puppy").limit(10).to_list()
+    assert len(results[0]) == 2
+    assert len(results) == 10
 
 
 def test_search_ordering_field_index_table(tmp_path, table):
