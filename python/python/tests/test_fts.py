@@ -100,7 +100,7 @@ def test_populate_index(tmp_path, table):
     assert ldb.fts.populate_index(index, table, ["text"]) == len(table)
 
 
-@pytest.mark.parametrize("table", [indexed_table, legacy_indexed_table])
+@pytest.mark.parametrize("table", [indexed_table, legacy_indexed_table], indirect=True)
 def test_search_index(table):
     results = table.search("puppy").limit(10).to_dict()
     assert len(results) == 2
