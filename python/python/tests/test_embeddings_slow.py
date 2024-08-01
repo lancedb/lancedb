@@ -421,10 +421,9 @@ def test_openai_embedding(tmp_path):
 
 @pytest.mark.slow
 @pytest.mark.skipif(
-    os.environ.get("WATSONX_API_KEY") is None, reason="WATSONX_API_KEY not set"
-)
-@pytest.mark.skipif(
-    os.environ.get("WATSONX_PROJECT_ID") is None, reason="WATSONX_PROJECT_ID not set"
+    os.environ.get("WATSONX_API_KEY") is None
+    or os.environ.get("WATSONX_PROJECT_ID") is None,
+    reason="Required environment variables (WATSONX_API_KEY and WATSONX_PROJECT_ID) not set",
 )
 def test_watsonx_embedding(tmp_path):
     from lancedb.embeddings import WatsonxEmbeddings
