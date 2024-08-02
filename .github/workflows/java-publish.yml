@@ -7,29 +7,29 @@ on:
       - .github/workflows/java-publish.yml
 
 jobs:
-  macos-arm64:
-    name: Build on MacOS Arm64
-    runs-on: macos-14
-    timeout-minutes: 80
-    defaults:
-      run:
-        working-directory: ./java
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-      - uses: Swatinem/rust-cache@v2
-      - name: Install dependencies
-        run: |
-          brew install protobuf
-      - name: Build release
-        run: |
-          cargo build --release
-      - uses: actions/upload-artifact@v4
-        with:
-          name: liblancedb_jni_darwin_aarch64.zip
-          path: target/release/liblancedb_jni.dylib
-          retention-days: 1
-          if-no-files-found: error
+  # macos-arm64:
+  #   name: Build on MacOS Arm64
+  #   runs-on: macos-14
+  #   timeout-minutes: 80
+  #   defaults:
+  #     run:
+  #       working-directory: ./java
+  #   steps:
+  #     - name: Checkout repository
+  #       uses: actions/checkout@v4
+  #     - uses: Swatinem/rust-cache@v2
+  #     - name: Install dependencies
+  #       run: |
+  #         brew install protobuf
+  #     - name: Build release
+  #       run: |
+  #         cargo build --release
+  #     - uses: actions/upload-artifact@v4
+  #       with:
+  #         name: liblancedb_jni_darwin_aarch64.zip
+  #         path: target/release/liblancedb_jni.dylib
+  #         retention-days: 1
+  #         if-no-files-found: error
   linux-arm64:
     name: Build on Linux Arm64
     runs-on: warp-ubuntu-2204-arm64-8x
@@ -65,7 +65,8 @@ jobs:
   linux-x86:
     runs-on: warp-ubuntu-2204-x64-8x
     timeout-minutes: 80
-    needs: [macos-arm64, linux-arm64]
+    # needs: [macos-arm64, linux-arm64]
+    needs: [linux-arm64]
     defaults:
       run:
         working-directory: ./java
@@ -93,7 +94,7 @@ jobs:
       - name: Copy native libs
         run: |
           mkdir -p ./core/target/classes/nativelib/darwin-aarch64 ./core/target/classes/nativelib/linux-aarch64
-          cp ../liblancedb_jni_darwin_aarch64.zip/liblancedb_jni.dylib ./core/target/classes/nativelib/darwin-aarch64/liblancedb_jni.dylib
+          # cp ../liblancedb_jni_darwin_aarch64.zip/liblancedb_jni.dylib ./core/target/classes/nativelib/darwin-aarch64/liblancedb_jni.dylib
           cp ../liblancedb_jni_linux_aarch64.zip/liblancedb_jni.so ./core/target/classes/nativelib/linux-aarch64/liblancedb_jni.so
       - name: Set github
         run: |
