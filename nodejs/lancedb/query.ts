@@ -138,14 +138,22 @@ export class QueryBase<NativeQueryType extends NativeQuery | NativeVectorQuery>
     return this.where(predicate);
   }
 
-  fullTextSearch(query: string, options: Partial<FullTextSearchOptions>): this {
+  fullTextSearch(
+    query: string,
+    options?: Partial<FullTextSearchOptions>,
+  ): this {
     let columns = null;
-    if (typeof options.columns === "string") {
-      columns = [options.columns];
-    } else if (Array.isArray(options.columns)) {
-      columns = options.columns;
+    if (options) {
+      if (typeof options.columns === "string") {
+        columns = [options.columns];
+      } else if (Array.isArray(options.columns)) {
+        columns = options.columns;
+      }
     }
-    this.doCall((inner: NativeQueryType) => inner.fullTextSearch(query, columns));
+
+    this.doCall((inner: NativeQueryType) =>
+      inner.fullTextSearch(query, columns),
+    );
     return this;
   }
 
