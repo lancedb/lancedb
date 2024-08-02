@@ -180,12 +180,12 @@ export class Index {
    * Create a full text search index
    *
    * A full text search index is an index on a string column, so that you can conduct full
-   * text searches on the column. 
-   * 
+   * text searches on the column.
+   *
    * The results of a full text search are ordered by relevance measured by BM25.
-   * 
+   *
    * You can combine the filter and full text search.
-   * 
+   *
    * For now, the full text search index only supports English, and doesn't support phrase search.
    */
   static fts() {
