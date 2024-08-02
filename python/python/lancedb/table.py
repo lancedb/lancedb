@@ -391,6 +391,9 @@ class Table(ABC):
             or string column.
         replace : bool, default True
             Replace the existing index if it exists.
+        index_type : str, default "BTREE"
+            The type of index to create.  Valid values are "BTREE", "BITMAP", or
+            "LABEL_LIST".
 
         Examples
         --------
