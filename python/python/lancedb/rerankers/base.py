@@ -153,10 +153,14 @@ class Reranker(ABC):
 
         Parameters
         ----------
-        query : str
-            The
-        vector_results : pa.Table
-            The results from the vector search
+        vector_results : List[pa.Table] or List[LanceVectorQueryBuilder]
+            The results from the vector search. Either accepts the query builder
+            if the results haven't been executed yet or the results in arrow format.
+        query : str, optional
+            The input query, by default None. Some rerankers might not need the query
+        deduplicate : bool, optional
+            Whether to deduplicate the results based on the `_rowid` column,
+            by default False. Requires `_rowid` to be present in the results.
 
         Returns
         -------
