@@ -2,7 +2,15 @@ import * as lancedb from "@lancedb/lancedb";
 
 const db = await lancedb.connect("data/sample-lancedb");
 
-const words = ["apple", "banana", "cherry", "date", "elderberry", "fig", "grape"];
+const words = [
+  "apple",
+  "banana",
+  "cherry",
+  "date",
+  "elderberry",
+  "fig",
+  "grape",
+];
 
 const data = Array.from({ length: 10_000 }, (_, i) => ({
   vector: Array(1536).fill(i),
