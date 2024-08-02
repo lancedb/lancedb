@@ -342,7 +342,6 @@ class Table(ABC):
         index_type: Literal["BTREE", "BITMAP", "LABEL_LIST"] = "BTREE",
         *,
         replace: bool = True,
-        index_type: Literal["BTREE", "BITMAP", "LABEL_LIST"] = "BTree",
     ):
         """Create a scalar index on a column.
 
@@ -356,7 +355,7 @@ class Table(ABC):
 
             db = lancedb.connect("/data/lance")
             img_table = db.open_table("images")
-            my_df = img_table.search().where("my_col = 7").to_pandas()
+            my_df = img_table.search().where("my_col = 7", prefilter=True).to_pandas()
 
         Scalar indices can also speed up scans containing a vector search and a
         prefilter:
@@ -395,6 +394,7 @@ class Table(ABC):
 
         Examples
         --------
+
 
             import lance
 
