@@ -72,7 +72,8 @@ class RRFReranker(Reranker):
         """
         Overridden method to rerank the results from multiple vector searches.
         This leverages the RRF hybrid reranking algorithm to combine the
-        results from multiple vector searches.
+        results from multiple vector searches as it doesn't support reranking
+        vector results individually.
         """
         # Make sure all elements are of the same type
         if not all(isinstance(v, type(vector_results[0])) for v in vector_results):
