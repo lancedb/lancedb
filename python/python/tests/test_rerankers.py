@@ -159,15 +159,17 @@ def _run_test_reranker(reranker, table, query, query_vector, schema):
 
     # Multi-vector search setting
     rs1 = table.search(query, vector_column_name="vector", with_row_id=True).limit(10)
-    rs2 = table.search(query, vector_column_name="meta_vector",  with_row_id=True).limit(10)
+    rs2 = table.search(query, vector_column_name="meta_vector", with_row_id=True).limit(
+        10
+    )
     result = reranker.rerank_multivector([rs1, rs2], query)
     assert len(result) == 20
-    result_deduped = reranker.rerank_multivector([rs1, rs2, rs1], query, deduplicate=True)
+    result_deduped = reranker.rerank_multivector(
+        [rs1, rs2, rs1], query, deduplicate=True
+    )
     assert len(result_deduped) < 20
     result_arrow = reranker.rerank_multivector([rs1.to_arrow(), rs2.to_arrow()], query)
     assert len(result) == 20 and result == result_arrow
-
-
 
 
 def _run_test_hybrid_reranker(reranker, tmp_path):
