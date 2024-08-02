@@ -4,7 +4,7 @@
 # range of linux distributions.
 ARG ARCH=x86_64
 
-FROM quay.io/pypa/manylinux2014_${ARCH}
+FROM quay.io/pypa/manylinux_2_28_${ARCH}
 
 ARG ARCH=x86_64
 ARG DOCKER_USER=default_user
