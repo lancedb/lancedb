@@ -88,6 +88,10 @@ export interface QueryExecutionOptions {
   maxBatchLength?: number;
 }
 
+export interface FullTextSearchOptions {
+  columns?: string | string[];
+}
+
 /** Common methods supported by all query types */
 export class QueryBase<NativeQueryType extends NativeQuery | NativeVectorQuery>
   implements AsyncIterable<RecordBatch>
@@ -132,6 +136,17 @@ export class QueryBase<NativeQueryType extends NativeQuery | NativeVectorQuery>
    */
   filter(predicate: string): this {
     return this.where(predicate);
+  }
+
+  fullTextSearch(query: string, options: Partial<FullTextSearchOptions>): this {
+    let columns = null;
+    if (typeof options.columns === "string") {
+      columns = [options.columns];
+    } else if (Array.isArray(options.columns)) {
+      columns = options.columns;
+    }
+    this.doCall((inner: NativeQueryType) => inner.fullTextSearch(query, columns));
+    return this;
   }
 
   /**

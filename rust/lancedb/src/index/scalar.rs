@@ -28,3 +28,13 @@
 pub struct BTreeIndexBuilder {}
 
 impl BTreeIndexBuilder {}
+
+/// Builder for a full text search index
+///
+/// A full text search index is an index on a string column that allows for full text search
+#[derive(Debug, Clone, Default)]
+pub struct FtsIndexBuilder {}
+
+impl FtsIndexBuilder {}
+
+pub use lance_index::scalar::FullTextSearchQuery;
