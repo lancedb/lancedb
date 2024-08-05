@@ -219,7 +219,8 @@ def test_search_index_with_filter(table, use_legacy):
         assert r["_rowid"] is not None
 
 
-@pytest.mark.parametrize("use_legacy", [True, False])
+# TODO: test with use_legacy=False after upgrading lance
+@pytest.mark.parametrize("use_legacy", [True])
 def test_null_input(table, use_legacy):
     table.add(
         [
