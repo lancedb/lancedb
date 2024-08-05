@@ -15,14 +15,12 @@
 import "reflect-metadata";
 import {
   DataType,
-  DataTypeLike,
   Field,
   FixedSizeList,
+  Float,
   Float32,
-  FloatLike,
   type IntoVector,
   Utf8,
-  isDataType,
   isFixedSizeList,
   isFloat,
   newVectorType,
@@ -94,11 +92,12 @@ export abstract class EmbeddingFunction<
    * @see {@link lancedb.LanceSchema}
    */
   sourceField(
-    optionsOrDatatype: Partial<FieldOptions> | DataTypeLike,
-  ): [DataTypeLike, Map<string, EmbeddingFunction>] {
-    let datatype = isDataType(optionsOrDatatype)
-      ? optionsOrDatatype
-      : optionsOrDatatype?.datatype;
+    optionsOrDatatype: Partial<FieldOptions> | DataType,
+  ): [DataType, Map<string, EmbeddingFunction>] {
+    let datatype =
+      "datatype" in optionsOrDatatype
+        ? optionsOrDatatype.datatype
+        : optionsOrDatatype;
     if (!datatype) {
       throw new Error("Datatype is required");
     }
@@ -124,15 +123,17 @@ export abstract class EmbeddingFunction<
     let dims: number | undefined = this.ndims();
 
     // `func.vectorField(new Float32())`
-    if (isDataType(optionsOrDatatype)) {
-      dtype = optionsOrDatatype;
+    if (optionsOrDatatype === undefined) {
+      dtype = new Float32();
+    } else if (!("datatype" in optionsOrDatatype)) {
+      dtype = sanitizeType(optionsOrDatatype);
     } else {
       // `func.vectorField({
       //  datatype: new Float32(),
       //  dims: 10
       // })`
       dims = dims ?? optionsOrDatatype?.dims;
-      dtype = optionsOrDatatype?.datatype;
+      dtype = sanitizeType(optionsOrDatatype?.datatype);
     }
 
     if (dtype !== undefined) {
@@ -174,7 +175,7 @@ export abstract class EmbeddingFunction<
   }
 
   /** The datatype of the embeddings */
-  abstract embeddingDataType(): FloatLike;
+  abstract embeddingDataType(): Float;
 
   /**
    * Creates a vector representation for the given values.
@@ -210,11 +211,11 @@ export abstract class TextEmbeddingFunction<
     return this.generateEmbeddings([data]).then((data) => data[0]);
   }
 
-  embeddingDataType(): FloatLike {
+  embeddingDataType(): Float {
     return new Float32();
   }
 
-  override sourceField(): [DataTypeLike, Map<string, EmbeddingFunction>] {
+  override sourceField(): [DataType, Map<string, EmbeddingFunction>] {
     return super.sourceField(new Utf8());
   }
 

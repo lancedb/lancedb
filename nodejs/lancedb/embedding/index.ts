@@ -13,7 +13,6 @@
 // limitations under the License.
 
 import { Field, Schema } from "../arrow";
-import { isDataType } from "../arrow";
 import { sanitizeType } from "../sanitize";
 import { EmbeddingFunction } from "./embedding_function";
 import { EmbeddingFunctionConfig, getRegistry } from "./registry";
@@ -57,15 +56,15 @@ export function LanceSchema(
     Partial<EmbeddingFunctionConfig>
   >();
   Object.entries(fields).forEach(([key, value]) => {
-    if (isDataType(value)) {
-      arrowFields.push(new Field(key, sanitizeType(value), true));
-    } else {
+    if (Array.isArray(value)) {
       const [dtype, metadata] = value as [
         object,
         Map<string, EmbeddingFunction>,
       ];
       arrowFields.push(new Field(key, sanitizeType(dtype), true));
       parseEmbeddingFunctions(embeddingFunctions, key, metadata);
+    } else {
+      arrowFields.push(new Field(key, sanitizeType(value), true));
     }
   });
   const registry = getRegistry();
