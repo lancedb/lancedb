@@ -108,15 +108,6 @@ export function isArrowTable(value: object): value is TableLike {
   return "schema" in value && "batches" in value;
 }
 
-export function isDataType(value: unknown): value is DataType {
-  if (typeof value !== "object" || Array.isArray(value) || value === null)
-    return false;
-  try {
-    return sanitizeType(value) instanceof DataType;
-  } catch {
-    return false;
-  }
-}
 export function isNull(value: unknown): value is Null {
   return value instanceof Null || DataType.isNull(value);
 }

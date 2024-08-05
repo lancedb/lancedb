@@ -21,7 +21,6 @@ import {
   Float32,
   type IntoVector,
   Utf8,
-  isDataType,
   isFixedSizeList,
   isFloat,
   newVectorType,
@@ -95,9 +94,10 @@ export abstract class EmbeddingFunction<
   sourceField(
     optionsOrDatatype: Partial<FieldOptions> | DataType,
   ): [DataType, Map<string, EmbeddingFunction>] {
-    let datatype = isDataType(optionsOrDatatype)
-      ? optionsOrDatatype
-      : optionsOrDatatype?.datatype;
+    let datatype =
+      "datatype" in optionsOrDatatype
+        ? optionsOrDatatype.datatype
+        : optionsOrDatatype;
     if (!datatype) {
       throw new Error("Datatype is required");
     }
@@ -123,15 +123,17 @@ export abstract class EmbeddingFunction<
     let dims: number | undefined = this.ndims();
 
     // `func.vectorField(new Float32())`
-    if (isDataType(optionsOrDatatype)) {
-      dtype = optionsOrDatatype;
+    if (optionsOrDatatype === undefined) {
+      dtype = new Float32();
+    } else if (!("datatype" in optionsOrDatatype)) {
+      dtype = sanitizeType(optionsOrDatatype);
     } else {
       // `func.vectorField({
       //  datatype: new Float32(),
       //  dims: 10
       // })`
       dims = dims ?? optionsOrDatatype?.dims;
-      dtype = optionsOrDatatype?.datatype;
+      dtype = sanitizeType(optionsOrDatatype?.datatype);
     }
 
     if (dtype !== undefined) {
