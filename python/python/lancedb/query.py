@@ -708,7 +708,9 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         # get the scores and doc ids
         query = self._query
         if self._phrase_query:
-            raise NotImplementedError("Phrase query is not yet supported.")
+            raise NotImplementedError("Phrase query is not yet supported")
+        if self._reranker:
+            raise NotImplementedError("Reranking is not yet supported")
 
         ds = self._table.to_lance()
         return ds.to_table(

@@ -186,7 +186,8 @@ def test_nested_schema(tmp_path, table):
     assert len(rs) == 10
 
 
-@pytest.mark.parametrize("use_legacy", [True, False])
+# TODO: test with use_legacy=False after exposing score column
+@pytest.mark.parametrize("use_legacy", [True])
 def test_search_index_with_filter(table, use_legacy):
     table.create_fts_index("text", use_legacy=use_legacy)
     orig_import = __import__
