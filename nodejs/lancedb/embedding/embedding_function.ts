@@ -15,11 +15,10 @@
 import "reflect-metadata";
 import {
   DataType,
-  DataTypeLike,
   Field,
   FixedSizeList,
+  Float,
   Float32,
-  FloatLike,
   type IntoVector,
   Utf8,
   isDataType,
@@ -94,8 +93,8 @@ export abstract class EmbeddingFunction<
    * @see {@link lancedb.LanceSchema}
    */
   sourceField(
-    optionsOrDatatype: Partial<FieldOptions> | DataTypeLike,
-  ): [DataTypeLike, Map<string, EmbeddingFunction>] {
+    optionsOrDatatype: Partial<FieldOptions> | DataType,
+  ): [DataType, Map<string, EmbeddingFunction>] {
     let datatype = isDataType(optionsOrDatatype)
       ? optionsOrDatatype
       : optionsOrDatatype?.datatype;
@@ -174,7 +173,7 @@ export abstract class EmbeddingFunction<
   }
 
   /** The datatype of the embeddings */
-  abstract embeddingDataType(): FloatLike;
+  abstract embeddingDataType(): Float;
 
   /**
    * Creates a vector representation for the given values.
@@ -210,11 +209,11 @@ export abstract class TextEmbeddingFunction<
     return this.generateEmbeddings([data]).then((data) => data[0]);
   }
 
-  embeddingDataType(): FloatLike {
+  embeddingDataType(): Float {
     return new Float32();
   }
 
-  override sourceField(): [DataTypeLike, Map<string, EmbeddingFunction>] {
+  override sourceField(): [DataType, Map<string, EmbeddingFunction>] {
     return super.sourceField(new Utf8());
   }
 

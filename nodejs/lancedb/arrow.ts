@@ -103,25 +103,12 @@ export type IntoVector =
   | number[]
   | Promise<Float32Array | Float64Array | number[]>;
 
-export type FloatLike =
-  | import("apache-arrow-13").Float
-  | import("apache-arrow-14").Float
-  | import("apache-arrow-15").Float
-  | import("apache-arrow-16").Float
-  | import("apache-arrow-17").Float;
-export type DataTypeLike =
-  | import("apache-arrow-13").DataType
-  | import("apache-arrow-14").DataType
-  | import("apache-arrow-15").DataType
-  | import("apache-arrow-16").DataType
-  | import("apache-arrow-17").DataType;
-
 export function isArrowTable(value: object): value is TableLike {
   if (value instanceof ArrowTable) return true;
   return "schema" in value && "batches" in value;
 }
 
-export function isDataType(value: unknown): value is DataTypeLike {
+export function isDataType(value: unknown): value is DataType {
   return (
     value instanceof DataType ||
     DataType.isNull(value) ||
