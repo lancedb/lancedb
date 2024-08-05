@@ -340,8 +340,14 @@ export function sanitizeType(typeLike: unknown): DataType<any> {
   if (typeof typeLike !== "object" || typeLike === null) {
     throw Error("Expected a Type but object was null/undefined");
   }
-  if (!("typeId" in typeLike) || !(typeof typeLike.typeId !== "function")) {
-    throw Error("Expected a Type to have a typeId function");
+  if (
+    !("typeId" in typeLike) ||
+    !(
+      typeof typeLike.typeId !== "function" ||
+      typeof typeLike.typeId !== "number"
+    )
+  ) {
+    throw Error("Expected a Type to have a typeId property");
   }
   let typeId: Type;
   if (typeof typeLike.typeId === "function") {

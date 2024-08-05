@@ -109,30 +109,13 @@ export function isArrowTable(value: object): value is TableLike {
 }
 
 export function isDataType(value: unknown): value is DataType {
-  return (
-    value instanceof DataType ||
-    DataType.isNull(value) ||
-    DataType.isInt(value) ||
-    DataType.isFloat(value) ||
-    DataType.isBinary(value) ||
-    DataType.isLargeBinary(value) ||
-    DataType.isUtf8(value) ||
-    DataType.isLargeUtf8(value) ||
-    DataType.isBool(value) ||
-    DataType.isDecimal(value) ||
-    DataType.isDate(value) ||
-    DataType.isTime(value) ||
-    DataType.isTimestamp(value) ||
-    DataType.isInterval(value) ||
-    DataType.isDuration(value) ||
-    DataType.isList(value) ||
-    DataType.isStruct(value) ||
-    DataType.isUnion(value) ||
-    DataType.isFixedSizeBinary(value) ||
-    DataType.isFixedSizeList(value) ||
-    DataType.isMap(value) ||
-    DataType.isDictionary(value)
-  );
+  if (typeof value !== "object" || Array.isArray(value) || value === null)
+    return false;
+  try {
+    return sanitizeType(value) instanceof DataType;
+  } catch {
+    return false;
+  }
 }
 export function isNull(value: unknown): value is Null {
   return value instanceof Null || DataType.isNull(value);
