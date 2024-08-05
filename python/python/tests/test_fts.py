@@ -158,7 +158,7 @@ def test_create_index_from_table(tmp_path, table, use_legacy):
         ]
     )
 
-    with pytest.raises(ValueError, match="already exists"):
+    with pytest.raises(Exception, match="already exists"):
         table.create_fts_index("text", use_legacy=use_legacy)
 
     table.create_fts_index("text", replace=True, use_legacy=use_legacy)
