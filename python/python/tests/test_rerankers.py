@@ -80,7 +80,7 @@ def get_test_table(tmp_path):
     table.add([{"text": p} for p in phrases])
 
     # Create a fts index
-    table.create_fts_index("text")
+    table.create_fts_index("text", use_legacy=True)
 
     return table, MyTable
 
