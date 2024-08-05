@@ -88,7 +88,16 @@ export interface QueryExecutionOptions {
   maxBatchLength?: number;
 }
 
+/**
+ * Options that control the behavior of a full text search
+ */
 export interface FullTextSearchOptions {
+  /**
+   * The columns to search
+   *
+   * If not specified, all indexed columns will be searched.
+   * For now, only one column can be searched.
+   */
   columns?: string | string[];
 }
 

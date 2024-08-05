@@ -2,6 +2,8 @@
 
 LanceDB provides support for full-text search via Lance (before via [Tantivy](https://github.com/quickwit-oss/tantivy) (Python only)), allowing you to incorporate keyword-based search (based on BM25) in your retrieval solutions.
 
+Currently, the Lance full text search is missing some features that are in the Tantivy full text search (custom tokenizer, phrase query, etc.)  Tantivy indexes are still available, and we are leaving the instructions in place, as we finish adding the rest of this functionality.
+
 
 ## Installation (For only version <= 0.11.0)
 
@@ -86,7 +88,7 @@ By default the text is tokenized by splitting on punctuation and whitespaces and
 === "> 0.11.0"
 
     ```python
-    not support yet
+    not supported yet
     ```
 
 === "<= 0.11.0"
@@ -104,7 +106,7 @@ If you have multiple string columns to index, there's no need to combine them ma
 === "> 0.11.0"
 
     ```python
-    not support yet
+    not supported yet
     ```
 
 === "<= 0.11.0"

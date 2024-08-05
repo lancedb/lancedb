@@ -22,8 +22,18 @@ const data = Array.from({ length: 10_000 }, (_, i) => ({
 
 const tbl = await db.createTable("myVectors", data, { mode: "overwrite" });
 
+await tbl.createIndex("doc", {
+  config: lancedb.Index.fts(),
+});
+
 // --8<-- [start:full_text_search]
-await tbl.query().fullTextSearch("apple").limit(10).toArray();
+let result = await tbl
+  .query()
+  .fullTextSearch("apple")
+  .select(["id", "doc"])
+  .limit(10)
+  .toArray();
+console.log(result);
 // --8<-- [end:full_text_search]
 
 console.log("SQL search: done");
