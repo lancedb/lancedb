@@ -1240,6 +1240,12 @@ class LanceTable(Table):
         if not use_legacy:
             if not isinstance(field_names, str):
                 raise ValueError("field_names must be a string when use_legacy=False")
+            # delete the existing legacy index if it exists
+            if replace:
+                fs, path = fs_from_uri(self._get_fts_index_path())
+                index_exists = fs.get_file_info(path).type != pa_fs.FileType.NotFound
+                if index_exists:
+                    fs.delete_dir(path)
             self._dataset_mut.create_scalar_index(
                 field_names, index_type="INVERTED", replace=replace
             )

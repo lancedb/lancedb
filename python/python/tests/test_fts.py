@@ -74,11 +74,12 @@ def test_create_index_with_stemming(tmp_path, table):
     assert os.path.exists(str(tmp_path / "index"))
 
     # Check stemming by running tokenizer on non empty table
-    table.create_fts_index("text", tokenizer_name="en_stem")
+    table.create_fts_index("text", tokenizer_name="en_stem", use_legacy=True)
 
 
-def test_create_inverted_index(table):
-    table.create_scalar_index("text", "INVERTED")
+@pytest.mark.parametrize("use_legacy", [True, False])
+def test_create_inverted_index(table, use_legacy):
+    table.create_fts_index("text", use_legacy=use_legacy)
 
 
 def test_populate_index(tmp_path, table):
@@ -96,14 +97,15 @@ def test_search_index(tmp_path, table):
     assert len(results[1]) == 10  # _distance
 
 
-def test_search_fts(table):
-    table.create_scalar_index("text", "INVERTED")
+@pytest.mark.parametrize("use_legacy", [True, False])
+def test_search_fts(table, use_legacy):
+    table.create_fts_index("text", use_legacy=use_legacy)
     results = table.search("puppy").limit(10).to_list()
     assert len(results) == 10
 
 
 def test_search_ordering_field_index_table(tmp_path, table):
-    table.create_fts_index("text", ordering_field_names=["count"])
+    table.create_fts_index("text", ordering_field_names=["count"], use_legacy=True)
     rows = (
         table.search("puppy", ordering_field_name="count")
         .limit(20)
@@ -135,8 +137,9 @@ def test_search_ordering_field_index(tmp_path, table):
     assert sorted(rows, key=lambda x: x["count"], reverse=True) == rows
 
 
-def test_create_index_from_table(tmp_path, table):
-    table.create_fts_index("text")
+@pytest.mark.parametrize("use_legacy", [True, False])
+def test_create_index_from_table(tmp_path, table, use_legacy):
+    table.create_fts_index("text", use_legacy=use_legacy)
     df = table.search("puppy").limit(10).select(["text"]).to_pandas()
     assert len(df) <= 10
     assert "text" in df.columns
@@ -156,14 +159,14 @@ def test_create_index_from_table(tmp_path, table):
     )
 
     with pytest.raises(ValueError, match="already exists"):
-        table.create_fts_index("text")
+        table.create_fts_index("text", use_legacy=use_legacy)
 
-    table.create_fts_index("text", replace=True)
+    table.create_fts_index("text", replace=True, use_legacy=use_legacy)
     assert len(table.search("gorilla").limit(1).to_pandas()) == 1
 
 
 def test_create_index_multiple_columns(tmp_path, table):
-    table.create_fts_index(["text", "text2"])
+    table.create_fts_index(["text", "text2"], use_legacy=True)
     df = table.search("puppy").limit(10).to_pandas()
     assert len(df) == 10
     assert "text" in df.columns
@@ -171,20 +174,21 @@ def test_create_index_multiple_columns(tmp_path, table):
 
 
 def test_empty_rs(tmp_path, table, mocker):
-    table.create_fts_index(["text", "text2"])
+    table.create_fts_index(["text", "text2"], use_legacy=True)
     mocker.patch("lancedb.fts.search_index", return_value=([], []))
     df = table.search("puppy").limit(10).to_pandas()
     assert len(df) == 0
 
 
 def test_nested_schema(tmp_path, table):
-    table.create_fts_index("nested.text")
+    table.create_fts_index("nested.text", use_legacy=True)
     rs = table.search("puppy").limit(10).to_list()
     assert len(rs) == 10
 
 
-def test_search_index_with_filter(table):
-    table.create_fts_index("text")
+@pytest.mark.parametrize("use_legacy", [True, False])
+def test_search_index_with_filter(table, use_legacy):
+    table.create_fts_index("text", use_legacy=use_legacy)
     orig_import = __import__
 
     def import_mock(name, *args):
@@ -214,7 +218,8 @@ def test_search_index_with_filter(table):
         assert r["_rowid"] is not None
 
 
-def test_null_input(table):
+@pytest.mark.parametrize("use_legacy", [True, False])
+def test_null_input(table, use_legacy):
     table.add(
         [
             {
@@ -227,12 +232,12 @@ def test_null_input(table):
             }
         ]
     )
-    table.create_fts_index("text")
+    table.create_fts_index("text", use_legacy=use_legacy)
 
 
 def test_syntax(table):
     # https://github.com/lancedb/lancedb/issues/769
-    table.create_fts_index("text")
+    table.create_fts_index("text", use_legacy=True)
     with pytest.raises(ValueError, match="Syntax Error"):
         table.search("they could have been dogs OR").limit(10).to_list()
 
