@@ -15,7 +15,7 @@ import logging
 import uuid
 from concurrent.futures import Future
 from functools import cached_property
-from typing import Dict, Iterable, Literal, Optional, Union
+from typing import Dict, Iterable, Optional, Union
 
 import pyarrow as pa
 from lance import json_to_schema
