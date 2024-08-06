@@ -158,9 +158,11 @@ def _run_test_reranker(reranker, table, query, query_vector, schema):
     assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), err
 
     # Multi-vector search setting
-    rs1 = table.search(query, vector_column_name="vector", with_row_id=True).limit(10)
-    rs2 = table.search(query, vector_column_name="meta_vector", with_row_id=True).limit(
-        10
+    rs1 = table.search(query, vector_column_name="vector").limit(10).with_row_id(True)
+    rs2 = (
+        table.search(query, vector_column_name="meta_vector")
+        .limit(10)
+        .with_row_id(True)
     )
     result = reranker.rerank_multivector([rs1, rs2], query)
     assert len(result) == 20

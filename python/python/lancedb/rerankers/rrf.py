@@ -93,7 +93,7 @@ class RRFReranker(Reranker):
         if not all("_rowid" in result.column_names for result in vector_results):
             raise ValueError(
                 "'_rowid' is required for RRF reranking. \
-                            include _rowid by passing `with_row_id=True` to search()"
+                    include _rowid like this `search().with_row_id(True)`"
             )
 
         combined = pa.concat_tables(vector_results, **self._concat_tables_args)

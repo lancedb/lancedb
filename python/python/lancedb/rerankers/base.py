@@ -145,7 +145,6 @@ class Reranker(ABC):
         vector_results: Union[List[pa.Table], List["LanceVectorQueryBuilder"]],
         query: Union[str, None] = None,  # Some rerankers might not need the query
         deduplicate: bool = False,
-        # deduplicator: callable = None,
     ):
         """
         This is a rerank function that receives the results from multiple
@@ -195,7 +194,7 @@ class Reranker(ABC):
             if "_rowid" not in combined.column_names:
                 raise ValueError(
                     "'_rowid' is required for deduplication. \
-                    include _rowid by passing `with_row_id=True` to search()"
+                    include _rowid like this `search().with_row_id(True)`"
                 )
             reranked = self._deduplicate(reranked)
 
