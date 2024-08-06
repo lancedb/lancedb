@@ -21,10 +21,10 @@ categories = ["database-implementations"]
 
 [workspace.dependencies]
 lance = { "version" = "=0.16.0", "features" = ["dynamodb"] }
-lance-index = { "version" = "=0.16.0" }
-lance-linalg = { "version" = "=0.16.0" }
-lance-testing = { "version" = "=0.16.0" }
-lance-datafusion = { "version" = "=0.16.0" }
+lance-index = { "version" = "=0.15.0" }
+lance-linalg = { "version" = "=0.15.0" }
+lance-testing = { "version" = "=0.15.0" }
+lance-datafusion = { "version" = "=0.15.0" }
 # Note that this one does not include pyarrow
 arrow = { version = "52.1", optional = false }
 arrow-array = "52.1"
