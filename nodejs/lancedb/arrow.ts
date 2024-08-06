@@ -103,50 +103,11 @@ export type IntoVector =
   | number[]
   | Promise<Float32Array | Float64Array | number[]>;
 
-export type FloatLike =
-  | import("apache-arrow-13").Float
-  | import("apache-arrow-14").Float
-  | import("apache-arrow-15").Float
-  | import("apache-arrow-16").Float
-  | import("apache-arrow-17").Float;
-export type DataTypeLike =
-  | import("apache-arrow-13").DataType
-  | import("apache-arrow-14").DataType
-  | import("apache-arrow-15").DataType
-  | import("apache-arrow-16").DataType
-  | import("apache-arrow-17").DataType;
-
 export function isArrowTable(value: object): value is TableLike {
   if (value instanceof ArrowTable) return true;
   return "schema" in value && "batches" in value;
 }
 
-export function isDataType(value: unknown): value is DataTypeLike {
-  return (
-    value instanceof DataType ||
-    DataType.isNull(value) ||
-    DataType.isInt(value) ||
-    DataType.isFloat(value) ||
-    DataType.isBinary(value) ||
-    DataType.isLargeBinary(value) ||
-    DataType.isUtf8(value) ||
-    DataType.isLargeUtf8(value) ||
-    DataType.isBool(value) ||
-    DataType.isDecimal(value) ||
-    DataType.isDate(value) ||
-    DataType.isTime(value) ||
-    DataType.isTimestamp(value) ||
-    DataType.isInterval(value) ||
-    DataType.isDuration(value) ||
-    DataType.isList(value) ||
-    DataType.isStruct(value) ||
-    DataType.isUnion(value) ||
-    DataType.isFixedSizeBinary(value) ||
-    DataType.isFixedSizeList(value) ||
-    DataType.isMap(value) ||
-    DataType.isDictionary(value)
-  );
-}
 export function isNull(value: unknown): value is Null {
   return value instanceof Null || DataType.isNull(value);
 }

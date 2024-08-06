@@ -15,13 +15,12 @@
 import "reflect-metadata";
 import {
   DataType,
-  DataTypeLike,
   Field,
   FixedSizeList,
+  Float,
   Float32,
-  FloatLike,
   type IntoVector,
-  isDataType,
+  Utf8,
   isFixedSizeList,
   isFloat,
   newVectorType,
@@ -93,11 +92,12 @@ export abstract class EmbeddingFunction<
    * @see {@link lancedb.LanceSchema}
    */
   sourceField(
-    optionsOrDatatype: Partial<FieldOptions> | DataTypeLike,
-  ): [DataTypeLike, Map<string, EmbeddingFunction>] {
-    let datatype = isDataType(optionsOrDatatype)
-      ? optionsOrDatatype
-      : optionsOrDatatype?.datatype;
+    optionsOrDatatype: Partial<FieldOptions> | DataType,
+  ): [DataType, Map<string, EmbeddingFunction>] {
+    let datatype =
+      "datatype" in optionsOrDatatype
+        ? optionsOrDatatype.datatype
+        : optionsOrDatatype;
     if (!datatype) {
       throw new Error("Datatype is required");
     }
@@ -123,15 +123,17 @@ export abstract class EmbeddingFunction<
     let dims: number | undefined = this.ndims();
 
     // `func.vectorField(new Float32())`
-    if (isDataType(optionsOrDatatype)) {
-      dtype = optionsOrDatatype;
+    if (optionsOrDatatype === undefined) {
+      dtype = new Float32();
+    } else if (!("datatype" in optionsOrDatatype)) {
+      dtype = sanitizeType(optionsOrDatatype);
     } else {
       // `func.vectorField({
       //  datatype: new Float32(),
       //  dims: 10
       // })`
       dims = dims ?? optionsOrDatatype?.dims;
-      dtype = optionsOrDatatype?.datatype;
+      dtype = sanitizeType(optionsOrDatatype?.datatype);
     }
 
     if (dtype !== undefined) {
@@ -173,7 +175,7 @@ export abstract class EmbeddingFunction<
   }
 
   /** The datatype of the embeddings */
-  abstract embeddingDataType(): FloatLike;
+  abstract embeddingDataType(): Float;
 
   /**
    * Creates a vector representation for the given values.
@@ -189,6 +191,38 @@ export abstract class EmbeddingFunction<
     return this.computeSourceEmbeddings([data]).then(
       (embeddings) => embeddings[0],
     );
+  }
+}
+
+/**
+ * an abstract class for implementing embedding functions that take text as input
+ */
+export abstract class TextEmbeddingFunction<
+  M extends FunctionOptions = FunctionOptions,
+> extends EmbeddingFunction<string, M> {
+  //** Generate the embeddings for the given texts */
+  abstract generateEmbeddings(
+    texts: string[],
+    // biome-ignore lint/suspicious/noExplicitAny: we don't know what the implementor will do
+    ...args: any[]
+  ): Promise<number[][] | Float32Array[] | Float64Array[]>;
+
+  async computeQueryEmbeddings(data: string): Promise<Awaited<IntoVector>> {
+    return this.generateEmbeddings([data]).then((data) => data[0]);
+  }
+
+  embeddingDataType(): Float {
+    return new Float32();
+  }
+
+  override sourceField(): [DataType, Map<string, EmbeddingFunction>] {
+    return super.sourceField(new Utf8());
+  }
+
+  computeSourceEmbeddings(
+    data: string[],
+  ): Promise<number[][] | Float32Array[] | Float64Array[]> {
+    return this.generateEmbeddings(data);
   }
 }
 

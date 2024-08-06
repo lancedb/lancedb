@@ -13,7 +13,7 @@
 // limitations under the License.
 
 import type OpenAI from "openai";
-import { type EmbeddingCreateParams } from "openai/resources";
+import type { EmbeddingCreateParams } from "openai/resources/index";
 import { Float, Float32 } from "../arrow";
 import { EmbeddingFunction } from "./embedding_function";
 import { register } from "./registry";

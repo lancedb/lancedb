@@ -336,7 +336,7 @@ class RemoteTable(Table):
 
         See [`Table.merge_insert`][lancedb.table.Table.merge_insert] for more details.
         """
-        super().merge_insert(on)
+        return super().merge_insert(on)
 
     def _do_merge(
         self,
