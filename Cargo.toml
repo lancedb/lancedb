@@ -20,7 +20,7 @@ keywords = ["lancedb", "lance", "database", "vector", "search"]
 categories = ["database-implementations"]
 
 [workspace.dependencies]
-lance = { "version" = "=0.16.0", "features" = ["dynamodb"] }
+lance = { "version" = "=0.15.0", "features" = ["dynamodb"] }
 lance-index = { "version" = "=0.15.0" }
 lance-linalg = { "version" = "=0.15.0" }
 lance-testing = { "version" = "=0.15.0" }

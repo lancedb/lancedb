@@ -5,7 +5,7 @@ LanceDB provides support for full-text search via Lance (before via [Tantivy](ht
 Currently, the Lance full text search is missing some features that are in the Tantivy full text search (custom tokenizer, phrase query, etc.), so in Python, tantivy is still the default way to do full text search, and we are leaving the instructions in place, as we finish adding the rest of this functionality.
 
 
-## Installation (For only tantivy FTS)
+## Installation (Only for tantivy based FTS)
 
 To use full-text search, install the dependency [`tantivy-py`](https://github.com/quickwit-oss/tantivy-py):
 
