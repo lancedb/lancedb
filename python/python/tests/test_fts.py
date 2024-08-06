@@ -218,7 +218,7 @@ def test_search_index_with_filter(table, use_tantivy):
         assert r["_rowid"] is not None
 
 
-@pytest.mark.parametrize("use_tantivy", [True,False])
+@pytest.mark.parametrize("use_tantivy", [True, False])
 def test_null_input(table, use_tantivy):
     table.add(
         [

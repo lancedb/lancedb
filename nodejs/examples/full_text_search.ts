@@ -28,8 +28,7 @@ await tbl.createIndex("doc", {
 
 // --8<-- [start:full_text_search]
 let result = await tbl
-  .query()
-  .fullTextSearch("apple")
+  .search("apple")
   .select(["id", "doc"])
   .limit(10)
   .toArray();
