@@ -785,9 +785,24 @@ describe.each([arrow13, arrow14, arrow15, arrow16, arrow17])(
       ];
       const table = await db.createTable("test", data);
 
-      expect(table.search("hello").toArray()).rejects.toThrow(
+      expect(table.search("hello", "vector").toArray()).rejects.toThrow(
         "No embedding functions are defined in the table",
       );
+    });
+
+    test("full text search if no embedding function provided", async () => {
+      const db = await connect(tmpDir.name);
+      const data = [
+        { text: "hello world", vector: [0.1, 0.2, 0.3] },
+        { text: "goodbye world", vector: [0.4, 0.5, 0.6] },
+      ];
+      const table = await db.createTable("test", data);
+      await table.createIndex("text", {
+        config: Index.fts(),
+      });
+
+      const results = await table.search("hello").toArray();
+      expect(results[0].text).toBe(data[0].text);
     });
 
     test.each([
