@@ -101,7 +101,7 @@ pub struct IndexConfig {
 #[pymethods]
 impl IndexConfig {
     pub fn __repr__(&self) -> String {
-        format!("Index({}, {:?})", self.index_type, self.columns)
+        format!("Index({}, columns={:?})", self.index_type, self.columns)
     }
 }
 

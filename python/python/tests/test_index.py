@@ -42,7 +42,7 @@ async def test_create_scalar_index(some_table: AsyncTable):
     # Can recreate if replace=True
     await some_table.create_index("id", replace=True)
     indices = await some_table.list_indices()
-    assert str(indices) == '[Index(BTree, ["id"])]'
+    assert str(indices) == '[Index(BTree, columns=["id"])]'
     assert len(indices) == 1
     assert indices[0].index_type == "BTree"
     assert indices[0].columns == ["id"]
