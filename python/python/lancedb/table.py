@@ -1464,15 +1464,13 @@ class LanceTable(Table):
                 else:
                     raise e
 
-        query_builder = LanceQueryBuilder.create(
+        return LanceQueryBuilder.create(
             self,
             query,
             query_type,
             vector_column_name=vector_column_name,
             ordering_field_name=ordering_field_name,
         )
-
-        return query_builder
 
     @classmethod
     def create(
