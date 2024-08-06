@@ -148,7 +148,8 @@ class Reranker(ABC):
     ):
         """
         This is a rerank function that receives the results from multiple
-        vector searches. Could be using different vector columns
+        vector searches. For example, this can be used to combine the
+        results of two vector searches with different embeddings.
 
         Parameters
         ----------
