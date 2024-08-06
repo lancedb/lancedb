@@ -508,11 +508,11 @@ export class LocalTable extends Table {
     optsOrUpdates:
       | (Map<string, string> | Record<string, string>)
       | ({
-        values: Map<string, IntoSql> | Record<string, IntoSql>;
-      } & Partial<UpdateOptions>)
+          values: Map<string, IntoSql> | Record<string, IntoSql>;
+        } & Partial<UpdateOptions>)
       | ({
-        valuesSql: Map<string, string> | Record<string, string>;
-      } & Partial<UpdateOptions>),
+          valuesSql: Map<string, string> | Record<string, string>;
+        } & Partial<UpdateOptions>),
     options?: Partial<UpdateOptions>,
   ) {
     const isValues =
