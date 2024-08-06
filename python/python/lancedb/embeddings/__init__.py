@@ -26,3 +26,4 @@ from .transformers import TransformersEmbeddingFunction, ColbertEmbeddings
 from .imagebind import ImageBindEmbeddings
 from .utils import with_embeddings
 from .jinaai import JinaEmbeddings
+from .watsonx import WatsonxEmbeddings

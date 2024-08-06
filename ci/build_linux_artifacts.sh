@@ -18,4 +18,4 @@ docker run \
     -v $(pwd):/io -w /io \
     --memory-swap=-1 \
     lancedb-node-manylinux \
-    bash ci/manylinux_node/build.sh $ARCH
+    bash ci/manylinux_node/build_vectordb.sh $ARCH

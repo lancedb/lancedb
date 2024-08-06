@@ -8,7 +8,7 @@ install_node() {
 
     source "$HOME"/.bashrc
 
-    nvm install --no-progress 16
+    nvm install --no-progress 18
 }
 
 install_rust() {
