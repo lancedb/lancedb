@@ -102,3 +102,6 @@ class RemovalStats:
 class OptimizeStats:
     compaction: CompactionStats
     prune: RemovalStats
+    
+    def __repr__(self) -> str:
+        return f"OptimizeStats (compaction={self.compaction}, prune={self.prune})"
