@@ -56,6 +56,9 @@ class Table:
 class IndexConfig:
     index_type: str
     columns: List[str]
+    
+    def __repr__(self) -> str:
+        return f"Index ({self.index_type}, {self.columns})"
 
 async def connect(
     uri: str,
