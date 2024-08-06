@@ -98,6 +98,13 @@ pub struct IndexConfig {
     pub columns: Vec<String>,
 }
 
+#[pymethods]
+impl IndexConfig {
+    pub fn __repr__(&self) -> String {
+        format!("Index({}, {:?})", self.index_type, self.columns)
+    }
+}
+
 impl From<lancedb::index::IndexConfig> for IndexConfig {
     fn from(value: lancedb::index::IndexConfig) -> Self {
         let index_type = format!("{:?}", value.index_type);
