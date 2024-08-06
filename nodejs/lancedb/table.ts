@@ -278,7 +278,7 @@ export abstract class Table {
    * @param {string} queryType - the type of the query, "vector", "fts", or "auto"
    * @param {string | string[]} ftsColumns - the columns to search in for full text search
    *    for now, only one column can be searched at a time.
-   * 
+   *
    * when "auto" is used, if the query is a string and an embedding function is defined, it will be treated as a vector query
    * if the query is a string and no embedding function is defined, it will be treated as a full text search query
    */
