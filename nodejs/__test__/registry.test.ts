@@ -1,3 +1,4 @@
+import * as apiArrow from "apache-arrow";
 // Copyright 2024 Lance Developers.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -69,7 +70,7 @@ describe.each([arrow13, arrow14, arrow15, arrow16, arrow17])(
           return 3;
         }
         embeddingDataType() {
-          return new arrow.Float32();
+          return new arrow.Float32() as apiArrow.Float;
         }
         async computeSourceEmbeddings(data: string[]) {
           return data.map(() => [1, 2, 3]);
@@ -82,7 +83,7 @@ describe.each([arrow13, arrow14, arrow15, arrow16, arrow17])(
 
       const schema = LanceSchema({
         id: new arrow.Int32(),
-        text: func.sourceField(new arrow.Utf8()),
+        text: func.sourceField(new arrow.Utf8() as apiArrow.DataType),
         vector: func.vectorField(),
       });
 
@@ -119,7 +120,7 @@ describe.each([arrow13, arrow14, arrow15, arrow16, arrow17])(
           return 3;
         }
         embeddingDataType() {
-          return new arrow.Float32();
+          return new arrow.Float32() as apiArrow.Float;
         }
         async computeSourceEmbeddings(data: string[]) {
           return data.map(() => [1, 2, 3]);
@@ -144,7 +145,7 @@ describe.each([arrow13, arrow14, arrow15, arrow16, arrow17])(
           return 3;
         }
         embeddingDataType() {
-          return new arrow.Float32();
+          return new arrow.Float32() as apiArrow.Float;
         }
         async computeSourceEmbeddings(data: string[]) {
           return data.map(() => [1, 2, 3]);
@@ -154,7 +155,7 @@ describe.each([arrow13, arrow14, arrow15, arrow16, arrow17])(
 
       const schema = LanceSchema({
         id: new arrow.Int32(),
-        text: func.sourceField(new arrow.Utf8()),
+        text: func.sourceField(new arrow.Utf8() as apiArrow.DataType),
         vector: func.vectorField(),
       });
       const expectedMetadata = new Map<string, string>([

@@ -6,7 +6,7 @@
 # /usr/bin/ld: failed to set dynamic section sizes: Bad value
 set -e
 
-git clone -b OpenSSL_1_1_1u \
+git clone -b OpenSSL_1_1_1v \
     --single-branch \
     https://github.com/openssl/openssl.git
 
