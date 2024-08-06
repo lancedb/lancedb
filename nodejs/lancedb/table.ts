@@ -284,7 +284,7 @@ export abstract class Table {
    */
   abstract search(
     query: string | IntoVector,
-    queryType: string,
+    queryType?: string,
     ftsColumns?: string | string[],
   ): VectorQuery | Query;
   /**
@@ -508,11 +508,11 @@ export class LocalTable extends Table {
     optsOrUpdates:
       | (Map<string, string> | Record<string, string>)
       | ({
-          values: Map<string, IntoSql> | Record<string, IntoSql>;
-        } & Partial<UpdateOptions>)
+        values: Map<string, IntoSql> | Record<string, IntoSql>;
+      } & Partial<UpdateOptions>)
       | ({
-          valuesSql: Map<string, string> | Record<string, string>;
-        } & Partial<UpdateOptions>),
+        valuesSql: Map<string, string> | Record<string, string>;
+      } & Partial<UpdateOptions>),
     options?: Partial<UpdateOptions>,
   ) {
     const isValues =

@@ -99,7 +99,6 @@ async fn search_index(table: &Table) -> Result<()> {
         .full_text_search(FullTextSearchQuery::new(words[0].to_owned()))
         .select(lancedb::query::Select::Columns(vec!["doc".to_owned()]))
         .limit(10)
-        .only_if(filter)
         .execute()
         .await?;
     while let Some(batch) = results.try_next().await? {
