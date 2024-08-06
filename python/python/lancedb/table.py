@@ -511,7 +511,6 @@ class Table(ABC):
         query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
         vector_column_name: Optional[str] = None,
         query_type: str = "auto",
-        with_row_id: bool = False,
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support [vector search][search]
@@ -1393,7 +1392,6 @@ class LanceTable(Table):
         vector_column_name: Optional[str] = None,
         query_type: str = "auto",
         ordering_field_name: Optional[str] = None,
-        with_row_id: bool = False,
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support [vector search][search]
@@ -1473,9 +1471,6 @@ class LanceTable(Table):
             vector_column_name=vector_column_name,
             ordering_field_name=ordering_field_name,
         )
-
-        if with_row_id:
-            query_builder = query_builder.with_row_id(True)
 
         return query_builder
 

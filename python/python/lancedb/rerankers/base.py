@@ -143,7 +143,7 @@ class Reranker(ABC):
     def rerank_multivector(
         self,
         vector_results: Union[List[pa.Table], List["LanceVectorQueryBuilder"]],
-        query: Union[str, None] = None,  # Some rerankers might not need the query
+        query: Union[str, None],  # Some rerankers might not need the query
         deduplicate: bool = False,
     ):
         """
@@ -155,8 +155,10 @@ class Reranker(ABC):
         vector_results : List[pa.Table] or List[LanceVectorQueryBuilder]
             The results from the vector search. Either accepts the query builder
             if the results haven't been executed yet or the results in arrow format.
-        query : str, optional
-            The input query, by default None. Some rerankers might not need the query
+        query : str or None,
+            The input query. Some rerankers might not need the query to rerank.
+            In that case, it can be set to None explicitly. This is inteded to
+            be handled by the reranker implementations.
         deduplicate : bool, optional
             Whether to deduplicate the results based on the `_rowid` column,
             by default False. Requires `_rowid` to be present in the results.
@@ -194,7 +196,8 @@ class Reranker(ABC):
             if "_rowid" not in combined.column_names:
                 raise ValueError(
                     "'_rowid' is required for deduplication. \
-                    include _rowid like this `search().with_row_id(True)`"
+                    add _rowid to search results like this: \
+                    `search().with_row_id(True)`"
                 )
             reranked = self._deduplicate(reranked)
 
