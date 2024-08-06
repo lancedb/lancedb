@@ -1207,7 +1207,7 @@ class LanceTable(Table):
         replace: bool = False,
         writer_heap_size: Optional[int] = 1024 * 1024 * 1024,
         tokenizer_name: str = "default",
-        use_legacy: bool = False,
+        use_tantivy: bool = True,
     ):
         """Create a full-text search index on the table.
 
@@ -1237,7 +1237,7 @@ class LanceTable(Table):
             If True, use the legacy full-text search implementation based on tantivy.
             If False, use the new full-text search implementation based on lance-index.
         """
-        if not use_legacy:
+        if not use_tantivy:
             if not isinstance(field_names, str):
                 raise ValueError("field_names must be a string when use_legacy=False")
             # delete the existing legacy index if it exists
