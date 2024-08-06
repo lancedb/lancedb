@@ -276,12 +276,16 @@ export abstract class Table {
    * of the given query
    * @param {string | IntoVector} query - the query, a vector or string
    * @param {string} queryType - the type of the query, "vector", "fts", or "auto"
+   * @param {string | string[]} ftsColumns - the columns to search in for full text search
+   *    for now, only one column can be searched at a time.
+   * 
    * when "auto" is used, if the query is a string and an embedding function is defined, it will be treated as a vector query
    * if the query is a string and no embedding function is defined, it will be treated as a full text search query
    */
   abstract search(
     query: string | IntoVector,
     queryType: string,
+    ftsColumns?: string | string[],
   ): VectorQuery | Query;
   /**
    * Search the table with a given query vector.
@@ -582,6 +586,7 @@ export class LocalTable extends Table {
   search(
     query: string | IntoVector,
     queryType: string = "auto",
+    ftsColumns?: string | string[],
   ): VectorQuery | Query {
     if (typeof query !== "string") {
       if (queryType === "fts") {
@@ -592,13 +597,17 @@ export class LocalTable extends Table {
 
     // If the query is a string, we need to determine if it is a vector query or a full text search query
     if (queryType === "fts") {
-      return this.query().fullTextSearch(query);
+      return this.query().fullTextSearch(query, {
+        columns: ftsColumns,
+      });
     }
 
     // The query type is auto or vector
     // fall back to full text search if no embedding functions are defined and the query is a string
     if (queryType === "auto" && getRegistry().length() === 0) {
-      return this.query().fullTextSearch(query);
+      return this.query().fullTextSearch(query, {
+        columns: ftsColumns,
+      });
     }
 
     const queryPromise = this.getEmbeddingFunctions().then(
