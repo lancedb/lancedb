@@ -22,7 +22,8 @@ use std::sync::Arc;
 use arrow_array::{RecordBatchIterator, RecordBatchReader};
 use arrow_schema::SchemaRef;
 use lance::dataset::{ReadParams, WriteMode};
-use lance::io::{ObjectStore, ObjectStoreParams, WrappingObjectStore};
+use lance::io::{ObjectStore, ObjectStoreParams, ObjectStoreRegistry, WrappingObjectStore};
+use lance_encoding::version::LanceFileVersion;
 use object_store::{aws::AwsCredential, local::LocalFileSystem};
 use snafu::prelude::*;
 
@@ -789,13 +790,14 @@ impl Database {
 
                 let plain_uri = url.to_string();
 
+                let registry = Arc::new(ObjectStoreRegistry::default());
                 let storage_options = options.storage_options.clone();
                 let os_params = ObjectStoreParams {
                     storage_options: Some(storage_options.clone()),
                     ..Default::default()
                 };
                 let (object_store, base_path) =
-                    ObjectStore::from_uri_and_params(&plain_uri, &os_params).await?;
+                    ObjectStore::from_uri_and_params(registry, &plain_uri, &os_params).await?;
                 if object_store.is_local() {
                     Self::try_create_dir(&plain_uri).context(CreateDirSnafu { path: plain_uri })?;
                 }
@@ -961,7 +963,11 @@ impl ConnectionInternal for Database {
         if matches!(&options.mode, CreateTableMode::Overwrite) {
             write_params.mode = WriteMode::Overwrite;
         }
-        write_params.use_legacy_format = options.use_legacy_format;
+        write_params.data_storage_version = if options.use_legacy_format {
+            Some(LanceFileVersion::Legacy)
+        } else {
+            Some(LanceFileVersion::Stable)
+        };
 
         match NativeTable::create(
             &table_uri,

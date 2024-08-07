@@ -320,12 +320,19 @@ impl JsTable {
                 .map(|val| val.value(&mut cx))
                 .unwrap_or_default(),
         );
+        let error_if_tagged_old_versions: Option<bool> = Some(
+            cx.argument_opt(2)
+                .and_then(|val| val.downcast::<JsBoolean, _>(&mut cx).ok())
+                .map(|val| val.value(&mut cx))
+                .unwrap_or_default(),
+        );
 
         rt.spawn(async move {
             let stats = table
                 .optimize(OptimizeAction::Prune {
                     older_than: Some(older_than),
                     delete_unverified,
+                    error_if_tagged_old_versions,
                 })
                 .await;
 
