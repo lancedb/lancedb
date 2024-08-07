@@ -18,8 +18,15 @@ over scalar columns.
 
     ```python
     import lancedb
+    data = [
+      {"my_col": 1, "category": "A", "vector": [1, 2]},
+      {"my_col": 2, "category": "B", "vector": [3, 4]},
+      {"my_col": 3, "category": "C", "vector": [5, 6]}
+    ]
+
     db = lancedb.connect("./db")
-    table = db.open_table("my_table")
+    table = db.create_table("my_table", data)
+    table.create_scalar_index("my_col")  # BTree by default
     table.create_scalar_index("category", index_type="BITMAP")
     ```
 
@@ -41,9 +48,8 @@ For example, the following scan will be faster if the column `my_col` has a scal
     ```python
     import lancedb
 
-    db = lancedb.connect("/data/lance")
-    img_table = db.open_table("images")
-    my_df = img_table.search().where("my_col = 7").to_pandas()
+    table = db.open_table("my_table")
+    my_df = table.search().where("my_col = 2").to_pandas()
     ```
 
 === "Typescript"
@@ -68,11 +74,17 @@ Scalar indices can also speed up scans containing a vector search or full text s
     ```python
     import lancedb
 
-    db = lancedb.connect("/data/lance")
-    img_table = db.open_table("images")
-    img_table.search([1, 2, 3, 4], vector_column_name="vector")
-        .where("my_col != 7", prefilter=True)
+    data = [
+      {"my_col": 1, "vector": [1, 2]},
+      {"my_col": 2, "vector": [3, 4]},
+      {"my_col": 3, "vector": [5, 6]}
+    ]
+    table = db.create_table("vecs", data)
+    (
+        table.search([1, 2])
+        .where("my_col != 3", prefilter=True)
         .to_pandas()
+    )
     ```
 
 === "Typescript"
