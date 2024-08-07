@@ -269,7 +269,7 @@ export class LocalConnection extends Connection {
       buf,
       mode,
       cleanseStorageOptions(options?.storageOptions),
-      options?.useLegacyFormat
+      dataStorageVersion
     );
 
     return new LocalTable(innerTable);
@@ -293,6 +293,13 @@ export class LocalConnection extends Connection {
       metadata = registry.getTableMetadata([embeddingFunction]);
     }
 
+    let dataStorageVersion = "legacy";
+    if (options?.dataStorageVersion !== undefined) {
+      dataStorageVersion = options.dataStorageVersion;
+    } else if (options?.useLegacyFormat !== undefined) {
+      dataStorageVersion = options.useLegacyFormat ? "legacy" : "stable";
+    }
+
     const table = makeEmptyTable(schema, metadata);
     const buf = await fromTableToBuffer(table);
     const innerTable = await this.inner.createEmptyTable(
@@ -300,7 +307,7 @@ export class LocalConnection extends Connection {
       buf,
       mode,
       cleanseStorageOptions(options?.storageOptions),
-      options?.useLegacyFormat
+      dataStorageVersion
     );
     return new LocalTable(innerTable);
   }
