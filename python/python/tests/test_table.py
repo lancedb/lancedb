@@ -1034,6 +1034,12 @@ async def test_optimize(db_async: AsyncConnection):
         ],
     )
     stats = await table.optimize()
+    expected = (
+        "OptimizeStats(compaction=CompactionStats { fragments_removed: 2, "
+        "fragments_added: 1, files_removed: 2, files_added: 1 }, "
+        "prune=RemovalStats { bytes_removed: 0, old_versions_removed: 0 })"
+    )
+    assert str(stats) == expected
     assert stats.compaction.files_removed == 2
     assert stats.compaction.files_added == 1
     assert stats.compaction.fragments_added == 1
