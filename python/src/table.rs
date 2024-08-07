@@ -63,7 +63,10 @@ pub struct Table {
 #[pymethods]
 impl OptimizeStats {
     pub fn __repr__(&self) -> String {
-        format!("OptimizeStats(compaction={:?}, prune={:?})", self.compaction, self.prune)
+        format!(
+            "OptimizeStats(compaction={:?}, prune={:?})",
+            self.compaction, self.prune
+        )
     }
 }
 
@@ -273,6 +276,7 @@ impl Table {
                 .optimize(OptimizeAction::Prune {
                     older_than,
                     delete_unverified: None,
+                    error_if_tagged_old_versions: None,
                 })
                 .await
                 .infer_error()?
