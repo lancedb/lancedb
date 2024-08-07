@@ -78,10 +78,7 @@ fn create_some_records() -> Result<Box<dyn RecordBatchReader + Send>> {
 
 async fn create_table(db: &Connection) -> Result<Table> {
     let initial_data: Box<dyn RecordBatchReader + Send> = create_some_records()?;
-    let tbl = db
-        .create_table("my_table", initial_data)
-        .execute()
-        .await?;
+    let tbl = db.create_table("my_table", initial_data).execute().await?;
     Ok(tbl)
 }
 
