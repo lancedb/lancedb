@@ -60,6 +60,13 @@ pub struct Table {
     inner: Option<LanceDbTable>,
 }
 
+#[pymethods]
+impl OptimizeStats {
+    pub fn __repr__(&self) -> String {
+        format!("OptimizeStats(compaction={:?}, prune={:?})", self.compaction, self.prune)
+    }
+}
+
 impl Table {
     pub(crate) fn new(inner: LanceDbTable) -> Self {
         Self {
