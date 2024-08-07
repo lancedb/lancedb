@@ -63,7 +63,10 @@ pub struct Table {
 #[pymethods]
 impl OptimizeStats {
     pub fn __repr__(&self) -> String {
-        format!("OptimizeStats(compaction={:?}, prune={:?})", self.compaction, self.prune)
+        format!(
+            "OptimizeStats(compaction={:?}, prune={:?})",
+            self.compaction, self.prune
+        )
     }
 }
 
