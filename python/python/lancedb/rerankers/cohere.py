@@ -88,7 +88,7 @@ class CohereReranker(Reranker):
         combined_results = self.merge_results(vector_results, fts_results)
         combined_results = self._rerank(combined_results, query)
         if self.score == "relevance":
-            combined_results = combined_results.drop_columns(["_score", "_distance"])
+            combined_results = self._keep_relevance_score(combined_results)
         elif self.score == "all":
             raise NotImplementedError(
                 "return_score='all' not implemented for cohere reranker"

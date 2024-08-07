@@ -103,7 +103,7 @@ class LinearCombinationReranker(Reranker):
             [("_relevance_score", "descending")]
         )
         if self.score == "relevance":
-            tbl = tbl.drop_columns(["_score", "_distance"])
+            tbl = self._keep_relevance_score(tbl)
         return tbl
 
     def _combine_score(self, score1, score2):
