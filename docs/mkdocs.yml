@@ -92,7 +92,7 @@ nav:
           - Building vector index: ann_indexes.md
           - Vector Search: search.md
           - Full-text search: fts.md
-          - Building scalar index: guides/scalar_index.md
+          - Building a scalar index: guides/scalar_index.md
           - Hybrid search:
               - Overview: hybrid_search/hybrid_search.md
               - Comparing Rerankers: hybrid_search/eval.md
