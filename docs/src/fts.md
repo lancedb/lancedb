@@ -2,10 +2,10 @@
 
 LanceDB provides support for full-text search via Lance (before via [Tantivy](https://github.com/quickwit-oss/tantivy) (Python only)), allowing you to incorporate keyword-based search (based on BM25) in your retrieval solutions.
 
-Currently, the Lance full text search is missing some features that are in the Tantivy full text search (custom tokenizer, phrase query, etc.), so in Python, tantivy is still the default way to do full text search, and we are leaving the instructions in place, as we finish adding the rest of this functionality.
+Currently, the Lance full text search is missing some features that are in the Tantivy full text search. This includes phrase queries, re-ranking, and customizing the tokenizer. Thus, in Python, Tantivy is still the default way to do full text search and many of the instructions below apply just to Tantivy-based indices.
 
 
-## Installation (Only for tantivy based FTS)
+## Installation (Only for Tantivy-based FTS)
 
 To use full-text search, install the dependency [`tantivy-py`](https://github.com/quickwit-oss/tantivy-py):
 
@@ -67,10 +67,9 @@ Consider that we have a LanceDB table named `my_table`, whose string column `tex
     let db = connect(uri).execute().await?;
     let initial_data: Box<dyn RecordBatchReader + Send> = create_some_records()?;
     let tbl = db
-        .create_table("my_table", Box::new(initial_data))
+        .create_table("my_table", initial_data)
         .execute()
-        .await
-        .unwrap();
+        .await?;
     tbl
         .create_index(&["text"], Index::FTS(FtsIndexBuilder::default()))
         .execute()
@@ -88,8 +87,7 @@ Consider that we have a LanceDB table named `my_table`, whose string column `tex
 It would search on all indexed columns by default, so it's useful when there are multiple indexed columns.
 For now, this is supported in tantivy way only.
 
-Passing `fts_columns="text"` if you want to specify the columns to search, but it's not available for tantivy based full text search.
-
+Passing `fts_columns="text"` if you want to specify the columns to search, but it's not available for Tantivy-based full text search.
 
 !!! note
     LanceDB automatically searches on the existing FTS index if the input to the search is of type `str`. If you provide a vector as input, LanceDB will search the ANN index instead.
@@ -97,7 +95,7 @@ Passing `fts_columns="text"` if you want to specify the columns to search, but i
 ## Tokenization
 By default the text is tokenized by splitting on punctuation and whitespaces and then removing tokens that are longer than 40 chars. For more language specific tokenization then provide the argument tokenizer_name with the 2 letter language code followed by "_stem". So for english it would be "en_stem".
 
-For now, only the tantivy based FTS index supports to specify the tokenizer, so it's only available in Python with `use_tantivy=True`.
+For now, only the Tantivy-based FTS index supports to specify the tokenizer, so it's only available in Python with `use_tantivy=True`.
 
 === "use_tantivy=True"
 
@@ -107,9 +105,7 @@ For now, only the tantivy based FTS index supports to specify the tokenizer, so 
 
 === "use_tantivy=False"
 
-    ```python
-    not supported yet
-    ```
+    [**Not supported yet**](https://github.com/lancedb/lance/issues/1195)
 
 the following [languages](https://docs.rs/tantivy/latest/tantivy/tokenizer/enum.Language.html) are currently supported.
 
@@ -125,9 +121,7 @@ If you have multiple string columns to index, there's no need to combine them ma
 
 === "use_tantivy=False"
 
-    ```python
-    not supported yet
-    ```
+    [**Not supported yet**](https://github.com/lancedb/lance/issues/1195)
 
 Note that the search API call does not change - you can search over all indexed columns at once.
 
@@ -169,8 +163,8 @@ applied on top of the full text search results. This can be invoked via the fami
 
 ## Sorting
 
-!!! tip "Warn"
-    Sorting is available for only tantivy based FTS
+!!! warning "Warn"
+    Sorting is available for only Tantivy-based FTS
 
 You can pre-sort the documents by specifying `ordering_field_names` when
 creating the full-text search index. Once pre-sorted, you can then specify
@@ -202,8 +196,8 @@ table.create_fts_index(["text_field"], use_tantivy=True, ordering_field_names=["
 
 ## Phrase queries vs. terms queries
 
-!!! tip "Warn"
-    Phrase queries are available for only tantivy based FTS
+!!! warning "Warn"
+    Phrase queries are available for only Tantivy-based FTS
 
 For full-text search you can specify either a **phrase** query like `"the old man and the sea"`,
 or a **terms** search query like `"(Old AND Man) AND Sea"`. For more details on the terms
@@ -239,7 +233,7 @@ In general, a query that's declared as a phrase query will be wrapped in double 
 double quotes replaced by single quotes.
 
 
-## Configurations (Only for tantivy based FTS)
+## Configurations (Only for Tantivy-based FTS)
 
 By default, LanceDB configures a 1GB heap size limit for creating the index. You can
 reduce this if running on a smaller node, or increase this for faster performance while
@@ -253,7 +247,7 @@ table.create_fts_index(["text1", "text2"], writer_heap_size=heap, replace=True)
 
 ## Current limitations
 
-For that tantivy based FTS:
+For that Tantivy-based FTS:
 
 1. Currently we do not yet support incremental writes.
    If you add data after FTS index creation, it won't be reflected

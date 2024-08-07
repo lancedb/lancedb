@@ -705,13 +705,17 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         if Path(tantivy_index_path).exists():
             return self.tantivy_to_arrow()
 
-        # get the scores and doc ids
         query = self._query
         if self._phrase_query:
-            raise NotImplementedError("Phrase query is not yet supported")
+            raise NotImplementedError(
+                "Phrase query is not yet supported in Lance FTS. "
+                "Use tantivy-based index instead for now."
+            )
         if self._reranker:
-            raise NotImplementedError("Reranking is not yet supported")
-
+            raise NotImplementedError(
+                "Reranking is not yet supported in Lance FTS. "
+                "Use tantivy-based index instead for now."
+            )
         ds = self._table.to_lance()
         return ds.to_table(
             columns=self._columns,

@@ -1220,7 +1220,7 @@ class LanceTable(Table):
         ----------
         field_names: str or list of str
             The name(s) of the field to index.
-            can be only str if use_legacy=True for now.
+            can be only str if use_tantivy=True for now.
         replace: bool, default False
             If True, replace the existing index if it exists. Note that this is
             not yet an atomic operation; the index will be temporarily
@@ -1229,19 +1229,19 @@ class LanceTable(Table):
         ordering_field_names:
             A list of unsigned type fields to index to optionally order
             results on at search time.
-            only available with use_legacy=True
+            only available with use_tantivy=True
         tokenizer_name: str, default "default"
             The tokenizer to use for the index. Can be "raw", "default" or the 2 letter
             language code followed by "_stem". So for english it would be "en_stem".
             For available languages see: https://docs.rs/tantivy/latest/tantivy/tokenizer/enum.Language.html
-            only available with use_legacy=True for now
-        use_legacy: bool, default False
+            only available with use_tantivy=True for now
+        use_tantivy: bool, default False
             If True, use the legacy full-text search implementation based on tantivy.
             If False, use the new full-text search implementation based on lance-index.
         """
         if not use_tantivy:
             if not isinstance(field_names, str):
-                raise ValueError("field_names must be a string when use_legacy=False")
+                raise ValueError("field_names must be a string when use_tantivy=False")
             # delete the existing legacy index if it exists
             if replace:
                 fs, path = fs_from_uri(self._get_fts_index_path())

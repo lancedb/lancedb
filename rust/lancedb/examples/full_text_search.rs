@@ -12,10 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! This example demonstrates setting advanced parameters when building an IVF PQ index
-//!
-//! Snippets from this example are used in the documentation on ANN indices.
-
 use std::sync::Arc;
 
 use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator, RecordBatchReader, StringArray};
@@ -52,15 +48,24 @@ fn create_some_records() -> Result<Box<dyn RecordBatchReader + Send>> {
         Field::new("doc", DataType::Utf8, true),
     ]));
 
-    let words = random_word::all(random_word::Lang::En);
+    let words = random_word::all(random_word::Lang::En)
+        .iter()
+        .step_by(1024)
+        .take(500)
+        .map(|w| *w)
+        .collect::<Vec<_>>();
+    let n_terms = 3;
     let batches = RecordBatchIterator::new(
         vec![RecordBatch::try_new(
             schema.clone(),
             vec![
                 Arc::new(Int32Array::from_iter_values(0..TOTAL as i32)),
-                Arc::new(StringArray::from_iter_values(
-                    (0..TOTAL).map(|_| words[random::<usize>() % 256]),
-                )),
+                Arc::new(StringArray::from_iter_values((0..TOTAL).map(|_| {
+                    (0..n_terms)
+                        .map(|_| words[random::<usize>() % words.len()])
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                }))),
             ],
         )
         .unwrap()]
@@ -74,10 +79,9 @@ fn create_some_records() -> Result<Box<dyn RecordBatchReader + Send>> {
 async fn create_table(db: &Connection) -> Result<Table> {
     let initial_data: Box<dyn RecordBatchReader + Send> = create_some_records()?;
     let tbl = db
-        .create_table("my_table", Box::new(initial_data))
+        .create_table("my_table", initial_data)
         .execute()
-        .await
-        .unwrap();
+        .await?;
     Ok(tbl)
 }
 
@@ -90,7 +94,12 @@ async fn create_index(table: &Table) -> Result<()> {
 }
 
 async fn search_index(table: &Table) -> Result<()> {
-    let words = random_word::all(random_word::Lang::En);
+    let words = random_word::all(random_word::Lang::En)
+        .iter()
+        .step_by(1024)
+        .take(500)
+        .map(|w| *w)
+        .collect::<Vec<_>>();
     let query = words[0].to_owned();
     println!("Searching for: {}", query);
 
