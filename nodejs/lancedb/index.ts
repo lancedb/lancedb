@@ -59,7 +59,7 @@ export {
 
 export { Index, IndexOptions, IvfPqOptions } from "./indices";
 
-export { Table, AddDataOptions, UpdateOptions } from "./table";
+export { Table, AddDataOptions, UpdateOptions, OptimizeOptions } from "./table";
 
 export * as embedding from "./embedding";
 
