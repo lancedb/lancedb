@@ -560,7 +560,7 @@ class AsyncConnection(object):
         fill_value: Optional[float] = None,
         storage_options: Optional[Dict[str, str]] = None,
         *,
-        data_storage_version: str = "legacy",
+        data_storage_version: Optional[str] = None,
         use_legacy_format: Optional[bool] = None,
     ) -> AsyncTable:
         """Create an [AsyncTable][lancedb.table.AsyncTable] in the database.
@@ -773,7 +773,9 @@ class AsyncConnection(object):
             mode = "exist_ok"
 
         if not data_storage_version:
-            data_storage_version = "legacy" if use_legacy_format else "stable"
+            data_storage_version = (
+                "legacy" if use_legacy_format is None or use_legacy_format else "stable"
+            )
 
         if data is None:
             new_table = await self._inner.create_empty_table(
