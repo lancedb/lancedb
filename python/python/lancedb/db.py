@@ -560,6 +560,7 @@ class AsyncConnection(object):
         fill_value: Optional[float] = None,
         storage_options: Optional[Dict[str, str]] = None,
         *,
+        data_storage_version: str = "legacy",
         use_legacy_format: Optional[bool] = None,
     ) -> AsyncTable:
         """Create an [AsyncTable][lancedb.table.AsyncTable] in the database.
@@ -603,9 +604,15 @@ class AsyncConnection(object):
             connection will be inherited by the table, but can be overridden here.
             See available options at
             https://lancedb.github.io/lancedb/guides/storage/
-        use_legacy_format: bool, optional, default True
+        data_storage_version: optional, str, default "legacy"
+            The version of the data storage format to use. Newer versions are more
+            efficient but require newer versions of lance to read.  The default is
+            "legacy" which will use the legacy v1 version.  See the user guide
+            for more details.
+        use_legacy_format: bool, optional, default True. (Deprecated)
             If True, use the legacy format for the table. If False, use the new format.
             The default is True while the new format is in beta.
+            This method is deprecated, use `data_storage_version` instead.
 
 
         Returns
@@ -765,13 +772,16 @@ class AsyncConnection(object):
         if mode == "create" and exist_ok:
             mode = "exist_ok"
 
+        if not data_storage_version:
+            data_storage_version = "legacy" if use_legacy_format else "stable"
+
         if data is None:
             new_table = await self._inner.create_empty_table(
                 name,
                 mode,
                 schema,
                 storage_options=storage_options,
-                use_legacy_format=use_legacy_format,
+                data_storage_version=data_storage_version,
             )
         else:
             data = data_to_reader(data, schema)
@@ -780,7 +790,7 @@ class AsyncConnection(object):
                 mode,
                 data,
                 storage_options=storage_options,
-                use_legacy_format=use_legacy_format,
+                data_storage_version=data_storage_version,
             )
 
         return AsyncTable(new_table)
