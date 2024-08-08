@@ -9,10 +9,15 @@ over scalar columns.
 - `BITMAP`: this index stores a bitmap for each unique value in the column.
   This index is useful for columns with a small number of unique values and many rows per value.
   For example, a column presents `categories`. In Apache Arrow terminology, a column can be presented
-  by `DictionaryType`.
+  as `DictionaryType`.
 - `LABEL_LIST`: a special index that is used to index list columns whose values have small cardinality.
   For example, a column that contains lists of tags (e.g. `["tag1", "tag2", "tag3"]`) can be indexed with a `LABEL_LIST` index.
-  This index can only speedup queries with `array_has_any()` or `array_has_all()` filters.
+
+| Data Type                                     | Filter                           | Index Type   |
+| --------------------------------------------- | -------------------------------- | ------------ |
+| Numeric, String, Boolean                      | `<`, `=`, `>`                    | `BTREE`      |
+| Low cardinality of numbers or strings         | `<`, `=`, `>`, `in`, `between`   | `BITMAP`     |
+| List of low cardinality of numbers or strings | `array_has_any`, `array_has_all` | `LABEL_LIST` |
 
 === "Python"
 
@@ -33,6 +38,8 @@ over scalar columns.
 === "Typescript"
 
     Only `BTree` index is supported today. `BITMAP` and `LABEL_LIST` will be added soon.
+
+    Follow [Github issue #1511](https://github.com/lancedb/lancedb/issues/1511) for updates.
 
     ```js
     const db = await lancedb.connect("data/sample-lancedb");
