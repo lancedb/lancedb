@@ -52,14 +52,18 @@ jobs:
         run: |
           sudo apt -y -qq update
           sudo apt install -y protobuf-compiler libssl-dev pkg-config
-      - name: Verify Rust installation
-        run: |
-          rustc -vV
-          cargo -vV
       - name: Build release
         run: |
-          cargo build --release
+          set -x # Enable command echo for debugging
+          cargo build --release -v > "$GITHUB_WORKSPACE/java/build.log" 2>&1
           cp ../target/release/liblancedb_jni.so liblancedb_jni.so
+        continue-on-error: true
+      - name: Upload build logs on failure
+        if: always() # Ensure this step runs regardless of the previous step's outcome
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: "$GITHUB_WORKSPACE/java/build.log"
       - uses: actions/upload-artifact@v4
         with:
           name: liblancedb_jni_linux_aarch64.zip
