@@ -186,7 +186,7 @@ def test_nested_schema(tmp_path, table):
     assert len(rs) == 10
 
 
-@pytest.mark.parametrize("use_tantivy", [True])
+@pytest.mark.parametrize("use_tantivy", [True, False])
 def test_search_index_with_filter(table, use_tantivy):
     table.create_fts_index("text", use_tantivy=use_tantivy)
     orig_import = __import__
@@ -218,7 +218,7 @@ def test_search_index_with_filter(table, use_tantivy):
         assert r["_rowid"] is not None
 
 
-@pytest.mark.parametrize("use_tantivy", [True])
+@pytest.mark.parametrize("use_tantivy", [True, False])
 def test_null_input(table, use_tantivy):
     table.add(
         [

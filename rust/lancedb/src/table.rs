@@ -1540,8 +1540,8 @@ impl NativeTable {
         }
 
         let mut dataset = self.dataset.get_mut().await?;
-        let lance_idx_params = lance::index::scalar::ScalarIndexParams {
-            force_index_type: Some(lance::index::scalar::ScalarIndexType::Inverted),
+        let lance_idx_params = lance_index::scalar::ScalarIndexParams {
+            force_index_type: Some(lance_index::scalar::ScalarIndexType::Inverted),
         };
         dataset
             .create_index(

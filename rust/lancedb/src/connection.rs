@@ -1217,7 +1217,7 @@ mod tests {
 
         let tbl = db
             .create_table("v2_test", make_data())
-            .use_legacy_format(false)
+            .data_storage_version(LanceFileVersion::Stable)
             .execute()
             .await
             .unwrap();
