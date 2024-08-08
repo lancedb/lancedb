@@ -8,8 +8,7 @@ over scalar columns.
   It will perform well on columns with a large number of unique values and few rows per value.
 - `BITMAP`: this index stores a bitmap for each unique value in the column.
   This index is useful for columns with a small number of unique values and many rows per value.
-  For example, a column presents `categories`. In Apache Arrow terminology, a column can be presented
-  as `DictionaryType`.
+  For example, columns that represent "categories", "labels", or "tags"
 - `LABEL_LIST`: a special index that is used to index list columns whose values have small cardinality.
   For example, a column that contains lists of tags (e.g. `["tag1", "tag2", "tag3"]`) can be indexed with a `LABEL_LIST` index.
 
