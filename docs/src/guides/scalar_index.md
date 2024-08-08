@@ -15,7 +15,7 @@ over scalar columns.
 | Data Type                                     | Filter                           | Index Type   |
 | --------------------------------------------- | -------------------------------- | ------------ |
 | Numeric, String, Boolean                      | `<`, `=`, `>`                    | `BTREE`      |
-| Low cardinality of numbers or strings         | `<`, `=`, `>`, `in`, `between`   | `BITMAP`     |
+| Boolean, numbers or strings with finite range of values         | `<`, `=`, `>`, `in`, `between`, `is null`   | `BITMAP`     |
 | List of low cardinality of numbers or strings | `array_has_any`, `array_has_all` | `LABEL_LIST` |
 
 === "Python"
