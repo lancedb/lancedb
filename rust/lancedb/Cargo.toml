@@ -56,6 +56,7 @@ tokenizers = { version = "0.19.1", optional = true }
 [dev-dependencies]
 tempfile = "3.5.0"
 rand = { version = "0.8.3", features = ["small_rng"] }
+random_word = { version = "0.4.3", features = ["en"] }
 uuid = { version = "1.7.0", features = ["v4"] }
 walkdir = "2"
 aws-sdk-dynamodb = { version = "1.38.0" }

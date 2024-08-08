@@ -38,6 +38,13 @@ export class EmbeddingFunctionRegistry {
   #functions = new Map<string, EmbeddingFunctionConstructor>();
 
   /**
+   * Get the number of registered functions
+   */
+  length() {
+    return this.#functions.size;
+  }
+
+  /**
    * Register an embedding function
    * @param name The name of the function
    * @param func The function to register

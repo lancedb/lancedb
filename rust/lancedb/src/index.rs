@@ -14,6 +14,7 @@
 
 use std::sync::Arc;
 
+use scalar::FtsIndexBuilder;
 use serde::Deserialize;
 use serde_with::skip_serializing_none;
 
@@ -30,6 +31,7 @@ pub mod vector;
 pub enum Index {
     Auto,
     BTree(BTreeIndexBuilder),
+    FTS(FtsIndexBuilder),
     IvfPq(IvfPqIndexBuilder),
     IvfHnswPq(IvfHnswPqIndexBuilder),
     IvfHnswSq(IvfHnswSqIndexBuilder),

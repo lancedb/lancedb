@@ -59,7 +59,6 @@ from .util import (
 if TYPE_CHECKING:
     import PIL
     from lance.dataset import CleanupStats, ReaderLike
-
     from ._lancedb import Table as LanceDBTable, OptimizeStats
     from .db import LanceDBConnection
     from .index import BTree, IndexConfig, IvfPq
@@ -350,6 +349,7 @@ class Table(ABC):
     def create_scalar_index(
         self,
         column: str,
+        index_type: Literal["BTREE", "BITMAP", "LABEL_LIST"] = "BTREE",
         *,
         replace: bool = True,
     ):
@@ -511,6 +511,8 @@ class Table(ABC):
         query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
         vector_column_name: Optional[str] = None,
         query_type: str = "auto",
+        ordering_field_name: Optional[str] = None,
+        fts_columns: Union[str, List[str]] = None,
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support [vector search][search]
@@ -1188,9 +1190,15 @@ class LanceTable(Table):
             index_cache_size=index_cache_size,
         )
 
-    def create_scalar_index(self, column: str, *, replace: bool = True):
+    def create_scalar_index(
+        self,
+        column: str,
+        index_type: Literal["BTREE", "BITMAP", "LABEL_LIST"] = "BTREE",
+        *,
+        replace: bool = True,
+    ):
         self._dataset_mut.create_scalar_index(
-            column, index_type="BTREE", replace=replace
+            column, index_type=index_type, replace=replace
         )
 
     def create_fts_index(
@@ -1201,6 +1209,7 @@ class LanceTable(Table):
         replace: bool = False,
         writer_heap_size: Optional[int] = 1024 * 1024 * 1024,
         tokenizer_name: str = "default",
+        use_tantivy: bool = True,
     ):
         """Create a full-text search index on the table.
 
@@ -1211,6 +1220,7 @@ class LanceTable(Table):
         ----------
         field_names: str or list of str
             The name(s) of the field to index.
+            can be only str if use_tantivy=True for now.
         replace: bool, default False
             If True, replace the existing index if it exists. Note that this is
             not yet an atomic operation; the index will be temporarily
@@ -1218,12 +1228,31 @@ class LanceTable(Table):
         writer_heap_size: int, default 1GB
         ordering_field_names:
             A list of unsigned type fields to index to optionally order
-            results on at search time
+            results on at search time.
+            only available with use_tantivy=True
         tokenizer_name: str, default "default"
             The tokenizer to use for the index. Can be "raw", "default" or the 2 letter
             language code followed by "_stem". So for english it would be "en_stem".
             For available languages see: https://docs.rs/tantivy/latest/tantivy/tokenizer/enum.Language.html
+            only available with use_tantivy=True for now
+        use_tantivy: bool, default False
+            If True, use the legacy full-text search implementation based on tantivy.
+            If False, use the new full-text search implementation based on lance-index.
         """
+        if not use_tantivy:
+            if not isinstance(field_names, str):
+                raise ValueError("field_names must be a string when use_tantivy=False")
+            # delete the existing legacy index if it exists
+            if replace:
+                fs, path = fs_from_uri(self._get_fts_index_path())
+                index_exists = fs.get_file_info(path).type != pa_fs.FileType.NotFound
+                if index_exists:
+                    fs.delete_dir(path)
+            self._dataset_mut.create_scalar_index(
+                field_names, index_type="INVERTED", replace=replace
+            )
+            return
+
         from .fts import create_index, populate_index
 
         if isinstance(field_names, str):
@@ -1392,6 +1421,7 @@ class LanceTable(Table):
         vector_column_name: Optional[str] = None,
         query_type: str = "auto",
         ordering_field_name: Optional[str] = None,
+        fts_columns: Union[str, List[str]] = None,
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support [vector search][search]
@@ -1446,6 +1476,10 @@ class LanceTable(Table):
             or raise an error if no corresponding embedding function is found.
             If the `query` is a string, then the query type is "vector" if the
             table has embedding functions, else the query type is "fts"
+        fts_columns: str or list of str, default None
+            The column(s) to search in for full-text search.
+            If None then the search is performed on all indexed columns.
+            For now, only one column can be searched at a time.
 
         Returns
         -------
@@ -1665,6 +1699,7 @@ class LanceTable(Table):
                 "nprobes": query.nprobes,
                 "refine_factor": query.refine_factor,
             },
+            full_text_query=query.full_text_query,
             with_row_id=query.with_row_id,
             batch_size=batch_size,
         ).to_reader()

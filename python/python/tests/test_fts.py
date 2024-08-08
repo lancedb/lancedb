@@ -74,7 +74,12 @@ def test_create_index_with_stemming(tmp_path, table):
     assert os.path.exists(str(tmp_path / "index"))
 
     # Check stemming by running tokenizer on non empty table
-    table.create_fts_index("text", tokenizer_name="en_stem")
+    table.create_fts_index("text", tokenizer_name="en_stem", use_tantivy=True)
+
+
+@pytest.mark.parametrize("use_tantivy", [True, False])
+def test_create_inverted_index(table, use_tantivy):
+    table.create_fts_index("text", use_tantivy=use_tantivy)
 
 
 def test_populate_index(tmp_path, table):
@@ -92,8 +97,15 @@ def test_search_index(tmp_path, table):
     assert len(results[1]) == 10  # _distance
 
 
+@pytest.mark.parametrize("use_tantivy", [True, False])
+def test_search_fts(table, use_tantivy):
+    table.create_fts_index("text", use_tantivy=use_tantivy)
+    results = table.search("puppy").limit(10).to_list()
+    assert len(results) == 10
+
+
 def test_search_ordering_field_index_table(tmp_path, table):
-    table.create_fts_index("text", ordering_field_names=["count"])
+    table.create_fts_index("text", ordering_field_names=["count"], use_tantivy=True)
     rows = (
         table.search("puppy", ordering_field_name="count")
         .limit(20)
@@ -125,8 +137,9 @@ def test_search_ordering_field_index(tmp_path, table):
     assert sorted(rows, key=lambda x: x["count"], reverse=True) == rows
 
 
-def test_create_index_from_table(tmp_path, table):
-    table.create_fts_index("text")
+@pytest.mark.parametrize("use_tantivy", [True, False])
+def test_create_index_from_table(tmp_path, table, use_tantivy):
+    table.create_fts_index("text", use_tantivy=use_tantivy)
     df = table.search("puppy").limit(10).select(["text"]).to_pandas()
     assert len(df) <= 10
     assert "text" in df.columns
@@ -145,15 +158,15 @@ def test_create_index_from_table(tmp_path, table):
         ]
     )
 
-    with pytest.raises(ValueError, match="already exists"):
-        table.create_fts_index("text")
+    with pytest.raises(Exception, match="already exists"):
+        table.create_fts_index("text", use_tantivy=use_tantivy)
 
-    table.create_fts_index("text", replace=True)
+    table.create_fts_index("text", replace=True, use_tantivy=use_tantivy)
     assert len(table.search("gorilla").limit(1).to_pandas()) == 1
 
 
 def test_create_index_multiple_columns(tmp_path, table):
-    table.create_fts_index(["text", "text2"])
+    table.create_fts_index(["text", "text2"], use_tantivy=True)
     df = table.search("puppy").limit(10).to_pandas()
     assert len(df) == 10
     assert "text" in df.columns
@@ -161,20 +174,21 @@ def test_create_index_multiple_columns(tmp_path, table):
 
 
 def test_empty_rs(tmp_path, table, mocker):
-    table.create_fts_index(["text", "text2"])
+    table.create_fts_index(["text", "text2"], use_tantivy=True)
     mocker.patch("lancedb.fts.search_index", return_value=([], []))
     df = table.search("puppy").limit(10).to_pandas()
     assert len(df) == 0
 
 
 def test_nested_schema(tmp_path, table):
-    table.create_fts_index("nested.text")
+    table.create_fts_index("nested.text", use_tantivy=True)
     rs = table.search("puppy").limit(10).to_list()
     assert len(rs) == 10
 
 
-def test_search_index_with_filter(table):
-    table.create_fts_index("text")
+@pytest.mark.parametrize("use_tantivy", [True, False])
+def test_search_index_with_filter(table, use_tantivy):
+    table.create_fts_index("text", use_tantivy=use_tantivy)
     orig_import = __import__
 
     def import_mock(name, *args):
@@ -186,7 +200,7 @@ def test_search_index_with_filter(table):
     with mock.patch("builtins.__import__", side_effect=import_mock):
         rs = table.search("puppy").where("id=1").limit(10)
         # test schema
-        assert rs.to_arrow().drop("score").schema.equals(table.schema)
+        assert rs.to_arrow().drop("_score").schema.equals(table.schema)
 
         rs = rs.to_list()
         for r in rs:
@@ -204,7 +218,8 @@ def test_search_index_with_filter(table):
         assert r["_rowid"] is not None
 
 
-def test_null_input(table):
+@pytest.mark.parametrize("use_tantivy", [True, False])
+def test_null_input(table, use_tantivy):
     table.add(
         [
             {
@@ -217,12 +232,12 @@ def test_null_input(table):
             }
         ]
     )
-    table.create_fts_index("text")
+    table.create_fts_index("text", use_tantivy=use_tantivy)
 
 
 def test_syntax(table):
     # https://github.com/lancedb/lancedb/issues/769
-    table.create_fts_index("text")
+    table.create_fts_index("text", use_tantivy=True)
     with pytest.raises(ValueError, match="Syntax Error"):
         table.search("they could have been dogs OR").limit(10).to_list()
 

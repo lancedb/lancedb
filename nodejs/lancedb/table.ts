@@ -270,22 +270,23 @@ export abstract class Table {
    * @returns {Query} A builder that can be used to parameterize the query
    */
   abstract query(): Query;
+
   /**
    * Create a search query to find the nearest neighbors
-   * of the given query vector
-   * @param {string} query - the query. This will be converted to a vector using the table's provided embedding function
-   * @note  If no embedding functions are defined in the table, this will error when collecting the results.
+   * of the given query
+   * @param {string | IntoVector} query - the query, a vector or string
+   * @param {string} queryType - the type of the query, "vector", "fts", or "auto"
+   * @param {string | string[]} ftsColumns - the columns to search in for full text search
+   *    for now, only one column can be searched at a time.
    *
-   * This is just a convenience method for calling `.query().nearestTo(await myEmbeddingFunction(query))`
+   * when "auto" is used, if the query is a string and an embedding function is defined, it will be treated as a vector query
+   * if the query is a string and no embedding function is defined, it will be treated as a full text search query
    */
-  abstract search(query: string): VectorQuery;
-  /**
-   * Create a search query to find the nearest neighbors
-   * of the given query vector
-   * @param {IntoVector} query - the query vector
-   * This is just a convenience method for calling `.query().nearestTo(query)`
-   */
-  abstract search(query: IntoVector): VectorQuery;
+  abstract search(
+    query: string | IntoVector,
+    queryType?: string,
+    ftsColumns?: string | string[],
+  ): VectorQuery | Query;
   /**
    * Search the table with a given query vector.
    *
@@ -581,27 +582,50 @@ export class LocalTable extends Table {
   query(): Query {
     return new Query(this.inner);
   }
-  search(query: string | IntoVector): VectorQuery {
-    if (typeof query !== "string") {
-      return this.vectorSearch(query);
-    } else {
-      const queryPromise = this.getEmbeddingFunctions().then(
-        async (functions) => {
-          // TODO: Support multiple embedding functions
-          const embeddingFunc: EmbeddingFunctionConfig | undefined = functions
-            .values()
-            .next().value;
-          if (!embeddingFunc) {
-            return Promise.reject(
-              new Error("No embedding functions are defined in the table"),
-            );
-          }
-          return await embeddingFunc.function.computeQueryEmbeddings(query);
-        },
-      );
 
-      return this.query().nearestTo(queryPromise);
+  search(
+    query: string | IntoVector,
+    queryType: string = "auto",
+    ftsColumns?: string | string[],
+  ): VectorQuery | Query {
+    if (typeof query !== "string") {
+      if (queryType === "fts") {
+        throw new Error("Cannot perform full text search on a vector query");
+      }
+      return this.vectorSearch(query);
     }
+
+    // If the query is a string, we need to determine if it is a vector query or a full text search query
+    if (queryType === "fts") {
+      return this.query().fullTextSearch(query, {
+        columns: ftsColumns,
+      });
+    }
+
+    // The query type is auto or vector
+    // fall back to full text search if no embedding functions are defined and the query is a string
+    if (queryType === "auto" && getRegistry().length() === 0) {
+      return this.query().fullTextSearch(query, {
+        columns: ftsColumns,
+      });
+    }
+
+    const queryPromise = this.getEmbeddingFunctions().then(
+      async (functions) => {
+        // TODO: Support multiple embedding functions
+        const embeddingFunc: EmbeddingFunctionConfig | undefined = functions
+          .values()
+          .next().value;
+        if (!embeddingFunc) {
+          return Promise.reject(
+            new Error("No embedding functions are defined in the table"),
+          );
+        }
+        return await embeddingFunc.function.computeQueryEmbeddings(query);
+      },
+    );
+
+    return this.query().nearestTo(queryPromise);
   }
 
   vectorSearch(vector: IntoVector): VectorQuery {

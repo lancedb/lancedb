@@ -96,7 +96,7 @@ class CrossEncoderReranker(Reranker):
     ):
         fts_results = self._rerank(fts_results, query)
         if self.score == "relevance":
-            fts_results = fts_results.drop_columns(["score"])
+            fts_results = fts_results.drop_columns(["_score"])
 
         fts_results = fts_results.sort_by([("_relevance_score", "descending")])
         return fts_results

@@ -9,7 +9,8 @@
     "allowJs": true,
     "resolveJsonModule": true,
     "emitDecoratorMetadata": true,
-    "experimentalDecorators": true
+    "experimentalDecorators": true,
+    "moduleResolution": "Node"
   },
   "exclude": ["./dist/*"],
   "typedocOptions": {

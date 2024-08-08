@@ -1054,6 +1054,10 @@ impl NativeTable {
             )
     }
 
+    fn supported_fts_data_type(dtype: &DataType) -> bool {
+        matches!(dtype, DataType::Utf8 | DataType::LargeUtf8)
+    }
+
     fn supported_vector_data_type(dtype: &DataType) -> bool {
         match dtype {
             DataType::FixedSizeList(inner, _) => DataType::is_floating(inner.data_type()),
@@ -1524,6 +1528,33 @@ impl NativeTable {
         Ok(())
     }
 
+    async fn create_fts_index(&self, field: &Field, opts: IndexBuilder) -> Result<()> {
+        if !Self::supported_fts_data_type(field.data_type()) {
+            return Err(Error::Schema {
+                message: format!(
+                    "A FTS index cannot be created on the field `{}` which has data type {}",
+                    field.name(),
+                    field.data_type()
+                ),
+            });
+        }
+
+        let mut dataset = self.dataset.get_mut().await?;
+        let lance_idx_params = lance_index::scalar::ScalarIndexParams {
+            force_index_type: Some(lance_index::scalar::ScalarIndexType::Inverted),
+        };
+        dataset
+            .create_index(
+                &[field.name()],
+                IndexType::Scalar,
+                None,
+                &lance_idx_params,
+                opts.replace,
+            )
+            .await?;
+        Ok(())
+    }
+
     async fn generic_query(
         &self,
         query: &VectorQuery,
@@ -1659,6 +1690,7 @@ impl TableInternal for NativeTable {
         match opts.index {
             Index::Auto => self.create_auto_index(field, opts).await,
             Index::BTree(_) => self.create_btree_index(field, opts).await,
+            Index::FTS(_) => self.create_fts_index(field, opts).await,
             Index::IvfPq(ivf_pq) => self.create_ivf_pq_index(ivf_pq, field, opts.replace).await,
             Index::IvfHnswPq(ivf_hnsw_pq) => {
                 self.create_ivf_hnsw_pq_index(ivf_hnsw_pq, field, opts.replace)
@@ -1787,6 +1819,10 @@ impl TableInternal for NativeTable {
 
         if let Some(filter) = &query.base.filter {
             scanner.filter(filter)?;
+        }
+
+        if let Some(fts) = &query.base.full_text_search {
+            scanner.full_text_search(fts.clone())?;
         }
 
         if let Some(refine_factor) = query.refine_factor {

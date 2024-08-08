@@ -99,6 +99,9 @@ class Query(pydantic.BaseModel):
     # if True then apply the filter before vector search
     prefilter: bool = False
 
+    # full text search query
+    full_text_query: Optional[Union[str, dict]] = None
+
     # top k results to return
     k: int
 
@@ -131,6 +134,7 @@ class LanceQueryBuilder(ABC):
         query_type: str,
         vector_column_name: str,
         ordering_field_name: str = None,
+        fts_columns: Union[str, List[str]] = None,
     ) -> LanceQueryBuilder:
         """
         Create a query builder based on the given query and query type.
@@ -226,6 +230,7 @@ class LanceQueryBuilder(ABC):
         self._limit = 10
         self._columns = None
         self._where = None
+        self._prefilter = False
         self._with_row_id = False
 
     @deprecation.deprecated(
@@ -664,12 +669,19 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
 class LanceFtsQueryBuilder(LanceQueryBuilder):
     """A builder for full text search for LanceDB."""
 
-    def __init__(self, table: "Table", query: str, ordering_field_name: str = None):
+    def __init__(
+        self,
+        table: "Table",
+        query: str,
+        ordering_field_name: str = None,
+        fts_columns: Union[str, List[str]] = None,
+    ):
         super().__init__(table)
         self._query = query
         self._phrase_query = False
         self.ordering_field_name = ordering_field_name
         self._reranker = None
+        self._fts_columns = fts_columns
 
     def phrase_query(self, phrase_query: bool = True) -> LanceFtsQueryBuilder:
         """Set whether to use phrase query.
@@ -689,6 +701,35 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         return self
 
     def to_arrow(self) -> pa.Table:
+        tantivy_index_path = self._table._get_fts_index_path()
+        if Path(tantivy_index_path).exists():
+            return self.tantivy_to_arrow()
+
+        query = self._query
+        if self._phrase_query:
+            raise NotImplementedError(
+                "Phrase query is not yet supported in Lance FTS. "
+                "Use tantivy-based index instead for now."
+            )
+        if self._reranker:
+            raise NotImplementedError(
+                "Reranking is not yet supported in Lance FTS. "
+                "Use tantivy-based index instead for now."
+            )
+        ds = self._table.to_lance()
+        return ds.to_table(
+            columns=self._columns,
+            filter=self._where,
+            limit=self._limit,
+            prefilter=self._prefilter,
+            with_row_id=self._with_row_id,
+            full_text_query={
+                "query": query,
+                "columns": self._fts_columns,
+            },
+        )
+
+    def tantivy_to_arrow(self) -> pa.Table:
         try:
             import tantivy
         except ImportError:
@@ -726,11 +767,11 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
             index, query, self._limit, ordering_field=self.ordering_field_name
         )
         if len(row_ids) == 0:
-            empty_schema = pa.schema([pa.field("score", pa.float32())])
+            empty_schema = pa.schema([pa.field("_score", pa.float32())])
             return pa.Table.from_pylist([], schema=empty_schema)
         scores = pa.array(scores)
         output_tbl = self._table.to_lance().take(row_ids, columns=self._columns)
-        output_tbl = output_tbl.append_column("score", scores)
+        output_tbl = output_tbl.append_column("_score", scores)
         # this needs to match vector search results which are uint64
         row_ids = pa.array(row_ids, type=pa.uint64())
 
@@ -784,8 +825,7 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         LanceFtsQueryBuilder
             The LanceQueryBuilder object.
         """
-        self._reranker = reranker
-        return self
+        raise NotImplementedError("Reranking is not yet supported for FTS queries.")
 
 
 class LanceEmptyQueryBuilder(LanceQueryBuilder):
@@ -856,13 +896,13 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         # convert to ranks first if needed
         if self._norm == "rank":
             vector_results = self._rank(vector_results, "_distance")
-            fts_results = self._rank(fts_results, "score")
+            fts_results = self._rank(fts_results, "_score")
         # normalize the scores to be between 0 and 1, 0 being most relevant
         vector_results = self._normalize_scores(vector_results, "_distance")
 
         # In fts higher scores represent relevance. Not inverting them here as
         # rerankers might need to preserve this score to support `return_score="all"`
-        fts_results = self._normalize_scores(fts_results, "score")
+        fts_results = self._normalize_scores(fts_results, "_score")
 
         results = self._reranker.rerank_hybrid(
             self._fts_query._query, vector_results, fts_results

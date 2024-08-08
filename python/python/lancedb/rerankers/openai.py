@@ -108,7 +108,7 @@ class OpenaiReranker(Reranker):
     def rerank_fts(self, query: str, fts_results: pa.Table):
         fts_results = self._rerank(fts_results, query)
         if self.score == "relevance":
-            fts_results = fts_results.drop_columns(["score"])
+            fts_results = fts_results.drop_columns(["_score"])
 
         fts_results = fts_results.sort_by([("_relevance_score", "descending")])
 

@@ -21,6 +21,7 @@ use datafusion_physical_plan::ExecutionPlan;
 use half::f16;
 use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance_datafusion::exec::execute_plan;
+use lance_index::scalar::FullTextSearchQuery;
 
 use crate::arrow::SendableRecordBatchStream;
 use crate::error::{Error, Result};
@@ -351,6 +352,17 @@ pub trait QueryBase {
     /// on the filter column(s).
     fn only_if(self, filter: impl AsRef<str>) -> Self;
 
+    /// Perform a full text search on the table.
+    ///
+    /// The results will be returned in order of BM25 scores.
+    ///
+    /// This method is only valid on tables that have a full text search index.
+    ///
+    /// ```ignore
+    /// query.full_text_search(FullTextSearchQuery::new("hello world"))
+    /// ```
+    fn full_text_search(self, query: FullTextSearchQuery) -> Self;
+
     /// Return only the specified columns.
     ///
     /// By default a query will return all columns from the table.  However, this can have
@@ -398,6 +410,11 @@ impl<T: HasQuery> QueryBase for T {
 
     fn only_if(mut self, filter: impl AsRef<str>) -> Self {
         self.mut_query().filter = Some(filter.as_ref().to_string());
+        self
+    }
+
+    fn full_text_search(mut self, query: FullTextSearchQuery) -> Self {
+        self.mut_query().full_text_search = Some(query);
         self
     }
 
@@ -502,8 +519,13 @@ pub struct Query {
 
     /// limit the number of rows to return.
     pub(crate) limit: Option<usize>,
+
     /// Apply filter to the returned rows.
     pub(crate) filter: Option<String>,
+
+    /// Perform a full text search on the table.
+    pub(crate) full_text_search: Option<FullTextSearchQuery>,
+
     /// Select column projection.
     pub(crate) select: Select,
 
@@ -520,6 +542,7 @@ impl Query {
             parent,
             limit: None,
             filter: None,
+            full_text_search: None,
             select: Select::All,
             fast_search: false,
         }

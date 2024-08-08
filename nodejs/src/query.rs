@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use lancedb::index::scalar::FullTextSearchQuery;
 use lancedb::query::ExecutableQuery;
 use lancedb::query::Query as LanceDbQuery;
 use lancedb::query::QueryBase;
@@ -40,6 +41,12 @@ impl Query {
     #[napi]
     pub fn only_if(&mut self, predicate: String) {
         self.inner = self.inner.clone().only_if(predicate);
+    }
+
+    #[napi]
+    pub fn full_text_search(&mut self, query: String, columns: Option<Vec<String>>) {
+        let query = FullTextSearchQuery::new(query).columns(columns);
+        self.inner = self.inner.clone().full_text_search(query);
     }
 
     #[napi]
@@ -136,6 +143,12 @@ impl VectorQuery {
     #[napi]
     pub fn only_if(&mut self, predicate: String) {
         self.inner = self.inner.clone().only_if(predicate);
+    }
+
+    #[napi]
+    pub fn full_text_search(&mut self, query: String, columns: Option<Vec<String>>) {
+        let query = FullTextSearchQuery::new(query).columns(columns);
+        self.inner = self.inner.clone().full_text_search(query);
     }
 
     #[napi]
