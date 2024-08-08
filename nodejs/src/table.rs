@@ -293,6 +293,7 @@ impl Table {
             .optimize(OptimizeAction::Prune {
                 older_than,
                 delete_unverified: None,
+                error_if_tagged_old_versions: None,
             })
             .await
             .default_error()?

@@ -730,7 +730,7 @@ def test_create_scalar_index(db):
     indices = table.to_lance().list_indices()
     assert len(indices) == 1
     scalar_index = indices[0]
-    assert scalar_index["type"] == "Scalar"
+    assert scalar_index["type"] == "BTree"
 
     # Confirm that prefiltering still works with the scalar index column
     results = table.search().where("x = 'c'").to_arrow()
@@ -1034,6 +1034,12 @@ async def test_optimize(db_async: AsyncConnection):
         ],
     )
     stats = await table.optimize()
+    expected = (
+        "OptimizeStats(compaction=CompactionStats { fragments_removed: 2, "
+        "fragments_added: 1, files_removed: 2, files_added: 1 }, "
+        "prune=RemovalStats { bytes_removed: 0, old_versions_removed: 0 })"
+    )
+    assert str(stats) == expected
     assert stats.compaction.files_removed == 2
     assert stats.compaction.files_added == 1
     assert stats.compaction.fragments_added == 1

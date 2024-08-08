@@ -191,6 +191,8 @@ pub enum OptimizeAction {
         /// Because they may be part of an in-progress transaction, files newer than 7 days old are not deleted by default.
         /// If you are sure that there are no in-progress transactions, then you can set this to True to delete all files older than `older_than`.
         delete_unverified: Option<bool>,
+        /// If true, an error will be returned if there are any old versions that are still tagged.
+        error_if_tagged_old_versions: Option<bool>,
     },
     /// Optimize the indices
     ///
@@ -1083,8 +1085,8 @@ impl NativeTable {
         params: Option<WriteParams>,
         read_consistency_interval: Option<std::time::Duration>,
     ) -> Result<Self> {
+        // Default params uses format v1.
         let params = params.unwrap_or(WriteParams {
-            use_legacy_format: true,
             ..Default::default()
         });
         // patch the params if we have a write store wrapper
@@ -1177,12 +1179,13 @@ impl NativeTable {
         &self,
         older_than: Duration,
         delete_unverified: Option<bool>,
+        error_if_tagged_old_versions: Option<bool>,
     ) -> Result<RemovalStats> {
         Ok(self
             .dataset
             .get_mut()
             .await?
-            .cleanup_old_versions(older_than, delete_unverified)
+            .cleanup_old_versions(older_than, delete_unverified, error_if_tagged_old_versions)
             .await?)
     }
 
@@ -1510,8 +1513,8 @@ impl NativeTable {
         }
 
         let mut dataset = self.dataset.get_mut().await?;
-        let lance_idx_params = lance::index::scalar::ScalarIndexParams {
-            force_index_type: Some(lance::index::scalar::ScalarIndexType::BTree),
+        let lance_idx_params = lance_index::scalar::ScalarIndexParams {
+            force_index_type: Some(lance_index::scalar::ScalarIndexType::BTree),
         };
         dataset
             .create_index(
@@ -1638,6 +1641,9 @@ impl TableInternal for NativeTable {
         let data =
             MaybeEmbedded::try_new(data, self.table_definition().await?, add.embedding_registry)?;
 
+        // Still use the legacy lance format (v1) by default.
+        // We don't want to accidentally switch to v2 format during an add operation.
+        // If the table is already v2 this won't have any effect.
         let mut lance_params = add.write_options.lance_write_params.unwrap_or(WriteParams {
             mode: match add.mode {
                 AddDataMode::Append => WriteMode::Append,
@@ -1659,15 +1665,10 @@ impl TableInternal for NativeTable {
         }
 
         // patch the params if we have a write store wrapper
-        let mut lance_params = match self.store_wrapper.clone() {
+        let lance_params = match self.store_wrapper.clone() {
             Some(wrapper) => lance_params.patch_with_store_wrapper(wrapper)?,
             None => lance_params,
         };
-
-        // Only use the new format if the user passes use_legacy_format=False in while creating
-        // a table with data.  We don't want to accidentally switch to v2 format during an add
-        // operation.  If the table is already v2 this won't have any effect.
-        lance_params.use_legacy_format = true;
 
         self.dataset.ensure_mutable().await?;
         let dataset = Dataset::write(data, &self.uri, Some(lance_params)).await?;
@@ -1914,6 +1915,7 @@ impl TableInternal for NativeTable {
                     .optimize(OptimizeAction::Prune {
                         older_than: None,
                         delete_unverified: None,
+                        error_if_tagged_old_versions: None,
                     })
                     .await?
                     .prune;
@@ -1929,11 +1931,13 @@ impl TableInternal for NativeTable {
             OptimizeAction::Prune {
                 older_than,
                 delete_unverified,
+                error_if_tagged_old_versions,
             } => {
                 stats.prune = Some(
                     self.cleanup_old_versions(
                         older_than.unwrap_or(Duration::try_days(7).expect("valid delta")),
                         delete_unverified,
+                        error_if_tagged_old_versions,
                     )
                     .await?,
                 );
