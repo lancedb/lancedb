@@ -339,9 +339,9 @@ class Table(ABC):
     def create_scalar_index(
         self,
         column: str,
-        index_type: Literal["BTREE", "BITMAP", "LABEL_LIST"] = "BTREE",
         *,
         replace: bool = True,
+        index_type: Literal["BTREE", "BITMAP", "LABEL_LIST"] = "BTREE",
     ):
         """Create a scalar index on a column.
 
@@ -391,6 +391,8 @@ class Table(ABC):
             or string column.
         replace : bool, default True
             Replace the existing index if it exists.
+        index_type: Literal["BTREE", "BITMAP", "LABEL_LIST"], default "BTREE"
+            The type of index to create.
 
         Examples
         --------
@@ -1232,9 +1234,9 @@ class LanceTable(Table):
     def create_scalar_index(
         self,
         column: str,
-        index_type: Literal["BTREE", "BITMAP", "LABEL_LIST"] = "BTREE",
         *,
         replace: bool = True,
+        index_type: Literal["BTREE", "BITMAP", "LABEL_LIST"] = "BTREE",
     ):
         self._dataset_mut.create_scalar_index(
             column, index_type=index_type, replace=replace
