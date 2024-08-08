@@ -1217,6 +1217,16 @@ class AsyncQueryBase(object):
             await batch_iter.read_all(), schema=batch_iter.schema
         )
 
+    async def to_list(self) -> List[dict]:
+        """
+        Execute the query and return the results as a list of dictionaries.
+
+        Each list entry is a dictionary with the selected column names as keys,
+        or all table columns if `select` is not called. The vector and the "_distance"
+        fields are returned whether or not they're explicitly selected.
+        """
+        return (await self.to_arrow()).to_pylist()
+
     async def to_pandas(self) -> "pd.DataFrame":
         """
         Execute the query and collect the results into a pandas DataFrame.
