@@ -148,7 +148,8 @@ def test_dynamic_projection(table):
 
 
 def test_query_builder_with_filter(table):
-    rs = LanceVectorQueryBuilder(table, [0, 0], "vector").where("id = 2").to_list()
+    rs = LanceVectorQueryBuilder(
+        table, [0, 0], "vector").where("id = 2").to_list()
     assert rs[0]["id"] == 2
     assert all(np.array(rs[0]["vector"]) == [3, 4])
 
@@ -175,7 +176,8 @@ def test_query_builder_with_prefilter(table):
 def test_query_builder_with_metric(table):
     query = [4, 8]
     vector_column_name = "vector"
-    df_default = LanceVectorQueryBuilder(table, query, vector_column_name).to_pandas()
+    df_default = LanceVectorQueryBuilder(
+        table, query, vector_column_name).to_pandas()
     df_l2 = (
         LanceVectorQueryBuilder(table, query, vector_column_name)
         .metric("L2")
@@ -276,7 +278,8 @@ async def test_query_async(table_async: AsyncTable):
     # just check that they don't raise exceptions and assume this is tested at a lower
     # level.
     await check_query(
-        table_async.query().where("id = 2").nearest_to(pa.array([1, 2])).postfilter(),
+        table_async.query().where("id = 2").nearest_to(
+            pa.array([1, 2])).postfilter(),
         expected_num_rows=1,
     )
     await check_query(
@@ -354,3 +357,11 @@ async def test_query_camelcase_async(tmp_path):
 
     result = await table.query().select(["camelCase"]).to_arrow()
     assert result == pa.table({"camelCase": pa.array([1, 2])})
+
+
+@pytest.mark.asyncio
+async def test_query_to_list_async(table_async: AsyncTable):
+    list = await table_async.query().to_list()
+    assert len(list) == 2
+    assert list[0]["vector"] == [1, 2]
+    assert list[1]["vector"] == [3, 4]
