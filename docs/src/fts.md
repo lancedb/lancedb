@@ -57,7 +57,7 @@ Consider that we have a LanceDB table named `my_table`, whose string column `tex
     { vector: [5.9, 26.5], text: "There are several kittens playing" },
     ];
     const tbl = await db.createTable("my_table", data, { mode: "overwrite" });
-    await tbl.createIndex("doc", {
+    await tbl.createIndex("text", {
         config: lancedb.Index.fts(),
     });
 
