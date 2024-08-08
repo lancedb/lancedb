@@ -7,6 +7,9 @@ Currently, the Lance full text search is missing some features that are in the T
 
 ## Installation (Only for Tantivy-based FTS)
 
+!!! note
+    No need to install the tantivy dependency if using native FTS
+
 To use full-text search, install the dependency [`tantivy-py`](https://github.com/quickwit-oss/tantivy-py):
 
 ```sh
@@ -35,7 +38,8 @@ Consider that we have a LanceDB table named `my_table`, whose string column `tex
     )
 
     # passing `use_tantivy=False` to use lance FTS index
-    table.create_fts_index("text", use_tantivy=True)
+    # `use_tantivy=True` by default
+    table.create_fts_index("text")
     table.search("puppy").limit(10).select(["text"]).to_list()
     # [{'text': 'Frodo was a happy puppy', '_score': 0.6931471824645996}]
     # ...
@@ -53,11 +57,15 @@ Consider that we have a LanceDB table named `my_table`, whose string column `tex
     { vector: [5.9, 26.5], text: "There are several kittens playing" },
     ];
     const tbl = await db.createTable("my_table", data, { mode: "overwrite" });
+    await tbl.createIndex("doc", {
+        config: lancedb.Index.fts(),
+    });
+
     await tbl
-    .search("puppy")
-    .select(["text"])
-    .limit(10)
-    .toArray();
+        .search("puppy")
+        .select(["text"])
+        .limit(10)
+        .toArray();
     ```
 
 === "Rust"
@@ -169,7 +177,7 @@ applied on top of the full text search results. This can be invoked via the fami
 You can pre-sort the documents by specifying `ordering_field_names` when
 creating the full-text search index. Once pre-sorted, you can then specify
 `ordering_field_name` while searching to return results sorted by the given
-field. For example, 
+field. For example,
 
 ```python
 table.create_fts_index(["text_field"], use_tantivy=True, ordering_field_names=["sort_by_field"])
@@ -185,8 +193,8 @@ table.create_fts_index(["text_field"], use_tantivy=True, ordering_field_names=["
     error will be raised that looks like `ValueError: The field does not exist: xxx`
 
 !!! note
-    The fields to sort on must be of typed unsigned integer, or else you will see 
-    an error during indexing that looks like 
+    The fields to sort on must be of typed unsigned integer, or else you will see
+    an error during indexing that looks like
     `TypeError: argument 'value': 'float' object cannot be interpreted as an integer`.
 
 !!! note
