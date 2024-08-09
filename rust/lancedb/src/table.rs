@@ -618,6 +618,11 @@ impl Table {
     ///     .execute()
     ///     .await
     ///     .unwrap();
+    /// // Create a LabelList index on the "label" column.
+    /// tbl.create_index(&["label"], Index::LabelList(Default::default()))
+    ///     .execute()
+    ///     .await
+    ///     .unwrap();
     /// # });
     /// ```
     pub fn create_index(&self, columns: &[impl AsRef<str>], index: Index) -> IndexBuilder {
