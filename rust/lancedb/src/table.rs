@@ -618,8 +618,8 @@ impl Table {
     ///     .execute()
     ///     .await
     ///     .unwrap();
-    /// // Create a LabelList index on the "label" column.
-    /// tbl.create_index(&["label"], Index::LabelList(Default::default()))
+    /// // Create a LabelList index on the "tags" column.
+    /// tbl.create_index(&["tags"], Index::LabelList(Default::default()))
     ///     .execute()
     ///     .await
     ///     .unwrap();
