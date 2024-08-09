@@ -54,66 +54,22 @@ jobs:
           sudo apt install -y protobuf-compiler libssl-dev pkg-config
       - name: Build release
         run: |
+          mkdir -p /var/log/lancedb/debuglu
           set -x # Enable command echo for debugging
-          cargo build --release -v > "$GITHUB_WORKSPACE/java/build.log" 2>&1
+          cargo build --release -v > /var/log/lancedb/debuglu/build.log 2>&1
           cp ../target/release/liblancedb_jni.so liblancedb_jni.so
-        continue-on-error: true
-      - name: Upload build logs on failure
-        if: always() # Ensure this step runs regardless of the previous step's outcome
+  upload_log:
+    name: Upload build log
+    runs-on: warp-ubuntu-2204-arm64-8x
+    steps:
+     - name: Sleep for 10 minutes
+        run: sleep 600
+      - name: Upload build logs
         uses: actions/upload-artifact@v4
         with:
           name: build-logs
-          path: "$GITHUB_WORKSPACE/java/build.log"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: liblancedb_jni_linux_aarch64.zip
-          path: target/release/liblancedb_jni.so
+          path: /var/log/lancedb/debuglu/build.log
           retention-days: 1
           if-no-files-found: error
-  linux-x86:
-    runs-on: warp-ubuntu-2204-x64-8x
-    timeout-minutes: 80
-    # needs: [macos-arm64, linux-arm64]
-    needs: [linux-arm64]
-    defaults:
-      run:
-        working-directory: ./java
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-      - uses: Swatinem/rust-cache@v2
-      - name: Set up Java 8
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 8
-          cache: "maven"
-          server-id: ossrh
-          server-username: SONATYPE_USER
-          server-password: SONATYPE_TOKEN
-          gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
-          gpg-passphrase: ${{ secrets.GPG_PASSPHRASE }}
-      - name: Install dependencies
-        run: |
-          sudo apt -y -qq update
-          sudo apt install -y protobuf-compiler libssl-dev pkg-config
-      - name: Download artifact
-        uses: actions/download-artifact@v4
-      - name: Copy native libs
-        run: |
-          mkdir -p ./core/target/classes/nativelib/darwin-aarch64 ./core/target/classes/nativelib/linux-aarch64
-          # cp ../liblancedb_jni_darwin_aarch64.zip/liblancedb_jni.dylib ./core/target/classes/nativelib/darwin-aarch64/liblancedb_jni.dylib
-          cp ../liblancedb_jni_linux_aarch64.zip/liblancedb_jni.so ./core/target/classes/nativelib/linux-aarch64/liblancedb_jni.so
-      - name: Set github
-        run: |
-          git config --global user.email "LanceDB Github Runner"
-          git config --global user.name "dev+gha@lancedb.com"
-      - name: Publish with Java 8
-        run: |
-          echo "use-agent" >> ~/.gnupg/gpg.conf
-          echo "pinentry-mode loopback" >> ~/.gnupg/gpg.conf
-          export GPG_TTY=$(tty)
-          mvn --batch-mode -DskipTests -DpushChanges=false -Dgpg.passphrase=${{ secrets.GPG_PASSPHRASE }} deploy -P deploy-to-ossrh
-        env:
-          SONATYPE_USER: ${{ secrets.SONATYPE_USER }}
-          SONATYPE_TOKEN: ${{ secrets.SONATYPE_TOKEN }}
+      - name: Delete logs
+        run: rm -rf /var/log/lancedb/debuglu
