@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 import glob
 from typing import Iterator, List
 from pathlib import Path
