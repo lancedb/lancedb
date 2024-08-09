@@ -32,6 +32,10 @@ class BTree(object):
         self._inner = LanceDbIndex.btree()
 
 
+class Bitmap:
+    def __init__(self):
+        self._inner = LanceDbIndex.bitmap()
+
 class IvfPq(object):
     """Describes an IVF PQ Index
 

@@ -573,7 +573,8 @@ impl Table {
     /// There are a variety of indices available.  They are described more in
     /// [`crate::index::Index`].  The simplest thing to do is to use `index::Index::Auto` which
     /// will attempt to create the most useful index based on the column type and column
-    /// statistics.
+    /// statistics. `BTree` index is created by default for numeric, temporal, and
+    /// string columns.
     ///
     /// Once an index is created it will remain until the data is overwritten (e.g. an
     /// add operation with mode overwrite) or the indexed column is dropped.
@@ -607,10 +608,16 @@ impl Table {
     ///     .await
     ///     .unwrap();
     /// # let tbl = db.open_table("idx_test").execute().await.unwrap();
+    /// // Create IVF PQ index on the "vector" column by default.
     /// tbl.create_index(&["vector"], Index::Auto)
     ///    .execute()
     ///    .await
     ///    .unwrap();
+    /// // Create a BTree index on the "id" column.
+    /// tbl.create_index(&["id"], Index::Auto)
+    ///     .execute()
+    ///     .await
+    ///     .unwrap();
     /// # });
     /// ```
     pub fn create_index(&self, columns: &[impl AsRef<str>], index: Index) -> IndexBuilder {
