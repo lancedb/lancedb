@@ -2095,6 +2095,7 @@ mod tests {
     use std::time::Duration;
 
     use arrow_array::{
+        builder::{ListBuilder, StringBuilder},
         Array, BooleanArray, Date32Array, FixedSizeListArray, Float32Array, Float64Array,
         Int32Array, Int64Array, LargeStringArray, RecordBatch, RecordBatchIterator,
         RecordBatchReader, StringArray, TimestampMillisecondArray, TimestampNanosecondArray,
@@ -2109,12 +2110,11 @@ mod tests {
     use rand::Rng;
     use tempfile::tempdir;
 
+    use super::*;
     use crate::connect;
     use crate::connection::ConnectBuilder;
     use crate::index::scalar::BTreeIndexBuilder;
     use crate::query::{ExecutableQuery, QueryBase};
-
-    use super::*;
 
     #[tokio::test]
     async fn test_open() {
@@ -3139,6 +3139,90 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(idx.index_type(), IndexType::Bitmap);
+    }
+
+    #[tokio::test]
+    async fn test_create_label_list_index() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        let conn = ConnectBuilder::new(uri).execute().await.unwrap();
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new(
+                "tags",
+                DataType::List(Field::new("item", DataType::Utf8, true).into()),
+                true,
+            ),
+        ]));
+
+        const TAGS: [&str; 3] = ["cat", "dog", "fish"];
+
+        let values_builder = StringBuilder::new();
+        let mut builder = ListBuilder::new(values_builder);
+        for i in 0..120 {
+            builder.values().append_value(TAGS[i % 3].to_string());
+            if i % 3 == 0 {
+                builder.append(true)
+            }
+        }
+        let tags = Arc::new(builder.finish());
+
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from_iter_values(0..40)), tags],
+        )
+        .unwrap();
+
+        let table = conn
+            .create_table(
+                "test_bitmap",
+                RecordBatchIterator::new(vec![Ok(batch.clone())], batch.schema()),
+            )
+            .execute()
+            .await
+            .unwrap();
+
+        // Can not create btree or bitmap index on list column
+        assert!(table
+            .create_index(&["tags"], Index::BTree(Default::default()))
+            .execute()
+            .await
+            .is_err());
+        assert!(table
+            .create_index(&["tags"], Index::Bitmap(Default::default()))
+            .execute()
+            .await
+            .is_err());
+
+        // Create bitmap index on the "category" column
+        table
+            .create_index(&["tags"], Index::LabelList(Default::default()))
+            .execute()
+            .await
+            .unwrap();
+
+        // Verify the index was created
+        let index_configs = table.list_indices().await.unwrap();
+        assert_eq!(index_configs.len(), 1);
+        let index = index_configs.into_iter().next().unwrap();
+        // TODO: Fix via https://github.com/lancedb/lance/issues/2039
+        // assert_eq!(index.index_type, crate::index::IndexType::LabelList);
+        assert_eq!(index.columns, vec!["tags".to_string()]);
+
+        // For now, just open the index to verify its type
+        let lance_dataset = table.as_native().unwrap().dataset.get().await.unwrap();
+        let indices = lance_dataset
+            .load_indices_by_name(&index.name)
+            .await
+            .unwrap();
+        let index_meta = &indices[0];
+        let idx = lance_dataset
+            .open_scalar_index("tags", &index_meta.uuid.to_string())
+            .await
+            .unwrap();
+        assert_eq!(idx.index_type(), IndexType::LabelList);
     }
 
     #[tokio::test]
