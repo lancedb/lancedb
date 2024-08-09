@@ -84,6 +84,20 @@ impl Index {
             inner: Mutex::new(Some(LanceDbIndex::BTree(BTreeIndexBuilder::default()))),
         })
     }
+
+    #[staticmethod]
+    pub fn bitmap() -> PyResult<Self> {
+        Ok(Self {
+            inner: Mutex::new(Some(LanceDbIndex::Bitmap(Default::default()))),
+        })
+    }
+
+    #[staticmethod]
+    pub fn label_list() -> PyResult<Self> {
+        Ok(Self {
+            inner: Mutex::new(Some(LanceDbIndex::LabelList(Default::default()))),
+        })
+    }
 }
 
 #[pyclass(get_all)]

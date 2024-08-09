@@ -61,7 +61,7 @@ if TYPE_CHECKING:
     from lance.dataset import CleanupStats, ReaderLike
     from ._lancedb import Table as LanceDBTable, OptimizeStats
     from .db import LanceDBConnection
-    from .index import BTree, IndexConfig, IvfPq
+    from .index import BTree, IndexConfig, IvfPq, Bitmap, LabelList
 
 
 pd = safe_import_pandas()
@@ -2123,7 +2123,7 @@ class AsyncTable:
         column: str,
         *,
         replace: Optional[bool] = None,
-        config: Optional[Union[IvfPq, BTree]] = None,
+        config: Optional[Union[IvfPq, BTree, Bitmap, LabelList]] = None,
     ):
         """Create an index to speed up queries
 
