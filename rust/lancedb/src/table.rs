@@ -1061,6 +1061,20 @@ impl NativeTable {
             )
     }
 
+    fn supported_bitmap_data_type(dtype: &DataType) -> bool {
+        dtype.is_integer() || matches!(dtype, DataType::Utf8)
+    }
+
+    fn supported_label_list_data_type(dtype: &DataType) -> bool {
+        match dtype {
+            DataType::List(field) => Self::supported_bitmap_data_type(field.data_type()),
+            DataType::FixedSizeList(field, _) => {
+                Self::supported_bitmap_data_type(field.data_type())
+            }
+            _ => false,
+        }
+    }
+
     fn supported_fts_data_type(dtype: &DataType) -> bool {
         matches!(dtype, DataType::Utf8 | DataType::LargeUtf8)
     }
@@ -1526,7 +1540,61 @@ impl NativeTable {
         dataset
             .create_index(
                 &[field.name()],
-                IndexType::Scalar,
+                IndexType::BTree,
+                None,
+                &lance_idx_params,
+                opts.replace,
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn create_bitmap_index(&self, field: &Field, opts: IndexBuilder) -> Result<()> {
+        if !Self::supported_bitmap_data_type(field.data_type()) {
+            return Err(Error::Schema {
+                message: format!(
+                    "A Bitmap index cannot be created on the field `{}` which has data type {}",
+                    field.name(),
+                    field.data_type()
+                ),
+            });
+        }
+
+        let mut dataset = self.dataset.get_mut().await?;
+        let lance_idx_params = lance_index::scalar::ScalarIndexParams {
+            force_index_type: Some(lance_index::scalar::ScalarIndexType::Bitmap),
+        };
+        dataset
+            .create_index(
+                &[field.name()],
+                IndexType::Bitmap,
+                None,
+                &lance_idx_params,
+                opts.replace,
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn create_label_list_index(&self, field: &Field, opts: IndexBuilder) -> Result<()> {
+        if !Self::supported_label_list_data_type(field.data_type()) {
+            return Err(Error::Schema {
+                message: format!(
+                    "A LabelList index cannot be created on the field `{}` which has data type {}",
+                    field.name(),
+                    field.data_type()
+                ),
+            });
+        }
+
+        let mut dataset = self.dataset.get_mut().await?;
+        let lance_idx_params = lance_index::scalar::ScalarIndexParams {
+            force_index_type: Some(lance_index::scalar::ScalarIndexType::LabelList),
+        };
+        dataset
+            .create_index(
+                &[field.name()],
+                IndexType::LabelList,
                 None,
                 &lance_idx_params,
                 opts.replace,
@@ -1697,6 +1765,8 @@ impl TableInternal for NativeTable {
         match opts.index {
             Index::Auto => self.create_auto_index(field, opts).await,
             Index::BTree(_) => self.create_btree_index(field, opts).await,
+            Index::Bitmap(_) => self.create_bitmap_index(field, opts).await,
+            Index::LabelList(_) => self.create_label_list_index(field, opts).await,
             Index::FTS(_) => self.create_fts_index(field, opts).await,
             Index::IvfPq(ivf_pq) => self.create_ivf_pq_index(ivf_pq, field, opts.replace).await,
             Index::IvfHnswPq(ivf_hnsw_pq) => {
