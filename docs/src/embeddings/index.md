@@ -99,28 +99,28 @@ LanceDB registers the Sentence Transformers embeddings function in the registry 
 
     Coming Soon!
 
-### Jina Embeddings
-
-LanceDB registers the JinaAI embeddings function in the registry as `jina`. You can pass any supported model name to the `create`. By default it uses `"jina-clip-v1"`.
-`jina-clip-v1` can handle both text and images and other models only support `text`.
-
-You need to pass `JINA_API_KEY` in the environment variable or pass it as `api_key` to `create` method.
+### Embedding function with LanceDB cloud
+Embedding functions are now supported on LanceDB cloud. The embeddings will be generated on the source device and sent to the cloud. This means that the source device must have the necessary resources to generate the embeddings. Here's an example using the OpenAI embedding function:
 
 ```python
 import os
 import lancedb
 from lancedb.pydantic import LanceModel, Vector
 from lancedb.embeddings import get_registry
-os.environ['JINA_API_KEY'] = "jina_*"
+os.environ['OPENAI_API_KEY'] = "..."
 
-db = lancedb.connect("/tmp/db")
-func = get_registry().get("jina").create(name="jina-clip-v1")
+db = lancedb.connect(
+  uri="db://....",
+  api_key="sk_...",
+  region="us-east-1"
+)
+func = get_registry().get("openai").create()
 
 class Words(LanceModel):
     text: str = func.SourceField()
     vector: Vector(func.ndims()) = func.VectorField()
 
-table = db.create_table("words", schema=Words, mode="overwrite")
+table = db.create_table("words", schema=Words)
 table.add(
     [
         {"text": "hello world"},

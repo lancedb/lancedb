@@ -2,8 +2,8 @@ Representing multi-modal data as vector embeddings is becoming a standard practi
 
 For this purpose, LanceDB introduces an **embedding functions API**, that allow you simply set up once, during the configuration stage of your project. After this, the table remembers it, effectively making the embedding functions *disappear in the background* so you don't have to worry about manually passing callables, and instead, simply focus on the rest of your data engineering pipeline.
 
-!!! Note "LanceDB cloud doesn't support embedding functions yet"
-    LanceDB Cloud does not support embedding functions yet. You need to generate embeddings before ingesting into the table or querying.
+!!! Note "Embedding functions on LanceDB cloud"
+    When using embedding functions with LanceDB cloud, the embeddings will be generated on the source device and sent to the cloud. This means that the source device must have the necessary resources to generate the embeddings.
 
 !!! warning
     Using the embedding function registry means that you don't have to explicitly generate the embeddings yourself.
