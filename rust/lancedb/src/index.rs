@@ -102,10 +102,14 @@ impl IndexBuilder {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum IndexType {
+    // Vector
     IvfPq,
     IvfHnswPq,
     IvfHnswSq,
+    // Scalar
     BTree,
+    Bitmap,
+    LabelList,
 }
 
 /// A description of an index currently configured on a column
