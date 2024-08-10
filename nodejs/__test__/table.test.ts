@@ -706,6 +706,12 @@ describe("when optimizing a dataset", () => {
     expect(stats.prune.bytesRemoved).toBeGreaterThan(0);
     expect(stats.prune.oldVersionsRemoved).toBe(3);
   });
+
+  it("delete unverified", async () => {
+    const stats = await table.optimize({ deleteUnverified: true });
+    expect(stats.compaction.fragmentsRemoved).toBeGreaterThan(0);
+    expect(stats.compaction.filesRemoved).toBeGreaterThan(0);
+  });
 });
 
 describe.each([arrow13, arrow14, arrow15, arrow16, arrow17])(
