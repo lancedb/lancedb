@@ -265,7 +265,11 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
-    pub async fn optimize(&self, older_than_ms: Option<i64>, delete_unverified: Option<bool>) -> napi::Result<OptimizeStats> {
+    pub async fn optimize(
+        &self,
+        older_than_ms: Option<i64>,
+        delete_unverified: Option<bool>,
+    ) -> napi::Result<OptimizeStats> {
         let inner = self.inner_ref()?;
 
         let older_than = if let Some(ms) = older_than_ms {
