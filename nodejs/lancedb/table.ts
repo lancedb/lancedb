@@ -672,7 +672,10 @@ export class LocalTable extends Table {
       cleanupOlderThanMs =
         new Date().getTime() - options.cleanupOlderThan.getTime();
     }
-    return await this.inner.optimize(cleanupOlderThanMs, options?.deleteUnverified);
+    return await this.inner.optimize(
+      cleanupOlderThanMs,
+      options?.deleteUnverified,
+    );
   }
 
   async listIndices(): Promise<IndexConfig[]> {
