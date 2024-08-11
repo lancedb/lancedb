@@ -31,7 +31,9 @@ import {
   Float64,
   Int32,
   Int64,
+  List,
   Schema,
+  Utf8,
   makeArrowTable,
 } from "../lancedb/arrow";
 import {
@@ -331,6 +333,7 @@ describe("When creating an index", () => {
   const schema = new Schema([
     new Field("id", new Int32(), true),
     new Field("vec", new FixedSizeList(32, new Field("item", new Float32()))),
+    new Field("tags", new List(new Field("item", new Utf8(), true))),
   ]);
   let tbl: Table;
   let queryVec: number[];
@@ -346,6 +349,7 @@ describe("When creating an index", () => {
           vec: Array(32)
             .fill(1)
             .map(() => Math.random()),
+          tags: ["tag1", "tag2", "tag3"],
         })),
       {
         schema,
@@ -426,6 +430,22 @@ describe("When creating an index", () => {
     for await (const r of tbl.query().filter("id > 1").select(["id"])) {
       expect(r.numRows).toBe(298);
     }
+  });
+
+  test("create a bitmap index", async () => {
+    await tbl.createIndex("id", {
+      config: Index.bitmap(),
+    });
+    const indexDir = path.join(tmpDir.name, "test.lance", "_indices");
+    expect(fs.readdirSync(indexDir)).toHaveLength(1);
+  });
+
+  test("create a label list index", async () => {
+    await tbl.createIndex("tags", {
+      config: Index.labelList(),
+    });
+    const indexDir = path.join(tmpDir.name, "test.lance", "_indices");
+    expect(fs.readdirSync(indexDir)).toHaveLength(1);
   });
 
   test("should be able to get index stats", async () => {

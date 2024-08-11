@@ -177,6 +177,29 @@ export class Index {
   }
 
   /**
+   * Create a bitmap index.
+   *
+   * A `Bitmap` index stores a bitmap for each distinct value in the column for every row.
+   *
+   * This index works best for low-cardinality columns, where the number of unique values
+   * is small (i.e., less than a few hundreds).
+   */
+  static bitmap() {
+    return new Index(LanceDbIndex.bitmap());
+  }
+
+  /**
+   * Create a label list index.
+   *
+   * LabelList index is a scalar index that can be used on `List<T>` columns to
+   * support queries with `array_contains_all` and `array_contains_any`
+   * using an underlying bitmap index.
+   */
+  static labelList() {
+    return new Index(LanceDbIndex.labelList());
+  }
+
+  /**
    * Create a full text search index
    *
    * A full text search index is an index on a string column, so that you can conduct full

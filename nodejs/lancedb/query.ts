@@ -151,7 +151,7 @@ export class QueryBase<NativeQueryType extends NativeQuery | NativeVectorQuery>
     query: string,
     options?: Partial<FullTextSearchOptions>,
   ): this {
-    let columns = null;
+    let columns: string[] | null = null;
     if (options) {
       if (typeof options.columns === "string") {
         columns = [options.columns];
