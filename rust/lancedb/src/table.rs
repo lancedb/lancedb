@@ -573,7 +573,8 @@ impl Table {
     /// There are a variety of indices available.  They are described more in
     /// [`crate::index::Index`].  The simplest thing to do is to use `index::Index::Auto` which
     /// will attempt to create the most useful index based on the column type and column
-    /// statistics.
+    /// statistics. `BTree` index is created by default for numeric, temporal, and
+    /// string columns.
     ///
     /// Once an index is created it will remain until the data is overwritten (e.g. an
     /// add operation with mode overwrite) or the indexed column is dropped.
@@ -607,10 +608,21 @@ impl Table {
     ///     .await
     ///     .unwrap();
     /// # let tbl = db.open_table("idx_test").execute().await.unwrap();
+    /// // Create IVF PQ index on the "vector" column by default.
     /// tbl.create_index(&["vector"], Index::Auto)
     ///    .execute()
     ///    .await
     ///    .unwrap();
+    /// // Create a BTree index on the "id" column.
+    /// tbl.create_index(&["id"], Index::Auto)
+    ///     .execute()
+    ///     .await
+    ///     .unwrap();
+    /// // Create a LabelList index on the "tags" column.
+    /// tbl.create_index(&["tags"], Index::LabelList(Default::default()))
+    ///     .execute()
+    ///     .await
+    ///     .unwrap();
     /// # });
     /// ```
     pub fn create_index(&self, columns: &[impl AsRef<str>], index: Index) -> IndexBuilder {
@@ -1052,6 +1064,20 @@ impl NativeTable {
                     | DataType::Date64
                     | DataType::Timestamp(_, _)
             )
+    }
+
+    fn supported_bitmap_data_type(dtype: &DataType) -> bool {
+        dtype.is_integer() || matches!(dtype, DataType::Utf8)
+    }
+
+    fn supported_label_list_data_type(dtype: &DataType) -> bool {
+        match dtype {
+            DataType::List(field) => Self::supported_bitmap_data_type(field.data_type()),
+            DataType::FixedSizeList(field, _) => {
+                Self::supported_bitmap_data_type(field.data_type())
+            }
+            _ => false,
+        }
     }
 
     fn supported_fts_data_type(dtype: &DataType) -> bool {
@@ -1519,7 +1545,61 @@ impl NativeTable {
         dataset
             .create_index(
                 &[field.name()],
-                IndexType::Scalar,
+                IndexType::BTree,
+                None,
+                &lance_idx_params,
+                opts.replace,
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn create_bitmap_index(&self, field: &Field, opts: IndexBuilder) -> Result<()> {
+        if !Self::supported_bitmap_data_type(field.data_type()) {
+            return Err(Error::Schema {
+                message: format!(
+                    "A Bitmap index cannot be created on the field `{}` which has data type {}",
+                    field.name(),
+                    field.data_type()
+                ),
+            });
+        }
+
+        let mut dataset = self.dataset.get_mut().await?;
+        let lance_idx_params = lance_index::scalar::ScalarIndexParams {
+            force_index_type: Some(lance_index::scalar::ScalarIndexType::Bitmap),
+        };
+        dataset
+            .create_index(
+                &[field.name()],
+                IndexType::Bitmap,
+                None,
+                &lance_idx_params,
+                opts.replace,
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn create_label_list_index(&self, field: &Field, opts: IndexBuilder) -> Result<()> {
+        if !Self::supported_label_list_data_type(field.data_type()) {
+            return Err(Error::Schema {
+                message: format!(
+                    "A LabelList index cannot be created on the field `{}` which has data type {}",
+                    field.name(),
+                    field.data_type()
+                ),
+            });
+        }
+
+        let mut dataset = self.dataset.get_mut().await?;
+        let lance_idx_params = lance_index::scalar::ScalarIndexParams {
+            force_index_type: Some(lance_index::scalar::ScalarIndexType::LabelList),
+        };
+        dataset
+            .create_index(
+                &[field.name()],
+                IndexType::LabelList,
                 None,
                 &lance_idx_params,
                 opts.replace,
@@ -1690,6 +1770,8 @@ impl TableInternal for NativeTable {
         match opts.index {
             Index::Auto => self.create_auto_index(field, opts).await,
             Index::BTree(_) => self.create_btree_index(field, opts).await,
+            Index::Bitmap(_) => self.create_bitmap_index(field, opts).await,
+            Index::LabelList(_) => self.create_label_list_index(field, opts).await,
             Index::FTS(_) => self.create_fts_index(field, opts).await,
             Index::IvfPq(ivf_pq) => self.create_ivf_pq_index(ivf_pq, field, opts.replace).await,
             Index::IvfHnswPq(ivf_hnsw_pq) => {
@@ -2013,6 +2095,7 @@ mod tests {
     use std::time::Duration;
 
     use arrow_array::{
+        builder::{ListBuilder, StringBuilder},
         Array, BooleanArray, Date32Array, FixedSizeListArray, Float32Array, Float64Array,
         Int32Array, Int64Array, LargeStringArray, RecordBatch, RecordBatchIterator,
         RecordBatchReader, StringArray, TimestampMillisecondArray, TimestampNanosecondArray,
@@ -2022,16 +2105,16 @@ mod tests {
     use arrow_schema::{DataType, Field, Schema, TimeUnit};
     use futures::TryStreamExt;
     use lance::dataset::{Dataset, WriteMode};
+    use lance::index::DatasetIndexInternalExt;
     use lance::io::{ObjectStoreParams, WrappingObjectStore};
     use rand::Rng;
     use tempfile::tempdir;
 
+    use super::*;
     use crate::connect;
     use crate::connection::ConnectBuilder;
     use crate::index::scalar::BTreeIndexBuilder;
     use crate::query::{ExecutableQuery, QueryBase};
-
-    use super::*;
 
     #[tokio::test]
     async fn test_open() {
@@ -2995,6 +3078,151 @@ mod tests {
                 .unwrap(),
             Some(0)
         );
+    }
+
+    #[tokio::test]
+    async fn test_create_bitmap_index() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        let conn = ConnectBuilder::new(uri).execute().await.unwrap();
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("category", DataType::Utf8, true),
+        ]));
+
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from_iter_values(0..100)),
+                Arc::new(StringArray::from_iter_values(
+                    (0..100).map(|i| format!("category_{}", i % 5)),
+                )),
+            ],
+        )
+        .unwrap();
+
+        let table = conn
+            .create_table(
+                "test_bitmap",
+                RecordBatchIterator::new(vec![Ok(batch.clone())], batch.schema()),
+            )
+            .execute()
+            .await
+            .unwrap();
+
+        // Create bitmap index on the "category" column
+        table
+            .create_index(&["category"], Index::Bitmap(Default::default()))
+            .execute()
+            .await
+            .unwrap();
+
+        // Verify the index was created
+        let index_configs = table.list_indices().await.unwrap();
+        assert_eq!(index_configs.len(), 1);
+        let index = index_configs.into_iter().next().unwrap();
+        // TODO: Fix via https://github.com/lancedb/lance/issues/2039
+        // assert_eq!(index.index_type, crate::index::IndexType::Bitmap);
+        assert_eq!(index.columns, vec!["category".to_string()]);
+
+        // For now, just open the index to verify its type
+        let lance_dataset = table.as_native().unwrap().dataset.get().await.unwrap();
+        let indices = lance_dataset
+            .load_indices_by_name(&index.name)
+            .await
+            .unwrap();
+        let index_meta = &indices[0];
+        let idx = lance_dataset
+            .open_scalar_index("category", &index_meta.uuid.to_string())
+            .await
+            .unwrap();
+        assert_eq!(idx.index_type(), IndexType::Bitmap);
+    }
+
+    #[tokio::test]
+    async fn test_create_label_list_index() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        let conn = ConnectBuilder::new(uri).execute().await.unwrap();
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new(
+                "tags",
+                DataType::List(Field::new("item", DataType::Utf8, true).into()),
+                true,
+            ),
+        ]));
+
+        const TAGS: [&str; 3] = ["cat", "dog", "fish"];
+
+        let values_builder = StringBuilder::new();
+        let mut builder = ListBuilder::new(values_builder);
+        for i in 0..120 {
+            builder.values().append_value(TAGS[i % 3].to_string());
+            if i % 3 == 0 {
+                builder.append(true)
+            }
+        }
+        let tags = Arc::new(builder.finish());
+
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from_iter_values(0..40)), tags],
+        )
+        .unwrap();
+
+        let table = conn
+            .create_table(
+                "test_bitmap",
+                RecordBatchIterator::new(vec![Ok(batch.clone())], batch.schema()),
+            )
+            .execute()
+            .await
+            .unwrap();
+
+        // Can not create btree or bitmap index on list column
+        assert!(table
+            .create_index(&["tags"], Index::BTree(Default::default()))
+            .execute()
+            .await
+            .is_err());
+        assert!(table
+            .create_index(&["tags"], Index::Bitmap(Default::default()))
+            .execute()
+            .await
+            .is_err());
+
+        // Create bitmap index on the "category" column
+        table
+            .create_index(&["tags"], Index::LabelList(Default::default()))
+            .execute()
+            .await
+            .unwrap();
+
+        // Verify the index was created
+        let index_configs = table.list_indices().await.unwrap();
+        assert_eq!(index_configs.len(), 1);
+        let index = index_configs.into_iter().next().unwrap();
+        // TODO: Fix via https://github.com/lancedb/lance/issues/2039
+        // assert_eq!(index.index_type, crate::index::IndexType::LabelList);
+        assert_eq!(index.columns, vec!["tags".to_string()]);
+
+        // For now, just open the index to verify its type
+        let lance_dataset = table.as_native().unwrap().dataset.get().await.unwrap();
+        let indices = lance_dataset
+            .load_indices_by_name(&index.name)
+            .await
+            .unwrap();
+        let index_meta = &indices[0];
+        let idx = lance_dataset
+            .open_scalar_index("tags", &index_meta.uuid.to_string())
+            .await
+            .unwrap();
+        assert_eq!(idx.index_type(), IndexType::LabelList);
     }
 
     #[tokio::test]

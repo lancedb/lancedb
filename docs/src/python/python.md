@@ -113,6 +113,10 @@ lists the indices that LanceDb supports.
 
 ::: lancedb.index.BTree
 
+::: lancedb.index.Bitmap
+
+::: lancedb.index.LabelList
+
 ::: lancedb.index.IvfPq
 
 ## Querying (Asynchronous)
