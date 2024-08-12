@@ -430,6 +430,7 @@ class Table(ABC):
             not yet an atomic operation; the index will be temporarily
             unavailable while the new index is being created.
         writer_heap_size: int, default 1GB
+            Only available with use_tantivy=True
         ordering_field_names:
             A list of unsigned type fields to index to optionally order
             results on at search time.
