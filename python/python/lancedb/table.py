@@ -297,7 +297,6 @@ class Table(ABC):
         """
         raise NotImplementedError
 
-    @abstractmethod
     def create_index(
         self,
         metric="L2",
@@ -404,7 +403,6 @@ class Table(ABC):
         """
         raise NotImplementedError
 
-    @abstractmethod
     def create_fts_index(
         self,
         field_names: Union[str, List[str]],
