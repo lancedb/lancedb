@@ -297,6 +297,7 @@ class Table(ABC):
         """
         raise NotImplementedError
 
+    @abstractmethod
     def create_index(
         self,
         metric="L2",
@@ -400,6 +401,47 @@ class Table(ABC):
 
             dataset = lance.dataset("./images.lance")
             dataset.create_scalar_index("category")
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def create_fts_index(
+        self,
+        field_names: Union[str, List[str]],
+        ordering_field_names: Union[str, List[str]] = None,
+        *,
+        replace: bool = False,
+        writer_heap_size: Optional[int] = 1024 * 1024 * 1024,
+        tokenizer_name: str = "default",
+        use_tantivy: bool = True,
+    ):
+        """Create a full-text search index on the table.
+
+        Warning - this API is highly experimental and is highly likely to change
+        in the future.
+
+        Parameters
+        ----------
+        field_names: str or list of str
+            The name(s) of the field to index.
+            can be only str if use_tantivy=True for now.
+        replace: bool, default False
+            If True, replace the existing index if it exists. Note that this is
+            not yet an atomic operation; the index will be temporarily
+            unavailable while the new index is being created.
+        writer_heap_size: int, default 1GB
+        ordering_field_names:
+            A list of unsigned type fields to index to optionally order
+            results on at search time.
+            only available with use_tantivy=True
+        tokenizer_name: str, default "default"
+            The tokenizer to use for the index. Can be "raw", "default" or the 2 letter
+            language code followed by "_stem". So for english it would be "en_stem".
+            For available languages see: https://docs.rs/tantivy/latest/tantivy/tokenizer/enum.Language.html
+            only available with use_tantivy=True for now
+        use_tantivy: bool, default True
+            If True, use the legacy full-text search implementation based on tantivy.
+            If False, use the new full-text search implementation based on lance-index.
         """
         raise NotImplementedError
 
@@ -1201,34 +1243,6 @@ class LanceTable(Table):
         tokenizer_name: str = "default",
         use_tantivy: bool = True,
     ):
-        """Create a full-text search index on the table.
-
-        Warning - this API is highly experimental and is highly likely to change
-        in the future.
-
-        Parameters
-        ----------
-        field_names: str or list of str
-            The name(s) of the field to index.
-            can be only str if use_tantivy=True for now.
-        replace: bool, default False
-            If True, replace the existing index if it exists. Note that this is
-            not yet an atomic operation; the index will be temporarily
-            unavailable while the new index is being created.
-        writer_heap_size: int, default 1GB
-        ordering_field_names:
-            A list of unsigned type fields to index to optionally order
-            results on at search time.
-            only available with use_tantivy=True
-        tokenizer_name: str, default "default"
-            The tokenizer to use for the index. Can be "raw", "default" or the 2 letter
-            language code followed by "_stem". So for english it would be "en_stem".
-            For available languages see: https://docs.rs/tantivy/latest/tantivy/tokenizer/enum.Language.html
-            only available with use_tantivy=True for now
-        use_tantivy: bool, default False
-            If True, use the legacy full-text search implementation based on tantivy.
-            If False, use the new full-text search implementation based on lance-index.
-        """
         if not use_tantivy:
             if not isinstance(field_names, str):
                 raise ValueError("field_names must be a string when use_tantivy=False")
