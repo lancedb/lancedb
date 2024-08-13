@@ -27,7 +27,7 @@ from pydantic import BaseModel
 
 class MockDB:
     def __init__(self, uri: Path):
-        self.uri = uri
+        self.uri = str(uri)
         self.read_consistency_interval = None
 
     @functools.cached_property
