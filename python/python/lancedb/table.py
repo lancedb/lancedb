@@ -1697,6 +1697,7 @@ class LanceTable(Table):
             }
         return ds.scanner(
             columns=query.columns,
+            limit=query.k,
             filter=query.filter,
             prefilter=query.prefilter,
             nearest=nearest,
