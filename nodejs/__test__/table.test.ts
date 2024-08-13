@@ -714,8 +714,11 @@ describe("when optimizing a dataset", () => {
 
     let stats = await table.optimize({ deleteUnverified: false });
     expect(stats.prune.oldVersionsRemoved).toBe(0);
-    
-    stats = await table.optimize({cleanupOlderThan: new Date(),  deleteUnverified: true });
+
+    stats = await table.optimize({
+      cleanupOlderThan: new Date(),
+      deleteUnverified: true,
+    });
     expect(stats.prune.oldVersionsRemoved).toBeGreaterThan(1);
   });
 });
