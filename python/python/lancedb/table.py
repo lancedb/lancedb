@@ -1685,18 +1685,21 @@ class LanceTable(Table):
         self, query: Query, batch_size: Optional[int] = None
     ) -> pa.RecordBatchReader:
         ds = self.to_lance()
-        return ds.scanner(
-            columns=query.columns,
-            filter=query.filter,
-            prefilter=query.prefilter,
-            nearest={
+        nearest = None
+        if len(query.vector) > 0:
+            nearest = {
                 "column": query.vector_column,
                 "q": query.vector,
                 "k": query.k,
                 "metric": query.metric,
                 "nprobes": query.nprobes,
                 "refine_factor": query.refine_factor,
-            },
+            }
+        return ds.scanner(
+            columns=query.columns,
+            filter=query.filter,
+            prefilter=query.prefilter,
+            nearest=nearest,
             full_text_query=query.full_text_query,
             with_row_id=query.with_row_id,
             batch_size=batch_size,
