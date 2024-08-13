@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import inspect
+from pathlib import Path
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -1488,12 +1489,19 @@ class LanceTable(Table):
                 else:
                     raise e
 
+        use_tantivy = False
+        if isinstance(query, str):
+            tantivy_index_path = self._table._get_fts_index_path()
+            if Path(tantivy_index_path).exists():
+                use_tantivy = True
+
         return LanceQueryBuilder.create(
             self,
             query,
             query_type,
             vector_column_name=vector_column_name,
             ordering_field_name=ordering_field_name,
+            use_tantivy=use_tantivy,
         )
 
     @classmethod

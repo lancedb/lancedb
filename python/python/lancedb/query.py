@@ -135,6 +135,8 @@ class LanceQueryBuilder(ABC):
         vector_column_name: str,
         ordering_field_name: str = None,
         fts_columns: Union[str, List[str]] = None,
+        *,
+        use_tantivy=True,
     ) -> LanceQueryBuilder:
         """
         Create a query builder based on the given query and query type.
@@ -157,7 +159,9 @@ class LanceQueryBuilder(ABC):
 
         if query_type == "hybrid":
             # hybrid fts and vector query
-            return LanceHybridQueryBuilder(table, query, vector_column_name)
+            return LanceHybridQueryBuilder(
+                table, query, vector_column_name, use_tantivy=use_tantivy
+            )
 
         # remember the string query for reranking purpose
         str_query = query if isinstance(query, str) else None
@@ -169,12 +173,17 @@ class LanceQueryBuilder(ABC):
         )
 
         if query_type == "hybrid":
-            return LanceHybridQueryBuilder(table, query, vector_column_name)
+            return LanceHybridQueryBuilder(
+                table, query, vector_column_name, use_tantivy=use_tantivy
+            )
 
         if isinstance(query, str):
             # fts
             return LanceFtsQueryBuilder(
-                table, query, ordering_field_name=ordering_field_name
+                table,
+                query,
+                ordering_field_name=ordering_field_name,
+                use_tantivy=use_tantivy,
             )
 
         if isinstance(query, list):
@@ -675,13 +684,18 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         query: str,
         ordering_field_name: str = None,
         fts_columns: Union[str, List[str]] = None,
+        *,
+        use_tantivy: bool = True,
     ):
         super().__init__(table)
         self._query = query
         self._phrase_query = False
         self.ordering_field_name = ordering_field_name
         self._reranker = None
+        if isinstance(fts_columns, str):
+            fts_columns = [fts_columns]
         self._fts_columns = fts_columns
+        self.use_tantivy = use_tantivy
 
     def phrase_query(self, phrase_query: bool = True) -> LanceFtsQueryBuilder:
         """Set whether to use phrase query.
@@ -701,8 +715,7 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         return self
 
     def to_arrow(self) -> pa.Table:
-        tantivy_index_path = self._table._get_fts_index_path()
-        if Path(tantivy_index_path).exists():
+        if self.use_tantivy:
             return self.tantivy_to_arrow()
 
         query = self._query
@@ -716,18 +729,20 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
                 "Reranking is not yet supported in Lance FTS. "
                 "Use tantivy-based index instead for now."
             )
-        ds = self._table.to_lance()
-        return ds.to_table(
+        query = Query(
             columns=self._columns,
             filter=self._where,
-            limit=self._limit,
+            k=self._limit,
             prefilter=self._prefilter,
             with_row_id=self._with_row_id,
             full_text_query={
                 "query": query,
                 "columns": self._fts_columns,
             },
+            vector=[],
         )
+        results = self._table._execute_query(query)
+        return results.read_all()
 
     def tantivy_to_arrow(self) -> pa.Table:
         try:
@@ -849,7 +864,9 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
     in the `rerank` method to convert the scores to ranks and then normalize them.
     """
 
-    def __init__(self, table: "Table", query: str, vector_column: str):
+    def __init__(
+        self, table: "Table", query: str, vector_column: str, *, use_tantivy=True
+    ):
         super().__init__(table)
         self._validate_fts_index()
         vector_query, fts_query = self._validate_query(query)
@@ -858,6 +875,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         self._vector_query = LanceVectorQueryBuilder(table, vector_query, vector_column)
         self._norm = "score"
         self._reranker = LinearCombinationReranker(weight=0.7, fill=1.0)
+        self.use_tantivy = use_tantivy
 
     def _validate_fts_index(self):
         if self._table._get_fts_index_path() is None:

@@ -118,6 +118,22 @@ class RemoteTable(Table):
 
         return resp
 
+    def create_fts_index(
+        self,
+        column: str,
+        *,
+        replace: bool = False,
+    ):
+        data = {
+            "column": column,
+            "index_type": "FTS",
+            "replace": replace,
+        }
+        resp = self._conn._client.post(
+            f"/v1/table/{self._name}/create_fts_index/", data=data
+        )
+        return resp
+
     def create_index(
         self,
         metric="L2",
@@ -248,6 +264,7 @@ class RemoteTable(Table):
         self,
         query: Union[VEC, str],
         vector_column_name: Optional[str] = None,
+        query_type="auto",
     ) -> LanceVectorQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support [vector search][search]
@@ -307,10 +324,22 @@ class RemoteTable(Table):
             - and also the "_distance" column which is the distance between the query
             vector and the returned vector.
         """
-        if vector_column_name is None:
-            vector_column_name = inf_vector_column_query(self.schema)
-        query = LanceQueryBuilder._query_to_vector(self, query, vector_column_name)
-        return LanceVectorQueryBuilder(self, query, vector_column_name)
+        if vector_column_name is None and query is not None:
+            try:
+                vector_column_name = inf_vector_column_query(self.schema)
+            except Exception as e:
+                if query_type == "fts":
+                    vector_column_name = ""
+                else:
+                    raise e
+
+        return LanceQueryBuilder.create(
+            self,
+            query,
+            query_type,
+            vector_column_name=vector_column_name,
+            use_tantivy=False,
+        )
 
     def _execute_query(
         self, query: Query, batch_size: Optional[int] = None
