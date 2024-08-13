@@ -15,7 +15,7 @@ import logging
 import uuid
 from concurrent.futures import Future
 from functools import cached_property
-from typing import Dict, Iterable, Optional, Union
+from typing import Dict, Iterable, Optional, Union, Literal
 
 import pyarrow as pa
 from lance import json_to_schema
@@ -97,6 +97,7 @@ class RemoteTable(Table):
     def create_scalar_index(
         self,
         column: str,
+        index_type: Literal["BTREE", "BITMAP", "LABEL_LIST", "scalar"] = "scalar",
     ):
         """Creates a scalar index
         Parameters
@@ -104,8 +105,10 @@ class RemoteTable(Table):
         column : str
             The column to be indexed.  Must be a boolean, integer, float,
             or string column.
+        index_type : str
+            The index type of the scalar index. Must be "scalar" (BTREE),
+            "BTREE", "BITMAP", or "LABEL_LIST"
         """
-        index_type = "scalar"
 
         data = {
             "column": column,
