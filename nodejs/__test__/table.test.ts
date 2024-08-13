@@ -708,9 +708,15 @@ describe("when optimizing a dataset", () => {
   });
 
   it("delete unverified", async () => {
-    const stats = await table.optimize({ deleteUnverified: true });
-    expect(stats.compaction.fragmentsRemoved).toBeGreaterThan(0);
-    expect(stats.compaction.filesRemoved).toBeGreaterThan(0);
+    const version = await table.version();
+    const versionFile = `${tmpDir.name}/${table.name}.lance/_versions/${version - 1}.manifest`;
+    fs.rmSync(versionFile);
+
+    let stats = await table.optimize({ deleteUnverified: false });
+    expect(stats.prune.oldVersionsRemoved).toBe(0);
+    
+    stats = await table.optimize({cleanupOlderThan: new Date(),  deleteUnverified: true });
+    expect(stats.prune.oldVersionsRemoved).toBeGreaterThan(1);
   });
 });
 
