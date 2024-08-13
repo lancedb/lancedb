@@ -1490,7 +1490,7 @@ class LanceTable(Table):
                     raise e
 
         use_tantivy = False
-        if isinstance(query, str):
+        if isinstance(query, (str, Tuple)):
             tantivy_index_path = self._get_fts_index_path()
             if Path(tantivy_index_path).exists():
                 use_tantivy = True

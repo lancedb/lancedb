@@ -724,11 +724,11 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
                 "Phrase query is not yet supported in Lance FTS. "
                 "Use tantivy-based index instead for now."
             )
-        if self._reranker:
-            raise NotImplementedError(
-                "Reranking is not yet supported in Lance FTS. "
-                "Use tantivy-based index instead for now."
-            )
+        # if self._reranker:
+        #     raise NotImplementedError(
+        #         "Reranking is not yet supported in Lance FTS. "
+        #         "Use tantivy-based index instead for now."
+        #     )
         query = Query(
             columns=self._columns,
             filter=self._where,
@@ -870,7 +870,9 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         super().__init__(table)
         self._validate_fts_index()
         vector_query, fts_query = self._validate_query(query)
-        self._fts_query = LanceFtsQueryBuilder(table, fts_query)
+        self._fts_query = LanceFtsQueryBuilder(
+            table, fts_query, use_tantivy=use_tantivy
+        )
         vector_query = self._query_to_vector(table, vector_query, vector_column)
         self._vector_query = LanceVectorQueryBuilder(table, vector_query, vector_column)
         self._norm = "score"
