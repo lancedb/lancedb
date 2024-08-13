@@ -106,8 +106,8 @@ class RemoteTable(Table):
             The column to be indexed.  Must be a boolean, integer, float,
             or string column.
         index_type : str
-            The index type of the scalar index. Must be "scalar" (btree), "btree", "bitmap",
-            or "label_list"
+            The index type of the scalar index. Must be "scalar" (btree),
+            "btree", "bitmap", or "label_list"
         """
 
         data = {
