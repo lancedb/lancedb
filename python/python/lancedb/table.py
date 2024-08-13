@@ -1491,7 +1491,7 @@ class LanceTable(Table):
 
         use_tantivy = False
         if isinstance(query, str):
-            tantivy_index_path = self._table._get_fts_index_path()
+            tantivy_index_path = self._get_fts_index_path()
             if Path(tantivy_index_path).exists():
                 use_tantivy = True
 
