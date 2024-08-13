@@ -97,6 +97,7 @@ class RemoteTable(Table):
     def create_scalar_index(
         self,
         column: str,
+        index_type: str = "scalar",
     ):
         """Creates a scalar index
         Parameters
@@ -104,8 +105,9 @@ class RemoteTable(Table):
         column : str
             The column to be indexed.  Must be a boolean, integer, float,
             or string column.
+        index_type : str
+            The index type of the scalar index. Must be "scalar" (btree), "btree", "bitmap", or "label_list"
         """
-        index_type = "scalar"
 
         data = {
             "column": column,
