@@ -726,6 +726,21 @@ describe("when optimizing a dataset", () => {
     expect(stats.prune.bytesRemoved).toBeGreaterThan(0);
     expect(stats.prune.oldVersionsRemoved).toBe(3);
   });
+
+  it("delete unverified", async () => {
+    const version = await table.version();
+    const versionFile = `${tmpDir.name}/${table.name}.lance/_versions/${version - 1}.manifest`;
+    fs.rmSync(versionFile);
+
+    let stats = await table.optimize({ deleteUnverified: false });
+    expect(stats.prune.oldVersionsRemoved).toBe(0);
+
+    stats = await table.optimize({
+      cleanupOlderThan: new Date(),
+      deleteUnverified: true,
+    });
+    expect(stats.prune.oldVersionsRemoved).toBeGreaterThan(1);
+  });
 });
 
 describe.each([arrow13, arrow14, arrow15, arrow16, arrow17])(
