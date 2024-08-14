@@ -69,6 +69,7 @@ class LabelList:
     def __init__(self):
         self._inner = LanceDbIndex.label_list()
 
+
 class FTS:
     """Describe a FTS index configuration.
 
