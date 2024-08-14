@@ -130,7 +130,7 @@ class RemoteTable(Table):
             "replace": replace,
         }
         resp = self._conn._client.post(
-            f"/v1/table/{self.name}/create_fts_index/", data=data
+            f"/v1/table/{self.name}/create_index/", data=data
         )
         return resp
 

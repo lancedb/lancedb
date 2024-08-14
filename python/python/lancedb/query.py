@@ -15,7 +15,6 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 from typing import (
     TYPE_CHECKING,
     Dict,
@@ -38,7 +37,7 @@ from .arrow import AsyncRecordBatchReader
 from .common import VEC
 from .rerankers.base import Reranker
 from .rerankers.linear_combination import LinearCombinationReranker
-from .util import fs_from_uri, safe_import_pandas
+from .util import safe_import_pandas
 
 if TYPE_CHECKING:
     import PIL
@@ -741,24 +740,23 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         from .fts import search_index
 
         # get the index path
-        index_path = self._table._get_fts_index_path()
-
-        # Check that we are on local filesystem
-        fs, _path = fs_from_uri(index_path)
-        if not isinstance(fs, pa_fs.LocalFileSystem):
-            raise NotImplementedError(
-                "Full-text search is only supported on the local filesystem"
-            )
+        path, fs, exist = self._table._get_fts_index_path()
 
         # check if the index exist
-        if not Path(index_path).exists():
+        if not exist:
             raise FileNotFoundError(
                 "Fts index does not exist. "
                 "Please first call table.create_fts_index(['<field_names>']) to "
                 "create the fts index."
             )
+
+        # Check that we are on local filesystem
+        if not isinstance(fs, pa_fs.LocalFileSystem):
+            raise NotImplementedError(
+                "Full-text search is only supported on the local filesystem"
+            )
         # open the index
-        index = tantivy.Index.open(index_path)
+        index = tantivy.Index.open(path)
         # get the scores and doc ids
         query = self._query
         if self._phrase_query:
@@ -852,19 +850,12 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
 
     def __init__(self, table: "Table", query: str, vector_column: str):
         super().__init__(table)
-        self._validate_fts_index()
         vector_query, fts_query = self._validate_query(query)
         self._fts_query = LanceFtsQueryBuilder(table, fts_query)
         vector_query = self._query_to_vector(table, vector_query, vector_column)
         self._vector_query = LanceVectorQueryBuilder(table, vector_query, vector_column)
         self._norm = "score"
         self._reranker = LinearCombinationReranker(weight=0.7, fill=1.0)
-
-    def _validate_fts_index(self):
-        if self._table._get_fts_index_path() is None:
-            raise ValueError(
-                "Please create a full-text search index " "to perform hybrid search."
-            )
 
     def _validate_query(self, query):
         # Temp hack to support vectorized queries for hybrid search
