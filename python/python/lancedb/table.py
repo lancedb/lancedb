@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import inspect
-from pathlib import Path
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -52,7 +51,7 @@ if TYPE_CHECKING:
     from lance.dataset import CleanupStats, ReaderLike
     from ._lancedb import Table as LanceDBTable, OptimizeStats
     from .db import LanceDBConnection
-    from .index import BTree, IndexConfig, IvfPq, Bitmap, LabelList
+    from .index import BTree, IndexConfig, IvfPq, Bitmap, LabelList, FTS
 
 
 pd = safe_import_pandas()
@@ -800,6 +799,18 @@ class Table(ABC):
             The names of the columns to drop.
         """
 
+    @cached_property
+    def _dataset_uri(self) -> str:
+        return _table_uri(self._conn.uri, self.name)
+
+    def _get_fts_index_path(self) -> Tuple[str, pa_fs.FileSystem, bool]:
+        if get_uri_scheme(self._dataset_uri) != "file":
+            return ("", None, False)
+        path = join_uri(self._dataset_uri, "_indices", "fts")
+        fs, path = fs_from_uri(path)
+        index_exists = fs.get_file_info(path).type != pa_fs.FileType.NotFound
+        return (path, fs, index_exists)
+
 
 class _LanceDatasetRef(ABC):
     @property
@@ -938,10 +949,6 @@ class LanceTable(Table):
     def _dataset_path(self) -> str:
         # Cacheable since it's deterministic
         return _table_path(self._conn.uri, self.name)
-
-    @cached_property
-    def _dataset_uri(self) -> str:
-        return _table_uri(self._conn.uri, self.name)
 
     @property
     def _dataset(self) -> LanceDataset:
@@ -1235,9 +1242,8 @@ class LanceTable(Table):
                 raise ValueError("field_names must be a string when use_tantivy=False")
             # delete the existing legacy index if it exists
             if replace:
-                fs, path = fs_from_uri(self._get_fts_index_path())
-                index_exists = fs.get_file_info(path).type != pa_fs.FileType.NotFound
-                if index_exists:
+                path, fs, exist = self._get_fts_index_path()
+                if exist:
                     fs.delete_dir(path)
             self._dataset_mut.create_scalar_index(
                 field_names, index_type="INVERTED", replace=replace
@@ -1252,9 +1258,8 @@ class LanceTable(Table):
         if isinstance(ordering_field_names, str):
             ordering_field_names = [ordering_field_names]
 
-        fs, path = fs_from_uri(self._get_fts_index_path())
-        index_exists = fs.get_file_info(path).type != pa_fs.FileType.NotFound
-        if index_exists:
+        path, fs, exist = self._get_fts_index_path()
+        if exist:
             if not replace:
                 raise ValueError("Index already exists. Use replace=True to overwrite.")
             fs.delete_dir(path)
@@ -1265,7 +1270,7 @@ class LanceTable(Table):
             )
 
         index = create_index(
-            self._get_fts_index_path(),
+            path,
             field_names,
             ordering_fields=ordering_field_names,
             tokenizer_name=tokenizer_name,
@@ -1277,13 +1282,6 @@ class LanceTable(Table):
             ordering_fields=ordering_field_names,
             writer_heap_size=writer_heap_size,
         )
-
-    def _get_fts_index_path(self):
-        if get_uri_scheme(self._dataset_uri) != "file":
-            raise NotImplementedError(
-                "Full-text search is not supported on object stores."
-            )
-        return join_uri(self._dataset_uri, "_indices", "tantivy")
 
     def add(
         self,
@@ -1489,19 +1487,12 @@ class LanceTable(Table):
                 else:
                     raise e
 
-        use_tantivy = False
-        if isinstance(query, (str, Tuple)):
-            tantivy_index_path = self._get_fts_index_path()
-            if Path(tantivy_index_path).exists():
-                use_tantivy = True
-
         return LanceQueryBuilder.create(
             self,
             query,
             query_type,
             vector_column_name=vector_column_name,
             ordering_field_name=ordering_field_name,
-            use_tantivy=use_tantivy,
         )
 
     @classmethod
@@ -2125,7 +2116,7 @@ class AsyncTable:
         column: str,
         *,
         replace: Optional[bool] = None,
-        config: Optional[Union[IvfPq, BTree, Bitmap, LabelList]] = None,
+        config: Optional[Union[IvfPq, BTree, Bitmap, LabelList, FTS]] = None,
     ):
         """Create an index to speed up queries
 

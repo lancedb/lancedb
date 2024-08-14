@@ -135,8 +135,6 @@ class LanceQueryBuilder(ABC):
         vector_column_name: str,
         ordering_field_name: str = None,
         fts_columns: Union[str, List[str]] = None,
-        *,
-        use_tantivy=True,
     ) -> LanceQueryBuilder:
         """
         Create a query builder based on the given query and query type.
@@ -159,9 +157,7 @@ class LanceQueryBuilder(ABC):
 
         if query_type == "hybrid":
             # hybrid fts and vector query
-            return LanceHybridQueryBuilder(
-                table, query, vector_column_name, use_tantivy=use_tantivy
-            )
+            return LanceHybridQueryBuilder(table, query, vector_column_name)
 
         # remember the string query for reranking purpose
         str_query = query if isinstance(query, str) else None
@@ -173,9 +169,7 @@ class LanceQueryBuilder(ABC):
         )
 
         if query_type == "hybrid":
-            return LanceHybridQueryBuilder(
-                table, query, vector_column_name, use_tantivy=use_tantivy
-            )
+            return LanceHybridQueryBuilder(table, query, vector_column_name)
 
         if isinstance(query, str):
             # fts
@@ -183,7 +177,6 @@ class LanceQueryBuilder(ABC):
                 table,
                 query,
                 ordering_field_name=ordering_field_name,
-                use_tantivy=use_tantivy,
             )
 
         if isinstance(query, list):
@@ -684,8 +677,6 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         query: str,
         ordering_field_name: str = None,
         fts_columns: Union[str, List[str]] = None,
-        *,
-        use_tantivy: bool = True,
     ):
         super().__init__(table)
         self._query = query
@@ -695,7 +686,6 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         if isinstance(fts_columns, str):
             fts_columns = [fts_columns]
         self._fts_columns = fts_columns
-        self.use_tantivy = use_tantivy
 
     def phrase_query(self, phrase_query: bool = True) -> LanceFtsQueryBuilder:
         """Set whether to use phrase query.
@@ -715,7 +705,8 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         return self
 
     def to_arrow(self) -> pa.Table:
-        if self.use_tantivy:
+        path, fs, exist = self._table._get_fts_index_path()
+        if exist:
             return self.tantivy_to_arrow()
 
         query = self._query
@@ -724,11 +715,6 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
                 "Phrase query is not yet supported in Lance FTS. "
                 "Use tantivy-based index instead for now."
             )
-        # if self._reranker:
-        #     raise NotImplementedError(
-        #         "Reranking is not yet supported in Lance FTS. "
-        #         "Use tantivy-based index instead for now."
-        #     )
         query = Query(
             columns=self._columns,
             filter=self._where,
@@ -864,20 +850,15 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
     in the `rerank` method to convert the scores to ranks and then normalize them.
     """
 
-    def __init__(
-        self, table: "Table", query: str, vector_column: str, *, use_tantivy=True
-    ):
+    def __init__(self, table: "Table", query: str, vector_column: str):
         super().__init__(table)
         self._validate_fts_index()
         vector_query, fts_query = self._validate_query(query)
-        self._fts_query = LanceFtsQueryBuilder(
-            table, fts_query, use_tantivy=use_tantivy
-        )
+        self._fts_query = LanceFtsQueryBuilder(table, fts_query)
         vector_query = self._query_to_vector(table, vector_query, vector_column)
         self._vector_query = LanceVectorQueryBuilder(table, vector_query, vector_column)
         self._norm = "score"
         self._reranker = LinearCombinationReranker(weight=0.7, fill=1.0)
-        self.use_tantivy = use_tantivy
 
     def _validate_fts_index(self):
         if self._table._get_fts_index_path() is None:
