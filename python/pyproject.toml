@@ -18,7 +18,7 @@ description = "lancedb"
 authors = [{ name = "LanceDB Devs", email = "dev@lancedb.com" }]
 license = { file = "LICENSE" }
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.9"
 keywords = [
     "data-format",
     "data-science",
