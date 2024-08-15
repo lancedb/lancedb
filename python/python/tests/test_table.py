@@ -1052,3 +1052,18 @@ async def test_optimize(db_async: AsyncConnection):
     assert stats.prune.old_versions_removed == 3
 
     assert await table.query().to_arrow() == pa.table({"x": [[1], [2]]})
+
+
+@pytest.mark.asyncio
+async def test_optimize_delete_unverified(db_async: AsyncConnection):
+    table = await db_async.create_table(
+        "test",
+        data=[{"x": [1]}],
+    )
+    await table.add(
+        data=[
+            {"x": [2]},
+        ],
+    )
+    stats = await table.optimize(delete_unverified=False)
+    print(stats)

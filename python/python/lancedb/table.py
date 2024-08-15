@@ -2438,7 +2438,10 @@ class AsyncTable:
         await self._inner.restore()
 
     async def optimize(
-        self, *, cleanup_older_than: Optional[timedelta] = None
+        self,
+        *,
+        cleanup_older_than: Optional[timedelta] = None,
+        delete_unverified: bool = False,
     ) -> OptimizeStats:
         """
         Optimize the on-disk data and indices for better performance.
@@ -2478,7 +2481,7 @@ class AsyncTable:
         """
         if cleanup_older_than is not None:
             cleanup_older_than = round(cleanup_older_than.total_seconds() * 1000)
-        return await self._inner.optimize(cleanup_older_than)
+        return await self._inner.optimize(cleanup_older_than, delete_unverified)
 
     async def list_indices(self) -> IndexConfig:
         """
