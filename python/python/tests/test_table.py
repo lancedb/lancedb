@@ -8,6 +8,7 @@ from pathlib import Path
 from time import sleep
 from typing import List
 from unittest.mock import PropertyMock, patch
+import os
 
 import lance
 import lancedb
@@ -1055,7 +1056,7 @@ async def test_optimize(db_async: AsyncConnection):
 
 
 @pytest.mark.asyncio
-async def test_optimize_delete_unverified(db_async: AsyncConnection):
+async def test_optimize_delete_unverified(db_async: AsyncConnection, tmp_path):
     table = await db_async.create_table(
         "test",
         data=[{"x": [1]}],
@@ -1065,5 +1066,12 @@ async def test_optimize_delete_unverified(db_async: AsyncConnection):
             {"x": [2]},
         ],
     )
+    version = await table.version()
+    path = tmp_path / "test.lance" / "_versions" / f"{version - 1}.manifest"
+    os.remove(path)
     stats = await table.optimize(delete_unverified=False)
-    print(stats)
+    assert stats.prune.old_versions_removed == 0
+    stats = await table.optimize(
+        cleanup_older_than=timedelta(seconds=0), delete_unverified=True
+    )
+    assert stats.prune.old_versions_removed == 2
