@@ -15,6 +15,7 @@ import random
 from unittest import mock
 
 import lancedb as ldb
+from lancedb.index import FTS
 import numpy as np
 import pandas as pd
 import pytest
@@ -45,6 +46,43 @@ def table(tmp_path) -> ldb.table.LanceTable:
     ]
     count = [random.randint(1, 10000) for _ in range(100)]
     table = db.create_table(
+        "test",
+        data=pd.DataFrame(
+            {
+                "vector": vectors,
+                "id": [i % 2 for i in range(100)],
+                "text": text,
+                "text2": text,
+                "nested": [{"text": t} for t in text],
+                "count": count,
+            }
+        ),
+    )
+    return table
+
+
+@pytest.fixture
+async def async_table(tmp_path) -> ldb.table.AsyncTable:
+    db = await ldb.connect_async(tmp_path)
+    vectors = [np.random.randn(128) for _ in range(100)]
+
+    nouns = ("puppy", "car", "rabbit", "girl", "monkey")
+    verbs = ("runs", "hits", "jumps", "drives", "barfs")
+    adv = ("crazily.", "dutifully.", "foolishly.", "merrily.", "occasionally.")
+    adj = ("adorable", "clueless", "dirty", "odd", "stupid")
+    text = [
+        " ".join(
+            [
+                nouns[random.randrange(0, 5)],
+                verbs[random.randrange(0, 5)],
+                adv[random.randrange(0, 5)],
+                adj[random.randrange(0, 5)],
+            ]
+        )
+        for _ in range(100)
+    ]
+    count = [random.randint(1, 10000) for _ in range(100)]
+    table = await db.create_table(
         "test",
         data=pd.DataFrame(
             {
@@ -101,6 +139,12 @@ def test_search_index(tmp_path, table):
 def test_search_fts(table, use_tantivy):
     table.create_fts_index("text", use_tantivy=use_tantivy)
     results = table.search("puppy").limit(10).to_list()
+    assert len(results) == 10
+
+
+async def test_search_fts_async(async_table):
+    await async_table.create_index("text", config=FTS())
+    results = await async_table.query().nearest_to_text("puppy").limit(10).to_list()
     assert len(results) == 10
 
 

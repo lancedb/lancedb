@@ -753,7 +753,8 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         # Check that we are on local filesystem
         if not isinstance(fs, pa_fs.LocalFileSystem):
             raise NotImplementedError(
-                "Full-text search is only supported on the local filesystem"
+                "Tantivy-based full text search "
+                "is only supported on the local filesystem"
             )
         # open the index
         index = tantivy.Index.open(path)
