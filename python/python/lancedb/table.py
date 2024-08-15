@@ -2460,6 +2460,11 @@ class AsyncTable:
             All files belonging to versions older than this will be removed.  Set
             to 0 days to remove all versions except the latest.  The latest version
             is never removed.
+        delete_unverified: bool, default False
+            Files leftover from a failed transaction may appear to be part of an
+            in-progress operation (e.g. appending new data) and these files will not
+            be deleted unless they are at least 7 days old. If delete_unverified is True
+            then these files will be deleted regardless of their age.
 
         Experimental API
         ----------------
