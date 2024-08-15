@@ -1346,6 +1346,35 @@ class AsyncQuery(AsyncQueryBase):
             self._inner.nearest_to(AsyncQuery._query_vec_to_array(query_vector))
         )
 
+    def nearest_to_text(
+        self, query: str, columns: Union[str, List[str]] = None
+    ) -> AsyncQuery:
+        """
+        Find the documents that are most relevant to the given text query.
+
+        This method will perform a full text search on the table and return
+        the most relevant documents.  The relevance is determined by BM25.
+
+        The columns to search must be with native FTS index
+        (Tantivy-based can't work with this method).
+
+        By default, all indexed columns are searched,
+        now only one column can be searched at a time.
+
+        Parameters
+        ----------
+        query: str
+            The text query to search for.
+        columns: str or list of str, default None
+            The columns to search in. If None, all indexed columns are searched.
+            For now only one column can be searched at a time.
+        """
+        if isinstance(columns, str):
+            columns = [columns]
+        return AsyncQuery(
+            self._inner.nearest_to_text({"query": query, "columns": columns})
+        )
+
 
 class AsyncVectorQuery(AsyncQueryBase):
     def __init__(self, inner: LanceVectorQuery):
