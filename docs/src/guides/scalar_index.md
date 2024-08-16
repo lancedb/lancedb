@@ -29,7 +29,7 @@ over scalar columns.
     ]
 
     db = lancedb.connect("./db")
-    table = db.create_table("my_table", data)
+    table = db.create_table("books", books)
     table.create_scalar_index("book_id")  # BTree by default
     table.create_scalar_index("publisher", index_type="BITMAP")
     ```
@@ -39,7 +39,7 @@ over scalar columns.
     === "@lancedb/lancedb"
 
         ```js
-        const db = await lancedb.connect("data/sample-lancedb");
+        const db = await lancedb.connect("data");
         const tbl = await db.openTable("my_vectors");
 
         await tbl.create_index("book_id");
@@ -53,8 +53,8 @@ For example, the following scan will be faster if the column `my_col` has a scal
     ```python
     import lancedb
 
-    table = db.open_table("my_table")
-    my_df = table.search().where("my_col = 2").to_pandas()
+    table = db.open_table("books")
+    my_df = table.search().where("book_id = 2").to_pandas()
     ```
 
 === "Typescript"
@@ -62,12 +62,12 @@ For example, the following scan will be faster if the column `my_col` has a scal
     === "@lancedb/lancedb"
 
         ```js
-        const db = await lancedb.connect("data/lance");
-        const tbl = await db.openTable("images");
+        const db = await lancedb.connect("data");
+        const tbl = await db.openTable("books");
 
         await tbl
           .query()
-          .where("book_id != 7")
+          .where("book_id = 2")
           .limit(10)
           .toArray();
         ```
@@ -80,14 +80,15 @@ Scalar indices can also speed up scans containing a vector search or full text s
     import lancedb
 
     data = [
-      {"my_col": 1, "vector": [1, 2]},
-      {"my_col": 2, "vector": [3, 4]},
-      {"my_col": 3, "vector": [5, 6]}
+      {"book_id": 1, "vector": [1, 2]},
+      {"book_id": 2, "vector": [3, 4]},
+      {"book_id": 3, "vector": [5, 6]}
     ]
-    table = db.create_table("vecs", data)
+    table = db.create_table("book_with_embeddings", data)
+
     (
         table.search([1, 2])
-        .where("my_col != 3", prefilter=True)
+        .where("book_id != 3", prefilter=True)
         .to_pandas()
     )
     ```
@@ -98,10 +99,10 @@ Scalar indices can also speed up scans containing a vector search or full text s
 
         ```js
         const db = await lancedb.connect("data/lance");
-        const tbl = await db.openTable("images");
+        const tbl = await db.openTable("book_with_embeddings");
 
         await tbl.search(Array(1536).fill(1.2))
-          .where("my_col != 7")  // prefilter is default behavior.
+          .where("book_id != 3")  // prefilter is default behavior.
           .limit(10)
           .toArray();
         ```
