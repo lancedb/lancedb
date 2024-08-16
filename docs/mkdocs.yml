@@ -144,6 +144,7 @@ nav:
               - Build From Scratch: examples/python_examples/build_from_scratch.md
               - Multimodal: examples/python_examples/multimodal.md
               - Rag: examples/python_examples/rag.md
+              - Vector Search: examples/python_examples/vector_search.md
               - Miscellaneous: 
                   - YouTube Transcript Search: notebooks/youtube_transcript_search.ipynb
                   - Documentation QA Bot using LangChain: notebooks/code_qa_bot.ipynb
@@ -229,6 +230,7 @@ nav:
           - Build From Scratch: examples/python_examples/build_from_scratch.md
           - Multimodal: examples/python_examples/multimodal.md
           - Rag: examples/python_examples/rag.md
+          - Vector Search: examples/python_examples/vector_search.md
           - Miscellaneous: 
               - YouTube Transcript Search: notebooks/youtube_transcript_search.ipynb
               - Documentation QA Bot using LangChain: notebooks/code_qa_bot.ipynb
