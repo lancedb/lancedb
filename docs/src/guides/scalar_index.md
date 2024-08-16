@@ -36,13 +36,15 @@ over scalar columns.
 
 === "Typescript"
 
-    ```js
-    const db = await lancedb.connect("data/sample-lancedb");
-    const tbl = await db.openTable("my_vectors");
+    === "@lancedb/lancedb"
 
-    await tbl.create_index("my_float_column");
-    await tlb.create_index("publisher", { config: lancedb.Index.bitmap() })
-    ```
+        ```js
+        const db = await lancedb.connect("data/sample-lancedb");
+        const tbl = await db.openTable("my_vectors");
+
+        await tbl.create_index("book_id");
+        await tlb.create_index("publisher", { config: lancedb.Index.bitmap() })
+        ```
 
 For example, the following scan will be faster if the column `my_col` has a scalar index:
 
