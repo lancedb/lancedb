@@ -276,6 +276,10 @@ class DBConnection(EnforceOverrides):
         """
         raise NotImplementedError
 
+    @property
+    def uri(self) -> str:
+        return self._uri
+
 
 class LanceDBConnection(DBConnection):
     """
@@ -339,10 +343,6 @@ class LanceDBConnection(DBConnection):
             val += f", read_consistency_interval={repr(self.read_consistency_interval)}"
         val += ")"
         return val
-
-    @property
-    def uri(self) -> str:
-        return self._uri
 
     async def _async_get_table_names(self, start_after: Optional[str], limit: int):
         conn = AsyncConnection(await lancedb_connect(self.uri))

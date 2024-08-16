@@ -15,7 +15,6 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 from typing import (
     TYPE_CHECKING,
     Dict,
@@ -38,7 +37,7 @@ from .arrow import AsyncRecordBatchReader
 from .common import VEC
 from .rerankers.base import Reranker
 from .rerankers.linear_combination import LinearCombinationReranker
-from .util import fs_from_uri, safe_import_pandas
+from .util import safe_import_pandas
 
 if TYPE_CHECKING:
     import PIL
@@ -174,7 +173,9 @@ class LanceQueryBuilder(ABC):
         if isinstance(query, str):
             # fts
             return LanceFtsQueryBuilder(
-                table, query, ordering_field_name=ordering_field_name
+                table,
+                query,
+                ordering_field_name=ordering_field_name,
             )
 
         if isinstance(query, list):
@@ -681,6 +682,8 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         self._phrase_query = False
         self.ordering_field_name = ordering_field_name
         self._reranker = None
+        if isinstance(fts_columns, str):
+            fts_columns = [fts_columns]
         self._fts_columns = fts_columns
 
     def phrase_query(self, phrase_query: bool = True) -> LanceFtsQueryBuilder:
@@ -701,8 +704,8 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         return self
 
     def to_arrow(self) -> pa.Table:
-        tantivy_index_path = self._table._get_fts_index_path()
-        if Path(tantivy_index_path).exists():
+        path, fs, exist = self._table._get_fts_index_path()
+        if exist:
             return self.tantivy_to_arrow()
 
         query = self._query
@@ -711,23 +714,20 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
                 "Phrase query is not yet supported in Lance FTS. "
                 "Use tantivy-based index instead for now."
             )
-        if self._reranker:
-            raise NotImplementedError(
-                "Reranking is not yet supported in Lance FTS. "
-                "Use tantivy-based index instead for now."
-            )
-        ds = self._table.to_lance()
-        return ds.to_table(
+        query = Query(
             columns=self._columns,
             filter=self._where,
-            limit=self._limit,
+            k=self._limit,
             prefilter=self._prefilter,
             with_row_id=self._with_row_id,
             full_text_query={
                 "query": query,
                 "columns": self._fts_columns,
             },
+            vector=[],
         )
+        results = self._table._execute_query(query)
+        return results.read_all()
 
     def tantivy_to_arrow(self) -> pa.Table:
         try:
@@ -740,24 +740,24 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         from .fts import search_index
 
         # get the index path
-        index_path = self._table._get_fts_index_path()
-
-        # Check that we are on local filesystem
-        fs, _path = fs_from_uri(index_path)
-        if not isinstance(fs, pa_fs.LocalFileSystem):
-            raise NotImplementedError(
-                "Full-text search is only supported on the local filesystem"
-            )
+        path, fs, exist = self._table._get_fts_index_path()
 
         # check if the index exist
-        if not Path(index_path).exists():
+        if not exist:
             raise FileNotFoundError(
                 "Fts index does not exist. "
                 "Please first call table.create_fts_index(['<field_names>']) to "
                 "create the fts index."
             )
+
+        # Check that we are on local filesystem
+        if not isinstance(fs, pa_fs.LocalFileSystem):
+            raise NotImplementedError(
+                "Tantivy-based full text search "
+                "is only supported on the local filesystem"
+            )
         # open the index
-        index = tantivy.Index.open(index_path)
+        index = tantivy.Index.open(path)
         # get the scores and doc ids
         query = self._query
         if self._phrase_query:
@@ -851,19 +851,12 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
 
     def __init__(self, table: "Table", query: str, vector_column: str):
         super().__init__(table)
-        self._validate_fts_index()
         vector_query, fts_query = self._validate_query(query)
         self._fts_query = LanceFtsQueryBuilder(table, fts_query)
         vector_query = self._query_to_vector(table, vector_query, vector_column)
         self._vector_query = LanceVectorQueryBuilder(table, vector_query, vector_column)
         self._norm = "score"
         self._reranker = LinearCombinationReranker(weight=0.7, fill=1.0)
-
-    def _validate_fts_index(self):
-        if self._table._get_fts_index_path() is None:
-            raise ValueError(
-                "Please create a full-text search index " "to perform hybrid search."
-            )
 
     def _validate_query(self, query):
         # Temp hack to support vectorized queries for hybrid search
@@ -1352,6 +1345,35 @@ class AsyncQuery(AsyncQueryBase):
         """
         return AsyncVectorQuery(
             self._inner.nearest_to(AsyncQuery._query_vec_to_array(query_vector))
+        )
+
+    def nearest_to_text(
+        self, query: str, columns: Union[str, List[str]] = None
+    ) -> AsyncQuery:
+        """
+        Find the documents that are most relevant to the given text query.
+
+        This method will perform a full text search on the table and return
+        the most relevant documents.  The relevance is determined by BM25.
+
+        The columns to search must be with native FTS index
+        (Tantivy-based can't work with this method).
+
+        By default, all indexed columns are searched,
+        now only one column can be searched at a time.
+
+        Parameters
+        ----------
+        query: str
+            The text query to search for.
+        columns: str or list of str, default None
+            The columns to search in. If None, all indexed columns are searched.
+            For now only one column can be searched at a time.
+        """
+        if isinstance(columns, str):
+            columns = [columns]
+        return AsyncQuery(
+            self._inner.nearest_to_text({"query": query, "columns": columns})
         )
 
 

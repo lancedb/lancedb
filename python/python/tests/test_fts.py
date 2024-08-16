@@ -15,6 +15,7 @@ import random
 from unittest import mock
 
 import lancedb as ldb
+from lancedb.index import FTS
 import numpy as np
 import pandas as pd
 import pytest
@@ -45,6 +46,43 @@ def table(tmp_path) -> ldb.table.LanceTable:
     ]
     count = [random.randint(1, 10000) for _ in range(100)]
     table = db.create_table(
+        "test",
+        data=pd.DataFrame(
+            {
+                "vector": vectors,
+                "id": [i % 2 for i in range(100)],
+                "text": text,
+                "text2": text,
+                "nested": [{"text": t} for t in text],
+                "count": count,
+            }
+        ),
+    )
+    return table
+
+
+@pytest.fixture
+async def async_table(tmp_path) -> ldb.table.AsyncTable:
+    db = await ldb.connect_async(tmp_path)
+    vectors = [np.random.randn(128) for _ in range(100)]
+
+    nouns = ("puppy", "car", "rabbit", "girl", "monkey")
+    verbs = ("runs", "hits", "jumps", "drives", "barfs")
+    adv = ("crazily.", "dutifully.", "foolishly.", "merrily.", "occasionally.")
+    adj = ("adorable", "clueless", "dirty", "odd", "stupid")
+    text = [
+        " ".join(
+            [
+                nouns[random.randrange(0, 5)],
+                verbs[random.randrange(0, 5)],
+                adv[random.randrange(0, 5)],
+                adj[random.randrange(0, 5)],
+            ]
+        )
+        for _ in range(100)
+    ]
+    count = [random.randint(1, 10000) for _ in range(100)]
+    table = await db.create_table(
         "test",
         data=pd.DataFrame(
             {
@@ -91,17 +129,23 @@ def test_search_index(tmp_path, table):
     index = ldb.fts.create_index(str(tmp_path / "index"), ["text"])
     ldb.fts.populate_index(index, table, ["text"])
     index.reload()
-    results = ldb.fts.search_index(index, query="puppy", limit=10)
+    results = ldb.fts.search_index(index, query="puppy", limit=5)
     assert len(results) == 2
-    assert len(results[0]) == 10  # row_ids
-    assert len(results[1]) == 10  # _distance
+    assert len(results[0]) == 5  # row_ids
+    assert len(results[1]) == 5  # _score
 
 
 @pytest.mark.parametrize("use_tantivy", [True, False])
 def test_search_fts(table, use_tantivy):
     table.create_fts_index("text", use_tantivy=use_tantivy)
-    results = table.search("puppy").limit(10).to_list()
-    assert len(results) == 10
+    results = table.search("puppy").limit(5).to_list()
+    assert len(results) == 5
+
+
+async def test_search_fts_async(async_table):
+    await async_table.create_index("text", config=FTS())
+    results = await async_table.query().nearest_to_text("puppy").limit(5).to_list()
+    assert len(results) == 5
 
 
 def test_search_ordering_field_index_table(tmp_path, table):
@@ -125,11 +169,11 @@ def test_search_ordering_field_index(tmp_path, table):
     ldb.fts.populate_index(index, table, ["text"], ordering_fields=["count"])
     index.reload()
     results = ldb.fts.search_index(
-        index, query="puppy", limit=10, ordering_field="count"
+        index, query="puppy", limit=5, ordering_field="count"
     )
     assert len(results) == 2
-    assert len(results[0]) == 10  # row_ids
-    assert len(results[1]) == 10  # _distance
+    assert len(results[0]) == 5  # row_ids
+    assert len(results[1]) == 5  # _distance
     rows = table.to_lance().take(results[0]).to_pylist()
 
     for r in rows:
@@ -140,8 +184,8 @@ def test_search_ordering_field_index(tmp_path, table):
 @pytest.mark.parametrize("use_tantivy", [True, False])
 def test_create_index_from_table(tmp_path, table, use_tantivy):
     table.create_fts_index("text", use_tantivy=use_tantivy)
-    df = table.search("puppy").limit(10).select(["text"]).to_pandas()
-    assert len(df) <= 10
+    df = table.search("puppy").limit(5).select(["text"]).to_pandas()
+    assert len(df) <= 5
     assert "text" in df.columns
 
     # Check whether it can be updated
@@ -167,8 +211,8 @@ def test_create_index_from_table(tmp_path, table, use_tantivy):
 
 def test_create_index_multiple_columns(tmp_path, table):
     table.create_fts_index(["text", "text2"], use_tantivy=True)
-    df = table.search("puppy").limit(10).to_pandas()
-    assert len(df) == 10
+    df = table.search("puppy").limit(5).to_pandas()
+    assert len(df) == 5
     assert "text" in df.columns
     assert "text2" in df.columns
 
@@ -176,14 +220,14 @@ def test_create_index_multiple_columns(tmp_path, table):
 def test_empty_rs(tmp_path, table, mocker):
     table.create_fts_index(["text", "text2"], use_tantivy=True)
     mocker.patch("lancedb.fts.search_index", return_value=([], []))
-    df = table.search("puppy").limit(10).to_pandas()
+    df = table.search("puppy").limit(5).to_pandas()
     assert len(df) == 0
 
 
 def test_nested_schema(tmp_path, table):
     table.create_fts_index("nested.text", use_tantivy=True)
-    rs = table.search("puppy").limit(10).to_list()
-    assert len(rs) == 10
+    rs = table.search("puppy").limit(5).to_list()
+    assert len(rs) == 5
 
 
 @pytest.mark.parametrize("use_tantivy", [True, False])

@@ -251,7 +251,8 @@ def test_s3_dynamodb_sync(s3_bucket: str, commit_table: str, monkeypatch):
 
     # FTS indices should error since they are not supported yet.
     with pytest.raises(
-        NotImplementedError, match="Full-text search is not supported on object stores."
+        NotImplementedError,
+        match="Full-text search is only supported on the local filesystem",
     ):
         table.create_fts_index("x")
 
