@@ -22,9 +22,9 @@ over scalar columns.
 
     ```python
     import lancedb
-    data = [
-      {"my_col": 1, "category": "A", "vector": [1, 2]},
-      {"my_col": 2, "category": "B", "vector": [3, 4]},
+    books = [
+      {"book_id": 1, "publisher": "plenty of books", "tags": ["fantasy", "adventure"]},
+      {"book_id": 2, "publisher": "book town", "tags": ["non-fiction"]},
       {"my_col": 3, "category": "C", "vector": [5, 6]}
     ]
 
