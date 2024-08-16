@@ -1,10 +1,14 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright The LanceDB Authors
+
 from datetime import timedelta
+import random
 
 import pyarrow as pa
 import pytest
 import pytest_asyncio
 from lancedb import AsyncConnection, AsyncTable, connect_async
-from lancedb.index import BTree, IvfPq
+from lancedb.index import BTree, IvfPq, Bitmap, LabelList
 
 
 @pytest_asyncio.fixture
@@ -25,8 +29,11 @@ NROWS = 256
 async def some_table(db_async):
     data = pa.Table.from_pydict(
         {
-            "id": list(range(256)),
+            "id": list(range(NROWS)),
             "vector": sample_fixed_size_list_array(NROWS, DIM),
+            "tags": [
+                [f"tag{random.randint(0, 8)}" for _ in range(2)] for _ in range(NROWS)
+            ],
         }
     )
     return await db_async.create_table(
@@ -42,6 +49,7 @@ async def test_create_scalar_index(some_table: AsyncTable):
     # Can recreate if replace=True
     await some_table.create_index("id", replace=True)
     indices = await some_table.list_indices()
+    assert str(indices) == '[Index(BTree, columns=["id"])]'
     assert len(indices) == 1
     assert indices[0].index_type == "BTree"
     assert indices[0].columns == ["id"]
@@ -50,6 +58,22 @@ async def test_create_scalar_index(some_table: AsyncTable):
         await some_table.create_index("id", replace=False)
     # can also specify index type
     await some_table.create_index("id", config=BTree())
+
+
+@pytest.mark.asyncio
+async def test_create_bitmap_index(some_table: AsyncTable):
+    await some_table.create_index("id", config=Bitmap())
+    # TODO: Fix via https://github.com/lancedb/lance/issues/2039
+    # indices = await some_table.list_indices()
+    # assert str(indices) == '[Index(Bitmap, columns=["id"])]'
+
+
+@pytest.mark.asyncio
+async def test_create_label_list_index(some_table: AsyncTable):
+    await some_table.create_index("tags", config=LabelList())
+    # TODO: Fix via https://github.com/lancedb/lance/issues/2039
+    # indices = await some_table.list_indices()
+    # assert str(indices) == '[Index(LabelList, columns=["id"])]'
 
 
 @pytest.mark.asyncio

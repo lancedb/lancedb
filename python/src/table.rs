@@ -60,6 +60,16 @@ pub struct Table {
     inner: Option<LanceDbTable>,
 }
 
+#[pymethods]
+impl OptimizeStats {
+    pub fn __repr__(&self) -> String {
+        format!(
+            "OptimizeStats(compaction={:?}, prune={:?})",
+            self.compaction, self.prune
+        )
+    }
+}
+
 impl Table {
     pub(crate) fn new(inner: LanceDbTable) -> Self {
         Self {
@@ -238,6 +248,7 @@ impl Table {
     pub fn optimize(
         self_: PyRef<'_, Self>,
         cleanup_since_ms: Option<u64>,
+        delete_unverified: Option<bool>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         let older_than = if let Some(ms) = cleanup_since_ms {
@@ -265,7 +276,8 @@ impl Table {
             let prune_stats = inner
                 .optimize(OptimizeAction::Prune {
                     older_than,
-                    delete_unverified: None,
+                    delete_unverified,
+                    error_if_tagged_old_versions: None,
                 })
                 .await
                 .infer_error()?

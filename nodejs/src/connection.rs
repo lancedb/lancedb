@@ -13,13 +13,16 @@
 // limitations under the License.
 
 use std::collections::HashMap;
+use std::str::FromStr;
 
 use napi::bindgen_prelude::*;
 use napi_derive::*;
 
 use crate::table::Table;
 use crate::ConnectionOptions;
-use lancedb::connection::{ConnectBuilder, Connection as LanceDBConnection, CreateTableMode};
+use lancedb::connection::{
+    ConnectBuilder, Connection as LanceDBConnection, CreateTableMode, LanceFileVersion,
+};
 use lancedb::ipc::{ipc_file_to_batches, ipc_file_to_schema};
 
 #[napi]
@@ -120,7 +123,7 @@ impl Connection {
         buf: Buffer,
         mode: String,
         storage_options: Option<HashMap<String, String>>,
-        use_legacy_format: Option<bool>,
+        data_storage_options: Option<String>,
     ) -> napi::Result<Table> {
         let batches = ipc_file_to_batches(buf.to_vec())
             .map_err(|e| napi::Error::from_reason(format!("Failed to read IPC file: {}", e)))?;
@@ -131,8 +134,11 @@ impl Connection {
                 builder = builder.storage_option(key, value);
             }
         }
-        if let Some(use_legacy_format) = use_legacy_format {
-            builder = builder.use_legacy_format(use_legacy_format);
+        if let Some(data_storage_option) = data_storage_options.as_ref() {
+            builder = builder.data_storage_version(
+                LanceFileVersion::from_str(data_storage_option)
+                    .map_err(|e| napi::Error::from_reason(format!("{}", e)))?,
+            );
         }
         let tbl = builder
             .execute()
@@ -148,7 +154,7 @@ impl Connection {
         schema_buf: Buffer,
         mode: String,
         storage_options: Option<HashMap<String, String>>,
-        use_legacy_format: Option<bool>,
+        data_storage_options: Option<String>,
     ) -> napi::Result<Table> {
         let schema = ipc_file_to_schema(schema_buf.to_vec()).map_err(|e| {
             napi::Error::from_reason(format!("Failed to marshal schema from JS to Rust: {}", e))
@@ -163,8 +169,11 @@ impl Connection {
                 builder = builder.storage_option(key, value);
             }
         }
-        if let Some(use_legacy_format) = use_legacy_format {
-            builder = builder.use_legacy_format(use_legacy_format);
+        if let Some(data_storage_option) = data_storage_options.as_ref() {
+            builder = builder.data_storage_version(
+                LanceFileVersion::from_str(data_storage_option)
+                    .map_err(|e| napi::Error::from_reason(format!("{}", e)))?,
+            );
         }
         let tbl = builder
             .execute()

@@ -22,7 +22,7 @@ from lancedb.table import LanceTable
 pytest.importorskip("lancedb.fts")
 
 
-def get_test_table(tmp_path):
+def get_test_table(tmp_path, use_tantivy):
     db = lancedb.connect(tmp_path)
     # Create a LanceDB table schema with a vector and a text column
     emb = EmbeddingFunctionRegistry.get_instance().get("test")()
@@ -89,7 +89,7 @@ def get_test_table(tmp_path):
     )
 
     # Create a fts index
-    table.create_fts_index("text")
+    table.create_fts_index("text", use_tantivy=use_tantivy)
 
     return table, MyTable
 
@@ -174,8 +174,8 @@ def _run_test_reranker(reranker, table, query, query_vector, schema):
     assert len(result) == 20 and result == result_arrow
 
 
-def _run_test_hybrid_reranker(reranker, tmp_path):
-    table, schema = get_test_table(tmp_path)
+def _run_test_hybrid_reranker(reranker, tmp_path, use_tantivy):
+    table, schema = get_test_table(tmp_path, use_tantivy)
     # The default reranker
     result1 = (
         table.search(
@@ -221,14 +221,16 @@ def _run_test_hybrid_reranker(reranker, tmp_path):
     )
 
 
-def test_linear_combination(tmp_path):
+@pytest.mark.parametrize("use_tantivy", [True, False])
+def test_linear_combination(tmp_path, use_tantivy):
     reranker = LinearCombinationReranker()
-    _run_test_hybrid_reranker(reranker, tmp_path)
+    _run_test_hybrid_reranker(reranker, tmp_path, use_tantivy)
 
 
-def test_rrf_reranker(tmp_path):
+@pytest.mark.parametrize("use_tantivy", [True, False])
+def test_rrf_reranker(tmp_path, use_tantivy):
     reranker = RRFReranker()
-    _run_test_hybrid_reranker(reranker, tmp_path)
+    _run_test_hybrid_reranker(reranker, tmp_path, use_tantivy)
 
 
 @pytest.mark.skipif(

@@ -24,7 +24,7 @@ class Connection(object):
         mode: str,
         data: pa.RecordBatchReader,
         storage_options: Optional[Dict[str, str]] = None,
-        use_legacy_format: Optional[bool] = None,
+        data_storage_version: Optional[str] = None,
     ) -> Table: ...
     async def create_empty_table(
         self,
@@ -32,7 +32,7 @@ class Connection(object):
         mode: str,
         schema: pa.Schema,
         storage_options: Optional[Dict[str, str]] = None,
-        use_legacy_format: Optional[bool] = None,
+        data_storage_version: Optional[str] = None,
     ) -> Table: ...
 
 class Table:
@@ -74,6 +74,7 @@ class Query:
     def select(self, columns: Tuple[str, str]): ...
     def limit(self, limit: int): ...
     def nearest_to(self, query_vec: pa.Array) -> VectorQuery: ...
+    def nearest_to_text(self, query: dict) -> Query: ...
     async def execute(self, max_batch_legnth: Optional[int]) -> RecordBatchStream: ...
 
 class VectorQuery:

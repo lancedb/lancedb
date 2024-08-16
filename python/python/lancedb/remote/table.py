@@ -15,15 +15,16 @@ import logging
 import uuid
 from concurrent.futures import Future
 from functools import cached_property
-from typing import Dict, Iterable, Optional, Union
+from typing import Dict, Iterable, Optional, Union, Literal
 
 import pyarrow as pa
 from lance import json_to_schema
 
 from lancedb.common import DATA, VEC, VECTOR_COLUMN_NAME
 from lancedb.merge import LanceMergeInsertBuilder
+from lancedb.embeddings import EmbeddingFunctionRegistry
 
-from ..query import LanceVectorQueryBuilder
+from ..query import LanceVectorQueryBuilder, LanceQueryBuilder
 from ..table import Query, Table, _sanitize_data
 from ..util import inf_vector_column_query, value_to_sql
 from .arrow import to_ipc_binary
@@ -34,10 +35,10 @@ from .db import RemoteDBConnection
 class RemoteTable(Table):
     def __init__(self, conn: RemoteDBConnection, name: str):
         self._conn = conn
-        self._name = name
+        self.name = name
 
     def __repr__(self) -> str:
-        return f"RemoteTable({self._conn.db_name}.{self._name})"
+        return f"RemoteTable({self._conn.db_name}.{self.name})"
 
     def __len__(self) -> int:
         self.count_rows(None)
@@ -48,15 +49,30 @@ class RemoteTable(Table):
         of this Table
 
         """
-        resp = self._conn._client.post(f"/v1/table/{self._name}/describe/")
+        resp = self._conn._client.post(f"/v1/table/{self.name}/describe/")
         schema = json_to_schema(resp["schema"])
         return schema
 
     @property
     def version(self) -> int:
         """Get the current version of the table"""
-        resp = self._conn._client.post(f"/v1/table/{self._name}/describe/")
+        resp = self._conn._client.post(f"/v1/table/{self.name}/describe/")
         return resp["version"]
+
+    @cached_property
+    def embedding_functions(self) -> dict:
+        """
+        Get the embedding functions for the table
+
+        Returns
+        -------
+        funcs: dict
+            A mapping of the vector column to the embedding function
+            or empty dict if not configured.
+        """
+        return EmbeddingFunctionRegistry.get_instance().parse_functions(
+            self.schema.metadata
+        )
 
     def to_arrow(self) -> pa.Table:
         """to_arrow() is not yet supported on LanceDB cloud."""
@@ -68,19 +84,20 @@ class RemoteTable(Table):
 
     def list_indices(self):
         """List all the indices on the table"""
-        resp = self._conn._client.post(f"/v1/table/{self._name}/index/list/")
+        resp = self._conn._client.post(f"/v1/table/{self.name}/index/list/")
         return resp
 
     def index_stats(self, index_uuid: str):
         """List all the stats of a specified index"""
         resp = self._conn._client.post(
-            f"/v1/table/{self._name}/index/{index_uuid}/stats/"
+            f"/v1/table/{self.name}/index/{index_uuid}/stats/"
         )
         return resp
 
     def create_scalar_index(
         self,
         column: str,
+        index_type: Literal["BTREE", "BITMAP", "LABEL_LIST", "scalar"] = "scalar",
     ):
         """Creates a scalar index
         Parameters
@@ -88,8 +105,10 @@ class RemoteTable(Table):
         column : str
             The column to be indexed.  Must be a boolean, integer, float,
             or string column.
+        index_type : str
+            The index type of the scalar index. Must be "scalar" (BTREE),
+            "BTREE", "BITMAP", or "LABEL_LIST"
         """
-        index_type = "scalar"
 
         data = {
             "column": column,
@@ -97,9 +116,25 @@ class RemoteTable(Table):
             "replace": True,
         }
         resp = self._conn._client.post(
-            f"/v1/table/{self._name}/create_scalar_index/", data=data
+            f"/v1/table/{self.name}/create_scalar_index/", data=data
         )
 
+        return resp
+
+    def create_fts_index(
+        self,
+        column: str,
+        *,
+        replace: bool = False,
+    ):
+        data = {
+            "column": column,
+            "index_type": "FTS",
+            "replace": replace,
+        }
+        resp = self._conn._client.post(
+            f"/v1/table/{self.name}/create_index/", data=data
+        )
         return resp
 
     def create_index(
@@ -175,7 +210,7 @@ class RemoteTable(Table):
             "index_cache_size": index_cache_size,
         }
         resp = self._conn._client.post(
-            f"/v1/table/{self._name}/create_index/", data=data
+            f"/v1/table/{self.name}/create_index/", data=data
         )
 
         return resp
@@ -213,7 +248,7 @@ class RemoteTable(Table):
         data, _ = _sanitize_data(
             data,
             self.schema,
-            metadata=None,
+            metadata=self.schema.metadata,
             on_bad_vectors=on_bad_vectors,
             fill_value=fill_value,
         )
@@ -222,7 +257,7 @@ class RemoteTable(Table):
         request_id = uuid.uuid4().hex
 
         self._conn._client.post(
-            f"/v1/table/{self._name}/insert/",
+            f"/v1/table/{self.name}/insert/",
             data=payload,
             params={"request_id": request_id, "mode": mode},
             content_type=ARROW_STREAM_CONTENT_TYPE,
@@ -232,6 +267,7 @@ class RemoteTable(Table):
         self,
         query: Union[VEC, str],
         vector_column_name: Optional[str] = None,
+        query_type="auto",
     ) -> LanceVectorQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support [vector search][search]
@@ -291,9 +327,18 @@ class RemoteTable(Table):
             - and also the "_distance" column which is the distance between the query
             vector and the returned vector.
         """
-        if vector_column_name is None:
-            vector_column_name = inf_vector_column_query(self.schema)
-        return LanceVectorQueryBuilder(self, query, vector_column_name)
+        if vector_column_name is None and query is not None and query_type != "fts":
+            try:
+                vector_column_name = inf_vector_column_query(self.schema)
+            except Exception as e:
+                raise e
+
+        return LanceQueryBuilder.create(
+            self,
+            query,
+            query_type,
+            vector_column_name=vector_column_name,
+        )
 
     def _execute_query(
         self, query: Query, batch_size: Optional[int] = None
@@ -322,12 +367,12 @@ class RemoteTable(Table):
                 v = list(v)
                 q = query.copy()
                 q.vector = v
-                results.append(submit(self._name, q))
+                results.append(submit(self.name, q))
             return pa.concat_tables(
                 [add_index(r.result().to_arrow(), i) for i, r in enumerate(results)]
             ).to_reader()
         else:
-            result = self._conn._client.query(self._name, query)
+            result = self._conn._client.query(self.name, query)
             return result.to_arrow().to_reader()
 
     def merge_insert(self, on: Union[str, Iterable[str]]) -> LanceMergeInsertBuilder:
@@ -377,7 +422,7 @@ class RemoteTable(Table):
             )
 
         self._conn._client.post(
-            f"/v1/table/{self._name}/merge_insert/",
+            f"/v1/table/{self.name}/merge_insert/",
             data=payload,
             params=params,
             content_type=ARROW_STREAM_CONTENT_TYPE,
@@ -431,7 +476,7 @@ class RemoteTable(Table):
         0  2  [3.0, 4.0]       85.0 # doctest: +SKIP
         """
         payload = {"predicate": predicate}
-        self._conn._client.post(f"/v1/table/{self._name}/delete/", data=payload)
+        self._conn._client.post(f"/v1/table/{self.name}/delete/", data=payload)
 
     def update(
         self,
@@ -492,7 +537,7 @@ class RemoteTable(Table):
             updates = [[k, v] for k, v in values_sql.items()]
 
         payload = {"predicate": where, "updates": updates}
-        self._conn._client.post(f"/v1/table/{self._name}/update/", data=payload)
+        self._conn._client.post(f"/v1/table/{self.name}/update/", data=payload)
 
     def cleanup_old_versions(self, *_):
         """cleanup_old_versions() is not supported on the LanceDB cloud"""
@@ -509,7 +554,7 @@ class RemoteTable(Table):
     def count_rows(self, filter: Optional[str] = None) -> int:
         payload = {"predicate": filter}
         resp = self._conn._client.post(
-            f"/v1/table/{self._name}/count_rows/", data=payload
+            f"/v1/table/{self.name}/count_rows/", data=payload
         )
         return resp
 

@@ -45,9 +45,19 @@ export interface CreateTableOptions {
    */
   storageOptions?: Record<string, string>;
   /**
+   * The version of the data storage format to use.
+   *
+   * The default is `legacy`, which is Lance format v1.
+   * `stable` is the new format, which is Lance format v2.
+   */
+  dataStorageVersion?: string;
+
+  /**
    * If true then data files will be written with the legacy format
    *
    * The default is true while the new format is in beta
+   *
+   * Deprecated.
    */
   useLegacyFormat?: boolean;
   schema?: SchemaLike;
@@ -247,12 +257,19 @@ export class LocalConnection extends Connection {
       throw new Error("data is required");
     }
     const { buf, mode } = await Table.parseTableData(data, options);
+    let dataStorageVersion = "legacy";
+    if (options?.dataStorageVersion !== undefined) {
+      dataStorageVersion = options.dataStorageVersion;
+    } else if (options?.useLegacyFormat !== undefined) {
+      dataStorageVersion = options.useLegacyFormat ? "legacy" : "stable";
+    }
+
     const innerTable = await this.inner.createTable(
       nameOrOptions,
       buf,
       mode,
       cleanseStorageOptions(options?.storageOptions),
-      options?.useLegacyFormat,
+      dataStorageVersion,
     );
 
     return new LocalTable(innerTable);
@@ -276,6 +293,13 @@ export class LocalConnection extends Connection {
       metadata = registry.getTableMetadata([embeddingFunction]);
     }
 
+    let dataStorageVersion = "legacy";
+    if (options?.dataStorageVersion !== undefined) {
+      dataStorageVersion = options.dataStorageVersion;
+    } else if (options?.useLegacyFormat !== undefined) {
+      dataStorageVersion = options.useLegacyFormat ? "legacy" : "stable";
+    }
+
     const table = makeEmptyTable(schema, metadata);
     const buf = await fromTableToBuffer(table);
     const innerTable = await this.inner.createEmptyTable(
@@ -283,7 +307,7 @@ export class LocalConnection extends Connection {
       buf,
       mode,
       cleanseStorageOptions(options?.storageOptions),
-      options?.useLegacyFormat,
+      dataStorageVersion,
     );
     return new LocalTable(innerTable);
   }

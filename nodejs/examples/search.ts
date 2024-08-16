@@ -32,6 +32,7 @@ const _results2 = await tbl
   .distanceType("cosine")
   .limit(10)
   .toArray();
+console.log(_results2);
 // --8<-- [end:search2]
 
 console.log("search: done");

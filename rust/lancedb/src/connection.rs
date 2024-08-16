@@ -22,7 +22,7 @@ use std::sync::Arc;
 use arrow_array::{RecordBatchIterator, RecordBatchReader};
 use arrow_schema::SchemaRef;
 use lance::dataset::{ReadParams, WriteMode};
-use lance::io::{ObjectStore, ObjectStoreParams, WrappingObjectStore};
+use lance::io::{ObjectStore, ObjectStoreParams, ObjectStoreRegistry, WrappingObjectStore};
 use object_store::{aws::AwsCredential, local::LocalFileSystem};
 use snafu::prelude::*;
 
@@ -35,6 +35,7 @@ use crate::io::object_store::MirroringObjectStoreWrapper;
 use crate::table::{NativeTable, TableDefinition, WriteOptions};
 use crate::utils::validate_table_name;
 use crate::Table;
+pub use lance_encoding::version::LanceFileVersion;
 
 #[cfg(feature = "remote")]
 use log::warn;
@@ -140,7 +141,7 @@ pub struct CreateTableBuilder<const HAS_DATA: bool, T: IntoArrow> {
     pub(crate) write_options: WriteOptions,
     pub(crate) table_definition: Option<TableDefinition>,
     pub(crate) embeddings: Vec<(EmbeddingDefinition, Arc<dyn EmbeddingFunction>)>,
-    pub(crate) use_legacy_format: bool,
+    pub(crate) data_storage_version: Option<LanceFileVersion>,
 }
 
 // Builder methods that only apply when we have initial data
@@ -154,7 +155,7 @@ impl<T: IntoArrow> CreateTableBuilder<true, T> {
             write_options: WriteOptions::default(),
             table_definition: None,
             embeddings: Vec::new(),
-            use_legacy_format: true,
+            data_storage_version: None,
         }
     }
 
@@ -186,7 +187,7 @@ impl<T: IntoArrow> CreateTableBuilder<true, T> {
             mode: self.mode,
             write_options: self.write_options,
             embeddings: self.embeddings,
-            use_legacy_format: self.use_legacy_format,
+            data_storage_version: self.data_storage_version,
         };
         Ok((data, builder))
     }
@@ -220,7 +221,7 @@ impl CreateTableBuilder<false, NoData> {
             mode: CreateTableMode::default(),
             write_options: WriteOptions::default(),
             embeddings: Vec::new(),
-            use_legacy_format: true,
+            data_storage_version: None,
         }
     }
 
@@ -283,6 +284,14 @@ impl<const HAS_DATA: bool, T: IntoArrow> CreateTableBuilder<HAS_DATA, T> {
         self
     }
 
+    /// Set the data storage version.
+    ///
+    /// The default is `LanceFileVersion::Legacy`.
+    pub fn data_storage_version(mut self, data_storage_version: LanceFileVersion) -> Self {
+        self.data_storage_version = Some(data_storage_version);
+        self
+    }
+
     /// Set to true to use the v1 format for data files
     ///
     /// This is currently defaulted to true and can be set to false to opt-in
@@ -292,8 +301,13 @@ impl<const HAS_DATA: bool, T: IntoArrow> CreateTableBuilder<HAS_DATA, T> {
     ///
     /// Once the new format is stable, the default will change to `false` for
     /// several releases and then eventually this option will be removed.
+    #[deprecated(since = "0.9.0", note = "use data_storage_version instead")]
     pub fn use_legacy_format(mut self, use_legacy_format: bool) -> Self {
-        self.use_legacy_format = use_legacy_format;
+        self.data_storage_version = if use_legacy_format {
+            Some(LanceFileVersion::Legacy)
+        } else {
+            Some(LanceFileVersion::Stable)
+        };
         self
     }
 }
@@ -789,13 +803,14 @@ impl Database {
 
                 let plain_uri = url.to_string();
 
+                let registry = Arc::new(ObjectStoreRegistry::default());
                 let storage_options = options.storage_options.clone();
                 let os_params = ObjectStoreParams {
                     storage_options: Some(storage_options.clone()),
                     ..Default::default()
                 };
                 let (object_store, base_path) =
-                    ObjectStore::from_uri_and_params(&plain_uri, &os_params).await?;
+                    ObjectStore::from_uri_and_params(registry, &plain_uri, &os_params).await?;
                 if object_store.is_local() {
                     Self::try_create_dir(&plain_uri).context(CreateDirSnafu { path: plain_uri })?;
                 }
@@ -961,7 +976,7 @@ impl ConnectionInternal for Database {
         if matches!(&options.mode, CreateTableMode::Overwrite) {
             write_params.mode = WriteMode::Overwrite;
         }
-        write_params.use_legacy_format = options.use_legacy_format;
+        write_params.data_storage_version = options.data_storage_version;
 
         match NativeTable::create(
             &table_uri,
@@ -1202,7 +1217,7 @@ mod tests {
 
         let tbl = db
             .create_table("v2_test", make_data())
-            .use_legacy_format(false)
+            .data_storage_version(LanceFileVersion::Stable)
             .execute()
             .await
             .unwrap();

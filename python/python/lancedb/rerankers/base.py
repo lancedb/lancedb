@@ -220,8 +220,8 @@ class Reranker(ABC):
 
     def _keep_relevance_score(self, combined_results: pa.Table):
         if self.score == "relevance":
-            if "score" in combined_results.column_names:
-                combined_results = combined_results.drop_columns(["score"])
+            if "_score" in combined_results.column_names:
+                combined_results = combined_results.drop_columns(["_score"])
             if "_distance" in combined_results.column_names:
                 combined_results = combined_results.drop_columns(["_distance"])
         return combined_results

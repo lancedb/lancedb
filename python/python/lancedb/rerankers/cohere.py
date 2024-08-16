@@ -113,6 +113,6 @@ class CohereReranker(Reranker):
     ):
         result_set = self._rerank(fts_results, query)
         if self.score == "relevance":
-            result_set = result_set.drop_columns(["score"])
+            result_set = result_set.drop_columns(["_score"])
 
         return result_set
