@@ -12,11 +12,11 @@ over scalar columns.
 - `LABEL_LIST`: a special index that is used to index list columns whose values have a finite set of possibilities.
   For example, a column that contains lists of tags (e.g. `["tag1", "tag2", "tag3"]`) can be indexed with a `LABEL_LIST` index.
 
-| Data Type                                     | Filter                           | Index Type   |
-| --------------------------------------------- | -------------------------------- | ------------ |
-| Numeric, String, Temporal                      | `<`, `=`, `>`, `in`, `between`, `is null`                    | `BTREE`      |
-| Boolean, numbers or strings with finite range of values         | `<`, `=`, `>`, `in`, `between`, `is null`   | `BITMAP`     |
-| List of low cardinality of numbers or strings | `array_has_any`, `array_has_all` | `LABEL_LIST` |
+| Data Type                                                       | Filter                                    | Index Type   |
+| --------------------------------------------------------------- | ----------------------------------------- | ------------ |
+| Numeric, String, Temporal                                       | `<`, `=`, `>`, `in`, `between`, `is null` | `BTREE`      |
+| Boolean, numbers or strings with fewer than 1,000 unique values | `<`, `=`, `>`, `in`, `between`, `is null` | `BITMAP`     |
+| List of low cardinality of numbers or strings                   | `array_has_any`, `array_has_all`          | `LABEL_LIST` |
 
 === "Python"
 
@@ -25,26 +25,23 @@ over scalar columns.
     books = [
       {"book_id": 1, "publisher": "plenty of books", "tags": ["fantasy", "adventure"]},
       {"book_id": 2, "publisher": "book town", "tags": ["non-fiction"]},
-      {"my_col": 3, "category": "C", "vector": [5, 6]}
+      {"book_id": 3, "publisher": "oreilly", "tags": ["textbook"]}
     ]
 
     db = lancedb.connect("./db")
     table = db.create_table("my_table", data)
-    table.create_scalar_index("my_col")  # BTree by default
-    table.create_scalar_index("category", index_type="BITMAP")
+    table.create_scalar_index("book_id")  # BTree by default
+    table.create_scalar_index("publisher", index_type="BITMAP")
     ```
 
 === "Typescript"
-
-    Only `BTree` index is supported today. `BITMAP` and `LABEL_LIST` will be added soon.
-
-    Follow [Github issue #1511](https://github.com/lancedb/lancedb/issues/1511) for updates.
 
     ```js
     const db = await lancedb.connect("data/sample-lancedb");
     const tbl = await db.openTable("my_vectors");
 
     await tbl.create_index("my_float_column");
+    await tlb.create_index("publisher", { config: lancedb.Index.bitmap() })
     ```
 
 For example, the following scan will be faster if the column `my_col` has a scalar index:
@@ -68,7 +65,7 @@ For example, the following scan will be faster if the column `my_col` has a scal
 
         await tbl
           .query()
-          .where("my_col != 7")
+          .where("book_id != 7")
           .limit(10)
           .toArray();
         ```
