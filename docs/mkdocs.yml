@@ -58,7 +58,7 @@ plugins:
             - https://pandas.pydata.org/docs/objects.inv
   - mkdocs-jupyter
   - render_swagger:
-      allow_arbitrary_locations : true
+      allow_arbitrary_locations: true
 
 markdown_extensions:
   - admonition
@@ -89,9 +89,10 @@ nav:
           - Data management: concepts/data_management.md
       - 🔨 Guides:
           - Working with tables: guides/tables.md
-          - Building an ANN index: ann_indexes.md
+          - Building a vector index: ann_indexes.md
           - Vector Search: search.md
           - Full-text search: fts.md
+          - Building a scalar index: guides/scalar_index.md
           - Hybrid search:
               - Overview: hybrid_search/hybrid_search.md
               - Comparing Rerankers: hybrid_search/eval.md
@@ -128,12 +129,12 @@ nav:
           - Polars: python/polars_arrow.md
           - DuckDB: python/duckdb.md
           - LangChain:
-            - LangChain 🔗: integrations/langchain.md
-            - LangChain demo: notebooks/langchain_demo.ipynb
-            - LangChain JS/TS 🔗: https://js.langchain.com/docs/integrations/vectorstores/lancedb
+              - LangChain 🔗: integrations/langchain.md
+              - LangChain demo: notebooks/langchain_demo.ipynb
+              - LangChain JS/TS 🔗: https://js.langchain.com/docs/integrations/vectorstores/lancedb
           - LlamaIndex 🦙:
-            - LlamaIndex docs: integrations/llamaIndex.md
-            - LlamaIndex demo: notebooks/llamaIndex_demo.ipynb
+              - LlamaIndex docs: integrations/llamaIndex.md
+              - LlamaIndex demo: notebooks/llamaIndex_demo.ipynb
           - Pydantic: python/pydantic.md
           - Voxel51: integrations/voxel51.md
           - PromptTools: integrations/prompttools.md
@@ -183,6 +184,7 @@ nav:
       - Building an ANN index: ann_indexes.md
       - Vector Search: search.md
       - Full-text search: fts.md
+      - Building a scalar index: guides/scalar_index.md
       - Hybrid search:
           - Overview: hybrid_search/hybrid_search.md
           - Comparing Rerankers: hybrid_search/eval.md
