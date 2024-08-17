@@ -146,7 +146,8 @@ nav:
               - Multimodal: examples/python_examples/multimodal.md
               - Rag: examples/python_examples/rag.md
               - Vector Search: examples/python_examples/vector_search.md
-              - Miscellaneous:
+              - Chatbot: examples/python_examples/chatbot.md
+              - Miscellaneous: 
                   - YouTube Transcript Search: notebooks/youtube_transcript_search.ipynb
                   - Documentation QA Bot using LangChain: notebooks/code_qa_bot.ipynb
                   - Multimodal search using CLIP: notebooks/multimodal_search.ipynb
@@ -233,7 +234,8 @@ nav:
           - Multimodal: examples/python_examples/multimodal.md
           - Rag: examples/python_examples/rag.md
           - Vector Search: examples/python_examples/vector_search.md
-          - Miscellaneous:
+          - Chatbot: examples/python_examples/chatbot.md
+          - Miscellaneous: 
               - YouTube Transcript Search: notebooks/youtube_transcript_search.ipynb
               - Documentation QA Bot using LangChain: notebooks/code_qa_bot.ipynb
               - Multimodal search using CLIP: notebooks/multimodal_search.ipynb

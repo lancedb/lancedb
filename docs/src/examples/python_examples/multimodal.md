@@ -1,8 +1,8 @@
-# Multimodal Search with LanceDB 🔍💡
+# **Multimodal Search with LanceDB 🤹‍♂️🔍**
 
 Experience the future of search with LanceDB's multimodal capabilities. Combine text and image queries to find the most relevant results in your corpus and unlock new possibilities! 🔓💡
 
-#### Explore the Future of Search 🚀
+**Explore the Future of Search 🚀**
 
 Unlock the power of multimodal search with LanceDB, enabling efficient vector-based retrieval of text and image data! 📊💻
 

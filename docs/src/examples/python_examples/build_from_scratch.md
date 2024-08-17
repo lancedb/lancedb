@@ -1,8 +1,8 @@
-# Build from Scratch with LanceDB 🚀
+# **Build from Scratch with LanceDB 🛠️🚀**
 
-Start building your GenAI applications from the ground up using LanceDB's efficient vector-based document retrieval capabilities! 📄
+Start building your GenAI applications from the ground up using LanceDB's efficient vector-based document retrieval capabilities! 📑
 
-#### Get Started in Minutes ⏱️
+**Get Started in Minutes ⏱️**
 
 These examples provide a solid foundation for building your own GenAI applications using LanceDB. Jump from idea to proof of concept quickly with applied examples. Get started and see what you can create! 💻
 
