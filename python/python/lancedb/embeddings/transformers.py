@@ -56,7 +56,6 @@ class TransformersEmbeddingFunction(EmbeddingFunction):
         self._model = transformers.AutoModel.from_pretrained(self.name)
         self._model.to(self.device)
 
-
     if PYDANTIC_VERSION.major < 2:  # Pydantic 1.x compat
 
         class Config:

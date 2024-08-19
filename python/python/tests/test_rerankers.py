@@ -251,6 +251,7 @@ def test_cross_encoder_reranker(tmp_path, use_tantivy):
     table, schema = get_test_table(tmp_path, use_tantivy)
     _run_test_reranker(reranker, table, "single player experience", None, schema)
 
+
 @pytest.mark.parametrize("use_tantivy", [True, False])
 def test_colbert_reranker(tmp_path, use_tantivy):
     pytest.importorskip("transformers")

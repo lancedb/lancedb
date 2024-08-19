@@ -1,5 +1,3 @@
-from functools import cached_property
-
 import pyarrow as pa
 
 from ..util import attempt_import_or_raise
@@ -32,8 +30,7 @@ class ColbertReranker(Reranker):
         rerankers = attempt_import_or_raise(
             "rerankers"
         )  # import here for faster ops later
-        self.colbert = rerankers.Reranker(self.model_name, model_type = "colbert")
-
+        self.colbert = rerankers.Reranker(self.model_name, model_type="colbert")
 
     def _rerank(self, result_set: pa.Table, query: str):
         docs = result_set[self.column].to_pylist()
