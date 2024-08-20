@@ -825,7 +825,8 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         LanceFtsQueryBuilder
             The LanceQueryBuilder object.
         """
-        raise NotImplementedError("Reranking is not yet supported for FTS queries.")
+        self._reranker = reranker
+        return self
 
 
 class LanceEmptyQueryBuilder(LanceQueryBuilder):
