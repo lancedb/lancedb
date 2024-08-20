@@ -37,7 +37,7 @@ class ColbertReranker(Reranker):
         doc_ids = [i for i in range(len(docs))]
         result = self.colbert.rank(query, docs, doc_ids=doc_ids)
 
-        # get the scores of each document in the same order as the input       
+        # get the scores of each document in the same order as the input
         scores = [result.get_result_by_docid(i).score for i in doc_ids]
 
         # add the scores
