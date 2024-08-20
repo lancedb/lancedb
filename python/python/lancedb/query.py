@@ -356,9 +356,7 @@ class LanceQueryBuilder(ABC):
         LanceQueryBuilder
             The LanceQueryBuilder object.
         """
-        if limit is None or limit <= 0:
-            self._limit = None
-        else:
+        if limit is not None and limit > 0:
             self._limit = limit
         return self
 
