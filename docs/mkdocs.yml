@@ -148,6 +148,7 @@ nav:
               - Vector Search: examples/python_examples/vector_search.md
               - Chatbot: examples/python_examples/chatbot.md
               - Evaluation: examples/python_examples/evaluations.md
+              - AI Agent: examples/python_examples/aiagent.md
               - Miscellaneous: 
                   - YouTube Transcript Search: notebooks/youtube_transcript_search.ipynb
                   - Documentation QA Bot using LangChain: notebooks/code_qa_bot.ipynb
@@ -237,6 +238,7 @@ nav:
           - Vector Search: examples/python_examples/vector_search.md
           - Chatbot: examples/python_examples/chatbot.md
           - Evaluation: examples/python_examples/evaluations.md
+          - AI Agent: examples/python_examples/aiagent.md
           - Miscellaneous: 
               - YouTube Transcript Search: notebooks/youtube_transcript_search.ipynb
               - Documentation QA Bot using LangChain: notebooks/code_qa_bot.ipynb
