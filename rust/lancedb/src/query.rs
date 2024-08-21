@@ -338,6 +338,12 @@ pub trait QueryBase {
     /// it will default to 10.
     fn limit(self, limit: usize) -> Self;
 
+    // Set the offset of the query.
+
+    /// By default, it fetches starting with the first row.
+    /// This method can be used to skip the first `offset` rows.
+    fn offset(self, offset: usize) -> Self;
+
     /// Only return rows which match the filter.
     ///
     /// The filter should be supplied as an SQL query string.  For example:
@@ -405,6 +411,11 @@ pub trait HasQuery {
 impl<T: HasQuery> QueryBase for T {
     fn limit(mut self, limit: usize) -> Self {
         self.mut_query().limit = Some(limit);
+        self
+    }
+
+    fn offset(mut self, offset: usize) -> Self {
+        self.mut_query().offset = Some(offset);
         self
     }
 

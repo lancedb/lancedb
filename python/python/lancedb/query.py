@@ -361,6 +361,25 @@ class LanceQueryBuilder(ABC):
         else:
             self._limit = limit
         return self
+    
+    def offset(self, offset: int) -> LanceQueryBuilder:
+        """Set the offset for the results.
+
+        Parameters
+        ----------
+        offset: int
+            The offset to start fetching results from.
+
+        Returns
+        -------
+        LanceQueryBuilder
+            The LanceQueryBuilder object.
+        """
+        if offset is None or offset < 0:
+            self._offset = None
+        else:
+            self._offset = offset
+        return self
 
     def select(self, columns: Union[list[str], dict[str, str]]) -> LanceQueryBuilder:
         """Set the columns to return.
