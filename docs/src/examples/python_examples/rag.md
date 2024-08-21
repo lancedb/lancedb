@@ -2,7 +2,7 @@
 **RAG: Revolutionize Information Retrieval with LanceDB 🔓🧐**
 ====================================================================
 
-Unlock the full potential of Retrieval-Augmented Generation (RAG) with LanceDB, the ultimate solution for efficient vector-based information retrieval 📊. Input text queries and retrieve relevant documents with lightning-fast speed ⚡️ and accuracy ✅. Generate comprehensive answers by combining retrieved information, uncovering new insights 🔍 and connections.
+Unlock the full potential of Retrieval-Augmented Generation (RAG) with LanceDB, a solution for efficient vector-based information retrieval 📊. 
 
 **Experience the Future of Search 🔄**
 

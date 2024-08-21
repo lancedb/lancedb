@@ -3,11 +3,11 @@
 
 **Evaluation Fundamentals 📊**
 
-The Evaluation Application is a comprehensive tool designed to measure the performance of text-based inputs, enabling data-driven optimization and improvement 📈. 
+Evaluation is a comprehensive tool designed to measure the performance of text-based inputs, enabling data-driven optimization and improvement 📈. 
 
 **Text Evaluation 101 📚**
 
-By leveraging cutting-edge technologies like Prompttools and RAGAs, this application provides a robust framework for evaluating reference and candidate texts across various metrics 📊, ensuring high-quality text outputs that meet specific requirements and standards 📝.
+By leveraging cutting-edge technologies, this application provides a robust framework for evaluating reference and candidate texts across various metrics 📊, ensuring high-quality text outputs that meet specific requirements and standards 📝.
 
 | **Evaluation** | **Description** | **Links** |
 | -------------- | --------------- | --------- |
