@@ -456,6 +456,22 @@ class LanceQueryBuilder(ABC):
                 "q": self._query,
             },
         ).explain_plan(verbose)
+    
+    @abstractmethod
+    def rerank(self, reranker: Reranker) -> LanceQueryBuilder:
+        """Rerank the results using the specified reranker.
+
+        Parameters
+        ----------
+        reranker: Reranker
+            The reranker to use.
+
+        Returns
+        -------
+        
+        The LanceQueryBuilder object.
+        """
+        raise NotImplementedError
 
 
 class LanceVectorQueryBuilder(LanceQueryBuilder):
