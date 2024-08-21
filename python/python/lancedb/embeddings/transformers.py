@@ -79,7 +79,7 @@ class TransformersEmbeddingFunction(EmbeddingFunction):
                 text, return_tensors="pt", padding=True, truncation=True
             ).to(self.device)
             emb = self._model(**encoding).last_hidden_state.mean(dim=1).squeeze()
-            embedding.append(emb.detach().numpy())
+            embedding.append(emb.tolist())
 
         return embedding
 
