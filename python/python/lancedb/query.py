@@ -727,7 +727,10 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
             vector=[],
         )
         results = self._table._execute_query(query)
-        return results.read_all()
+        results = results.read_all()
+        if self._reranker is not None:
+            results = self._reranker.rerank_fts(self._query, results)
+        return results
 
     def tantivy_to_arrow(self) -> pa.Table:
         try:
