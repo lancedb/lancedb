@@ -853,6 +853,21 @@ class LanceEmptyQueryBuilder(LanceQueryBuilder):
             limit=self._limit,
         )
 
+    def rerank(self, reranker: Reranker) -> LanceEmptyQueryBuilder:
+        """Rerank the results using the specified reranker.
+
+        Parameters
+        ----------
+        reranker: Reranker
+            The reranker to use.
+
+        Returns
+        -------
+        LanceEmptyQueryBuilder
+            The LanceQueryBuilder object.
+        """
+        raise NotImplementedError("Reranking is not yet supported.")
+
 
 class LanceHybridQueryBuilder(LanceQueryBuilder):
     """
