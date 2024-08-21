@@ -127,6 +127,7 @@ class InstructorEmbeddingFunction(TextEmbeddingFunction):
             batch_size=self.batch_size,
             show_progress_bar=self.show_progress_bar,
             normalize_embeddings=self.normalize_embeddings,
+            device=self.device,
         ).tolist()
         return res
 
