@@ -13,7 +13,7 @@ jobs:
     timeout-minutes: 45
     defaults:
       run:
-        working-directory: ./java
+        working-directory: ./java/core/lancedb-jni
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -36,7 +36,7 @@ jobs:
     timeout-minutes: 45
     defaults:
       run:
-        working-directory: ./java
+        working-directory: ./java/core/lancedb-jni
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -44,7 +44,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: "1.79.0"
-          cache-workspaces: "src/rust"
+          cache-workspaces: "./java/core/lancedb-jni"
           # Disable full debug symbol generation to speed up CI build and keep memory down
           # "1" means line tables only, which is useful for panic tracebacks.
           rustflags: "-C debuginfo=1"
@@ -55,7 +55,6 @@ jobs:
       - name: Build release
         run: |
           cargo build --release
-          cp ../target/release/liblancedb_jni.so liblancedb_jni.so
       - uses: actions/upload-artifact@v4
         with:
           name: liblancedb_jni_linux_aarch64.zip
