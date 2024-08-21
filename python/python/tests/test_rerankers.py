@@ -236,33 +236,37 @@ def test_rrf_reranker(tmp_path, use_tantivy):
 @pytest.mark.skipif(
     os.environ.get("COHERE_API_KEY") is None, reason="COHERE_API_KEY not set"
 )
-def test_cohere_reranker(tmp_path):
+@pytest.mark.parametrize("use_tantivy", [True, False])
+def test_cohere_reranker(tmp_path, use_tantivy):
     pytest.importorskip("cohere")
     reranker = CohereReranker()
-    table, schema = get_test_table(tmp_path)
+    table, schema = get_test_table(tmp_path, use_tantivy)
     _run_test_reranker(reranker, table, "single player experience", None, schema)
 
 
-def test_cross_encoder_reranker(tmp_path):
+@pytest.mark.parametrize("use_tantivy", [True, False])
+def test_cross_encoder_reranker(tmp_path, use_tantivy):
     pytest.importorskip("sentence_transformers")
     reranker = CrossEncoderReranker()
-    table, schema = get_test_table(tmp_path)
+    table, schema = get_test_table(tmp_path, use_tantivy)
     _run_test_reranker(reranker, table, "single player experience", None, schema)
 
 
-def test_colbert_reranker(tmp_path):
+@pytest.mark.parametrize("use_tantivy", [True, False])
+def test_colbert_reranker(tmp_path, use_tantivy):
     pytest.importorskip("transformers")
     reranker = ColbertReranker()
-    table, schema = get_test_table(tmp_path)
+    table, schema = get_test_table(tmp_path, use_tantivy)
     _run_test_reranker(reranker, table, "single player experience", None, schema)
 
 
 @pytest.mark.skipif(
     os.environ.get("OPENAI_API_KEY") is None, reason="OPENAI_API_KEY not set"
 )
-def test_openai_reranker(tmp_path):
+@pytest.mark.parametrize("use_tantivy", [True, False])
+def test_openai_reranker(tmp_path, use_tantivy):
     pytest.importorskip("openai")
-    table, schema = get_test_table(tmp_path)
+    table, schema = get_test_table(tmp_path, use_tantivy)
     reranker = OpenaiReranker()
     _run_test_reranker(reranker, table, "single player experience", None, schema)
 
@@ -270,8 +274,9 @@ def test_openai_reranker(tmp_path):
 @pytest.mark.skipif(
     os.environ.get("JINA_API_KEY") is None, reason="JINA_API_KEY not set"
 )
-def test_jina_reranker(tmp_path):
+@pytest.mark.parametrize("use_tantivy", [True, False])
+def test_jina_reranker(tmp_path, use_tantivy):
     pytest.importorskip("jina")
-    table, schema = get_test_table(tmp_path)
+    table, schema = get_test_table(tmp_path, use_tantivy)
     reranker = JinaReranker()
     _run_test_reranker(reranker, table, "single player experience", None, schema)

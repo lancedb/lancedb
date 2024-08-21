@@ -1,5 +1,3 @@
-from functools import cached_property
-
 import pyarrow as pa
 
 from ..util import attempt_import_or_raise
@@ -12,7 +10,7 @@ class ColbertReranker(Reranker):
 
     Parameters
     ----------
-    model_name : str, default "colbert-ir/colbertv2.0"
+    model_name : str, default "colbert" (colbert-ir/colbert-v2.0)
         The name of the cross encoder model to use.
     column : str, default "text"
         The name of the column to use as input to the cross encoder model.
@@ -22,41 +20,26 @@ class ColbertReranker(Reranker):
 
     def __init__(
         self,
-        model_name: str = "colbert-ir/colbertv2.0",
+        model_name: str = "colbert",
         column: str = "text",
         return_score="relevance",
     ):
         super().__init__(return_score)
         self.model_name = model_name
         self.column = column
-        self.torch = attempt_import_or_raise(
-            "torch"
+        rerankers = attempt_import_or_raise(
+            "rerankers"
         )  # import here for faster ops later
+        self.colbert = rerankers.Reranker(self.model_name, model_type="colbert")
 
     def _rerank(self, result_set: pa.Table, query: str):
         docs = result_set[self.column].to_pylist()
+        doc_ids = list(range(len(docs)))
+        result = self.colbert.rank(query, docs, doc_ids=doc_ids)
 
-        tokenizer, model = self._model
+        # get the scores of each document in the same order as the input
+        scores = [result.get_result_by_docid(i).score for i in doc_ids]
 
-        # Encode the query
-        query_encoding = tokenizer(query, return_tensors="pt")
-        query_embedding = model(**query_encoding).last_hidden_state.mean(dim=1)
-        scores = []
-        # Get score for each document
-        for document in docs:
-            document_encoding = tokenizer(
-                document, return_tensors="pt", truncation=True, max_length=512
-            )
-            document_embedding = model(**document_encoding).last_hidden_state
-            # Calculate MaxSim score
-            score = self.maxsim(query_embedding.unsqueeze(0), document_embedding)
-            scores.append(score.item())
-
-        # replace the self.column column with the docs
-        result_set = result_set.drop(self.column)
-        result_set = result_set.append_column(
-            self.column, pa.array(docs, type=pa.string())
-        )
         # add the scores
         result_set = result_set.append_column(
             "_relevance_score", pa.array(scores, type=pa.float32())
@@ -110,31 +93,3 @@ class ColbertReranker(Reranker):
         result_set = result_set.sort_by([("_relevance_score", "descending")])
 
         return result_set
-
-    @cached_property
-    def _model(self):
-        transformers = attempt_import_or_raise("transformers")
-        tokenizer = transformers.AutoTokenizer.from_pretrained(self.model_name)
-        model = transformers.AutoModel.from_pretrained(self.model_name)
-
-        return tokenizer, model
-
-    def maxsim(self, query_embedding, document_embedding):
-        # Expand dimensions for broadcasting
-        # Query: [batch, length, size] -> [batch, query, 1, size]
-        # Document: [batch, length, size] -> [batch, 1, length, size]
-        expanded_query = query_embedding.unsqueeze(2)
-        expanded_doc = document_embedding.unsqueeze(1)
-
-        # Compute cosine similarity across the embedding dimension
-        sim_matrix = self.torch.nn.functional.cosine_similarity(
-            expanded_query, expanded_doc, dim=-1
-        )
-
-        # Take the maximum similarity for each query token (across all document tokens)
-        # sim_matrix shape: [batch_size, query_length, doc_length]
-        max_sim_scores, _ = self.torch.max(sim_matrix, dim=2)
-
-        # Average these maximum scores across all query tokens
-        avg_max_sim = self.torch.mean(max_sim_scores, dim=1)
-        return avg_max_sim

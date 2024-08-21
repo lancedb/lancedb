@@ -44,6 +44,7 @@ class TransformersEmbeddingFunction(EmbeddingFunction):
     """
 
     name: str = "colbert-ir/colbertv2.0"
+    device: str = "cpu"
     _tokenizer: Any = PrivateAttr()
     _model: Any = PrivateAttr()
 
@@ -53,6 +54,7 @@ class TransformersEmbeddingFunction(EmbeddingFunction):
         transformers = attempt_import_or_raise("transformers")
         self._tokenizer = transformers.AutoTokenizer.from_pretrained(self.name)
         self._model = transformers.AutoModel.from_pretrained(self.name)
+        self._model.to(self.device)
 
     if PYDANTIC_VERSION.major < 2:  # Pydantic 1.x compat
 
@@ -75,9 +77,9 @@ class TransformersEmbeddingFunction(EmbeddingFunction):
         for text in texts:
             encoding = self._tokenizer(
                 text, return_tensors="pt", padding=True, truncation=True
-            )
+            ).to(self.device)
             emb = self._model(**encoding).last_hidden_state.mean(dim=1).squeeze()
-            embedding.append(emb.detach().numpy())
+            embedding.append(emb.tolist())
 
         return embedding
 
