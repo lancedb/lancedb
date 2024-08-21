@@ -7,7 +7,7 @@ Evaluation is a comprehensive tool designed to measure the performance of text-b
 
 **Text Evaluation 101 📚**
 
-By leveraging cutting-edge technologies, this application provides a robust framework for evaluating reference and candidate texts across various metrics 📊, ensuring high-quality text outputs that meet specific requirements and standards 📝.
+By leveraging cutting-edge technologies, this provides a robust framework for evaluating reference and candidate texts across various metrics 📊, ensuring high-quality text outputs that meet specific requirements and standards 📝.
 
 | **Evaluation** | **Description** | **Links** |
 | -------------- | --------------- | --------- |
