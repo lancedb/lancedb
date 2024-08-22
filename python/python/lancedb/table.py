@@ -557,7 +557,7 @@ class Table(ABC):
         vector_column_name: Optional[str] = None,
         query_type: QueryType = "auto",
         ordering_field_name: Optional[str] = None,
-        fts_columns: Union[str, List[str], None] = None,
+        fts_columns: Optional[Union[str, List[str]]] = None,
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support [vector search][search]
@@ -1438,7 +1438,7 @@ class LanceTable(Table):
         vector_column_name: Optional[str] = None,
         query_type: Literal["vector"] = "vector",
         ordering_field_name: Optional[str] = None,
-        fts_columns: Union[str, List[str], None] = None,
+        fts_columns: Optional[Union[str, List[str]]] = None,
     ) -> LanceVectorQueryBuilder: ...
 
     @overload
@@ -1448,7 +1448,7 @@ class LanceTable(Table):
         vector_column_name: Optional[str] = None,
         query_type: Literal["fts"] = "fts",
         ordering_field_name: Optional[str] = None,
-        fts_columns: Union[str, List[str], None] = None,
+        fts_columns: Optional[Union[str, List[str]]] = None,
     ) -> LanceFtsQueryBuilder: ...
 
     @overload
@@ -1458,7 +1458,7 @@ class LanceTable(Table):
         vector_column_name: Optional[str] = None,
         query_type: Literal["hybrid"] = "hybrid",
         ordering_field_name: Optional[str] = None,
-        fts_columns: Union[str, List[str], None] = None,
+        fts_columns: Optional[Union[str, List[str]]] = None,
     ) -> LanceHybridQueryBuilder: ...
 
     @overload
@@ -1468,7 +1468,7 @@ class LanceTable(Table):
         vector_column_name: Optional[str] = None,
         query_type: QueryType = "auto",
         ordering_field_name: Optional[str] = None,
-        fts_columns: Union[str, List[str], None] = None,
+        fts_columns: Optional[Union[str, List[str]]] = None,
     ) -> LanceEmptyQueryBuilder: ...
 
     def search(
@@ -1477,7 +1477,7 @@ class LanceTable(Table):
         vector_column_name: Optional[str] = None,
         query_type: QueryType = "auto",
         ordering_field_name: Optional[str] = None,
-        fts_columns: Union[str, List[str], None] = None,
+        fts_columns: Optional[Union[str, List[str]]] = None,
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support [vector search][search]
