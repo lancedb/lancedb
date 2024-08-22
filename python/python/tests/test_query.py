@@ -119,19 +119,14 @@ def test_query_builder(table):
 
 def test_vector_query_with_no_limit(table):
     with pytest.raises(ValueError):
-        rs = (
-            LanceVectorQueryBuilder(table, [0, 0], "vector")
-            .limit(0)
-            .select(["id", "vector"])
-            .to_list()
-        )
+        LanceVectorQueryBuilder(table, [0, 0], "vector").limit(0).select(
+            ["id", "vector"]
+        ).to_list()
+
     with pytest.raises(ValueError):
-        rs = (
-            LanceVectorQueryBuilder(table, [0, 0], "vector")
-            .limit(0)
-            .select(["id", "vector"])
-            .to_list()
-        )
+        LanceVectorQueryBuilder(table, [0, 0], "vector").limit(None).select(
+            ["id", "vector"]
+        ).to_list()
 
 
 def test_query_builder_batches(table):
