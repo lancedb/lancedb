@@ -457,6 +457,22 @@ class LanceQueryBuilder(ABC):
             },
         ).explain_plan(verbose)
 
+    @abstractmethod
+    def rerank(self, reranker: Reranker) -> LanceQueryBuilder:
+        """Rerank the results using the specified reranker.
+
+        Parameters
+        ----------
+        reranker: Reranker
+            The reranker to use.
+
+        Returns
+        -------
+
+        The LanceQueryBuilder object.
+        """
+        raise NotImplementedError
+
 
 class LanceVectorQueryBuilder(LanceQueryBuilder):
     """
@@ -840,6 +856,21 @@ class LanceEmptyQueryBuilder(LanceQueryBuilder):
             filter=self._where,
             limit=self._limit,
         )
+
+    def rerank(self, reranker: Reranker) -> LanceEmptyQueryBuilder:
+        """Rerank the results using the specified reranker.
+
+        Parameters
+        ----------
+        reranker: Reranker
+            The reranker to use.
+
+        Returns
+        -------
+        LanceEmptyQueryBuilder
+            The LanceQueryBuilder object.
+        """
+        raise NotImplementedError("Reranking is not yet supported.")
 
 
 class LanceHybridQueryBuilder(LanceQueryBuilder):
