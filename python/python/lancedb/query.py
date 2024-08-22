@@ -356,7 +356,13 @@ class LanceQueryBuilder(ABC):
         LanceQueryBuilder
             The LanceQueryBuilder object.
         """
-        if limit is not None and limit > 0:
+        print(self.to_lance())
+        if limit is None or limit <= 0:
+            if self. is not None:
+                raise ValueError("Limit is required for ANN/KNN queries")
+            else:
+            self._limit = None
+        else:
             self._limit = limit
         return self
 
