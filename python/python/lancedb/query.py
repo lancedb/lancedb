@@ -357,10 +357,10 @@ class LanceQueryBuilder(ABC):
             The LanceQueryBuilder object.
         """
         if limit is None or limit <= 0:
-            # if self.nearest is not None:
-            #     raise ValueError("Limit is required for ANN/KNN queries")
-            # else:
-            self._limit = None
+            if isinstance(self, LanceVectorQueryBuilder):
+                raise ValueError("Limit is required for ANN/KNN queries")
+            else:
+                self._limit = None
         else:
             self._limit = limit
         return self
