@@ -1,6 +1,6 @@
-# `dlt`  
+# dlt  
 
-[`dlt` is an open-source python library for ELT and ETL](https://dlthub.com/docs/intro) that can run anywhere your python scripts run (colab notebooks, cloud functions etc.) `dlt`'s [integration with LanceDB](https://dlthub.com/docs/dlt-ecosystem/destinations/lancedb) lets you ingest data from any source (databases, APIs, CSVs, dictionaries, JSONs) into LanceDB with few lines of simple python code. The integration enables adding embeddings, doing automatic normalization, schema inference, incremental loading. `dlt` also has integrations with several other tools like dbt, airflow, dagster etc. that can be inserted into your LanceDB workflow.
+[dlt](https://dlthub.com/docs/intro) is an open-source library that you can add to your Python scripts to load data from various and often messy data sources into well-structured, live datasets. dlt's [integration with LanceDB](https://dlthub.com/docs/dlt-ecosystem/destinations/lancedb) lets you ingest data from any source (databases, APIs, CSVs, dataframes, JSONs, and more) into LanceDB with a few lines of simple python code. The integration enables automatic normalization of nested data, schema inference, incremental loading and embedding the data. dlt also has integrations with several other tools like dbt, airflow, dagster etc. that can be inserted into your LanceDB workflow.
 
 ## How to ingest data into LanceDB  
 
@@ -25,14 +25,14 @@ In this example, we will be fetching movie information from the [Open Movie Data
     └── requirements.txt
     ```
   
-    `dlt` has a list of pre-built [sources](https://dlthub.com/docs/dlt-ecosystem/verified-sources/) like [SQL databases](https://dlthub.com/docs/dlt-ecosystem/verified-sources/sql_database), [REST APIs](https://dlthub.com/docs/dlt-ecosystem/verified-sources/rest_api), [Google Sheets](https://dlthub.com/docs/dlt-ecosystem/verified-sources/google_sheets), [Notion](https://dlthub.com/docs/dlt-ecosystem/verified-sources/notion) etc., that can be used out-of-the-box by running `dlt init <source_name> lancedb`. However, since `dlt` is a python library, it is also very easy to modify these pre-built sources or to write your own custom source from scratch.
+    dlt has a list of pre-built [sources](https://dlthub.com/docs/dlt-ecosystem/verified-sources/) like [SQL databases](https://dlthub.com/docs/dlt-ecosystem/verified-sources/sql_database), [REST APIs](https://dlthub.com/docs/dlt-ecosystem/verified-sources/rest_api), [Google Sheets](https://dlthub.com/docs/dlt-ecosystem/verified-sources/google_sheets), [Notion](https://dlthub.com/docs/dlt-ecosystem/verified-sources/notion) etc., that can be used out-of-the-box by running `dlt init <source_name> lancedb`. Since dlt is a python library, it is also very easy to modify these pre-built sources or to write your own custom source from scratch.
 
 
 3. **Specify necessary credentials and/or embedding model details:**  
     
-    In order to fetch data from the OMDb API, you will need to pass a valid API key into your pipeline. Additionally, depending on whether you're using LanceDB OSS or LanceDB cloud, you also may or may not need to provide necessary credentials to connect to the LanceDB instance. These can be pasted inside `.dlt/sercrets.toml`. 
+    In order to fetch data from the OMDb API, you will need to pass a valid API key into your pipeline. Depending on whether you're using LanceDB OSS or LanceDB cloud, you also may need to provide the necessary credentials to connect to the LanceDB instance. These can be pasted inside `.dlt/sercrets.toml`. 
 
-    Furthermore, `dlt`'s LanceDB integration allows you to automatically embed the data during ingestion. Again, depending on the embedding model chosen, you may need to paste necessary credentials inside `.dlt/sercrets.toml`:
+    dlt's LanceDB integration also allows you to automatically embed the data during ingestion. Depending on the embedding model chosen, you may need to paste the necessary credentials inside `.dlt/sercrets.toml`:
     ```toml
     [sources.rest_api]
     api_key = "api_key" # Enter the API key for the OMDb API
@@ -50,7 +50,7 @@ In this example, we will be fetching movie information from the [Open Movie Data
 
 4. **Write the pipeline code inside `rest_api_pipeline.py`:**  
 
-    The following code shows how you can configure `dlt`'s REST API source to connect to the [OMDb API](https://www.omdbapi.com/), fetch all movies with the word "godzilla" in the title, and load it into a LanceDB table. For more details on the `dlt` REST API source, see [here](https://dlthub.com/docs/dlt-ecosystem/verified-sources/rest_api).
+    The following code shows how you can configure dlt's REST API source to connect to the [OMDb API](https://www.omdbapi.com/), fetch all movies with the word "godzilla" in the title, and load it into a LanceDB table. The REST API source allows you to pull data from any API with minimal code, to learn more read the [dlt docs](https://dlthub.com/docs/dlt-ecosystem/verified-sources/rest_api).
 
     ```python   
 
@@ -106,7 +106,7 @@ In this example, we will be fetching movie information from the [Open Movie Data
         print(load_info)
     ```
 
-    The script above will ingest the data into LanceDB as it is, i.e. without creating any embeddings. If we want to embed one of the fields (for example, `"Title"` that contains the movie titles), then we will use `dlt`'s `lancedb_adapter` and modify the script as follows:  
+    The script above will ingest the data into LanceDB as it is, i.e. without creating any embeddings. If we want to embed one of the fields (for example, `"Title"` that contains the movie titles), then we will use dlt's `lancedb_adapter` and modify the script as follows:  
     
     - Add the following import statement:
         ```python
@@ -139,4 +139,4 @@ In this example, we will be fetching movie information from the [Open Movie Data
     python custom_source.py
     ```
 
-For more information and advanced usage of `dlt`'s LanceDB integration, see [here](https://dlthub.com/docs/dlt-ecosystem/destinations/lancedb).
+For more information and advanced usage of dlt's LanceDB integration, read [the dlt documentation](https://dlthub.com/docs/dlt-ecosystem/destinations/lancedb).
