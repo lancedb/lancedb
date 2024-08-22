@@ -138,6 +138,7 @@ nav:
           - Pydantic: python/pydantic.md
           - Voxel51: integrations/voxel51.md
           - PromptTools: integrations/prompttools.md
+          - dlt: integrations/dlt.md
       - 🎯 Examples:
           - Overview: examples/index.md
           - 🐍 Python:
@@ -228,6 +229,7 @@ nav:
       - Pydantic: python/pydantic.md
       - Voxel51: integrations/voxel51.md
       - PromptTools: integrations/prompttools.md
+      - dlt: integrations/dlt.md
   - Examples:
       - examples/index.md
       - 🐍 Python:
