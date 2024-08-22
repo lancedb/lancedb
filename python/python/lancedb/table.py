@@ -19,6 +19,7 @@ from typing import (
     Optional,
     Tuple,
     Union,
+    overload,
 )
 from urllib.parse import urlparse
 
@@ -35,7 +36,16 @@ from .common import DATA, VEC, VECTOR_COLUMN_NAME
 from .embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
 from .merge import LanceMergeInsertBuilder
 from .pydantic import LanceModel, model_to_dict
-from .query import AsyncQuery, AsyncVectorQuery, LanceQueryBuilder, Query
+from .query import (
+    AsyncQuery,
+    AsyncVectorQuery,
+    LanceEmptyQueryBuilder,
+    LanceFtsQueryBuilder,
+    LanceHybridQueryBuilder,
+    LanceQueryBuilder,
+    LanceVectorQueryBuilder,
+    Query,
+)
 from .util import (
     fs_from_uri,
     get_uri_scheme,
@@ -56,6 +66,8 @@ if TYPE_CHECKING:
 
 pd = safe_import_pandas()
 pl = safe_import_polars()
+
+QueryType = Literal["vector", "fts", "hybrid", "auto"]
 
 
 def _sanitize_data(
@@ -543,9 +555,9 @@ class Table(ABC):
         self,
         query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
         vector_column_name: Optional[str] = None,
-        query_type: str = "auto",
+        query_type: QueryType = "auto",
         ordering_field_name: Optional[str] = None,
-        fts_columns: Union[str, List[str]] = None,
+        fts_columns: Union[str, List[str], None] = None,
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support [vector search][search]
@@ -1419,13 +1431,53 @@ class LanceTable(Table):
             self.schema.metadata
         )
 
+    @overload
     def search(
         self,
         query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
         vector_column_name: Optional[str] = None,
-        query_type: str = "auto",
+        query_type: Literal["vector"] = "vector",
         ordering_field_name: Optional[str] = None,
-        fts_columns: Union[str, List[str]] = None,
+        fts_columns: Union[str, List[str], None] = None,
+    ) -> LanceVectorQueryBuilder: ...
+
+    @overload
+    def search(
+        self,
+        query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
+        vector_column_name: Optional[str] = None,
+        query_type: Literal["fts"] = "fts",
+        ordering_field_name: Optional[str] = None,
+        fts_columns: Union[str, List[str], None] = None,
+    ) -> LanceFtsQueryBuilder: ...
+
+    @overload
+    def search(
+        self,
+        query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
+        vector_column_name: Optional[str] = None,
+        query_type: Literal["hybrid"] = "hybrid",
+        ordering_field_name: Optional[str] = None,
+        fts_columns: Union[str, List[str], None] = None,
+    ) -> LanceHybridQueryBuilder: ...
+
+    @overload
+    def search(
+        self,
+        query: None = None,
+        vector_column_name: Optional[str] = None,
+        query_type: QueryType = "auto",
+        ordering_field_name: Optional[str] = None,
+        fts_columns: Union[str, List[str], None] = None,
+    ) -> LanceEmptyQueryBuilder: ...
+
+    def search(
+        self,
+        query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
+        vector_column_name: Optional[str] = None,
+        query_type: QueryType = "auto",
+        ordering_field_name: Optional[str] = None,
+        fts_columns: Union[str, List[str], None] = None,
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support [vector search][search]
