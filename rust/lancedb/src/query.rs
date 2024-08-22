@@ -531,6 +531,9 @@ pub struct Query {
     /// limit the number of rows to return.
     pub(crate) limit: Option<usize>,
 
+    /// Offset of the query.
+    pub(crate) offset: Option<usize>,
+
     /// Apply filter to the returned rows.
     pub(crate) filter: Option<String>,
 
@@ -552,6 +555,7 @@ impl Query {
         Self {
             parent,
             limit: None,
+            offset: None,
             filter: None,
             full_text_search: None,
             select: Select::All,

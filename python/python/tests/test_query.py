@@ -104,7 +104,13 @@ def test_cast(table):
     assert r0.vector == [1, 2]
     assert r0.str_field == "a"
     assert r0.float_field == 1.0
-
+    
+def test_offset(table):
+    q = LanceVectorQueryBuilder(table, [0, 0], "vector").offset(1)
+    results = q.to_pandas()
+    print("length", len(results))
+    assert len(results) == 1
+    assert results["id"].values[0] == 2
 
 def test_query_builder(table):
     rs = (
