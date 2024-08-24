@@ -1,6 +1,6 @@
 **Recommender Systems: Personalized Discovery🍿📺**
 ==============================================================
-🚀 Get ready to revolutionize the way your users discover new favorites! 🎉 With Recommender Systems, get ready to experience the personalized experience ! 🌟
+Deliver personalized experiences with Recommender Systems. 🎁
 
 **Technical Overview📜**
 
