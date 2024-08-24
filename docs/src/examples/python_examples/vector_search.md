@@ -1,7 +1,7 @@
 **Vector Search: Unlock Efficient Document Retrieval 🔓👀**
 ====================================================================
 
-Unlock the power of vector search with LanceDB, a cutting-edge solution for efficient vector-based document retrieval 📊. 
+Vector search with LanceDB, is a solution for  efficient and accurate similarity searches in large datasets 📊. 
 
 **Vector Search Capabilities in LanceDB🔝**
 
