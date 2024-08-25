@@ -30,9 +30,13 @@ jobs:
       uses: actions/checkout@v4
     - name: Print CPU capabilities
       run: cat /proc/cpuinfo
+    - name: Install protobuf
+      run: |
+        sudo apt update
+        sudo apt install -y protobuf-compiler
     - name: Install dependecies needed for ubuntu
       run: |
-        sudo apt install -y protobuf-compiler libssl-dev
+        sudo apt install -y libssl-dev
         rustup update && rustup default
     - name: Set up Python
       uses: actions/setup-python@v5
