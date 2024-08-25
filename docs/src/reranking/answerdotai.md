@@ -27,7 +27,7 @@ data = [
     ]
 tbl = db.create_table("test", schema=Schema, mode="overwrite")
 tbl.add(data)
-reranker = CohereReranker(api_key="key")
+reranker = AnswerdotaiRerankers()
 
 # Run vector search with a reranker
 result = tbl.search("hello").rerank(reranker=reranker).to_list() 
