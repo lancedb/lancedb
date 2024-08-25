@@ -133,6 +133,7 @@ class LanceQueryBuilder(ABC):
         query_type: str,
         vector_column_name: str,
         ordering_field_name: str = None,
+        fuzzy_fields: Dict[str, Tuple[bool, int, bool]] = None,
         fts_columns: Union[str, List[str]] = None,
     ) -> LanceQueryBuilder:
         """
@@ -176,6 +177,7 @@ class LanceQueryBuilder(ABC):
                 table,
                 query,
                 ordering_field_name=ordering_field_name,
+                fuzzy_fields=fuzzy_fields,
             )
 
         if isinstance(query, list):
@@ -692,11 +694,13 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         query: str,
         ordering_field_name: str = None,
         fts_columns: Union[str, List[str]] = None,
+        fuzzy_fields: Dict[str, Tuple[bool, int, bool]] = None,
     ):
         super().__init__(table)
         self._query = query
         self._phrase_query = False
         self.ordering_field_name = ordering_field_name
+        self.fuzzy_fields = fuzzy_fields
         self._reranker = None
         if isinstance(fts_columns, str):
             fts_columns = [fts_columns]
@@ -783,7 +787,11 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
             query = query.replace('"', "'")
             query = f'"{query}"'
         row_ids, scores = search_index(
-            index, query, self._limit, ordering_field=self.ordering_field_name
+            index,
+            query,
+            self._limit,
+            ordering_field=self.ordering_field_name,
+            fuzzy_fields=self.fuzzy_fields,
         )
         if len(row_ids) == 0:
             empty_schema = pa.schema([pa.field("_score", pa.float32())])

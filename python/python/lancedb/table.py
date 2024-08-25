@@ -1426,6 +1426,7 @@ class LanceTable(Table):
         query_type: str = "auto",
         ordering_field_name: Optional[str] = None,
         fts_columns: Union[str, List[str]] = None,
+        fuzzy_fields: Optional[Dict[str, Tuple[bool, int, bool]]] = None,
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support [vector search][search]
@@ -1505,6 +1506,7 @@ class LanceTable(Table):
             query_type,
             vector_column_name=vector_column_name,
             ordering_field_name=ordering_field_name,
+            fuzzy_fields=fuzzy_fields,
         )
 
     @classmethod

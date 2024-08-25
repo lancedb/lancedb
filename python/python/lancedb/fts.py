@@ -14,7 +14,7 @@
 """Full text search index using tantivy-py"""
 
 import os
-from typing import List, Tuple
+from typing import List, Tuple, Dict
 
 import pyarrow as pa
 
@@ -171,7 +171,11 @@ def resolve_path(schema, field_name: str) -> pa.Field:
 
 
 def search_index(
-    index: tantivy.Index, query: str, limit: int = 10, ordering_field=None
+    index: tantivy.Index,
+    query: str,
+    limit: int = 10,
+    ordering_field: str = None,
+    fuzzy_fields: Dict[str, Tuple[bool, int, bool]] = None,
 ) -> Tuple[Tuple[int], Tuple[float]]:
     """
     Search an index for a query
@@ -184,6 +188,11 @@ def search_index(
         The query string
     limit : int
         The maximum number of results to return
+    ordering_field : str
+        The field to order by
+    fuzzy_fields : Dict[str, Tuple[bool, int, bool]]
+        A dictionary of field names to a tuple of prefix, distance,
+        transposition_cost_one
 
     Returns
     -------
@@ -192,11 +201,14 @@ def search_index(
         and the second containing the scores
     """
     searcher = index.searcher()
-    query = index.parse_query(query)
-    # get top results
-    if ordering_field:
+    if fuzzy_fields:
+        query = index.parse_query(query, fuzzy_fields=fuzzy_fields)
+        results = searcher.search(query, limit)
+    elif ordering_field:
+        query = index.parse_query(query)
         results = searcher.search(query, limit, order_by_field=ordering_field)
     else:
+        query = index.parse_query(query)
         results = searcher.search(query, limit)
     if results.count == 0:
         return tuple(), tuple()
