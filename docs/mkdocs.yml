@@ -150,6 +150,7 @@ nav:
               - Chatbot: examples/python_examples/chatbot.md
               - Evaluation: examples/python_examples/evaluations.md
               - AI Agent: examples/python_examples/aiagent.md
+              - Recommender System: examples/python_examples/recommendersystem.md
               - Miscellaneous: 
                   - YouTube Transcript Search: notebooks/youtube_transcript_search.ipynb
                   - Documentation QA Bot using LangChain: notebooks/code_qa_bot.ipynb
@@ -241,6 +242,7 @@ nav:
           - Chatbot: examples/python_examples/chatbot.md
           - Evaluation: examples/python_examples/evaluations.md
           - AI Agent: examples/python_examples/aiagent.md
+          - Recommender System: examples/python_examples/recommendersystem.md
           - Miscellaneous: 
               - YouTube Transcript Search: notebooks/youtube_transcript_search.ipynb
               - Documentation QA Bot using LangChain: notebooks/code_qa_bot.ipynb
