@@ -76,9 +76,13 @@ jobs:
       uses: actions/setup-node@v4
       with:
         node-version: 20
+    - name: Install protobuf
+      run: |
+        sudo apt update
+        sudo apt install -y protobuf-compiler
     - name: Install dependecies needed for ubuntu
       run: |
-        sudo apt install -y protobuf-compiler libssl-dev
+        sudo apt install -y libssl-dev
         rustup update && rustup default
     - name: Rust cache
       uses: swatinem/rust-cache@v2
