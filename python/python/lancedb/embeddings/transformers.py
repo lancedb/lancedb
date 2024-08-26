@@ -36,6 +36,10 @@ class TransformersEmbeddingFunction(EmbeddingFunction):
         The name of the model to use. This should be a model name that can be loaded
         by transformers.AutoModel.from_pretrained. For example, "bert-base-uncased".
         default: "colbert-ir/colbertv2.0""
+    device : str
+        The device to use for the model. Default is "cpu".
+    show_progress_bar : bool
+        Whether to show a progress bar when loading the model. Default is True.
 
     to download package, run :
         `pip install transformers`
