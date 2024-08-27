@@ -120,7 +120,7 @@ class Query(pydantic.BaseModel):
     refine_factor: Optional[int] = None
 
     with_row_id: bool = False
-    
+
     offset: int = 0
 
 
@@ -366,7 +366,7 @@ class LanceQueryBuilder(ABC):
         else:
             self._limit = limit
         return self
-    
+
     def offset(self, offset: int) -> LanceQueryBuilder:
         """Set the offset for the results.
 
@@ -380,7 +380,6 @@ class LanceQueryBuilder(ABC):
         LanceQueryBuilder
             The LanceQueryBuilder object.
         """
-        print("offset", offset)
         if offset is None or offset <= 0:
             self._offset = 0
         else:
@@ -619,7 +618,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             refine_factor=self._refine_factor,
             vector_column=self._vector_column,
             with_row_id=self._with_row_id,
-            offset=self._offset
+            offset=self._offset,
         )
         result_set = self._table._execute_query(query, batch_size)
         if self._reranker is not None:
@@ -751,7 +750,7 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
                 "columns": self._fts_columns,
             },
             vector=[],
-            offset=self._offset
+            offset=self._offset,
         )
         results = self._table._execute_query(query)
         results = results.read_all()
@@ -1034,8 +1033,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         self._limit = limit
 
         return self
-    
-    
+
     def offset(self, offset: int) -> LanceHybridQueryBuilder:
         """
         Set the offset for the results for both vector and fts search components.
@@ -1231,7 +1229,7 @@ class AsyncQueryBase(object):
         """
         self._inner.limit(limit)
         return self
-    
+
     def offset(self, offset: int) -> AsyncQuery:
         """
         Set the offset for the results.
