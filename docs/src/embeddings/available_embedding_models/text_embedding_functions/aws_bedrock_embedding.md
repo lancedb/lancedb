@@ -34,6 +34,7 @@ Usage Example:
 import lancedb
 from lancedb.pydantic import LanceModel, Vector
 from lancedb.embeddings import get_registry
+import pandas as pd
 
 model = get_registry().get("bedrock-text").create()
 
