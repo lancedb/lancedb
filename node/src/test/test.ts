@@ -105,6 +105,7 @@ describe("LanceDB client", function () {
       })
       const table2 = await db2.openTable("vectors");
 
+      assert.equal(await table2.countRows(), 2);
       await table1.add([
         {
           id: 3,
