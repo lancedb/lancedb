@@ -117,6 +117,18 @@ def test_query_builder(table):
     assert all(np.array(rs[0]["vector"]) == [1, 2])
 
 
+def test_vector_query_with_no_limit(table):
+    with pytest.raises(ValueError):
+        LanceVectorQueryBuilder(table, [0, 0], "vector").limit(0).select(
+            ["id", "vector"]
+        ).to_list()
+
+    with pytest.raises(ValueError):
+        LanceVectorQueryBuilder(table, [0, 0], "vector").limit(None).select(
+            ["id", "vector"]
+        ).to_list()
+
+
 def test_query_builder_batches(table):
     rs = (
         LanceVectorQueryBuilder(table, [0, 0], "vector")
