@@ -84,7 +84,9 @@ nav:
       - 🏃🏼‍♂️ Quick start: basic.md
       - 📚 Concepts:
           - Vector search: concepts/vector_search.md
-          - Indexing: concepts/index_ivfpq.md
+          - Indexing: 
+            - IVFPQ: concepts/index_ivfpq.md
+            - HNSW: concepts/index_hnsw.md
           - Storage: concepts/storage.md
           - Data management: concepts/data_management.md
       - 🔨 Guides:
@@ -180,7 +182,9 @@ nav:
   - Quick start: basic.md
   - Concepts:
       - Vector search: concepts/vector_search.md
-      - Indexing: concepts/index_ivfpq.md
+      - Indexing: 
+        - IVFPQ: concepts/index_ivfpq.md
+        - HNSW: concepts/index_hnsw.md
       - Storage: concepts/storage.md
       - Data management: concepts/data_management.md
   - Guides:
