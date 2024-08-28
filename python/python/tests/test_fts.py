@@ -142,10 +142,75 @@ def test_search_fts(table, use_tantivy):
     assert len(results) == 5
 
 
+def test_search_fts_specify_column(table):
+    table.create_fts_index("text", use_tantivy=False)
+    table.create_fts_index("text2", use_tantivy=False)
+
+    results = table.search("puppy", fts_columns="text").limit(5).to_list()
+    assert len(results) == 5
+
+    results = table.search("puppy", fts_columns="text2").limit(5).to_list()
+    assert len(results) == 5
+
+    try:
+        # we can only specify one column for now
+        table.search("puppy", fts_columns=["text", "text2"]).limit(5).to_list()
+        assert False
+    except Exception as e:
+        pass
+
+    try:
+        # have to specify a column because we have two fts indices
+        table.search("puppy").limit(5).to_list()
+        assert False
+    except Exception as e:
+        pass
+
+
 async def test_search_fts_async(async_table):
     await async_table.create_index("text", config=FTS())
     results = await async_table.query().nearest_to_text("puppy").limit(5).to_list()
     assert len(results) == 5
+
+
+async def test_search_fts_specify_column_async(async_table):
+    await async_table.create_fts_index("text", use_tantivy=False)
+    await async_table.create_fts_index("text2", use_tantivy=False)
+
+    results = (
+        await async_table.query()
+        .nearest_to_text("puppy", columns="text")
+        .limit(5)
+        .to_list()
+    )
+    assert len(results) == 5
+
+    results = (
+        await async_table.query()
+        .nearest_to_text("puppy", columns="text2")
+        .limit(5)
+        .to_list()
+    )
+    assert len(results) == 5
+
+    try:
+        # we can only specify one column for now
+        await (
+            async_table.query()
+            .nearest_to_text("puppy", columns="text2")
+            .limit(5)
+            .to_list()
+        )
+        assert False
+    except Exception as e:
+        pass
+
+    try:
+        # have to specify a column because we have two fts indices
+        await async_table.query().nearest_to_text("puppy").limit(5).to_list()
+        assert False
+    except Exception as e:
+        pass
 
 
 def test_search_ordering_field_index_table(tmp_path, table):
