@@ -156,14 +156,14 @@ def test_search_fts_specify_column(table):
         # we can only specify one column for now
         table.search("puppy", fts_columns=["text", "text2"]).limit(5).to_list()
         assert False
-    except Exception as e:
+    except Exception:
         pass
 
     try:
         # have to specify a column because we have two fts indices
         table.search("puppy").limit(5).to_list()
         assert False
-    except Exception as e:
+    except Exception:
         pass
 
 
@@ -202,14 +202,14 @@ async def test_search_fts_specify_column_async(async_table):
             .to_list()
         )
         assert False
-    except Exception as e:
+    except Exception:
         pass
 
     try:
         # have to specify a column because we have two fts indices
         await async_table.query().nearest_to_text("puppy").limit(5).to_list()
         assert False
-    except Exception as e:
+    except Exception:
         pass
 
 
