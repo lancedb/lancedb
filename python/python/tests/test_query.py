@@ -366,6 +366,7 @@ async def test_explain_plan_async(table_async: AsyncTable):
     plan = await table_async.query().nearest_to(pa.array([1, 2])).explain_plan(True)
     assert "KNN" in plan
 
+
 @pytest.mark.asyncio
 async def test_offset(table_async: AsyncTable):
     table = await table_async.query().offset(1).to_arrow()
