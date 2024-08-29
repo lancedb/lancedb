@@ -51,6 +51,7 @@ class MockTable:
                 "refine_factor": query.refine_factor,
             },
             batch_size=batch_size,
+            offset=query.offset,
         ).to_reader()
 
 
@@ -109,7 +110,7 @@ def test_cast(table):
 def test_offset(table):
     q = LanceVectorQueryBuilder(table, [0, 0], "vector").offset(1)
     results = q.to_pandas()
-    assert len(results) == 2
+    assert len(results) == 1
 
 
 def test_query_builder(table):
