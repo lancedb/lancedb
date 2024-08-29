@@ -613,7 +613,11 @@ export class LocalTable extends Table {
           columns: ftsColumns,
         });
       }
-      throw new Error("No embedding functions are defined in the table");
+      return this.query().nearestTo(
+        Promise.reject(
+          new Error("No embedding functions are defined in the table"),
+        ),
+      );
     }
     const queryPromise = embeddingFunc.function.computeQueryEmbeddings(query);
     return this.query().nearestTo(queryPromise);
