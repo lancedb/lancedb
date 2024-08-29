@@ -34,7 +34,6 @@ import pydantic
 
 from . import __version__
 from .arrow import AsyncRecordBatchReader
-from .common import VEC
 from .rerankers.base import Reranker
 from .rerankers.linear_combination import LinearCombinationReranker
 from .util import safe_import_pandas
@@ -43,6 +42,7 @@ if TYPE_CHECKING:
     import PIL
     import polars as pl
 
+    from .common import VEC
     from ._lancedb import Query as LanceQuery
     from ._lancedb import VectorQuery as LanceVectorQuery
     from .pydantic import LanceModel
@@ -155,7 +155,7 @@ class LanceQueryBuilder(ABC):
         if query_type == "hybrid":
             # hybrid fts and vector query
             return LanceHybridQueryBuilder(table, query, vector_column_name)
-        
+
         if query is None:
             return LanceEmptyQueryBuilder(table)
 
@@ -202,8 +202,6 @@ class LanceQueryBuilder(ABC):
         elif query_type == "auto":
             if isinstance(query, (list, np.ndarray)):
                 return query, "vector"
-            if isinstance(query, tuple): 
-                return query, "hybrid"
             else:
                 conf = table.embedding_functions.get(vector_column_name)
                 if conf is not None:
@@ -477,7 +475,7 @@ class LanceQueryBuilder(ABC):
             The LanceQueryBuilder object.
         """
         raise NotImplementedError
-    
+
     def text(self, text: str) -> LanceQueryBuilder:
         """Set the text to search for.
 
@@ -931,12 +929,15 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
 
     def _validate_query(self, query, vector=None, text=None):
         if query is not None and vector is not None:
-            raise ValueError("You can either provide query or its vector representation but not both.")
-        
+            raise ValueError(
+                "You can either provide query or its vector representation"
+                "but not both."
+            )
+
         vector_query = query or vector
         if not isinstance(vector_query, (str, list, np.ndarray)):
             raise ValueError("The vector query must be either a string or a vector")
-        
+
         text_query = query or text
         if text_query is None:
             raise ValueError("The text query must be provided for hybrid search.")
@@ -946,10 +947,16 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         return vector_query, text_query
 
     def to_arrow(self) -> pa.Table:
-        vector_query, fts_query = self._validate_query(self._query, self._vector, self._text)
+        vector_query, fts_query = self._validate_query(
+            self._query, self._vector, self._text
+        )
         self._fts_query = LanceFtsQueryBuilder(self._table, fts_query)
-        vector_query = self._query_to_vector(self._table, vector_query, self._vector_column)
-        self._vector_query = LanceVectorQueryBuilder(self._table, vector_query, self._vector_column)
+        vector_query = self._query_to_vector(
+            self._table, vector_query, self._vector_column
+        )
+        self._vector_query = LanceVectorQueryBuilder(
+            self._table, vector_query, self._vector_column
+        )
 
         if self._limit:
             self._vector_query.limit(self._limit)
@@ -1110,12 +1117,11 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         """
         self._refine_factor = refine_factor
         return self
-    
-    
+
     def vector(self, vector: Union[np.ndarray, list]) -> LanceHybridQueryBuilder:
         self._vector = vector
         return self
-    
+
     def text(self, text: str) -> LanceHybridQueryBuilder:
         self._text = text
         return self
