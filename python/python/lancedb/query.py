@@ -936,13 +936,13 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
 
         vector_query = query or vector
         if not isinstance(vector_query, (str, list, np.ndarray)):
-            raise ValueError("The vector query must be either a string or a vector")
+            raise ValueError("Vector query must be either a string or a vector")
 
         text_query = query or text
         if text_query is None:
-            raise ValueError("The text query must be provided for hybrid search.")
+            raise ValueError("Text query must be provided for hybrid search.")
         if not isinstance(text_query, str):
-            raise ValueError("The text query must be a string")
+            raise ValueError("Text query must be a string")
 
         return vector_query, text_query
 
