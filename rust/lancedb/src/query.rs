@@ -873,6 +873,7 @@ mod tests {
         let query = table
             .query()
             .limit(100)
+            .offset(1)
             .nearest_to(&[9.8, 8.7])
             .unwrap()
             .nprobes(1000)
@@ -885,6 +886,7 @@ mod tests {
             new_vector
         );
         assert_eq!(query.base.limit.unwrap(), 100);
+        assert_eq!(query.base.offset.unwrap(), 1);
         assert_eq!(query.nprobes, 1000);
         assert!(query.use_index);
         assert_eq!(query.distance_type, Some(DistanceType::Cosine));
