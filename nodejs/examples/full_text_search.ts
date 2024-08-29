@@ -49,4 +49,4 @@ let result = await tbl
 console.log(result);
 // --8<-- [end:full_text_search]
 
-console.log("SQL search: done");
+console.log("FTS search: done");

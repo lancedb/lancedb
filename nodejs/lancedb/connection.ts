@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { Data, Schema, SchemaLike, TableLike } from "./arrow";
+import { Data, Schema, SchemaLike, TableLike, tableFromIPC } from "./arrow";
 import { fromTableToBuffer, makeEmptyTable } from "./arrow";
 import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
 import { Connection as LanceDbConnection } from "./native";
@@ -238,7 +238,10 @@ export class LocalConnection extends Connection {
       options?.indexCacheSize,
     );
 
-    return new LocalTable(innerTable);
+    const schemaBuf = await innerTable.schema();
+    const tbl = tableFromIPC(schemaBuf);
+
+    return new LocalTable(innerTable, tbl.schema);
   }
 
   async createTable(
@@ -272,7 +275,10 @@ export class LocalConnection extends Connection {
       dataStorageVersion,
     );
 
-    return new LocalTable(innerTable);
+    const schemaBuf = await innerTable.schema();
+    const tbl = tableFromIPC(schemaBuf);
+
+    return new LocalTable(innerTable, tbl.schema);
   }
 
   async createEmptyTable(
@@ -309,7 +315,10 @@ export class LocalConnection extends Connection {
       cleanseStorageOptions(options?.storageOptions),
       dataStorageVersion,
     );
-    return new LocalTable(innerTable);
+    const schemaBuf = await innerTable.schema();
+    const tbl = tableFromIPC(schemaBuf);
+
+    return new LocalTable(innerTable, tbl.schema);
   }
 
   async dropTable(name: string): Promise<void> {

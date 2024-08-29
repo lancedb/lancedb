@@ -456,10 +456,12 @@ export abstract class Table {
 
 export class LocalTable extends Table {
   private readonly inner: _NativeTable;
+  private readonly schema_: Schema;
 
-  constructor(inner: _NativeTable) {
+  constructor(inner: _NativeTable, schema: Schema) {
     super();
     this.inner = inner;
+    this.schema_ = schema;
   }
   get name(): string {
     return this.inner.name;
@@ -476,12 +478,9 @@ export class LocalTable extends Table {
     return this.inner.display();
   }
 
-  private async getEmbeddingFunctions(): Promise<
-    Map<string, EmbeddingFunctionConfig>
-  > {
-    const schema = await this.schema();
+  private getEmbeddingFunctions(): Map<string, EmbeddingFunctionConfig> {
     const registry = getRegistry();
-    return registry.parseFunctions(schema.metadata);
+    return registry.parseFunctions(this.schema_.metadata);
   }
 
   /** Get the schema of the table. */
@@ -611,21 +610,18 @@ export class LocalTable extends Table {
       });
     }
 
-    const queryPromise = this.getEmbeddingFunctions().then(
-      async (functions) => {
-        // TODO: Support multiple embedding functions
-        const embeddingFunc: EmbeddingFunctionConfig | undefined = functions
-          .values()
-          .next().value;
-        if (!embeddingFunc) {
-          return Promise.reject(
-            new Error("No embedding functions are defined in the table"),
-          );
-        }
-        return await embeddingFunc.function.computeQueryEmbeddings(query);
-      },
-    );
-
+    // TODO: Support multiple embedding functions
+    const embeddingFunc: EmbeddingFunctionConfig | undefined =
+      this.getEmbeddingFunctions().values().next().value;
+    if (!embeddingFunc) {
+      if (queryType === "auto" && typeof query === "string") {
+        return this.query().fullTextSearch(query, {
+          columns: ftsColumns,
+        });
+      }
+      throw new Error("No embedding functions are defined in the table");
+    }
+    const queryPromise = embeddingFunc.function.computeQueryEmbeddings(query);
     return this.query().nearestTo(queryPromise);
   }
 
