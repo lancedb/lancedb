@@ -111,7 +111,9 @@ def _run_test_reranker(reranker, table, query, query_vector, schema):
 
     query_vector = table.to_pandas()["vector"][0]
     result = (
-        table.search((query_vector, query), vector_column_name="vector")
+        table.search(query_type="hybrid", vector_column_name="vector")
+        .vector(query_vector)
+        .text(query)
         .limit(30)
         .rerank(reranker=reranker)
         .to_arrow()
@@ -207,7 +209,9 @@ def _run_test_hybrid_reranker(reranker, tmp_path, use_tantivy):
     query = "Our father who art in heaven"
     query_vector = table.to_pandas()["vector"][0]
     result = (
-        table.search((query_vector, query), vector_column_name="vector")
+        table.search(query_type="hybrid", vector_column_name="vector")
+        .vector(query_vector)
+        .text(query)
         .limit(30)
         .rerank(normalize="score")
         .to_arrow()
