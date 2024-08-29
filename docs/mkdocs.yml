@@ -119,7 +119,23 @@ nav:
       - 🧬 Managing embeddings:
           - Overview: embeddings/index.md
           - Embedding functions: embeddings/embedding_functions.md
-          - Available models: embeddings/default_embedding_functions.md
+          - Available models: 
+              - Overview: embeddings/default_embedding_functions.md
+              - Text Embedding Functions:
+                  - Sentence Transformers: embeddings/available_embedding_models/text_embedding_functions/sentence_transformers.md
+                  - Huggingface Embedding Models: embeddings/available_embedding_models/text_embedding_functions/huggingface_embedding.md
+                  - Ollama Embeddings: embeddings/available_embedding_models/text_embedding_functions/ollama_embedding.md
+                  - OpenAI Embeddings: embeddings/available_embedding_models/text_embedding_functions/openai_embedding.md
+                  - Instructor Embeddings: embeddings/available_embedding_models/text_embedding_functions/instructor_embedding.md
+                  - Gemini Embeddings: embeddings/available_embedding_models/text_embedding_functions/gemini_embedding.md
+                  - Cohere Embeddings: embeddings/available_embedding_models/text_embedding_functions/cohere_embedding.md
+                  - Jina Embeddings: embeddings/available_embedding_models/text_embedding_functions/jina_embedding.md
+                  - AWS Bedrock Text Embedding Functions: embeddings/available_embedding_models/text_embedding_functions/aws_bedrock_embedding.md
+                  - IBM watsonx.ai Embeddings: embeddings/available_embedding_models/text_embedding_functions/ibm_watsonx_ai_embedding.md
+              - Multimodal Embedding Functions:
+                  - OpenClip embeddings: embeddings/available_embedding_models/multimodal_embedding_functions/openclip_embedding.md
+                  - Imagebind embeddings: embeddings/available_embedding_models/multimodal_embedding_functions/imagebind_embedding.md
+                  - Jina Embeddings: embeddings/available_embedding_models/multimodal_embedding_functions/jina_multimodal_embedding.md
           - User-defined embedding functions: embeddings/custom_embedding_function.md
           - "Example: Multi-lingual semantic search": notebooks/multi_lingual_example.ipynb
           - "Example: MultiModal CLIP Embeddings": notebooks/DisappearingEmbeddingFunction.ipynb
@@ -138,6 +154,7 @@ nav:
           - Pydantic: python/pydantic.md
           - Voxel51: integrations/voxel51.md
           - PromptTools: integrations/prompttools.md
+          - dlt: integrations/dlt.md
       - 🎯 Examples:
           - Overview: examples/index.md
           - 🐍 Python:
@@ -149,6 +166,7 @@ nav:
               - Chatbot: examples/python_examples/chatbot.md
               - Evaluation: examples/python_examples/evaluations.md
               - AI Agent: examples/python_examples/aiagent.md
+              - Recommender System: examples/python_examples/recommendersystem.md
               - Miscellaneous: 
                   - YouTube Transcript Search: notebooks/youtube_transcript_search.ipynb
                   - Documentation QA Bot using LangChain: notebooks/code_qa_bot.ipynb
@@ -213,7 +231,23 @@ nav:
   - Managing Embeddings:
       - Overview: embeddings/index.md
       - Embedding functions: embeddings/embedding_functions.md
-      - Available models: embeddings/default_embedding_functions.md
+      - Available models: 
+          - Overview: embeddings/default_embedding_functions.md
+          - Text Embedding Functions:
+              - Sentence Transformers: embeddings/available_embedding_models/text_embedding_functions/sentence_transformers.md
+              - Huggingface Embedding Models: embeddings/available_embedding_models/text_embedding_functions/huggingface_embedding.md
+              - Ollama Embeddings: embeddings/available_embedding_models/text_embedding_functions/ollama_embedding.md
+              - OpenAI Embeddings: embeddings/available_embedding_models/text_embedding_functions/openai_embedding.md
+              - Instructor Embeddings: embeddings/available_embedding_models/text_embedding_functions/instructor_embedding.md
+              - Gemini Embeddings: embeddings/available_embedding_models/text_embedding_functions/gemini_embedding.md
+              - Cohere Embeddings: embeddings/available_embedding_models/text_embedding_functions/cohere_embedding.md
+              - Jina Embeddings: embeddings/available_embedding_models/text_embedding_functions/jina_embedding.md
+              - AWS Bedrock Text Embedding Functions: embeddings/available_embedding_models/text_embedding_functions/aws_bedrock_embedding.md
+              - IBM watsonx.ai Embeddings: embeddings/available_embedding_models/text_embedding_functions/ibm_watsonx_ai_embedding.md
+          - Multimodal Embedding Functions:
+              - OpenClip embeddings: embeddings/available_embedding_models/multimodal_embedding_functions/openclip_embedding.md
+              - Imagebind embeddings: embeddings/available_embedding_models/multimodal_embedding_functions/imagebind_embedding.md
+              - Jina Embeddings: embeddings/available_embedding_models/multimodal_embedding_functions/jina_multimodal_embedding.md
       - User-defined embedding functions: embeddings/custom_embedding_function.md
       - "Example: Multi-lingual semantic search": notebooks/multi_lingual_example.ipynb
       - "Example: MultiModal CLIP Embeddings": notebooks/DisappearingEmbeddingFunction.ipynb
@@ -228,6 +262,7 @@ nav:
       - Pydantic: python/pydantic.md
       - Voxel51: integrations/voxel51.md
       - PromptTools: integrations/prompttools.md
+      - dlt: integrations/dlt.md
   - Examples:
       - examples/index.md
       - 🐍 Python:
@@ -239,6 +274,7 @@ nav:
           - Chatbot: examples/python_examples/chatbot.md
           - Evaluation: examples/python_examples/evaluations.md
           - AI Agent: examples/python_examples/aiagent.md
+          - Recommender System: examples/python_examples/recommendersystem.md
           - Miscellaneous: 
               - YouTube Transcript Search: notebooks/youtube_transcript_search.ipynb
               - Documentation QA Bot using LangChain: notebooks/code_qa_bot.ipynb

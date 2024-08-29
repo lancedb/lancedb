@@ -10,75 +10,56 @@
 #  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
-
-from functools import cached_property
-from typing import Union
-
 import pyarrow as pa
-
-from ..util import attempt_import_or_raise
 from .base import Reranker
+from ..util import attempt_import_or_raise
 
 
-class CrossEncoderReranker(Reranker):
+class AnswerdotaiRerankers(Reranker):
     """
-    Reranks the results using a cross encoder model. The cross encoder model is
-    used to score the query and each result. The results are then sorted by the score.
+    Reranks the results using the Answerdotai Rerank API.
+    All supported reranker model types can be found here:
+    - https://github.com/AnswerDotAI/rerankers
+
 
     Parameters
     ----------
-    model_name : str, default "cross-encoder/ms-marco-TinyBERT-L-6"
-        The name of the cross encoder model to use. See the sentence transformers
-        documentation for a list of available models.
+    model_type : str, default "colbert"
+        The type of the model to use.
+    model_name : str, default "rerank-english-v2.0"
+        The name of the model to use from the given model type.
     column : str, default "text"
         The name of the column to use as input to the cross encoder model.
-    device : str, default None
-        The device to use for the cross encoder model. If None, will use "cuda"
-        if available, otherwise "cpu".
     return_score : str, default "relevance"
         options are "relevance" or "all". Only "relevance" is supported for now.
-    trust_remote_code : bool, default True
-        If True, will trust the remote code to be safe. If False, will not trust
-        the remote code and will not run it
     """
 
     def __init__(
         self,
-        model_name: str = "cross-encoder/ms-marco-TinyBERT-L-6",
+        model_type="colbert",
+        model_name: str = "answerdotai/answerai-colbert-small-v1",
         column: str = "text",
-        device: Union[str, None] = None,
         return_score="relevance",
-        trust_remote_code: bool = True,
     ):
         super().__init__(return_score)
-        torch = attempt_import_or_raise("torch")
-        self.model_name = model_name
         self.column = column
-        self.device = device
-        self.trust_remote_code = trust_remote_code
-        if self.device is None:
-            self.device = "cuda" if torch.cuda.is_available() else "cpu"
-
-    @cached_property
-    def model(self):
-        sbert = attempt_import_or_raise("sentence_transformers")
-        # Allows overriding the automatically selected device
-        cross_encoder = sbert.CrossEncoder(
-            self.model_name,
-            device=self.device,
-            trust_remote_code=self.trust_remote_code,
-        )
-
-        return cross_encoder
+        rerankers = attempt_import_or_raise(
+            "rerankers"
+        )  # import here for faster ops later
+        self.reranker = rerankers.Reranker(model_name, model_type)
 
     def _rerank(self, result_set: pa.Table, query: str):
-        passages = result_set[self.column].to_pylist()
-        cross_inp = [[query, passage] for passage in passages]
-        cross_scores = self.model.predict(cross_inp)
-        result_set = result_set.append_column(
-            "_relevance_score", pa.array(cross_scores, type=pa.float32())
-        )
+        docs = result_set[self.column].to_pylist()
+        doc_ids = list(range(len(docs)))
+        result = self.reranker.rank(query, docs, doc_ids=doc_ids)
 
+        # get the scores of each document in the same order as the input
+        scores = [result.get_result_by_docid(i).score for i in doc_ids]
+
+        # add the scores
+        result_set = result_set.append_column(
+            "_relevance_score", pa.array(scores, type=pa.float32())
+        )
         return result_set
 
     def rerank_hybrid(
@@ -89,24 +70,18 @@ class CrossEncoderReranker(Reranker):
     ):
         combined_results = self.merge_results(vector_results, fts_results)
         combined_results = self._rerank(combined_results, query)
-        # sort the results by _score
         if self.score == "relevance":
             combined_results = self._keep_relevance_score(combined_results)
         elif self.score == "all":
             raise NotImplementedError(
-                "return_score='all' not implemented for CrossEncoderReranker"
+                "Answerdotai Reranker does not support score='all' yet"
             )
         combined_results = combined_results.sort_by(
             [("_relevance_score", "descending")]
         )
-
         return combined_results
 
-    def rerank_vector(
-        self,
-        query: str,
-        vector_results: pa.Table,
-    ):
+    def rerank_vector(self, query: str, vector_results: pa.Table):
         vector_results = self._rerank(vector_results, query)
         if self.score == "relevance":
             vector_results = vector_results.drop_columns(["_distance"])
@@ -114,14 +89,11 @@ class CrossEncoderReranker(Reranker):
         vector_results = vector_results.sort_by([("_relevance_score", "descending")])
         return vector_results
 
-    def rerank_fts(
-        self,
-        query: str,
-        fts_results: pa.Table,
-    ):
+    def rerank_fts(self, query: str, fts_results: pa.Table):
         fts_results = self._rerank(fts_results, query)
         if self.score == "relevance":
             fts_results = fts_results.drop_columns(["_score"])
 
         fts_results = fts_results.sort_by([("_relevance_score", "descending")])
+
         return fts_results
