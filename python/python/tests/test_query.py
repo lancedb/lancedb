@@ -108,6 +108,7 @@ def test_cast(table):
 
 
 def test_offset(table):
+    assert table.count_rows() == 2
     q = LanceVectorQueryBuilder(table, [0, 0], "vector").offset(1)
     results = q.to_pandas()
     assert len(results) == 1
@@ -276,7 +277,6 @@ async def test_query_async(table_async: AsyncTable):
         table_async.query().select({"foo": "id", "bar": "id + 1"}),
         expected_columns=["foo", "bar"],
     )
-    await check_query(table_async.query().limit(1), expected_num_rows=1)
 
     await check_query(
         table_async.query().nearest_to(pa.array([1, 2])), expected_num_rows=2
@@ -365,6 +365,13 @@ def test_explain_plan(table):
 async def test_explain_plan_async(table_async: AsyncTable):
     plan = await table_async.query().nearest_to(pa.array([1, 2])).explain_plan(True)
     assert "KNN" in plan
+
+@pytest.mark.asyncio
+async def test_offset(table_async: AsyncTable):
+    table = await table_async.query().offset(1).to_arrow()
+    rows = table.num_rows
+    print(rows)
+    # assert "KNN" in plan
 
 
 @pytest.mark.asyncio

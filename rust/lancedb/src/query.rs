@@ -338,7 +338,7 @@ pub trait QueryBase {
     /// it will default to 10.
     fn limit(self, limit: usize) -> Self;
 
-    // Set the offset of the query.
+    /// Set the offset of the query.
 
     /// By default, it fetches starting with the first row.
     /// This method can be used to skip the first `offset` rows.
@@ -510,6 +510,7 @@ pub trait ExecutableQuery {
     ) -> impl Future<Output = Result<SendableRecordBatchStream>> + Send;
 
     fn explain_plan(&self, verbose: bool) -> impl Future<Output = Result<String>> + Send;
+
 }
 
 /// A builder for LanceDB queries.
