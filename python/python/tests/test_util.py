@@ -15,7 +15,7 @@ import os
 import pathlib
 
 import pytest
-from lancedb.util import get_uri_scheme, join_uri
+from lancedb.util import get_uri_scheme, join_uri, value_to_sql
 
 
 def test_normalize_uri():
@@ -84,3 +84,24 @@ def test_local_join_uri_windows():
         assert joined == str(pathlib.Path(base) / "table.lance")
         joined = join_uri(pathlib.Path(base), "table.lance")
         assert joined == pathlib.Path(base) / "table.lance"
+
+
+def test_value_to_sql_string():
+    target_ids = [
+        1,
+        "2",
+        "'3'",
+        "'",
+    ]
+    # fmt: off
+    expected_formatting = [
+        '"id = \'1\'"',
+        '"id = \'2\'"',
+        '"id = \'\'3\'\'"',
+        '"id = \'\'\'"',
+    ]
+    # fmt: on
+    for target, expected in zip(target_ids, expected_formatting):
+        where = f"id = '{target}'"
+        got = value_to_sql(where)
+        assert got == expected
