@@ -923,7 +923,13 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
     in the `rerank` method to convert the scores to ranks and then normalize them.
     """
 
-    def __init__(self, table: "Table", query: str = None, vector_column: str = None, fts_columns: Union[str, List[str]] = []):
+    def __init__(
+        self,
+        table: "Table",
+        query: str = None,
+        vector_column: str = None,
+        fts_columns: Union[str, List[str]] = [],
+    ):
         super().__init__(table)
         self._query = query
         self._vector_column = vector_column
@@ -956,7 +962,9 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         vector_query, fts_query = self._validate_query(
             self._query, self._vector, self._text
         )
-        self._fts_query = LanceFtsQueryBuilder(self._table, fts_query, fts_columns=self._fts_columns)
+        self._fts_query = LanceFtsQueryBuilder(
+            self._table, fts_query, fts_columns=self._fts_columns
+        )
         vector_query = self._query_to_vector(
             self._table, vector_query, self._vector_column
         )
