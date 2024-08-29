@@ -510,7 +510,6 @@ pub trait ExecutableQuery {
     ) -> impl Future<Output = Result<SendableRecordBatchStream>> + Send;
 
     fn explain_plan(&self, verbose: bool) -> impl Future<Output = Result<String>> + Send;
-
 }
 
 /// A builder for LanceDB queries.
