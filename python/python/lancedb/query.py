@@ -42,9 +42,9 @@ if TYPE_CHECKING:
     import PIL
     import polars as pl
 
-    from .common import VEC
     from ._lancedb import Query as LanceQuery
     from ._lancedb import VectorQuery as LanceVectorQuery
+    from .common import VEC
     from .pydantic import LanceModel
     from .table import Table
 
@@ -985,6 +985,23 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             raise ValueError("Text query must be a string")
 
         return vector_query, text_query
+
+    def phrase_query(self, phrase_query: bool = True) -> LanceHybridQueryBuilder:
+        """Set whether to use phrase query.
+
+        Parameters
+        ----------
+        phrase_query: bool, default True
+            If True, then the query will be wrapped in quotes and
+            double quotes replaced by single quotes.
+
+        Returns
+        -------
+        LanceHybridQueryBuilder
+            The LanceHybridQueryBuilder object.
+        """
+        self._fts_query.phrase_query(phrase_query)
+        return self
 
     def to_arrow(self) -> pa.Table:
         vector_query, fts_query = self._validate_query(
