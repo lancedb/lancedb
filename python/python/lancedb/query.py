@@ -133,7 +133,7 @@ class LanceQueryBuilder(ABC):
         query_type: str,
         vector_column_name: str,
         ordering_field_name: Optional[str] = None,
-        fts_columns: Optional[Union[str, List[str]]] = None,
+        fts_columns: Union[str, List[str]] = [],
     ) -> LanceQueryBuilder:
         """
         Create a query builder based on the given query and query type.
@@ -699,7 +699,7 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         table: "Table",
         query: str,
         ordering_field_name: Optional[str] = None,
-        fts_columns: Optional[Union[str, List[str]]] = None,
+        fts_columns: Union[str, List[str]] = [],
     ):
         super().__init__(table)
         self._query = query
@@ -897,7 +897,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         table: "Table",
         query: str,
         vector_column: str,
-        fts_columns: Optional[Union[str, List[str]]] = None,
+        fts_columns: Union[str, List[str]] = [],
     ):
         super().__init__(table)
         vector_query, fts_query = self._validate_query(query)
@@ -1399,7 +1399,7 @@ class AsyncQuery(AsyncQueryBase):
         )
 
     def nearest_to_text(
-        self, query: str, columns: Optional[Union[str, List[str]]] = None
+        self, query: str, columns: Union[str, List[str]] = []
     ) -> AsyncQuery:
         """
         Find the documents that are most relevant to the given text query.
@@ -1423,9 +1423,8 @@ class AsyncQuery(AsyncQueryBase):
         """
         if isinstance(columns, str):
             columns = [columns]
-        return AsyncQuery(
-            self._inner.nearest_to_text({"query": query, "columns": columns})
-        )
+        self._inner.nearest_to_text({"query": query, "columns": columns})
+        return self
 
 
 class AsyncVectorQuery(AsyncQueryBase):
