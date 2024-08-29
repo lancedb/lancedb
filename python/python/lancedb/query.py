@@ -132,8 +132,8 @@ class LanceQueryBuilder(ABC):
         query: Optional[Union[np.ndarray, str, "PIL.Image.Image", Tuple]],
         query_type: str,
         vector_column_name: str,
-        ordering_field_name: str = None,
-        fts_columns: Union[str, List[str]] = None,
+        ordering_field_name: Optional[str] = None,
+        fts_columns: Union[str, List[str]] = [],
     ) -> LanceQueryBuilder:
         """
         Create a query builder based on the given query and query type.
@@ -154,7 +154,9 @@ class LanceQueryBuilder(ABC):
         # Check hybrid search first as it supports empty query pattern
         if query_type == "hybrid":
             # hybrid fts and vector query
-            return LanceHybridQueryBuilder(table, query, vector_column_name)
+            return LanceHybridQueryBuilder(
+                table, query, vector_column_name, fts_columns=fts_columns
+            )
 
         if query is None:
             return LanceEmptyQueryBuilder(table)
@@ -169,7 +171,9 @@ class LanceQueryBuilder(ABC):
         )
 
         if query_type == "hybrid":
-            return LanceHybridQueryBuilder(table, query, vector_column_name)
+            return LanceHybridQueryBuilder(
+                table, query, vector_column_name, fts_columns=fts_columns
+            )
 
         if isinstance(query, str):
             # fts
@@ -177,6 +181,7 @@ class LanceQueryBuilder(ABC):
                 table,
                 query,
                 ordering_field_name=ordering_field_name,
+                fts_columns=fts_columns,
             )
 
         if isinstance(query, list):
@@ -724,8 +729,8 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         self,
         table: "Table",
         query: str,
-        ordering_field_name: str = None,
-        fts_columns: Union[str, List[str]] = None,
+        ordering_field_name: Optional[str] = None,
+        fts_columns: Union[str, List[str]] = [],
     ):
         super().__init__(table)
         self._query = query
@@ -918,10 +923,11 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
     in the `rerank` method to convert the scores to ranks and then normalize them.
     """
 
-    def __init__(self, table: "Table", query: str = None, vector_column: str = None):
+    def __init__(self, table: "Table", query: str = None, vector_column: str = None, fts_columns: Union[str, List[str]] = []):
         super().__init__(table)
         self._query = query
         self._vector_column = vector_column
+        self._fts_columns = fts_columns
         self._norm = "score"
         self._reranker = LinearCombinationReranker(weight=0.7, fill=1.0)
         self._nprobes = None
@@ -950,7 +956,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         vector_query, fts_query = self._validate_query(
             self._query, self._vector, self._text
         )
-        self._fts_query = LanceFtsQueryBuilder(self._table, fts_query)
+        self._fts_query = LanceFtsQueryBuilder(self._table, fts_query, fts_columns=self._fts_columns)
         vector_query = self._query_to_vector(
             self._table, vector_query, self._vector_column
         )
@@ -1372,7 +1378,7 @@ class AsyncQuery(AsyncQueryBase):
         )
 
     def nearest_to_text(
-        self, query: str, columns: Union[str, List[str]] = None
+        self, query: str, columns: Union[str, List[str]] = []
     ) -> AsyncQuery:
         """
         Find the documents that are most relevant to the given text query.
@@ -1396,9 +1402,8 @@ class AsyncQuery(AsyncQueryBase):
         """
         if isinstance(columns, str):
             columns = [columns]
-        return AsyncQuery(
-            self._inner.nearest_to_text({"query": query, "columns": columns})
-        )
+        self._inner.nearest_to_text({"query": query, "columns": columns})
+        return self
 
 
 class AsyncVectorQuery(AsyncQueryBase):
