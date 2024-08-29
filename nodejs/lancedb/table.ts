@@ -602,18 +602,12 @@ export class LocalTable extends Table {
       });
     }
 
-    // The query type is auto or vector
-    // fall back to full text search if no embedding functions are defined and the query is a string
-    if (queryType === "auto" && getRegistry().length() === 0) {
-      return this.query().fullTextSearch(query, {
-        columns: ftsColumns,
-      });
-    }
-
     // TODO: Support multiple embedding functions
     const embeddingFunc: EmbeddingFunctionConfig | undefined =
       this.getEmbeddingFunctions().values().next().value;
     if (!embeddingFunc) {
+      // The query type is auto and string
+      // fall back to full text search if no embedding functions are defined and the query is a string
       if (queryType === "auto" && typeof query === "string") {
         return this.query().fullTextSearch(query, {
           columns: ftsColumns,
