@@ -54,6 +54,8 @@ LanceDB comes with some built-in rerankers. Here are some of the rerankers that 
 - [OpenAI Reranker](./openai.md)
 - [Linear Combination Reranker](./linear_combination.md)
 - [Jina Reranker](./jina.md)
+- [AnswerDotAI Rerankers](./answerdotai.md)
+- [Reciprocal Rank Fusion Reranker](./rrf.md)
 
 ## Creating Custom Rerankers
 
