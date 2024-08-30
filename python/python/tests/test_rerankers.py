@@ -216,8 +216,18 @@ def _run_test_hybrid_reranker(reranker, tmp_path, use_tantivy):
         .rerank(normalize="score")
         .to_arrow()
     )
-
     assert len(result) == 30
+
+    # Fail if both query and (vector or text) are provided
+    with pytest.raises(ValueError):
+        table.search(query, query_type="hybrid", vector_column_name="vector").vector(
+            query_vector
+        ).to_arrow()
+
+    with pytest.raises(ValueError):
+        table.search(query, query_type="hybrid", vector_column_name="vector").text(
+            query
+        ).to_arrow()
 
     assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), (
         "The _relevance_score column of the results returned by the reranker "

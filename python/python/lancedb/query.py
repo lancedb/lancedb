@@ -940,13 +940,14 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         self._refine_factor = None
 
     def _validate_query(self, query, vector=None, text=None):
-        if query is not None and vector is not None:
+        if query is not None and (vector is not None or text is not None):
             raise ValueError(
-                "You can either provide query or its vector representation"
-                "but not both."
+                "You can either provide a string query in search() method"
+                "or set `vector()` and `text()` explicitly for hybrid search."
+                "But not both."
             )
 
-        vector_query = vector or query
+        vector_query = vector if vector is not None else query
         if not isinstance(vector_query, (str, list, np.ndarray)):
             raise ValueError("Vector query must be either a string or a vector")
 
