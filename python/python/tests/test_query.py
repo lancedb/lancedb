@@ -371,14 +371,6 @@ async def test_explain_plan_async(table_async: AsyncTable):
 
 
 @pytest.mark.asyncio
-async def test_offset(table_async: AsyncTable):
-    table = await table_async.query().offset(1).to_arrow()
-    rows = table.num_rows
-    print(rows)
-    # assert "KNN" in plan
-
-
-@pytest.mark.asyncio
 async def test_query_camelcase_async(tmp_path):
     db = await lancedb.connect_async(tmp_path)
     table = await db.create_table("test", pa.table({"camelCase": pa.array([1, 2])}))
