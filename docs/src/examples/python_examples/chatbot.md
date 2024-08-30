@@ -1,7 +1,7 @@
 **Chatbot applications with LanceDB 🤖**
 ====================================================================
 
- Create an innovative chatbot applications that utilizes LanceDB for efficient vector-based response generation! 🌐✨ 
+ Create innovative chatbot applications that utilizes LanceDB for efficient vector-based response generation! 🌐✨ 
  
 **Introduction 👋✨**
 
