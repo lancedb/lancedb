@@ -291,6 +291,7 @@ nav:
       - 🦀 Rust:
           - Overview: examples/examples_rust.md
   - Studies:
+    - studies/overview.md
     - ↗Improve retrievers with hybrid search and reranking: https://blog.lancedb.com/hybrid-search-and-reranking-report/
   - API reference:
       - Overview: api_reference.md
