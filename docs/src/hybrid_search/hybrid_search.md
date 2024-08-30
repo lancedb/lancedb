@@ -43,6 +43,19 @@ table.create_fts_index("text")
 # hybrid search with default re-ranker
 results = table.search("flower moon", query_type="hybrid").to_pandas()
 ```
+!!! Note
+    You can also pass the vector and text query manually. This is useful if you're not using the embedding API or if you're using a separate embedder service.
+### Explicitly passing the vector and text query
+```python
+vector_query = [0.1, 0.2, 0.3, 0.4, 0.5]
+text_query = "flower moon"
+results = table.search(query_type="hybrid")
+                .vector(vector_query)
+                .text(text_query)
+                .limit(5)
+                .to_pandas()
+
+```
 
 By default, LanceDB uses `LinearCombinationReranker(weight=0.7)` to combine and rerank the results of semantic and full-text search. You can customize the hyperparameters as needed or write your own custom reranker. Here's how you can use any of the available rerankers:
 

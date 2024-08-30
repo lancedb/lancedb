@@ -98,6 +98,13 @@ impl Index {
             inner: Mutex::new(Some(LanceDbIndex::LabelList(Default::default()))),
         })
     }
+
+    #[staticmethod]
+    pub fn fts() -> PyResult<Self> {
+        Ok(Self {
+            inner: Mutex::new(Some(LanceDbIndex::FTS(Default::default()))),
+        })
+    }
 }
 
 #[pyclass(get_all)]
