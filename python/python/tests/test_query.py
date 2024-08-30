@@ -108,10 +108,10 @@ def test_cast(table):
 
 
 def test_offset(table):
-    assert table.count_rows() == 2
-    q = LanceVectorQueryBuilder(table, [0, 0], "vector").offset(1)
-    results = q.to_pandas()
-    assert len(results) == 1
+    results_without_offset = LanceVectorQueryBuilder(table, [0, 0], "vector")
+    assert len(results_without_offset.to_pandas()) == 2
+    results_with_offset = LanceVectorQueryBuilder(table, [0, 0], "vector").offset(1)
+    assert len(results_with_offset.to_pandas()) == 1
 
 
 def test_query_builder(table):
