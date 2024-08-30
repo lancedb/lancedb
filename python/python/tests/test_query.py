@@ -277,6 +277,9 @@ async def test_query_async(table_async: AsyncTable):
         table_async.query().select({"foo": "id", "bar": "id + 1"}),
         expected_columns=["foo", "bar"],
     )
+    
+    await check_query(table_async.query().limit(1), expected_num_rows=1)
+    await check_query(table_async.query().offset(1), expected_num_rows=1)
 
     await check_query(
         table_async.query().nearest_to(pa.array([1, 2])), expected_num_rows=2

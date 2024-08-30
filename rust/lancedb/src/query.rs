@@ -933,9 +933,25 @@ mod tests {
         let result = query.execute().await;
         let mut stream = result.expect("should have result");
         // should only have one batch
+
         while let Some(batch) = stream.next().await {
             // pre filter should return 10 rows
             assert!(batch.expect("should be Ok").num_rows() == 10);
+        }
+
+        let query = table
+            .query()
+            .limit(10)
+            .offset(1)
+            .only_if(String::from("id % 2 == 0"))
+            .nearest_to(&[0.1; 4])
+            .unwrap();
+        let result = query.execute().await;
+        let mut stream = result.expect("should have result");
+        // should only have one batch
+        while let Some(batch) = stream.next().await {
+            // pre filter should return 10 rows
+            assert!(batch.expect("should be Ok").num_rows() == 9);
         }
     }
 
