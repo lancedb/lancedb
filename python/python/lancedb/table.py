@@ -545,7 +545,7 @@ class Table(ABC):
         vector_column_name: Optional[str] = None,
         query_type: str = "auto",
         ordering_field_name: Optional[str] = None,
-        fts_columns: Union[str, List[str]] = None,
+        fts_columns: Optional[Union[str, List[str]]] = None,
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support [vector search][search]
@@ -1425,7 +1425,7 @@ class LanceTable(Table):
         vector_column_name: Optional[str] = None,
         query_type: str = "auto",
         ordering_field_name: Optional[str] = None,
-        fts_columns: Union[str, List[str]] = None,
+        fts_columns: Optional[Union[str, List[str]]] = None,
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support [vector search][search]
@@ -1505,6 +1505,7 @@ class LanceTable(Table):
             query_type,
             vector_column_name=vector_column_name,
             ordering_field_name=ordering_field_name,
+            fts_columns=fts_columns,
         )
 
     @classmethod

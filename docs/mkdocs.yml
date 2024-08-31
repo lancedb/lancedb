@@ -84,7 +84,9 @@ nav:
       - 🏃🏼‍♂️ Quick start: basic.md
       - 📚 Concepts:
           - Vector search: concepts/vector_search.md
-          - Indexing: concepts/index_ivfpq.md
+          - Indexing: 
+            - IVFPQ: concepts/index_ivfpq.md
+            - HNSW: concepts/index_hnsw.md
           - Storage: concepts/storage.md
           - Data management: concepts/data_management.md
       - 🔨 Guides:
@@ -106,6 +108,7 @@ nav:
               - ColBERT Reranker: reranking/colbert.md
               - Jina Reranker: reranking/jina.md
               - OpenAI Reranker: reranking/openai.md
+              - AnswerDotAi Rerankers: reranking/answerdotai.md
               - Building Custom Rerankers: reranking/custom_reranker.md
               - Example: notebooks/lancedb_reranking.ipynb
           - Filtering: sql.md
@@ -168,9 +171,6 @@ nav:
               - AI Agent: examples/python_examples/aiagent.md
               - Recommender System: examples/python_examples/recommendersystem.md
               - Miscellaneous: 
-                  - YouTube Transcript Search: notebooks/youtube_transcript_search.ipynb
-                  - Documentation QA Bot using LangChain: notebooks/code_qa_bot.ipynb
-                  - Multimodal search using CLIP: notebooks/multimodal_search.ipynb
                   - Serverless QA Bot with S3 and Lambda: examples/serverless_lancedb_with_s3_and_lambda.md
                   - Serverless QA Bot with Modal: examples/serverless_qa_bot_with_modal_and_langchain.md
           - 👾 JavaScript:
@@ -180,6 +180,8 @@ nav:
               - TransformersJS Embedding Search: examples/transformerjs_embedding_search_nodejs.md
           - 🦀 Rust:
               - Overview: examples/examples_rust.md
+      - Studies:
+          - ↗Improve retrievers with hybrid search and reranking: https://blog.lancedb.com/hybrid-search-and-reranking-report/
       - 💭 FAQs: faq.md
       - ⚙️ API reference:
           - 🐍 Python: python/python.md
@@ -196,7 +198,9 @@ nav:
   - Quick start: basic.md
   - Concepts:
       - Vector search: concepts/vector_search.md
-      - Indexing: concepts/index_ivfpq.md
+      - Indexing: 
+        - IVFPQ: concepts/index_ivfpq.md
+        - HNSW: concepts/index_hnsw.md
       - Storage: concepts/storage.md
       - Data management: concepts/data_management.md
   - Guides:
@@ -218,6 +222,7 @@ nav:
           - ColBERT Reranker: reranking/colbert.md
           - Jina Reranker: reranking/jina.md
           - OpenAI Reranker: reranking/openai.md
+          - AnswerDotAi Rerankers: reranking/answerdotai.md
           - Building Custom Rerankers: reranking/custom_reranker.md
           - Example: notebooks/lancedb_reranking.ipynb
       - Filtering: sql.md
@@ -276,9 +281,6 @@ nav:
           - AI Agent: examples/python_examples/aiagent.md
           - Recommender System: examples/python_examples/recommendersystem.md
           - Miscellaneous: 
-              - YouTube Transcript Search: notebooks/youtube_transcript_search.ipynb
-              - Documentation QA Bot using LangChain: notebooks/code_qa_bot.ipynb
-              - Multimodal search using CLIP: notebooks/multimodal_search.ipynb
               - Serverless QA Bot with S3 and Lambda: examples/serverless_lancedb_with_s3_and_lambda.md
               - Serverless QA Bot with Modal: examples/serverless_qa_bot_with_modal_and_langchain.md
       - 👾 JavaScript:
@@ -288,6 +290,9 @@ nav:
           - TransformersJS Embedding Search: examples/transformerjs_embedding_search_nodejs.md
       - 🦀 Rust:
           - Overview: examples/examples_rust.md
+  - Studies:
+    - studies/overview.md
+    - ↗Improve retrievers with hybrid search and reranking: https://blog.lancedb.com/hybrid-search-and-reranking-report/
   - API reference:
       - Overview: api_reference.md
       - Python: python/python.md

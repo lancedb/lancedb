@@ -15,7 +15,7 @@ import logging
 import uuid
 from concurrent.futures import Future
 from functools import cached_property
-from typing import Dict, Iterable, Optional, Union, Literal
+from typing import Dict, Iterable, List, Optional, Union, Literal
 
 import pyarrow as pa
 from lance import json_to_schema
@@ -268,6 +268,7 @@ class RemoteTable(Table):
         query: Union[VEC, str],
         vector_column_name: Optional[str] = None,
         query_type="auto",
+        fts_columns: Optional[Union[str, List[str]]] = None,
     ) -> LanceVectorQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support [vector search][search]
@@ -338,6 +339,7 @@ class RemoteTable(Table):
             query,
             query_type,
             vector_column_name=vector_column_name,
+            fts_columns=fts_columns,
         )
 
     def _execute_query(
