@@ -572,7 +572,7 @@ You can use the embedding API when working with embedding models. It automatical
     --8<-- "rust/lancedb/examples/openai.rs:openai_embeddings"
     ```
 
-Learn about using the existing integrations and creating custom embedding functions in the [embedding API guide](./embeddings/).
+Learn about using the existing integrations and creating custom embedding functions in the [embedding API guide](./embeddings/index.md).
 
 
 ## What's next
