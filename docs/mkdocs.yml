@@ -108,6 +108,7 @@ nav:
               - ColBERT Reranker: reranking/colbert.md
               - Jina Reranker: reranking/jina.md
               - OpenAI Reranker: reranking/openai.md
+              - AnswerDotAi Rerankers: reranking/answerdotai.md
               - Building Custom Rerankers: reranking/custom_reranker.md
               - Example: notebooks/lancedb_reranking.ipynb
           - Filtering: sql.md
@@ -179,6 +180,8 @@ nav:
               - TransformersJS Embedding Search: examples/transformerjs_embedding_search_nodejs.md
           - 🦀 Rust:
               - Overview: examples/examples_rust.md
+      - Studies:
+          - ↗Improve retrievers with hybrid search and reranking: https://blog.lancedb.com/hybrid-search-and-reranking-report/
       - 💭 FAQs: faq.md
       - ⚙️ API reference:
           - 🐍 Python: python/python.md
@@ -219,6 +222,7 @@ nav:
           - ColBERT Reranker: reranking/colbert.md
           - Jina Reranker: reranking/jina.md
           - OpenAI Reranker: reranking/openai.md
+          - AnswerDotAi Rerankers: reranking/answerdotai.md
           - Building Custom Rerankers: reranking/custom_reranker.md
           - Example: notebooks/lancedb_reranking.ipynb
       - Filtering: sql.md
@@ -286,6 +290,9 @@ nav:
           - TransformersJS Embedding Search: examples/transformerjs_embedding_search_nodejs.md
       - 🦀 Rust:
           - Overview: examples/examples_rust.md
+  - Studies:
+    - studies/overview.md
+    - ↗Improve retrievers with hybrid search and reranking: https://blog.lancedb.com/hybrid-search-and-reranking-report/
   - API reference:
       - Overview: api_reference.md
       - Python: python/python.md
