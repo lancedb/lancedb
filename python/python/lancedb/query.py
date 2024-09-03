@@ -35,7 +35,7 @@ import pydantic
 from . import __version__
 from .arrow import AsyncRecordBatchReader
 from .rerankers.base import Reranker
-from .rerankers.linear_combination import LinearCombinationReranker
+from .rerankers.rrf import RRFReranker
 from .util import safe_import_pandas
 
 if TYPE_CHECKING:
@@ -916,7 +916,8 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
     """
     A query builder that performs hybrid vector and full text search.
     Results are combined and reranked based on the specified reranker.
-    By default, the results are reranked using the LinearCombinationReranker.
+    By default, the results are reranked using the RRFReranker, which
+    uses reciprocal rank fusion score for reranking.
 
     To make the vector and fts results comparable, the scores are normalized.
     Instead of normalizing scores, the `normalize` parameter can be set to "rank"
@@ -935,7 +936,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         self._vector_column = vector_column
         self._fts_columns = fts_columns
         self._norm = "score"
-        self._reranker = LinearCombinationReranker(weight=0.7, fill=1.0)
+        self._reranker = RRFReranker()
         self._nprobes = None
         self._refine_factor = None
 
@@ -1066,7 +1067,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
     def rerank(
         self,
         normalize="score",
-        reranker: Reranker = LinearCombinationReranker(weight=0.7, fill=1.0),
+        reranker: Reranker = RRFReranker(),
     ) -> LanceHybridQueryBuilder:
         """
         Rerank the hybrid search results using the specified reranker. The reranker
@@ -1078,7 +1079,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             The method to normalize the scores. Can be "rank" or "score". If "rank",
             the scores are converted to ranks and then normalized. If "score", the
             scores are normalized directly.
-        reranker: Reranker, default LinearCombinationReranker(weight=0.7, fill=1.0)
+        reranker: Reranker, default RRFReranker()
             The reranker to use. Must be an instance of Reranker class.
         Returns
         -------
