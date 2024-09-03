@@ -121,8 +121,50 @@ def _sanitize_data(
         data = _to_record_batch_generator(
             data, schema, metadata, on_bad_vectors, fill_value
         )
+        if schema is None:
+            data, schema = _generator_to_data_and_schema(data)
+            if schema is None:
+                raise ValueError("Cannot infer schema from generator data")
     else:
         raise TypeError(f"Unsupported data type: {type(data)}")
+    return data, schema
+
+
+def sanitize_create_table(
+    data, schema, metadata=None, on_bad_vectors="error", fill_value=0.0
+):
+    if inspect.isclass(schema) and issubclass(schema, LanceModel):
+        # convert LanceModel to pyarrow schema
+        # note that it's possible this contains
+        # embedding function metadata already
+        schema = schema.to_arrow_schema()
+
+    if data is not None:
+        data, schema = _sanitize_data(
+            data,
+            schema,
+            metadata=metadata,
+            on_bad_vectors=on_bad_vectors,
+            fill_value=fill_value,
+        )
+    else:
+        if schema is None:
+            raise ValueError("Either data or schema must be provided")
+        elif hasattr(data, "schema"):
+            schema = data.schema
+        elif isinstance(data, Iterable):
+            if metadata:
+                raise TypeError(
+                    (
+                        "Persistent embedding functions not yet "
+                        "supported for generator data input"
+                    )
+                )
+        data = pa.Table.from_pylist([], schema=schema)
+
+    if metadata:
+        schema = schema.with_metadata(metadata)
+
     return data, schema
 
 
@@ -187,8 +229,30 @@ def _append_vector_col(data: pa.Table, metadata: dict, schema: Optional[pa.Schem
     return data
 
 
+def _generator_to_data_and_schema(
+    data: Iterable,
+) -> Tuple[Iterable[pa.RecordBatch], pa.Schema]:
+    def _with_first_generator(first, data):
+        yield first
+        yield from data
+
+    first = next(data, None)
+    schema = None
+    if isinstance(first, pa.RecordBatch):
+        schema = first.schema
+        data = _with_first_generator(first, data)
+    elif isinstance(first, pa.Table):
+        schema = first.schema
+        data = _with_first_generator(first.to_batches(), data)
+    return data, schema
+
+
 def _to_record_batch_generator(
-    data: Iterable, schema, metadata, on_bad_vectors, fill_value
+    data: Iterable,
+    schema,
+    metadata,
+    on_bad_vectors,
+    fill_value,
 ):
     for batch in data:
         # always convert to table because we need to sanitize the data
@@ -1569,12 +1633,6 @@ class LanceTable(Table):
             The embedding functions to use when creating the table.
         """
         tbl = LanceTable(db, name)
-        if inspect.isclass(schema) and issubclass(schema, LanceModel):
-            # convert LanceModel to pyarrow schema
-            # note that it's possible this contains
-            # embedding function metadata already
-            schema = schema.to_arrow_schema()
-
         metadata = None
         if embedding_functions is not None:
             # If we passed in embedding functions explicitly
@@ -1583,31 +1641,9 @@ class LanceTable(Table):
             registry = EmbeddingFunctionRegistry.get_instance()
             metadata = registry.get_table_metadata(embedding_functions)
 
-        if data is not None:
-            data, schema = _sanitize_data(
-                data,
-                schema,
-                metadata=metadata,
-                on_bad_vectors=on_bad_vectors,
-                fill_value=fill_value,
-            )
-
-        if schema is None:
-            if data is None:
-                raise ValueError("Either data or schema must be provided")
-            elif hasattr(data, "schema"):
-                schema = data.schema
-            elif isinstance(data, Iterable):
-                if metadata:
-                    raise TypeError(
-                        (
-                            "Persistent embedding functions not yet "
-                            "supported for generator data input"
-                        )
-                    )
-
-        if metadata:
-            schema = schema.with_metadata(metadata)
+        data, schema = sanitize_create_table(
+            data, schema, metadata, on_bad_vectors, fill_value
+        )
 
         empty = pa.Table.from_pylist([], schema=schema)
         try:

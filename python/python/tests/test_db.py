@@ -233,6 +233,24 @@ def test_create_mode(tmp_path):
     assert tbl.to_pandas().item.tolist() == ["fizz", "buzz"]
 
 
+def test_create_table_from_iterator(tmp_path):
+    db = lancedb.connect(tmp_path)
+
+    def gen_data():
+        for _ in range(10):
+            yield pa.RecordBatch.from_arrays(
+                [
+                    pa.array([[3.1, 4.1]], pa.list_(pa.float32(), 2)),
+                    pa.array(["foo"]),
+                    pa.array([10.0]),
+                ],
+                ["vector", "item", "price"],
+            )
+
+    table = db.create_table("test", data=gen_data())
+    assert table.count_rows() == 10
+
+
 def test_create_exist_ok(tmp_path):
     db = lancedb.connect(tmp_path)
     data = pd.DataFrame(
