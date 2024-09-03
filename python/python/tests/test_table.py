@@ -2,13 +2,13 @@
 # SPDX-FileCopyrightText: Copyright The Lance Authors
 
 import functools
+import os
 from copy import copy
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from time import sleep
 from typing import List
 from unittest.mock import PropertyMock, patch
-import os
 
 import lance
 import lancedb
@@ -908,9 +908,14 @@ def test_hybrid_search(db, tmp_path):
     ).to_pydantic(MyTable)
 
     # Test that double and single quote characters are handled with phrase_query()
-    result4 = table.search(
-        '"Aren\'t you a little short for a stormtrooper?" -- Leia', query_type="hybrid"
-    ).phrase_query(True).to_pydantic(MyTable)
+    result4 = (
+        table.search(
+            '"Aren\'t you a little short for a stormtrooper?" -- Leia',
+            query_type="hybrid",
+        )
+        .phrase_query(True)
+        .to_pydantic(MyTable)
+    )
 
     assert result1 == result3
 

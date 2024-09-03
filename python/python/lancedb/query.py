@@ -965,6 +965,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         self._reranker = RRFReranker()
         self._nprobes = None
         self._refine_factor = None
+        self._phrase_query = False
 
     def _validate_query(self, query, vector=None, text=None):
         if query is not None and (vector is not None or text is not None):
@@ -1000,7 +1001,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         LanceHybridQueryBuilder
             The LanceHybridQueryBuilder object.
         """
-        self._fts_query.phrase_query(phrase_query)
+        self._phrase_query = phrase_query
         return self
 
     def to_arrow(self) -> pa.Table:
@@ -1029,6 +1030,8 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         if self._with_row_id:
             self._vector_query.with_row_id(True)
             self._fts_query.with_row_id(True)
+        if self._phrase_query:
+            self._fts_query.phrase_query(True)
         if self._nprobes:
             self._vector_query.nprobes(self._nprobes)
         if self._refine_factor:
