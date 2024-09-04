@@ -6,7 +6,7 @@ There are various embedding functions available out of the box with LanceDB to m
 ```python
 model = get_registry().get("registry-key").create(params)
 ```
-The line effectively creates a configured instance of an `embedding function` with `model` of choice that is ready for use.
+This👆 line effectively creates a configured instance of an `embedding function` with `model` of choice that is ready for use.
 
 - `get_registry()` :  This function call returns an instance of a `EmbeddingFunctionRegistry` object. This registry manages the registration and retrieval of embedding functions.
 
