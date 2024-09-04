@@ -214,6 +214,24 @@ export class Index {
   static fts() {
     return new Index(LanceDbIndex.fts());
   }
+
+  /**
+   * 
+   * Create a hnswpq index
+   * 
+   */
+  static hnswpq() {
+    return new Index(LanceDbIndex.hnswpq());
+  }
+
+  /**
+   * 
+   * Create a hnswsq index
+   * 
+   */
+  static hnswsq() {
+    return new Index(LanceDbIndex.hnswsq());
+  }
 }
 
 export interface IndexOptions {

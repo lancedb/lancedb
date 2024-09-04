@@ -106,7 +106,7 @@ impl Index {
     }
 
     #[napi(factory)]
-    pub fn hnsqsq() -> Self {
+    pub fn hnswsq() -> Self {
         Self {
             inner: Mutex::new(Some(LanceDbIndex::IvfHnswSq(IvfHnswSqIndexBuilder::default()))),
         }
