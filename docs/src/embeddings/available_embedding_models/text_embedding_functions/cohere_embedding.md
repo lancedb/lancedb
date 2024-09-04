@@ -4,13 +4,14 @@ Using cohere API requires cohere package, which can be installed using `pip inst
 You also need to set the `COHERE_API_KEY` environment variable to use the Cohere API.
 
 Supported models are:
-* embed-english-v3.0
-* embed-multilingual-v3.0
-* embed-english-light-v3.0
-* embed-multilingual-light-v3.0
-* embed-english-v2.0
-* embed-english-light-v2.0
-* embed-multilingual-v2.0
+
+- embed-english-v3.0
+- embed-multilingual-v3.0
+- embed-english-light-v3.0
+- embed-multilingual-light-v3.0
+- embed-english-v2.0
+- embed-english-light-v2.0
+- embed-multilingual-v2.0
 
 
 Supported parameters (to be passed in `create` method) are:
