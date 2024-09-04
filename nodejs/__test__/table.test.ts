@@ -446,8 +446,7 @@ describe("When creating an index", () => {
     });
     const indexDir = path.join(tmpDir.name, "test.lance", "_indices");
     expect(fs.readdirSync(indexDir)).toHaveLength(1);
-  })
-
+  });
 
   test("create a hnswsq index", async () => {
     await tbl.createIndex("vec", {

@@ -216,18 +216,18 @@ export class Index {
   }
 
   /**
-   * 
+   *
    * Create a hnswpq index
-   * 
+   *
    */
   static hnswpq() {
     return new Index(LanceDbIndex.hnswpq());
   }
 
   /**
-   * 
+   *
    * Create a hnswsq index
-   * 
+   *
    */
   static hnswsq() {
     return new Index(LanceDbIndex.hnswsq());
