@@ -1,10 +1,13 @@
-There are various embedding functions available out of the box with LanceDB to manage your embeddings implicitly. We're actively working on adding other popular embedding APIs and models.
+# 📚 LanceDB Embedding Functions
 
-## Text embedding functions
-Contains the text embedding functions registered by default.
+There are various embedding functions available out of the box with LanceDB to manage your embeddings implicitly. We're actively working on adding other popular embedding APIs and models. 🚀
 
-* Embedding functions have an inbuilt rate limit handler wrapper for source and query embedding function calls that retry with exponential backoff. 
-* Each `EmbeddingFunction` implementation automatically takes `max_retries` as an argument which has the default value of 7.
+## Text Embedding Functions 📝 
+These functions are registered by default to handle text embeddings.
+
+- 🔄 **Embedding functions** have an inbuilt rate limit handler wrapper for source and query embedding function calls that retry with **exponential backoff**. 
+
+- 🌕 Each `EmbeddingFunction` implementation automatically takes `max_retries` as an argument which has the default value of 7. 
 
 **Available Text Embeddings**:
 
@@ -20,8 +23,9 @@ Contains the text embedding functions registered by default.
 - [IBM Watsonx.ai Embeddings](available_embedding_models/text_embedding_functions/ibm_watsonx_ai_embedding.md)
 
 
-## Multi-modal embedding functions
-Multi-modal embedding functions allow you to query your table using both images and text.
+## Multi-modal Embedding Functions🖼️ 
+
+Multi-modal embedding functions allow you to query your table using both images and text. 💬🖼️
 
 **Available Multi-modal Embeddings** :
 
