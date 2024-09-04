@@ -2,17 +2,24 @@
 
 There are various embedding functions available out of the box with LanceDB to manage your embeddings implicitly. We're actively working on adding other popular embedding APIs and models. 🚀
 
-## Usage 
+## Example 
 ```python
-model = get_registry().get("registry-key").create(params)
+model = get_registry()
+          .get("openai")
+          .create(name="text-embedding-ada-002")
+```
+
+## Syntax 
+```python
+model = get_registry().get("model_id").create(...params)
 ```
 This👆 line effectively creates a configured instance of an `embedding function` with `model` of choice that is ready for use.
 
 - `get_registry()` :  This function call returns an instance of a `EmbeddingFunctionRegistry` object. This registry manages the registration and retrieval of embedding functions.
 
-- `.get("registry-key")` : This method call on the registry object and retrieves the **embedding models functions** associated with the `"registry-key"` :material-information-outline:{ title="Hover over the name in table below to find out the registry-key of different embedding functions" } .
+- `.get("model_id")` : This method call on the registry object and retrieves the **embedding models functions** associated with the `"model_id"` :material-information-outline:{ title="Hover over the name in table below to find out the model_id of different embedding functions" } .
 
-- `.create(...params)` : This method call is on the object returned by the `get` method. It instantiates an embedding model function using the **specified parameters**. Check the documentation of specific models to know what parameters it takes.
+- `.create(...params)` : This method call is on the object returned by the `get` method. It instantiates an embedding model function using the **specified parameters**. **Check the documentation of specific models to know what parameters it takes**.
 
 ## Text Embedding Functions 📝 
 These functions are registered by default to handle text embeddings.
@@ -23,7 +30,7 @@ These functions are registered by default to handle text embeddings.
 
 🌟 **Available Text Embeddings**
 
-| **Embedding** :material-information-outline:{ title="Hover over the name to find out the registry-key" } | **Description** | **Documentation** |
+| **Embedding** :material-information-outline:{ title="Hover over the name to find out the model_id" } | **Description** | **Documentation** |
 |-----------|-------------|---------------|
 | [**Sentence Transformers**](available_embedding_models/text_embedding_functions/sentence_transformers.md "sentence-transformers")  | 🧠 **SentenceTransformers** is a Python framework for state-of-the-art sentence, text, and image embeddings. | [<img src="https://raw.githubusercontent.com/lancedb/assets/main/docs/assets/logos/sbert_2.png" alt="Sentence Transformers Icon" width="90" height="35">](available_embedding_models/text_embedding_functions/sentence_transformers.md)|                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               
 | [**Huggingface Models**](available_embedding_models/text_embedding_functions/huggingface_embedding.md "huggingface") |🤗 We offer support for all **Huggingface** models. The default model is `colbert-ir/colbertv2.0`. | [<img src="https://raw.githubusercontent.com/lancedb/assets/main/docs/assets/logos/hugging_face.png" alt="Huggingface Icon" width="130" height="35">](available_embedding_models/text_embedding_functions/huggingface_embedding.md) |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               
@@ -56,7 +63,7 @@ Multi-modal embedding functions allow you to query your table using both images 
 
 🌐 **Available Multi-modal Embeddings**
 
-| Embedding :material-information-outline:{ title="Hover over the name to find out the registry-key" }  | Description | Documentation  |
+| Embedding :material-information-outline:{ title="Hover over the name to find out the model_id" }  | Description | Documentation  |
 |-----------|-------------|---------------|
 | [**OpenClip Embeddings**](available_embedding_models/multimodal_embedding_functions/openclip_embedding.md "open-clip") | 🎨 We support CLIP model embeddings using the open source alternative, **open-clip** which supports various customizations. | [<img src="https://raw.githubusercontent.com/lancedb/assets/main/docs/assets/logos/openclip_github.png" alt="openclip Icon" width="150" height="35">](available_embedding_models/multimodal_embedding_functions/openclip_embedding.md) |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    
 | [**Imagebind Embeddings**](available_embedding_models/multimodal_embedding_functions/imagebind_embedding.md "imageind") | 🌌  We have support for **imagebind model embeddings**. You can download our version of the packaged model via - `pip install imagebind-packaged==0.1.2`. | [<img src="https://raw.githubusercontent.com/lancedb/assets/main/docs/assets/logos/imagebind_meta.png" alt="imagebind Icon" width="150" height="35">](available_embedding_models/multimodal_embedding_functions/imagebind_embedding.md)|                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    
