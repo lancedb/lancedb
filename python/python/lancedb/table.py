@@ -117,6 +117,8 @@ def _sanitize_data(
         data = _sanitize_schema(
             data, schema=schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value
         )
+        if schema is None:
+            schema = data.schema
     elif isinstance(data, Iterable):
         data = _to_record_batch_generator(
             data, schema, metadata, on_bad_vectors, fill_value
