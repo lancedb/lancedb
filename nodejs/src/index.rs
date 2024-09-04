@@ -94,12 +94,19 @@ impl Index {
     #[napi(factory)]
     pub fn fts() -> Self {
         Self {
+            inner: Mutex::new(Some(LanceDbIndex::FTS(FtsIndexBuilder::default()))),
+        }
+    }
+
+    #[napi(factory)]
+    pub fn hnswpq() -> Self {
+        Self {
             inner: Mutex::new(Some(LanceDbIndex::IvfHnswPq(IvfHnswPqIndexBuilder::default()))),
         }
     }
 
     #[napi(factory)]
-    pub fn fts() -> Self {
+    pub fn hnsqsq() -> Self {
         Self {
             inner: Mutex::new(Some(LanceDbIndex::IvfHnswSq(IvfHnswSqIndexBuilder::default()))),
         }
