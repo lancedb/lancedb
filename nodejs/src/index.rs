@@ -101,14 +101,18 @@ impl Index {
     #[napi(factory)]
     pub fn hnswpq() -> Self {
         Self {
-            inner: Mutex::new(Some(LanceDbIndex::IvfHnswPq(IvfHnswPqIndexBuilder::default()))),
+            inner: Mutex::new(Some(LanceDbIndex::IvfHnswPq(
+                IvfHnswPqIndexBuilder::default(),
+            ))),
         }
     }
 
     #[napi(factory)]
     pub fn hnswsq() -> Self {
         Self {
-            inner: Mutex::new(Some(LanceDbIndex::IvfHnswSq(IvfHnswSqIndexBuilder::default()))),
+            inner: Mutex::new(Some(LanceDbIndex::IvfHnswSq(
+                IvfHnswSqIndexBuilder::default(),
+            ))),
         }
     }
 }
