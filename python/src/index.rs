@@ -84,6 +84,27 @@ impl Index {
             inner: Mutex::new(Some(LanceDbIndex::BTree(BTreeIndexBuilder::default()))),
         })
     }
+
+    #[staticmethod]
+    pub fn bitmap() -> PyResult<Self> {
+        Ok(Self {
+            inner: Mutex::new(Some(LanceDbIndex::Bitmap(Default::default()))),
+        })
+    }
+
+    #[staticmethod]
+    pub fn label_list() -> PyResult<Self> {
+        Ok(Self {
+            inner: Mutex::new(Some(LanceDbIndex::LabelList(Default::default()))),
+        })
+    }
+
+    #[staticmethod]
+    pub fn fts() -> PyResult<Self> {
+        Ok(Self {
+            inner: Mutex::new(Some(LanceDbIndex::FTS(Default::default()))),
+        })
+    }
 }
 
 #[pyclass(get_all)]
@@ -96,6 +117,13 @@ pub struct IndexConfig {
     /// Currently this is always a list of size 1.  In the future there may
     /// be more columns to represent composite indices.
     pub columns: Vec<String>,
+}
+
+#[pymethods]
+impl IndexConfig {
+    pub fn __repr__(&self) -> String {
+        format!("Index({}, columns={:?})", self.index_type, self.columns)
+    }
 }
 
 impl From<lancedb::index::IndexConfig> for IndexConfig {

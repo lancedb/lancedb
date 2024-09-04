@@ -13,7 +13,7 @@
 // limitations under the License.
 
 //! [LanceDB](https://github.com/lancedb/lancedb) is an open-source database for vector-search built with persistent storage,
-//! which greatly simplifies retrevial, filtering and management of embeddings.
+//! which greatly simplifies retrieval, filtering and management of embeddings.
 //!
 //! The key features of LanceDB include:
 //! - Production-scale vector search with no servers to manage.
@@ -133,6 +133,13 @@
 //!
 //! #### Create vector index (IVF_PQ)
 //!
+//! LanceDB is capable to automatically create appropriate indices based on the data types
+//! of the columns. For example,
+//!
+//! * If a column has a data type of `FixedSizeList<Float16/Float32>`,
+//!   LanceDB will create a `IVF-PQ` vector index with default parameters.
+//! * Otherwise, it creates a `BTree` index by default.
+//!
 //! ```no_run
 //! # use std::sync::Arc;
 //! # use arrow_array::{FixedSizeListArray, types::Float32Type, RecordBatch,
@@ -150,7 +157,10 @@
 //! # });
 //! ```
 //!
-//! #### Open table and run search
+//!
+//! User can also specify the index type explicitly, see [`Table::create_index`].
+//!
+//! #### Open table and search
 //!
 //! ```rust
 //! # use std::sync::Arc;

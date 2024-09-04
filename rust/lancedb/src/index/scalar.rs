@@ -28,3 +28,32 @@
 pub struct BTreeIndexBuilder {}
 
 impl BTreeIndexBuilder {}
+
+/// Builder for a Bitmap index.
+///
+/// It is a scalar index that stores a bitmap for each possible value
+///
+/// This index works best for low-cardinality (i.e., less than 1000 unique values) columns,
+/// where the number of unique values is small.
+/// The bitmap stores a list of row ids where the value is present.
+#[derive(Debug, Clone, Default)]
+pub struct BitmapIndexBuilder {}
+
+/// Builder for LabelList index.
+///
+/// [LabeListIndexBuilder] is a scalar index that can be used on `List<T>` columns to
+/// support queries with `array_contains_all` and `array_contains_any`
+/// using an underlying bitmap index.
+///
+#[derive(Debug, Clone, Default)]
+pub struct LabelListIndexBuilder {}
+
+/// Builder for a full text search index
+///
+/// A full text search index is an index on a string column that allows for full text search
+#[derive(Debug, Clone, Default)]
+pub struct FtsIndexBuilder {}
+
+impl FtsIndexBuilder {}
+
+pub use lance_index::scalar::FullTextSearchQuery;

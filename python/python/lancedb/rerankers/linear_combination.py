@@ -1,3 +1,16 @@
+#  Copyright (c) 2023. LanceDB Developers
+#
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
+
 import pyarrow as pa
 
 from .base import Reranker
@@ -69,12 +82,12 @@ class LinearCombinationReranker(Reranker):
             vi = vector_list[i]
             fj = fts_list[j]
             # invert the fts score from relevance to distance
-            inverted_fts_score = self._invert_score(fj["score"])
+            inverted_fts_score = self._invert_score(fj["_score"])
             if vi["_rowid"] == fj["_rowid"]:
                 vi["_relevance_score"] = self._combine_score(
                     vi["_distance"], inverted_fts_score
                 )
-                vi["score"] = fj["score"]  # keep the original score
+                vi["_score"] = fj["_score"]  # keep the original score
                 combined_list.append(vi)
                 i += 1
                 j += 1
@@ -103,7 +116,7 @@ class LinearCombinationReranker(Reranker):
             [("_relevance_score", "descending")]
         )
         if self.score == "relevance":
-            tbl = tbl.drop_columns(["score", "_distance"])
+            tbl = self._keep_relevance_score(tbl)
         return tbl
 
     def _combine_score(self, score1, score2):

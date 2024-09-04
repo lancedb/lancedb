@@ -1,18 +1,26 @@
-from functools import cached_property
+#  Copyright (c) 2023. LanceDB Developers
+#
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
 
-import pyarrow as pa
-
-from ..util import attempt_import_or_raise
-from .base import Reranker
+from .answerdotai import AnswerdotaiRerankers
 
 
-class ColbertReranker(Reranker):
+class ColbertReranker(AnswerdotaiRerankers):
     """
     Reranks the results using the ColBERT model.
 
     Parameters
     ----------
-    model_name : str, default "colbert-ir/colbertv2.0"
+    model_name : str, default "colbert" (colbert-ir/colbert-v2.0)
         The name of the cross encoder model to use.
     column : str, default "text"
         The name of the column to use as input to the cross encoder model.
@@ -26,115 +34,9 @@ class ColbertReranker(Reranker):
         column: str = "text",
         return_score="relevance",
     ):
-        super().__init__(return_score)
-        self.model_name = model_name
-        self.column = column
-        self.torch = attempt_import_or_raise(
-            "torch"
-        )  # import here for faster ops later
-
-    def _rerank(self, result_set: pa.Table, query: str):
-        docs = result_set[self.column].to_pylist()
-
-        tokenizer, model = self._model
-
-        # Encode the query
-        query_encoding = tokenizer(query, return_tensors="pt")
-        query_embedding = model(**query_encoding).last_hidden_state.mean(dim=1)
-        scores = []
-        # Get score for each document
-        for document in docs:
-            document_encoding = tokenizer(
-                document, return_tensors="pt", truncation=True, max_length=512
-            )
-            document_embedding = model(**document_encoding).last_hidden_state
-            # Calculate MaxSim score
-            score = self.maxsim(query_embedding.unsqueeze(0), document_embedding)
-            scores.append(score.item())
-
-        # replace the self.column column with the docs
-        result_set = result_set.drop(self.column)
-        result_set = result_set.append_column(
-            self.column, pa.array(docs, type=pa.string())
+        super().__init__(
+            model_type="colbert",
+            model_name=model_name,
+            column=column,
+            return_score=return_score,
         )
-        # add the scores
-        result_set = result_set.append_column(
-            "_relevance_score", pa.array(scores, type=pa.float32())
-        )
-
-        return result_set
-
-    def rerank_hybrid(
-        self,
-        query: str,
-        vector_results: pa.Table,
-        fts_results: pa.Table,
-    ):
-        combined_results = self.merge_results(vector_results, fts_results)
-        combined_results = self._rerank(combined_results, query)
-        if self.score == "relevance":
-            combined_results = combined_results.drop_columns(["score", "_distance"])
-        elif self.score == "all":
-            raise NotImplementedError(
-                "OpenAI Reranker does not support score='all' yet"
-            )
-
-        combined_results = combined_results.sort_by(
-            [("_relevance_score", "descending")]
-        )
-
-        return combined_results
-
-    def rerank_vector(
-        self,
-        query: str,
-        vector_results: pa.Table,
-    ):
-        result_set = self._rerank(vector_results, query)
-        if self.score == "relevance":
-            result_set = result_set.drop_columns(["_distance"])
-
-        result_set = result_set.sort_by([("_relevance_score", "descending")])
-
-        return result_set
-
-    def rerank_fts(
-        self,
-        query: str,
-        fts_results: pa.Table,
-    ):
-        result_set = self._rerank(fts_results, query)
-        if self.score == "relevance":
-            result_set = result_set.drop_columns(["score"])
-
-        result_set = result_set.sort_by([("_relevance_score", "descending")])
-
-        return result_set
-
-    @cached_property
-    def _model(self):
-        transformers = attempt_import_or_raise("transformers")
-        tokenizer = transformers.AutoTokenizer.from_pretrained(self.model_name)
-        model = transformers.AutoModel.from_pretrained(self.model_name)
-
-        return tokenizer, model
-
-    def maxsim(self, query_embedding, document_embedding):
-        # Expand dimensions for broadcasting
-        # Query: [batch, length, size] -> [batch, query, 1, size]
-        # Document: [batch, length, size] -> [batch, 1, length, size]
-        expanded_query = query_embedding.unsqueeze(2)
-        expanded_doc = document_embedding.unsqueeze(1)
-
-        # Compute cosine similarity across the embedding dimension
-        sim_matrix = self.torch.nn.functional.cosine_similarity(
-            expanded_query, expanded_doc, dim=-1
-        )
-
-        # Take the maximum similarity for each query token (across all document tokens)
-        # sim_matrix shape: [batch_size, query_length, doc_length]
-        max_sim_scores, _ = self.torch.max(sim_matrix, dim=2)
-
-        # Average these maximum scores across all query tokens
-        avg_max_sim = self.torch.mean(max_sim_scores, dim=1)
-        return avg_max_sim

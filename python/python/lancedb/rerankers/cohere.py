@@ -1,3 +1,16 @@
+#  Copyright (c) 2023. LanceDB Developers
+#
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
+
 import os
 from packaging.version import Version
 from functools import cached_property
@@ -88,7 +101,7 @@ class CohereReranker(Reranker):
         combined_results = self.merge_results(vector_results, fts_results)
         combined_results = self._rerank(combined_results, query)
         if self.score == "relevance":
-            combined_results = combined_results.drop_columns(["score", "_distance"])
+            combined_results = self._keep_relevance_score(combined_results)
         elif self.score == "all":
             raise NotImplementedError(
                 "return_score='all' not implemented for cohere reranker"
@@ -113,6 +126,6 @@ class CohereReranker(Reranker):
     ):
         result_set = self._rerank(fts_results, query)
         if self.score == "relevance":
-            result_set = result_set.drop_columns(["score"])
+            result_set = result_set.drop_columns(["_score"])
 
         return result_set

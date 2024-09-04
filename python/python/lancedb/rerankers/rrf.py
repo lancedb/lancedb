@@ -1,7 +1,24 @@
+#  Copyright (c) 2023. LanceDB Developers
+#
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
+
+from typing import Union, List, TYPE_CHECKING
 import pyarrow as pa
 
 from collections import defaultdict
 from .base import Reranker
+
+if TYPE_CHECKING:
+    from ..table import LanceVectorQueryBuilder
 
 
 class RRFReranker(Reranker):
@@ -55,6 +72,46 @@ class RRFReranker(Reranker):
         )
 
         if self.score == "relevance":
-            combined_results = combined_results.drop_columns(["score", "_distance"])
+            combined_results = self._keep_relevance_score(combined_results)
 
         return combined_results
+
+    def rerank_multivector(
+        self,
+        vector_results: Union[List[pa.Table], List["LanceVectorQueryBuilder"]],
+        query: str = None,
+        deduplicate: bool = True,  # noqa: F821 # TODO: automatically deduplicates
+    ):
+        """
+        Overridden method to rerank the results from multiple vector searches.
+        This leverages the RRF hybrid reranking algorithm to combine the
+        results from multiple vector searches as it doesn't support reranking
+        vector results individually.
+        """
+        # Make sure all elements are of the same type
+        if not all(isinstance(v, type(vector_results[0])) for v in vector_results):
+            raise ValueError(
+                "All elements in vector_results should be of the same type"
+            )
+
+        # avoid circular import
+        if type(vector_results[0]).__name__ == "LanceVectorQueryBuilder":
+            vector_results = [result.to_arrow() for result in vector_results]
+        elif not isinstance(vector_results[0], pa.Table):
+            raise ValueError(
+                "vector_results should be a list of pa.Table or LanceVectorQueryBuilder"
+            )
+
+        # _rowid is required for RRF reranking
+        if not all("_rowid" in result.column_names for result in vector_results):
+            raise ValueError(
+                "'_rowid' is required for deduplication. \
+                    add _rowid to search results like this: \
+                    `search().with_row_id(True)`"
+            )
+
+        combined = pa.concat_tables(vector_results, **self._concat_tables_args)
+        empty_table = pa.Table.from_arrays([], names=[])
+        reranked = self.rerank_hybrid(query, combined, empty_table)
+
+        return reranked

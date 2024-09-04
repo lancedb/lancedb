@@ -8,7 +8,7 @@ from ._lancedb import (
 )
 
 
-class BTree(object):
+class BTree:
     """Describes a btree index configuration
 
     A btree index is an index on scalar columns.  The index stores a copy of the
@@ -22,7 +22,8 @@ class BTree(object):
     sizeof(Scalar) * 4096 bytes to find the correct row ids.
 
     This index is good for scalar columns with mostly distinct values and does best
-    when the query is highly selective.
+    when the query is highly selective. It works with numeric, temporal, and string
+    columns.
 
     The btree index does not currently have any parameters though parameters such as
     the block size may be added in the future.
@@ -32,7 +33,56 @@ class BTree(object):
         self._inner = LanceDbIndex.btree()
 
 
-class IvfPq(object):
+class Bitmap:
+    """Describe a Bitmap index configuration.
+
+    A `Bitmap` index stores a bitmap for each distinct value in the column for
+    every row.
+
+    This index works best for low-cardinality numeric or string columns,
+    where the number of unique values is small (i.e., less than a few thousands).
+    `Bitmap` index can accelerate the following filters:
+
+    - `<`, `<=`, `=`, `>`, `>=`
+    - `IN (value1, value2, ...)`
+    - `between (value1, value2)`
+    - `is null`
+
+    For example, a bitmap index with a table with 1Bi rows, and 128 distinct values,
+    requires 128 / 8 * 1Bi bytes on disk.
+    """
+
+    def __init__(self):
+        self._inner = LanceDbIndex.bitmap()
+
+
+class LabelList:
+    """Describe a LabelList index configuration.
+
+    `LabelList` is a scalar index that can be used on `List<T>` columns to
+    support queries with `array_contains_all` and `array_contains_any`
+    using an underlying bitmap index.
+
+    For example, it works with `tags`, `categories`, `keywords`, etc.
+    """
+
+    def __init__(self):
+        self._inner = LanceDbIndex.label_list()
+
+
+class FTS:
+    """Describe a FTS index configuration.
+
+    `FTS` is a full-text search index that can be used on `String` columns
+
+    For example, it works with `title`, `description`, `content`, etc.
+    """
+
+    def __init__(self):
+        self._inner = LanceDbIndex.fts()
+
+
+class IvfPq:
     """Describes an IVF PQ Index
 
     This index stores a compressed (quantized) copy of every vector.  These vectors

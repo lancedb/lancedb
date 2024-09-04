@@ -31,7 +31,9 @@ import {
   Float64,
   Int32,
   Int64,
+  List,
   Schema,
+  Utf8,
   makeArrowTable,
 } from "../lancedb/arrow";
 import {
@@ -331,6 +333,7 @@ describe("When creating an index", () => {
   const schema = new Schema([
     new Field("id", new Int32(), true),
     new Field("vec", new FixedSizeList(32, new Field("item", new Float32()))),
+    new Field("tags", new List(new Field("item", new Utf8(), true))),
   ]);
   let tbl: Table;
   let queryVec: number[];
@@ -346,6 +349,7 @@ describe("When creating an index", () => {
           vec: Array(32)
             .fill(1)
             .map(() => Math.random()),
+          tags: ["tag1", "tag2", "tag3"],
         })),
       {
         schema,
@@ -426,6 +430,22 @@ describe("When creating an index", () => {
     for await (const r of tbl.query().filter("id > 1").select(["id"])) {
       expect(r.numRows).toBe(298);
     }
+  });
+
+  test("create a bitmap index", async () => {
+    await tbl.createIndex("id", {
+      config: Index.bitmap(),
+    });
+    const indexDir = path.join(tmpDir.name, "test.lance", "_indices");
+    expect(fs.readdirSync(indexDir)).toHaveLength(1);
+  });
+
+  test("create a label list index", async () => {
+    await tbl.createIndex("tags", {
+      config: Index.labelList(),
+    });
+    const indexDir = path.join(tmpDir.name, "test.lance", "_indices");
+    expect(fs.readdirSync(indexDir)).toHaveLength(1);
   });
 
   test("should be able to get index stats", async () => {
@@ -706,6 +726,21 @@ describe("when optimizing a dataset", () => {
     expect(stats.prune.bytesRemoved).toBeGreaterThan(0);
     expect(stats.prune.oldVersionsRemoved).toBe(3);
   });
+
+  it("delete unverified", async () => {
+    const version = await table.version();
+    const versionFile = `${tmpDir.name}/${table.name}.lance/_versions/${version - 1}.manifest`;
+    fs.rmSync(versionFile);
+
+    let stats = await table.optimize({ deleteUnverified: false });
+    expect(stats.prune.oldVersionsRemoved).toBe(0);
+
+    stats = await table.optimize({
+      cleanupOlderThan: new Date(),
+      deleteUnverified: true,
+    });
+    expect(stats.prune.oldVersionsRemoved).toBeGreaterThan(1);
+  });
 });
 
 describe.each([arrow13, arrow14, arrow15, arrow16, arrow17])(
@@ -785,9 +820,24 @@ describe.each([arrow13, arrow14, arrow15, arrow16, arrow17])(
       ];
       const table = await db.createTable("test", data);
 
-      expect(table.search("hello").toArray()).rejects.toThrow(
+      expect(table.search("hello", "vector").toArray()).rejects.toThrow(
         "No embedding functions are defined in the table",
       );
+    });
+
+    test("full text search if no embedding function provided", async () => {
+      const db = await connect(tmpDir.name);
+      const data = [
+        { text: "hello world", vector: [0.1, 0.2, 0.3] },
+        { text: "goodbye world", vector: [0.4, 0.5, 0.6] },
+      ];
+      const table = await db.createTable("test", data);
+      await table.createIndex("text", {
+        config: Index.fts(),
+      });
+
+      const results = await table.search("hello").toArray();
+      expect(results[0].text).toBe(data[0].text);
     });
 
     test.each([

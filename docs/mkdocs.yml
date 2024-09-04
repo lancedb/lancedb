@@ -58,7 +58,7 @@ plugins:
             - https://pandas.pydata.org/docs/objects.inv
   - mkdocs-jupyter
   - render_swagger:
-      allow_arbitrary_locations : true
+      allow_arbitrary_locations: true
 
 markdown_extensions:
   - admonition
@@ -84,14 +84,17 @@ nav:
       - 🏃🏼‍♂️ Quick start: basic.md
       - 📚 Concepts:
           - Vector search: concepts/vector_search.md
-          - Indexing: concepts/index_ivfpq.md
+          - Indexing: 
+            - IVFPQ: concepts/index_ivfpq.md
+            - HNSW: concepts/index_hnsw.md
           - Storage: concepts/storage.md
           - Data management: concepts/data_management.md
       - 🔨 Guides:
           - Working with tables: guides/tables.md
-          - Building an ANN index: ann_indexes.md
+          - Building a vector index: ann_indexes.md
           - Vector Search: search.md
           - Full-text search: fts.md
+          - Building a scalar index: guides/scalar_index.md
           - Hybrid search:
               - Overview: hybrid_search/hybrid_search.md
               - Comparing Rerankers: hybrid_search/eval.md
@@ -105,6 +108,7 @@ nav:
               - ColBERT Reranker: reranking/colbert.md
               - Jina Reranker: reranking/jina.md
               - OpenAI Reranker: reranking/openai.md
+              - AnswerDotAi Rerankers: reranking/answerdotai.md
               - Building Custom Rerankers: reranking/custom_reranker.md
               - Example: notebooks/lancedb_reranking.ipynb
           - Filtering: sql.md
@@ -118,7 +122,23 @@ nav:
       - 🧬 Managing embeddings:
           - Overview: embeddings/index.md
           - Embedding functions: embeddings/embedding_functions.md
-          - Available models: embeddings/default_embedding_functions.md
+          - Available models: 
+              - Overview: embeddings/default_embedding_functions.md
+              - Text Embedding Functions:
+                  - Sentence Transformers: embeddings/available_embedding_models/text_embedding_functions/sentence_transformers.md
+                  - Huggingface Embedding Models: embeddings/available_embedding_models/text_embedding_functions/huggingface_embedding.md
+                  - Ollama Embeddings: embeddings/available_embedding_models/text_embedding_functions/ollama_embedding.md
+                  - OpenAI Embeddings: embeddings/available_embedding_models/text_embedding_functions/openai_embedding.md
+                  - Instructor Embeddings: embeddings/available_embedding_models/text_embedding_functions/instructor_embedding.md
+                  - Gemini Embeddings: embeddings/available_embedding_models/text_embedding_functions/gemini_embedding.md
+                  - Cohere Embeddings: embeddings/available_embedding_models/text_embedding_functions/cohere_embedding.md
+                  - Jina Embeddings: embeddings/available_embedding_models/text_embedding_functions/jina_embedding.md
+                  - AWS Bedrock Text Embedding Functions: embeddings/available_embedding_models/text_embedding_functions/aws_bedrock_embedding.md
+                  - IBM watsonx.ai Embeddings: embeddings/available_embedding_models/text_embedding_functions/ibm_watsonx_ai_embedding.md
+              - Multimodal Embedding Functions:
+                  - OpenClip embeddings: embeddings/available_embedding_models/multimodal_embedding_functions/openclip_embedding.md
+                  - Imagebind embeddings: embeddings/available_embedding_models/multimodal_embedding_functions/imagebind_embedding.md
+                  - Jina Embeddings: embeddings/available_embedding_models/multimodal_embedding_functions/jina_multimodal_embedding.md
           - User-defined embedding functions: embeddings/custom_embedding_function.md
           - "Example: Multi-lingual semantic search": notebooks/multi_lingual_example.ipynb
           - "Example: MultiModal CLIP Embeddings": notebooks/DisappearingEmbeddingFunction.ipynb
@@ -128,25 +148,31 @@ nav:
           - Polars: python/polars_arrow.md
           - DuckDB: python/duckdb.md
           - LangChain:
-            - LangChain 🔗: integrations/langchain.md
-            - LangChain demo: notebooks/langchain_demo.ipynb
-            - LangChain JS/TS 🔗: https://js.langchain.com/docs/integrations/vectorstores/lancedb
+              - LangChain 🔗: integrations/langchain.md
+              - LangChain demo: notebooks/langchain_demo.ipynb
+              - LangChain JS/TS 🔗: https://js.langchain.com/docs/integrations/vectorstores/lancedb
           - LlamaIndex 🦙:
-            - LlamaIndex docs: integrations/llamaIndex.md
-            - LlamaIndex demo: notebooks/llamaIndex_demo.ipynb
+              - LlamaIndex docs: integrations/llamaIndex.md
+              - LlamaIndex demo: notebooks/llamaIndex_demo.ipynb
           - Pydantic: python/pydantic.md
           - Voxel51: integrations/voxel51.md
           - PromptTools: integrations/prompttools.md
+          - dlt: integrations/dlt.md
       - 🎯 Examples:
           - Overview: examples/index.md
           - 🐍 Python:
               - Overview: examples/examples_python.md
-              - YouTube Transcript Search: notebooks/youtube_transcript_search.ipynb
-              - Documentation QA Bot using LangChain: notebooks/code_qa_bot.ipynb
-              - Multimodal search using CLIP: notebooks/multimodal_search.ipynb
-              - Example - Calculate CLIP Embeddings with Roboflow Inference: examples/image_embeddings_roboflow.md
-              - Serverless QA Bot with S3 and Lambda: examples/serverless_lancedb_with_s3_and_lambda.md
-              - Serverless QA Bot with Modal: examples/serverless_qa_bot_with_modal_and_langchain.md
+              - Build From Scratch: examples/python_examples/build_from_scratch.md
+              - Multimodal: examples/python_examples/multimodal.md
+              - Rag: examples/python_examples/rag.md
+              - Vector Search: examples/python_examples/vector_search.md
+              - Chatbot: examples/python_examples/chatbot.md
+              - Evaluation: examples/python_examples/evaluations.md
+              - AI Agent: examples/python_examples/aiagent.md
+              - Recommender System: examples/python_examples/recommendersystem.md
+              - Miscellaneous: 
+                  - Serverless QA Bot with S3 and Lambda: examples/serverless_lancedb_with_s3_and_lambda.md
+                  - Serverless QA Bot with Modal: examples/serverless_qa_bot_with_modal_and_langchain.md
           - 👾 JavaScript:
               - Overview: examples/examples_js.md
               - Serverless Website Chatbot: examples/serverless_website_chatbot.md
@@ -154,6 +180,8 @@ nav:
               - TransformersJS Embedding Search: examples/transformerjs_embedding_search_nodejs.md
           - 🦀 Rust:
               - Overview: examples/examples_rust.md
+      - Studies:
+          - ↗Improve retrievers with hybrid search and reranking: https://blog.lancedb.com/hybrid-search-and-reranking-report/
       - 💭 FAQs: faq.md
       - ⚙️ API reference:
           - 🐍 Python: python/python.md
@@ -170,7 +198,9 @@ nav:
   - Quick start: basic.md
   - Concepts:
       - Vector search: concepts/vector_search.md
-      - Indexing: concepts/index_ivfpq.md
+      - Indexing: 
+        - IVFPQ: concepts/index_ivfpq.md
+        - HNSW: concepts/index_hnsw.md
       - Storage: concepts/storage.md
       - Data management: concepts/data_management.md
   - Guides:
@@ -178,6 +208,7 @@ nav:
       - Building an ANN index: ann_indexes.md
       - Vector Search: search.md
       - Full-text search: fts.md
+      - Building a scalar index: guides/scalar_index.md
       - Hybrid search:
           - Overview: hybrid_search/hybrid_search.md
           - Comparing Rerankers: hybrid_search/eval.md
@@ -191,6 +222,7 @@ nav:
           - ColBERT Reranker: reranking/colbert.md
           - Jina Reranker: reranking/jina.md
           - OpenAI Reranker: reranking/openai.md
+          - AnswerDotAi Rerankers: reranking/answerdotai.md
           - Building Custom Rerankers: reranking/custom_reranker.md
           - Example: notebooks/lancedb_reranking.ipynb
       - Filtering: sql.md
@@ -204,7 +236,23 @@ nav:
   - Managing Embeddings:
       - Overview: embeddings/index.md
       - Embedding functions: embeddings/embedding_functions.md
-      - Available models: embeddings/default_embedding_functions.md
+      - Available models: 
+          - Overview: embeddings/default_embedding_functions.md
+          - Text Embedding Functions:
+              - Sentence Transformers: embeddings/available_embedding_models/text_embedding_functions/sentence_transformers.md
+              - Huggingface Embedding Models: embeddings/available_embedding_models/text_embedding_functions/huggingface_embedding.md
+              - Ollama Embeddings: embeddings/available_embedding_models/text_embedding_functions/ollama_embedding.md
+              - OpenAI Embeddings: embeddings/available_embedding_models/text_embedding_functions/openai_embedding.md
+              - Instructor Embeddings: embeddings/available_embedding_models/text_embedding_functions/instructor_embedding.md
+              - Gemini Embeddings: embeddings/available_embedding_models/text_embedding_functions/gemini_embedding.md
+              - Cohere Embeddings: embeddings/available_embedding_models/text_embedding_functions/cohere_embedding.md
+              - Jina Embeddings: embeddings/available_embedding_models/text_embedding_functions/jina_embedding.md
+              - AWS Bedrock Text Embedding Functions: embeddings/available_embedding_models/text_embedding_functions/aws_bedrock_embedding.md
+              - IBM watsonx.ai Embeddings: embeddings/available_embedding_models/text_embedding_functions/ibm_watsonx_ai_embedding.md
+          - Multimodal Embedding Functions:
+              - OpenClip embeddings: embeddings/available_embedding_models/multimodal_embedding_functions/openclip_embedding.md
+              - Imagebind embeddings: embeddings/available_embedding_models/multimodal_embedding_functions/imagebind_embedding.md
+              - Jina Embeddings: embeddings/available_embedding_models/multimodal_embedding_functions/jina_multimodal_embedding.md
       - User-defined embedding functions: embeddings/custom_embedding_function.md
       - "Example: Multi-lingual semantic search": notebooks/multi_lingual_example.ipynb
       - "Example: MultiModal CLIP Embeddings": notebooks/DisappearingEmbeddingFunction.ipynb
@@ -219,16 +267,32 @@ nav:
       - Pydantic: python/pydantic.md
       - Voxel51: integrations/voxel51.md
       - PromptTools: integrations/prompttools.md
+      - dlt: integrations/dlt.md
   - Examples:
       - examples/index.md
-      - YouTube Transcript Search: notebooks/youtube_transcript_search.ipynb
-      - Documentation QA Bot using LangChain: notebooks/code_qa_bot.ipynb
-      - Multimodal search using CLIP: notebooks/multimodal_search.ipynb
-      - Serverless QA Bot with S3 and Lambda: examples/serverless_lancedb_with_s3_and_lambda.md
-      - Serverless QA Bot with Modal: examples/serverless_qa_bot_with_modal_and_langchain.md
-      - YouTube Transcript Search (JS): examples/youtube_transcript_bot_with_nodejs.md
-      - Serverless Chatbot from any website: examples/serverless_website_chatbot.md
-      - TransformersJS Embedding Search: examples/transformerjs_embedding_search_nodejs.md
+      - 🐍 Python:
+          - Overview: examples/examples_python.md
+          - Build From Scratch: examples/python_examples/build_from_scratch.md
+          - Multimodal: examples/python_examples/multimodal.md
+          - Rag: examples/python_examples/rag.md
+          - Vector Search: examples/python_examples/vector_search.md
+          - Chatbot: examples/python_examples/chatbot.md
+          - Evaluation: examples/python_examples/evaluations.md
+          - AI Agent: examples/python_examples/aiagent.md
+          - Recommender System: examples/python_examples/recommendersystem.md
+          - Miscellaneous: 
+              - Serverless QA Bot with S3 and Lambda: examples/serverless_lancedb_with_s3_and_lambda.md
+              - Serverless QA Bot with Modal: examples/serverless_qa_bot_with_modal_and_langchain.md
+      - 👾 JavaScript:
+          - Overview: examples/examples_js.md
+          - Serverless Website Chatbot: examples/serverless_website_chatbot.md
+          - YouTube Transcript Search: examples/youtube_transcript_bot_with_nodejs.md
+          - TransformersJS Embedding Search: examples/transformerjs_embedding_search_nodejs.md
+      - 🦀 Rust:
+          - Overview: examples/examples_rust.md
+  - Studies:
+    - studies/overview.md
+    - ↗Improve retrievers with hybrid search and reranking: https://blog.lancedb.com/hybrid-search-and-reranking-report/
   - API reference:
       - Overview: api_reference.md
       - Python: python/python.md

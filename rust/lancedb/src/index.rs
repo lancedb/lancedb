@@ -14,24 +14,54 @@
 
 use std::sync::Arc;
 
+use scalar::FtsIndexBuilder;
 use serde::Deserialize;
 use serde_with::skip_serializing_none;
 
 use crate::{table::TableInternal, Result};
 
 use self::{
-    scalar::BTreeIndexBuilder,
+    scalar::{BTreeIndexBuilder, BitmapIndexBuilder, LabelListIndexBuilder},
     vector::{IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder, IvfPqIndexBuilder},
 };
 
 pub mod scalar;
 pub mod vector;
 
+/// Supported index types.
 pub enum Index {
     Auto,
+    /// A `BTree` index is an sorted index on scalar columns.
+    /// This index is good for scalar columns with mostly distinct values and does best when
+    /// the query is highly selective. It can apply to numeric, temporal, and string columns.
+    ///
+    /// BTree index is useful to answer queries with
+    /// equality (`=`), inequality (`>`, `>=`, `<`, `<=`),and range queries.
+    ///
+    /// This is the default index type for scalar columns.
     BTree(BTreeIndexBuilder),
+
+    /// A `Bitmap` index stores a bitmap for each distinct value in the column for every row.
+    ///
+    /// This index works best for low-cardinality columns,
+    /// where the number of unique values is small (i.e., less than a few hundreds).
+    Bitmap(BitmapIndexBuilder),
+
+    /// [LabelListIndexBuilder] is a scalar index that can be used on `List<T>` columns to
+    /// support queries with `array_contains_all` and `array_contains_any`
+    /// using an underlying bitmap index.
+    LabelList(LabelListIndexBuilder),
+
+    /// Full text search index using bm25.
+    FTS(FtsIndexBuilder),
+
+    /// IVF index with Product Quantization
     IvfPq(IvfPqIndexBuilder),
+
+    /// IVF-HNSW index with Product Quantization
     IvfHnswPq(IvfHnswPqIndexBuilder),
+
+    /// IVF-HNSW index with Scalar Quantization
     IvfHnswSq(IvfHnswSqIndexBuilder),
 }
 
@@ -72,10 +102,14 @@ impl IndexBuilder {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum IndexType {
+    // Vector
     IvfPq,
     IvfHnswPq,
     IvfHnswSq,
+    // Scalar
     BTree,
+    Bitmap,
+    LabelList,
 }
 
 /// A description of an index currently configured on a column
