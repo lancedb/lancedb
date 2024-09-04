@@ -10,7 +10,7 @@ This👆 line effectively creates a configured instance of an `embedding functio
 
 - `get_registry()` :  This function call returns an instance of a `EmbeddingFunctionRegistry` object. This registry manages the registration and retrieval of embedding functions.
 
-- `.get("registry-key")` : This method call on the registry object and retrieves the **embedding models functions** associated with the `"registry-key"`.
+- `.get("registry-key")` : This method call on the registry object and retrieves the **embedding models functions** associated with the `"registry-key"` :material-information-outline:{ title="Hover over the name in table below to find out the registry-key of different embedding functions" } .
 
 - `.create(...params)` : This method call is on the object returned by the `get` method. It instantiates an embedding model function using the **specified parameters**. Check the documentation of specific models to know what parameters it takes.
 
