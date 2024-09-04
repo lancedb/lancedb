@@ -15,7 +15,7 @@
 use std::sync::Mutex;
 
 use lancedb::index::scalar::{BTreeIndexBuilder, FtsIndexBuilder};
-use lancedb::index::vector::IvfPqIndexBuilder;
+use lancedb::index::vector::{IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder, IvfPqIndexBuilder};
 use lancedb::index::Index as LanceDbIndex;
 use napi_derive::napi;
 
@@ -94,7 +94,14 @@ impl Index {
     #[napi(factory)]
     pub fn fts() -> Self {
         Self {
-            inner: Mutex::new(Some(LanceDbIndex::FTS(FtsIndexBuilder::default()))),
+            inner: Mutex::new(Some(LanceDbIndex::IvfHnswPq(IvfHnswPqIndexBuilder::default()))),
+        }
+    }
+
+    #[napi(factory)]
+    pub fn fts() -> Self {
+        Self {
+            inner: Mutex::new(Some(LanceDbIndex::IvfHnswSq(IvfHnswSqIndexBuilder::default()))),
         }
     }
 }
