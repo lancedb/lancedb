@@ -15,7 +15,6 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 from typing import (
     TYPE_CHECKING,
     Dict,
@@ -35,15 +34,15 @@ import pydantic
 
 from . import __version__
 from .arrow import AsyncRecordBatchReader
-from .common import VEC
 from .rerankers.base import Reranker
-from .rerankers.linear_combination import LinearCombinationReranker
-from .util import fs_from_uri, safe_import_pandas
+from .rerankers.rrf import RRFReranker
+from .util import safe_import_pandas
 
 if TYPE_CHECKING:
     import PIL
     import polars as pl
 
+    from .common import VEC
     from ._lancedb import Query as LanceQuery
     from ._lancedb import VectorQuery as LanceVectorQuery
     from .pydantic import LanceModel
@@ -133,8 +132,8 @@ class LanceQueryBuilder(ABC):
         query: Optional[Union[np.ndarray, str, "PIL.Image.Image", Tuple]],
         query_type: str,
         vector_column_name: str,
-        ordering_field_name: str = None,
-        fts_columns: Union[str, List[str]] = None,
+        ordering_field_name: Optional[str] = None,
+        fts_columns: Union[str, List[str]] = [],
     ) -> LanceQueryBuilder:
         """
         Create a query builder based on the given query and query type.
@@ -152,12 +151,15 @@ class LanceQueryBuilder(ABC):
         vector_column_name: str
             The name of the vector column to use for vector search.
         """
-        if query is None:
-            return LanceEmptyQueryBuilder(table)
-
+        # Check hybrid search first as it supports empty query pattern
         if query_type == "hybrid":
             # hybrid fts and vector query
-            return LanceHybridQueryBuilder(table, query, vector_column_name)
+            return LanceHybridQueryBuilder(
+                table, query, vector_column_name, fts_columns=fts_columns
+            )
+
+        if query is None:
+            return LanceEmptyQueryBuilder(table)
 
         # remember the string query for reranking purpose
         str_query = query if isinstance(query, str) else None
@@ -169,12 +171,17 @@ class LanceQueryBuilder(ABC):
         )
 
         if query_type == "hybrid":
-            return LanceHybridQueryBuilder(table, query, vector_column_name)
+            return LanceHybridQueryBuilder(
+                table, query, vector_column_name, fts_columns=fts_columns
+            )
 
         if isinstance(query, str):
             # fts
             return LanceFtsQueryBuilder(
-                table, query, ordering_field_name=ordering_field_name
+                table,
+                query,
+                ordering_field_name=ordering_field_name,
+                fts_columns=fts_columns,
             )
 
         if isinstance(query, list):
@@ -200,8 +207,6 @@ class LanceQueryBuilder(ABC):
         elif query_type == "auto":
             if isinstance(query, (list, np.ndarray)):
                 return query, "vector"
-            if isinstance(query, tuple):
-                return query, "hybrid"
             else:
                 conf = table.embedding_functions.get(vector_column_name)
                 if conf is not None:
@@ -232,6 +237,8 @@ class LanceQueryBuilder(ABC):
         self._where = None
         self._prefilter = False
         self._with_row_id = False
+        self._vector = None
+        self._text = None
 
     @deprecation.deprecated(
         deprecated_in="0.3.1",
@@ -356,7 +363,10 @@ class LanceQueryBuilder(ABC):
             The LanceQueryBuilder object.
         """
         if limit is None or limit <= 0:
-            self._limit = None
+            if isinstance(self, LanceVectorQueryBuilder):
+                raise ValueError("Limit is required for ANN/KNN queries")
+            else:
+                self._limit = None
         else:
             self._limit = limit
         return self
@@ -455,6 +465,52 @@ class LanceQueryBuilder(ABC):
                 "q": self._query,
             },
         ).explain_plan(verbose)
+
+    def vector(self, vector: Union[np.ndarray, list]) -> LanceQueryBuilder:
+        """Set the vector to search for.
+
+        Parameters
+        ----------
+        vector: np.ndarray or list
+            The vector to search for.
+
+        Returns
+        -------
+        LanceQueryBuilder
+            The LanceQueryBuilder object.
+        """
+        raise NotImplementedError
+
+    def text(self, text: str) -> LanceQueryBuilder:
+        """Set the text to search for.
+
+        Parameters
+        ----------
+        text: str
+            The text to search for.
+
+        Returns
+        -------
+        LanceQueryBuilder
+            The LanceQueryBuilder object.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def rerank(self, reranker: Reranker) -> LanceQueryBuilder:
+        """Rerank the results using the specified reranker.
+
+        Parameters
+        ----------
+        reranker: Reranker
+            The reranker to use.
+
+        Returns
+        -------
+
+        The LanceQueryBuilder object.
+        """
+        raise NotImplementedError
 
 
 class LanceVectorQueryBuilder(LanceQueryBuilder):
@@ -673,14 +729,16 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         self,
         table: "Table",
         query: str,
-        ordering_field_name: str = None,
-        fts_columns: Union[str, List[str]] = None,
+        ordering_field_name: Optional[str] = None,
+        fts_columns: Union[str, List[str]] = [],
     ):
         super().__init__(table)
         self._query = query
         self._phrase_query = False
         self.ordering_field_name = ordering_field_name
         self._reranker = None
+        if isinstance(fts_columns, str):
+            fts_columns = [fts_columns]
         self._fts_columns = fts_columns
 
     def phrase_query(self, phrase_query: bool = True) -> LanceFtsQueryBuilder:
@@ -701,8 +759,8 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         return self
 
     def to_arrow(self) -> pa.Table:
-        tantivy_index_path = self._table._get_fts_index_path()
-        if Path(tantivy_index_path).exists():
+        path, fs, exist = self._table._get_fts_index_path()
+        if exist:
             return self.tantivy_to_arrow()
 
         query = self._query
@@ -711,23 +769,23 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
                 "Phrase query is not yet supported in Lance FTS. "
                 "Use tantivy-based index instead for now."
             )
-        if self._reranker:
-            raise NotImplementedError(
-                "Reranking is not yet supported in Lance FTS. "
-                "Use tantivy-based index instead for now."
-            )
-        ds = self._table.to_lance()
-        return ds.to_table(
+        query = Query(
             columns=self._columns,
             filter=self._where,
-            limit=self._limit,
+            k=self._limit,
             prefilter=self._prefilter,
             with_row_id=self._with_row_id,
             full_text_query={
                 "query": query,
                 "columns": self._fts_columns,
             },
+            vector=[],
         )
+        results = self._table._execute_query(query)
+        results = results.read_all()
+        if self._reranker is not None:
+            results = self._reranker.rerank_fts(self._query, results)
+        return results
 
     def tantivy_to_arrow(self) -> pa.Table:
         try:
@@ -740,24 +798,24 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         from .fts import search_index
 
         # get the index path
-        index_path = self._table._get_fts_index_path()
-
-        # Check that we are on local filesystem
-        fs, _path = fs_from_uri(index_path)
-        if not isinstance(fs, pa_fs.LocalFileSystem):
-            raise NotImplementedError(
-                "Full-text search is only supported on the local filesystem"
-            )
+        path, fs, exist = self._table._get_fts_index_path()
 
         # check if the index exist
-        if not Path(index_path).exists():
+        if not exist:
             raise FileNotFoundError(
                 "Fts index does not exist. "
                 "Please first call table.create_fts_index(['<field_names>']) to "
                 "create the fts index."
             )
+
+        # Check that we are on local filesystem
+        if not isinstance(fs, pa_fs.LocalFileSystem):
+            raise NotImplementedError(
+                "Tantivy-based full text search "
+                "is only supported on the local filesystem"
+            )
         # open the index
-        index = tantivy.Index.open(index_path)
+        index = tantivy.Index.open(path)
         # get the scores and doc ids
         query = self._query
         if self._phrase_query:
@@ -825,7 +883,8 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         LanceFtsQueryBuilder
             The LanceQueryBuilder object.
         """
-        raise NotImplementedError("Reranking is not yet supported for FTS queries.")
+        self._reranker = reranker
+        return self
 
 
 class LanceEmptyQueryBuilder(LanceQueryBuilder):
@@ -837,54 +896,101 @@ class LanceEmptyQueryBuilder(LanceQueryBuilder):
             limit=self._limit,
         )
 
+    def rerank(self, reranker: Reranker) -> LanceEmptyQueryBuilder:
+        """Rerank the results using the specified reranker.
+
+        Parameters
+        ----------
+        reranker: Reranker
+            The reranker to use.
+
+        Returns
+        -------
+        LanceEmptyQueryBuilder
+            The LanceQueryBuilder object.
+        """
+        raise NotImplementedError("Reranking is not yet supported.")
+
 
 class LanceHybridQueryBuilder(LanceQueryBuilder):
     """
     A query builder that performs hybrid vector and full text search.
     Results are combined and reranked based on the specified reranker.
-    By default, the results are reranked using the LinearCombinationReranker.
+    By default, the results are reranked using the RRFReranker, which
+    uses reciprocal rank fusion score for reranking.
 
     To make the vector and fts results comparable, the scores are normalized.
     Instead of normalizing scores, the `normalize` parameter can be set to "rank"
     in the `rerank` method to convert the scores to ranks and then normalize them.
     """
 
-    def __init__(self, table: "Table", query: str, vector_column: str):
+    def __init__(
+        self,
+        table: "Table",
+        query: str = None,
+        vector_column: str = None,
+        fts_columns: Union[str, List[str]] = [],
+    ):
         super().__init__(table)
-        self._validate_fts_index()
-        vector_query, fts_query = self._validate_query(query)
-        self._fts_query = LanceFtsQueryBuilder(table, fts_query)
-        vector_query = self._query_to_vector(table, vector_query, vector_column)
-        self._vector_query = LanceVectorQueryBuilder(table, vector_query, vector_column)
+        self._query = query
+        self._vector_column = vector_column
+        self._fts_columns = fts_columns
         self._norm = "score"
-        self._reranker = LinearCombinationReranker(weight=0.7, fill=1.0)
+        self._reranker = RRFReranker()
+        self._nprobes = None
+        self._refine_factor = None
 
-    def _validate_fts_index(self):
-        if self._table._get_fts_index_path() is None:
+    def _validate_query(self, query, vector=None, text=None):
+        if query is not None and (vector is not None or text is not None):
             raise ValueError(
-                "Please create a full-text search index " "to perform hybrid search."
+                "You can either provide a string query in search() method"
+                "or set `vector()` and `text()` explicitly for hybrid search."
+                "But not both."
             )
 
-    def _validate_query(self, query):
-        # Temp hack to support vectorized queries for hybrid search
-        if isinstance(query, str):
-            return query, query
-        elif isinstance(query, tuple):
-            if len(query) != 2:
-                raise ValueError(
-                    "The query must be a tuple of (vector_query, fts_query)."
-                )
-            if not isinstance(query[0], (list, np.ndarray, pa.Array, pa.ChunkedArray)):
-                raise ValueError(f"The vector query must be one of {VEC}.")
-            if not isinstance(query[1], str):
-                raise ValueError("The fts query must be a string.")
-            return query[0], query[1]
-        else:
-            raise ValueError(
-                "The query must be either a string or a tuple of (vector, string)."
-            )
+        vector_query = vector if vector is not None else query
+        if not isinstance(vector_query, (str, list, np.ndarray)):
+            raise ValueError("Vector query must be either a string or a vector")
+
+        text_query = text or query
+        if text_query is None:
+            raise ValueError("Text query must be provided for hybrid search.")
+        if not isinstance(text_query, str):
+            raise ValueError("Text query must be a string")
+
+        return vector_query, text_query
 
     def to_arrow(self) -> pa.Table:
+        vector_query, fts_query = self._validate_query(
+            self._query, self._vector, self._text
+        )
+        self._fts_query = LanceFtsQueryBuilder(
+            self._table, fts_query, fts_columns=self._fts_columns
+        )
+        vector_query = self._query_to_vector(
+            self._table, vector_query, self._vector_column
+        )
+        self._vector_query = LanceVectorQueryBuilder(
+            self._table, vector_query, self._vector_column
+        )
+
+        if self._limit:
+            self._vector_query.limit(self._limit)
+            self._fts_query.limit(self._limit)
+        if self._columns:
+            self._vector_query.select(self._columns)
+            self._fts_query.select(self._columns)
+        if self._where:
+            self._vector_query.where(self._where, self._prefilter)
+            self._fts_query.where(self._where, self._prefilter)
+        if self._with_row_id:
+            self._vector_query.with_row_id(True)
+            self._fts_query.with_row_id(True)
+        if self._nprobes:
+            self._vector_query.nprobes(self._nprobes)
+        if self._refine_factor:
+            self._vector_query.refine_factor(self._refine_factor)
+
         with ThreadPoolExecutor() as executor:
             fts_future = executor.submit(self._fts_query.with_row_id(True).to_arrow)
             vector_future = executor.submit(
@@ -961,7 +1067,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
     def rerank(
         self,
         normalize="score",
-        reranker: Reranker = LinearCombinationReranker(weight=0.7, fill=1.0),
+        reranker: Reranker = RRFReranker(),
     ) -> LanceHybridQueryBuilder:
         """
         Rerank the hybrid search results using the specified reranker. The reranker
@@ -973,7 +1079,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             The method to normalize the scores. Can be "rank" or "score". If "rank",
             the scores are converted to ranks and then normalized. If "score", the
             scores are normalized directly.
-        reranker: Reranker, default LinearCombinationReranker(weight=0.7, fill=1.0)
+        reranker: Reranker, default RRFReranker()
             The reranker to use. Must be an instance of Reranker class.
         Returns
         -------
@@ -988,87 +1094,6 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         self._norm = normalize
         self._reranker = reranker
 
-        return self
-
-    def limit(self, limit: int) -> LanceHybridQueryBuilder:
-        """
-        Set the maximum number of results to return for both vector and fts search
-        components.
-
-        Parameters
-        ----------
-        limit: int
-            The maximum number of results to return.
-
-        Returns
-        -------
-        LanceHybridQueryBuilder
-            The LanceHybridQueryBuilder object.
-        """
-        self._vector_query.limit(limit)
-        self._fts_query.limit(limit)
-        self._limit = limit
-
-        return self
-
-    def select(self, columns: list) -> LanceHybridQueryBuilder:
-        """
-        Set the columns to return for both vector and fts search.
-
-        Parameters
-        ----------
-        columns: list
-            The columns to return.
-
-        Returns
-        -------
-        LanceHybridQueryBuilder
-            The LanceHybridQueryBuilder object.
-        """
-        self._vector_query.select(columns)
-        self._fts_query.select(columns)
-        return self
-
-    def where(self, where: str, prefilter: bool = False) -> LanceHybridQueryBuilder:
-        """
-        Set the where clause for both vector and fts search.
-
-        Parameters
-        ----------
-        where: str
-            The where clause which is a valid SQL where clause. See
-            `Lance filter pushdown <https://lancedb.github.io/lance/read_and_write.html#filter-push-down>`_
-            for valid SQL expressions.
-
-        prefilter: bool, default False
-            If True, apply the filter before vector search, otherwise the
-            filter is applied on the result of vector search.
-
-        Returns
-        -------
-        LanceHybridQueryBuilder
-            The LanceHybridQueryBuilder object.
-        """
-
-        self._vector_query.where(where, prefilter=prefilter)
-        self._fts_query.where(where)
-        return self
-
-    def metric(self, metric: Literal["L2", "cosine"]) -> LanceHybridQueryBuilder:
-        """
-        Set the distance metric to use for vector search.
-
-        Parameters
-        ----------
-        metric: "L2" or "cosine"
-            The distance metric to use. By default "L2" is used.
-
-        Returns
-        -------
-        LanceHybridQueryBuilder
-            The LanceHybridQueryBuilder object.
-        """
-        self._vector_query.metric(metric)
         return self
 
     def nprobes(self, nprobes: int) -> LanceHybridQueryBuilder:
@@ -1088,7 +1113,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         LanceHybridQueryBuilder
             The LanceHybridQueryBuilder object.
         """
-        self._vector_query.nprobes(nprobes)
+        self._nprobes = nprobes
         return self
 
     def refine_factor(self, refine_factor: int) -> LanceHybridQueryBuilder:
@@ -1106,7 +1131,15 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         LanceHybridQueryBuilder
             The LanceHybridQueryBuilder object.
         """
-        self._vector_query.refine_factor(refine_factor)
+        self._refine_factor = refine_factor
+        return self
+
+    def vector(self, vector: Union[np.ndarray, list]) -> LanceHybridQueryBuilder:
+        self._vector = vector
+        return self
+
+    def text(self, text: str) -> LanceHybridQueryBuilder:
+        self._text = text
         return self
 
 
@@ -1353,6 +1386,34 @@ class AsyncQuery(AsyncQueryBase):
         return AsyncVectorQuery(
             self._inner.nearest_to(AsyncQuery._query_vec_to_array(query_vector))
         )
+
+    def nearest_to_text(
+        self, query: str, columns: Union[str, List[str]] = []
+    ) -> AsyncQuery:
+        """
+        Find the documents that are most relevant to the given text query.
+
+        This method will perform a full text search on the table and return
+        the most relevant documents.  The relevance is determined by BM25.
+
+        The columns to search must be with native FTS index
+        (Tantivy-based can't work with this method).
+
+        By default, all indexed columns are searched,
+        now only one column can be searched at a time.
+
+        Parameters
+        ----------
+        query: str
+            The text query to search for.
+        columns: str or list of str, default None
+            The columns to search in. If None, all indexed columns are searched.
+            For now only one column can be searched at a time.
+        """
+        if isinstance(columns, str):
+            columns = [columns]
+        self._inner.nearest_to_text({"query": query, "columns": columns})
+        return self
 
 
 class AsyncVectorQuery(AsyncQueryBase):

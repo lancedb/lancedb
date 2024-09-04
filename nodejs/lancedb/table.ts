@@ -84,6 +84,7 @@ export interface OptimizeOptions {
    * tbl.cleanupOlderVersions(new Date());
    */
   cleanupOlderThan: Date;
+  deleteUnverified: boolean;
 }
 
 /**
@@ -671,7 +672,10 @@ export class LocalTable extends Table {
       cleanupOlderThanMs =
         new Date().getTime() - options.cleanupOlderThan.getTime();
     }
-    return await this.inner.optimize(cleanupOlderThanMs);
+    return await this.inner.optimize(
+      cleanupOlderThanMs,
+      options?.deleteUnverified,
+    );
   }
 
   async listIndices(): Promise<IndexConfig[]> {

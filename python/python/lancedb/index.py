@@ -70,6 +70,18 @@ class LabelList:
         self._inner = LanceDbIndex.label_list()
 
 
+class FTS:
+    """Describe a FTS index configuration.
+
+    `FTS` is a full-text search index that can be used on `String` columns
+
+    For example, it works with `title`, `description`, `content`, etc.
+    """
+
+    def __init__(self):
+        self._inner = LanceDbIndex.fts()
+
+
 class IvfPq:
     """Describes an IVF PQ Index
 

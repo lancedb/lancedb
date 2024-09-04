@@ -93,6 +93,30 @@ describe("LanceDB client", function () {
       const con = await lancedb.connect(uri);
       assert.deepEqual(await con.tableNames(), ["vectors"]);
     });
+
+    it("read consistency level", async function () {
+      const uri = await createTestDB();
+      const db1 = await lancedb.connect({ uri });
+      const table1 = await db1.openTable("vectors");
+
+      const db2 = await lancedb.connect({
+        uri,
+        readConsistencyInterval: 0
+      })
+      const table2 = await db2.openTable("vectors");
+
+      assert.equal(await table2.countRows(), 2);
+      await table1.add([
+        {
+          id: 3,
+          name: 'name_2',
+          price: 10,
+          is_active: true,
+          vector: [ 0, 0.1 ]
+        },
+      ]);
+      assert.equal(await table2.countRows(), 3);
+    });
   });
 
   describe("when querying an existing dataset", function () {

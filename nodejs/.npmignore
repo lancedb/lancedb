@@ -20,6 +20,5 @@ Cargo.toml
 biome.json
 build.rs
 jest.config.js
-native.d.ts
 tsconfig.json
 typedoc.json

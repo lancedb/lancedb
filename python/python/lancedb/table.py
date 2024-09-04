@@ -51,7 +51,7 @@ if TYPE_CHECKING:
     from lance.dataset import CleanupStats, ReaderLike
     from ._lancedb import Table as LanceDBTable, OptimizeStats
     from .db import LanceDBConnection
-    from .index import BTree, IndexConfig, IvfPq, Bitmap, LabelList
+    from .index import BTree, IndexConfig, IvfPq, Bitmap, LabelList, FTS
 
 
 pd = safe_import_pandas()
@@ -339,9 +339,9 @@ class Table(ABC):
     def create_scalar_index(
         self,
         column: str,
-        index_type: Literal["BTREE", "BITMAP", "LABEL_LIST"] = "BTREE",
         *,
         replace: bool = True,
+        index_type: Literal["BTREE", "BITMAP", "LABEL_LIST"] = "BTREE",
     ):
         """Create a scalar index on a column.
 
@@ -391,6 +391,8 @@ class Table(ABC):
             or string column.
         replace : bool, default True
             Replace the existing index if it exists.
+        index_type: Literal["BTREE", "BITMAP", "LABEL_LIST"], default "BTREE"
+            The type of index to create.
 
         Examples
         --------
@@ -400,6 +402,47 @@ class Table(ABC):
 
             dataset = lance.dataset("./images.lance")
             dataset.create_scalar_index("category")
+        """
+        raise NotImplementedError
+
+    def create_fts_index(
+        self,
+        field_names: Union[str, List[str]],
+        ordering_field_names: Union[str, List[str]] = None,
+        *,
+        replace: bool = False,
+        writer_heap_size: Optional[int] = 1024 * 1024 * 1024,
+        tokenizer_name: str = "default",
+        use_tantivy: bool = True,
+    ):
+        """Create a full-text search index on the table.
+
+        Warning - this API is highly experimental and is highly likely to change
+        in the future.
+
+        Parameters
+        ----------
+        field_names: str or list of str
+            The name(s) of the field to index.
+            can be only str if use_tantivy=True for now.
+        replace: bool, default False
+            If True, replace the existing index if it exists. Note that this is
+            not yet an atomic operation; the index will be temporarily
+            unavailable while the new index is being created.
+        writer_heap_size: int, default 1GB
+            Only available with use_tantivy=True
+        ordering_field_names:
+            A list of unsigned type fields to index to optionally order
+            results on at search time.
+            only available with use_tantivy=True
+        tokenizer_name: str, default "default"
+            The tokenizer to use for the index. Can be "raw", "default" or the 2 letter
+            language code followed by "_stem". So for english it would be "en_stem".
+            For available languages see: https://docs.rs/tantivy/latest/tantivy/tokenizer/enum.Language.html
+            only available with use_tantivy=True for now
+        use_tantivy: bool, default True
+            If True, use the legacy full-text search implementation based on tantivy.
+            If False, use the new full-text search implementation based on lance-index.
         """
         raise NotImplementedError
 
@@ -502,7 +545,7 @@ class Table(ABC):
         vector_column_name: Optional[str] = None,
         query_type: str = "auto",
         ordering_field_name: Optional[str] = None,
-        fts_columns: Union[str, List[str]] = None,
+        fts_columns: Optional[Union[str, List[str]]] = None,
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support [vector search][search]
@@ -799,6 +842,18 @@ class Table(ABC):
             The names of the columns to drop.
         """
 
+    @cached_property
+    def _dataset_uri(self) -> str:
+        return _table_uri(self._conn.uri, self.name)
+
+    def _get_fts_index_path(self) -> Tuple[str, pa_fs.FileSystem, bool]:
+        if get_uri_scheme(self._dataset_uri) != "file":
+            return ("", None, False)
+        path = join_uri(self._dataset_uri, "_indices", "fts")
+        fs, path = fs_from_uri(path)
+        index_exists = fs.get_file_info(path).type != pa_fs.FileType.NotFound
+        return (path, fs, index_exists)
+
 
 class _LanceDatasetRef(ABC):
     @property
@@ -937,10 +992,6 @@ class LanceTable(Table):
     def _dataset_path(self) -> str:
         # Cacheable since it's deterministic
         return _table_path(self._conn.uri, self.name)
-
-    @cached_property
-    def _dataset_uri(self) -> str:
-        return _table_uri(self._conn.uri, self.name)
 
     @property
     def _dataset(self) -> LanceDataset:
@@ -1183,9 +1234,9 @@ class LanceTable(Table):
     def create_scalar_index(
         self,
         column: str,
-        index_type: Literal["BTREE", "BITMAP", "LABEL_LIST"] = "BTREE",
         *,
         replace: bool = True,
+        index_type: Literal["BTREE", "BITMAP", "LABEL_LIST"] = "BTREE",
     ):
         self._dataset_mut.create_scalar_index(
             column, index_type=index_type, replace=replace
@@ -1201,42 +1252,13 @@ class LanceTable(Table):
         tokenizer_name: str = "default",
         use_tantivy: bool = True,
     ):
-        """Create a full-text search index on the table.
-
-        Warning - this API is highly experimental and is highly likely to change
-        in the future.
-
-        Parameters
-        ----------
-        field_names: str or list of str
-            The name(s) of the field to index.
-            can be only str if use_tantivy=True for now.
-        replace: bool, default False
-            If True, replace the existing index if it exists. Note that this is
-            not yet an atomic operation; the index will be temporarily
-            unavailable while the new index is being created.
-        writer_heap_size: int, default 1GB
-        ordering_field_names:
-            A list of unsigned type fields to index to optionally order
-            results on at search time.
-            only available with use_tantivy=True
-        tokenizer_name: str, default "default"
-            The tokenizer to use for the index. Can be "raw", "default" or the 2 letter
-            language code followed by "_stem". So for english it would be "en_stem".
-            For available languages see: https://docs.rs/tantivy/latest/tantivy/tokenizer/enum.Language.html
-            only available with use_tantivy=True for now
-        use_tantivy: bool, default False
-            If True, use the legacy full-text search implementation based on tantivy.
-            If False, use the new full-text search implementation based on lance-index.
-        """
         if not use_tantivy:
             if not isinstance(field_names, str):
                 raise ValueError("field_names must be a string when use_tantivy=False")
             # delete the existing legacy index if it exists
             if replace:
-                fs, path = fs_from_uri(self._get_fts_index_path())
-                index_exists = fs.get_file_info(path).type != pa_fs.FileType.NotFound
-                if index_exists:
+                path, fs, exist = self._get_fts_index_path()
+                if exist:
                     fs.delete_dir(path)
             self._dataset_mut.create_scalar_index(
                 field_names, index_type="INVERTED", replace=replace
@@ -1251,9 +1273,8 @@ class LanceTable(Table):
         if isinstance(ordering_field_names, str):
             ordering_field_names = [ordering_field_names]
 
-        fs, path = fs_from_uri(self._get_fts_index_path())
-        index_exists = fs.get_file_info(path).type != pa_fs.FileType.NotFound
-        if index_exists:
+        path, fs, exist = self._get_fts_index_path()
+        if exist:
             if not replace:
                 raise ValueError("Index already exists. Use replace=True to overwrite.")
             fs.delete_dir(path)
@@ -1264,7 +1285,7 @@ class LanceTable(Table):
             )
 
         index = create_index(
-            self._get_fts_index_path(),
+            path,
             field_names,
             ordering_fields=ordering_field_names,
             tokenizer_name=tokenizer_name,
@@ -1276,13 +1297,6 @@ class LanceTable(Table):
             ordering_fields=ordering_field_names,
             writer_heap_size=writer_heap_size,
         )
-
-    def _get_fts_index_path(self):
-        if get_uri_scheme(self._dataset_uri) != "file":
-            raise NotImplementedError(
-                "Full-text search is not supported on object stores."
-            )
-        return join_uri(self._dataset_uri, "_indices", "tantivy")
 
     def add(
         self,
@@ -1411,7 +1425,7 @@ class LanceTable(Table):
         vector_column_name: Optional[str] = None,
         query_type: str = "auto",
         ordering_field_name: Optional[str] = None,
-        fts_columns: Union[str, List[str]] = None,
+        fts_columns: Optional[Union[str, List[str]]] = None,
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support [vector search][search]
@@ -1479,14 +1493,11 @@ class LanceTable(Table):
             and also the "_distance" column which is the distance between the query
             vector and the returned vector.
         """
-        if vector_column_name is None and query is not None:
+        if vector_column_name is None and query is not None and query_type != "fts":
             try:
                 vector_column_name = inf_vector_column_query(self.schema)
             except Exception as e:
-                if query_type == "fts":
-                    vector_column_name = ""
-                else:
-                    raise e
+                raise e
 
         return LanceQueryBuilder.create(
             self,
@@ -1494,6 +1505,7 @@ class LanceTable(Table):
             query_type,
             vector_column_name=vector_column_name,
             ordering_field_name=ordering_field_name,
+            fts_columns=fts_columns,
         )
 
     @classmethod
@@ -1677,18 +1689,22 @@ class LanceTable(Table):
         self, query: Query, batch_size: Optional[int] = None
     ) -> pa.RecordBatchReader:
         ds = self.to_lance()
-        return ds.scanner(
-            columns=query.columns,
-            filter=query.filter,
-            prefilter=query.prefilter,
-            nearest={
+        nearest = None
+        if len(query.vector) > 0:
+            nearest = {
                 "column": query.vector_column,
                 "q": query.vector,
                 "k": query.k,
                 "metric": query.metric,
                 "nprobes": query.nprobes,
                 "refine_factor": query.refine_factor,
-            },
+            }
+        return ds.scanner(
+            columns=query.columns,
+            limit=query.k,
+            filter=query.filter,
+            prefilter=query.prefilter,
+            nearest=nearest,
             full_text_query=query.full_text_query,
             with_row_id=query.with_row_id,
             batch_size=batch_size,
@@ -2113,7 +2129,7 @@ class AsyncTable:
         column: str,
         *,
         replace: Optional[bool] = None,
-        config: Optional[Union[IvfPq, BTree, Bitmap, LabelList]] = None,
+        config: Optional[Union[IvfPq, BTree, Bitmap, LabelList, FTS]] = None,
     ):
         """Create an index to speed up queries
 
@@ -2438,7 +2454,10 @@ class AsyncTable:
         await self._inner.restore()
 
     async def optimize(
-        self, *, cleanup_older_than: Optional[timedelta] = None
+        self,
+        *,
+        cleanup_older_than: Optional[timedelta] = None,
+        delete_unverified: bool = False,
     ) -> OptimizeStats:
         """
         Optimize the on-disk data and indices for better performance.
@@ -2457,6 +2476,11 @@ class AsyncTable:
             All files belonging to versions older than this will be removed.  Set
             to 0 days to remove all versions except the latest.  The latest version
             is never removed.
+        delete_unverified: bool, default False
+            Files leftover from a failed transaction may appear to be part of an
+            in-progress operation (e.g. appending new data) and these files will not
+            be deleted unless they are at least 7 days old. If delete_unverified is True
+            then these files will be deleted regardless of their age.
 
         Experimental API
         ----------------
@@ -2478,7 +2502,7 @@ class AsyncTable:
         """
         if cleanup_older_than is not None:
             cleanup_older_than = round(cleanup_older_than.total_seconds() * 1000)
-        return await self._inner.optimize(cleanup_older_than)
+        return await self._inner.optimize(cleanup_older_than, delete_unverified)
 
     async def list_indices(self) -> IndexConfig:
         """

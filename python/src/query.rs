@@ -15,17 +15,20 @@
 use arrow::array::make_array;
 use arrow::array::ArrayData;
 use arrow::pyarrow::FromPyArrow;
+use lancedb::index::scalar::FullTextSearchQuery;
 use lancedb::query::QueryExecutionOptions;
 use lancedb::query::{
     ExecutableQuery, Query as LanceDbQuery, QueryBase, Select, VectorQuery as LanceDbVectorQuery,
 };
 use pyo3::exceptions::PyRuntimeError;
-use pyo3::pyclass;
+use pyo3::prelude::{PyAnyMethods, PyDictMethods};
 use pyo3::pymethods;
+use pyo3::types::PyDict;
 use pyo3::Bound;
 use pyo3::PyAny;
 use pyo3::PyRef;
 use pyo3::PyResult;
+use pyo3::{pyclass, PyErr};
 use pyo3_asyncio_0_21::tokio::future_into_py;
 
 use crate::arrow::RecordBatchStream;
@@ -66,6 +69,24 @@ impl Query {
         let array = make_array(data);
         let inner = self.inner.clone().nearest_to(array).infer_error()?;
         Ok(VectorQuery { inner })
+    }
+
+    pub fn nearest_to_text(&mut self, query: Bound<'_, PyDict>) -> PyResult<()> {
+        let query_text = query
+            .get_item("query")?
+            .ok_or(PyErr::new::<PyRuntimeError, _>(
+                "Query text is required for nearest_to_text",
+            ))?
+            .extract::<String>()?;
+        let columns = query
+            .get_item("columns")?
+            .map(|columns| columns.extract::<Vec<String>>())
+            .transpose()?;
+
+        let fts_query = FullTextSearchQuery::new(query_text).columns(columns);
+        self.inner = self.inner.clone().full_text_search(fts_query);
+
+        Ok(())
     }
 
     pub fn execute(

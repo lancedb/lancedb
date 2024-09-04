@@ -36,6 +36,10 @@ class TransformersEmbeddingFunction(EmbeddingFunction):
         The name of the model to use. This should be a model name that can be loaded
         by transformers.AutoModel.from_pretrained. For example, "bert-base-uncased".
         default: "colbert-ir/colbertv2.0""
+    device : str
+        The device to use for the model. Default is "cpu".
+    show_progress_bar : bool
+        Whether to show a progress bar when loading the model. Default is True.
 
     to download package, run :
         `pip install transformers`
@@ -44,6 +48,7 @@ class TransformersEmbeddingFunction(EmbeddingFunction):
     """
 
     name: str = "colbert-ir/colbertv2.0"
+    device: str = "cpu"
     _tokenizer: Any = PrivateAttr()
     _model: Any = PrivateAttr()
 
@@ -53,6 +58,7 @@ class TransformersEmbeddingFunction(EmbeddingFunction):
         transformers = attempt_import_or_raise("transformers")
         self._tokenizer = transformers.AutoTokenizer.from_pretrained(self.name)
         self._model = transformers.AutoModel.from_pretrained(self.name)
+        self._model.to(self.device)
 
     if PYDANTIC_VERSION.major < 2:  # Pydantic 1.x compat
 
@@ -75,9 +81,9 @@ class TransformersEmbeddingFunction(EmbeddingFunction):
         for text in texts:
             encoding = self._tokenizer(
                 text, return_tensors="pt", padding=True, truncation=True
-            )
+            ).to(self.device)
             emb = self._model(**encoding).last_hidden_state.mean(dim=1).squeeze()
-            embedding.append(emb.detach().numpy())
+            embedding.append(emb.tolist())
 
         return embedding
 

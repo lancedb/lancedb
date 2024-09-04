@@ -8,6 +8,7 @@ from pathlib import Path
 from time import sleep
 from typing import List
 from unittest.mock import PropertyMock, patch
+import os
 
 import lance
 import lancedb
@@ -27,7 +28,7 @@ from pydantic import BaseModel
 
 class MockDB:
     def __init__(self, uri: Path):
-        self.uri = uri
+        self.uri = str(uri)
         self.read_consistency_interval = None
 
     @functools.cached_property
@@ -1052,3 +1053,25 @@ async def test_optimize(db_async: AsyncConnection):
     assert stats.prune.old_versions_removed == 3
 
     assert await table.query().to_arrow() == pa.table({"x": [[1], [2]]})
+
+
+@pytest.mark.asyncio
+async def test_optimize_delete_unverified(db_async: AsyncConnection, tmp_path):
+    table = await db_async.create_table(
+        "test",
+        data=[{"x": [1]}],
+    )
+    await table.add(
+        data=[
+            {"x": [2]},
+        ],
+    )
+    version = await table.version()
+    path = tmp_path / "test.lance" / "_versions" / f"{version - 1}.manifest"
+    os.remove(path)
+    stats = await table.optimize(delete_unverified=False)
+    assert stats.prune.old_versions_removed == 0
+    stats = await table.optimize(
+        cleanup_older_than=timedelta(seconds=0), delete_unverified=True
+    )
+    assert stats.prune.old_versions_removed == 2

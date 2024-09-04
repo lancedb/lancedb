@@ -26,12 +26,23 @@ class SentenceTransformerEmbeddings(TextEmbeddingFunction):
     An embedding function that uses the sentence-transformers library
 
     https://huggingface.co/sentence-transformers
+
+    Parameters
+    ----------
+    name: str, default "all-MiniLM-L6-v2"
+        The name of the model to use.
+    device: str, default "cpu"
+        The device to use for the model
+    normalize: bool, default True
+        Whether to normalize the embeddings
+    trust_remote_code: bool, default True
+        Whether to trust the remote code
     """
 
     name: str = "all-MiniLM-L6-v2"
     device: str = "cpu"
     normalize: bool = True
-    trust_remote_code: bool = False
+    trust_remote_code: bool = True
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)

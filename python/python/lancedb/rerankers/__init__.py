@@ -6,6 +6,7 @@ from .linear_combination import LinearCombinationReranker
 from .openai import OpenaiReranker
 from .jinaai import JinaReranker
 from .rrf import RRFReranker
+from .answerdotai import AnswerdotaiRerankers
 
 __all__ = [
     "Reranker",
@@ -16,4 +17,5 @@ __all__ = [
     "ColbertReranker",
     "JinaReranker",
     "RRFReranker",
+    "AnswerdotaiRerankers",
 ]

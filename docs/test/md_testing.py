@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 import glob
 from typing import Iterator, List
 from pathlib import Path
@@ -17,6 +19,8 @@ excluded_globs = [
     "../src/hybrid_search/hybrid_search.md",
     "../src/reranking/*.md",
     "../src/guides/tuning_retrievers/*.md",
+    "../src/embeddings/available_embedding_models/text_embedding_functions/*.md",
+    "../src/embeddings/available_embedding_models/multimodal_embedding_functions/*.md"
 ]
 
 python_prefix = "py"
