@@ -1708,6 +1708,7 @@ class LanceTable(Table):
             full_text_query=query.full_text_query,
             with_row_id=query.with_row_id,
             batch_size=batch_size,
+            offset=query.offset,
         ).to_reader()
 
     def _do_merge(

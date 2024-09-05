@@ -85,6 +85,8 @@ class Query(pydantic.BaseModel):
 
         - See discussion in [Querying an ANN Index][querying-an-ann-index] for
           tuning advice.
+    offset: int
+        The offset to start fetching results from
     """
 
     vector_column: Optional[str] = None
@@ -118,6 +120,8 @@ class Query(pydantic.BaseModel):
     refine_factor: Optional[int] = None
 
     with_row_id: bool = False
+
+    offset: int = 0
 
 
 class LanceQueryBuilder(ABC):
@@ -233,6 +237,7 @@ class LanceQueryBuilder(ABC):
     def __init__(self, table: "Table"):
         self._table = table
         self._limit = 10
+        self._offset = 0
         self._columns = None
         self._where = None
         self._prefilter = False
@@ -369,6 +374,25 @@ class LanceQueryBuilder(ABC):
                 self._limit = None
         else:
             self._limit = limit
+        return self
+
+    def offset(self, offset: int) -> LanceQueryBuilder:
+        """Set the offset for the results.
+
+        Parameters
+        ----------
+        offset: int
+            The offset to start fetching results from.
+
+        Returns
+        -------
+        LanceQueryBuilder
+            The LanceQueryBuilder object.
+        """
+        if offset is None or offset <= 0:
+            self._offset = 0
+        else:
+            self._offset = offset
         return self
 
     def select(self, columns: Union[list[str], dict[str, str]]) -> LanceQueryBuilder:
@@ -649,6 +673,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             refine_factor=self._refine_factor,
             vector_column=self._vector_column,
             with_row_id=self._with_row_id,
+            offset=self._offset,
         )
         result_set = self._table._execute_query(query, batch_size)
         if self._reranker is not None:
@@ -780,6 +805,7 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
                 "columns": self._fts_columns,
             },
             vector=[],
+            offset=self._offset,
         )
         results = self._table._execute_query(query)
         results = results.read_all()
@@ -1218,6 +1244,18 @@ class AsyncQueryBase(object):
         called then every valid row from the table will be returned.
         """
         self._inner.limit(limit)
+        return self
+
+    def offset(self, offset: int) -> AsyncQuery:
+        """
+        Set the offset for the results.
+
+        Parameters
+        ----------
+        offset: int
+            The offset to start fetching results from.
+        """
+        self._inner.offset(offset)
         return self
 
     async def to_batches(

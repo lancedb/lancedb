@@ -1852,9 +1852,16 @@ impl TableInternal for NativeTable {
                 query_vector,
                 query.base.limit.unwrap_or(DEFAULT_TOP_K),
             )?;
+            scanner.limit(
+                query.base.limit.map(|limit| limit as i64),
+                query.base.offset.map(|offset| offset as i64),
+            )?;
         } else {
             // If there is no vector query, it's ok to not have a limit
-            scanner.limit(query.base.limit.map(|limit| limit as i64), None)?;
+            scanner.limit(
+                query.base.limit.map(|limit| limit as i64),
+                query.base.offset.map(|offset| offset as i64),
+            )?;
         }
 
         scanner.nprobs(query.nprobes);
