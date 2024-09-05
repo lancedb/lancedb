@@ -35,9 +35,6 @@ def mock_embed_func(input_data):
 
 def test_with_embeddings():
     for wrap_api in [True, False]:
-        if wrap_api and sys.version_info.minor >= 11:
-            # ratelimiter package doesn't work on 3.11
-            continue
         data = pa.Table.from_arrays(
             [
                 pa.array(["foo", "bar"]),
