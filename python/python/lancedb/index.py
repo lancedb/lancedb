@@ -82,6 +82,20 @@ class FTS:
         self._inner = LanceDbIndex.fts()
 
 
+class Hnswpq:
+    """Describe a Hnswpq index configuration."""
+
+    def __init__(self):
+        self._inner = LanceDbIndex.hnswpq()
+
+
+class Hnswsq:
+    """Describe a Hnswsq index configuration."""
+
+    def __init__(self):
+        self._inner = LanceDbIndex.hnswsq()
+
+
 class IvfPq:
     """Describes an IVF PQ Index
 
