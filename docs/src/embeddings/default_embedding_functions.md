@@ -1,4 +1,4 @@
-# 📚 LanceDB Embedding Functions
+# 📚 Available Embedding Models
 
 There are various embedding functions available out of the box with LanceDB to manage your embeddings implicitly. We're actively working on adding other popular embedding APIs and models. 🚀
 
