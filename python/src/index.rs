@@ -105,6 +105,20 @@ impl Index {
             inner: Mutex::new(Some(LanceDbIndex::FTS(Default::default()))),
         })
     }
+
+    #[staticmethod]
+    pub fn hnswpq() -> PyResult<Self> {
+        Ok(Self {
+            inner: Mutex::new(Some(LanceDbIndex::IvfHnswPq(Default::default()))),
+        })
+    }
+
+    #[staticmethod]
+    pub fn hnswsq() -> PyResult<Self> {
+        Ok(Self {
+            inner: Mutex::new(Some(LanceDbIndex::IvfHnswSq(Default::default()))),
+        })
+    }
 }
 
 #[pyclass(get_all)]
