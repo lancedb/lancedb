@@ -149,20 +149,11 @@ def sanitize_create_table(
             on_bad_vectors=on_bad_vectors,
             fill_value=fill_value,
         )
-    else:
-        if schema is None:
+    if schema is None:
+        if data is None:
             raise ValueError("Either data or schema must be provided")
         elif hasattr(data, "schema"):
             schema = data.schema
-        elif isinstance(data, Iterable):
-            if metadata:
-                raise TypeError(
-                    (
-                        "Persistent embedding functions not yet "
-                        "supported for generator data input"
-                    )
-                )
-        data = pa.Table.from_pylist([], schema=schema)
 
     if metadata:
         schema = schema.with_metadata(metadata)
@@ -1647,7 +1638,7 @@ class LanceTable(Table):
             data, schema, metadata, on_bad_vectors, fill_value
         )
 
-        empty = pa.Table.from_pylist([], schema=schema)
+        empty = pa.Table.from_batches([], schema=schema)
         try:
             lance.write_dataset(empty, tbl._dataset_uri, schema=schema, mode=mode)
         except OSError as err:

@@ -826,7 +826,7 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         )
         if len(row_ids) == 0:
             empty_schema = pa.schema([pa.field("_score", pa.float32())])
-            return pa.Table.from_pylist([], schema=empty_schema)
+            return pa.Table.from_batches([], schema=empty_schema)
         scores = pa.array(scores)
         output_tbl = self._table.to_lance().take(row_ids, columns=self._columns)
         output_tbl = output_tbl.append_column("_score", scores)
