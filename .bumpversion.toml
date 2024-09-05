@@ -73,7 +73,7 @@ search = """
 """
 
 [[tool.bumpversion.files]]
-glob = "java/core/pom.xml"
+glob = "java/*/**/pom.xml"
 replace = """
         <groupId>com.lancedb</groupId>
         <artifactId>lancedb-parent</artifactId>
