@@ -36,6 +36,7 @@ theme:
     - navigation.instant
   icon:
     repo: fontawesome/brands/github
+    annotation: material/arrow-right-circle
   custom_dir: overrides
 
 plugins:

@@ -2,24 +2,35 @@
 
 There are various embedding functions available out of the box with LanceDB to manage your embeddings implicitly. We're actively working on adding other popular embedding APIs and models. 🚀
 
-## Example 
-```python
-model = get_registry()
-          .get("openai")
-          .create(name="text-embedding-ada-002")
-```
+Before jumping on the list of available models, let's understand how to get an embedding model initialized and configured to use in our code: 
 
-## Syntax 
+!!! example "Example usage"
+    ```python
+    model = get_registry()
+              .get("openai")
+              .create(name="text-embedding-ada-002")
+    ```
+
+Now let's understand the above syntax: 
 ```python
 model = get_registry().get("model_id").create(...params)
 ```
-This👆 line effectively creates a configured instance of an `embedding function` with `model` of choice that is ready for use.
+**This👆 line effectively creates a configured instance of an `embedding function` with `model` of choice that is ready for use.**
 
 - `get_registry()` :  This function call returns an instance of a `EmbeddingFunctionRegistry` object. This registry manages the registration and retrieval of embedding functions.
 
-- `.get("model_id")` : This method call on the registry object and retrieves the **embedding models functions** associated with the `"model_id"` :material-information-outline:{ title="Hover over the name in table below to find out the model_id of different embedding functions" } .
+- `.get("model_id")` : This method call on the registry object and retrieves the **embedding models functions** associated with the `"model_id"` (1) .
+    { .annotate }
 
-- `.create(...params)` : This method call is on the object returned by the `get` method. It instantiates an embedding model function using the **specified parameters**. **Check the documentation of specific models to know what parameters it takes**.
+    1.  Hover over the names in table below to find out the `model_id` of different embedding functions.
+
+- `.create(...params)` : This method call is on the object returned by the `get` method. It instantiates an embedding model function using the **specified parameters**. 
+
+??? question "What parameters does the `.create(...params)` method accepts?"
+    **Checkout the documentation of specific embedding models (links in the table below👇) to know what parameters it takes**.
+
+!!! tip "Moving on"
+    Now that we know how to get the **desired embedding model** and use it in our code, let's explore the comprehensive **list** of embedding models **supported by LanceDB**, in the tables below.
 
 ## Text Embedding Functions 📝 
 These functions are registered by default to handle text embeddings.
