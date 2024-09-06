@@ -113,6 +113,25 @@ export interface IvfPqOptions {
   sampleRate?: number;
 }
 
+export interface HnswPqOptions {
+  distanceType?: "l2" | "cosine" | "dot";
+  numPartitions?: number;
+  numSubVectors?: number;
+  maxIterations?: number;
+  sampleRate?: number;
+  m?: number;
+  efConstruction?: number;
+}
+
+export interface HnswSqOptions {
+  distanceType?: "l2" | "cosine" | "dot";
+  numPartitions?: number;
+  maxIterations?: number;
+  sampleRate?: number;
+  m?: number;
+  efConstruction?: number;
+}
+
 export class Index {
   private readonly inner: LanceDbIndex;
   private constructor(inner: LanceDbIndex) {
@@ -220,8 +239,18 @@ export class Index {
    * Create a hnswpq index
    *
    */
-  static hnswpq() {
-    return new Index(LanceDbIndex.hnswpq());
+  static hnswpq(options?: Partial<HnswPqOptions>) {
+    return new Index(
+      LanceDbIndex.hnswpq(
+        options?.distanceType,
+        options?.numPartitions,
+        options?.numSubVectors,
+        options?.maxIterations,
+        options?.sampleRate,
+        options?.m,
+        options?.efConstruction,
+      ),
+    );
   }
 
   /**
@@ -229,8 +258,17 @@ export class Index {
    * Create a hnswsq index
    *
    */
-  static hnswsq() {
-    return new Index(LanceDbIndex.hnswsq());
+  static hnswsq(options?: Partial<HnswSqOptions>) {
+    return new Index(
+      LanceDbIndex.hnswpq(
+        options?.distanceType,
+        options?.numPartitions,
+        options?.maxIterations,
+        options?.sampleRate,
+        options?.m,
+        options?.efConstruction,
+      ),
+    );
   }
 }
 
