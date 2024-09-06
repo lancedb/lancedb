@@ -13,6 +13,7 @@
 
 import re
 from datetime import timedelta
+import os
 
 import lancedb
 import numpy as np
@@ -411,6 +412,37 @@ async def test_create_exist_ok_async(tmp_path):
     # )
     # with pytest.raises(ValueError):
     #     await db.create_table("test", schema=bad_schema, exist_ok=True)
+
+
+@pytest.mark.asyncio
+async def test_create_table_v2_manifest_paths_async(tmp_path):
+    db = await lancedb.connect_async(tmp_path)
+    # Create table in v2 mode with v2 manifest paths enabled
+    tbl = await db.create_table(
+        "test_v2_manifest_paths",
+        data=[{"id": 0}],
+        use_legacy_format=False,
+        enable_v2_manifest_paths=True,
+    )
+    manifests_dir = tmp_path / "test_v2_manifest_paths.lance" / "_versions"
+    for manifest in os.listdir(manifests_dir):
+        assert re.match(r"\d{20}\.manifest", manifest)
+    
+    # Start a table in V1 mode then migrate
+    tbl = await db.create_table(
+        "test_v2_migration",
+        data=[{"id": 0}],
+        use_legacy_format=False,
+        enable_v2_manifest_paths=False,
+    )
+    manifests_dir = tmp_path / "test_v2_migration.lance" / "_versions"
+    for manifest in os.listdir(manifests_dir):
+        assert re.match(r"\d\.manifest", manifest)
+
+    await tbl.migrate_manifest_paths_v2()
+
+    for manifest in os.listdir(manifests_dir):
+        assert re.match(r"\d{20}\.manifest", manifest)
 
 
 def test_open_table_sync(tmp_path):

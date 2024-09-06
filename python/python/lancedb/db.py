@@ -567,6 +567,7 @@ class AsyncConnection(object):
         *,
         data_storage_version: Optional[str] = None,
         use_legacy_format: Optional[bool] = None,
+        enable_v2_manifest_paths: Optional[bool] = None,
     ) -> AsyncTable:
         """Create an [AsyncTable][lancedb.table.AsyncTable] in the database.
 
@@ -618,6 +619,12 @@ class AsyncConnection(object):
             If True, use the legacy format for the table. If False, use the new format.
             The default is True while the new format is in beta.
             This method is deprecated, use `data_storage_version` instead.
+        enable_v2_manifest_paths: bool, optional, default False
+            Use the new V2 manifest paths. These paths provide more efficient
+            opening of datasets with many versions on object stores.  WARNING:
+            turning this on will make the dataset unreadable for older versions
+            of LanceDB (prior to 0.13.0). To migrate an existing dataset, instead use the
+            [[AsyncTable.migrate_manifest_paths_v2]] method.
 
 
         Returns
@@ -761,6 +768,7 @@ class AsyncConnection(object):
                 schema,
                 storage_options=storage_options,
                 data_storage_version=data_storage_version,
+                enable_v2_manifest_paths=enable_v2_manifest_paths,
             )
         else:
             data = data_to_reader(data, schema)
@@ -770,6 +778,7 @@ class AsyncConnection(object):
                 data,
                 storage_options=storage_options,
                 data_storage_version=data_storage_version,
+                enable_v2_manifest_paths=enable_v2_manifest_paths,
             )
 
         return AsyncTable(new_table)
