@@ -24,6 +24,7 @@ tag = true
 tag_message = "Bump version: {current_version} → {new_version}"
 tag_name = "v{new_version}"
 
+# Java maven files
 pre_commit_hooks = [
   """
     NEW_VERSION="${BVHOOK_NEW_MAJOR}.${BVHOOK_NEW_MINOR}.${BVHOOK_NEW_PATCH}"
