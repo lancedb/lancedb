@@ -33,7 +33,7 @@ pre_commit_hooks = [
     echo "Constructed new version: $NEW_VERSION"
     cd java && mvn versions:set -DnewVersion=$NEW_VERSION && mvn versions:commit
     cd ..
-    git add java/core/pom.xml java/pom.xml
+    git add java/
     """,
 ]
 
