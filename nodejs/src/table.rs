@@ -347,6 +347,16 @@ impl Table {
         let on: Vec<_> = on.iter().map(String::as_str).collect();
         Ok(self.inner_ref()?.merge_insert(on.as_slice()).into())
     }
+
+    #[napi(catch_unwind)]
+    pub async fn migrate_manifest_paths_v2(&self) -> napi::Result<()> {
+        self.inner_ref()?
+            .as_native()
+            .ok_or_else(|| napi::Error::from_reason("This cannot be run on a remote table"))?
+            .migrate_manifest_paths_v2()
+            .await
+            .default_error()
+    }
 }
 
 #[napi(object)]
