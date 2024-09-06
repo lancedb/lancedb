@@ -456,12 +456,12 @@ export abstract class Table {
 
 export class LocalTable extends Table {
   private readonly inner: _NativeTable;
-  private readonly schema_: Schema;
+  private readonly registeredEmbeddings: Map<string, EmbeddingFunctionConfig>;
 
   constructor(inner: _NativeTable, schema: Schema) {
     super();
     this.inner = inner;
-    this.schema_ = schema;
+    this.registeredEmbeddings = getRegistry().parseFunctions(schema.metadata);
   }
   get name(): string {
     return this.inner.name;
@@ -479,8 +479,7 @@ export class LocalTable extends Table {
   }
 
   private getEmbeddingFunctions(): Map<string, EmbeddingFunctionConfig> {
-    const registry = getRegistry();
-    return registry.parseFunctions(this.schema_.metadata);
+    return this.registeredEmbeddings;
   }
 
   /** Get the schema of the table. */
@@ -494,7 +493,7 @@ export class LocalTable extends Table {
     const mode = options?.mode ?? "append";
     const schema = await this.schema();
     const registry = getRegistry();
-    const functions = await registry.parseFunctions(schema.metadata);
+    const functions = registry.parseFunctions(schema.metadata);
 
     const buffer = await fromDataToBuffer(
       data,
