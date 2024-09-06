@@ -2788,7 +2788,7 @@ mod tests {
                 .get_index_type(index_uuid)
                 .await
                 .unwrap(),
-            Some("IVF".to_string())
+            Some("IVF_PQ".to_string())
         );
         assert_eq!(
             table
