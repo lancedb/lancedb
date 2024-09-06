@@ -820,7 +820,7 @@ describe.each([arrow13, arrow14, arrow15, arrow16, arrow17])(
       ];
       const table = await db.createTable("test", data);
 
-      expect(table.search("hello", "vector").toArray()).rejects.toThrow(
+      expect(() => table.search("hello", "vector").toArray()).toThrow(
         "No embedding functions are defined in the table",
       );
     });
