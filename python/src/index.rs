@@ -15,7 +15,11 @@
 use std::sync::Mutex;
 
 use lancedb::{
-    index::{scalar::BTreeIndexBuilder, vector::IvfPqIndexBuilder, Index as LanceDbIndex},
+    index::{
+        scalar::BTreeIndexBuilder,
+        vector::{IvfHnswPqIndexBuilder, IvfPqIndexBuilder},
+        Index as LanceDbIndex,
+    },
     DistanceType,
 };
 use pyo3::{
@@ -107,9 +111,48 @@ impl Index {
     }
 
     #[staticmethod]
-    pub fn hnswpq() -> PyResult<Self> {
+    pub fn hnswpq(
+        distance_type: Option<String>,
+        num_partitions: Option<u32>,
+        num_sub_vectors: Option<u32>,
+        max_iterations: Option<u32>,
+        sample_rate: Option<u32>,
+        m: Option<u32>,
+        ef_construction: Option<u32>,
+    ) -> PyResult<Self> {
+        let mut hnsw_pq_builder = IvfHnswPqIndexBuilder::default();
+        if let Some(distance_type) = distance_type {
+            let distance_type = match distance_type.as_str() {
+                "l2" => Ok(DistanceType::L2),
+                "cosine" => Ok(DistanceType::Cosine),
+                "dot" => Ok(DistanceType::Dot),
+                _ => Err(PyValueError::new_err(format!(
+                    "Invalid distance type '{}'.  Must be one of l2, cosine, or dot",
+                    distance_type
+                ))),
+            }?;
+            hnsw_pq_builder = hnsw_pq_builder.distance_type(distance_type);
+        }
+        if let Some(num_partitions) = num_partitions {
+            hnsw_pq_builder = hnsw_pq_builder.num_partitions(num_partitions);
+        }
+        if let Some(num_sub_vectors) = num_sub_vectors {
+            hnsw_pq_builder = hnsw_pq_builder.num_sub_vectors(num_sub_vectors);
+        }
+        if let Some(max_iterations) = max_iterations {
+            hnsw_pq_builder = hnsw_pq_builder.max_iterations(max_iterations);
+        }
+        if let Some(sample_rate) = sample_rate {
+            hnsw_pq_builder = hnsw_pq_builder.sample_rate(sample_rate);
+        }
+        if let Some(m) = m {
+            hnsw_pq_builder = hnsw_pq_builder.num_edges(m);
+        }
+        if let Some(m) = ef_construction {
+            hnsw_pq_builder = hnsw_pq_builder.ef_construction(m);
+        }
         Ok(Self {
-            inner: Mutex::new(Some(LanceDbIndex::IvfHnswPq(Default::default()))),
+            inner: Mutex::new(Some(LanceDbIndex::IvfHnswPq(hnsw_pq_builder))),
         })
     }
 

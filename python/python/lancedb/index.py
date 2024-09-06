@@ -85,8 +85,26 @@ class FTS:
 class Hnswpq:
     """Describe a Hnswpq index configuration."""
 
-    def __init__(self):
-        self._inner = LanceDbIndex.hnswpq()
+    def __init__(
+        self,
+        *,
+        distance_type: Optional[str] = None,
+        num_partitions: Optional[int] = None,
+        num_sub_vectors: Optional[int] = None,
+        max_iterations: Optional[int] = None,
+        sample_rate: Optional[int] = None,
+        m: Optional[int] = None,
+        ef_construction: Optional[int] = None,
+    ):
+        self._inner = LanceDbIndex.hnswpq(
+            distance_type=distance_type,
+            num_partitions=num_partitions,
+            num_sub_vectors=num_sub_vectors,
+            max_iterations=max_iterations,
+            sample_rate=sample_rate,
+            m=m,
+            ef_construction=ef_construction,
+        )
 
 
 class Hnswsq:
