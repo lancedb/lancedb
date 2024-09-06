@@ -27,6 +27,8 @@ use pyo3::{
     pyclass, pymethods, PyResult,
 };
 
+use crate::util::parse_distance_type;
+
 #[pyclass]
 pub struct Index {
     inner: Mutex<Option<LanceDbIndex>>,
@@ -122,15 +124,7 @@ impl Index {
     ) -> PyResult<Self> {
         let mut hnsw_pq_builder = IvfHnswPqIndexBuilder::default();
         if let Some(distance_type) = distance_type {
-            let distance_type = match distance_type.as_str() {
-                "l2" => Ok(DistanceType::L2),
-                "cosine" => Ok(DistanceType::Cosine),
-                "dot" => Ok(DistanceType::Dot),
-                _ => Err(PyValueError::new_err(format!(
-                    "Invalid distance type '{}'.  Must be one of l2, cosine, or dot",
-                    distance_type
-                ))),
-            }?;
+            let distance_type = parse_distance_type(distance_type)?;
             hnsw_pq_builder = hnsw_pq_builder.distance_type(distance_type);
         }
         if let Some(num_partitions) = num_partitions {
@@ -148,8 +142,8 @@ impl Index {
         if let Some(m) = m {
             hnsw_pq_builder = hnsw_pq_builder.num_edges(m);
         }
-        if let Some(m) = ef_construction {
-            hnsw_pq_builder = hnsw_pq_builder.ef_construction(m);
+        if let Some(ef_construction) = ef_construction {
+            hnsw_pq_builder = hnsw_pq_builder.ef_construction(ef_construction);
         }
         Ok(Self {
             inner: Mutex::new(Some(LanceDbIndex::IvfHnswPq(hnsw_pq_builder))),
@@ -167,15 +161,7 @@ impl Index {
     ) -> PyResult<Self> {
         let mut hnsw_sq_builder = IvfHnswSqIndexBuilder::default();
         if let Some(distance_type) = distance_type {
-            let distance_type = match distance_type.as_str() {
-                "l2" => Ok(DistanceType::L2),
-                "cosine" => Ok(DistanceType::Cosine),
-                "dot" => Ok(DistanceType::Dot),
-                _ => Err(PyValueError::new_err(format!(
-                    "Invalid distance type '{}'.  Must be one of l2, cosine, or dot",
-                    distance_type
-                ))),
-            }?;
+            let distance_type = parse_distance_type(distance_type)?;
             hnsw_sq_builder = hnsw_sq_builder.distance_type(distance_type);
         }
         if let Some(num_partitions) = num_partitions {
@@ -190,8 +176,8 @@ impl Index {
         if let Some(m) = m {
             hnsw_sq_builder = hnsw_sq_builder.num_edges(m);
         }
-        if let Some(m) = ef_construction {
-            hnsw_sq_builder = hnsw_sq_builder.ef_construction(m);
+        if let Some(ef_construction) = ef_construction {
+            hnsw_sq_builder = hnsw_sq_builder.ef_construction(ef_construction);
         }
         Ok(Self {
             inner: Mutex::new(Some(LanceDbIndex::IvfHnswSq(hnsw_sq_builder))),
