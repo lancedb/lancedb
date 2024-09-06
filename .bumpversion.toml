@@ -24,6 +24,19 @@ tag = true
 tag_message = "Bump version: {current_version} → {new_version}"
 tag_name = "v{new_version}"
 
+pre_commit_hooks = [
+  """
+    NEW_VERSION="${BVHOOK_NEW_MAJOR}.${BVHOOK_NEW_MINOR}.${BVHOOK_NEW_PATCH}"
+    if [ ! -z "$BVHOOK_NEW_PRE_L" ] && [ ! -z "$BVHOOK_NEW_PRE_N" ]; then
+        NEW_VERSION="${NEW_VERSION}-${BVHOOK_NEW_PRE_L}.${BVHOOK_NEW_PRE_N}"
+    fi
+    echo "Constructed new version: $NEW_VERSION"
+    cd java && mvn versions:set -DnewVersion=$NEW_VERSION && mvn versions:commit
+    cd ..
+    git add java/core/pom.xml java/pom.xml
+    """,
+]
+
 [tool.bumpversion.parts.pre_l]
 optional_value = "final"
 values = ["beta", "final"]
@@ -55,32 +68,3 @@ search = "\nversion = \"{current_version}\""
 filename = "rust/lancedb/Cargo.toml"
 replace = "\nversion = \"{new_version}\""
 search = "\nversion = \"{current_version}\""
-
-# Java files
-# Consider using mvn version management if java project becomes more complex
-# ------------
-[[tool.bumpversion.files]]
-glob = "java/pom.xml"
-replace = """
-    <groupId>com.lancedb</groupId>
-    <artifactId>lancedb-parent</artifactId>
-    <version>{new_version}</version>
-"""
-search = """
-    <groupId>com.lancedb</groupId>
-    <artifactId>lancedb-parent</artifactId>
-    <version>{current_version}</version>
-"""
-
-[[tool.bumpversion.files]]
-glob = "java/*/**/pom.xml"
-replace = """
-        <groupId>com.lancedb</groupId>
-        <artifactId>lancedb-parent</artifactId>
-        <version>{new_version}</version>
-"""
-search = """
-        <groupId>com.lancedb</groupId>
-        <artifactId>lancedb-parent</artifactId>
-        <version>{current_version}</version>
-"""
