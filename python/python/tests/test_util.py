@@ -15,6 +15,7 @@ import os
 import pathlib
 
 import pytest
+import lancedb
 from lancedb.util import get_uri_scheme, join_uri, value_to_sql
 
 
@@ -86,22 +87,35 @@ def test_local_join_uri_windows():
         assert joined == pathlib.Path(base) / "table.lance"
 
 
-def test_value_to_sql_string():
-    target_ids = [
-        1,
-        "2",
-        "'3'",
-        "'",
+def test_value_to_sql_string(tmp_path):
+    # Make sure we can convert Python string literals to SQL strings, even if
+    # they contain characters meaningful in SQL, such as ' and \.
+    values = [
+        "anthony's",
+        "test\n newline",
+        "anthony's \n newline",
     ]
-    # fmt: off
-    expected_formatting = [
-        '"id = \'1\'"',
-        '"id = \'2\'"',
-        '"id = \'\'3\'\'"',
-        '"id = \'\'\'"',
+    expected_values = [
+        '"anthony\'s"',
+        '"test\n newline"',
+        '"anthony\'s \n newline"',
     ]
-    # fmt: on
-    for target, expected in zip(target_ids, expected_formatting):
-        where = f"id = '{target}'"
-        got = value_to_sql(where)
-        assert got == expected
+
+    for value, expected in zip(values, expected_values):
+        assert value_to_sql(value) == expected
+
+    # Also test we can roundtrip those strings through update.
+    # This validates the query parser understands the strings we
+    # are creating.
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
+        "test",
+        [
+            {"search": "anthony's", "replace": "something"},
+            {"search": "test\n newline", "replace": "something"},
+            {"search": "anthony's \n newline", "replace": "something"},
+        ],
+    )
+    for value in values:
+        table.update(where=f'search = "{value}"', values={"replace": value})
+        assert table.to_pandas().query("search == @value")["replace"].item() == value
