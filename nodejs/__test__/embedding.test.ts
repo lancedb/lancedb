@@ -164,8 +164,8 @@ describe("embedding functions", () => {
     });
 
     const db = await connect(tmpDir.name);
-    const _ = await db.createTable(
-      "test",
+    const table = await db.createTable(
+      "mock_embedding_test",
       [
         { id: 1, text: "hello" },
         { id: 2, text: "world" },
@@ -175,10 +175,12 @@ describe("embedding functions", () => {
       },
     );
 
-    getRegistry().reset();
-    const db2 = await connect(tmpDir.name);
+    await table.add([{ id: 3, text: "hello world" }]);
+    expect(await table.countRows()).toBe(3);
 
-    expect(db2.openTable("test")).rejects.toThrow(
+    getRegistry().reset();
+
+    expect(db.openTable("mock_embedding_test")).rejects.toThrow(
       `Function "mock" not found in registry`,
     );
   });

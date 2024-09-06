@@ -254,7 +254,7 @@ export class LocalConnection extends Connection {
     if (typeof nameOrOptions !== "string" && "name" in nameOrOptions) {
       const { name, data, ...options } = nameOrOptions;
 
-      return this.createTable(name, data, options);
+      return await this.createTable(name, data, options);
     }
     if (data === undefined) {
       throw new Error("data is required");
