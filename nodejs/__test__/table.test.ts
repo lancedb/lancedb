@@ -442,7 +442,9 @@ describe("When creating an index", () => {
 
   test("create a hnswpq index", async () => {
     await tbl.createIndex("vec", {
-      config: Index.hnswpq(),
+      config: Index.hnswpq({
+        numPartitions: 10,
+      }),
     });
     const indexDir = path.join(tmpDir.name, "test.lance", "_indices");
     expect(fs.readdirSync(indexDir)).toHaveLength(1);
@@ -450,7 +452,9 @@ describe("When creating an index", () => {
 
   test("create a hnswsq index", async () => {
     await tbl.createIndex("vec", {
-      config: Index.hnswsq(),
+      config: Index.hnswsq({
+        numPartitions: 10,
+      }),
     });
     const indexDir = path.join(tmpDir.name, "test.lance", "_indices");
     expect(fs.readdirSync(indexDir)).toHaveLength(1);

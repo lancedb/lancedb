@@ -95,13 +95,13 @@ async def test_create_vector_index(some_table: AsyncTable):
 
 @pytest.mark.asyncio
 async def test_create_hnswpq_index(some_table: AsyncTable):
-    await some_table.create_index("vector", config=Hnswpq())
+    await some_table.create_index("vector", config=Hnswpq(num_partitions=10))
     indices = await some_table.list_indices()
     assert len(indices) == 1
 
 
 @pytest.mark.asyncio
 async def test_create_hnswsq_index(some_table: AsyncTable):
-    await some_table.create_index("vector", config=Hnswsq())
+    await some_table.create_index("vector", config=Hnswsq(num_partitions=10))
     indices = await some_table.list_indices()
     assert len(indices) == 1
