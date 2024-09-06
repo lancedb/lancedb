@@ -623,8 +623,10 @@ class AsyncConnection(object):
             Use the new V2 manifest paths. These paths provide more efficient
             opening of datasets with many versions on object stores.  WARNING:
             turning this on will make the dataset unreadable for older versions
-            of LanceDB (prior to 0.13.0). To migrate an existing dataset, instead use the
-            [[AsyncTable.migrate_manifest_paths_v2]] method.
+            of LanceDB (prior to 0.13.0). To migrate an existing dataset, instead
+            use the
+            [AsyncTable.migrate_manifest_paths_v2][lancedb.table.AsyncTable.migrate_manifest_paths_v2]
+            method.
 
 
         Returns

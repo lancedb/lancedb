@@ -2549,8 +2549,9 @@ class AsyncTable:
         This function is idempotent, and can be run multiple times without
         changing the state of the object store.
 
-        DANGER: this should not be run while other concurrent operations are happening.
+        !!! danger
 
-        And it should also run until completion before resuming other operations.
+            This should not be run while other concurrent operations are happening.
+            And it should also run until completion before resuming other operations.
         """
         await self._inner.migrate_manifest_paths_v2()

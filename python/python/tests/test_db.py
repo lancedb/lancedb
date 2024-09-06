@@ -427,7 +427,7 @@ async def test_create_table_v2_manifest_paths_async(tmp_path):
     manifests_dir = tmp_path / "test_v2_manifest_paths.lance" / "_versions"
     for manifest in os.listdir(manifests_dir):
         assert re.match(r"\d{20}\.manifest", manifest)
-    
+
     # Start a table in V1 mode then migrate
     tbl = await db.create_table(
         "test_v2_migration",
