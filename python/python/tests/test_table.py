@@ -908,7 +908,7 @@ def test_hybrid_search(db, tmp_path):
     ).to_pydantic(MyTable)
 
     # Test that double and single quote characters are handled with phrase_query()
-    result4 = (
+    (
         table.search(
             '"Aren\'t you a little short for a stormtrooper?" -- Leia',
             query_type="hybrid",
