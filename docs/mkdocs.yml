@@ -106,6 +106,12 @@ nav:
               - Overview: hybrid_search/hybrid_search.md
               - Comparing Rerankers: hybrid_search/eval.md
               - Airbnb financial data example: notebooks/hybrid_search.ipynb
+          - RAG:
+              - Vanilla RAG: rag/vanilla_rag.md
+              - Multi-head RAG: rag/multi_head_rag.md
+              - Corrective RAG: rag/corrective_rag.md
+              - Agentic RAG: rag/agentic_rag.md
+              - Graph RAG: rag/graph_rag.md
           - Reranking:
               - Quickstart: reranking/index.md
               - Cohere Reranker: reranking/cohere.md
@@ -220,6 +226,12 @@ nav:
           - Overview: hybrid_search/hybrid_search.md
           - Comparing Rerankers: hybrid_search/eval.md
           - Airbnb financial data example: notebooks/hybrid_search.ipynb
+      - RAG:
+          - Vanilla RAG: rag/vanilla_rag.md
+          - Multi-head RAG: rag/multi_head_rag.md
+          - Corrective RAG: rag/corrective_rag.md
+          - Agentic RAG: rag/agentic_rag.md
+          - Graph RAG: rag/graph_rag.md
       - Reranking:
           - Quickstart: reranking/index.md
           - Cohere Reranker: reranking/cohere.md
