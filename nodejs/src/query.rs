@@ -65,6 +65,11 @@ impl Query {
     }
 
     #[napi]
+    pub fn offset(&mut self, offset: u32) {
+        self.inner = self.inner.clone().offset(offset as usize);
+    }
+
+    #[napi]
     pub fn nearest_to(&mut self, vector: Float32Array) -> Result<VectorQuery> {
         let inner = self
             .inner
@@ -164,6 +169,11 @@ impl VectorQuery {
     #[napi]
     pub fn limit(&mut self, limit: u32) {
         self.inner = self.inner.clone().limit(limit as usize);
+    }
+
+    #[napi]
+    pub fn offset(&mut self, offset: u32) {
+        self.inner = self.inner.clone().offset(offset as usize);
     }
 
     #[napi(catch_unwind)]
