@@ -112,6 +112,11 @@ nav:
               - Corrective RAG: rag/corrective_rag.md
               - Agentic RAG: rag/agentic_rag.md
               - Graph RAG: rag/graph_rag.md
+              - Self RAG: rag/self_rag.md
+              - Adaptive RAG: rag/adaptive_rag.md
+              - Advanced Techniques:
+                - HyDE: rag/advanced_techniques/hyde.md
+                - FLARE: rag/advanced_techniques/flare.md
           - Reranking:
               - Quickstart: reranking/index.md
               - Cohere Reranker: reranking/cohere.md
@@ -232,6 +237,11 @@ nav:
           - Corrective RAG: rag/corrective_rag.md
           - Agentic RAG: rag/agentic_rag.md
           - Graph RAG: rag/graph_rag.md
+          - Self RAG: rag/self_rag.md
+          - Adaptive RAG: rag/adaptive_rag.md
+          - Advanced Techniques:
+            - HyDE: rag/advanced_techniques/hyde.md
+            - FLARE: rag/advanced_techniques/flare.md
       - Reranking:
           - Quickstart: reranking/index.md
           - Cohere Reranker: reranking/cohere.md

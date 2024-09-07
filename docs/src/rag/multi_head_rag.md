@@ -5,7 +5,11 @@ Multi-head RAG (MRAG) is designed to handle queries that need multiple documents
 
 **[Official Paper](https://arxiv.org/pdf/2406.05085)**
 
-![paper_img](../assets/mrag-paper.png)
+<figure markdown="span">
+  ![agent-based-rag](../assets/mrag-paper.png)
+  <figcaption>Multi-Head RAG: <a href="https://github.com/spcl/MRAG">Source</a>
+  </figcaption>
+</figure>
 
 MRAG is cost-effective and energy-efficient because it avoids extra LLM queries, multiple model instances, increased storage, and additional inference passes.
 

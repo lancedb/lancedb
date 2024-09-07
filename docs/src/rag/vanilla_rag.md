@@ -15,8 +15,11 @@ Here’s a simple guide to building a RAG pipeline from scratch:
 
 5. **Answer Generation**: Send the prepared prompt to a LLM to generate a detailed and accurate answer.
 
-![basic RAG](../assets/rag_from_scratch.png)
-
+<figure markdown="span">
+  ![agent-based-rag](../assets/rag_from_scratch.png)
+  <figcaption>Vanilla RAG
+  </figcaption>
+</figure>
 
 [![Open In Colab](../assets/colab.svg)](https://colab.research.google.com/github/lancedb/vectordb-recipes/blob/main/tutorials/RAG-from-Scratch/RAG_from_Scratch.ipynb)
 

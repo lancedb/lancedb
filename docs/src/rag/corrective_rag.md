@@ -11,7 +11,11 @@ Corrective-RAG (CRAG) is a strategy for Retrieval-Augmented Generation (RAG) tha
 Above steps are mentioned in 
 **[Official Paper](https://arxiv.org/abs/2401.15884)**
 
-![alt text](../assets/crag_paper.png)
+<figure markdown="span">
+  ![agent-based-rag](../assets/crag_paper.png)
+  <figcaption>Corrective RAG: <a href="https://github.com/HuskyInSalt/CRAG">Source</a>
+  </figcaption>
+</figure>
 
 Corrective Retrieval-Augmented Generation (CRAG) is a method that works like a **built-in fact-checker**.
 

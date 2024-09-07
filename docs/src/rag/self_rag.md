@@ -1,13 +1,18 @@
-**Agentic RAG 🤖**
+**Self RAG 🤳**
 ====================================================================
-Agentic RAG is Agent-based RAG introduces an advanced framework for answering questions by using intelligent agents instead of just relying on large language models. These agents act like expert researchers, handling complex tasks such as detailed planning, multi-step reasoning, and using external tools. They navigate multiple documents, compare information, and generate accurate answers. This system is easily scalable, with each new document set managed by a sub-agent, making it a powerful tool for tackling a wide range of information needs.
+Self-RAG is a strategy for Retrieval-Augmented Generation (RAG) to get better retrieved information, generated text, and  checking their own work, all without losing their flexibility. Unlike the traditional Retrieval-Augmented Generation (RAG) method, Self-RAG retrieves information as needed, can skip retrieval if not needed, and evaluates its own output while generating text. It also uses a process to pick the best output based on different preferences.
+
+**[Official Paper](https://arxiv.org/pdf/2310.11511)**
 
 <figure markdown="span">
-  ![agent-based-rag](../assets/agentic_rag.png)
-  <figcaption>Agent-based RAG</figcaption>
+  ![agent-based-rag](../assets/self_rag.png)
+  <figcaption>Self RAG: <a href="https://github.com/AkariAsai/self-rag">Source</a>
+  </figcaption>
 </figure>
 
-[![Open In Colab](../assets/colab.svg)](https://colab.research.google.com/github/lancedb/vectordb-recipes/blob/main/tutorials/Agentic_RAG/main.ipynb)
+**[Offical Implementation](https://github.com/AkariAsai/self-rag)**
+
+Self-RAG starts by generating a response without retrieving extra info if it's not needed. For questions that need more details, it retrieves to get the necessary information.
 
 Here’s a code snippet for defining retriever using Langchain
 
@@ -18,9 +23,9 @@ from langchain_community.vectorstores import LanceDB
 from langchain_openai import OpenAIEmbeddings
 
 urls = [
-    "https://content.dgft.gov.in/Website/CIEP.pdf",
-    "https://content.dgft.gov.in/Website/GAE.pdf",
-    "https://content.dgft.gov.in/Website/HTE.pdf",
+    "https://lilianweng.github.io/posts/2023-06-23-agent/",
+    "https://lilianweng.github.io/posts/2023-03-15-prompt-engineering/",
+    "https://lilianweng.github.io/posts/2023-10-25-adv-attack-llm/",
 ]
 
 
@@ -41,7 +46,7 @@ retriever = vectorstore.as_retriever()
 
 ```
 
-Agent that formulates an improved query for better retrieval results and then grades the retrieved documents
+Functions that grades the retrieved documents and if required formulates an improved query for better retrieval results  
 
 ```python
 def grade_documents(state) -> Literal["generate", "rewrite"]:
@@ -71,14 +76,6 @@ def grade_documents(state) -> Literal["generate", "rewrite"]:
     return "generate" if score == "yes" else "rewrite"
 
 
-def agent(state):
-    messages = state["messages"]
-    model = ChatOpenAI(temperature=0, streaming=True, model="gpt-4-turbo")
-    model = model.bind_tools(tools)
-    response = model.invoke(messages)
-    return {"messages": [response]}
-
-
 def rewrite(state):
     messages = state["messages"]
     question = messages[0].content
@@ -97,5 +94,3 @@ def rewrite(state):
     response = model.invoke(msg)
     return {"messages": [response]}
 ```
-
-[![Open In Colab](../assets/colab.svg)](https://colab.research.google.com/github/lancedb/vectordb-recipes/blob/main/tutorials/Agentic_RAG/main.ipynb)
