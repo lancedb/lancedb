@@ -396,6 +396,16 @@ describe("When creating an index", () => {
       .toArrow();
     expect(rst2.numRows).toBe(2);
     expect(rst.toString()).toEqual(rst2.toString());
+
+    // test offset
+    rst = await tbl
+      .query()
+      .limit(2)
+      .offset(1)
+      .nearestTo(queryVec)
+      .toArrow();
+
+    expect(rst.numRows).toBe(1);
   });
 
   it("should allow parameters to be specified", async () => {
