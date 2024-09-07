@@ -398,12 +398,7 @@ describe("When creating an index", () => {
     expect(rst.toString()).toEqual(rst2.toString());
 
     // test offset
-    rst = await tbl
-      .query()
-      .limit(2)
-      .offset(1)
-      .nearestTo(queryVec)
-      .toArrow();
+    rst = await tbl.query().limit(2).offset(1).nearestTo(queryVec).toArrow();
 
     expect(rst.numRows).toBe(1);
   });
