@@ -12,7 +12,7 @@ Above steps are mentioned in
 **[Official Paper](https://arxiv.org/abs/2401.15884)**
 
 <figure markdown="span">
-  ![agent-based-rag](../assets/crag_paper.png)
+  ![agent-based-rag](https://raw.githubusercontent.com/lancedb/assets/main/docs/assets/rag/crag_paper.png)
   <figcaption>Corrective RAG: <a href="https://github.com/HuskyInSalt/CRAG">Source</a>
   </figcaption>
 </figure>

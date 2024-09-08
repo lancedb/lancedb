@@ -5,7 +5,7 @@ Self-RAG is a strategy for Retrieval-Augmented Generation (RAG) to get better re
 **[Official Paper](https://arxiv.org/pdf/2310.11511)**
 
 <figure markdown="span">
-  ![agent-based-rag](../assets/self_rag.png)
+  ![agent-based-rag](https://raw.githubusercontent.com/lancedb/assets/main/docs/assets/rag/self_rag.png)
   <figcaption>Self RAG: <a href="https://github.com/AkariAsai/self-rag">Source</a>
   </figcaption>
 </figure>

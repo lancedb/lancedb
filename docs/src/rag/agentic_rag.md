@@ -3,7 +3,7 @@
 Agentic RAG is Agent-based RAG introduces an advanced framework for answering questions by using intelligent agents instead of just relying on large language models. These agents act like expert researchers, handling complex tasks such as detailed planning, multi-step reasoning, and using external tools. They navigate multiple documents, compare information, and generate accurate answers. This system is easily scalable, with each new document set managed by a sub-agent, making it a powerful tool for tackling a wide range of information needs.
 
 <figure markdown="span">
-  ![agent-based-rag](../assets/agentic_rag.png)
+  ![agent-based-rag](https://raw.githubusercontent.com/lancedb/assets/main/docs/assets/rag/agentic_rag.png)
   <figcaption>Agent-based RAG</figcaption>
 </figure>
 

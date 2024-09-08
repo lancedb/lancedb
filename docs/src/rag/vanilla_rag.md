@@ -16,7 +16,7 @@ Here’s a simple guide to building a RAG pipeline from scratch:
 5. **Answer Generation**: Send the prepared prompt to a LLM to generate a detailed and accurate answer.
 
 <figure markdown="span">
-  ![agent-based-rag](../assets/rag_from_scratch.png)
+  ![agent-based-rag](https://raw.githubusercontent.com/lancedb/assets/main/docs/assets/rag/rag_from_scratch.png)
   <figcaption>Vanilla RAG
   </figcaption>
 </figure>

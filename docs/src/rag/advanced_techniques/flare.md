@@ -5,7 +5,7 @@ FLARE, stands for Forward-Looking Active REtrieval augmented generation is a gen
 **[Official Paper](https://arxiv.org/abs/2305.06983)**
 
 <figure markdown="span">
-  ![flare](../../assets/flare.gif)
+  ![flare](https://raw.githubusercontent.com/lancedb/assets/main/docs/assets/rag/flare.gif)
   <figcaption>FLARE: <a href="https://github.com/jzbjyb/FLARE">Source</a></figcaption>
 </figure>
 

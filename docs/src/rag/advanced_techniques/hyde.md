@@ -5,7 +5,7 @@ HyDE, stands for Hypothetical Document Embeddings is an approach used for precis
 **[Official Paper](https://arxiv.org/pdf/2212.10496)**
 
 <figure markdown="span">
-  ![hyde](../../assets/hyde.png)
+  ![hyde](https://raw.githubusercontent.com/lancedb/assets/main/docs/assets/rag/hyde.png)
   <figcaption>HyDE: <a href="https://arxiv.org/pdf/2212.10496">Source</a></figcaption>
 </figure>
 

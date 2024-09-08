@@ -7,7 +7,7 @@ For Query Analysis, it uses a small classifier(LLM), to decide the query’s com
 **[Official Paper](https://arxiv.org/pdf/2403.14403)**
 
 <figure markdown="span">
-  ![agent-based-rag](../assets/adaptive_rag.png)
+  ![agent-based-rag](https://raw.githubusercontent.com/lancedb/assets/main/docs/assets/rag/adaptive_rag.png)
   <figcaption>Adaptive-RAG: <a href="https://github.com/starsuzi/Adaptive-RAG">Source</a>
   </figcaption>
 </figure>

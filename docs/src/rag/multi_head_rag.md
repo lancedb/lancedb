@@ -6,7 +6,7 @@ Multi-head RAG (MRAG) is designed to handle queries that need multiple documents
 **[Official Paper](https://arxiv.org/pdf/2406.05085)**
 
 <figure markdown="span">
-  ![agent-based-rag](../assets/mrag-paper.png)
+  ![agent-based-rag](https://raw.githubusercontent.com/lancedb/assets/main/docs/assets/rag/mrag-paper.png)
   <figcaption>Multi-Head RAG: <a href="https://github.com/spcl/MRAG">Source</a>
   </figcaption>
 </figure>
