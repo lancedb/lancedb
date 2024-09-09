@@ -1315,6 +1315,20 @@ class AsyncQueryBase(object):
         self._inner.offset(offset)
         return self
 
+    def fast_search(self) -> AsyncQuery:
+        """
+        Skip searching un-indexed data.
+
+        This can make queries faster, but will miss any data that has not been
+        indexed.
+
+        !!! tip
+            You can add new data into an existing index by calling
+            [AsyncTable.optimize][lancedb.table.AsyncTable.optimize].
+        """
+        self._inner.fast_search()
+        return self
+
     async def to_batches(
         self, *, max_batch_length: Optional[int] = None
     ) -> AsyncRecordBatchReader:

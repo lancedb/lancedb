@@ -75,6 +75,10 @@ impl Query {
         Ok(VectorQuery { inner })
     }
 
+    pub fn fast_search(&mut self) {
+        self.inner = self.inner.clone().fast_search();
+    }
+
     pub fn nearest_to_text(&mut self, query: Bound<'_, PyDict>) -> PyResult<()> {
         let query_text = query
             .get_item("query")?
