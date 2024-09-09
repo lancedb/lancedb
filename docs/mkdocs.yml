@@ -26,6 +26,7 @@ theme:
     - content.code.copy
     - content.tabs.link
     - content.action.edit
+    - content.tooltips
     - toc.follow
     - navigation.top
     - navigation.tabs
@@ -35,6 +36,7 @@ theme:
     - navigation.instant
   icon:
     repo: fontawesome/brands/github
+    annotation: material/arrow-right-circle
   custom_dir: overrides
 
 plugins:
@@ -76,7 +78,12 @@ markdown_extensions:
   - pymdownx.tabbed:
       alternate_style: true
   - md_in_html
+  - abbr
   - attr_list
+  - pymdownx.snippets
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
 
 nav:
   - Home:

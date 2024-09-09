@@ -11,7 +11,6 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
-import inspect
 import logging
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -26,7 +25,7 @@ from ..common import DATA
 from ..db import DBConnection
 from ..embeddings import EmbeddingFunctionConfig
 from ..pydantic import LanceModel
-from ..table import Table, _sanitize_data
+from ..table import Table, sanitize_create_table
 from ..util import validate_table_name
 from .arrow import to_ipc_binary
 from .client import ARROW_STREAM_CONTENT_TYPE, RestfulLanceDBClient
@@ -228,8 +227,6 @@ class RemoteDBConnection(DBConnection):
 
         """
         validate_table_name(name)
-        if data is None and schema is None:
-            raise ValueError("Either data or schema must be provided.")
         if embedding_functions is not None:
             logging.warning(
                 "embedding_functions is not yet supported on LanceDB Cloud."
@@ -239,24 +236,9 @@ class RemoteDBConnection(DBConnection):
         if mode is not None:
             logging.warning("mode is not yet supported on LanceDB Cloud.")
 
-        if inspect.isclass(schema) and issubclass(schema, LanceModel):
-            # convert LanceModel to pyarrow schema
-            # note that it's possible this contains
-            # embedding function metadata already
-            schema = schema.to_arrow_schema()
-
-        if data is not None:
-            data, schema = _sanitize_data(
-                data,
-                schema,
-                metadata=None,
-                on_bad_vectors=on_bad_vectors,
-                fill_value=fill_value,
-            )
-        else:
-            if schema is None:
-                raise ValueError("Either data or schema must be provided")
-            data = pa.Table.from_pylist([], schema=schema)
+        data, schema = sanitize_create_table(
+            data, schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value
+        )
 
         from .table import RemoteTable
 

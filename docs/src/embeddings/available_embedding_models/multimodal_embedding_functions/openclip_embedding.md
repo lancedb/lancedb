@@ -20,7 +20,7 @@ from lancedb.pydantic import LanceModel, Vector
 from lancedb.embeddings import get_registry
 
 db = lancedb.connect(tmp_path)
-func = get_registry.get("open-clip").create()
+func = get_registry().get("open-clip").create()
 
 class Images(LanceModel):
     label: str
