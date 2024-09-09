@@ -17,7 +17,7 @@ from lancedb.pydantic import LanceModel, Vector
 from lancedb.embeddings import get_registry
 
 db = lancedb.connect(tmp_path)
-func = get_registry.get("imagebind").create()
+func = get_registry().get("imagebind").create()
 
 class ImageBindModel(LanceModel):
     text: str

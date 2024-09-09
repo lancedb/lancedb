@@ -14,7 +14,6 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import os
 from abc import abstractmethod
 from pathlib import Path
@@ -27,8 +26,13 @@ from pyarrow import fs
 from lancedb.common import data_to_reader, validate_schema
 
 from ._lancedb import connect as lancedb_connect
-from .pydantic import LanceModel
-from .table import AsyncTable, LanceTable, Table, _sanitize_data, _table_path
+from .table import (
+    AsyncTable,
+    LanceTable,
+    Table,
+    _table_path,
+    sanitize_create_table,
+)
 from .util import (
     fs_from_uri,
     get_uri_location,
@@ -37,6 +41,7 @@ from .util import (
 )
 
 if TYPE_CHECKING:
+    from .pydantic import LanceModel
     from datetime import timedelta
 
     from ._lancedb import Connection as LanceDbConnection
@@ -722,12 +727,6 @@ class AsyncConnection(object):
         ...     await db.create_table("table4", make_batches(), schema=schema)
         >>> asyncio.run(iterable_example())
         """
-        if inspect.isclass(schema) and issubclass(schema, LanceModel):
-            # convert LanceModel to pyarrow schema
-            # note that it's possible this contains
-            # embedding function metadata already
-            schema = schema.to_arrow_schema()
-
         metadata = None
 
         # Defining defaults here and not in function prototype.  In the future
@@ -738,31 +737,9 @@ class AsyncConnection(object):
         if fill_value is None:
             fill_value = 0.0
 
-        if data is not None:
-            data, schema = _sanitize_data(
-                data,
-                schema,
-                metadata=metadata,
-                on_bad_vectors=on_bad_vectors,
-                fill_value=fill_value,
-            )
-
-        if schema is None:
-            if data is None:
-                raise ValueError("Either data or schema must be provided")
-            elif hasattr(data, "schema"):
-                schema = data.schema
-            elif isinstance(data, Iterable):
-                if metadata:
-                    raise TypeError(
-                        (
-                            "Persistent embedding functions not yet "
-                            "supported for generator data input"
-                        )
-                    )
-
-        if metadata:
-            schema = schema.with_metadata(metadata)
+        data, schema = sanitize_create_table(
+            data, schema, metadata, on_bad_vectors, fill_value
+        )
         validate_schema(schema)
 
         if exist_ok is None:
