@@ -139,13 +139,14 @@ describe("given a connection", () => {
 
   it("should be able to create tables with V2 manifest paths", async () => {
     const db = await connect(tmpDir.name);
-    await db.createEmptyTable(
+    let table = (await db.createEmptyTable(
       "test_manifest_paths_v2_empty",
       new Schema([new Field("id", new Float64(), true)]),
       {
         enableV2ManifestPaths: true,
       },
-    );
+    )) as LocalTable;
+    expect(await table.usesV2ManifestPaths()).toBe(true);
 
     let manifestDir =
       tmpDir.name + "/test_manifest_paths_v2_empty.lance/_versions";
@@ -153,9 +154,10 @@ describe("given a connection", () => {
       expect(file).toMatch(/^\d{20}\.manifest$/);
     });
 
-    await db.createTable("test_manifest_paths_v2", [{ id: 1 }], {
+    table = (await db.createTable("test_manifest_paths_v2", [{ id: 1 }], {
       enableV2ManifestPaths: true,
-    });
+    })) as LocalTable;
+    expect(await table.usesV2ManifestPaths()).toBe(true);
     manifestDir = tmpDir.name + "/test_manifest_paths_v2.lance/_versions";
     readdirSync(manifestDir).forEach((file) => {
       expect(file).toMatch(/^\d{20}\.manifest$/);
@@ -172,6 +174,8 @@ describe("given a connection", () => {
       },
     )) as LocalTable;
 
+    expect(await table.usesV2ManifestPaths()).toBe(false);
+
     const manifestDir =
       tmpDir.name + "/test_manifest_path_migration.lance/_versions";
     readdirSync(manifestDir).forEach((file) => {
@@ -179,6 +183,7 @@ describe("given a connection", () => {
     });
 
     await table.migrateManifestPathsV2();
+    expect(await table.usesV2ManifestPaths()).toBe(true);
 
     readdirSync(manifestDir).forEach((file) => {
       expect(file).toMatch(/^\d{20}\.manifest$/);

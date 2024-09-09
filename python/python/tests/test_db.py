@@ -424,6 +424,7 @@ async def test_create_table_v2_manifest_paths_async(tmp_path):
         use_legacy_format=False,
         enable_v2_manifest_paths=True,
     )
+    assert await tbl.uses_v2_manifest_paths()
     manifests_dir = tmp_path / "test_v2_manifest_paths.lance" / "_versions"
     for manifest in os.listdir(manifests_dir):
         assert re.match(r"\d{20}\.manifest", manifest)
@@ -435,11 +436,13 @@ async def test_create_table_v2_manifest_paths_async(tmp_path):
         use_legacy_format=False,
         enable_v2_manifest_paths=False,
     )
+    assert not await tbl.uses_v2_manifest_paths()
     manifests_dir = tmp_path / "test_v2_migration.lance" / "_versions"
     for manifest in os.listdir(manifests_dir):
         assert re.match(r"\d\.manifest", manifest)
 
     await tbl.migrate_manifest_paths_v2()
+    assert await tbl.uses_v2_manifest_paths()
 
     for manifest in os.listdir(manifests_dir):
         assert re.match(r"\d{20}\.manifest", manifest)

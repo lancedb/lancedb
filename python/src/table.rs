@@ -304,6 +304,18 @@ impl Table {
         })
     }
 
+    pub fn uses_v2_manifest_paths(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            inner
+                .as_native()
+                .ok_or_else(|| PyValueError::new_err("This cannot be run on a remote table"))?
+                .uses_v2_manifest_paths()
+                .await
+                .infer_error()
+        })
+    }
+
     pub fn migrate_manifest_paths_v2(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
@@ -313,7 +325,6 @@ impl Table {
                 .migrate_manifest_paths_v2()
                 .await
                 .infer_error()
-                .map(|_| ())
         })
     }
 }

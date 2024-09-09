@@ -349,6 +349,16 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
+    pub async fn uses_v2_manifest_paths(&self) -> napi::Result<bool> {
+        self.inner_ref()?
+            .as_native()
+            .ok_or_else(|| napi::Error::from_reason("This cannot be run on a remote table"))?
+            .uses_v2_manifest_paths()
+            .await
+            .default_error()
+    }
+
+    #[napi(catch_unwind)]
     pub async fn migrate_manifest_paths_v2(&self) -> napi::Result<()> {
         self.inner_ref()?
             .as_native()

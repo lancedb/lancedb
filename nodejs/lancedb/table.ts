@@ -699,6 +699,16 @@ export class LocalTable extends Table {
   }
 
   /**
+   * Check if the table uses the new manifest path scheme.
+   *
+   * This function will return true if the table uses the V2 manifest
+   * path scheme.
+   */
+  async usesV2ManifestPaths(): Promise<boolean> {
+    return await this.inner.usesV2ManifestPaths();
+  }
+
+  /**
    * Migrate the table to use the new manifest path scheme.
    *
    * This function will rename all V1 manifests to V2 manifest paths.
