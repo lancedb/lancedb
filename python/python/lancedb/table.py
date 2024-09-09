@@ -468,6 +468,7 @@ class Table(ABC):
         ordering_field_names: Union[str, List[str]] = None,
         *,
         replace: bool = False,
+        with_position: bool = True,
         writer_heap_size: Optional[int] = 1024 * 1024 * 1024,
         tokenizer_name: str = "default",
         use_tantivy: bool = True,
@@ -500,6 +501,12 @@ class Table(ABC):
         use_tantivy: bool, default True
             If True, use the legacy full-text search implementation based on tantivy.
             If False, use the new full-text search implementation based on lance-index.
+        with_position: bool, default True
+            Only available with use_tantivy=False
+            If False, do not store the positions of the terms in the text.
+            This can reduce the size of the index and improve indexing speed.
+            But it will not be possible to use phrase queries.
+
         """
         raise NotImplementedError
 
@@ -1305,6 +1312,7 @@ class LanceTable(Table):
         ordering_field_names: Union[str, List[str]] = None,
         *,
         replace: bool = False,
+        with_position: bool = True,
         writer_heap_size: Optional[int] = 1024 * 1024 * 1024,
         tokenizer_name: str = "default",
         use_tantivy: bool = True,
@@ -1318,7 +1326,10 @@ class LanceTable(Table):
                 if exist:
                     fs.delete_dir(path)
             self._dataset_mut.create_scalar_index(
-                field_names, index_type="INVERTED", replace=replace
+                field_names,
+                index_type="INVERTED",
+                replace=replace,
+                with_position=with_position,
             )
             return
 

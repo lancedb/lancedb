@@ -140,8 +140,11 @@ def test_create_index_with_stemming(tmp_path, table):
 
 
 @pytest.mark.parametrize("use_tantivy", [True, False])
-def test_create_inverted_index(table, use_tantivy):
-    table.create_fts_index("text", use_tantivy=use_tantivy)
+@pytest.mark.parametrize("with_position", [True, False])
+def test_create_inverted_index(table, use_tantivy, with_position):
+    if use_tantivy and not with_position:
+        pytest.skip("we don't support to build tantivy index without position")
+    table.create_fts_index("text", use_tantivy=use_tantivy, with_position=with_position)
 
 
 def test_populate_index(tmp_path, table):
@@ -164,6 +167,14 @@ def test_search_fts(table, use_tantivy):
     table.create_fts_index("text", use_tantivy=use_tantivy)
     results = table.search("puppy").limit(5).to_list()
     assert len(results) == 5
+
+
+def test_search_fts_phrase_query(table):
+    table.create_fts_index("text", use_tantivy=False)
+    results = table.search("puppy").to_list()
+    phrase_results = table.search('"puppy rabbit"').to_list()
+    assert len(results) > len(phrase_results)
+    assert len(phrase_results) > 0
 
 
 def test_search_fts_specify_column(table):

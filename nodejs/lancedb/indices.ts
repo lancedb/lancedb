@@ -113,6 +113,19 @@ export interface IvfPqOptions {
   sampleRate?: number;
 }
 
+/**
+ * Options to create a full text search index
+ */
+export interface FtsOptions {
+  /**
+   * Whether to build the index with positions.
+   * True by default.
+   * If set to false, the index will not store the positions of the tokens in the text,
+   * which will make the index smaller and faster to build, but will not support phrase queries.
+   */
+  withPositions?: boolean;
+}
+
 export class Index {
   private readonly inner: LanceDbIndex;
   private constructor(inner: LanceDbIndex) {
@@ -211,8 +224,8 @@ export class Index {
    *
    * For now, the full text search index only supports English, and doesn't support phrase search.
    */
-  static fts() {
-    return new Index(LanceDbIndex.fts());
+  static fts(options?: Partial<FtsOptions>) {
+    return new Index(LanceDbIndex.fts(options?.withPositions));
   }
 }
 

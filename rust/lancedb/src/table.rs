@@ -51,6 +51,7 @@ use crate::arrow::IntoArrow;
 use crate::connection::NoData;
 use crate::embeddings::{EmbeddingDefinition, EmbeddingRegistry, MaybeEmbedded, MemoryRegistry};
 use crate::error::{Error, Result};
+use crate::index::scalar::FtsIndexBuilder;
 use crate::index::vector::{
     IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder, IvfPqIndexBuilder, VectorIndex,
 };
@@ -1608,7 +1609,12 @@ impl NativeTable {
         Ok(())
     }
 
-    async fn create_fts_index(&self, field: &Field, opts: IndexBuilder) -> Result<()> {
+    async fn create_fts_index(
+        &self,
+        field: &Field,
+        fts_opts: FtsIndexBuilder,
+        replace: bool,
+    ) -> Result<()> {
         if !Self::supported_fts_data_type(field.data_type()) {
             return Err(Error::Schema {
                 message: format!(
@@ -1620,16 +1626,16 @@ impl NativeTable {
         }
 
         let mut dataset = self.dataset.get_mut().await?;
-        let lance_idx_params = lance_index::scalar::ScalarIndexParams {
-            force_index_type: Some(lance_index::scalar::ScalarIndexType::Inverted),
+        let fts_params = lance_index::scalar::InvertedIndexParams {
+            with_position: fts_opts.with_position,
         };
         dataset
             .create_index(
                 &[field.name()],
                 IndexType::Scalar,
                 None,
-                &lance_idx_params,
-                opts.replace,
+                &fts_params,
+                replace,
             )
             .await?;
         Ok(())
@@ -1772,7 +1778,7 @@ impl TableInternal for NativeTable {
             Index::BTree(_) => self.create_btree_index(field, opts).await,
             Index::Bitmap(_) => self.create_bitmap_index(field, opts).await,
             Index::LabelList(_) => self.create_label_list_index(field, opts).await,
-            Index::FTS(_) => self.create_fts_index(field, opts).await,
+            Index::FTS(fts_opts) => self.create_fts_index(field, fts_opts, opts.replace).await,
             Index::IvfPq(ivf_pq) => self.create_ivf_pq_index(ivf_pq, field, opts.replace).await,
             Index::IvfHnswPq(ivf_hnsw_pq) => {
                 self.create_ivf_hnsw_pq_index(ivf_hnsw_pq, field, opts.replace)
