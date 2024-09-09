@@ -2539,3 +2539,34 @@ class AsyncTable:
         List all indices that have been created with Self::create_index
         """
         return await self._inner.list_indices()
+
+    async def uses_v2_manifest_paths(self) -> bool:
+        """
+        Check if the table is using the new v2 manifest paths.
+
+        Returns
+        -------
+        bool
+            True if the table is using the new v2 manifest paths, False otherwise.
+        """
+        return await self._inner.uses_v2_manifest_paths()
+
+    async def migrate_manifest_paths_v2(self):
+        """
+        Migrate the manifest paths to the new format.
+
+        This will update the manifest to use the new v2 format for paths.
+
+        This function is idempotent, and can be run multiple times without
+        changing the state of the object store.
+
+        !!! danger
+
+            This should not be run while other concurrent operations are happening.
+            And it should also run until completion before resuming other operations.
+
+        You can use
+        [AsyncTable.uses_v2_manifest_paths][lancedb.table.AsyncTable.uses_v2_manifest_paths]
+        to check if the table is already using the new path style.
+        """
+        await self._inner.migrate_manifest_paths_v2()

@@ -81,6 +81,7 @@ impl Connection {
         data: Bound<'_, PyAny>,
         storage_options: Option<HashMap<String, String>>,
         data_storage_version: Option<String>,
+        enable_v2_manifest_paths: Option<bool>,
     ) -> PyResult<Bound<'a, PyAny>> {
         let inner = self_.get_inner()?.clone();
 
@@ -91,6 +92,10 @@ impl Connection {
 
         if let Some(storage_options) = storage_options {
             builder = builder.storage_options(storage_options);
+        }
+
+        if let Some(enable_v2_manifest_paths) = enable_v2_manifest_paths {
+            builder = builder.enable_v2_manifest_paths(enable_v2_manifest_paths);
         }
 
         if let Some(data_storage_version) = data_storage_version.as_ref() {
@@ -113,6 +118,7 @@ impl Connection {
         schema: Bound<'_, PyAny>,
         storage_options: Option<HashMap<String, String>>,
         data_storage_version: Option<String>,
+        enable_v2_manifest_paths: Option<bool>,
     ) -> PyResult<Bound<'a, PyAny>> {
         let inner = self_.get_inner()?.clone();
 
@@ -124,6 +130,10 @@ impl Connection {
 
         if let Some(storage_options) = storage_options {
             builder = builder.storage_options(storage_options);
+        }
+
+        if let Some(enable_v2_manifest_paths) = enable_v2_manifest_paths {
+            builder = builder.enable_v2_manifest_paths(enable_v2_manifest_paths);
         }
 
         if let Some(data_storage_version) = data_storage_version.as_ref() {

@@ -23,6 +23,7 @@ categories = ["database-implementations"]
 lance = { "version" = "=0.17.0", "features" = ["dynamodb"] }
 lance-index = { "version" = "=0.17.0" }
 lance-linalg = { "version" = "=0.17.0" }
+lance-table = { "version" = "=0.17.0" }
 lance-testing = { "version" = "=0.17.0" }
 lance-datafusion = { "version" = "=0.17.0" }
 lance-encoding = { "version" = "=0.17.0" }

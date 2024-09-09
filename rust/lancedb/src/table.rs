@@ -43,6 +43,7 @@ use lance_index::vector::pq::PQBuildParams;
 use lance_index::vector::sq::builder::SQBuildParams;
 use lance_index::DatasetIndexExt;
 use lance_index::IndexType;
+use lance_table::io::commit::ManifestNamingScheme;
 use log::info;
 use serde::{Deserialize, Serialize};
 use snafu::whatever;
@@ -1645,6 +1646,35 @@ impl NativeTable {
             plan,
             Default::default(),
         )?))
+    }
+
+    /// Check whether the table uses V2 manifest paths.
+    ///
+    /// See [Self::migrate_manifest_paths_v2] and [ManifestNamingScheme] for
+    /// more information.
+    pub async fn uses_v2_manifest_paths(&self) -> Result<bool> {
+        let dataset = self.dataset.get().await?;
+        Ok(dataset.manifest_naming_scheme == ManifestNamingScheme::V2)
+    }
+
+    /// Migrate the table to use the new manifest path scheme.
+    ///
+    /// This function will rename all V1 manifests to V2 manifest paths.
+    /// These paths provide more efficient opening of datasets with many versions
+    /// on object stores.
+    ///
+    /// This function is idempotent, and can be run multiple times without
+    /// changing the state of the object store.
+    ///
+    /// However, it should not be run while other concurrent operations are happening.
+    /// And it should also run until completion before resuming other operations.
+    ///
+    /// You can use [Self::uses_v2_manifest_paths] to check if the table is already
+    /// using V2 manifest paths.
+    pub async fn migrate_manifest_paths_v2(&self) -> Result<()> {
+        let mut dataset = self.dataset.get_mut().await?;
+        dataset.migrate_manifest_paths_v2().await?;
+        Ok(())
     }
 }
 

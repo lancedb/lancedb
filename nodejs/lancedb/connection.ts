@@ -53,6 +53,15 @@ export interface CreateTableOptions {
   dataStorageVersion?: string;
 
   /**
+   * Use the new V2 manifest paths. These paths provide more efficient
+   * opening of datasets with many versions on object stores.  WARNING:
+   * turning this on will make the dataset unreadable for older versions
+   * of LanceDB (prior to 0.10.0). To migrate an existing dataset, instead
+   * use the {@link LocalTable#migrateManifestPathsV2} method.
+   */
+  enableV2ManifestPaths?: boolean;
+
+  /**
    * If true then data files will be written with the legacy format
    *
    * The default is true while the new format is in beta
@@ -270,6 +279,7 @@ export class LocalConnection extends Connection {
       mode,
       cleanseStorageOptions(options?.storageOptions),
       dataStorageVersion,
+      options?.enableV2ManifestPaths,
     );
 
     return new LocalTable(innerTable);
@@ -308,6 +318,7 @@ export class LocalConnection extends Connection {
       mode,
       cleanseStorageOptions(options?.storageOptions),
       dataStorageVersion,
+      options?.enableV2ManifestPaths,
     );
     return new LocalTable(innerTable);
   }
