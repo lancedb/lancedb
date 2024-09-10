@@ -171,8 +171,8 @@ def test_search_fts(table, use_tantivy):
 
 def test_search_fts_phrase_query(table):
     table.create_fts_index("text", use_tantivy=False)
-    results = table.search("puppy").to_list()
-    phrase_results = table.search('"puppy rabbit"').to_list()
+    results = table.search("puppy").limit(100).to_list()
+    phrase_results = table.search('"puppy runs"').limit(100).to_list()
     assert len(results) > len(phrase_results)
     assert len(phrase_results) > 0
 
