@@ -8,7 +8,7 @@ import pyarrow as pa
 import pytest
 import pytest_asyncio
 from lancedb import AsyncConnection, AsyncTable, connect_async
-from lancedb.index import BTree, IvfPq, Bitmap, LabelList, Hnswpq, Hnswsq
+from lancedb.index import BTree, IvfPq, Bitmap, LabelList, HnswPq, HnswSq
 
 
 @pytest_asyncio.fixture
@@ -95,13 +95,13 @@ async def test_create_vector_index(some_table: AsyncTable):
 
 @pytest.mark.asyncio
 async def test_create_hnswpq_index(some_table: AsyncTable):
-    await some_table.create_index("vector", config=Hnswpq(num_partitions=10))
+    await some_table.create_index("vector", config=HnswPq(num_partitions=10))
     indices = await some_table.list_indices()
     assert len(indices) == 1
 
 
 @pytest.mark.asyncio
 async def test_create_hnswsq_index(some_table: AsyncTable):
-    await some_table.create_index("vector", config=Hnswsq(num_partitions=10))
+    await some_table.create_index("vector", config=HnswSq(num_partitions=10))
     indices = await some_table.list_indices()
     assert len(indices) == 1

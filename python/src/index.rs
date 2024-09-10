@@ -113,7 +113,7 @@ impl Index {
     }
 
     #[staticmethod]
-    pub fn hnswpq(
+    pub fn hnsw_pq(
         distance_type: Option<String>,
         num_partitions: Option<u32>,
         num_sub_vectors: Option<u32>,
@@ -151,7 +151,7 @@ impl Index {
     }
 
     #[staticmethod]
-    pub fn hnswsq(
+    pub fn hnsw_sq(
         distance_type: Option<String>,
         num_partitions: Option<u32>,
         max_iterations: Option<u32>,

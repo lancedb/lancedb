@@ -96,7 +96,7 @@ class HnswPq:
         m: Optional[int] = None,
         ef_construction: Optional[int] = None,
     ):
-        self._inner = LanceDbIndex.hnswpq(
+        self._inner = LanceDbIndex.hnsw_pq(
             distance_type=distance_type,
             num_partitions=num_partitions,
             num_sub_vectors=num_sub_vectors,
@@ -120,7 +120,7 @@ class HnswSq:
         m: Optional[int] = None,
         ef_construction: Optional[int] = None,
     ):
-        self._inner = LanceDbIndex.hnswsq(
+        self._inner = LanceDbIndex.hnsw_sq(
             distance_type=distance_type,
             num_partitions=num_partitions,
             max_iterations=max_iterations,

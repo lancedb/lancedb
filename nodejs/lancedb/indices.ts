@@ -241,7 +241,7 @@ export class Index {
    */
   static hnswPq(options?: Partial<HnswPqOptions>) {
     return new Index(
-      LanceDbIndex.hnswpq(
+      LanceDbIndex.hnswPq(
         options?.distanceType,
         options?.numPartitions,
         options?.numSubVectors,
@@ -260,7 +260,7 @@ export class Index {
    */
   static hnswSq(options?: Partial<HnswSqOptions>) {
     return new Index(
-      LanceDbIndex.hnswpq(
+      LanceDbIndex.hnswSq(
         options?.distanceType,
         options?.numPartitions,
         options?.maxIterations,
