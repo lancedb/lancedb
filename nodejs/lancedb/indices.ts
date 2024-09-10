@@ -239,7 +239,7 @@ export class Index {
    * Create a hnswpq index
    *
    */
-  static hnswpq(options?: Partial<HnswPqOptions>) {
+  static hnswPq(options?: Partial<HnswPqOptions>) {
     return new Index(
       LanceDbIndex.hnswpq(
         options?.distanceType,
