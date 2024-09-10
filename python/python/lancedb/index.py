@@ -78,8 +78,8 @@ class FTS:
     For example, it works with `title`, `description`, `content`, etc.
     """
 
-    def __init__(self):
-        self._inner = LanceDbIndex.fts()
+    def __init__(self, with_position: bool = True):
+        self._inner = LanceDbIndex.fts(with_position=with_position)
 
 
 class HnswPq:

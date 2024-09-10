@@ -396,6 +396,10 @@ describe("When creating an index", () => {
       .toArrow();
     expect(rst2.numRows).toBe(2);
     expect(rst.toString()).toEqual(rst2.toString());
+
+    // test offset
+    rst = await tbl.query().limit(2).offset(1).nearestTo(queryVec).toArrow();
+    expect(rst.numRows).toBe(1);
   });
 
   it("should allow parameters to be specified", async () => {
@@ -858,6 +862,38 @@ describe.each([arrow13, arrow14, arrow15, arrow16, arrow17])(
 
       const results = await table.search("hello").toArray();
       expect(results[0].text).toBe(data[0].text);
+    });
+
+    test("full text search without positions", async () => {
+      const db = await connect(tmpDir.name);
+      const data = [
+        { text: "hello world", vector: [0.1, 0.2, 0.3] },
+        { text: "goodbye world", vector: [0.4, 0.5, 0.6] },
+      ];
+      const table = await db.createTable("test", data);
+      await table.createIndex("text", {
+        config: Index.fts({ withPositions: false }),
+      });
+
+      const results = await table.search("hello").toArray();
+      expect(results[0].text).toBe(data[0].text);
+    });
+
+    test("full text search phrase query", async () => {
+      const db = await connect(tmpDir.name);
+      const data = [
+        { text: "hello world", vector: [0.1, 0.2, 0.3] },
+        { text: "goodbye world", vector: [0.4, 0.5, 0.6] },
+      ];
+      const table = await db.createTable("test", data);
+      await table.createIndex("text", {
+        config: Index.fts(),
+      });
+
+      const results = await table.search("world").toArray();
+      expect(results.length).toBe(2);
+      const phraseResults = await table.search('"hello world"').toArray();
+      expect(phraseResults.length).toBe(1);
     });
 
     test.each([

@@ -43,6 +43,7 @@ use lance_index::vector::pq::PQBuildParams;
 use lance_index::vector::sq::builder::SQBuildParams;
 use lance_index::DatasetIndexExt;
 use lance_index::IndexType;
+use lance_table::io::commit::ManifestNamingScheme;
 use log::info;
 use serde::{Deserialize, Serialize};
 use snafu::whatever;
@@ -51,6 +52,7 @@ use crate::arrow::IntoArrow;
 use crate::connection::NoData;
 use crate::embeddings::{EmbeddingDefinition, EmbeddingRegistry, MaybeEmbedded, MemoryRegistry};
 use crate::error::{Error, Result};
+use crate::index::scalar::FtsIndexBuilder;
 use crate::index::vector::{
     IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder, IvfPqIndexBuilder, VectorIndex,
 };
@@ -1608,7 +1610,12 @@ impl NativeTable {
         Ok(())
     }
 
-    async fn create_fts_index(&self, field: &Field, opts: IndexBuilder) -> Result<()> {
+    async fn create_fts_index(
+        &self,
+        field: &Field,
+        fts_opts: FtsIndexBuilder,
+        replace: bool,
+    ) -> Result<()> {
         if !Self::supported_fts_data_type(field.data_type()) {
             return Err(Error::Schema {
                 message: format!(
@@ -1620,16 +1627,16 @@ impl NativeTable {
         }
 
         let mut dataset = self.dataset.get_mut().await?;
-        let lance_idx_params = lance_index::scalar::ScalarIndexParams {
-            force_index_type: Some(lance_index::scalar::ScalarIndexType::Inverted),
+        let fts_params = lance_index::scalar::InvertedIndexParams {
+            with_position: fts_opts.with_position,
         };
         dataset
             .create_index(
                 &[field.name()],
-                IndexType::Scalar,
+                IndexType::Inverted,
                 None,
-                &lance_idx_params,
-                opts.replace,
+                &fts_params,
+                replace,
             )
             .await?;
         Ok(())
@@ -1645,6 +1652,35 @@ impl NativeTable {
             plan,
             Default::default(),
         )?))
+    }
+
+    /// Check whether the table uses V2 manifest paths.
+    ///
+    /// See [Self::migrate_manifest_paths_v2] and [ManifestNamingScheme] for
+    /// more information.
+    pub async fn uses_v2_manifest_paths(&self) -> Result<bool> {
+        let dataset = self.dataset.get().await?;
+        Ok(dataset.manifest_naming_scheme == ManifestNamingScheme::V2)
+    }
+
+    /// Migrate the table to use the new manifest path scheme.
+    ///
+    /// This function will rename all V1 manifests to V2 manifest paths.
+    /// These paths provide more efficient opening of datasets with many versions
+    /// on object stores.
+    ///
+    /// This function is idempotent, and can be run multiple times without
+    /// changing the state of the object store.
+    ///
+    /// However, it should not be run while other concurrent operations are happening.
+    /// And it should also run until completion before resuming other operations.
+    ///
+    /// You can use [Self::uses_v2_manifest_paths] to check if the table is already
+    /// using V2 manifest paths.
+    pub async fn migrate_manifest_paths_v2(&self) -> Result<()> {
+        let mut dataset = self.dataset.get_mut().await?;
+        dataset.migrate_manifest_paths_v2().await?;
+        Ok(())
     }
 }
 
@@ -1772,7 +1808,7 @@ impl TableInternal for NativeTable {
             Index::BTree(_) => self.create_btree_index(field, opts).await,
             Index::Bitmap(_) => self.create_bitmap_index(field, opts).await,
             Index::LabelList(_) => self.create_label_list_index(field, opts).await,
-            Index::FTS(_) => self.create_fts_index(field, opts).await,
+            Index::FTS(fts_opts) => self.create_fts_index(field, fts_opts, opts.replace).await,
             Index::IvfPq(ivf_pq) => self.create_ivf_pq_index(ivf_pq, field, opts.replace).await,
             Index::IvfHnswPq(ivf_hnsw_pq) => {
                 self.create_ivf_hnsw_pq_index(ivf_hnsw_pq, field, opts.replace)
@@ -1852,9 +1888,16 @@ impl TableInternal for NativeTable {
                 query_vector,
                 query.base.limit.unwrap_or(DEFAULT_TOP_K),
             )?;
+            scanner.limit(
+                query.base.limit.map(|limit| limit as i64),
+                query.base.offset.map(|offset| offset as i64),
+            )?;
         } else {
             // If there is no vector query, it's ok to not have a limit
-            scanner.limit(query.base.limit.map(|limit| limit as i64), None)?;
+            scanner.limit(
+                query.base.limit.map(|limit| limit as i64),
+                query.base.offset.map(|offset| offset as i64),
+            )?;
         }
 
         scanner.nprobs(query.nprobes);
@@ -2781,7 +2824,7 @@ mod tests {
                 .get_index_type(index_uuid)
                 .await
                 .unwrap(),
-            Some("IVF".to_string())
+            Some("IVF_PQ".to_string())
         );
         assert_eq!(
             table

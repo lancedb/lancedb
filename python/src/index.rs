@@ -14,6 +14,7 @@
 
 use std::sync::Mutex;
 
+use lancedb::index::scalar::FtsIndexBuilder;
 use lancedb::{
     index::{
         scalar::BTreeIndexBuilder,
@@ -106,10 +107,14 @@ impl Index {
     }
 
     #[staticmethod]
-    pub fn fts() -> PyResult<Self> {
-        Ok(Self {
-            inner: Mutex::new(Some(LanceDbIndex::FTS(Default::default()))),
-        })
+    pub fn fts(with_position: Option<bool>) -> Self {
+        let mut opts = FtsIndexBuilder::default();
+        if let Some(with_position) = with_position {
+            opts = opts.with_position(with_position);
+        }
+        Self {
+            inner: Mutex::new(Some(LanceDbIndex::FTS(opts))),
+        }
     }
 
     #[staticmethod]

@@ -27,6 +27,7 @@ lazy_static.workspace = true
 lance = { workspace = true }
 lance-datafusion.workspace = true
 lance-index = { workspace = true }
+lance-table = { workspace = true }
 lance-linalg = { workspace = true }
 lance-testing = { workspace = true }
 lance-encoding = { workspace = true }

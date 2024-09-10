@@ -338,6 +338,12 @@ pub trait QueryBase {
     /// it will default to 10.
     fn limit(self, limit: usize) -> Self;
 
+    /// Set the offset of the query.
+
+    /// By default, it fetches starting with the first row.
+    /// This method can be used to skip the first `offset` rows.
+    fn offset(self, offset: usize) -> Self;
+
     /// Only return rows which match the filter.
     ///
     /// The filter should be supplied as an SQL query string.  For example:
@@ -405,6 +411,11 @@ pub trait HasQuery {
 impl<T: HasQuery> QueryBase for T {
     fn limit(mut self, limit: usize) -> Self {
         self.mut_query().limit = Some(limit);
+        self
+    }
+
+    fn offset(mut self, offset: usize) -> Self {
+        self.mut_query().offset = Some(offset);
         self
     }
 
@@ -520,6 +531,9 @@ pub struct Query {
     /// limit the number of rows to return.
     pub(crate) limit: Option<usize>,
 
+    /// Offset of the query.
+    pub(crate) offset: Option<usize>,
+
     /// Apply filter to the returned rows.
     pub(crate) filter: Option<String>,
 
@@ -541,6 +555,7 @@ impl Query {
         Self {
             parent,
             limit: None,
+            offset: None,
             filter: None,
             full_text_search: None,
             select: Select::All,
@@ -858,6 +873,7 @@ mod tests {
         let query = table
             .query()
             .limit(100)
+            .offset(1)
             .nearest_to(&[9.8, 8.7])
             .unwrap()
             .nprobes(1000)
@@ -870,6 +886,7 @@ mod tests {
             new_vector
         );
         assert_eq!(query.base.limit.unwrap(), 100);
+        assert_eq!(query.base.offset.unwrap(), 1);
         assert_eq!(query.nprobes, 1000);
         assert!(query.use_index);
         assert_eq!(query.distance_type, Some(DistanceType::Cosine));
@@ -916,9 +933,25 @@ mod tests {
         let result = query.execute().await;
         let mut stream = result.expect("should have result");
         // should only have one batch
+
         while let Some(batch) = stream.next().await {
             // pre filter should return 10 rows
             assert!(batch.expect("should be Ok").num_rows() == 10);
+        }
+
+        let query = table
+            .query()
+            .limit(10)
+            .offset(1)
+            .only_if(String::from("id % 2 == 0"))
+            .nearest_to(&[0.1; 4])
+            .unwrap();
+        let result = query.execute().await;
+        let mut stream = result.expect("should have result");
+        // should only have one batch
+        while let Some(batch) = stream.next().await {
+            // pre filter should return 10 rows
+            assert!(batch.expect("should be Ok").num_rows() == 9);
         }
     }
 
