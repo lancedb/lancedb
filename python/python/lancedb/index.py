@@ -107,7 +107,7 @@ class HnswPq:
         )
 
 
-class Hnswsq:
+class HnswSq:
     """Describe a Hnswsq index configuration."""
 
     def __init__(
