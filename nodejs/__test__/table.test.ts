@@ -844,6 +844,38 @@ describe.each([arrow13, arrow14, arrow15, arrow16, arrow17])(
       expect(results[0].text).toBe(data[0].text);
     });
 
+    test("full text search without positions", async () => {
+      const db = await connect(tmpDir.name);
+      const data = [
+        { text: "hello world", vector: [0.1, 0.2, 0.3] },
+        { text: "goodbye world", vector: [0.4, 0.5, 0.6] },
+      ];
+      const table = await db.createTable("test", data);
+      await table.createIndex("text", {
+        config: Index.fts({ withPositions: false }),
+      });
+
+      const results = await table.search("hello").toArray();
+      expect(results[0].text).toBe(data[0].text);
+    });
+
+    test("full text search phrase query", async () => {
+      const db = await connect(tmpDir.name);
+      const data = [
+        { text: "hello world", vector: [0.1, 0.2, 0.3] },
+        { text: "goodbye world", vector: [0.4, 0.5, 0.6] },
+      ];
+      const table = await db.createTable("test", data);
+      await table.createIndex("text", {
+        config: Index.fts(),
+      });
+
+      const results = await table.search("world").toArray();
+      expect(results.length).toBe(2);
+      const phraseResults = await table.search('"hello world"').toArray();
+      expect(phraseResults.length).toBe(1);
+    });
+
     test.each([
       [0.4, 0.5, 0.599], // number[]
       Float32Array.of(0.4, 0.5, 0.599), // Float32Array
