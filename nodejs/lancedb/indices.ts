@@ -258,7 +258,7 @@ export class Index {
    * Create a hnswsq index
    *
    */
-  static hnswsq(options?: Partial<HnswSqOptions>) {
+  static hnswSq(options?: Partial<HnswSqOptions>) {
     return new Index(
       LanceDbIndex.hnswpq(
         options?.distanceType,
