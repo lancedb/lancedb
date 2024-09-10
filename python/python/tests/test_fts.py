@@ -170,9 +170,35 @@ def test_search_fts(table, use_tantivy):
 
 
 def test_search_fts_phrase_query(table):
-    table.create_fts_index("text", use_tantivy=False)
+    table.create_fts_index("text", use_tantivy=False, with_position=False)
+    try:
+        phrase_results = table.search('"puppy runs"').limit(100).to_list()
+        assert False
+    except Exception:
+        pass
+    table.create_fts_index("text", use_tantivy=False, replace=True)
     results = table.search("puppy").limit(100).to_list()
     phrase_results = table.search('"puppy runs"').limit(100).to_list()
+    assert len(results) > len(phrase_results)
+    assert len(phrase_results) > 0
+
+
+@pytest.mark.asyncio
+async def test_search_fts_phrase_query_async(async_table):
+    async_table = await async_table
+    await async_table.create_index("text", config=FTS(with_position=False))
+    try:
+        phrase_results = (
+            await async_table.query().nearest_to_text("puppy runs").limit(100).to_list()
+        )
+        assert False
+    except Exception:
+        pass
+    await async_table.create_index("text", config=FTS())
+    results = await async_table.query().nearest_to_text("puppy").limit(100).to_list()
+    phrase_results = (
+        await async_table.query().nearest_to_text('"puppy runs"').limit(100).to_list()
+    )
     assert len(results) > len(phrase_results)
     assert len(phrase_results) > 0
 
