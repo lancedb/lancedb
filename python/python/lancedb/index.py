@@ -82,7 +82,7 @@ class FTS:
         self._inner = LanceDbIndex.fts()
 
 
-class Hnswpq:
+class HnswPq:
     """Describe a Hnswpq index configuration."""
 
     def __init__(
