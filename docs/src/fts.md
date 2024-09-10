@@ -62,7 +62,7 @@ Consider that we have a LanceDB table named `my_table`, whose string column `tex
     });
 
     await tbl
-        .search("puppy")
+        .search("puppy", queryType="fts")
         .select(["text"])
         .limit(10)
         .toArray();
@@ -205,7 +205,7 @@ table.create_fts_index(["text_field"], use_tantivy=True, ordering_field_names=["
 ## Phrase queries vs. terms queries
 
 !!! warning "Warn"
-    Phrase queries are available for only Tantivy-based FTS
+    Lance-based FTS doesn't support queries combining by boolean operators `OR`, `AND`.
 
 For full-text search you can specify either a **phrase** query like `"the old man and the sea"`,
 or a **terms** search query like `"(Old AND Man) AND Sea"`. For more details on the terms

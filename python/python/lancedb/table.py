@@ -117,20 +117,66 @@ def _sanitize_data(
         data = _sanitize_schema(
             data, schema=schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value
         )
+        if schema is None:
+            schema = data.schema
     elif isinstance(data, Iterable):
         data = _to_record_batch_generator(
             data, schema, metadata, on_bad_vectors, fill_value
         )
+        if schema is None:
+            data, schema = _generator_to_data_and_schema(data)
+            if schema is None:
+                raise ValueError("Cannot infer schema from generator data")
     elif isinstance(data, pa.RecordBatch):
         data = pa.Table.from_batches([data]).to_reader()
+        if schema is None:
+            schema = data.schema
     elif isinstance(data, pa.dataset.Dataset):
         data = pa.dataset.Scanner.from_dataset(data).to_reader()
+        if schema is None:
+            schema = data.schema
     elif isinstance(data, pa.dataset.Scanner):
         data = data.to_reader()
+        if schema is None:
+            schema = data.schema
     elif isinstance(data, LanceDataset):
         data = data.scanner().to_reader()
+        if schema is None:
+            schema = data.schema
+    elif isinstance(data, pa.RecordBatchReader):
+        if schema is None:
+            schema = data.schema
     elif not isinstance(data, pa.RecordBatchReader):
         raise TypeError(f"Unsupported data type: {type(data)}")
+    return data, schema
+
+
+def sanitize_create_table(
+    data, schema, metadata=None, on_bad_vectors="error", fill_value=0.0
+):
+    if inspect.isclass(schema) and issubclass(schema, LanceModel):
+        # convert LanceModel to pyarrow schema
+        # note that it's possible this contains
+        # embedding function metadata already
+        schema = schema.to_arrow_schema()
+
+    if data is not None:
+        data, schema = _sanitize_data(
+            data,
+            schema,
+            metadata=metadata,
+            on_bad_vectors=on_bad_vectors,
+            fill_value=fill_value,
+        )
+    if schema is None:
+        if data is None:
+            raise ValueError("Either data or schema must be provided")
+        elif hasattr(data, "schema"):
+            schema = data.schema
+
+    if metadata:
+        schema = schema.with_metadata(metadata)
+
     return data, schema
 
 
@@ -195,8 +241,30 @@ def _append_vector_col(data: pa.Table, metadata: dict, schema: Optional[pa.Schem
     return data
 
 
+def _generator_to_data_and_schema(
+    data: Iterable,
+) -> Tuple[Iterable[pa.RecordBatch], pa.Schema]:
+    def _with_first_generator(first, data):
+        yield first
+        yield from data
+
+    first = next(data, None)
+    schema = None
+    if isinstance(first, pa.RecordBatch):
+        schema = first.schema
+        data = _with_first_generator(first, data)
+    elif isinstance(first, pa.Table):
+        schema = first.schema
+        data = _with_first_generator(first.to_batches(), data)
+    return data, schema
+
+
 def _to_record_batch_generator(
-    data: Iterable, schema, metadata, on_bad_vectors, fill_value
+    data: Iterable,
+    schema,
+    metadata,
+    on_bad_vectors,
+    fill_value,
 ):
     for batch in data:
         # always convert to table because we need to sanitize the data
@@ -419,6 +487,7 @@ class Table(ABC):
         ordering_field_names: Union[str, List[str]] = None,
         *,
         replace: bool = False,
+        with_position: bool = True,
         writer_heap_size: Optional[int] = 1024 * 1024 * 1024,
         tokenizer_name: str = "default",
         use_tantivy: bool = True,
@@ -451,6 +520,12 @@ class Table(ABC):
         use_tantivy: bool, default True
             If True, use the legacy full-text search implementation based on tantivy.
             If False, use the new full-text search implementation based on lance-index.
+        with_position: bool, default True
+            Only available with use_tantivy=False
+            If False, do not store the positions of the terms in the text.
+            This can reduce the size of the index and improve indexing speed.
+            But it will not be possible to use phrase queries.
+
         """
         raise NotImplementedError
 
@@ -1256,6 +1331,7 @@ class LanceTable(Table):
         ordering_field_names: Union[str, List[str]] = None,
         *,
         replace: bool = False,
+        with_position: bool = True,
         writer_heap_size: Optional[int] = 1024 * 1024 * 1024,
         tokenizer_name: str = "default",
         use_tantivy: bool = True,
@@ -1269,7 +1345,10 @@ class LanceTable(Table):
                 if exist:
                     fs.delete_dir(path)
             self._dataset_mut.create_scalar_index(
-                field_names, index_type="INVERTED", replace=replace
+                field_names,
+                index_type="INVERTED",
+                replace=replace,
+                with_position=with_position,
             )
             return
 
@@ -1577,12 +1656,6 @@ class LanceTable(Table):
             The embedding functions to use when creating the table.
         """
         tbl = LanceTable(db, name)
-        if inspect.isclass(schema) and issubclass(schema, LanceModel):
-            # convert LanceModel to pyarrow schema
-            # note that it's possible this contains
-            # embedding function metadata already
-            schema = schema.to_arrow_schema()
-
         metadata = None
         if embedding_functions is not None:
             # If we passed in embedding functions explicitly
@@ -1591,33 +1664,11 @@ class LanceTable(Table):
             registry = EmbeddingFunctionRegistry.get_instance()
             metadata = registry.get_table_metadata(embedding_functions)
 
-        if data is not None:
-            data, schema = _sanitize_data(
-                data,
-                schema,
-                metadata=metadata,
-                on_bad_vectors=on_bad_vectors,
-                fill_value=fill_value,
-            )
+        data, schema = sanitize_create_table(
+            data, schema, metadata, on_bad_vectors, fill_value
+        )
 
-        if schema is None:
-            if data is None:
-                raise ValueError("Either data or schema must be provided")
-            elif hasattr(data, "schema"):
-                schema = data.schema
-            elif isinstance(data, Iterable):
-                if metadata:
-                    raise TypeError(
-                        (
-                            "Persistent embedding functions not yet "
-                            "supported for generator data input"
-                        )
-                    )
-
-        if metadata:
-            schema = schema.with_metadata(metadata)
-
-        empty = pa.Table.from_pylist([], schema=schema)
+        empty = pa.Table.from_batches([], schema=schema)
         try:
             lance.write_dataset(empty, tbl._dataset_uri, schema=schema, mode=mode)
         except OSError as err:
@@ -2518,3 +2569,34 @@ class AsyncTable:
         List all indices that have been created with Self::create_index
         """
         return await self._inner.list_indices()
+
+    async def uses_v2_manifest_paths(self) -> bool:
+        """
+        Check if the table is using the new v2 manifest paths.
+
+        Returns
+        -------
+        bool
+            True if the table is using the new v2 manifest paths, False otherwise.
+        """
+        return await self._inner.uses_v2_manifest_paths()
+
+    async def migrate_manifest_paths_v2(self):
+        """
+        Migrate the manifest paths to the new format.
+
+        This will update the manifest to use the new v2 format for paths.
+
+        This function is idempotent, and can be run multiple times without
+        changing the state of the object store.
+
+        !!! danger
+
+            This should not be run while other concurrent operations are happening.
+            And it should also run until completion before resuming other operations.
+
+        You can use
+        [AsyncTable.uses_v2_manifest_paths][lancedb.table.AsyncTable.uses_v2_manifest_paths]
+        to check if the table is already using the new path style.
+        """
+        await self._inner.migrate_manifest_paths_v2()
