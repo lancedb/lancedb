@@ -444,6 +444,26 @@ describe("When creating an index", () => {
     expect(fs.readdirSync(indexDir)).toHaveLength(1);
   });
 
+  test("create a hnswPq index", async () => {
+    await tbl.createIndex("vec", {
+      config: Index.hnswPq({
+        numPartitions: 10,
+      }),
+    });
+    const indexDir = path.join(tmpDir.name, "test.lance", "_indices");
+    expect(fs.readdirSync(indexDir)).toHaveLength(1);
+  });
+
+  test("create a HnswSq index", async () => {
+    await tbl.createIndex("vec", {
+      config: Index.hnswSq({
+        numPartitions: 10,
+      }),
+    });
+    const indexDir = path.join(tmpDir.name, "test.lance", "_indices");
+    expect(fs.readdirSync(indexDir)).toHaveLength(1);
+  });
+
   test("create a label list index", async () => {
     await tbl.createIndex("tags", {
       config: Index.labelList(),
