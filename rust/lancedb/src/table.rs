@@ -1632,7 +1632,7 @@ impl NativeTable {
         dataset
             .create_index(
                 &[field.name()],
-                IndexType::Scalar,
+                IndexType::Inverted,
                 None,
                 &fts_params,
                 replace,
