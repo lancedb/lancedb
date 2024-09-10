@@ -79,6 +79,7 @@ def test_input_data_type(db, tmp_path):
         "age": [25, 30, 35, 40, 45],
     }
     record_batch = pa.RecordBatch.from_pydict(data, schema=schema)
+    pa_reader = pa.RecordBatchReader.from_batches(record_batch.schema, [record_batch])
     pa_table = pa.Table.from_batches([record_batch])
 
     def create_dataset(tmp_path):
@@ -90,6 +91,7 @@ def test_input_data_type(db, tmp_path):
     pa_scanner = pa_dataset.scanner()
 
     input_types = [
+        ("RecordBatchReader", pa_reader),
         ("RecordBatch", record_batch),
         ("Table", pa_table),
         ("Dataset", pa_dataset),
