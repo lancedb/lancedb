@@ -121,7 +121,15 @@ def _sanitize_data(
         data = _to_record_batch_generator(
             data, schema, metadata, on_bad_vectors, fill_value
         )
-    else:
+    elif isinstance(data, pa.RecordBatch):
+        data = pa.Table.from_batches([data]).to_reader()
+    elif isinstance(data, pa.dataset.Dataset):
+        data = pa.dataset.Scanner.from_dataset(data).to_reader()
+    elif isinstance(data, pa.dataset.Scanner):
+        data = data.to_reader()
+    elif isinstance(data, LanceDataset):
+        data = data.scanner().to_reader()
+    elif not isinstance(data, pa.RecordBatchReader):
         raise TypeError(f"Unsupported data type: {type(data)}")
     return data, schema
 
