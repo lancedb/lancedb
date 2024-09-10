@@ -65,11 +65,13 @@ def test_basic(db):
 
 
 def test_input_data_type(db, tmp_path):
-    schema = pa.schema([
-        pa.field("id", pa.int64()),
-        pa.field("name", pa.string()),
-        pa.field("age", pa.int32()),
-    ])
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("name", pa.string()),
+            pa.field("age", pa.int32()),
+        ]
+    )
 
     data = {
         "id": [1, 2, 3, 4, 5],
