@@ -109,15 +109,8 @@ def _coerce_to_table(data, schema: Optional[pa.Schema] = None) -> pa.Table:
         and data.__class__.__name__ == "DataFrame"
     ):
         return data.to_arrow()
-    # for other iterables, assume they are of type Iterable[RecordBatch]
     elif isinstance(data, Iterable):
-        if schema is not None:
-            data = _casting_recordbatch_iter(data, schema)
-            return pa.Table.from_batches(data, schema=schema)
-        else:
-            raise ValueError(
-                "Must provide schema to write dataset from RecordBatch iterable"
-            )
+        return _process_iterator(data, schema)
     else:
         raise TypeError(
             f"Unknown data type {type(data)}. "
@@ -2060,32 +2053,27 @@ def _validate_metadata(metadata: dict):
             _validate_metadata(v)
 
 
-def _casting_recordbatch_iter(
-    input_iter: Iterable[pa.RecordBatch], schema: pa.Schema
-) -> Iterable[pa.RecordBatch]:
-    """
-    Wrapper around an iterator of record batches. If the batches don't match the
-    schema, try to cast them to the schema. If that fails, raise an error.
-
-    This is helpful for users who might have written the iterator with default
-    data types in PyArrow, but specified more specific types in the schema. For
-    example, PyArrow defaults to float64 for floating point types, but Lance
-    uses float32 for vectors.
-    """
-    for batch in input_iter:
-        if not isinstance(batch, pa.RecordBatch):
-            raise TypeError(f"Expected RecordBatch, got {type(batch)}")
-        if batch.schema != schema:
+def _process_iterator(data: Iterable, schema: pa.Schema) -> pa.Table:
+    if schema is None:
+        raise ValueError("Must provide schema to write dataset from iterable")
+    batches = []
+    for batch in data:
+        batch_table = _coerce_to_table(batch, schema)
+        if batch_table.schema != schema:
             try:
-                # RecordBatch doesn't have a cast method, but table does.
-                batch = pa.Table.from_batches([batch]).cast(schema).to_batches()[0]
+                batch_table = batch_table.cast(schema)
             except pa.lib.ArrowInvalid:
                 raise ValueError(
-                    f"Input RecordBatch iterator yielded a batch with schema that "
+                    f"Input iterator yielded a batch with schema that "
                     f"does not match the expected schema.\nExpected:\n{schema}\n"
-                    f"Got:\n{batch.schema}"
+                    f"Got:\n{batch_table.schema}"
                 )
-        yield batch
+        batches.append(batch_table)
+
+    if batches:
+        return pa.concat_tables(batches)
+    else:
+        raise ValueError("Input iterable is empty")
 
 
 class AsyncTable:
