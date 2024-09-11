@@ -209,6 +209,7 @@ def test_add(db):
             {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
             {"vector": [5.9, 26.5], "item": "bar", "price": 20.0},
         ],
+        schema = schema
     )
     _add(table, schema)
 
@@ -323,7 +324,6 @@ def test_polars(db):
 
 
 def _add(table, schema):
-    # table = LanceTable(db, "test")
     assert len(table) == 2
 
     table.add([{"vector": [6.3, 100.5], "item": "new", "price": 30.0}])

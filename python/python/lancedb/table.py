@@ -23,6 +23,7 @@ from typing import (
 from urllib.parse import urlparse
 
 import lance
+from .dependencies import _check_for_pandas
 import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
@@ -53,38 +54,24 @@ if TYPE_CHECKING:
     from .db import LanceDBConnection
     from .index import BTree, IndexConfig, IvfPq, Bitmap, LabelList, FTS
 
-
 pd = safe_import_pandas()
 pl = safe_import_polars()
 
 
-def _sanitize_data(
-    data,
-    schema: Optional[pa.Schema],
-    metadata: Optional[dict],
-    on_bad_vectors: str,
-    fill_value: Any,
-):
+def _coerce_to_table(
+    data, schema: Optional[pa.Schema] = None
+) -> pa.Table:
     if _check_for_hugging_face(data):
         # Huggingface datasets
         from lance.dependencies import datasets
-
-        if isinstance(data, datasets.dataset_dict.DatasetDict):
-            if schema is None:
-                schema = _schema_from_hf(data, schema)
-            data = _to_record_batch_generator(
-                _to_batches_with_split(data),
-                schema,
-                metadata,
-                on_bad_vectors,
-                fill_value,
-            )
-        elif isinstance(data, datasets.Dataset):
+        if isinstance(data, datasets.Dataset):
             if schema is None:
                 schema = data.features.arrow_schema
-            data = _to_record_batch_generator(
-                data.data.to_batches(), schema, metadata, on_bad_vectors, fill_value
-            )
+            return pa.Table.from_batches(data.data.to_batches(), schema=schema)
+        elif isinstance(data, datasets.dataset_dict.DatasetDict):
+            if schema is None:
+                schema = _schema_from_hf(data, schema)
+            return pa.Table.from_batches(_to_batches_with_split(data), schema=schema)
 
     if isinstance(data, LanceModel):
         raise ValueError("Cannot add a single LanceModel to a table. Use a list.")
@@ -95,59 +82,72 @@ def _sanitize_data(
             if schema is None:
                 schema = data[0].__class__.to_arrow_schema()
             data = [model_to_dict(d) for d in data]
-            data = pa.Table.from_pylist(data, schema=schema)
+            return pa.Table.from_pylist(data, schema=schema)
         else:
-            data = pa.Table.from_pylist(data)
+            return pa.Table.from_pylist(data)
     elif isinstance(data, dict):
-        data = vec_to_table(data)
-    elif pd is not None and isinstance(data, pd.DataFrame):
-        data = pa.Table.from_pandas(data, preserve_index=False)
+        return vec_to_table(data)
+    elif _check_for_pandas(data) and isinstance(data, pd.DataFrame):
+        table = pa.Table.from_pandas(data, preserve_index=False, schema=schema)
         # Do not serialize Pandas metadata
-        meta = data.schema.metadata if data.schema.metadata is not None else {}
+        meta = table.schema.metadata if table.schema.metadata is not None else {}
         meta = {k: v for k, v in meta.items() if k != b"pandas"}
-        data = data.replace_schema_metadata(meta)
-    elif pl is not None and isinstance(data, pl.DataFrame):
-        data = data.to_arrow()
-
-    if isinstance(data, pa.Table):
-        if metadata:
-            data = _append_vector_col(data, metadata, schema)
-            metadata.update(data.schema.metadata or {})
-            data = data.replace_schema_metadata(metadata)
-        data = _sanitize_schema(
-            data, schema=schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value
-        )
-        if schema is None:
-            schema = data.schema
-    elif isinstance(data, Iterable):
-        data = _to_record_batch_generator(
-            data, schema, metadata, on_bad_vectors, fill_value
-        )
-        if schema is None:
-            data, schema = _generator_to_data_and_schema(data)
-            if schema is None:
-                raise ValueError("Cannot infer schema from generator data")
+        return table.replace_schema_metadata(meta)
+    elif isinstance(data, pa.Table):
+        return data
     elif isinstance(data, pa.RecordBatch):
-        data = pa.Table.from_batches([data]).to_reader()
-        if schema is None:
-            schema = data.schema
-    elif isinstance(data, pa.dataset.Dataset):
-        data = pa.dataset.Scanner.from_dataset(data).to_reader()
-        if schema is None:
-            schema = data.schema
-    elif isinstance(data, pa.dataset.Scanner):
-        data = data.to_reader()
-        if schema is None:
-            schema = data.schema
+        return pa.Table.from_batches([data])
     elif isinstance(data, LanceDataset):
-        data = data.scanner().to_reader()
-        if schema is None:
-            schema = data.schema
+        return data.scanner().to_table()
+    elif isinstance(data, pa.dataset.Dataset):
+        return data.to_table()
+    elif isinstance(data, pa.dataset.Scanner):
+        return data.to_table()
     elif isinstance(data, pa.RecordBatchReader):
-        if schema is None:
-            schema = data.schema
-    elif not isinstance(data, pa.RecordBatchReader):
-        raise TypeError(f"Unsupported data type: {type(data)}")
+        return data.read_all()
+    elif (
+        type(data).__module__.startswith("polars")
+        and data.__class__.__name__ == "DataFrame"
+    ):
+        return data.to_arrow()
+    # for other iterables, assume they are of type Iterable[RecordBatch]
+    elif isinstance(data, Iterable):
+        if schema is not None:
+            data = _casting_recordbatch_iter(data, schema)
+            return pa.Table.from_batches(data, schema=schema)
+        else:
+            raise ValueError(
+                "Must provide schema to write dataset from RecordBatch iterable"
+            )
+    else:
+        raise TypeError(
+            f"Unknown data type {type(data)}. "
+            "Please check "
+            "https://lancedb.github.io/lancedb/python/python/ "
+            "to see supported types."
+        )
+
+
+def _sanitize_data(
+    data: Any,
+    schema: Optional[pa.Schema] = None,
+    metadata: Optional[dict] = None, # embedding metadata
+    on_bad_vectors: str = "error",
+    fill_value: float = 0.0
+):
+    data = _coerce_to_table(data, schema)
+
+    if metadata:
+        data = _append_vector_col(data, metadata, schema)
+        metadata.update(data.schema.metadata or {})
+        data = data.replace_schema_metadata(metadata)
+
+    # TODO improve the logics in _sanitize_schema
+    data = _sanitize_schema(data, schema, on_bad_vectors, fill_value)
+    if schema is None:
+        schema = data.schema
+
+    _validate_schema(schema)
     return data, schema
 
 
@@ -2033,6 +2033,58 @@ def _sanitize_nans(data, fill_value, on_bad_vectors, vec_arr, vector_column_name
         data = data.filter(is_full)
     return data
 
+def _validate_schema(schema: pa.Schema):
+    """
+    Make sure the metadata is valid utf8
+    """
+    if schema.metadata is not None:
+        _validate_metadata(schema.metadata)
+
+
+def _validate_metadata(metadata: dict):
+    """
+    Make sure the metadata values are valid utf8 (can be nested)
+
+    Raises ValueError if not valid utf8
+    """
+    for k, v in metadata.items():
+        if isinstance(v, bytes):
+            try:
+                v.decode("utf8")
+            except UnicodeDecodeError:
+                raise ValueError(
+                    f"Metadata key {k} is not valid utf8. "
+                    "Consider base64 encode for generic binary metadata."
+                )
+        elif isinstance(v, dict):
+            _validate_metadata(v)
+
+def _casting_recordbatch_iter(
+    input_iter: Iterable[pa.RecordBatch], schema: pa.Schema
+) -> Iterable[pa.RecordBatch]:
+    """
+    Wrapper around an iterator of record batches. If the batches don't match the
+    schema, try to cast them to the schema. If that fails, raise an error.
+
+    This is helpful for users who might have written the iterator with default
+    data types in PyArrow, but specified more specific types in the schema. For
+    example, PyArrow defaults to float64 for floating point types, but Lance
+    uses float32 for vectors.
+    """
+    for batch in input_iter:
+        if not isinstance(batch, pa.RecordBatch):
+            raise TypeError(f"Expected RecordBatch, got {type(batch)}")
+        if batch.schema != schema:
+            try:
+                # RecordBatch doesn't have a cast method, but table does.
+                batch = pa.Table.from_batches([batch]).cast(schema).to_batches()[0]
+            except pa.lib.ArrowInvalid:
+                raise ValueError(
+                    f"Input RecordBatch iterator yielded a batch with schema that "
+                    f"does not match the expected schema.\nExpected:\n{schema}\n"
+                    f"Got:\n{batch.schema}"
+                )
+        yield batch
 
 class AsyncTable:
     """
