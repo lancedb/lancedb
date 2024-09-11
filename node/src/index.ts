@@ -197,35 +197,30 @@ export async function connect(
 export async function connect(
   arg: string | Partial<ConnectionOptions>
 ): Promise<Connection> {
-  let opts: ConnectionOptions;
+  let partOpts: Partial<ConnectionOptions>;
   if (typeof arg === "string") {
-    opts = { uri: arg };
+    partOpts = { uri: arg };
   } else {
     const keys = Object.keys(arg);
     if (keys.length === 1 && keys[0] === "uri" && typeof arg.uri === "string") {
-      opts = { uri: arg.uri };
+      partOpts = { uri: arg.uri };
     } else {
-      opts = Object.assign(
-        {
-          uri: "",
-          awsCredentials: undefined,
-          awsRegion: defaultAwsRegion,
-          apiKey: undefined,
-          region: defaultAwsRegion,
-          timeout: defaultRequestTimeout
-        },
-        arg
-      );
+      partOpts = arg;
     }
   }
-  if (opts.awsRegion === undefined) {
-    opts.awsRegion = defaultAwsRegion;
-  }
-  if (opts.region === undefined) {
-    opts.region = defaultAwsRegion;
-  }
-  if (opts.timeout === undefined) {
-    opts.timeout = defaultRequestTimeout;
+
+  let defaultRegion = process.env.AWS_REGION ?? process.env.AWS_DEFAULT_REGION;
+  defaultRegion = (defaultRegion ?? "").trim() !== "" ? defaultRegion : defaultAwsRegion;
+
+  const opts: ConnectionOptions = {
+    uri: partOpts.uri ?? "",
+    awsCredentials: partOpts.awsCredentials ?? undefined,
+    awsRegion: partOpts.awsRegion ?? defaultRegion,
+    apiKey: partOpts.apiKey ?? undefined,
+    region: partOpts.region ?? defaultRegion,
+    timeout: partOpts.timeout ?? defaultRequestTimeout,
+    readConsistencyInterval: partOpts.readConsistencyInterval ?? undefined,
+    storageOptions: partOpts.storageOptions ?? undefined
   }
   if (opts.uri.startsWith("db://")) {
     // Remote connection
