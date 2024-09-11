@@ -92,13 +92,13 @@ def test_value_to_sql_string(tmp_path):
     # they contain characters meaningful in SQL, such as ' and \.
     values = [
         "anthony's",
-        "test\n newline",
-        "anthony's \n newline",
+        'a "test" string',
+        "anthony's \"favorite color\" wasn't red"
     ]
     expected_values = [
-        '"anthony\'s"',
-        '"test\n newline"',
-        '"anthony\'s \n newline"',
+        "'anthony''s'",
+        "'a \"test\" string'",
+        "'anthony''s \"favorite color\" wasn''t red'",
     ]
 
     for value, expected in zip(values, expected_values):
@@ -110,12 +110,8 @@ def test_value_to_sql_string(tmp_path):
     db = lancedb.connect(tmp_path)
     table = db.create_table(
         "test",
-        [
-            {"search": "anthony's", "replace": "something"},
-            {"search": "test\n newline", "replace": "something"},
-            {"search": "anthony's \n newline", "replace": "something"},
-        ],
+        [{"search": value, "replace": "something"} for value in values],
     )
     for value in values:
-        table.update(where=f'search = "{value}"', values={"replace": value})
+        table.update(where=f'search = {value_to_sql(value)}', values={"replace": value})
         assert table.to_pandas().query("search == @value")["replace"].item() == value
