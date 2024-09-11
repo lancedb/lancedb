@@ -82,7 +82,7 @@ export class RemoteConnection extends Connection {
       // biome-ignore lint/style/useNamingConvention: <explanation>
       page_token: options?.startAfter ?? "",
     });
-    const body = await response.body();
+    const body = await response;
     for (const table of body.tables) {
       this.#tableCache.set(table, true);
     }

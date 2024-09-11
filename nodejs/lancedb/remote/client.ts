@@ -42,23 +42,22 @@ export class RestfulLanceDBClient {
     this.#region = region;
     this.#hostOverride = hostOverride ?? this.#hostOverride;
     this.#timeout = timeout ?? this.#timeout;
+    this.#session = undefined;
   }
 
-  // todo: cache the session.
   get session(): import("axios").AxiosInstance {
-    if (this.#session !== undefined) {
-      return this.#session;
-    } else {
-      return axios.create({
+    if (this.#session === undefined) {
+      this.#session = axios.create({
         baseURL: this.url,
         headers: {
           // biome-ignore lint: external API
-          Authorization: `Bearer ${this.#apiKey}`,
+          "x-api-key": this.#apiKey,
         },
         transformResponse: decodeErrorData,
         timeout: this.#timeout,
       });
     }
+    return this.#session;
   }
 
   get url(): string {
@@ -66,20 +65,6 @@ export class RestfulLanceDBClient {
       this.#hostOverride ??
       `https://${this.#dbName}.${this.#region}.api.lancedb.com`
     );
-  }
-
-  get headers(): { [key: string]: string } {
-    const headers: { [key: string]: string } = {
-      "x-api-key": this.#apiKey,
-      "x-request-id": "na",
-    };
-    if (this.#region == "local") {
-      headers["Host"] = `${this.#dbName}.${this.#region}.api.lancedb.com`;
-    }
-    if (this.#hostOverride) {
-      headers["x-lancedb-database"] = this.#dbName;
-    }
-    return headers;
   }
 
   isOpen(): boolean {
@@ -104,7 +89,6 @@ export class RestfulLanceDBClient {
     let response;
     try {
       response = await this.session.get(uri, {
-        headers: this.headers,
         params,
       });
     } catch (e) {
@@ -149,7 +133,7 @@ export class RestfulLanceDBClient {
       additional,
     );
 
-    const headers = { ...this.headers, ...additional.headers };
+    const headers = { ...additional.headers };
 
     if (!headers["Content-Type"]) {
       headers["Content-Type"] = "application/json";
