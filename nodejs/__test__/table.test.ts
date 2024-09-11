@@ -872,7 +872,7 @@ describe.each([arrow13, arrow14, arrow15, arrow16, arrow17])(
       ];
       const table = await db.createTable("test", data);
       await table.createIndex("text", {
-        config: Index.fts({ withPositions: false }),
+        config: Index.fts({ withPosition: false }),
       });
 
       const results = await table.search("hello").toArray();

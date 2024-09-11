@@ -142,7 +142,7 @@ export interface FtsOptions {
    * If set to false, the index will not store the positions of the tokens in the text,
    * which will make the index smaller and faster to build, but will not support phrase queries.
    */
-  withPositions?: boolean;
+  withPosition?: boolean;
 }
 
 export class Index {
@@ -244,7 +244,7 @@ export class Index {
    * For now, the full text search index only supports English, and doesn't support phrase search.
    */
   static fts(options?: Partial<FtsOptions>) {
-    return new Index(LanceDbIndex.fts(options?.withPositions));
+    return new Index(LanceDbIndex.fts(options?.withPosition));
   }
 
   /**
