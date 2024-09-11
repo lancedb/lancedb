@@ -143,7 +143,7 @@ def test_create_index_with_stemming(tmp_path, table):
 @pytest.mark.parametrize("with_position", [True, False])
 def test_create_inverted_index(table, use_tantivy, with_position):
     if use_tantivy and not with_position:
-        pytest.skip("we don't support to build tantivy index without position")
+        pytest.skip("we don't support building a tantivy index without position")
     table.create_fts_index("text", use_tantivy=use_tantivy, with_position=with_position)
 
 

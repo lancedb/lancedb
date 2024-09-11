@@ -505,7 +505,7 @@ class Table(ABC):
             Only available with use_tantivy=False
             If False, do not store the positions of the terms in the text.
             This can reduce the size of the index and improve indexing speed.
-            But it will not be possible to use phrase queries.
+            But it will raise an exception for phrase queries.
 
         """
         raise NotImplementedError
