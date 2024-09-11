@@ -60,7 +60,7 @@ export {
   type MakeArrowTableOptions
 } from "./arrow";
 
-const defaultAwsRegion = "us-west-2";
+const defaultAwsRegion = "us-east-1";
 
 const defaultRequestTimeout = 10_000
 
@@ -111,7 +111,7 @@ export interface ConnectionOptions {
    */
   apiKey?: string
 
-  /** Region to connect */
+  /** Region to connect. Default is 'us-east-1' */
   region?: string
 
   /**
@@ -212,13 +212,21 @@ export async function connect(
           awsRegion: defaultAwsRegion,
           apiKey: undefined,
           region: defaultAwsRegion,
-          timeout: defaultRequestTimeout 
+          timeout: defaultRequestTimeout
         },
         arg
       );
     }
   }
-
+  if (opts.awsRegion === undefined) {
+    opts.awsRegion = defaultAwsRegion;
+  }
+  if (opts.region === undefined) {
+    opts.region = defaultAwsRegion;
+  }
+  if (opts.timeout === undefined) {
+    opts.timeout = defaultRequestTimeout;
+  }
   if (opts.uri.startsWith("db://")) {
     // Remote connection
     return new RemoteConnection(opts);
