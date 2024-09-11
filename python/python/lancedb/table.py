@@ -58,12 +58,11 @@ pd = safe_import_pandas()
 pl = safe_import_polars()
 
 
-def _coerce_to_table(
-    data, schema: Optional[pa.Schema] = None
-) -> pa.Table:
+def _coerce_to_table(data, schema: Optional[pa.Schema] = None) -> pa.Table:
     if _check_for_hugging_face(data):
         # Huggingface datasets
         from lance.dependencies import datasets
+
         if isinstance(data, datasets.Dataset):
             if schema is None:
                 schema = data.features.arrow_schema
@@ -131,9 +130,9 @@ def _coerce_to_table(
 def _sanitize_data(
     data: Any,
     schema: Optional[pa.Schema] = None,
-    metadata: Optional[dict] = None, # embedding metadata
+    metadata: Optional[dict] = None,  # embedding metadata
     on_bad_vectors: str = "error",
-    fill_value: float = 0.0
+    fill_value: float = 0.0,
 ):
     data = _coerce_to_table(data, schema)
 
@@ -2033,6 +2032,7 @@ def _sanitize_nans(data, fill_value, on_bad_vectors, vec_arr, vector_column_name
         data = data.filter(is_full)
     return data
 
+
 def _validate_schema(schema: pa.Schema):
     """
     Make sure the metadata is valid utf8
@@ -2058,6 +2058,7 @@ def _validate_metadata(metadata: dict):
                 )
         elif isinstance(v, dict):
             _validate_metadata(v)
+
 
 def _casting_recordbatch_iter(
     input_iter: Iterable[pa.RecordBatch], schema: pa.Schema
@@ -2085,6 +2086,7 @@ def _casting_recordbatch_iter(
                     f"Got:\n{batch.schema}"
                 )
         yield batch
+
 
 class AsyncTable:
     """
