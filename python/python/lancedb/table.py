@@ -87,7 +87,8 @@ def _coerce_to_table(data, schema: Optional[pa.Schema] = None) -> pa.Table:
     elif isinstance(data, dict):
         return vec_to_table(data)
     elif _check_for_pandas(data) and isinstance(data, pd.DataFrame):
-        table = pa.Table.from_pandas(data, preserve_index=False, schema=schema)
+        # Do not add schema here, since schema may contains the vector column
+        table = pa.Table.from_pandas(data, preserve_index=False)
         # Do not serialize Pandas metadata
         meta = table.schema.metadata if table.schema.metadata is not None else {}
         meta = {k: v for k, v in meta.items() if k != b"pandas"}
@@ -2053,21 +2054,20 @@ def _validate_metadata(metadata: dict):
             _validate_metadata(v)
 
 
-def _process_iterator(data: Iterable, schema: pa.Schema) -> pa.Table:
-    if schema is None:
-        raise ValueError("Must provide schema to write dataset from iterable")
+def _process_iterator(data: Iterable, schema: Optional[pa.Schema] = None) -> pa.Table:
     batches = []
     for batch in data:
         batch_table = _coerce_to_table(batch, schema)
-        if batch_table.schema != schema:
-            try:
-                batch_table = batch_table.cast(schema)
-            except pa.lib.ArrowInvalid:
-                raise ValueError(
-                    f"Input iterator yielded a batch with schema that "
-                    f"does not match the expected schema.\nExpected:\n{schema}\n"
-                    f"Got:\n{batch_table.schema}"
-                )
+        if schema is not None:
+            if batch_table.schema != schema:
+                try:
+                    batch_table = batch_table.cast(schema)
+                except pa.lib.ArrowInvalid:
+                    raise ValueError(
+                        f"Input iterator yielded a batch with schema that "
+                        f"does not match the expected schema.\nExpected:\n{schema}\n"
+                        f"Got:\n{batch_table.schema}"
+                    )
         batches.append(batch_table)
 
     if batches:
