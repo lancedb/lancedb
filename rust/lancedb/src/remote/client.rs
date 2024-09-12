@@ -174,7 +174,7 @@ pub mod test_utils {
         async fn send(&self, request: reqwest::RequestBuilder) -> Result<reqwest::Response> {
             let request = request.build().unwrap();
             let response = (self.f)(request);
-            Ok(reqwest::Response::from(response))
+            Ok(response)
         }
     }
 

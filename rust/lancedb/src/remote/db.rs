@@ -16,6 +16,7 @@ use std::sync::Arc;
 
 use arrow_array::RecordBatchReader;
 use async_trait::async_trait;
+use http::StatusCode;
 use reqwest::header::CONTENT_TYPE;
 use serde::Deserialize;
 use tokio::task::spawn_blocking;
@@ -114,6 +115,16 @@ impl<S: HttpSend> ConnectionInternal for RemoteDatabase<S> {
             // This is currently expected by LanceDb cloud but will be removed soon.
             .header("x-request-id", "na");
         let rsp = self.client.send(req).await?;
+
+        if rsp.status() == StatusCode::BAD_REQUEST {
+            let body = rsp.text().await?;
+            if body.contains("already exists") {
+                return Err(crate::Error::TableAlreadyExists { name: options.name });
+            } else {
+                return Err(crate::Error::InvalidInput { message: body });
+            }
+        }
+
         self.client.check_response(rsp).await?;
 
         Ok(Table::new(Arc::new(RemoteTable::new(
@@ -122,16 +133,34 @@ impl<S: HttpSend> ConnectionInternal for RemoteDatabase<S> {
         ))))
     }
 
-    async fn do_open_table(&self, _options: OpenTableBuilder) -> Result<Table> {
-        todo!()
+    async fn do_open_table(&self, options: OpenTableBuilder) -> Result<Table> {
+        // We describe the table to confirm it exists before moving on.
+        // TODO: a TTL cache of table existence
+        let req = self
+            .client
+            .get(&format!("/v1/table/{}/describe/", options.name));
+        let resp = self.client.send(req).await?;
+        if resp.status() == StatusCode::NOT_FOUND {
+            return Err(crate::Error::TableNotFound { name: options.name });
+        }
+        self.client.check_response(resp).await?;
+        Ok(Table::new(Arc::new(RemoteTable::new(
+            self.client.clone(),
+            options.name,
+        ))))
     }
 
-    async fn drop_table(&self, _name: &str) -> Result<()> {
-        todo!()
+    async fn drop_table(&self, name: &str) -> Result<()> {
+        let req = self.client.post(&format!("/v1/table/{}/drop/", name));
+        let resp = self.client.send(req).await?;
+        self.client.check_response(resp).await?;
+        Ok(())
     }
 
     async fn drop_db(&self) -> Result<()> {
-        todo!()
+        Err(crate::Error::NotSupported {
+            message: "Dropping databases is not supported in the remote API".to_string(),
+        })
     }
 
     fn embedding_registry(&self) -> &dyn EmbeddingRegistry {
@@ -141,7 +170,12 @@ impl<S: HttpSend> ConnectionInternal for RemoteDatabase<S> {
 
 #[cfg(test)]
 mod tests {
-    use crate::Connection;
+    use std::sync::Arc;
+
+    use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator};
+    use arrow_schema::{DataType, Field, Schema};
+
+    use crate::{remote::db::ARROW_STREAM_CONTENT_TYPE, Connection};
 
     #[tokio::test]
     async fn test_table_names() {
@@ -150,14 +184,155 @@ mod tests {
             assert_eq!(request.url().path(), "/v1/table/");
             assert_eq!(request.url().query(), None);
 
-            // Build response
-            let response = http::Response::builder()
+            http::Response::builder()
                 .status(200)
                 .body(r#"{"tables": ["table1", "table2"]}"#)
-                .unwrap();
-            response
+                .unwrap()
         });
         let names = conn.table_names().execute().await.unwrap();
         assert_eq!(names, vec!["table1", "table2"]);
+    }
+
+    #[tokio::test]
+    async fn test_table_names_pagination() {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::GET);
+            assert_eq!(request.url().path(), "/v1/table/");
+            assert!(request.url().query().unwrap().contains("limit=2"));
+            assert!(request.url().query().unwrap().contains("page_token=table2"));
+
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"tables": ["table3", "table4"], "page_token": "token"}"#)
+                .unwrap()
+        });
+        let names = conn
+            .table_names()
+            .start_after("table2")
+            .limit(2)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(names, vec!["table3", "table4"]);
+    }
+
+    #[tokio::test]
+    async fn test_open_table() {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::GET);
+            assert_eq!(request.url().path(), "/v1/table/table1/describe/");
+            assert_eq!(request.url().query(), None);
+
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"table": "table1"}"#)
+                .unwrap()
+        });
+        let table = conn.open_table("table1").execute().await.unwrap();
+        assert_eq!(table.name(), "table1");
+
+        // Storage options should be ignored.
+        let table = conn
+            .open_table("table1")
+            .storage_option("key", "value")
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(table.name(), "table1");
+    }
+
+    #[tokio::test]
+    async fn test_open_table_not_found() {
+        let conn = Connection::new_with_handler(|_| {
+            http::Response::builder()
+                .status(404)
+                .body("table not found")
+                .unwrap()
+        });
+        let result = conn.open_table("table1").execute().await;
+        assert!(result.is_err());
+        assert!(matches!(result, Err(crate::Error::TableNotFound { .. })));
+    }
+
+    #[tokio::test]
+    async fn test_create_table() {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(request.url().path(), "/v1/table/table1/create/");
+            assert_eq!(
+                request
+                    .headers()
+                    .get(reqwest::header::CONTENT_TYPE)
+                    .unwrap(),
+                ARROW_STREAM_CONTENT_TYPE.as_bytes()
+            );
+
+            http::Response::builder().status(200).body("").unwrap()
+        });
+        let data = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+        let reader = RecordBatchIterator::new([Ok(data.clone())], data.schema());
+        let table = conn.create_table("table1", reader).execute().await.unwrap();
+        assert_eq!(table.name(), "table1");
+    }
+
+    #[tokio::test]
+    async fn test_create_table_already_exists() {
+        let conn = Connection::new_with_handler(|_| {
+            http::Response::builder()
+                .status(400)
+                .body("table table1 already exists")
+                .unwrap()
+        });
+        let data = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+        let reader = RecordBatchIterator::new([Ok(data.clone())], data.schema());
+        let result = conn.create_table("table1", reader).execute().await;
+        assert!(result.is_err());
+        assert!(
+            matches!(result, Err(crate::Error::TableAlreadyExists { name }) if name == "table1")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_create_table_empty() {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(request.url().path(), "/v1/table/table1/create/");
+            assert_eq!(
+                request
+                    .headers()
+                    .get(reqwest::header::CONTENT_TYPE)
+                    .unwrap(),
+                ARROW_STREAM_CONTENT_TYPE.as_bytes()
+            );
+
+            http::Response::builder().status(200).body("").unwrap()
+        });
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        conn.create_empty_table("table1", schema)
+            .execute()
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_drop_table() {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(request.url().path(), "/v1/table/table1/drop/");
+            assert_eq!(request.url().query(), None);
+            assert!(request.body().is_none());
+
+            http::Response::builder().status(200).body("").unwrap()
+        });
+        conn.drop_table("table1").await.unwrap();
+        // NOTE: the API will return 200 even if the table does not exist. So we shouldn't expect 404.
     }
 }

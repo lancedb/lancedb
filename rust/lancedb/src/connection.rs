@@ -335,8 +335,8 @@ impl<const HAS_DATA: bool, T: IntoArrow> CreateTableBuilder<HAS_DATA, T> {
 
 #[derive(Clone, Debug)]
 pub struct OpenTableBuilder {
-    parent: Arc<dyn ConnectionInternal>,
-    name: String,
+    pub(crate) parent: Arc<dyn ConnectionInternal>,
+    pub(crate) name: String,
     index_cache_size: u32,
     lance_read_params: Option<ReadParams>,
 }
@@ -1227,9 +1227,9 @@ mod tests {
         assert_eq!(tables, vec!["table1".to_owned()]);
     }
 
-    fn make_data() -> impl RecordBatchReader + Send + 'static {
+    fn make_data() -> Box<dyn RecordBatchReader + Send + 'static> {
         let id = Box::new(IncrementingInt32::new().named("id".to_string()));
-        BatchGenerator::new().col(id).batches(10, 2000)
+        Box::new(BatchGenerator::new().col(id).batches(10, 2000))
     }
 
     #[tokio::test]
