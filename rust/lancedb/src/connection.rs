@@ -1095,6 +1095,25 @@ impl ConnectionInternal for Database {
     }
 }
 
+#[cfg(all(test, feature = "remote"))]
+mod test_utils {
+    use super::*;
+    impl Connection {
+        pub fn new_with_handler<T>(
+            handler: impl Fn(reqwest::Request) -> http::Response<T> + Clone + Send + Sync + 'static,
+        ) -> Self
+        where
+            T: Into<reqwest::Body>,
+        {
+            let internal = Arc::new(crate::remote::db::RemoteDatabase::new_mock(handler));
+            Self {
+                internal,
+                uri: "db://test".to_string(),
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use arrow_schema::{DataType, Field, Schema};

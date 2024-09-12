@@ -65,6 +65,7 @@ aws-sdk-s3 = { version = "1.38.0" }
 aws-sdk-kms = { version = "1.37" }
 aws-config = { version = "1.0" }
 aws-smithy-runtime = { version = "1.3" }
+http = { version = "0.2"} # Matching what is in reqwest
 
 [features]
 default = []
