@@ -15,11 +15,13 @@ HNSW also combines this with the ideas behind a classic 1-dimensional search dat
 
 ## k-Nearest Neighbor Graphs and k-approximate Nearest neighbor Graphs
 The k-nearest neighbor graph actually predates its use for ANN search. Its construction is quite simple:
+
 * Each vector in the dataset is given an associated vertex.
 * Each vertex has outgoing edges to its k nearest neighbors. That is, the k closest other vertices by Euclidean distance between the two corresponding vectors. This can be thought of as a "friend list" for the vertex.
 * For some applications (including nearest-neighbor search), the incoming edges are also added.
 
 Eventually, it was realized that the following greedy search method over such a graph typically results in good approximate nearest neighbors:
+
 * Given a query vector, start at some fixed "entry point" vertex (e.g. the approximate center node).
 * Look at that vertex's neighbors. If any of them are closer to the query vector than the current vertex, then move to that vertex.
 * Repeat until a local optimum is found.
@@ -36,15 +38,18 @@ One downside of k-NN and k-ANN graphs alone is that one must typically build the
 ## HNSW: Hierarchical Navigable Small Worlds
 
 HNSW builds on k-ANN in two main ways:
+
 * Instead of getting the k-approximate nearest neighbors for a large value of k, it sparsifies the k-ANN graph using a carefully chosen "edge pruning" heuristic, allowing for the number of edges per vertex to be limited to a relatively small constant.
 * The "entry point" vertex is chosen dynamically using a recursively constructed data structure on a subset of the data, similarly to a skip list.
 
 This recursive structure can be thought of as separating into layers:
+
 * At the bottom-most layer, an k-ANN graph on the whole dataset is present.
 * At the second layer, a k-ANN graph on a fraction of the dataset (e.g. 10%) is present.
 * At the Lth layer, a k-ANN graph is present. It is over a (constant) fraction (e.g. 10%) of the vectors/vertices present in the L-1th layer.
 
 Then the greedy search routine operates as follows:
+
 * At the top layer (using an arbitrary vertex as an entry point), use the greedy local search routine on the k-ANN graph to get an approximate nearest neighbor at that layer.
 * Using the approximate nearest neighbor found in the previous layer as an entry point, find an approximate nearest neighbor in the next layer with the same method.
 * Repeat until the bottom-most layer is reached. Then use the entry point to find multiple nearest neighbors (e.g. top 10).

@@ -391,7 +391,7 @@ impl JsTable {
                 materialize_deletions_threshold.value(&mut cx) as f32;
         }
         if let Some(num_threads) = js_options.get_opt::<JsNumber, _, _>(&mut cx, "numThreads")? {
-            options.num_threads = num_threads.value(&mut cx) as usize;
+            options.num_threads = Some(num_threads.value(&mut cx) as usize);
         }
 
         rt.spawn(async move {
