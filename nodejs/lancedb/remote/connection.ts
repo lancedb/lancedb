@@ -94,9 +94,17 @@ export class RemoteConnection extends Connection {
     _options?: Partial<OpenTableOptions> | undefined,
   ): Promise<Table> {
     if (this.#tableCache.get(name) === undefined) {
-      await this.#client.post(
-        `/v1/table/${encodeURIComponent(name)}/describe/`,
-      );
+      try {
+        await this.#client.post(
+          `/v1/table/${encodeURIComponent(name)}/describe/`,
+        );
+      } catch (e: any) {
+        if (e.status === 404) {
+          throw new Error(`Table "${name}" does not exist`);
+        }
+
+        throw e;
+      }
       this.#tableCache.set(name, true);
     }
     return new RemoteTable(this.#client, name, this.#dbName);
@@ -137,16 +145,14 @@ export class RemoteConnection extends Connection {
       true /** streaming */,
     );
 
-    await this.#client.post(
+    const _ = await this.#client.post(
       `/v1/table/${encodeURIComponent(nameOrOptions)}/create/`,
       buf,
       {
-        config: {
-          responseType: "arraybuffer",
-        },
         headers: { "Content-Type": "application/vnd.apache.arrow.stream" },
       },
     );
+    
     this.#tableCache.set(nameOrOptions, true);
     return new RemoteTable(this.#client, nameOrOptions, this.#dbName);
   }

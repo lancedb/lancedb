@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+import { tableFromArrays, tableToIPC } from "apache-arrow";
 import axios, { AxiosInstance } from "axios";
 import * as lancedb from "../lancedb";
 
@@ -74,23 +75,120 @@ describe("RemoteConnection#tableNames", () => {
 
 describe("RemoteConnection#openTable", () => {
   it("should make a valid open table request", async () => {
-    const _db = await lancedb.connect("db://test", {
+    const db = await lancedb.connect("db://test", {
       apiKey: "test",
       region: "us-west-2",
     });
+
+    mockedAxios.post.mockResolvedValue({
+      status: 200,
+      data: {
+        table: "table1",
+        version: 42,
+        schema: "TODO",
+        stats: {},
+      },
+    });
+
+    const table = await db.openTable("table1");
+    const expectedUri =
+      "https://test.us-west-2.api.lancedb.com/v1/table/table1/describe/";
+    const expectedConfig = {
+      headers: {
+        "Content-Type": "application/json",
+      },
+      params: new Map<string, string>(),
+      responseType: "json",
+    };
+    expect(mockedAxios.post).toHaveBeenCalledWith(
+      expectedUri,
+      undefined,
+      expectedConfig,
+    );
+    expect(table.name).toEqual("table1");
+
+    // Parameters should be ignored
+    await db.openTable("table1", {
+      indexCacheSize: 10,
+      storageOptions: { key: "value" },
+    });
+    expect(mockedAxios.post).toHaveBeenCalledWith(
+      expectedUri,
+      undefined,
+      expectedConfig,
+    );
   });
 
-  it("should raise a TableNotFoundError if the table does not exist", async () => {});
+  it("should raise a TableNotFoundError if the table does not exist", async () => {
+    const db = await lancedb.connect("db://test", {
+      apiKey: "test",
+      region: "us-west-2",
+    });
+
+    mockedAxios.post.mockResolvedValue({
+      status: 404,
+    });
+
+    expect(async () => {
+      await db.openTable("table1");
+    }).rejects.toThrow('Table "table1" does not exist');
+  });
 });
 
 describe("RemoteConnection#createTable", () => {
-  it("should make a valid create table request", async () => {});
+  it("should make a valid create table request", async () => {
+    const db = await lancedb.connect("db://test", {
+      apiKey: "test",
+      region: "us-west-2",
+    });
 
-  it("should raise an error if mode other than 'create' is passed", async () => {});
+    const data = tableFromArrays({
+      x: Float32Array.from([1, 2, 3]),
+    });
+    const ipcBuffer = tableToIPC(data, "stream");
+    const expectedBody = Buffer.from(ipcBuffer);
 
-  it("should raise an error if you try to pass embedding functions", async () => {});
+    mockedAxios.post.mockResolvedValue({
+      status: 200,
+    });
 
-  it("should raise a TableAlreadyExistsError if the table already exists", async () => {});
+    await db.createTable("table1", data);
+    const expectedUri =
+      "https://test.us-west-2.api.lancedb.com/v1/table/table1/create/";
+    const expectedConfig = {
+      headers: {
+        "Content-Type": "application/vnd.apache.arrow.stream",
+      },
+      params: new Map<string, string>(),
+      responseType: "json",
+    };
+    expect(mockedAxios.post).toHaveBeenCalledWith(
+      expectedUri,
+      expectedBody,
+      expectedConfig,
+    );
+  });
+
+  it("should raise a TableAlreadyExistsError if the table already exists", async () => {
+    const db = await lancedb.connect("db://test", {
+      apiKey: "test",
+      region: "us-west-2",
+    });
+
+    mockedAxios.post.mockResolvedValue({
+      status: 400,
+      body: {
+        error: "Table table1 already exists",
+      }
+    });
+
+    expect(async () => {
+      const data = tableFromArrays({
+        x: Float32Array.from([1, 2, 3]),
+      });
+      await db.createTable("table1", data);
+    }).rejects.toThrow('Table table1 already exists');
+  });
 });
 
 describe("RemoteConnection#createEmptyTable", () => {

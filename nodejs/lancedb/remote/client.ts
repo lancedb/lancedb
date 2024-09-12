@@ -99,7 +99,8 @@ export class RestfulLanceDBClient {
       }
     }
 
-    RestfulLanceDBClient.checkStatus(response!);
+    RequestError.checkStatus(response!);
+
     return response!.data;
   }
 
@@ -128,20 +129,19 @@ export class RestfulLanceDBClient {
   ): Promise<any> {
     this.checkNotClosed();
     uri = new URL(uri, this.url).toString();
-    additional = Object.assign(
-      { config: { responseType: "json" } },
-      additional,
-    );
 
-    const headers = { ...additional.headers };
-
-    if (!headers["Content-Type"]) {
-      headers["Content-Type"] = "application/json";
+    if (additional === undefined) {
+      additional = {};
     }
+    additional.config = additional.config ?? { responseType: "json" };
+    additional.headers = additional.headers ?? {};
+    additional.headers["Content-Type"] =
+      additional.headers["Content-Type"] || "application/json";
+
     let response;
     try {
       response = await this.session.post(uri, body, {
-        headers,
+        headers: additional.headers,
         responseType: additional!.config!.responseType,
         params: new Map(Object.entries(additional.params ?? {})),
       });
@@ -152,12 +152,8 @@ export class RestfulLanceDBClient {
         throw e;
       }
     }
-    RestfulLanceDBClient.checkStatus(response!);
-    if (additional!.config!.responseType === "arraybuffer") {
-      return response!.data;
-    } else {
-      return JSON.parse(response!.data);
-    }
+    RequestError.checkStatus(response!);
+    return response!.data;
   }
 
   async listTables(limit = 10, pageToken = ""): Promise<string[]> {
@@ -173,24 +169,6 @@ export class RestfulLanceDBClient {
     });
     return tableFromIPC(tbl);
   }
-
-  static checkStatus(response: AxiosResponse): void {
-    if (response.status === 404) {
-      throw new Error(`Not found: ${response.data}`);
-    } else if (response.status >= 400 && response.status < 500) {
-      throw new Error(
-        `Bad Request: ${response.status}, error: ${response.data}`,
-      );
-    } else if (response.status >= 500 && response.status < 600) {
-      throw new Error(
-        `Internal Server Error: ${response.status}, error: ${response.data}`,
-      );
-    } else if (response.status !== 200) {
-      throw new Error(
-        `Unknown Error: ${response.status}, error: ${response.data}`,
-      );
-    }
-  }
 }
 
 function decodeErrorData(data: unknown) {
@@ -199,4 +177,26 @@ function decodeErrorData(data: unknown) {
     return decoded;
   }
   return data;
+}
+
+export class RequestError extends Error {
+  constructor(
+    public message: string,
+    public status?: number,
+    public response?: AxiosResponse,
+  ) {
+    super(message);
+    this.name = "RequestError";
+    this.message = message;
+  }
+
+  public static checkStatus(response: AxiosResponse) {
+    if (response.status >= 300) {
+      throw new RequestError(response.statusText, response.status, response);
+    }
+  }
+
+  public toString(): string {
+    return `${this.name}: ${this.message}`;
+  }
 }
