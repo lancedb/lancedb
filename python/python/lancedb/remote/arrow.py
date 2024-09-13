@@ -11,12 +11,15 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
+from typing import Iterable, Union
 import pyarrow as pa
 
 
-def to_ipc_binary(table: pa.Table) -> bytes:
+def to_ipc_binary(table: Union[pa.Table, Iterable[pa.RecordBatch]]) -> bytes:
     """Serialize a PyArrow Table to IPC binary."""
     sink = pa.BufferOutputStream()
+    if isinstance(table, Iterable):
+        table = pa.Table.from_batches(table)
     with pa.ipc.new_stream(sink, table.schema) as writer:
         writer.write_table(table)
     return sink.getvalue().to_pybytes()

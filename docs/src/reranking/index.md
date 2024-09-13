@@ -45,6 +45,23 @@ tbl.create_fts_index("text")
 result = tbl.query("hello", query_type="hybrid").rerank(reranker).to_list()
 ```
 
+### Multi-vector reranking
+Most rerankers support reranking based on multiple vectors. To rerank based on multiple vectors, you can pass a list of vectors to the `rerank` method. Here's an example of how to rerank based on multiple vector columns using the `CrossEncoderReranker`:
+
+```python
+from lancedb.rerankers import CrossEncoderReranker
+
+reranker = CrossEncoderReranker()
+
+query = "hello"
+
+res1 = table.search(query, vector_column_name="vector").limit(3)
+res2 = table.search(query, vector_column_name="text_vector").limit(3)
+res3 = table.search(query, vector_column_name="meta_vector").limit(3)
+
+reranked = reranker.rerank_multivector([res1, res2, res3],  deduplicate=True)
+```
+    
 ## Available Rerankers
 LanceDB comes with some built-in rerankers. Here are some of the rerankers that are available in LanceDB:
 
@@ -54,6 +71,8 @@ LanceDB comes with some built-in rerankers. Here are some of the rerankers that 
 - [OpenAI Reranker](./openai.md)
 - [Linear Combination Reranker](./linear_combination.md)
 - [Jina Reranker](./jina.md)
+- [AnswerDotAI Rerankers](./answerdotai.md)
+- [Reciprocal Rank Fusion Reranker](./rrf.md)
 
 ## Creating Custom Rerankers
 

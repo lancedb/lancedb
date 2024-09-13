@@ -29,14 +29,26 @@ def table(tmp_path) -> ldb.table.LanceTable:
     db = ldb.connect(tmp_path)
     vectors = [np.random.randn(128) for _ in range(100)]
 
-    nouns = ("puppy", "car", "rabbit", "girl", "monkey")
+    text_nouns = ("puppy", "car")
+    text2_nouns = ("rabbit", "girl", "monkey")
     verbs = ("runs", "hits", "jumps", "drives", "barfs")
     adv = ("crazily.", "dutifully.", "foolishly.", "merrily.", "occasionally.")
     adj = ("adorable", "clueless", "dirty", "odd", "stupid")
     text = [
         " ".join(
             [
-                nouns[random.randrange(0, 5)],
+                text_nouns[random.randrange(0, len(text_nouns))],
+                verbs[random.randrange(0, 5)],
+                adv[random.randrange(0, 5)],
+                adj[random.randrange(0, 5)],
+            ]
+        )
+        for _ in range(100)
+    ]
+    text2 = [
+        " ".join(
+            [
+                text2_nouns[random.randrange(0, len(text2_nouns))],
                 verbs[random.randrange(0, 5)],
                 adv[random.randrange(0, 5)],
                 adj[random.randrange(0, 5)],
@@ -52,7 +64,7 @@ def table(tmp_path) -> ldb.table.LanceTable:
                 "vector": vectors,
                 "id": [i % 2 for i in range(100)],
                 "text": text,
-                "text2": text,
+                "text2": text2,
                 "nested": [{"text": t} for t in text],
                 "count": count,
             }
@@ -66,14 +78,26 @@ async def async_table(tmp_path) -> ldb.table.AsyncTable:
     db = await ldb.connect_async(tmp_path)
     vectors = [np.random.randn(128) for _ in range(100)]
 
-    nouns = ("puppy", "car", "rabbit", "girl", "monkey")
+    text_nouns = ("puppy", "car")
+    text2_nouns = ("rabbit", "girl", "monkey")
     verbs = ("runs", "hits", "jumps", "drives", "barfs")
     adv = ("crazily.", "dutifully.", "foolishly.", "merrily.", "occasionally.")
     adj = ("adorable", "clueless", "dirty", "odd", "stupid")
     text = [
         " ".join(
             [
-                nouns[random.randrange(0, 5)],
+                text_nouns[random.randrange(0, len(text_nouns))],
+                verbs[random.randrange(0, 5)],
+                adv[random.randrange(0, 5)],
+                adj[random.randrange(0, 5)],
+            ]
+        )
+        for _ in range(100)
+    ]
+    text2 = [
+        " ".join(
+            [
+                text2_nouns[random.randrange(0, len(text2_nouns))],
                 verbs[random.randrange(0, 5)],
                 adv[random.randrange(0, 5)],
                 adj[random.randrange(0, 5)],
@@ -89,7 +113,7 @@ async def async_table(tmp_path) -> ldb.table.AsyncTable:
                 "vector": vectors,
                 "id": [i % 2 for i in range(100)],
                 "text": text,
-                "text2": text,
+                "text2": text2,
                 "nested": [{"text": t} for t in text],
                 "count": count,
             }
@@ -116,8 +140,11 @@ def test_create_index_with_stemming(tmp_path, table):
 
 
 @pytest.mark.parametrize("use_tantivy", [True, False])
-def test_create_inverted_index(table, use_tantivy):
-    table.create_fts_index("text", use_tantivy=use_tantivy)
+@pytest.mark.parametrize("with_position", [True, False])
+def test_create_inverted_index(table, use_tantivy, with_position):
+    if use_tantivy and not with_position:
+        pytest.skip("we don't support building a tantivy index without position")
+    table.create_fts_index("text", use_tantivy=use_tantivy, with_position=with_position)
 
 
 def test_populate_index(tmp_path, table):
@@ -142,10 +169,113 @@ def test_search_fts(table, use_tantivy):
     assert len(results) == 5
 
 
+def test_search_fts_phrase_query(table):
+    table.create_fts_index("text", use_tantivy=False, with_position=False)
+    try:
+        phrase_results = table.search('"puppy runs"').limit(100).to_list()
+        assert False
+    except Exception:
+        pass
+    table.create_fts_index("text", use_tantivy=False, replace=True)
+    results = table.search("puppy").limit(100).to_list()
+    phrase_results = table.search('"puppy runs"').limit(100).to_list()
+    assert len(results) > len(phrase_results)
+    assert len(phrase_results) > 0
+
+
+@pytest.mark.asyncio
+async def test_search_fts_phrase_query_async(async_table):
+    async_table = await async_table
+    await async_table.create_index("text", config=FTS(with_position=False))
+    try:
+        phrase_results = (
+            await async_table.query().nearest_to_text("puppy runs").limit(100).to_list()
+        )
+        assert False
+    except Exception:
+        pass
+    await async_table.create_index("text", config=FTS())
+    results = await async_table.query().nearest_to_text("puppy").limit(100).to_list()
+    phrase_results = (
+        await async_table.query().nearest_to_text('"puppy runs"').limit(100).to_list()
+    )
+    assert len(results) > len(phrase_results)
+    assert len(phrase_results) > 0
+
+
+def test_search_fts_specify_column(table):
+    table.create_fts_index("text", use_tantivy=False)
+    table.create_fts_index("text2", use_tantivy=False)
+
+    results = table.search("puppy", fts_columns="text").limit(5).to_list()
+    assert len(results) == 5
+
+    results = table.search("rabbit", fts_columns="text2").limit(5).to_list()
+    assert len(results) == 5
+
+    try:
+        # we can only specify one column for now
+        table.search("puppy", fts_columns=["text", "text2"]).limit(5).to_list()
+        assert False
+    except Exception:
+        pass
+
+    try:
+        # have to specify a column because we have two fts indices
+        table.search("puppy").limit(5).to_list()
+        assert False
+    except Exception:
+        pass
+
+
+@pytest.mark.asyncio
 async def test_search_fts_async(async_table):
+    async_table = await async_table
     await async_table.create_index("text", config=FTS())
     results = await async_table.query().nearest_to_text("puppy").limit(5).to_list()
     assert len(results) == 5
+
+
+@pytest.mark.asyncio
+async def test_search_fts_specify_column_async(async_table):
+    async_table = await async_table
+    await async_table.create_index("text", config=FTS())
+    await async_table.create_index("text2", config=FTS())
+
+    results = (
+        await async_table.query()
+        .nearest_to_text("puppy", columns="text")
+        .limit(5)
+        .to_list()
+    )
+    assert len(results) == 5
+
+    results = (
+        await async_table.query()
+        .nearest_to_text("rabbit", columns="text2")
+        .limit(5)
+        .to_list()
+    )
+    assert len(results) == 5
+
+    try:
+        # we can only specify one column for now
+        await (
+            async_table.query()
+            .nearest_to_text("rabbit", columns="text2")
+            .limit(5)
+            .to_list()
+        )
+        assert False
+    except Exception:
+        pass
+
+    try:
+        # have to specify a column because we have two fts indices
+        await async_table.query().nearest_to_text("puppy").limit(5).to_list()
+        assert False
+    except Exception:
+        pass
 
 
 def test_search_ordering_field_index_table(tmp_path, table):

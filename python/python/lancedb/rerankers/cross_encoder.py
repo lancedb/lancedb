@@ -1,3 +1,16 @@
+#  Copyright (c) 2023. LanceDB Developers
+#
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
+
 from functools import cached_property
 from typing import Union
 
@@ -22,6 +35,11 @@ class CrossEncoderReranker(Reranker):
     device : str, default None
         The device to use for the cross encoder model. If None, will use "cuda"
         if available, otherwise "cpu".
+    return_score : str, default "relevance"
+        options are "relevance" or "all". Only "relevance" is supported for now.
+    trust_remote_code : bool, default True
+        If True, will trust the remote code to be safe. If False, will not trust
+        the remote code and will not run it
     """
 
     def __init__(
@@ -30,12 +48,14 @@ class CrossEncoderReranker(Reranker):
         column: str = "text",
         device: Union[str, None] = None,
         return_score="relevance",
+        trust_remote_code: bool = True,
     ):
         super().__init__(return_score)
         torch = attempt_import_or_raise("torch")
         self.model_name = model_name
         self.column = column
         self.device = device
+        self.trust_remote_code = trust_remote_code
         if self.device is None:
             self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -43,7 +63,11 @@ class CrossEncoderReranker(Reranker):
     def model(self):
         sbert = attempt_import_or_raise("sentence_transformers")
         # Allows overriding the automatically selected device
-        cross_encoder = sbert.CrossEncoder(self.model_name, device=self.device)
+        cross_encoder = sbert.CrossEncoder(
+            self.model_name,
+            device=self.device,
+            trust_remote_code=self.trust_remote_code,
+        )
 
         return cross_encoder
 

@@ -24,6 +24,7 @@ from typing import (
 from urllib.parse import urlparse
 
 import lance
+from .dependencies import _check_for_pandas
 import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
@@ -63,40 +64,25 @@ if TYPE_CHECKING:
     from .db import LanceDBConnection
     from .index import BTree, IndexConfig, IvfPq, Bitmap, LabelList, FTS
 
-
 pd = safe_import_pandas()
 pl = safe_import_polars()
 
 QueryType = Literal["vector", "fts", "hybrid", "auto"]
 
 
-def _sanitize_data(
-    data,
-    schema: Optional[pa.Schema],
-    metadata: Optional[dict],
-    on_bad_vectors: str,
-    fill_value: Any,
-):
+def _coerce_to_table(data, schema: Optional[pa.Schema] = None) -> pa.Table:
     if _check_for_hugging_face(data):
         # Huggingface datasets
         from lance.dependencies import datasets
 
-        if isinstance(data, datasets.dataset_dict.DatasetDict):
-            if schema is None:
-                schema = _schema_from_hf(data, schema)
-            data = _to_record_batch_generator(
-                _to_batches_with_split(data),
-                schema,
-                metadata,
-                on_bad_vectors,
-                fill_value,
-            )
-        elif isinstance(data, datasets.Dataset):
+        if isinstance(data, datasets.Dataset):
             if schema is None:
                 schema = data.features.arrow_schema
-            data = _to_record_batch_generator(
-                data.data.to_batches(), schema, metadata, on_bad_vectors, fill_value
-            )
+            return pa.Table.from_batches(data.data.to_batches(), schema=schema)
+        elif isinstance(data, datasets.dataset_dict.DatasetDict):
+            if schema is None:
+                schema = _schema_from_hf(data, schema)
+            return pa.Table.from_batches(_to_batches_with_split(data), schema=schema)
 
     if isinstance(data, LanceModel):
         raise ValueError("Cannot add a single LanceModel to a table. Use a list.")
@@ -107,34 +93,95 @@ def _sanitize_data(
             if schema is None:
                 schema = data[0].__class__.to_arrow_schema()
             data = [model_to_dict(d) for d in data]
-            data = pa.Table.from_pylist(data, schema=schema)
+            return pa.Table.from_pylist(data, schema=schema)
         else:
-            data = pa.Table.from_pylist(data)
+            return pa.Table.from_pylist(data)
     elif isinstance(data, dict):
-        data = vec_to_table(data)
-    elif pd is not None and isinstance(data, pd.DataFrame):
-        data = pa.Table.from_pandas(data, preserve_index=False)
+        return vec_to_table(data)
+    elif _check_for_pandas(data) and isinstance(data, pd.DataFrame):
+        # Do not add schema here, since schema may contains the vector column
+        table = pa.Table.from_pandas(data, preserve_index=False)
         # Do not serialize Pandas metadata
-        meta = data.schema.metadata if data.schema.metadata is not None else {}
+        meta = table.schema.metadata if table.schema.metadata is not None else {}
         meta = {k: v for k, v in meta.items() if k != b"pandas"}
-        data = data.replace_schema_metadata(meta)
-    elif pl is not None and isinstance(data, pl.DataFrame):
-        data = data.to_arrow()
-
-    if isinstance(data, pa.Table):
-        if metadata:
-            data = _append_vector_col(data, metadata, schema)
-            metadata.update(data.schema.metadata or {})
-            data = data.replace_schema_metadata(metadata)
-        data = _sanitize_schema(
-            data, schema=schema, on_bad_vectors=on_bad_vectors, fill_value=fill_value
-        )
+        return table.replace_schema_metadata(meta)
+    elif isinstance(data, pa.Table):
+        return data
+    elif isinstance(data, pa.RecordBatch):
+        return pa.Table.from_batches([data])
+    elif isinstance(data, LanceDataset):
+        return data.scanner().to_table()
+    elif isinstance(data, pa.dataset.Dataset):
+        return data.to_table()
+    elif isinstance(data, pa.dataset.Scanner):
+        return data.to_table()
+    elif isinstance(data, pa.RecordBatchReader):
+        return data.read_all()
+    elif (
+        type(data).__module__.startswith("polars")
+        and data.__class__.__name__ == "DataFrame"
+    ):
+        return data.to_arrow()
     elif isinstance(data, Iterable):
-        data = _to_record_batch_generator(
-            data, schema, metadata, on_bad_vectors, fill_value
-        )
+        return _process_iterator(data, schema)
     else:
-        raise TypeError(f"Unsupported data type: {type(data)}")
+        raise TypeError(
+            f"Unknown data type {type(data)}. "
+            "Please check "
+            "https://lancedb.github.io/lancedb/python/python/ "
+            "to see supported types."
+        )
+
+
+def _sanitize_data(
+    data: Any,
+    schema: Optional[pa.Schema] = None,
+    metadata: Optional[dict] = None,  # embedding metadata
+    on_bad_vectors: str = "error",
+    fill_value: float = 0.0,
+):
+    data = _coerce_to_table(data, schema)
+
+    if metadata:
+        data = _append_vector_col(data, metadata, schema)
+        metadata.update(data.schema.metadata or {})
+        data = data.replace_schema_metadata(metadata)
+
+    # TODO improve the logics in _sanitize_schema
+    data = _sanitize_schema(data, schema, on_bad_vectors, fill_value)
+    if schema is None:
+        schema = data.schema
+
+    _validate_schema(schema)
+    return data, schema
+
+
+def sanitize_create_table(
+    data, schema, metadata=None, on_bad_vectors="error", fill_value=0.0
+):
+    if inspect.isclass(schema) and issubclass(schema, LanceModel):
+        # convert LanceModel to pyarrow schema
+        # note that it's possible this contains
+        # embedding function metadata already
+        schema = schema.to_arrow_schema()
+
+    if data is not None:
+        data, schema = _sanitize_data(
+            data,
+            schema,
+            metadata=metadata,
+            on_bad_vectors=on_bad_vectors,
+            fill_value=fill_value,
+        )
+    if schema is None:
+        if data is None:
+            raise ValueError("Either data or schema must be provided")
+        elif hasattr(data, "schema"):
+            schema = data.schema
+
+    if metadata:
+        schema = schema.with_metadata(metadata)
+
     return data, schema
 
 
@@ -199,8 +246,30 @@ def _append_vector_col(data: pa.Table, metadata: dict, schema: Optional[pa.Schem
     return data
 
 
+def _generator_to_data_and_schema(
+    data: Iterable,
+) -> Tuple[Iterable[pa.RecordBatch], pa.Schema]:
+    def _with_first_generator(first, data):
+        yield first
+        yield from data
+
+    first = next(data, None)
+    schema = None
+    if isinstance(first, pa.RecordBatch):
+        schema = first.schema
+        data = _with_first_generator(first, data)
+    elif isinstance(first, pa.Table):
+        schema = first.schema
+        data = _with_first_generator(first.to_batches(), data)
+    return data, schema
+
+
 def _to_record_batch_generator(
-    data: Iterable, schema, metadata, on_bad_vectors, fill_value
+    data: Iterable,
+    schema,
+    metadata,
+    on_bad_vectors,
+    fill_value,
 ):
     for batch in data:
         # always convert to table because we need to sanitize the data
@@ -423,6 +492,7 @@ class Table(ABC):
         ordering_field_names: Union[str, List[str]] = None,
         *,
         replace: bool = False,
+        with_position: bool = True,
         writer_heap_size: Optional[int] = 1024 * 1024 * 1024,
         tokenizer_name: str = "default",
         use_tantivy: bool = True,
@@ -455,6 +525,12 @@ class Table(ABC):
         use_tantivy: bool, default True
             If True, use the legacy full-text search implementation based on tantivy.
             If False, use the new full-text search implementation based on lance-index.
+        with_position: bool, default True
+            Only available with use_tantivy=False
+            If False, do not store the positions of the terms in the text.
+            This can reduce the size of the index and improve indexing speed.
+            But it will raise an exception for phrase queries.
+
         """
         raise NotImplementedError
 
@@ -1260,6 +1336,7 @@ class LanceTable(Table):
         ordering_field_names: Union[str, List[str]] = None,
         *,
         replace: bool = False,
+        with_position: bool = True,
         writer_heap_size: Optional[int] = 1024 * 1024 * 1024,
         tokenizer_name: str = "default",
         use_tantivy: bool = True,
@@ -1273,7 +1350,10 @@ class LanceTable(Table):
                 if exist:
                     fs.delete_dir(path)
             self._dataset_mut.create_scalar_index(
-                field_names, index_type="INVERTED", replace=replace
+                field_names,
+                index_type="INVERTED",
+                replace=replace,
+                with_position=with_position,
             )
             return
 
@@ -1557,6 +1637,7 @@ class LanceTable(Table):
             query_type,
             vector_column_name=vector_column_name,
             ordering_field_name=ordering_field_name,
+            fts_columns=fts_columns,
         )
 
     @classmethod
@@ -1620,12 +1701,6 @@ class LanceTable(Table):
             The embedding functions to use when creating the table.
         """
         tbl = LanceTable(db, name)
-        if inspect.isclass(schema) and issubclass(schema, LanceModel):
-            # convert LanceModel to pyarrow schema
-            # note that it's possible this contains
-            # embedding function metadata already
-            schema = schema.to_arrow_schema()
-
         metadata = None
         if embedding_functions is not None:
             # If we passed in embedding functions explicitly
@@ -1634,33 +1709,11 @@ class LanceTable(Table):
             registry = EmbeddingFunctionRegistry.get_instance()
             metadata = registry.get_table_metadata(embedding_functions)
 
-        if data is not None:
-            data, schema = _sanitize_data(
-                data,
-                schema,
-                metadata=metadata,
-                on_bad_vectors=on_bad_vectors,
-                fill_value=fill_value,
-            )
+        data, schema = sanitize_create_table(
+            data, schema, metadata, on_bad_vectors, fill_value
+        )
 
-        if schema is None:
-            if data is None:
-                raise ValueError("Either data or schema must be provided")
-            elif hasattr(data, "schema"):
-                schema = data.schema
-            elif isinstance(data, Iterable):
-                if metadata:
-                    raise TypeError(
-                        (
-                            "Persistent embedding functions not yet "
-                            "supported for generator data input"
-                        )
-                    )
-
-        if metadata:
-            schema = schema.with_metadata(metadata)
-
-        empty = pa.Table.from_pylist([], schema=schema)
+        empty = pa.Table.from_batches([], schema=schema)
         try:
             lance.write_dataset(empty, tbl._dataset_uri, schema=schema, mode=mode)
         except OSError as err:
@@ -1759,6 +1812,7 @@ class LanceTable(Table):
             full_text_query=query.full_text_query,
             with_row_id=query.with_row_id,
             batch_size=batch_size,
+            offset=query.offset,
         ).to_reader()
 
     def _do_merge(
@@ -2023,6 +2077,55 @@ def _sanitize_nans(data, fill_value, on_bad_vectors, vec_arr, vector_column_name
         is_full = np.any(~is_value_nan.reshape(-1, vec_arr.type.list_size), axis=1)
         data = data.filter(is_full)
     return data
+
+
+def _validate_schema(schema: pa.Schema):
+    """
+    Make sure the metadata is valid utf8
+    """
+    if schema.metadata is not None:
+        _validate_metadata(schema.metadata)
+
+
+def _validate_metadata(metadata: dict):
+    """
+    Make sure the metadata values are valid utf8 (can be nested)
+
+    Raises ValueError if not valid utf8
+    """
+    for k, v in metadata.items():
+        if isinstance(v, bytes):
+            try:
+                v.decode("utf8")
+            except UnicodeDecodeError:
+                raise ValueError(
+                    f"Metadata key {k} is not valid utf8. "
+                    "Consider base64 encode for generic binary metadata."
+                )
+        elif isinstance(v, dict):
+            _validate_metadata(v)
+
+
+def _process_iterator(data: Iterable, schema: Optional[pa.Schema] = None) -> pa.Table:
+    batches = []
+    for batch in data:
+        batch_table = _coerce_to_table(batch, schema)
+        if schema is not None:
+            if batch_table.schema != schema:
+                try:
+                    batch_table = batch_table.cast(schema)
+                except pa.lib.ArrowInvalid:
+                    raise ValueError(
+                        f"Input iterator yielded a batch with schema that "
+                        f"does not match the expected schema.\nExpected:\n{schema}\n"
+                        f"Got:\n{batch_table.schema}"
+                    )
+        batches.append(batch_table)
+
+    if batches:
+        return pa.concat_tables(batches)
+    else:
+        raise ValueError("Input iterable is empty")
 
 
 class AsyncTable:
@@ -2560,3 +2663,34 @@ class AsyncTable:
         List all indices that have been created with Self::create_index
         """
         return await self._inner.list_indices()
+
+    async def uses_v2_manifest_paths(self) -> bool:
+        """
+        Check if the table is using the new v2 manifest paths.
+
+        Returns
+        -------
+        bool
+            True if the table is using the new v2 manifest paths, False otherwise.
+        """
+        return await self._inner.uses_v2_manifest_paths()
+
+    async def migrate_manifest_paths_v2(self):
+        """
+        Migrate the manifest paths to the new format.
+
+        This will update the manifest to use the new v2 format for paths.
+
+        This function is idempotent, and can be run multiple times without
+        changing the state of the object store.
+
+        !!! danger
+
+            This should not be run while other concurrent operations are happening.
+            And it should also run until completion before resuming other operations.
+
+        You can use
+        [AsyncTable.uses_v2_manifest_paths][lancedb.table.AsyncTable.uses_v2_manifest_paths]
+        to check if the table is already using the new path style.
+        """
+        await self._inner.migrate_manifest_paths_v2()

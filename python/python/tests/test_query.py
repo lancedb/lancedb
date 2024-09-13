@@ -51,6 +51,7 @@ class MockTable:
                 "refine_factor": query.refine_factor,
             },
             batch_size=batch_size,
+            offset=query.offset,
         ).to_reader()
 
 
@@ -106,6 +107,13 @@ def test_cast(table):
     assert r0.float_field == 1.0
 
 
+def test_offset(table):
+    results_without_offset = LanceVectorQueryBuilder(table, [0, 0], "vector")
+    assert len(results_without_offset.to_pandas()) == 2
+    results_with_offset = LanceVectorQueryBuilder(table, [0, 0], "vector").offset(1)
+    assert len(results_with_offset.to_pandas()) == 1
+
+
 def test_query_builder(table):
     rs = (
         LanceVectorQueryBuilder(table, [0, 0], "vector")
@@ -115,6 +123,18 @@ def test_query_builder(table):
     )
     assert rs[0]["id"] == 1
     assert all(np.array(rs[0]["vector"]) == [1, 2])
+
+
+def test_vector_query_with_no_limit(table):
+    with pytest.raises(ValueError):
+        LanceVectorQueryBuilder(table, [0, 0], "vector").limit(0).select(
+            ["id", "vector"]
+        ).to_list()
+
+    with pytest.raises(ValueError):
+        LanceVectorQueryBuilder(table, [0, 0], "vector").limit(None).select(
+            ["id", "vector"]
+        ).to_list()
 
 
 def test_query_builder_batches(table):
@@ -257,7 +277,10 @@ async def test_query_async(table_async: AsyncTable):
         table_async.query().select({"foo": "id", "bar": "id + 1"}),
         expected_columns=["foo", "bar"],
     )
+
     await check_query(table_async.query().limit(1), expected_num_rows=1)
+    await check_query(table_async.query().offset(1), expected_num_rows=1)
+
     await check_query(
         table_async.query().nearest_to(pa.array([1, 2])), expected_num_rows=2
     )

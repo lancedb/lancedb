@@ -49,7 +49,7 @@ fn runtime<'a, C: Context<'a>>(cx: &mut C) -> NeonResult<&'static Runtime> {
 fn database_new(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let path = cx.argument::<JsString>(0)?.value(&mut cx);
     let read_consistency_interval = cx
-        .argument_opt(5)
+        .argument_opt(2)
         .and_then(|arg| arg.downcast::<JsNumber, _>(&mut cx).ok())
         .map(|v| v.value(&mut cx))
         .map(std::time::Duration::from_secs_f64);

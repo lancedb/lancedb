@@ -2,13 +2,13 @@
 # SPDX-FileCopyrightText: Copyright The Lance Authors
 
 import functools
+import os
 from copy import copy
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from time import sleep
 from typing import List
 from unittest.mock import PropertyMock, patch
-import os
 
 import lance
 import lancedb
@@ -62,6 +62,55 @@ def test_basic(db):
     assert table.name == "test"
     assert table.schema == ds.schema
     assert table.to_lance().to_table() == ds.to_table()
+
+
+def test_input_data_type(db, tmp_path):
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("name", pa.string()),
+            pa.field("age", pa.int32()),
+        ]
+    )
+
+    data = {
+        "id": [1, 2, 3, 4, 5],
+        "name": ["Alice", "Bob", "Charlie", "David", "Eve"],
+        "age": [25, 30, 35, 40, 45],
+    }
+    record_batch = pa.RecordBatch.from_pydict(data, schema=schema)
+    pa_reader = pa.RecordBatchReader.from_batches(record_batch.schema, [record_batch])
+    pa_table = pa.Table.from_batches([record_batch])
+
+    def create_dataset(tmp_path):
+        path = os.path.join(tmp_path, "test_source_dataset")
+        pa.dataset.write_dataset(pa_table, path, format="parquet")
+        return pa.dataset.dataset(path, format="parquet")
+
+    pa_dataset = create_dataset(tmp_path)
+    pa_scanner = pa_dataset.scanner()
+
+    input_types = [
+        ("RecordBatchReader", pa_reader),
+        ("RecordBatch", record_batch),
+        ("Table", pa_table),
+        ("Dataset", pa_dataset),
+        ("Scanner", pa_scanner),
+    ]
+    for input_type, input_data in input_types:
+        table_name = f"test_{input_type.lower()}"
+        ds = LanceTable.create(db, table_name, data=input_data).to_lance()
+        assert ds.schema == schema
+        assert ds.count_rows() == 5
+
+        assert ds.schema.field("id").type == pa.int64()
+        assert ds.schema.field("name").type == pa.string()
+        assert ds.schema.field("age").type == pa.int32()
+
+        result_table = ds.to_table()
+        assert result_table.column("id").to_pylist() == data["id"]
+        assert result_table.column("name").to_pylist() == data["name"]
+        assert result_table.column("age").to_pylist() == data["age"]
 
 
 @pytest.mark.asyncio
@@ -274,7 +323,6 @@ def test_polars(db):
 
 
 def _add(table, schema):
-    # table = LanceTable(db, "test")
     assert len(table) == 2
 
     table.add([{"vector": [6.3, 100.5], "item": "new", "price": 30.0}])
@@ -906,6 +954,16 @@ def test_hybrid_search(db, tmp_path):
     result3 = table.search(
         "Our father who art in heaven", query_type="hybrid"
     ).to_pydantic(MyTable)
+
+    # Test that double and single quote characters are handled with phrase_query()
+    (
+        table.search(
+            '"Aren\'t you a little short for a stormtrooper?" -- Leia',
+            query_type="hybrid",
+        )
+        .phrase_query(True)
+        .to_pydantic(MyTable)
+    )
 
     assert result1 == result3
 

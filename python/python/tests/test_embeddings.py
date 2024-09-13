@@ -10,7 +10,6 @@
 #  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
-import sys
 from typing import List, Union
 
 import lance
@@ -35,9 +34,6 @@ def mock_embed_func(input_data):
 
 def test_with_embeddings():
     for wrap_api in [True, False]:
-        if wrap_api and sys.version_info.minor >= 11:
-            # ratelimiter package doesn't work on 3.11
-            continue
         data = pa.Table.from_arrays(
             [
                 pa.array(["foo", "bar"]),

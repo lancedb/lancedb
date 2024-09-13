@@ -501,16 +501,28 @@ Get the schema of the table.
 
 #### search(query)
 
-> `abstract` **search**(`query`): [`VectorQuery`](VectorQuery.md)
+> `abstract` **search**(`query`, `queryType`, `ftsColumns`): [`VectorQuery`](VectorQuery.md)
 
 Create a search query to find the nearest neighbors
-of the given query vector
+of the given query vector, or the documents
+with the highest relevance to the query string.
 
 ##### Parameters
 
 • **query**: `string`
 
-the query. This will be converted to a vector using the table's provided embedding function
+the query. This will be converted to a vector using the table's provided embedding function,
+or the query string for full-text search if `queryType` is "fts".
+
+• **queryType**: `string` =  `"auto"` \| `"fts"`
+
+the type of query to run. If "auto", the query type will be determined based on the query.
+
+• **ftsColumns**: `string[] | str` =  undefined
+
+the columns to search in. If not provided, all indexed columns will be searched.
+
+For now, this can support to search only one column.
 
 ##### Returns
 

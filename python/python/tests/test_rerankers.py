@@ -15,6 +15,7 @@ from lancedb.rerankers import (
     CrossEncoderReranker,
     OpenaiReranker,
     JinaReranker,
+    AnswerdotaiRerankers,
 )
 from lancedb.table import LanceTable
 
@@ -110,7 +111,9 @@ def _run_test_reranker(reranker, table, query, query_vector, schema):
 
     query_vector = table.to_pandas()["vector"][0]
     result = (
-        table.search((query_vector, query), vector_column_name="vector")
+        table.search(query_type="hybrid", vector_column_name="vector")
+        .vector(query_vector)
+        .text(query)
         .limit(30)
         .rerank(reranker=reranker)
         .to_arrow()
@@ -206,13 +209,25 @@ def _run_test_hybrid_reranker(reranker, tmp_path, use_tantivy):
     query = "Our father who art in heaven"
     query_vector = table.to_pandas()["vector"][0]
     result = (
-        table.search((query_vector, query), vector_column_name="vector")
+        table.search(query_type="hybrid", vector_column_name="vector")
+        .vector(query_vector)
+        .text(query)
         .limit(30)
         .rerank(normalize="score")
         .to_arrow()
     )
-
     assert len(result) == 30
+
+    # Fail if both query and (vector or text) are provided
+    with pytest.raises(ValueError):
+        table.search(query, query_type="hybrid", vector_column_name="vector").vector(
+            query_vector
+        ).to_arrow()
+
+    with pytest.raises(ValueError):
+        table.search(query, query_type="hybrid", vector_column_name="vector").text(
+            query
+        ).to_arrow()
 
     assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), (
         "The _relevance_score column of the results returned by the reranker "
@@ -254,8 +269,16 @@ def test_cross_encoder_reranker(tmp_path, use_tantivy):
 
 @pytest.mark.parametrize("use_tantivy", [True, False])
 def test_colbert_reranker(tmp_path, use_tantivy):
-    pytest.importorskip("transformers")
+    pytest.importorskip("rerankers")
     reranker = ColbertReranker()
+    table, schema = get_test_table(tmp_path, use_tantivy)
+    _run_test_reranker(reranker, table, "single player experience", None, schema)
+
+
+@pytest.mark.parametrize("use_tantivy", [True, False])
+def test_answerdotai_reranker(tmp_path, use_tantivy):
+    pytest.importorskip("rerankers")
+    reranker = AnswerdotaiRerankers()
     table, schema = get_test_table(tmp_path, use_tantivy)
     _run_test_reranker(reranker, table, "single player experience", None, schema)
 

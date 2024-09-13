@@ -68,3 +68,25 @@ currently is also a memory intensive operation.
 #### Returns
 
 [`Index`](Index.md)
+
+### fts()
+
+> `static` **fts**(`options`?): [`Index`](Index.md)
+
+Create a full text search index
+
+This index is used to search for text data.  The index is created by tokenizing the text
+into words and then storing occurrences of these words in a data structure called inverted index
+that allows for fast search.
+
+During a search the query is tokenized and the inverted index is used to find the rows that
+contain the query words.  The rows are then scored based on BM25 and the top scoring rows are
+sorted and returned.
+
+#### Parameters
+
+• **options?**: `Partial`&lt;[`FtsOptions`](../interfaces/FtsOptions.md)&gt;
+
+#### Returns
+
+[`Index`](Index.md)

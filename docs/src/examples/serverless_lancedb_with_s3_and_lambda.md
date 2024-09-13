@@ -25,8 +25,8 @@ s3://eto-public/datasets/sift/vec_data.lance
 Then, we can write a quick Python script to populate our LanceDB Table:
 
 ```python
-import pylance
-sift_dataset = pylance.dataset("/path/to/local/vec_data.lance")
+import lance
+sift_dataset = lance.dataset("/path/to/local/vec_data.lance")
 df = sift_dataset.to_table().to_pandas()
 
 import lancedb
