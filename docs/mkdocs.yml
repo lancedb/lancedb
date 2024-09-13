@@ -138,7 +138,8 @@ nav:
               - Reranking: guides/tuning_retrievers/2_reranking.md
               - Embedding fine-tuning: guides/tuning_retrievers/3_embed_tuning.md
       - 🧬 Managing embeddings:
-          - Overview: embeddings/index.md
+          - Understand Embeddings: embeddings/understanding_embeddings.md 
+          - Get Started: embeddings/index.md
           - Embedding functions: embeddings/embedding_functions.md
           - Available models: 
               - Overview: embeddings/default_embedding_functions.md
@@ -263,7 +264,8 @@ nav:
           - Reranking: guides/tuning_retrievers/2_reranking.md
           - Embedding fine-tuning: guides/tuning_retrievers/3_embed_tuning.md
   - Managing Embeddings:
-      - Overview: embeddings/index.md
+      - Understand Embeddings: embeddings/understanding_embeddings.md 
+      - Get Started: embeddings/index.md
       - Embedding functions: embeddings/embedding_functions.md
       - Available models: 
           - Overview: embeddings/default_embedding_functions.md
