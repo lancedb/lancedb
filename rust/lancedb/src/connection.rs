@@ -335,8 +335,8 @@ impl<const HAS_DATA: bool, T: IntoArrow> CreateTableBuilder<HAS_DATA, T> {
 
 #[derive(Clone, Debug)]
 pub struct OpenTableBuilder {
-    parent: Arc<dyn ConnectionInternal>,
-    name: String,
+    pub(crate) parent: Arc<dyn ConnectionInternal>,
+    pub(crate) name: String,
     index_cache_size: u32,
     lance_read_params: Option<ReadParams>,
 }
@@ -1095,6 +1095,25 @@ impl ConnectionInternal for Database {
     }
 }
 
+#[cfg(all(test, feature = "remote"))]
+mod test_utils {
+    use super::*;
+    impl Connection {
+        pub fn new_with_handler<T>(
+            handler: impl Fn(reqwest::Request) -> http::Response<T> + Clone + Send + Sync + 'static,
+        ) -> Self
+        where
+            T: Into<reqwest::Body>,
+        {
+            let internal = Arc::new(crate::remote::db::RemoteDatabase::new_mock(handler));
+            Self {
+                internal,
+                uri: "db://test".to_string(),
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use arrow_schema::{DataType, Field, Schema};
@@ -1208,9 +1227,9 @@ mod tests {
         assert_eq!(tables, vec!["table1".to_owned()]);
     }
 
-    fn make_data() -> impl RecordBatchReader + Send + 'static {
+    fn make_data() -> Box<dyn RecordBatchReader + Send + 'static> {
         let id = Box::new(IncrementingInt32::new().named("id".to_string()));
-        BatchGenerator::new().col(id).batches(10, 2000)
+        Box::new(BatchGenerator::new().col(id).batches(10, 2000))
     }
 
     #[tokio::test]

@@ -19,29 +19,29 @@ use crate::{
     },
 };
 
-use super::client::RestfulLanceDbClient;
+use super::client::{HttpSend, RestfulLanceDbClient, Sender};
 
 #[derive(Debug)]
-pub struct RemoteTable {
+pub struct RemoteTable<S: HttpSend = Sender> {
     #[allow(dead_code)]
-    client: RestfulLanceDbClient,
+    client: RestfulLanceDbClient<S>,
     name: String,
 }
 
-impl RemoteTable {
-    pub fn new(client: RestfulLanceDbClient, name: String) -> Self {
+impl<S: HttpSend> RemoteTable<S> {
+    pub fn new(client: RestfulLanceDbClient<S>, name: String) -> Self {
         Self { client, name }
     }
 }
 
-impl std::fmt::Display for RemoteTable {
+impl<S: HttpSend> std::fmt::Display for RemoteTable<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "RemoteTable({})", self.name)
     }
 }
 
 #[async_trait]
-impl TableInternal for RemoteTable {
+impl<S: HttpSend> TableInternal for RemoteTable<S> {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
