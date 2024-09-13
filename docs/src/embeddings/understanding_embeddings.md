@@ -5,7 +5,7 @@ The term **dimension** is a synonym for the number of elements in a feature vect
 High-dimensional data means there are many features(or attributes) in the data.
 
 !!! example
-     1. An image is a data and it might have thousands of dimensions because each pixel could be considered as a feature. 
+     1. An image is a data point and it might have thousands of dimensions because each pixel could be considered as a feature. 
 
      2. Text data, when represented by each word or character, can also lead to high dimensions, especially when considering all possible words in a language.
 
@@ -17,18 +17,18 @@ Vector embeddings is a way to convert complex data, like text, images, or audio 
 
 The closer these data points are related in the real world, the closer their corresponding numerical coordinates (vectors) will be to each other in the embedding space. This proximity in the embedding space reflects their semantic similarities, allowing machines to intuitively understand and process the data in a way that mirrors human perception of relationships and meaning.
 
-In a way, it captures the most important aspects of the data while ignoring less important ones. As a result, tasks like searching for related content or identifying patterns become more efficient and accurate, as the embeddings make it possible to quantify how **closely related** different **data points** are and **reduces** the **computational complexity**.
+In a way, it captures the most important aspects of the data while ignoring the less important ones. As a result, tasks like searching for related content or identifying patterns become more efficient and accurate, as the embeddings make it possible to quantify how **closely related** different **data points** are and **reduce** the **computational complexity**.
 
-??? question "Are vectors and embeddings same thing?"
+??? question "Are vectors and embeddings the same thing?"
 
     When we say “vectors” we mean - **list of numbers** that **represents the data**. 
-    When we say “embeddings” we mean - **list of numbers** that **captures important details and relationships**.
+    When we say “embeddings” we mean - **list of numbers** that **capture important details and relationships**.
 
-    Although the terms are often used interchangeably, “embeddings” highlights how the data is represented with meaning and structure, while “vector” simply refers to the numerical form of that representation.
+    Although the terms are often used interchangeably, “embeddings” highlight how the data is represented with meaning and structure, while “vector” simply refers to the numerical form of that representation.
 
 ## Embedding vs Indexing
 
-We already saw that creating **embeddings** on a data is a method of creating **vectors** for a **n-dimensional embedding space** that captures the meaning and relationships inherent in the data.
+We already saw that creating **embeddings** on data is a method of creating **vectors** for a **n-dimensional embedding space** that captures the meaning and relationships inherent in the data.
 
 Once we have these **vectors**, indexing comes into play. Indexing is a method of organizing these vector embeddings, that allows us to quickly and efficiently locate and retrieve them from the entire dataset of vector embeddings.
 
@@ -48,26 +48,26 @@ Large datasets of multi-modal data (text, audio, images, etc.) can be converted 
 
     With the ability to store both vectors and associated file data, LanceDB enhances the querying process. Users can perform semantic searches that not only retrieve similar embeddings but also access related files and metadata, thus streamlining the workflow.
 
-## How do embedding works?
+## How does embedding works?
 
 As mentioned, after creating embedding, each data point is represented as a vector in a n-dimensional space (embedding space). The dimensionality of this space can vary depending on the complexity of the data and the specific embedding technique used.
 
-Points that are close to each other in vector space are considered similar (or appear in similar contexts), and points that are far away are considered dissimilar. To quantify this closeness, we use distance as a metric which can be measured in following way - 
+Points that are close to each other in vector space are considered similar (or appear in similar contexts), and points that are far away are considered dissimilar. To quantify this closeness, we use distance as a metric which can be measured in the  following way - 
 
 1. **Euclidean Distance (L2)**: It calculates the straight-line distance between two points (vectors) in a multidimensional space.
 2. **Cosine Similarity**: It measures the cosine of the angle between two vectors, providing a normalized measure of similarity based on their direction.
 3. **Dot product**: It is calculated as the sum of the products of their corresponding components. To measure relatedness it considers both the magnitude and direction of the vectors.
 
-## How to create and store vector embeddings for your data?
+## How do you create and store vector embeddings for your data?
 
-1. **Creating embeddings**: Choose a embedding model, it can be a pre-trained model (open-source or commercial) or you can train a custom embedding model for your scenario. Then feed your preprocessed data into the chosen model to obtain embeddings.
+1. **Creating embeddings**: Choose an embedding model, it can be a pre-trained model (open-source or commercial) or you can train a custom embedding model for your scenario. Then feed your preprocessed data into the chosen model to obtain embeddings.
 
 ??? question "Popular choices for embedding models"
-    For text data, popular choices are OpenAI’s text-embedding models, Google Gemini text-embedding models, Cohere’s Embed models, and SentenceTransformers etc.
+    For text data, popular choices are OpenAI’s text-embedding models, Google Gemini text-embedding models, Cohere’s Embed models, and SentenceTransformers, etc.
 
-    For image data, popular choices are CLIP (Contrastive Language–Image Pretraining), Imagebind embeddings by meta (supports audio, video and image) and Jina multi-modal embeddings etc.
+    For image data, popular choices are CLIP (Contrastive Language–Image Pretraining), Imagebind embeddings by meta (supports audio, video, and image), and Jina multi-modal embeddings, etc.
 
-2. **Storing vector embeddings**: This effectively requires **specialized databases** that can handle the complexity of vector data, as traditional databases often struggle with this task. Vector databases are designed specifically for storing and querying vector embeddings. They optimize for efficient nearest neighbor searches and provide built-in indexing mechanisms.
+2. **Storing vector embeddings**: This effectively requires **specialized databases** that can handle the complexity of vector data, as traditional databases often struggle with this task. Vector databases are designed specifically for storing and querying vector embeddings. They optimize for efficient nearest-neighbor searches and provide built-in indexing mechanisms.
 
 !!! tip "Why LanceDB"
     LanceDB **automates** the entire process of creating and storing embeddings for your data. LanceDB allows you to define and use **embedding functions**, which can be **pre-trained models** or **custom models**. 
