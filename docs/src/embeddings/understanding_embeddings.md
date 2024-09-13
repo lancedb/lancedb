@@ -76,7 +76,7 @@ Points that are close to each other in vector space are considered similar (or a
 
 Let's quickly [get started](./index.md) and learn how to manage embeddings in LanceDB. 
 
-## BONUS: As a developer, what you can create using embeddings?
+## Bonus: As a developer, what you can create using embeddings?
 
 As a developer, you can create a variety of innovative applications using vector embeddings. Check out the following - 
 
