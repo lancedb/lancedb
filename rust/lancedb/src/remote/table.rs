@@ -302,10 +302,7 @@ mod tests {
         let table = Table::new_with_handler("my_table", |request| {
             assert_eq!(request.method(), "POST");
             assert_eq!(request.url().path(), "/table/my_table/count_rows/");
-            assert_eq!(
-                request.body().unwrap().as_bytes().unwrap(),
-                br#"{}"#
-            );
+            assert_eq!(request.body().unwrap().as_bytes().unwrap(), br#"{}"#);
 
             http::Response::builder().status(200).body("42").unwrap()
         });
