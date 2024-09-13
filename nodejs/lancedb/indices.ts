@@ -249,8 +249,30 @@ export class Index {
 
   /**
    *
-   * Create a hnswpq index
-   *
+   * Create a hnswPq index
+   * 
+   * HNSW-PQ stands for Hierarchical Navigable Small World - Product Quantization.
+   * It is a variant of the HNSW algorithm that uses product quantization to compress
+   * the vectors. To create an HNSW-PQ index, you can specify the following parameters:
+   * 
+   * 1. distance_type: str
+   *     The distance metric used to train the index. The following distance types are available:
+   *     - "l2" - Euclidean distance
+   *     - "cosine" - Cosine distance
+   *     - "dot" - Dot product
+   *     - "hamming" - Hamming distance
+   * 2. num_partitions: int
+   *     Indicates the number of partitions to divide the data into.
+   * 3. num_sub_vectors: int
+   *     Specifies the number of sub-vectors to divide each vector into.
+   * 4. max_iterations: int
+   *     Max iterations.
+   * 5. sample_rate: int
+   *      Defines the rate at which samples are taken from the data.
+   * 6. m: int
+   *     It represents the number of edges per node in a graph
+   * 7. ef_construction: int
+   *     The number of neighbors to search for each vector during the construction phase.
    */
   static hnswPq(options?: Partial<HnswPqOptions>) {
     return new Index(
@@ -269,7 +291,27 @@ export class Index {
   /**
    *
    * Create a hnswsq index
-   *
+   * 
+   * HNSW-SQ stands for Hierarchical Navigable Small World - Scalar Quantization.
+   * It is a variant of the HNSW algorithm that uses scalar quantization to compress
+   * the vectors. To create an HNSW-SQ index, you can specify the following parameters:
+   * 
+   * 1. distance_type: str
+   *    The distance metric used to train the index. The following distance types are available:
+   *    - "l2" - Euclidean distance
+   *    - "cosine" - Cosine distance
+   *    - "dot" - Dot product
+   *    - "hamming" - Hamming distance
+   * 2. num_partitions: int
+   *      Indicates the number of partitions to divide the data into.
+   * 3. max_iterations: int
+   *      Max iterations.
+   * 4. sample_rate: int
+   *      Defines the rate at which samples are taken from the data.
+   * 5. m: int
+   *      It represents the number of edges per node in a graph
+   * 6. ef_construction: int
+   *      The number of neighbors to search for each vector during the construction phase.
    */
   static hnswSq(options?: Partial<HnswSqOptions>) {
     return new Index(
