@@ -223,10 +223,11 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
 mod tests {
     use super::*;
 
+    use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator};
     use arrow_schema::{DataType, Field, Schema};
     use futures::{future::BoxFuture, TryFutureExt};
 
-    use crate::{Error, Table};
+    use crate::{remote::ARROW_STREAM_CONTENT_TYPE, Error, Table};
 
     #[tokio::test]
     async fn test_not_found() {
@@ -323,5 +324,53 @@ mod tests {
 
         let count = table.count_rows(Some("a > 10".into())).await.unwrap();
         assert_eq!(count, 42);
+    }
+
+    #[tokio::test]
+    async fn test_add_append() {
+        let data = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+
+        let data_ref = data.clone();
+        let table = Table::new_with_handler("my_table", move |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url().path(), "/table/my_table/insert/");
+            // If mode is specified, it should be "append". Append is default
+            // so it's not required.
+            assert!(request
+                .url()
+                .query_pairs()
+                .filter(|(k, _)| k == "mode")
+                .all(|(_, v)| v == "append"));
+
+            assert_eq!(
+                request.headers().get("Content-Type").unwrap(),
+                ARROW_STREAM_CONTENT_TYPE
+            );
+
+            let mut expected_body = Vec::new();
+            {
+                let mut writer = arrow_ipc::writer::StreamWriter::try_new(
+                    &mut expected_body,
+                    &data_ref.schema(),
+                )
+                .unwrap();
+                writer.write(&data_ref).unwrap();
+                writer.finish().unwrap();
+            }
+
+            assert_eq!(request.body().unwrap().as_bytes().unwrap(), &expected_body);
+
+            http::Response::builder().status(200).body("").unwrap()
+        });
+
+        table
+            .add(RecordBatchIterator::new([Ok(data.clone())], data.schema()))
+            .execute()
+            .await
+            .unwrap();
     }
 }
