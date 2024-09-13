@@ -35,6 +35,7 @@ pub trait HttpSend: Clone + Send + Sync + std::fmt::Debug + 'static {
     fn send(&self, req: RequestBuilder) -> impl Future<Output = Result<Response>> + Send;
 }
 
+// Default implementation of HttpSend which sends the request normally with reqwest
 #[derive(Clone, Debug)]
 pub struct Sender;
 impl HttpSend for Sender {
