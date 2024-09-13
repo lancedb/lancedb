@@ -90,11 +90,7 @@ def test_local_join_uri_windows():
 def test_value_to_sql_string(tmp_path):
     # Make sure we can convert Python string literals to SQL strings, even if
     # they contain characters meaningful in SQL, such as ' and \.
-    values = [
-        "anthony's",
-        'a "test" string',
-        "anthony's \"favorite color\" wasn't red"
-    ]
+    values = ["anthony's", 'a "test" string', "anthony's \"favorite color\" wasn't red"]
     expected_values = [
         "'anthony''s'",
         "'a \"test\" string'",
@@ -113,5 +109,5 @@ def test_value_to_sql_string(tmp_path):
         [{"search": value, "replace": "something"} for value in values],
     )
     for value in values:
-        table.update(where=f'search = {value_to_sql(value)}', values={"replace": value})
+        table.update(where=f"search = {value_to_sql(value)}", values={"replace": value})
         assert table.to_pandas().query("search == @value")["replace"].item() == value
