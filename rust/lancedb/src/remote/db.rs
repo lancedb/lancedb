@@ -31,8 +31,7 @@ use crate::Table;
 use super::client::{HttpSend, RestfulLanceDbClient, Sender};
 use super::table::RemoteTable;
 use super::util::batches_to_ipc_bytes;
-
-const ARROW_STREAM_CONTENT_TYPE: &str = "application/vnd.apache.arrow.stream";
+use super::ARROW_STREAM_CONTENT_TYPE;
 
 #[derive(Deserialize)]
 struct ListTablesResponse {
