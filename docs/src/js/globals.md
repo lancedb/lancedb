@@ -37,6 +37,7 @@
 - [IndexOptions](interfaces/IndexOptions.md)
 - [IndexStatistics](interfaces/IndexStatistics.md)
 - [IvfPqOptions](interfaces/IvfPqOptions.md)
+- [FtsOptions](interfaces/FtsOptions.md)
 - [TableNamesOptions](interfaces/TableNamesOptions.md)
 - [UpdateOptions](interfaces/UpdateOptions.md)
 - [WriteOptions](interfaces/WriteOptions.md)

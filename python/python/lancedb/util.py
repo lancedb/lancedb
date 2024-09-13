@@ -219,6 +219,7 @@ def value_to_sql(value):
 
 @value_to_sql.register(str)
 def _(value: str):
+    value = value.replace("'", "''")
     return f"'{value}'"
 
 
