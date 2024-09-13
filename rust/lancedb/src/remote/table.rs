@@ -1,11 +1,13 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::table::dataset::DatasetReadGuard;
+use crate::table::AddDataMode;
 use crate::Error;
 use arrow_array::RecordBatchReader;
 use arrow_schema::SchemaRef;
 use async_trait::async_trait;
 use datafusion_physical_plan::ExecutionPlan;
+use http::header::CONTENT_TYPE;
 use http::StatusCode;
 use lance::arrow::json::JsonSchema;
 use lance::dataset::scanner::{DatasetRecordBatchStream, Scanner};
@@ -24,6 +26,7 @@ use crate::{
 };
 
 use super::client::{HttpSend, RestfulLanceDbClient, Sender};
+use super::ARROW_STREAM_CONTENT_TYPE;
 
 #[derive(Debug)]
 pub struct RemoteTable<S: HttpSend = Sender> {
@@ -149,10 +152,53 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
     }
     async fn add(
         &self,
-        _add: AddDataBuilder<NoData>,
-        _data: Box<dyn RecordBatchReader + Send>,
+        add: AddDataBuilder<NoData>,
+        data: Box<dyn RecordBatchReader + Send>,
     ) -> Result<()> {
-        todo!()
+        let request = self.client.post(&format!("/table/{}/insert/", self.name));
+
+        match add.mode {
+            AddDataMode::Append => {}
+            AddDataMode::Overwrite => {
+                todo!("Overwrite mode is not supported yet.");
+            }
+        }
+
+        let request = request.header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE);
+
+        // TODO: Once Phalanx supports compression, we should use it here.
+        let mut writer = arrow_ipc::writer::StreamWriter::try_new(Vec::new(), &data.schema())?;
+
+        //  Mutex is just here to make it sync. We shouldn't have any contention.
+        let mut data = Mutex::new(data);
+        let body_iter = std::iter::from_fn(move || match data.get_mut().unwrap().next() {
+            Some(Ok(batch)) => {
+                writer.write(&batch).ok()?;
+                let buffer = std::mem::take(writer.get_mut());
+                Some(Ok(buffer))
+            }
+            Some(Err(e)) => Some(Err(e)),
+            None => {
+                writer.finish().ok()?;
+                let buffer = std::mem::take(writer.get_mut());
+                Some(Ok(buffer))
+            }
+        });
+        let body_stream = futures::stream::iter(body_iter);
+        let body = reqwest::Body::wrap_stream(body_stream);
+        let request = request.body(body);
+
+        let response = self.client.send(request).await?;
+
+        if response.status() == StatusCode::NOT_FOUND {
+            return Err(Error::TableNotFound {
+                name: self.name.clone(),
+            });
+        }
+
+        self.client.check_response(response).await?;
+
+        Ok(())
     }
     async fn build_plan(
         &self,
@@ -221,13 +267,16 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
 
 #[cfg(test)]
 mod tests {
+    use std::pin::Pin;
+
     use super::*;
 
     use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator};
     use arrow_schema::{DataType, Field, Schema};
-    use futures::{future::BoxFuture, TryFutureExt};
+    use futures::{future::BoxFuture, StreamExt, TryFutureExt};
+    use reqwest::Body;
 
-    use crate::{remote::ARROW_STREAM_CONTENT_TYPE, Error, Table};
+    use crate::{Error, Table};
 
     #[tokio::test]
     async fn test_not_found() {
@@ -335,7 +384,9 @@ mod tests {
         .unwrap();
 
         let data_ref = data.clone();
-        let table = Table::new_with_handler("my_table", move |request| {
+
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let table = Table::new_with_handler("my_table", move |mut request| {
             assert_eq!(request.method(), "POST");
             assert_eq!(request.url().path(), "/table/my_table/insert/");
             // If mode is specified, it should be "append". Append is default
@@ -351,18 +402,9 @@ mod tests {
                 ARROW_STREAM_CONTENT_TYPE
             );
 
-            let mut expected_body = Vec::new();
-            {
-                let mut writer = arrow_ipc::writer::StreamWriter::try_new(
-                    &mut expected_body,
-                    &data_ref.schema(),
-                )
-                .unwrap();
-                writer.write(&data_ref).unwrap();
-                writer.finish().unwrap();
-            }
-
-            assert_eq!(request.body().unwrap().as_bytes().unwrap(), &expected_body);
+            let mut body_out = reqwest::Body::from(Vec::new());
+            std::mem::swap(request.body_mut().as_mut().unwrap(), &mut body_out);
+            sender.send(body_out).unwrap();
 
             http::Response::builder().status(200).body("").unwrap()
         });
@@ -372,5 +414,35 @@ mod tests {
             .execute()
             .await
             .unwrap();
+
+        let mut expected_body = Vec::new();
+        {
+            let mut writer =
+                arrow_ipc::writer::StreamWriter::try_new(&mut expected_body, &data_ref.schema())
+                    .unwrap();
+            writer.write(&data_ref).unwrap();
+            writer.finish().unwrap();
+        }
+
+        let body = receiver.recv().unwrap();
+        let body = collect_body(body).await;
+        assert_eq!(&body, &expected_body);
+    }
+
+    async fn collect_body(body: Body) -> Vec<u8> {
+        use http_body::Body;
+        let mut body = body;
+        let mut data = Vec::new();
+        let mut body_pin = Pin::new(&mut body);
+        futures::stream::poll_fn(|cx| {
+            // TODO: needs another dependency to work.
+            body_pin.as_mut().poll_frame(cx)
+        })
+        .for_each(|frame| {
+            data.extend_from_slice(frame.unwrap().data_ref().unwrap());
+            futures::future::ready(())
+        })
+        .await;
+        data
     }
 }
