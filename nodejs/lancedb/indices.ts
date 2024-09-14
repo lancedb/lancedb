@@ -182,7 +182,7 @@ export interface HnswPqOptions {
    * Increasing this might improve the quality of the index but in most cases the parameter
    * is unused because kmeans will converge with fewer iterations.  The parameter is only
    * used in cases where kmeans does not appear to converge.  In those cases it is unlikely
-   *  
+   * that setting this larger will lead to the index converging anyways.
    * 
    */
   maxIterations?: number;
@@ -281,7 +281,7 @@ export interface HnswSqOptions {
    * Increasing this might improve the quality of the index but in most cases the parameter
    * is unused because kmeans will converge with fewer iterations.  The parameter is only
    * used in cases where kmeans does not appear to converge.  In those cases it is unlikely
-   *  
+   * that setting this larger will lead to the index converging anyways.
    * 
    */
   maxIterations?: number;
