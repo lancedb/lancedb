@@ -128,42 +128,46 @@ class HnswPq:
 
         Number of sub-vectors of PQ.
 
-        This value controls how much the vector is compressed during the quantization step.
-        The more sub vectors there are the less the vector is compressed.  The default is
-        the dimension of the vector divided by 16.  If the dimension is not evenly divisible
-        by 16 we use the dimension divded by 8.
+        This value controls how much the vector is compressed during the
+        quantization step. The more sub vectors there are the less the vector is
+        compressed.  The default is the dimension of the vector divided by 16.
+        If the dimension is not evenly divisible by 16 we use the dimension
+        divided by 8.
 
-        The above two cases are highly preferred.  Having 8 or 16 values per subvector allows
-        us to use efficient SIMD instructions.
+        The above two cases are highly preferred.  Having 8 or 16 values per
+        subvector allows us to use efficient SIMD instructions.
 
-        If the dimension is not visible by 8 then we use 1 subvector.  This is not ideal and
-        will likely result in poor performance.
+        If the dimension is not visible by 8 then we use 1 subvector.  This is not
+        ideal and will likely result in poor performance.
 
     max_iterations, default 50
 
         Max iterations to train kmeans.
 
-        When training an IVF index we use kmeans to calculate the partitions.  This parameter
-        controls how many iterations of kmeans to run.
+        When training an IVF index we use kmeans to calculate the partitions.  This
+        parameter controls how many iterations of kmeans to run.
 
-        Increasing this might improve the quality of the index but in most cases the parameter
-        is unused because kmeans will converge with fewer iterations.  The parameter is only
-        used in cases where kmeans does not appear to converge.  In those cases it is unlikely
-        that setting this larger will lead to the index converging anyways.
+        Increasing this might improve the quality of the index but in most cases the
+        parameter is unused because kmeans will converge with fewer iterations.  The
+        parameter is only used in cases where kmeans does not appear to converge.  In
+        those cases it is unlikely that setting this larger will lead to the index
+        converging anyways.
 
     sample_rate, default 256
 
         The rate used to calculate the number of training vectors for kmeans.
 
-        When an IVF index is trained, we need to calculate partitions.  These are groups
-        of vectors that are similar to each other.  To do this we use an algorithm called kmeans.
+        When an IVF index is trained, we need to calculate partitions.  These are
+        groups of vectors that are similar to each other.  To do this we use an
+        algorithm called kmeans.
 
-        Running kmeans on a large dataset can be slow.  To speed this up we run kmeans on a
-        random sample of the data.  This parameter controls the size of the sample.  The total
-        number of vectors used to train the index is `sample_rate * num_partitions`.
+        Running kmeans on a large dataset can be slow.  To speed this up we
+        run kmeans on a random sample of the data.  This parameter controls the
+        size of the sample.  The total number of vectors used to train the index
+        is `sample_rate * num_partitions`.
 
-        Increasing this value might improve the quality of the index but in most cases the
-        default should be sufficient.
+        Increasing this value might improve the quality of the index but in
+        most cases the default should be sufficient.
 
     m, default 20
 
@@ -178,7 +182,8 @@ class HnswPq:
 
         This value controls the tradeoff between build speed and accuracy.
         The higher the value the more accurate the build but the slower it will be.
-        This value should be set to a value that is not less than `ef` in the search phase.
+        This value should be set to a value that is not less than `ef` in the
+        search phase.
     """
 
     def __init__(
@@ -249,27 +254,30 @@ class HnswSq:
 
         Max iterations to train kmeans.
 
-        When training an IVF index we use kmeans to calculate the partitions.  This parameter
-        controls how many iterations of kmeans to run.
+        When training an IVF index we use kmeans to calculate the partitions.
+        This parameter controls how many iterations of kmeans to run.
 
-        Increasing this might improve the quality of the index but in most cases the parameter
-        is unused because kmeans will converge with fewer iterations.  The parameter is only
-        used in cases where kmeans does not appear to converge.  In those cases it is unlikely
-        that setting this larger will lead to the index converging anyways.
+        Increasing this might improve the quality of the index but in most cases
+        the parameter is unused because kmeans will converge with fewer iterations.
+        The parameter is only used in cases where kmeans does not appear to converge.
+        In those cases it is unlikely that setting this larger will lead to
+        the index converging anyways.
 
     sample_rate, default 256
 
         The rate used to calculate the number of training vectors for kmeans.
 
-        When an IVF index is trained, we need to calculate partitions.  These are groups
-        of vectors that are similar to each other.  To do this we use an algorithm called kmeans.
+        When an IVF index is trained, we need to calculate partitions.  These
+        are groups of vectors that are similar to each other.  To do this
+        we use an algorithm called kmeans.
 
-        Running kmeans on a large dataset can be slow.  To speed this up we run kmeans on a
-        random sample of the data.  This parameter controls the size of the sample.  The total
-        number of vectors used to train the index is `sample_rate * num_partitions`.
+        Running kmeans on a large dataset can be slow.  To speed this up we
+        run kmeans on a random sample of the data.  This parameter controls the
+        size of the sample.  The total number of vectors used to train the index
+        is `sample_rate * num_partitions`.
 
-        Increasing this value might improve the quality of the index but in most cases the
-        default should be sufficient.
+        Increasing this value might improve the quality of the index but in
+        most cases the default should be sufficient.
 
     m, default 20
 
@@ -284,7 +292,8 @@ class HnswSq:
 
         This value controls the tradeoff between build speed and accuracy.
         The higher the value the more accurate the build but the slower it will be.
-        This value should be set to a value that is not less than `ef` in the search phase.
+        This value should be set to a value that is not less than `ef` in the search
+        phase.
 
     """
 
