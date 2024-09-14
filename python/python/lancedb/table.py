@@ -94,6 +94,8 @@ def _coerce_to_table(data, schema: Optional[pa.Schema] = None) -> pa.Table:
                 schema = data[0].__class__.to_arrow_schema()
             data = [model_to_dict(d) for d in data]
             return pa.Table.from_pylist(data, schema=schema)
+        elif isinstance(data[0], pa.RecordBatch):
+            return pa.Table.from_batches(data, schema=schema)
         else:
             return pa.Table.from_pylist(data)
     elif isinstance(data, dict):

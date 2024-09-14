@@ -67,3 +67,17 @@ def test_create_empty_table():
 
     client.post.return_value = 0
     assert table.count_rows(None) == 0
+
+
+def test_create_table_with_recordbatches():
+    client = MagicMock()
+    conn = lancedb.connect("db://client-will-be-injected", api_key="fake")
+
+    conn._client = client
+
+    batch = pa.RecordBatch.from_arrays([pa.array([[1.0, 2.0], [3.0, 4.0]])], ["vector"])
+
+    client.post.return_value = {"status": "ok"}
+    table = conn.create_table("test", [batch], schema=batch.schema)
+    assert table.name == "test"
+    assert client.post.call_args[0][0] == "/v1/table/test/create/"
