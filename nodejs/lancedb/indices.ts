@@ -119,11 +119,11 @@ export interface IvfPqOptions {
 export interface HnswPqOptions {
   /**
    * The distance metric used to train the index.
-   * 
+   *
    * Default value is "l2".
-   * 
+   *
    * The following distance types are available:
-   * 
+   *
    * "l2" - Euclidean distance. This is a very common distance metric that
    * accounts for both magnitude and direction when determining the distance
    * between vectors. L2 distance has a range of [0, ∞).
@@ -134,97 +134,97 @@ export interface HnswPqOptions {
    * inner product space. It is defined to equal the cosine of the angle
    * between them.  Unlike L2, the cosine distance is not affected by the
    * magnitude of the vectors.  Cosine distance has a range of [0, 2].
-   * 
+   *
    * "dot" - Dot product. Dot distance is the dot product of two vectors. Dot
    * distance has a range of (-∞, ∞). If the vectors are normalized (i.e. their
    * L2 norm is 1), then dot distance is equivalent to the cosine distance.
-  */
+   */
   distanceType?: "l2" | "cosine" | "dot";
 
   /**
    * The number of IVF partitions to create.
-   * 
+   *
    * This value should generally scale with the number of rows in the dataset.  By default
    * the number of partitions is the square root of the number of rows.
-   * 
+   *
    * If this value is too large then the first part of the search (picking the right partition)
    * will be slow.  If this value is too small then the second part of the search (searching
    * within a partition) will be slow.
-   * 
+   *
    */
   numPartitions?: number;
 
   /**
    * Number of sub-vectors of PQ.
-   * 
+   *
    * This value controls how much the vector is compressed during the quantization step.
    * The more sub vectors there are the less the vector is compressed.  The default is
    * the dimension of the vector divided by 16.  If the dimension is not evenly divisible
    * by 16 we use the dimension divded by 8.
-   * 
+   *
    * The above two cases are highly preferred.  Having 8 or 16 values per subvector allows
    * us to use efficient SIMD instructions.
-   * 
+   *
    * If the dimension is not visible by 8 then we use 1 subvector.  This is not ideal and
    * will likely result in poor performance.
-   * 
+   *
    */
   numSubVectors?: number;
 
   /**
    * Max iterations to train kmeans.
-   * 
+   *
    * The default value is 50.
-   * 
+   *
    * When training an IVF index we use kmeans to calculate the partitions.  This parameter
    * controls how many iterations of kmeans to run.
-   * 
+   *
    * Increasing this might improve the quality of the index but in most cases the parameter
    * is unused because kmeans will converge with fewer iterations.  The parameter is only
    * used in cases where kmeans does not appear to converge.  In those cases it is unlikely
    * that setting this larger will lead to the index converging anyways.
-   * 
+   *
    */
   maxIterations?: number;
 
   /**
    * The rate used to calculate the number of training vectors for kmeans.
-   * 
+   *
    * Default value is 256.
-   * 
+   *
    * When an IVF index is trained, we need to calculate partitions.  These are groups
    * of vectors that are similar to each other.  To do this we use an algorithm called kmeans.
-   * 
+   *
    * Running kmeans on a large dataset can be slow.  To speed this up we run kmeans on a
    * random sample of the data.  This parameter controls the size of the sample.  The total
    * number of vectors used to train the index is `sample_rate * num_partitions`.
-   * 
+   *
    * Increasing this value might improve the quality of the index but in most cases the
    * default should be sufficient.
-   * 
+   *
    */
   sampleRate?: number;
 
   /**
    * The number of neighbors to select for each vector in the HNSW graph.
-   * 
+   *
    * The default value is 20.
-   * 
+   *
    * This value controls the tradeoff between search speed and accuracy.
    * The higher the value the more accurate the search but the slower it will be.
-   * 
+   *
    */
   m?: number;
 
   /**
    * The number of candidates to evaluate during the construction of the HNSW graph.
-   * 
+   *
    * The default value is 300.
-   * 
+   *
    * This value controls the tradeoff between build speed and accuracy.
    * The higher the value the more accurate the build but the slower it will be.
    * This value should be set to a value that is not less than `ef` in the search phase.
-   * 
+   *
    */
   efConstruction?: number;
 }
@@ -235,11 +235,11 @@ export interface HnswPqOptions {
 export interface HnswSqOptions {
   /**
    * The distance metric used to train the index.
-   * 
+   *
    * Default value is "l2".
-   * 
+   *
    * The following distance types are available:
-   * 
+   *
    * "l2" - Euclidean distance. This is a very common distance metric that
    * accounts for both magnitude and direction when determining the distance
    * between vectors. L2 distance has a range of [0, ∞).
@@ -250,80 +250,80 @@ export interface HnswSqOptions {
    * inner product space. It is defined to equal the cosine of the angle
    * between them.  Unlike L2, the cosine distance is not affected by the
    * magnitude of the vectors.  Cosine distance has a range of [0, 2].
-   * 
+   *
    * "dot" - Dot product. Dot distance is the dot product of two vectors. Dot
    * distance has a range of (-∞, ∞). If the vectors are normalized (i.e. their
    * L2 norm is 1), then dot distance is equivalent to the cosine distance.
-  */
+   */
   distanceType?: "l2" | "cosine" | "dot";
 
   /**
    * The number of IVF partitions to create.
-   * 
+   *
    * This value should generally scale with the number of rows in the dataset.  By default
    * the number of partitions is the square root of the number of rows.
-   * 
+   *
    * If this value is too large then the first part of the search (picking the right partition)
    * will be slow.  If this value is too small then the second part of the search (searching
    * within a partition) will be slow.
-   * 
-  */
+   *
+   */
   numPartitions?: number;
 
   /**
    * Max iterations to train kmeans.
-   * 
+   *
    * The default value is 50.
-   * 
+   *
    * When training an IVF index we use kmeans to calculate the partitions.  This parameter
    * controls how many iterations of kmeans to run.
-   * 
+   *
    * Increasing this might improve the quality of the index but in most cases the parameter
    * is unused because kmeans will converge with fewer iterations.  The parameter is only
    * used in cases where kmeans does not appear to converge.  In those cases it is unlikely
    * that setting this larger will lead to the index converging anyways.
-   * 
+   *
    */
   maxIterations?: number;
 
   /**
    * The rate used to calculate the number of training vectors for kmeans.
-   * 
+   *
    * Default value is 256.
-   * 
+   *
    * When an IVF index is trained, we need to calculate partitions.  These are groups
    * of vectors that are similar to each other.  To do this we use an algorithm called kmeans.
-   * 
+   *
    * Running kmeans on a large dataset can be slow.  To speed this up we run kmeans on a
    * random sample of the data.  This parameter controls the size of the sample.  The total
    * number of vectors used to train the index is `sample_rate * num_partitions`.
-   * 
+   *
    * Increasing this value might improve the quality of the index but in most cases the
    * default should be sufficient.
-   * 
+   *
    */
   sampleRate?: number;
 
   /**
    * The number of neighbors to select for each vector in the HNSW graph.
-   * 
+   *
    * The default value is 20.
-   * 
+   *
    * This value controls the tradeoff between search speed and accuracy.
    * The higher the value the more accurate the search but the slower it will be.
-   * 
+   *
    */
   m?: number;
 
   /**
    * The number of candidates to evaluate during the construction of the HNSW graph.
-   * 
+   *
    * The default value is 300.
-   * 
+   *
    * This value controls the tradeoff between build speed and accuracy.
    * The higher the value the more accurate the build but the slower it will be.
    * This value should be set to a value that is not less than `ef` in the search phase.
-   * 
+   *
    */
   efConstruction?: number;
 }
@@ -446,11 +446,11 @@ export class Index {
   /**
    *
    * Create a hnswPq index
-   * 
+   *
    * HNSW-PQ stands for Hierarchical Navigable Small World - Product Quantization.
    * It is a variant of the HNSW algorithm that uses product quantization to compress
    * the vectors.
-   * 
+   *
    */
   static hnswPq(options?: Partial<HnswPqOptions>) {
     return new Index(
@@ -469,11 +469,11 @@ export class Index {
   /**
    *
    * Create a hnswSq index
-   * 
+   *
    * HNSW-SQ stands for Hierarchical Navigable Small World - Scalar Quantization.
    * It is a variant of the HNSW algorithm that uses scalar quantization to compress
    * the vectors.
-   * 
+   *
    */
   static hnswSq(options?: Partial<HnswSqOptions>) {
     return new Index(
