@@ -94,6 +94,8 @@ def _coerce_to_table(data, schema: Optional[pa.Schema] = None) -> pa.Table:
                 schema = data[0].__class__.to_arrow_schema()
             data = [model_to_dict(d) for d in data]
             return pa.Table.from_pylist(data, schema=schema)
+        elif isinstance(data[0], pa.RecordBatch):
+            return pa.Table.from_batches(data, schema=schema)
         else:
             return pa.Table.from_pylist(data)
     elif isinstance(data, dict):
@@ -173,6 +175,9 @@ def sanitize_create_table(
             on_bad_vectors=on_bad_vectors,
             fill_value=fill_value,
         )
+    else:
+        if schema is not None:
+            data = pa.Table.from_pylist([], schema)
     if schema is None:
         if data is None:
             raise ValueError("Either data or schema must be provided")
