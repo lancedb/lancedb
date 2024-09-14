@@ -173,6 +173,9 @@ def sanitize_create_table(
             on_bad_vectors=on_bad_vectors,
             fill_value=fill_value,
         )
+    else:
+        if schema is not None:
+            data = pa.Table.from_pylist([], schema)
     if schema is None:
         if data is None:
             raise ValueError("Either data or schema must be provided")
