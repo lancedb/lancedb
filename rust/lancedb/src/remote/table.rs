@@ -310,11 +310,23 @@ mod tests {
                 .unwrap()
         });
 
+        let example_data = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+        let example_data = Box::new(RecordBatchIterator::new(
+            [Ok(example_data.clone())],
+            example_data.schema(),
+        ));
+
         // All endpoints should translate 404 to TableNotFound.
         let results: Vec<BoxFuture<'_, Result<()>>> = vec![
             Box::pin(table.version().map_ok(|_| ())),
             Box::pin(table.schema().map_ok(|_| ())),
             Box::pin(table.count_rows(None).map_ok(|_| ())),
+            Box::pin(table.update().column("a", "a + 1").execute()),
+            Box::pin(table.add(example_data).execute().map_ok(|_| ())),
             // TODO: other endpoints.
         ];
 
