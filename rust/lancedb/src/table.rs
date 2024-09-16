@@ -428,6 +428,31 @@ pub struct Table {
     embedding_registry: Arc<dyn EmbeddingRegistry>,
 }
 
+#[cfg(all(test, feature = "remote"))]
+mod test_utils {
+    use super::*;
+
+    impl Table {
+        pub fn new_with_handler<T>(
+            name: impl Into<String>,
+            handler: impl Fn(reqwest::Request) -> http::Response<T> + Clone + Send + Sync + 'static,
+        ) -> Self
+        where
+            T: Into<reqwest::Body>,
+        {
+            let inner = Arc::new(crate::remote::table::RemoteTable::new_mock(
+                name.into(),
+                handler,
+            ));
+            Self {
+                inner,
+                // Registry is unused.
+                embedding_registry: Arc::new(MemoryRegistry::new()),
+            }
+        }
+    }
+}
+
 impl std::fmt::Display for Table {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.inner)
