@@ -12,7 +12,7 @@ use http::StatusCode;
 use lance::arrow::json::JsonSchema;
 use lance::dataset::scanner::{DatasetRecordBatchStream, Scanner};
 use lance::dataset::{ColumnAlteration, NewColumnTransform};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     connection::NoData,
@@ -57,6 +57,29 @@ impl<S: HttpSend> RemoteTable<S> {
         serde_json::from_str(&body).map_err(|e| Error::Http {
             message: format!("Failed to parse table description: {}", e),
         })
+    }
+
+    fn reader_as_body(data: Box<dyn RecordBatchReader + Send>) -> Result<reqwest::Body> {
+        // TODO: Once Phalanx supports compression, we should use it here.
+        let mut writer = arrow_ipc::writer::StreamWriter::try_new(Vec::new(), &data.schema())?;
+
+        //  Mutex is just here to make it sync. We shouldn't have any contention.
+        let mut data = Mutex::new(data);
+        let body_iter = std::iter::from_fn(move || match data.get_mut().unwrap().next() {
+            Some(Ok(batch)) => {
+                writer.write(&batch).ok()?;
+                let buffer = std::mem::take(writer.get_mut());
+                Some(Ok(buffer))
+            }
+            Some(Err(e)) => Some(Err(e)),
+            None => {
+                writer.finish().ok()?;
+                let buffer = std::mem::take(writer.get_mut());
+                Some(Ok(buffer))
+            }
+        });
+        let body_stream = futures::stream::iter(body_iter);
+        Ok(reqwest::Body::wrap_stream(body_stream))
     }
 }
 
@@ -155,7 +178,12 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
         add: AddDataBuilder<NoData>,
         data: Box<dyn RecordBatchReader + Send>,
     ) -> Result<()> {
-        let mut request = self.client.post(&format!("/table/{}/insert/", self.name));
+        let body = Self::reader_as_body(data)?;
+        let mut request = self
+            .client
+            .post(&format!("/table/{}/insert/", self.name))
+            .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE)
+            .body(body);
 
         match add.mode {
             AddDataMode::Append => {}
@@ -163,30 +191,6 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
                 request = request.query(&[("mode", "overwrite")]);
             }
         }
-
-        let request = request.header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE);
-
-        // TODO: Once Phalanx supports compression, we should use it here.
-        let mut writer = arrow_ipc::writer::StreamWriter::try_new(Vec::new(), &data.schema())?;
-
-        //  Mutex is just here to make it sync. We shouldn't have any contention.
-        let mut data = Mutex::new(data);
-        let body_iter = std::iter::from_fn(move || match data.get_mut().unwrap().next() {
-            Some(Ok(batch)) => {
-                writer.write(&batch).ok()?;
-                let buffer = std::mem::take(writer.get_mut());
-                Some(Ok(buffer))
-            }
-            Some(Err(e)) => Some(Err(e)),
-            None => {
-                writer.finish().ok()?;
-                let buffer = std::mem::take(writer.get_mut());
-                Some(Ok(buffer))
-            }
-        });
-        let body_stream = futures::stream::iter(body_iter);
-        let body = reqwest::Body::wrap_stream(body_stream);
-        let request = request.body(body);
 
         let response = self.client.send(request).await?;
 
@@ -259,10 +263,29 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
     }
     async fn merge_insert(
         &self,
-        _params: MergeInsertBuilder,
-        _new_data: Box<dyn RecordBatchReader + Send>,
+        params: MergeInsertBuilder,
+        new_data: Box<dyn RecordBatchReader + Send>,
     ) -> Result<()> {
-        todo!()
+        let query = MergeInsertRequest::try_from(params)?;
+        let body = Self::reader_as_body(new_data)?;
+        let request = self
+            .client
+            .post(&format!("/table/{}/merge_insert/", self.name))
+            .query(&query)
+            .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE)
+            .body(body);
+
+        let response = self.client.send(request).await?;
+
+        if response.status() == StatusCode::NOT_FOUND {
+            return Err(Error::TableNotFound {
+                name: self.name.clone(),
+            });
+        }
+
+        self.client.check_response(response).await?;
+
+        Ok(())
     }
     async fn optimize(&self, _action: OptimizeAction) -> Result<OptimizeStats> {
         todo!()
@@ -288,9 +311,45 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
     }
 }
 
+#[derive(Serialize)]
+struct MergeInsertRequest {
+    on: String,
+    when_matched_update_all: bool,
+    when_matched_update_all_filt: Option<String>,
+    when_not_matched_insert_all: bool,
+    when_not_matched_by_source_delete: bool,
+    when_not_matched_by_source_delete_filt: Option<String>,
+}
+
+impl TryFrom<MergeInsertBuilder> for MergeInsertRequest {
+    type Error = Error;
+
+    fn try_from(value: MergeInsertBuilder) -> Result<Self> {
+        if value.on.is_empty() {
+            return Err(Error::InvalidInput {
+                message: "MergeInsertBuilder missing required 'on' field".into(),
+            });
+        } else if value.on.len() > 1 {
+            return Err(Error::NotSupported {
+                message: "MergeInsertBuilder only supports a single 'on' column".into(),
+            });
+        }
+        let on = value.on[0].clone();
+
+        Ok(Self {
+            on,
+            when_matched_update_all: value.when_matched_update_all,
+            when_matched_update_all_filt: value.when_matched_update_all_filt,
+            when_not_matched_insert_all: value.when_not_matched_insert_all,
+            when_not_matched_by_source_delete: value.when_not_matched_by_source_delete,
+            when_not_matched_by_source_delete_filt: value.when_not_matched_by_source_delete_filt,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::pin::Pin;
+    use std::{collections::HashMap, pin::Pin};
 
     use super::*;
 
@@ -568,4 +627,93 @@ mod tests {
             .await
             .unwrap();
     }
+
+    #[tokio::test]
+    async fn test_merge_insert() {
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+        let data = Box::new(RecordBatchIterator::new(
+            [Ok(batch.clone())],
+            batch.schema(),
+        ));
+
+        // Default parameters
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url().path(), "/table/my_table/merge_insert/");
+
+            let params = request.url().query_pairs().collect::<HashMap<_, _>>();
+            assert_eq!(params["on"], "some_col");
+            assert_eq!(params["when_matched_update_all"], "false");
+            assert_eq!(params["when_not_matched_insert_all"], "false");
+            assert_eq!(params["when_not_matched_by_source_delete"], "false");
+            assert!(!params.contains_key("when_matched_update_all_filt"));
+            assert!(!params.contains_key("when_not_matched_by_source_delete_filt"));
+
+            http::Response::builder().status(200).body("").unwrap()
+        });
+
+        table
+            .merge_insert(&["some_col"])
+            .execute(data)
+            .await
+            .unwrap();
+
+        // All parameters specified
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let table = Table::new_with_handler("my_table", move |mut request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url().path(), "/table/my_table/merge_insert/");
+            assert_eq!(
+                request.headers().get("Content-Type").unwrap(),
+                ARROW_STREAM_CONTENT_TYPE
+            );
+
+            let params = request.url().query_pairs().collect::<HashMap<_, _>>();
+            assert_eq!(params["on"], "some_col");
+            assert_eq!(params["when_matched_update_all"], "true");
+            assert_eq!(params["when_not_matched_insert_all"], "false");
+            assert_eq!(params["when_not_matched_by_source_delete"], "true");
+            assert_eq!(params["when_matched_update_all_filt"], "a = 1");
+            assert_eq!(params["when_not_matched_by_source_delete_filt"], "b = 2");
+
+            let mut body_out = reqwest::Body::from(Vec::new());
+            std::mem::swap(request.body_mut().as_mut().unwrap(), &mut body_out);
+            sender.send(body_out).unwrap();
+
+            http::Response::builder().status(200).body("").unwrap()
+        });
+        let mut builder = table.merge_insert(&["some_col"]);
+        builder
+            .when_matched_update_all(Some("a = 1".into()))
+            .when_not_matched_by_source_delete(Some("b = 2".into()));
+        let data = Box::new(RecordBatchIterator::new(
+            [Ok(batch.clone())],
+            batch.schema(),
+        ));
+        builder.execute(data).await.unwrap();
+
+        // Check we serialize data correctly.
+        let mut expected_body = Vec::new();
+        {
+            let mut writer =
+                arrow_ipc::writer::StreamWriter::try_new(&mut expected_body, &batch.schema())
+                    .unwrap();
+            writer.write(&batch).unwrap();
+            writer.finish().unwrap();
+        }
+
+        let body = receiver.recv().unwrap();
+        let body = collect_body(body).await;
+        assert_eq!(&body, &expected_body);
+    }
+
+    // TODO: Delete
+
+    // TODO: not yet supported endpoints
+
+    // TODO: not applicable errors.
 }
