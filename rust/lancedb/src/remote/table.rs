@@ -225,8 +225,31 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
     ) -> Result<DatasetRecordBatchStream> {
         todo!()
     }
-    async fn update(&self, _update: UpdateBuilder) -> Result<()> {
-        todo!()
+    async fn update(&self, update: UpdateBuilder) -> Result<()> {
+        let request = self.client.post(&format!("/table/{}/update/", self.name));
+
+        let mut updates = Vec::new();
+        for (column, expression) in update.columns {
+            updates.push(column);
+            updates.push(expression);
+        }
+
+        let request = request.json(&serde_json::json!({
+            "updates": updates,
+            "only_if": update.filter,
+        }));
+
+        let response = self.client.send(request).await?;
+
+        if response.status() == StatusCode::NOT_FOUND {
+            return Err(Error::TableNotFound {
+                name: self.name.clone(),
+            });
+        }
+
+        self.client.check_response(response).await?;
+
+        Ok(())
     }
     async fn delete(&self, _predicate: &str) -> Result<()> {
         todo!()
@@ -380,15 +403,12 @@ mod tests {
         let mut body = body;
         let mut data = Vec::new();
         let mut body_pin = Pin::new(&mut body);
-        futures::stream::poll_fn(|cx| {
-            // TODO: needs another dependency to work.
-            body_pin.as_mut().poll_frame(cx)
-        })
-        .for_each(|frame| {
-            data.extend_from_slice(frame.unwrap().data_ref().unwrap());
-            futures::future::ready(())
-        })
-        .await;
+        futures::stream::poll_fn(|cx| body_pin.as_mut().poll_frame(cx))
+            .for_each(|frame| {
+                data.extend_from_slice(frame.unwrap().data_ref().unwrap());
+                futures::future::ready(())
+            })
+            .await;
         data
     }
 
@@ -502,5 +522,38 @@ mod tests {
         let body = receiver.recv().unwrap();
         let body = collect_body(body).await;
         assert_eq!(&body, &expected_body);
+    }
+
+    #[tokio::test]
+    async fn test_update() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url().path(), "/table/my_table/update/");
+
+            if let Some(body) = request.body().unwrap().as_bytes() {
+                let body = std::str::from_utf8(body).unwrap();
+                let value: serde_json::Value = serde_json::from_str(body).unwrap();
+                let updates = value.get("updates").unwrap().as_array().unwrap();
+                assert!(updates.len() == 2);
+
+                let col_name = updates[0].as_str().unwrap();
+                let expression = updates[1].as_str().unwrap();
+                assert_eq!(col_name, "a");
+                assert_eq!(expression, "a + 1");
+
+                let only_if = value.get("only_if").unwrap().as_str().unwrap();
+                assert_eq!(only_if, "b > 10");
+            }
+
+            http::Response::builder().status(200).body("").unwrap()
+        });
+
+        table
+            .update()
+            .column("a", "a + 1")
+            .only_if("b > 10")
+            .execute()
+            .await
+            .unwrap();
     }
 }
