@@ -255,8 +255,20 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
 
         Ok(())
     }
-    async fn delete(&self, _predicate: &str) -> Result<()> {
-        todo!()
+    async fn delete(&self, predicate: &str) -> Result<()> {
+        let body = serde_json::json!({ "predicate": predicate });
+        let request = self
+            .client
+            .post(&format!("/table/{}/delete/", self.name))
+            .json(&body);
+        let response = self.client.send(request).await?;
+        if response.status() == StatusCode::NOT_FOUND {
+            return Err(Error::TableNotFound {
+                name: self.name.clone(),
+            });
+        }
+        self.client.check_response(response).await?;
+        Ok(())
     }
     async fn create_index(&self, _index: IndexBuilder) -> Result<()> {
         todo!()
@@ -369,15 +381,17 @@ mod tests {
                 .unwrap()
         });
 
-        let example_data = RecordBatch::try_new(
+        let batch = RecordBatch::try_new(
             Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
             vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
         )
         .unwrap();
-        let example_data = Box::new(RecordBatchIterator::new(
-            [Ok(example_data.clone())],
-            example_data.schema(),
-        ));
+        let example_data = || {
+            Box::new(RecordBatchIterator::new(
+                [Ok(batch.clone())],
+                batch.schema(),
+            ))
+        };
 
         // All endpoints should translate 404 to TableNotFound.
         let results: Vec<BoxFuture<'_, Result<()>>> = vec![
@@ -385,8 +399,9 @@ mod tests {
             Box::pin(table.schema().map_ok(|_| ())),
             Box::pin(table.count_rows(None).map_ok(|_| ())),
             Box::pin(table.update().column("a", "a + 1").execute()),
-            Box::pin(table.add(example_data).execute().map_ok(|_| ())),
-            // TODO: other endpoints.
+            Box::pin(table.add(example_data()).execute().map_ok(|_| ())),
+            Box::pin(table.merge_insert(&["test"]).execute(example_data())),
+            Box::pin(table.delete("false")), // TODO: other endpoints.
         ];
 
         for result in results {
@@ -711,7 +726,22 @@ mod tests {
         assert_eq!(&body, &expected_body);
     }
 
-    // TODO: Delete
+    #[tokio::test]
+    async fn test_delete() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url().path(), "/table/my_table/delete/");
+
+            let body = request.body().unwrap().as_bytes().unwrap();
+            let body: serde_json::Value = serde_json::from_slice(body).unwrap();
+            let predicate = body.get("predicate").unwrap().as_str().unwrap();
+            assert_eq!(predicate, "id in (1, 2, 3)");
+
+            http::Response::builder().status(200).body("").unwrap()
+        });
+
+        table.delete("id in (1, 2, 3)").await.unwrap();
+    }
 
     // TODO: not yet supported endpoints
 
