@@ -155,12 +155,12 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
         add: AddDataBuilder<NoData>,
         data: Box<dyn RecordBatchReader + Send>,
     ) -> Result<()> {
-        let request = self.client.post(&format!("/table/{}/insert/", self.name));
+        let mut request = self.client.post(&format!("/table/{}/insert/", self.name));
 
         match add.mode {
             AddDataMode::Append => {}
             AddDataMode::Overwrite => {
-                todo!("Overwrite mode is not supported yet.");
+                request = request.query(&[("mode", "overwrite")]);
             }
         }
 
@@ -375,6 +375,23 @@ mod tests {
         assert_eq!(count, 42);
     }
 
+    async fn collect_body(body: Body) -> Vec<u8> {
+        use http_body::Body;
+        let mut body = body;
+        let mut data = Vec::new();
+        let mut body_pin = Pin::new(&mut body);
+        futures::stream::poll_fn(|cx| {
+            // TODO: needs another dependency to work.
+            body_pin.as_mut().poll_frame(cx)
+        })
+        .for_each(|frame| {
+            data.extend_from_slice(frame.unwrap().data_ref().unwrap());
+            futures::future::ready(())
+        })
+        .await;
+        data
+    }
+
     #[tokio::test]
     async fn test_add_append() {
         let data = RecordBatch::try_new(
@@ -429,20 +446,61 @@ mod tests {
         assert_eq!(&body, &expected_body);
     }
 
-    async fn collect_body(body: Body) -> Vec<u8> {
-        use http_body::Body;
-        let mut body = body;
-        let mut data = Vec::new();
-        let mut body_pin = Pin::new(&mut body);
-        futures::stream::poll_fn(|cx| {
-            // TODO: needs another dependency to work.
-            body_pin.as_mut().poll_frame(cx)
-        })
-        .for_each(|frame| {
-            data.extend_from_slice(frame.unwrap().data_ref().unwrap());
-            futures::future::ready(())
-        })
-        .await;
-        data
+    #[tokio::test]
+    async fn test_add_overwrite() {
+        let data = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+
+        let data_ref = data.clone();
+
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let table = Table::new_with_handler("my_table", move |mut request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url().path(), "/table/my_table/insert/");
+            assert_eq!(
+                request
+                    .url()
+                    .query_pairs()
+                    .find(|(k, _)| k == "mode")
+                    .map(|kv| kv.1)
+                    .as_deref(),
+                Some("overwrite"),
+                "Expected mode=overwrite"
+            );
+
+            assert_eq!(
+                request.headers().get("Content-Type").unwrap(),
+                ARROW_STREAM_CONTENT_TYPE
+            );
+
+            let mut body_out = reqwest::Body::from(Vec::new());
+            std::mem::swap(request.body_mut().as_mut().unwrap(), &mut body_out);
+            sender.send(body_out).unwrap();
+
+            http::Response::builder().status(200).body("").unwrap()
+        });
+
+        table
+            .add(RecordBatchIterator::new([Ok(data.clone())], data.schema()))
+            .mode(AddDataMode::Overwrite)
+            .execute()
+            .await
+            .unwrap();
+
+        let mut expected_body = Vec::new();
+        {
+            let mut writer =
+                arrow_ipc::writer::StreamWriter::try_new(&mut expected_body, &data_ref.schema())
+                    .unwrap();
+            writer.write(&data_ref).unwrap();
+            writer.finish().unwrap();
+        }
+
+        let body = receiver.recv().unwrap();
+        let body = collect_body(body).await;
+        assert_eq!(&body, &expected_body);
     }
 }
