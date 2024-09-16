@@ -44,13 +44,7 @@ impl<S: HttpSend> RemoteTable<S> {
         let request = self.client.post(&format!("/table/{}/describe/", self.name));
         let response = self.client.send(request).await?;
 
-        if response.status() == StatusCode::NOT_FOUND {
-            return Err(Error::TableNotFound {
-                name: self.name.clone(),
-            });
-        }
-
-        let response = self.client.check_response(response).await?;
+        let response = self.check_table_response(response).await?;
 
         let body = response.text().await?;
 
@@ -80,6 +74,16 @@ impl<S: HttpSend> RemoteTable<S> {
         });
         let body_stream = futures::stream::iter(body_iter);
         Ok(reqwest::Body::wrap_stream(body_stream))
+    }
+
+    async fn check_table_response(&self, response: reqwest::Response) -> Result<reqwest::Response> {
+        if response.status() == StatusCode::NOT_FOUND {
+            return Err(Error::TableNotFound {
+                name: self.name.clone(),
+            });
+        }
+
+        self.client.check_response(response).await
     }
 }
 
@@ -159,13 +163,7 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
 
         let response = self.client.send(request).await?;
 
-        if response.status() == StatusCode::NOT_FOUND {
-            return Err(Error::TableNotFound {
-                name: self.name.clone(),
-            });
-        }
-
-        let response = self.client.check_response(response).await?;
+        let response = self.check_table_response(response).await?;
 
         let body = response.text().await?;
 
@@ -194,13 +192,7 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
 
         let response = self.client.send(request).await?;
 
-        if response.status() == StatusCode::NOT_FOUND {
-            return Err(Error::TableNotFound {
-                name: self.name.clone(),
-            });
-        }
-
-        self.client.check_response(response).await?;
+        self.check_table_response(response).await?;
 
         Ok(())
     }
@@ -210,24 +202,32 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
         _query: &VectorQuery,
         _options: Option<QueryExecutionOptions>,
     ) -> Result<Scanner> {
-        todo!()
+        Err(Error::NotSupported {
+            message: "build_plan is not supported on LanceDB cloud.".into(),
+        })
     }
     async fn create_plan(
         &self,
         _query: &VectorQuery,
         _options: QueryExecutionOptions,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        unimplemented!()
+        Err(Error::NotSupported {
+            message: "create_plan is not supported on LanceDB cloud.".into(),
+        })
     }
     async fn explain_plan(&self, _query: &VectorQuery, _verbose: bool) -> Result<String> {
-        todo!()
+        Err(Error::NotSupported {
+            message: "explain_plan is not supported on LanceDB cloud.".into(),
+        })
     }
     async fn plain_query(
         &self,
         _query: &Query,
         _options: QueryExecutionOptions,
     ) -> Result<DatasetRecordBatchStream> {
-        todo!()
+        Err(Error::NotSupported {
+            message: "plain_query is not yet supported on LanceDB cloud.".into(),
+        })
     }
     async fn update(&self, update: UpdateBuilder) -> Result<()> {
         let request = self.client.post(&format!("/table/{}/update/", self.name));
@@ -245,13 +245,7 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
 
         let response = self.client.send(request).await?;
 
-        if response.status() == StatusCode::NOT_FOUND {
-            return Err(Error::TableNotFound {
-                name: self.name.clone(),
-            });
-        }
-
-        self.client.check_response(response).await?;
+        self.check_table_response(response).await?;
 
         Ok(())
     }
@@ -262,16 +256,13 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
             .post(&format!("/table/{}/delete/", self.name))
             .json(&body);
         let response = self.client.send(request).await?;
-        if response.status() == StatusCode::NOT_FOUND {
-            return Err(Error::TableNotFound {
-                name: self.name.clone(),
-            });
-        }
-        self.client.check_response(response).await?;
+        self.check_table_response(response).await?;
         Ok(())
     }
     async fn create_index(&self, _index: IndexBuilder) -> Result<()> {
-        todo!()
+        Err(Error::NotSupported {
+            message: "plain_query is not yet supported on LanceDB cloud.".into(),
+        })
     }
     async fn merge_insert(
         &self,
@@ -289,37 +280,43 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
 
         let response = self.client.send(request).await?;
 
-        if response.status() == StatusCode::NOT_FOUND {
-            return Err(Error::TableNotFound {
-                name: self.name.clone(),
-            });
-        }
-
-        self.client.check_response(response).await?;
+        self.check_table_response(response).await?;
 
         Ok(())
     }
     async fn optimize(&self, _action: OptimizeAction) -> Result<OptimizeStats> {
-        todo!()
+        Err(Error::NotSupported {
+            message: "optimize is not supported on LanceDB cloud.".into(),
+        })
     }
     async fn add_columns(
         &self,
         _transforms: NewColumnTransform,
         _read_columns: Option<Vec<String>>,
     ) -> Result<()> {
-        todo!()
+        Err(Error::NotSupported {
+            message: "add_columns is not yet supported.".into(),
+        })
     }
     async fn alter_columns(&self, _alterations: &[ColumnAlteration]) -> Result<()> {
-        todo!()
+        Err(Error::NotSupported {
+            message: "alter_columns is not yet supported.".into(),
+        })
     }
     async fn drop_columns(&self, _columns: &[&str]) -> Result<()> {
-        todo!()
+        Err(Error::NotSupported {
+            message: "drop_columns is not yet supported.".into(),
+        })
     }
     async fn list_indices(&self) -> Result<Vec<IndexConfig>> {
-        todo!()
+        Err(Error::NotSupported {
+            message: "list_indices is not yet supported.".into(),
+        })
     }
     async fn table_definition(&self) -> Result<TableDefinition> {
-        todo!()
+        Err(Error::NotSupported {
+            message: "plain_query is not supported on LanceDB cloud.".into(),
+        })
     }
 }
 
@@ -742,8 +739,4 @@ mod tests {
 
         table.delete("id in (1, 2, 3)").await.unwrap();
     }
-
-    // TODO: not yet supported endpoints
-
-    // TODO: not applicable errors.
 }
