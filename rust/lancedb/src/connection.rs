@@ -1240,6 +1240,7 @@ mod tests {
 
         let tbl = db
             .create_table("v1_test", make_data())
+            .data_storage_version(LanceFileVersion::Legacy)
             .execute()
             .await
             .unwrap();
