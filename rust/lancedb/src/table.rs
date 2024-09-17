@@ -37,6 +37,7 @@ use lance::dataset::{
 use lance::dataset::{MergeInsertBuilder as LanceMergeInsertBuilder, WhenNotMatchedBySource};
 use lance::io::WrappingObjectStore;
 use lance_datafusion::exec::execute_plan;
+use lance_encoding::version::LanceFileVersion;
 use lance_index::vector::hnsw::builder::HnswBuildParams;
 use lance_index::vector::ivf::IvfBuildParams;
 use lance_index::vector::pq::PQBuildParams;
@@ -1793,6 +1794,10 @@ impl TableInternal for NativeTable {
             },
             ..Default::default()
         });
+
+        if lance_params.data_storage_version.is_none() {
+            lance_params.data_storage_version = Some(LanceFileVersion::Legacy);
+        }
 
         // Bring storage options from table
         let storage_options = lance_params
