@@ -25,6 +25,7 @@ class Connection(object):
         data: pa.RecordBatchReader,
         storage_options: Optional[Dict[str, str]] = None,
         data_storage_version: Optional[str] = None,
+        enable_v2_manifest_paths: Optional[bool] = None,
     ) -> Table: ...
     async def create_empty_table(
         self,
@@ -33,6 +34,7 @@ class Connection(object):
         schema: pa.Schema,
         storage_options: Optional[Dict[str, str]] = None,
         data_storage_version: Optional[str] = None,
+        enable_v2_manifest_paths: Optional[bool] = None,
     ) -> Table: ...
 
 class Table:

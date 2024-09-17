@@ -1,28 +1,28 @@
 [tool.bumpversion]
-allow_dirty = true
-commit = true
-commit_args = ""
-current_version = "0.10.0-beta.1"
-ignore_missing_files = false
-ignore_missing_version = false
-message = "Bump version: {current_version} → {new_version}"
+current_version = "0.10.0"
 parse = """(?x)
     (?P<major>0|[1-9]\\d*)\\.
     (?P<minor>0|[1-9]\\d*)\\.
     (?P<patch>0|[1-9]\\d*)
     (?:-(?P<pre_l>[a-zA-Z-]+)\\.(?P<pre_n>0|[1-9]\\d*))?
 """
-regex = false
-replace = "{new_version}"
-search = "{current_version}"
 serialize = [
-  "{major}.{minor}.{patch}-{pre_l}.{pre_n}",
-  "{major}.{minor}.{patch}",
+    "{major}.{minor}.{patch}-{pre_l}.{pre_n}",
+    "{major}.{minor}.{patch}",
 ]
-sign_tags = false
+search = "{current_version}"
+replace = "{new_version}"
+regex = false
+ignore_missing_version = false
+ignore_missing_files = false
 tag = true
-tag_message = "Bump version: {current_version} → {new_version}"
+sign_tags = false
 tag_name = "v{new_version}"
+tag_message = "Bump version: {current_version} → {new_version}"
+allow_dirty = true
+commit = true
+message = "Bump version: {current_version} → {new_version}"
+commit_args = ""
 
 # Java maven files
 pre_commit_hooks = [

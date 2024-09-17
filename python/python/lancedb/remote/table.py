@@ -126,6 +126,7 @@ class RemoteTable(Table):
         column: str,
         *,
         replace: bool = False,
+        with_position: bool = True,
     ):
         data = {
             "column": column,

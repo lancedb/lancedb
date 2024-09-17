@@ -15,7 +15,8 @@ import os
 import pathlib
 
 import pytest
-from lancedb.util import get_uri_scheme, join_uri
+import lancedb
+from lancedb.util import get_uri_scheme, join_uri, value_to_sql
 
 
 def test_normalize_uri():
@@ -84,3 +85,29 @@ def test_local_join_uri_windows():
         assert joined == str(pathlib.Path(base) / "table.lance")
         joined = join_uri(pathlib.Path(base), "table.lance")
         assert joined == pathlib.Path(base) / "table.lance"
+
+
+def test_value_to_sql_string(tmp_path):
+    # Make sure we can convert Python string literals to SQL strings, even if
+    # they contain characters meaningful in SQL, such as ' and \.
+    values = ["anthony's", 'a "test" string', "anthony's \"favorite color\" wasn't red"]
+    expected_values = [
+        "'anthony''s'",
+        "'a \"test\" string'",
+        "'anthony''s \"favorite color\" wasn''t red'",
+    ]
+
+    for value, expected in zip(values, expected_values):
+        assert value_to_sql(value) == expected
+
+    # Also test we can roundtrip those strings through update.
+    # This validates the query parser understands the strings we
+    # are creating.
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
+        "test",
+        [{"search": value, "replace": "something"} for value in values],
+    )
+    for value in values:
+        table.update(where=f"search = {value_to_sql(value)}", values={"replace": value})
+        assert table.to_pandas().query("search == @value")["replace"].item() == value

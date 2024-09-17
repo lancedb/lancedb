@@ -79,6 +79,13 @@ class RestfulLanceDBClient:
             or f"https://{self.db_name}.{self.region}.api.lancedb.com"
         )
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
+        return False  # Do not suppress exceptions
+
     def close(self):
         self.session.close()
         self.closed = True

@@ -234,6 +234,11 @@ export class QueryBase<NativeQueryType extends NativeQuery | NativeVectorQuery>
     return this;
   }
 
+  offset(offset: number): this {
+    this.doCall((inner: NativeQueryType) => inner.offset(offset));
+    return this;
+  }
+
   protected nativeExecute(
     options?: Partial<QueryExecutionOptions>,
   ): Promise<NativeBatchIterator> {

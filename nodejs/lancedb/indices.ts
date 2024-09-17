@@ -113,6 +113,38 @@ export interface IvfPqOptions {
   sampleRate?: number;
 }
 
+export interface HnswPqOptions {
+  distanceType?: "l2" | "cosine" | "dot";
+  numPartitions?: number;
+  numSubVectors?: number;
+  maxIterations?: number;
+  sampleRate?: number;
+  m?: number;
+  efConstruction?: number;
+}
+
+export interface HnswSqOptions {
+  distanceType?: "l2" | "cosine" | "dot";
+  numPartitions?: number;
+  maxIterations?: number;
+  sampleRate?: number;
+  m?: number;
+  efConstruction?: number;
+}
+
+/**
+ * Options to create a full text search index
+ */
+export interface FtsOptions {
+  /**
+   * Whether to build the index with positions.
+   * True by default.
+   * If set to false, the index will not store the positions of the tokens in the text,
+   * which will make the index smaller and faster to build, but will not support phrase queries.
+   */
+  withPosition?: boolean;
+}
+
 export class Index {
   private readonly inner: LanceDbIndex;
   private constructor(inner: LanceDbIndex) {
@@ -211,8 +243,45 @@ export class Index {
    *
    * For now, the full text search index only supports English, and doesn't support phrase search.
    */
-  static fts() {
-    return new Index(LanceDbIndex.fts());
+  static fts(options?: Partial<FtsOptions>) {
+    return new Index(LanceDbIndex.fts(options?.withPosition));
+  }
+
+  /**
+   *
+   * Create a hnswpq index
+   *
+   */
+  static hnswPq(options?: Partial<HnswPqOptions>) {
+    return new Index(
+      LanceDbIndex.hnswPq(
+        options?.distanceType,
+        options?.numPartitions,
+        options?.numSubVectors,
+        options?.maxIterations,
+        options?.sampleRate,
+        options?.m,
+        options?.efConstruction,
+      ),
+    );
+  }
+
+  /**
+   *
+   * Create a hnswsq index
+   *
+   */
+  static hnswSq(options?: Partial<HnswSqOptions>) {
+    return new Index(
+      LanceDbIndex.hnswSq(
+        options?.distanceType,
+        options?.numPartitions,
+        options?.maxIterations,
+        options?.sampleRate,
+        options?.m,
+        options?.efConstruction,
+      ),
+    );
   }
 }
 

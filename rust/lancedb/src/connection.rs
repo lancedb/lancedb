@@ -142,6 +142,7 @@ pub struct CreateTableBuilder<const HAS_DATA: bool, T: IntoArrow> {
     pub(crate) table_definition: Option<TableDefinition>,
     pub(crate) embeddings: Vec<(EmbeddingDefinition, Arc<dyn EmbeddingFunction>)>,
     pub(crate) data_storage_version: Option<LanceFileVersion>,
+    pub(crate) enable_v2_manifest_paths: Option<bool>,
 }
 
 // Builder methods that only apply when we have initial data
@@ -156,6 +157,7 @@ impl<T: IntoArrow> CreateTableBuilder<true, T> {
             table_definition: None,
             embeddings: Vec::new(),
             data_storage_version: None,
+            enable_v2_manifest_paths: None,
         }
     }
 
@@ -188,6 +190,7 @@ impl<T: IntoArrow> CreateTableBuilder<true, T> {
             write_options: self.write_options,
             embeddings: self.embeddings,
             data_storage_version: self.data_storage_version,
+            enable_v2_manifest_paths: self.enable_v2_manifest_paths,
         };
         Ok((data, builder))
     }
@@ -222,6 +225,7 @@ impl CreateTableBuilder<false, NoData> {
             write_options: WriteOptions::default(),
             embeddings: Vec::new(),
             data_storage_version: None,
+            enable_v2_manifest_paths: None,
         }
     }
 
@@ -284,6 +288,23 @@ impl<const HAS_DATA: bool, T: IntoArrow> CreateTableBuilder<HAS_DATA, T> {
         self
     }
 
+    /// Set whether to use V2 manifest paths for the table. (default: false)
+    ///
+    /// These paths provide more efficient opening of tables with many
+    /// versions on object stores.
+    ///
+    /// <div class="warning">Turning this on will make the dataset unreadable
+    /// for older versions of LanceDB (prior to 0.10.0).</div>
+    ///
+    /// To migrate an existing dataset, instead use the
+    /// [[NativeTable::migrate_manifest_paths_v2]].
+    ///
+    /// This has no effect in LanceDB Cloud.
+    pub fn enable_v2_manifest_paths(mut self, use_v2_manifest_paths: bool) -> Self {
+        self.enable_v2_manifest_paths = Some(use_v2_manifest_paths);
+        self
+    }
+
     /// Set the data storage version.
     ///
     /// The default is `LanceFileVersion::Legacy`.
@@ -314,8 +335,8 @@ impl<const HAS_DATA: bool, T: IntoArrow> CreateTableBuilder<HAS_DATA, T> {
 
 #[derive(Clone, Debug)]
 pub struct OpenTableBuilder {
-    parent: Arc<dyn ConnectionInternal>,
-    name: String,
+    pub(crate) parent: Arc<dyn ConnectionInternal>,
+    pub(crate) name: String,
     index_cache_size: u32,
     lance_read_params: Option<ReadParams>,
 }
@@ -976,7 +997,10 @@ impl ConnectionInternal for Database {
         if matches!(&options.mode, CreateTableMode::Overwrite) {
             write_params.mode = WriteMode::Overwrite;
         }
+
         write_params.data_storage_version = options.data_storage_version;
+        write_params.enable_v2_manifest_paths =
+            options.enable_v2_manifest_paths.unwrap_or_default();
 
         match NativeTable::create(
             &table_uri,
@@ -1068,6 +1092,25 @@ impl ConnectionInternal for Database {
             .remove_dir_all(self.base_path.clone())
             .await?;
         Ok(())
+    }
+}
+
+#[cfg(all(test, feature = "remote"))]
+mod test_utils {
+    use super::*;
+    impl Connection {
+        pub fn new_with_handler<T>(
+            handler: impl Fn(reqwest::Request) -> http::Response<T> + Clone + Send + Sync + 'static,
+        ) -> Self
+        where
+            T: Into<reqwest::Body>,
+        {
+            let internal = Arc::new(crate::remote::db::RemoteDatabase::new_mock(handler));
+            Self {
+                internal,
+                uri: "db://test".to_string(),
+            }
+        }
     }
 }
 
@@ -1184,9 +1227,9 @@ mod tests {
         assert_eq!(tables, vec!["table1".to_owned()]);
     }
 
-    fn make_data() -> impl RecordBatchReader + Send + 'static {
+    fn make_data() -> Box<dyn RecordBatchReader + Send + 'static> {
         let id = Box::new(IncrementingInt32::new().named("id".to_string()));
-        BatchGenerator::new().col(id).batches(10, 2000)
+        Box::new(BatchGenerator::new().col(id).batches(10, 2000))
     }
 
     #[tokio::test]

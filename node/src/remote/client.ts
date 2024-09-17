@@ -82,7 +82,7 @@ async function callWithMiddlewares (
 
 interface MiddlewareInvocationOptions {
   responseType?: ResponseType
-  timeout?: number,
+  timeout?: number
 }
 
 /**
@@ -130,8 +130,8 @@ export class HttpLancedbClient {
     url: string,
     apiKey: string,
     timeout?: number,
-    private readonly _dbName?: string,
-    
+    private readonly _dbName?: string
+
   ) {
     this._url = url
     this._apiKey = () => apiKey
@@ -237,7 +237,7 @@ export class HttpLancedbClient {
     try {
       response = await callWithMiddlewares(req, this._middlewares, {
         responseType,
-        timeout: this._timeout,
+        timeout: this._timeout
       })
 
       // return response

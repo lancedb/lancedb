@@ -124,6 +124,7 @@ impl Connection {
         mode: String,
         storage_options: Option<HashMap<String, String>>,
         data_storage_options: Option<String>,
+        enable_v2_manifest_paths: Option<bool>,
     ) -> napi::Result<Table> {
         let batches = ipc_file_to_batches(buf.to_vec())
             .map_err(|e| napi::Error::from_reason(format!("Failed to read IPC file: {}", e)))?;
@@ -140,6 +141,9 @@ impl Connection {
                     .map_err(|e| napi::Error::from_reason(format!("{}", e)))?,
             );
         }
+        if let Some(enable_v2_manifest_paths) = enable_v2_manifest_paths {
+            builder = builder.enable_v2_manifest_paths(enable_v2_manifest_paths);
+        }
         let tbl = builder
             .execute()
             .await
@@ -155,6 +159,7 @@ impl Connection {
         mode: String,
         storage_options: Option<HashMap<String, String>>,
         data_storage_options: Option<String>,
+        enable_v2_manifest_paths: Option<bool>,
     ) -> napi::Result<Table> {
         let schema = ipc_file_to_schema(schema_buf.to_vec()).map_err(|e| {
             napi::Error::from_reason(format!("Failed to marshal schema from JS to Rust: {}", e))
@@ -174,6 +179,9 @@ impl Connection {
                 LanceFileVersion::from_str(data_storage_option)
                     .map_err(|e| napi::Error::from_reason(format!("{}", e)))?,
             );
+        }
+        if let Some(enable_v2_manifest_paths) = enable_v2_manifest_paths {
+            builder = builder.enable_v2_manifest_paths(enable_v2_manifest_paths);
         }
         let tbl = builder
             .execute()
