@@ -349,8 +349,9 @@ impl UpdateBuilder {
         self
     }
 
-    /// Executes the update operation
-    pub async fn execute(self) -> Result<()> {
+    /// Executes the update operation.
+    /// Returns the number of rows that were updated.
+    pub async fn execute(self) -> Result<u64> {
         if self.columns.is_empty() {
             Err(Error::InvalidInput {
                 message: "at least one column must be specified in an update operation".to_string(),
@@ -396,7 +397,7 @@ pub(crate) trait TableInternal: std::fmt::Display + std::fmt::Debug + Send + Syn
         data: Box<dyn arrow_array::RecordBatchReader + Send>,
     ) -> Result<()>;
     async fn delete(&self, predicate: &str) -> Result<()>;
-    async fn update(&self, update: UpdateBuilder) -> Result<()>;
+    async fn update(&self, update: UpdateBuilder) -> Result<u64>;
     async fn create_index(&self, index: IndexBuilder) -> Result<()>;
     async fn list_indices(&self) -> Result<Vec<IndexConfig>>;
     async fn merge_insert(
@@ -1846,7 +1847,7 @@ impl TableInternal for NativeTable {
         }
     }
 
-    async fn update(&self, update: UpdateBuilder) -> Result<()> {
+    async fn update(&self, update: UpdateBuilder) -> Result<u64> {
         let dataset = self.dataset.get().await?.clone();
         let mut builder = LanceUpdateBuilder::new(Arc::new(dataset));
         if let Some(predicate) = update.filter {
@@ -1858,9 +1859,11 @@ impl TableInternal for NativeTable {
         }
 
         let operation = builder.build()?;
-        let ds = operation.execute().await?;
-        self.dataset.set_latest(ds.as_ref().clone()).await;
-        Ok(())
+        let res = operation.execute().await?;
+        self.dataset
+            .set_latest(res.new_dataset.as_ref().clone())
+            .await;
+        Ok(res.rows_updated)
     }
 
     async fn build_plan(

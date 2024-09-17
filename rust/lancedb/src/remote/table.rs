@@ -179,7 +179,7 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
     ) -> Result<DatasetRecordBatchStream> {
         todo!()
     }
-    async fn update(&self, _update: UpdateBuilder) -> Result<()> {
+    async fn update(&self, _update: UpdateBuilder) -> Result<u64> {
         todo!()
     }
     async fn delete(&self, _predicate: &str) -> Result<()> {
