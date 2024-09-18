@@ -33,8 +33,16 @@ pre_commit_hooks = [
     fi
     echo "Constructed new version: $NEW_VERSION"
     cd java && mvn versions:set -DnewVersion=$NEW_VERSION && mvn versions:commit
-    cd ..
-    git add java/
+
+    # Check for any modified but unstaged pom.xml files
+    MODIFIED_POMS=$(git ls-files -m | grep pom.xml)
+    if [ ! -z "$MODIFIED_POMS" ]; then
+        echo "The following pom.xml files were modified but not staged. Adding them now:"
+        echo "$MODIFIED_POMS" | while read -r file; do
+            git add "$file"
+            echo "Added: $file"
+        done
+    fi
     """,
 ]
 

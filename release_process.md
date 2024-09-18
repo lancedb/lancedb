@@ -1,11 +1,11 @@
 # Release process
 
-There are six total packages we release. Four are the `lancedb` packages
-for Python, Rust, Java, and Node.js. The other two are the legacy `vectordb`
-packages for Rust and node.js.
+There are five total packages we release. Four are the `lancedb` packages
+for Python, Rust, Java, and Node.js. The other one is the legacy `vectordb`
+package node.js.
 
 The Python package is versioned and released separately from the Rust, Java, and Node.js
-ones. For Rust, and Node.js, the release process is shared between `lancedb` and
+ones. For Node.js the release process is shared between `lancedb` and
 `vectordb` for now.
 
 ## Preview releases
