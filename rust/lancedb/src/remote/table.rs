@@ -3,14 +3,20 @@ use std::sync::{Arc, Mutex};
 use crate::table::AddDataMode;
 use crate::Error;
 use arrow_array::RecordBatchReader;
+use arrow_ipc::reader::StreamReader;
 use arrow_schema::SchemaRef;
 use async_trait::async_trait;
-use datafusion_physical_plan::ExecutionPlan;
+use bytes::Buf;
+use datafusion_common::DataFusionError;
+use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
+use datafusion_physical_plan::{ExecutionPlan, SendableRecordBatchStream};
+use futures::TryStreamExt;
 use http::header::CONTENT_TYPE;
 use http::StatusCode;
 use lance::arrow::json::JsonSchema;
 use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::{ColumnAlteration, NewColumnTransform};
+use lance_datafusion::exec::OneShotExec;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -83,6 +89,19 @@ impl<S: HttpSend> RemoteTable<S> {
         }
 
         self.client.check_response(response).await
+    }
+
+    async fn read_arrow_stream(
+        &self,
+        body: reqwest::Response,
+    ) -> Result<SendableRecordBatchStream> {
+        // There isn't a way to actually stream this data yet. I have an upstream issue:
+        // https://github.com/apache/arrow-rs/issues/6420
+        let body = body.bytes().await?;
+        let reader = StreamReader::try_new(body.reader(), None)?;
+        let schema = reader.schema();
+        let stream = futures::stream::iter(reader).map_err(DataFusionError::from);
+        Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
     }
 }
 
@@ -201,9 +220,15 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
         _query: &VectorQuery,
         _options: QueryExecutionOptions,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        Err(Error::NotSupported {
-            message: "create_plan is not supported on LanceDB cloud.".into(),
-        })
+        let request = self.client.post(&format!("/table/{}/query/", self.name));
+
+        todo!("build request from query");
+
+        let response = self.client.send(request).await?;
+
+        let stream = self.read_arrow_stream(response).await?;
+
+        Ok(Arc::new(OneShotExec::new(stream)))
     }
 
     async fn plain_query(
@@ -360,7 +385,7 @@ mod tests {
     use futures::{future::BoxFuture, StreamExt, TryFutureExt};
     use reqwest::Body;
 
-    use crate::{Error, Table};
+    use crate::{query::ExecutableQuery, Error, Table};
 
     #[tokio::test]
     async fn test_not_found() {
@@ -716,12 +741,46 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_query() {
-        // TODO:
-        // * [ ] Eliminate build plan
-        // * [ ] Default impl for explain_plan?
-        // * [ ] Create execution plan for request against SaaS
-        // * [ ] Test execution plan creation here as explain plans.
-        // * [ ] Test execution plan execution in query module.
+    async fn test_query_vector_default_values() {
+        let expected_data = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url().path(), "/table/my_table/delete/");
+
+            let body = request.body().unwrap().as_bytes().unwrap();
+            let body: serde_json::Value = serde_json::from_slice(body).unwrap();
+            let expected_body = serde_json::json!({
+                "vector": [0.1, 0.2, 0.3],
+                "vector_column": "my_vector",
+                "prefilter": false,
+                "k": 42,
+                "distance_type": "cosine",
+                "bypass_vector_index": false,
+                "columns": ["a", "b"],
+                "nprobes": 12,
+                "refine_factor": 2,
+            });
+            assert_eq!(body, expected_body);
+
+            // TODO: test the body output
+            http::Response::builder().status(200).body("").unwrap()
+        });
+
+        let data = table
+            .query()
+            .nearest_to(vec![0.1, 0.2, 0.3])
+            .unwrap()
+            .execute()
+            .await;
+    }
+
+    #[tokio::test]
+    async fn test_query_fts() {
+        todo!()
     }
 }
