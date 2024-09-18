@@ -1,6 +1,5 @@
 use std::sync::{Arc, Mutex};
 
-use crate::table::dataset::DatasetReadGuard;
 use crate::table::AddDataMode;
 use crate::Error;
 use arrow_array::RecordBatchReader;
@@ -10,7 +9,7 @@ use datafusion_physical_plan::ExecutionPlan;
 use http::header::CONTENT_TYPE;
 use http::StatusCode;
 use lance::arrow::json::JsonSchema;
-use lance::dataset::scanner::{DatasetRecordBatchStream, Scanner};
+use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::{ColumnAlteration, NewColumnTransform};
 use serde::{Deserialize, Serialize};
 
@@ -196,16 +195,7 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
 
         Ok(())
     }
-    async fn build_plan(
-        &self,
-        _ds_ref: &DatasetReadGuard,
-        _query: &VectorQuery,
-        _options: Option<QueryExecutionOptions>,
-    ) -> Result<Scanner> {
-        Err(Error::NotSupported {
-            message: "build_plan is not supported on LanceDB cloud.".into(),
-        })
-    }
+
     async fn create_plan(
         &self,
         _query: &VectorQuery,
@@ -215,11 +205,7 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
             message: "create_plan is not supported on LanceDB cloud.".into(),
         })
     }
-    async fn explain_plan(&self, _query: &VectorQuery, _verbose: bool) -> Result<String> {
-        Err(Error::NotSupported {
-            message: "explain_plan is not supported on LanceDB cloud.".into(),
-        })
-    }
+
     async fn plain_query(
         &self,
         _query: &Query,
@@ -727,5 +713,15 @@ mod tests {
         });
 
         table.delete("id in (1, 2, 3)").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_query() {
+        // TODO:
+        // * [ ] Eliminate build plan
+        // * [ ] Default impl for explain_plan?
+        // * [ ] Create execution plan for request against SaaS
+        // * [ ] Test execution plan creation here as explain plans.
+        // * [ ] Test execution plan execution in query module.
     }
 }

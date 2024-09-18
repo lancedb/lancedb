@@ -23,6 +23,7 @@ use arrow::datatypes::Float32Type;
 use arrow_array::{RecordBatchIterator, RecordBatchReader};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use async_trait::async_trait;
+use datafusion_physical_plan::display::DisplayableExecutionPlan;
 use datafusion_physical_plan::ExecutionPlan;
 use lance::dataset::builder::DatasetBuilder;
 use lance::dataset::cleanup::RemovalStats;
@@ -68,7 +69,7 @@ use crate::query::{
 };
 use crate::utils::{default_vector_column, PatchReadParam, PatchWriteParam};
 
-use self::dataset::{DatasetConsistencyWrapper, DatasetReadGuard};
+use self::dataset::DatasetConsistencyWrapper;
 use self::merge::MergeInsertBuilder;
 
 pub(crate) mod dataset;
@@ -375,12 +376,6 @@ pub(crate) trait TableInternal: std::fmt::Display + std::fmt::Debug + Send + Syn
     async fn schema(&self) -> Result<SchemaRef>;
     /// Count the number of rows in this table.
     async fn count_rows(&self, filter: Option<String>) -> Result<usize>;
-    async fn build_plan(
-        &self,
-        ds_ref: &DatasetReadGuard,
-        query: &VectorQuery,
-        options: Option<QueryExecutionOptions>,
-    ) -> Result<Scanner>;
     async fn create_plan(
         &self,
         query: &VectorQuery,
@@ -391,7 +386,12 @@ pub(crate) trait TableInternal: std::fmt::Display + std::fmt::Debug + Send + Syn
         query: &Query,
         options: QueryExecutionOptions,
     ) -> Result<DatasetRecordBatchStream>;
-    async fn explain_plan(&self, query: &VectorQuery, verbose: bool) -> Result<String>;
+    async fn explain_plan(&self, query: &VectorQuery, verbose: bool) -> Result<String> {
+        let plan = self.create_plan(query, Default::default()).await?;
+        let display = DisplayableExecutionPlan::new(plan.as_ref());
+
+        Ok(format!("{}", display.indent(verbose)))
+    }
     async fn add(
         &self,
         add: AddDataBuilder<NoData>,
@@ -1879,12 +1879,13 @@ impl TableInternal for NativeTable {
         Ok(res.rows_updated)
     }
 
-    async fn build_plan(
+    async fn create_plan(
         &self,
-        ds_ref: &DatasetReadGuard,
         query: &VectorQuery,
-        options: Option<QueryExecutionOptions>,
-    ) -> Result<Scanner> {
+        options: QueryExecutionOptions,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        let ds_ref = self.dataset.get().await?;
+
         let mut scanner: Scanner = ds_ref.scan();
 
         if let Some(query_vector) = query.query_vector.as_ref() {
@@ -1958,24 +1959,11 @@ impl TableInternal for NativeTable {
             scanner.with_row_id();
         }
 
-        if let Some(opts) = options {
-            scanner.batch_size(opts.max_batch_length as usize);
-        }
+        scanner.batch_size(options.max_batch_length as usize);
+
         if query.base.fast_search {
             scanner.fast_search();
         }
-
-        Ok(scanner)
-    }
-
-    async fn create_plan(
-        &self,
-        query: &VectorQuery,
-        options: QueryExecutionOptions,
-    ) -> Result<Arc<dyn ExecutionPlan>> {
-        let ds_ref = self.dataset.get().await?;
-
-        let mut scanner = self.build_plan(&ds_ref, query, Some(options)).await?;
 
         match &query.base.select {
             Select::Columns(select) => {
@@ -2013,16 +2001,6 @@ impl TableInternal for NativeTable {
     ) -> Result<DatasetRecordBatchStream> {
         self.generic_query(&query.clone().into_vector(), options)
             .await
-    }
-
-    async fn explain_plan(&self, query: &VectorQuery, verbose: bool) -> Result<String> {
-        let ds_ref = self.dataset.get().await?;
-
-        let scanner = self.build_plan(&ds_ref, query, None).await?;
-
-        let plan = scanner.explain_plan(verbose).await?;
-
-        Ok(plan)
     }
 
     async fn merge_insert(
