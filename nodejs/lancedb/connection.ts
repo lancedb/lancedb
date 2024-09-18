@@ -44,11 +44,12 @@ export interface CreateTableOptions {
    * The available options are described at https://lancedb.github.io/lancedb/guides/storage/
    */
   storageOptions?: Record<string, string>;
+
   /**
    * The version of the data storage format to use.
    *
-   * The default is `legacy`, which is Lance format v1.
-   * `stable` is the new format, which is Lance format v2.
+   * The default is `stable`.
+   * Set to "legacy" to use the old format.
    */
   dataStorageVersion?: string;
 
@@ -64,9 +65,9 @@ export interface CreateTableOptions {
   /**
    * If true then data files will be written with the legacy format
    *
-   * The default is true while the new format is in beta
+   * The default is false.
    *
-   * Deprecated.
+   * Deprecated. Use data storage version instead.
    */
   useLegacyFormat?: boolean;
   schema?: SchemaLike;
@@ -266,7 +267,7 @@ export class LocalConnection extends Connection {
       throw new Error("data is required");
     }
     const { buf, mode } = await Table.parseTableData(data, options);
-    let dataStorageVersion = "legacy";
+    let dataStorageVersion = "stable";
     if (options?.dataStorageVersion !== undefined) {
       dataStorageVersion = options.dataStorageVersion;
     } else if (options?.useLegacyFormat !== undefined) {

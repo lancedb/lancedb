@@ -130,8 +130,6 @@ impl Connection {
             .map_err(|e| napi::Error::from_reason(format!("Failed to read IPC file: {}", e)))?;
         let mode = Self::parse_create_mode_str(&mode)?;
         let mut builder = self.get_inner()?.create_table(&name, batches).mode(mode);
-        // Always set the data storage version to Legacy
-        builder = builder.data_storage_version(LanceFileVersion::Legacy);
 
         if let Some(storage_options) = storage_options {
             for (key, value) in storage_options {

@@ -1784,9 +1784,6 @@ impl TableInternal for NativeTable {
         let data =
             MaybeEmbedded::try_new(data, self.table_definition().await?, add.embedding_registry)?;
 
-        // Still use the legacy lance format (v1) by default.
-        // We don't want to accidentally switch to v2 format during an add operation.
-        // If the table is already v2 this won't have any effect.
         let mut lance_params = add.write_options.lance_write_params.unwrap_or(WriteParams {
             mode: match add.mode {
                 AddDataMode::Append => WriteMode::Append,
@@ -1794,10 +1791,6 @@ impl TableInternal for NativeTable {
             },
             ..Default::default()
         });
-
-        if lance_params.data_storage_version.is_none() {
-            lance_params.data_storage_version = Some(LanceFileVersion::Legacy);
-        }
 
         // Bring storage options from table
         let storage_options = lance_params

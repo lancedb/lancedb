@@ -610,14 +610,13 @@ class AsyncConnection(object):
             connection will be inherited by the table, but can be overridden here.
             See available options at
             https://lancedb.github.io/lancedb/guides/storage/
-        data_storage_version: optional, str, default "legacy"
+        data_storage_version: optional, str, default "stable"
             The version of the data storage format to use. Newer versions are more
             efficient but require newer versions of lance to read.  The default is
-            "legacy" which will use the legacy v1 version.  See the user guide
+            "stable" which will use the legacy v2 version.  See the user guide
             for more details.
-        use_legacy_format: bool, optional, default True. (Deprecated)
+        use_legacy_format: bool, optional, default False. (Deprecated)
             If True, use the legacy format for the table. If False, use the new format.
-            The default is True while the new format is in beta.
             This method is deprecated, use `data_storage_version` instead.
         enable_v2_manifest_paths: bool, optional, default False
             Use the new V2 manifest paths. These paths provide more efficient
@@ -759,9 +758,7 @@ class AsyncConnection(object):
             mode = "exist_ok"
 
         if not data_storage_version:
-            data_storage_version = (
-                "legacy" if use_legacy_format is None or use_legacy_format else "stable"
-            )
+            data_storage_version = "legacy" if use_legacy_format else "stable"
 
         if data is None:
             new_table = await self._inner.create_empty_table(
