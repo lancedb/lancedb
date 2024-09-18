@@ -261,7 +261,7 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
     }
     async fn create_index(&self, _index: IndexBuilder) -> Result<()> {
         Err(Error::NotSupported {
-            message: "plain_query is not yet supported on LanceDB cloud.".into(),
+            message: "create_index is not yet supported on LanceDB cloud.".into(),
         })
     }
     async fn merge_insert(
@@ -315,7 +315,7 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
     }
     async fn table_definition(&self) -> Result<TableDefinition> {
         Err(Error::NotSupported {
-            message: "plain_query is not supported on LanceDB cloud.".into(),
+            message: "table_definition is not supported on LanceDB cloud.".into(),
         })
     }
 }
