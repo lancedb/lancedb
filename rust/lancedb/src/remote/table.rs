@@ -495,6 +495,17 @@ mod tests {
         data
     }
 
+    fn write_ipc_stream(data: &RecordBatch) -> Vec<u8> {
+        let mut body = Vec::new();
+        {
+            let mut writer = arrow_ipc::writer::StreamWriter::try_new(&mut body, &data.schema())
+                .expect("Failed to create writer");
+            writer.write(data).expect("Failed to write data");
+            writer.finish().expect("Failed to finish");
+        }
+        body
+    }
+
     #[tokio::test]
     async fn test_add_append() {
         let data = RecordBatch::try_new(
@@ -502,8 +513,6 @@ mod tests {
             vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
         )
         .unwrap();
-
-        let data_ref = data.clone();
 
         let (sender, receiver) = std::sync::mpsc::channel();
         let table = Table::new_with_handler("my_table", move |mut request| {
@@ -535,17 +544,9 @@ mod tests {
             .await
             .unwrap();
 
-        let mut expected_body = Vec::new();
-        {
-            let mut writer =
-                arrow_ipc::writer::StreamWriter::try_new(&mut expected_body, &data_ref.schema())
-                    .unwrap();
-            writer.write(&data_ref).unwrap();
-            writer.finish().unwrap();
-        }
-
         let body = receiver.recv().unwrap();
         let body = collect_body(body).await;
+        let expected_body = write_ipc_stream(&data);
         assert_eq!(&body, &expected_body);
     }
 
@@ -556,8 +557,6 @@ mod tests {
             vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
         )
         .unwrap();
-
-        let data_ref = data.clone();
 
         let (sender, receiver) = std::sync::mpsc::channel();
         let table = Table::new_with_handler("my_table", move |mut request| {
@@ -593,17 +592,9 @@ mod tests {
             .await
             .unwrap();
 
-        let mut expected_body = Vec::new();
-        {
-            let mut writer =
-                arrow_ipc::writer::StreamWriter::try_new(&mut expected_body, &data_ref.schema())
-                    .unwrap();
-            writer.write(&data_ref).unwrap();
-            writer.finish().unwrap();
-        }
-
         let body = receiver.recv().unwrap();
         let body = collect_body(body).await;
+        let expected_body = write_ipc_stream(&data);
         assert_eq!(&body, &expected_body);
     }
 
@@ -708,18 +699,9 @@ mod tests {
         ));
         builder.execute(data).await.unwrap();
 
-        // Check we serialize data correctly.
-        let mut expected_body = Vec::new();
-        {
-            let mut writer =
-                arrow_ipc::writer::StreamWriter::try_new(&mut expected_body, &batch.schema())
-                    .unwrap();
-            writer.write(&batch).unwrap();
-            writer.finish().unwrap();
-        }
-
         let body = receiver.recv().unwrap();
         let body = collect_body(body).await;
+        let expected_body = write_ipc_stream(&batch);
         assert_eq!(&body, &expected_body);
     }
 
