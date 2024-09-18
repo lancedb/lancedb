@@ -37,7 +37,6 @@ use lance::dataset::{
 use lance::dataset::{MergeInsertBuilder as LanceMergeInsertBuilder, WhenNotMatchedBySource};
 use lance::io::WrappingObjectStore;
 use lance_datafusion::exec::execute_plan;
-use lance_encoding::version::LanceFileVersion;
 use lance_index::vector::hnsw::builder::HnswBuildParams;
 use lance_index::vector::ivf::IvfBuildParams;
 use lance_index::vector::pq::PQBuildParams;
