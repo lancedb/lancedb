@@ -3230,7 +3230,7 @@ mod tests {
         let values_builder = StringBuilder::new();
         let mut builder = ListBuilder::new(values_builder);
         for i in 0..120 {
-            builder.values().append_value(TAGS[i % 3].to_string());
+            builder.values().append_value(TAGS[i % 3]);
             if i % 3 == 0 {
                 builder.append(true)
             }
