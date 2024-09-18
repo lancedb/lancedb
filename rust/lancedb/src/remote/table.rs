@@ -378,7 +378,10 @@ mod tests {
     use futures::{future::BoxFuture, StreamExt, TryFutureExt};
     use reqwest::Body;
 
-    use crate::{query::ExecutableQuery, Error, Table};
+    use crate::{
+        query::{ExecutableQuery, QueryBase},
+        Error, Table,
+    };
 
     #[tokio::test]
     async fn test_not_found() {
@@ -740,8 +743,45 @@ mod tests {
             vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
         )
         .unwrap();
+        let expected_data_ref = expected_data.clone();
 
-        let table = Table::new_with_handler("my_table", |request| {
+        let table = Table::new_with_handler("my_table", move |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url().path(), "/table/my_table/query/");
+
+            let body = request.body().unwrap().as_bytes().unwrap();
+            let body: serde_json::Value = serde_json::from_slice(body).unwrap();
+            let expected_body = serde_json::json!({
+                "vector": [0.1, 0.2, 0.3],
+                "prefilter": true,
+                "k": 10,
+                "distance_type": "l2",
+                "nprobes": 1,
+                "refine_factor": null,
+            });
+            assert_eq!(body, expected_body);
+
+            let response_body = write_ipc_stream(&expected_data_ref);
+            http::Response::builder()
+                .status(200)
+                .body(response_body)
+                .unwrap()
+        });
+
+        let data = table
+            .query()
+            .nearest_to(vec![0.1, 0.2, 0.3])
+            .unwrap()
+            .execute()
+            .await;
+        let data = data.unwrap().collect::<Vec<_>>().await;
+        assert_eq!(data.len(), 1);
+        assert_eq!(data[0].as_ref().unwrap(), &expected_data);
+    }
+
+    #[tokio::test]
+    async fn test_query_vector_all_params() {
+        let table = Table::new_with_handler("my_table", move |request| {
             assert_eq!(request.method(), "POST");
             assert_eq!(request.url().path(), "/table/my_table/delete/");
 
@@ -753,23 +793,38 @@ mod tests {
                 "prefilter": false,
                 "k": 42,
                 "distance_type": "cosine",
-                "bypass_vector_index": false,
+                "bypass_vector_index": true,
                 "columns": ["a", "b"],
                 "nprobes": 12,
                 "refine_factor": 2,
             });
             assert_eq!(body, expected_body);
 
-            // TODO: test the body output
-            http::Response::builder().status(200).body("").unwrap()
+            let data = RecordBatch::try_new(
+                Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
+                vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+            )
+            .unwrap();
+            let response_body = write_ipc_stream(&data);
+            http::Response::builder()
+                .status(200)
+                .body(response_body)
+                .unwrap()
         });
 
-        let data = table
+        let _ = table
             .query()
+            .limit(42)
             .nearest_to(vec![0.1, 0.2, 0.3])
             .unwrap()
+            .column("my_vector")
+            .postfilter()
+            .distance_type(crate::DistanceType::Cosine)
+            .nprobes(12)
+            .refine_factor(2)
             .execute()
-            .await;
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
