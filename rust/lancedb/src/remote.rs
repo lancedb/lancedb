@@ -21,3 +21,5 @@ pub mod client;
 pub mod db;
 pub mod table;
 pub mod util;
+
+const ARROW_STREAM_CONTENT_TYPE: &str = "application/vnd.apache.arrow.stream";
