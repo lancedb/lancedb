@@ -402,7 +402,7 @@ mod tests {
             Box::pin(table.version().map_ok(|_| ())),
             Box::pin(table.schema().map_ok(|_| ())),
             Box::pin(table.count_rows(None).map_ok(|_| ())),
-            Box::pin(table.update().column("a", "a + 1").execute()),
+            Box::pin(table.update().column("a", "a + 1").execute().map_ok(|_| ())),
             Box::pin(table.add(example_data()).execute().map_ok(|_| ())),
             Box::pin(table.merge_insert(&["test"]).execute(example_data())),
             Box::pin(table.delete("false")), // TODO: other endpoints.
@@ -626,7 +626,7 @@ mod tests {
                 assert_eq!(only_if, "b > 10");
             }
 
-            http::Response::builder().status(200).body("").unwrap()
+            http::Response::builder().status(200).body("1").unwrap()
         });
 
         table

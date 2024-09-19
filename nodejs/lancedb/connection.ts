@@ -304,7 +304,7 @@ export class LocalConnection extends Connection {
       metadata = registry.getTableMetadata([embeddingFunction]);
     }
 
-    let dataStorageVersion = "legacy";
+    let dataStorageVersion = "stable";
     if (options?.dataStorageVersion !== undefined) {
       dataStorageVersion = options.dataStorageVersion;
     } else if (options?.useLegacyFormat !== undefined) {

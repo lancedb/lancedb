@@ -107,7 +107,7 @@ describe("given a connection", () => {
     const data = [...Array(10000).keys()].map((i) => ({ id: i }));
 
     // Create in v1 mode
-    let table = await db.createTable("test", data);
+    let table = await db.createTable("test", data, { useLegacyFormat: true });
 
     const isV2 = async (table: Table) => {
       const data = await table.query().toArrow({ maxBatchLength: 100000 });
@@ -118,7 +118,7 @@ describe("given a connection", () => {
     await expect(isV2(table)).resolves.toBe(false);
 
     // Create in v2 mode
-    table = await db.createTable("test_v2", data, { useLegacyFormat: false });
+    table = await db.createTable("test_v2", data);
 
     await expect(isV2(table)).resolves.toBe(true);
 
