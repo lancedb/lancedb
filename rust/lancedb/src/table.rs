@@ -21,7 +21,7 @@ use std::sync::Arc;
 use arrow::array::AsArray;
 use arrow::datatypes::Float32Type;
 use arrow_array::{RecordBatchIterator, RecordBatchReader};
-use arrow_schema::{DataType, Field, Schema, SchemaRef};
+use arrow_schema::{Field, Schema, SchemaRef};
 use async_trait::async_trait;
 use datafusion_physical_plan::display::DisplayableExecutionPlan;
 use datafusion_physical_plan::ExecutionPlan;
@@ -66,7 +66,11 @@ use crate::index::{
 use crate::query::{
     IntoQueryVector, Query, QueryExecutionOptions, Select, VectorQuery, DEFAULT_TOP_K,
 };
-use crate::utils::{default_vector_column, PatchReadParam, PatchWriteParam};
+use crate::utils::{
+    default_vector_column, supported_bitmap_data_type, supported_btree_data_type,
+    supported_fts_data_type, supported_label_list_data_type, supported_vector_data_type,
+    PatchReadParam, PatchWriteParam,
+};
 
 use self::dataset::DatasetConsistencyWrapper;
 use self::merge::MergeInsertBuilder;
@@ -1078,46 +1082,6 @@ impl NativeTable {
         Ok(name.to_string())
     }
 
-    fn supported_btree_data_type(dtype: &DataType) -> bool {
-        dtype.is_integer()
-            || dtype.is_floating()
-            || matches!(
-                dtype,
-                DataType::Boolean
-                    | DataType::Utf8
-                    | DataType::Time32(_)
-                    | DataType::Time64(_)
-                    | DataType::Date32
-                    | DataType::Date64
-                    | DataType::Timestamp(_, _)
-            )
-    }
-
-    fn supported_bitmap_data_type(dtype: &DataType) -> bool {
-        dtype.is_integer() || matches!(dtype, DataType::Utf8)
-    }
-
-    fn supported_label_list_data_type(dtype: &DataType) -> bool {
-        match dtype {
-            DataType::List(field) => Self::supported_bitmap_data_type(field.data_type()),
-            DataType::FixedSizeList(field, _) => {
-                Self::supported_bitmap_data_type(field.data_type())
-            }
-            _ => false,
-        }
-    }
-
-    fn supported_fts_data_type(dtype: &DataType) -> bool {
-        matches!(dtype, DataType::Utf8 | DataType::LargeUtf8)
-    }
-
-    fn supported_vector_data_type(dtype: &DataType) -> bool {
-        match dtype {
-            DataType::FixedSizeList(inner, _) => DataType::is_floating(inner.data_type()),
-            _ => false,
-        }
-    }
-
     /// Creates a new Table
     ///
     /// # Arguments
@@ -1376,7 +1340,7 @@ impl NativeTable {
         field: &Field,
         replace: bool,
     ) -> Result<()> {
-        if !Self::supported_vector_data_type(field.data_type()) {
+        if !supported_vector_data_type(field.data_type()) {
             return Err(Error::InvalidInput {
                 message: format!(
                     "An IVF PQ index cannot be created on the column `{}` which has data type {}",
@@ -1429,7 +1393,7 @@ impl NativeTable {
         field: &Field,
         replace: bool,
     ) -> Result<()> {
-        if !Self::supported_vector_data_type(field.data_type()) {
+        if !supported_vector_data_type(field.data_type()) {
             return Err(Error::InvalidInput {
                 message: format!(
                     "An IVF HNSW PQ index cannot be created on the column `{}` which has data type {}",
@@ -1492,7 +1456,7 @@ impl NativeTable {
         field: &Field,
         replace: bool,
     ) -> Result<()> {
-        if !Self::supported_vector_data_type(field.data_type()) {
+        if !supported_vector_data_type(field.data_type()) {
             return Err(Error::InvalidInput {
                 message: format!(
                     "An IVF HNSW SQ index cannot be created on the column `{}` which has data type {}",
@@ -1538,10 +1502,10 @@ impl NativeTable {
     }
 
     async fn create_auto_index(&self, field: &Field, opts: IndexBuilder) -> Result<()> {
-        if Self::supported_vector_data_type(field.data_type()) {
+        if supported_vector_data_type(field.data_type()) {
             self.create_ivf_pq_index(IvfPqIndexBuilder::default(), field, opts.replace)
                 .await
-        } else if Self::supported_btree_data_type(field.data_type()) {
+        } else if supported_btree_data_type(field.data_type()) {
             self.create_btree_index(field, opts).await
         } else {
             Err(Error::InvalidInput {
@@ -1555,7 +1519,7 @@ impl NativeTable {
     }
 
     async fn create_btree_index(&self, field: &Field, opts: IndexBuilder) -> Result<()> {
-        if !Self::supported_btree_data_type(field.data_type()) {
+        if !supported_btree_data_type(field.data_type()) {
             return Err(Error::Schema {
                 message: format!(
                     "A BTree index cannot be created on the field `{}` which has data type {}",
@@ -1582,7 +1546,7 @@ impl NativeTable {
     }
 
     async fn create_bitmap_index(&self, field: &Field, opts: IndexBuilder) -> Result<()> {
-        if !Self::supported_bitmap_data_type(field.data_type()) {
+        if !supported_bitmap_data_type(field.data_type()) {
             return Err(Error::Schema {
                 message: format!(
                     "A Bitmap index cannot be created on the field `{}` which has data type {}",
@@ -1609,7 +1573,7 @@ impl NativeTable {
     }
 
     async fn create_label_list_index(&self, field: &Field, opts: IndexBuilder) -> Result<()> {
-        if !Self::supported_label_list_data_type(field.data_type()) {
+        if !supported_label_list_data_type(field.data_type()) {
             return Err(Error::Schema {
                 message: format!(
                     "A LabelList index cannot be created on the field `{}` which has data type {}",
@@ -1641,7 +1605,7 @@ impl NativeTable {
         fts_opts: FtsIndexBuilder,
         replace: bool,
     ) -> Result<()> {
-        if !Self::supported_fts_data_type(field.data_type()) {
+        if !supported_fts_data_type(field.data_type()) {
             return Err(Error::Schema {
                 message: format!(
                     "A FTS index cannot be created on the field `{}` which has data type {}",
