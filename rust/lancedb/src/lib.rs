@@ -253,6 +253,12 @@ pub enum DistanceType {
     Hamming,
 }
 
+impl Default for DistanceType {
+    fn default() -> Self {
+        Self::L2
+    }
+}
+
 impl From<DistanceType> for LanceDistanceType {
     fn from(value: DistanceType) -> Self {
         match value {

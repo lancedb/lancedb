@@ -1,10 +1,11 @@
 use std::sync::{Arc, Mutex};
 
+use crate::query::Select;
 use crate::table::AddDataMode;
 use crate::Error;
 use arrow_array::RecordBatchReader;
 use arrow_ipc::reader::StreamReader;
-use arrow_schema::SchemaRef;
+use arrow_schema::{DataType, SchemaRef};
 use async_trait::async_trait;
 use bytes::Buf;
 use datafusion_common::DataFusionError;
@@ -217,12 +218,70 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
 
     async fn create_plan(
         &self,
-        _query: &VectorQuery,
+        query: &VectorQuery,
         _options: QueryExecutionOptions,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let request = self.client.post(&format!("/table/{}/query/", self.name));
 
-        todo!("build request from query");
+        let mut body = serde_json::json!({
+            "prefilter": query.prefilter,
+            "k": query.base.limit.unwrap_or(10),
+            "distance_type": query.distance_type.unwrap_or_default(),
+            "nprobes": query.nprobes,
+            "refine_factor": query.refine_factor,
+        });
+
+        if let Some(vector) = query.query_vector.as_ref() {
+            let vector: Vec<f32> = match vector.data_type() {
+                DataType::Float32 => vector
+                    .as_any()
+                    .downcast_ref::<arrow_array::Float32Array>()
+                    .unwrap()
+                    .values()
+                    .iter()
+                    .cloned()
+                    .collect(),
+                _ => {
+                    return Err(Error::InvalidInput {
+                        message: "VectorQuery vector must be of type Float32".into(),
+                    })
+                }
+            };
+            body["vector"] = serde_json::json!(vector);
+        }
+
+        if let Some(vector_column) = query.column.as_ref() {
+            body["vector_column"] = serde_json::Value::String(vector_column.clone());
+        }
+
+        match &query.base.select {
+            Select::All => {}
+            Select::Columns(columns) => {
+                body["columns"] = serde_json::Value::Array(
+                    columns
+                        .iter()
+                        .map(|s| serde_json::Value::String(s.clone()))
+                        .collect(),
+                );
+            }
+            Select::Dynamic(pairs) => {
+                body["columns"] = serde_json::Value::Array(
+                    pairs
+                        .iter()
+                        .map(|(name, expr)| serde_json::json!([name, expr]))
+                        .collect(),
+                );
+            }
+        }
+
+        if !query.use_index {
+            body["bypass_vector_index"] = serde_json::Value::Bool(true);
+        }
+
+        let body = serde_json::to_vec(&body).map_err(|e| Error::Http {
+            message: format!("Failed to serialize query: {}", e),
+        })?;
+        let request = request.body(body);
 
         let response = self.client.send(request).await?;
 
@@ -376,6 +435,7 @@ mod tests {
     use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator};
     use arrow_schema::{DataType, Field, Schema};
     use futures::{future::BoxFuture, StreamExt, TryFutureExt};
+    use lance_index::scalar::FullTextSearchQuery;
     use reqwest::Body;
 
     use crate::{
@@ -751,14 +811,15 @@ mod tests {
 
             let body = request.body().unwrap().as_bytes().unwrap();
             let body: serde_json::Value = serde_json::from_slice(body).unwrap();
-            let expected_body = serde_json::json!({
-                "vector": [0.1, 0.2, 0.3],
+            let mut expected_body = serde_json::json!({
                 "prefilter": true,
                 "k": 10,
-                "distance_type": "l2",
-                "nprobes": 1,
+                "distance_type": "L2",
+                "nprobes": 20,
                 "refine_factor": null,
             });
+            // Pass vector separately to make sure it matches f32 precision.
+            expected_body["vector"] = vec![0.1f32, 0.2, 0.3].into();
             assert_eq!(body, expected_body);
 
             let response_body = write_ipc_stream(&expected_data_ref);
@@ -781,23 +842,24 @@ mod tests {
 
     #[tokio::test]
     async fn test_query_vector_all_params() {
-        let table = Table::new_with_handler("my_table", move |request| {
+        let table = Table::new_with_handler("my_table", |request| {
             assert_eq!(request.method(), "POST");
-            assert_eq!(request.url().path(), "/table/my_table/delete/");
+            assert_eq!(request.url().path(), "/table/my_table/query/");
 
             let body = request.body().unwrap().as_bytes().unwrap();
             let body: serde_json::Value = serde_json::from_slice(body).unwrap();
-            let expected_body = serde_json::json!({
-                "vector": [0.1, 0.2, 0.3],
+            let mut expected_body = serde_json::json!({
                 "vector_column": "my_vector",
                 "prefilter": false,
                 "k": 42,
-                "distance_type": "cosine",
+                "distance_type": "Cosine",
                 "bypass_vector_index": true,
                 "columns": ["a", "b"],
                 "nprobes": 12,
                 "refine_factor": 2,
             });
+            // Pass vector separately to make sure it matches f32 precision.
+            expected_body["vector"] = vec![0.1f32, 0.2, 0.3].into();
             assert_eq!(body, expected_body);
 
             let data = RecordBatch::try_new(
@@ -815,6 +877,7 @@ mod tests {
         let _ = table
             .query()
             .limit(42)
+            .select(Select::columns(&["a", "b"]))
             .nearest_to(vec![0.1, 0.2, 0.3])
             .unwrap()
             .column("my_vector")
@@ -822,6 +885,7 @@ mod tests {
             .distance_type(crate::DistanceType::Cosine)
             .nprobes(12)
             .refine_factor(2)
+            .bypass_vector_index()
             .execute()
             .await
             .unwrap();
@@ -829,6 +893,44 @@ mod tests {
 
     #[tokio::test]
     async fn test_query_fts() {
-        todo!()
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url().path(), "/table/my_table/query/");
+
+            let body = request.body().unwrap().as_bytes().unwrap();
+            let body: serde_json::Value = serde_json::from_slice(body).unwrap();
+            let expected_body = serde_json::json!({
+                "full_text_query": {
+                    "columns": ["a", "b"],
+                    "query": "hello world",
+                },
+                "limit": 10,
+            });
+            assert_eq!(body, expected_body);
+
+            let data = RecordBatch::try_new(
+                Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
+                vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+            )
+            .unwrap();
+            let response_body = write_ipc_stream(&data);
+            http::Response::builder()
+                .status(200)
+                .body(response_body)
+                .unwrap()
+        });
+
+        let _ = table
+            .query()
+            .full_text_search(
+                FullTextSearchQuery::new("hello world".into())
+                    .columns(Some(vec!["a".into(), "b".into()])),
+            )
+            .limit(10)
+            .execute()
+            .await
+            .unwrap();
+
+        // WAND factor and limit are not supported.
     }
 }
