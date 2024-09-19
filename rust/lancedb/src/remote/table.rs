@@ -32,7 +32,7 @@ use crate::{
 };
 
 use super::client::{HttpSend, RestfulLanceDbClient, Sender};
-use super::ARROW_STREAM_CONTENT_TYPE;
+use super::{ARROW_STREAM_CONTENT_TYPE, JSON_CONTENT_TYPE};
 
 #[derive(Debug)]
 pub struct RemoteTable<S: HttpSend = Sender> {
@@ -96,6 +96,26 @@ impl<S: HttpSend> RemoteTable<S> {
         &self,
         body: reqwest::Response,
     ) -> Result<SendableRecordBatchStream> {
+        // Assert that the content type is correct
+        let content_type = body
+            .headers()
+            .get(CONTENT_TYPE)
+            .ok_or_else(|| Error::Http {
+                message: "Missing content type".into(),
+            })?
+            .to_str()
+            .map_err(|e| Error::Http {
+                message: format!("Failed to parse content type: {}", e),
+            })?;
+        if content_type != ARROW_STREAM_CONTENT_TYPE {
+            return Err(Error::Http {
+                message: format!(
+                    "Expected content type {}, got {}",
+                    ARROW_STREAM_CONTENT_TYPE, content_type
+                ),
+            });
+        }
+
         // There isn't a way to actually stream this data yet. I have an upstream issue:
         // https://github.com/apache/arrow-rs/issues/6420
         let body = body.bytes().await?;
@@ -103,6 +123,60 @@ impl<S: HttpSend> RemoteTable<S> {
         let schema = reader.schema();
         let stream = futures::stream::iter(reader).map_err(DataFusionError::from);
         Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
+    }
+
+    fn apply_query_params(body: &mut serde_json::Value, params: &Query) -> Result<()> {
+        if params.offset.is_some() {
+            return Err(Error::NotSupported {
+                message: "Offset is not yet supported in LanceDB Cloud".into(),
+            });
+        }
+
+        if let Some(limit) = params.limit {
+            body["k"] = serde_json::Value::Number(serde_json::Number::from(limit));
+        }
+
+        if let Some(filter) = &params.filter {
+            body["filter"] = serde_json::Value::String(filter.clone());
+        }
+
+        match &params.select {
+            Select::All => {}
+            Select::Columns(columns) => {
+                body["columns"] = serde_json::Value::Array(
+                    columns
+                        .iter()
+                        .map(|s| serde_json::Value::String(s.clone()))
+                        .collect(),
+                );
+            }
+            Select::Dynamic(pairs) => {
+                body["columns"] = serde_json::Value::Array(
+                    pairs
+                        .iter()
+                        .map(|(name, expr)| serde_json::json!([name, expr]))
+                        .collect(),
+                );
+            }
+        }
+
+        if params.fast_search {
+            body["fast_search"] = serde_json::Value::Bool(true);
+        }
+
+        if let Some(full_text_search) = &params.full_text_search {
+            if full_text_search.wand_factor.is_some() {
+                return Err(Error::NotSupported {
+                    message: "Wand factor is not yet supported in LanceDB Cloud".into(),
+                });
+            }
+            body["full_text_query"] = serde_json::json!({
+                "columns": full_text_search.columns,
+                "query": full_text_search.query,
+            })
+        }
+
+        Ok(())
     }
 }
 
@@ -223,13 +297,14 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let request = self.client.post(&format!("/table/{}/query/", self.name));
 
-        let mut body = serde_json::json!({
-            "prefilter": query.prefilter,
-            "k": query.base.limit.unwrap_or(10),
-            "distance_type": query.distance_type.unwrap_or_default(),
-            "nprobes": query.nprobes,
-            "refine_factor": query.refine_factor,
-        });
+        let mut body = serde_json::Value::Object(Default::default());
+        Self::apply_query_params(&mut body, &query.base)?;
+
+        body["prefilter"] = query.prefilter.into();
+        body["k"] = query.base.limit.unwrap_or(10).into();
+        body["distance_type"] = serde_json::json!(query.distance_type.unwrap_or_default());
+        body["nprobes"] = query.nprobes.into();
+        body["refine_factor"] = query.refine_factor.into();
 
         if let Some(vector) = query.query_vector.as_ref() {
             let vector: Vec<f32> = match vector.data_type() {
@@ -254,34 +329,11 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
             body["vector_column"] = serde_json::Value::String(vector_column.clone());
         }
 
-        match &query.base.select {
-            Select::All => {}
-            Select::Columns(columns) => {
-                body["columns"] = serde_json::Value::Array(
-                    columns
-                        .iter()
-                        .map(|s| serde_json::Value::String(s.clone()))
-                        .collect(),
-                );
-            }
-            Select::Dynamic(pairs) => {
-                body["columns"] = serde_json::Value::Array(
-                    pairs
-                        .iter()
-                        .map(|(name, expr)| serde_json::json!([name, expr]))
-                        .collect(),
-                );
-            }
-        }
-
         if !query.use_index {
             body["bypass_vector_index"] = serde_json::Value::Bool(true);
         }
 
-        let body = serde_json::to_vec(&body).map_err(|e| Error::Http {
-            message: format!("Failed to serialize query: {}", e),
-        })?;
-        let request = request.body(body);
+        let request = request.json(&body);
 
         let response = self.client.send(request).await?;
 
@@ -292,12 +344,24 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
 
     async fn plain_query(
         &self,
-        _query: &Query,
+        query: &Query,
         _options: QueryExecutionOptions,
     ) -> Result<DatasetRecordBatchStream> {
-        Err(Error::NotSupported {
-            message: "plain_query is not yet supported on LanceDB cloud.".into(),
-        })
+        let request = self
+            .client
+            .post(&format!("/table/{}/query/", self.name))
+            .header(CONTENT_TYPE, JSON_CONTENT_TYPE);
+
+        let mut body = serde_json::Value::Object(Default::default());
+        Self::apply_query_params(&mut body, query)?;
+
+        let request = request.json(&body);
+
+        let response = self.client.send(request).await?;
+
+        let stream = self.read_arrow_stream(response).await?;
+
+        Ok(DatasetRecordBatchStream::new(stream))
     }
     async fn update(&self, update: UpdateBuilder) -> Result<u64> {
         let request = self.client.post(&format!("/table/{}/update/", self.name));
@@ -539,6 +603,10 @@ mod tests {
         let table = Table::new_with_handler("my_table", |request| {
             assert_eq!(request.method(), "POST");
             assert_eq!(request.url().path(), "/table/my_table/count_rows/");
+            assert_eq!(
+                request.headers().get("Content-Type").unwrap(),
+                JSON_CONTENT_TYPE
+            );
             assert_eq!(request.body().unwrap().as_bytes().unwrap(), br#"{}"#);
 
             http::Response::builder().status(200).body("42").unwrap()
@@ -550,6 +618,10 @@ mod tests {
         let table = Table::new_with_handler("my_table", |request| {
             assert_eq!(request.method(), "POST");
             assert_eq!(request.url().path(), "/table/my_table/count_rows/");
+            assert_eq!(
+                request.headers().get("Content-Type").unwrap(),
+                JSON_CONTENT_TYPE
+            );
             assert_eq!(
                 request.body().unwrap().as_bytes().unwrap(),
                 br#"{"filter":"a > 10"}"#
@@ -684,6 +756,10 @@ mod tests {
         let table = Table::new_with_handler("my_table", |request| {
             assert_eq!(request.method(), "POST");
             assert_eq!(request.url().path(), "/table/my_table/update/");
+            assert_eq!(
+                request.headers().get("Content-Type").unwrap(),
+                JSON_CONTENT_TYPE
+            );
 
             if let Some(body) = request.body().unwrap().as_bytes() {
                 let body = std::str::from_utf8(body).unwrap();
@@ -791,6 +867,10 @@ mod tests {
         let table = Table::new_with_handler("my_table", |request| {
             assert_eq!(request.method(), "POST");
             assert_eq!(request.url().path(), "/table/my_table/delete/");
+            assert_eq!(
+                request.headers().get("Content-Type").unwrap(),
+                JSON_CONTENT_TYPE
+            );
 
             let body = request.body().unwrap().as_bytes().unwrap();
             let body: serde_json::Value = serde_json::from_slice(body).unwrap();
@@ -815,6 +895,10 @@ mod tests {
         let table = Table::new_with_handler("my_table", move |request| {
             assert_eq!(request.method(), "POST");
             assert_eq!(request.url().path(), "/table/my_table/query/");
+            assert_eq!(
+                request.headers().get("Content-Type").unwrap(),
+                JSON_CONTENT_TYPE
+            );
 
             let body = request.body().unwrap().as_bytes().unwrap();
             let body: serde_json::Value = serde_json::from_slice(body).unwrap();
@@ -832,6 +916,7 @@ mod tests {
             let response_body = write_ipc_stream(&expected_data_ref);
             http::Response::builder()
                 .status(200)
+                .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE)
                 .body(response_body)
                 .unwrap()
         });
@@ -852,6 +937,10 @@ mod tests {
         let table = Table::new_with_handler("my_table", |request| {
             assert_eq!(request.method(), "POST");
             assert_eq!(request.url().path(), "/table/my_table/query/");
+            assert_eq!(
+                request.headers().get("Content-Type").unwrap(),
+                JSON_CONTENT_TYPE
+            );
 
             let body = request.body().unwrap().as_bytes().unwrap();
             let body: serde_json::Value = serde_json::from_slice(body).unwrap();
@@ -877,6 +966,7 @@ mod tests {
             let response_body = write_ipc_stream(&data);
             http::Response::builder()
                 .status(200)
+                .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE)
                 .body(response_body)
                 .unwrap()
         });
@@ -903,6 +993,10 @@ mod tests {
         let table = Table::new_with_handler("my_table", |request| {
             assert_eq!(request.method(), "POST");
             assert_eq!(request.url().path(), "/table/my_table/query/");
+            assert_eq!(
+                request.headers().get("Content-Type").unwrap(),
+                JSON_CONTENT_TYPE
+            );
 
             let body = request.body().unwrap().as_bytes().unwrap();
             let body: serde_json::Value = serde_json::from_slice(body).unwrap();
@@ -911,7 +1005,7 @@ mod tests {
                     "columns": ["a", "b"],
                     "query": "hello world",
                 },
-                "limit": 10,
+                "k": 10,
             });
             assert_eq!(body, expected_body);
 
@@ -923,6 +1017,7 @@ mod tests {
             let response_body = write_ipc_stream(&data);
             http::Response::builder()
                 .status(200)
+                .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE)
                 .body(response_body)
                 .unwrap()
         });
