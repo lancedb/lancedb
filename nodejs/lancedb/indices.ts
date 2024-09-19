@@ -318,6 +318,8 @@ export interface HnswSqOptions {
    *
    * This value controls the tradeoff between build speed and accuracy.
    * The higher the value the more accurate the build but the slower it will be.
+   * 150 to 300 is the typical range. 100 is a minimum for good quality search
+   * results. In most cases, there is no benefit to setting this higher than 500.
    * This value should be set to a value that is not less than `ef` in the search phase.
    *
    */
