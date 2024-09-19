@@ -229,7 +229,7 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
             message: "plain_query is not yet supported on LanceDB cloud.".into(),
         })
     }
-    async fn update(&self, update: UpdateBuilder) -> Result<()> {
+    async fn update(&self, update: UpdateBuilder) -> Result<u64> {
         let request = self.client.post(&format!("/table/{}/update/", self.name));
 
         let mut updates = Vec::new();
@@ -245,9 +245,16 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
 
         let response = self.client.send(request).await?;
 
-        self.check_table_response(response).await?;
+        let response = self.check_table_response(response).await?;
 
-        Ok(())
+        let body = response.text().await?;
+
+        serde_json::from_str(&body).map_err(|e| Error::Http {
+            message: format!(
+                "Failed to parse updated rows result from response {}: {}",
+                body, e
+            ),
+        })
     }
     async fn delete(&self, predicate: &str) -> Result<()> {
         let body = serde_json::json!({ "predicate": predicate });
@@ -395,7 +402,7 @@ mod tests {
             Box::pin(table.version().map_ok(|_| ())),
             Box::pin(table.schema().map_ok(|_| ())),
             Box::pin(table.count_rows(None).map_ok(|_| ())),
-            Box::pin(table.update().column("a", "a + 1").execute()),
+            Box::pin(table.update().column("a", "a + 1").execute().map_ok(|_| ())),
             Box::pin(table.add(example_data()).execute().map_ok(|_| ())),
             Box::pin(table.merge_insert(&["test"]).execute(example_data())),
             Box::pin(table.delete("false")), // TODO: other endpoints.
@@ -619,7 +626,7 @@ mod tests {
                 assert_eq!(only_if, "b > 10");
             }
 
-            http::Response::builder().status(200).body("").unwrap()
+            http::Response::builder().status(200).body("1").unwrap()
         });
 
         table
