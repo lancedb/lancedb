@@ -170,8 +170,6 @@ impl Connection {
             .get_inner()?
             .create_empty_table(&name, schema)
             .mode(mode);
-        // Always set the data storage version to Legacy
-        builder = builder.data_storage_version(LanceFileVersion::Legacy);
         if let Some(storage_options) = storage_options {
             for (key, value) in storage_options {
                 builder = builder.storage_option(key, value);
