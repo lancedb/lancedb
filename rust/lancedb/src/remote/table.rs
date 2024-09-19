@@ -1,7 +1,9 @@
 use std::sync::{Arc, Mutex};
 
+use crate::index::Index;
 use crate::query::Select;
 use crate::table::AddDataMode;
+use crate::utils::{supported_btree_data_type, supported_vector_data_type};
 use crate::Error;
 use arrow_array::RecordBatchReader;
 use arrow_ipc::reader::StreamReader;
@@ -400,11 +402,79 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
         self.check_table_response(response).await?;
         Ok(())
     }
-    async fn create_index(&self, _index: IndexBuilder) -> Result<()> {
-        Err(Error::NotSupported {
-            message: "create_index is not yet supported on LanceDB cloud.".into(),
-        })
+
+    async fn create_index(&self, mut index: IndexBuilder) -> Result<()> {
+        let request = self
+            .client
+            .post(&format!("/table/{}/create_index/", self.name));
+
+        let column = match index.columns.len() {
+            0 => {
+                return Err(Error::InvalidInput {
+                    message: "No columns specified".into(),
+                })
+            }
+            1 => index.columns.pop().unwrap(),
+            _ => {
+                return Err(Error::NotSupported {
+                    message: "Indices over multiple columns not yet supported".into(),
+                })
+            }
+        };
+        let mut body = serde_json::json!({
+            "column": column
+        });
+
+        let (index_type, distance_type) = match index.index {
+            // TODO: Should we pass the actual index parameters? SaaS does not
+            // yet support them.
+            Index::IvfPq(index) => ("IVF_PQ", Some(index.distance_type)),
+            Index::IvfHnswSq(index) => ("IVF_HNSW_SQ", Some(index.distance_type)),
+            Index::BTree(_) => ("BTREE", None),
+            Index::Bitmap(_) => ("BITMAP", None),
+            Index::LabelList(_) => ("LABEL_LIST", None),
+            Index::FTS(_) => ("FTS", None),
+            Index::Auto => {
+                let schema = self.schema().await?;
+                let field = schema
+                    .field_with_name(&column)
+                    .map_err(|_| Error::InvalidInput {
+                        message: format!("Column {} not found in schema", column),
+                    })?;
+                if supported_vector_data_type(field.data_type()) {
+                    ("IVF_PQ", None)
+                } else if supported_btree_data_type(field.data_type()) {
+                    ("BTREE", None)
+                } else {
+                    return Err(Error::NotSupported {
+                        message: format!(
+                            "there are no indices supported for the field `{}` with the data type {}",
+                            field.name(),
+                            field.data_type()
+                        ),
+                    });
+                }
+            }
+            _ => {
+                return Err(Error::NotSupported {
+                    message: "Index type not supported".into(),
+                })
+            }
+        };
+        body["index_type"] = serde_json::Value::String(index_type.into());
+        if let Some(distance_type) = distance_type {
+            body["distance_type"] = serde_json::Value::String(distance_type.to_string());
+        }
+
+        let request = request.json(&body);
+
+        let response = self.client.send(request).await?;
+
+        self.check_table_response(response).await?;
+
+        Ok(())
     }
+
     async fn merge_insert(
         &self,
         params: MergeInsertBuilder,
@@ -510,8 +580,9 @@ mod tests {
     use reqwest::Body;
 
     use crate::{
+        index::{vector::IvfPqIndexBuilder, Index},
         query::{ExecutableQuery, QueryBase},
-        Error, Table,
+        DistanceType, Error, Table,
     };
 
     #[tokio::test]
@@ -1034,5 +1105,53 @@ mod tests {
             .unwrap();
 
         // WAND factor and limit are not supported.
+    }
+
+    #[tokio::test]
+    async fn test_create_index() {
+        let cases = [
+            ("IVF_PQ", Some("l2"), Index::IvfPq(Default::default())),
+            (
+                "IVF_PQ",
+                Some("cosine"),
+                Index::IvfPq(IvfPqIndexBuilder::default().distance_type(DistanceType::Cosine)),
+            ),
+            (
+                "IVF_HNSW_SQ",
+                Some("l2"),
+                Index::IvfHnswSq(Default::default()),
+            ),
+            // HNSW_PQ isn't yet supported on SaaS
+            ("BTREE", None, Index::BTree(Default::default())),
+            ("BITMAP", None, Index::Bitmap(Default::default())),
+            ("LABEL_LIST", None, Index::LabelList(Default::default())),
+            ("FTS", None, Index::FTS(Default::default())),
+        ];
+
+        for (index_type, distance_type, index) in cases {
+            let table = Table::new_with_handler("my_table", move |request| {
+                assert_eq!(request.method(), "POST");
+                assert_eq!(request.url().path(), "/table/my_table/create_index/");
+                assert_eq!(
+                    request.headers().get("Content-Type").unwrap(),
+                    JSON_CONTENT_TYPE
+                );
+                let body = request.body().unwrap().as_bytes().unwrap();
+                let body: serde_json::Value = serde_json::from_slice(body).unwrap();
+                let mut expected_body = serde_json::json!({
+                    "column": "a",
+                    "index_type": index_type,
+                });
+                if let Some(distance_type) = distance_type {
+                    expected_body["distance_type"] = distance_type.into();
+                }
+                assert_eq!(body, expected_body);
+
+                http::Response::builder().status(200).body("{}").unwrap()
+            });
+
+            // How should Auto be handled?
+            table.create_index(&["a"], index).execute().await.unwrap();
+        }
     }
 }
