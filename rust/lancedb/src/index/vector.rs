@@ -214,6 +214,11 @@ pub(crate) fn suggested_num_partitions(rows: usize) -> u32 {
     max(1, num_partitions)
 }
 
+pub(crate) fn suggested_num_partitions_for_hnsw(rows: usize, dim: u32) -> u32 {
+    let num_partitions = ((rows as f64) * (dim as f64)) / (256 * 5000000);
+    max(1, num_partitions)
+}
+
 pub(crate) fn suggested_num_sub_vectors(dim: u32) -> u32 {
     if dim % 16 == 0 {
         // Should be more aggressive than this default.
