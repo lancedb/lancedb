@@ -59,9 +59,11 @@ pub enum Index {
     IvfPq(IvfPqIndexBuilder),
 
     /// IVF-HNSW index with Product Quantization
+    /// It is a variant of the HNSW algorithm that uses product quantization to compress the vectors.
     IvfHnswPq(IvfHnswPqIndexBuilder),
 
     /// IVF-HNSW index with Scalar Quantization
+    /// It is a variant of the HNSW algorithm that uses scalar quantization to compress the vectors.
     IvfHnswSq(IvfHnswSqIndexBuilder),
 }
 
