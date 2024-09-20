@@ -86,6 +86,39 @@ def test_embedding_function(tmp_path):
     assert np.allclose(actual, expected)
 
 
+def test_embedding_with_bad_results(tmp_path):
+    @register("mock-embedding")
+    class MockEmbeddingFunction(TextEmbeddingFunction):
+        def ndims(self):
+            return 128
+
+        def generate_embeddings(
+            self, texts: Union[List[str], np.ndarray]
+        ) -> list[Union[np.array, None]]:
+            return [
+                None if i % 2 == 0 else np.random.randn(self.ndims())
+                for i in range(len(texts))
+            ]
+
+    db = lancedb.connect(tmp_path)
+    registry = EmbeddingFunctionRegistry.get_instance()
+    model = registry.get("mock-embedding").create()
+
+    class Schema(LanceModel):
+        text: str = model.SourceField()
+        vector: Vector(model.ndims()) = model.VectorField()
+
+    table = db.create_table("test", schema=Schema, mode="overwrite")
+    table.add(
+        [{"text": "hello world"}, {"text": "bar"}],
+        on_bad_vectors="drop",
+    )
+
+    df = table.to_pandas()
+    assert len(table) == 1
+    assert df.iloc[0]["text"] == "bar"
+
+
 @pytest.mark.slow
 def test_embedding_function_rate_limit(tmp_path):
     def _get_schema_from_model(model):

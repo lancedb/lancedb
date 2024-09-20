@@ -1998,22 +1998,26 @@ def _sanitize_vector_column(
                 data, fill_value, on_bad_vectors, vec_arr, vector_column_name
             )
             vec_arr = data[vector_column_name].combine_chunks()
+        vec_arr = ensure_fixed_size_list(vec_arr)
+        data = data.set_column(
+            data.column_names.index(vector_column_name), vector_column_name, vec_arr
+        )
     elif not pa.types.is_fixed_size_list(vec_arr.type):
         raise TypeError(f"Unsupported vector column type: {vec_arr.type}")
 
-    vec_arr = ensure_fixed_size_list(vec_arr)
-    data = data.set_column(
-        data.column_names.index(vector_column_name), vector_column_name, vec_arr
-    )
-
-    # Use numpy to check for NaNs, because as pyarrow 14.0.2 does not have `is_nan`
-    # kernel over f16 types.
-    values_np = vec_arr.values.to_numpy(zero_copy_only=False)
-    if np.isnan(values_np).any():
-        data = _sanitize_nans(
-            data, fill_value, on_bad_vectors, vec_arr, vector_column_name
-        )
-
+    if pa.cpp_version_info.major < 15:
+        # Use numpy to check for NaNs, because as pyarrow 14.0.2 does not have `is_nan`
+        # kernel over f16 types.
+        values_np = vec_arr.values.to_numpy(zero_copy_only=True)
+        if np.isnan(values_np).any():
+            data = _sanitize_nans(
+                data, fill_value, on_bad_vectors, vec_arr, vector_column_name
+            )
+    else:
+        if pc.any(pc.is_null(vec_arr.values, nan_is_null=True)).as_py():
+            data = _sanitize_nans(
+                data, fill_value, on_bad_vectors, vec_arr, vector_column_name
+            )
     return data
 
 
@@ -2078,9 +2082,8 @@ def _sanitize_nans(data, fill_value, on_bad_vectors, vec_arr, vector_column_name
             data.column_names.index(vector_column_name), vector_column_name, vec_arr
         )
     elif on_bad_vectors == "drop":
-        is_value_nan = pc.is_nan(vec_arr.values).to_numpy(zero_copy_only=False)
-        is_full = np.any(~is_value_nan.reshape(-1, vec_arr.type.list_size), axis=1)
-        data = data.filter(is_full)
+        not_nulls = pc.true_unless_null(vec_arr)
+        data = data.filter(not_nulls)
     return data
 
 
