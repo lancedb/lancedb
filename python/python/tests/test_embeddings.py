@@ -118,6 +118,14 @@ def test_embedding_with_bad_results(tmp_path):
     assert len(table) == 1
     assert df.iloc[0]["text"] == "bar"
 
+    # table = db.create_table("test2", schema=Schema, mode="overwrite")
+    # table.add(
+    #     [{"text": "hello world"}, {"text": "bar"}],
+    # )
+    # assert len(table) == 2
+    # tbl = table.to_arrow()
+    # assert tbl["vector"].null_count == 1
+
 
 @pytest.mark.slow
 def test_embedding_function_rate_limit(tmp_path):
