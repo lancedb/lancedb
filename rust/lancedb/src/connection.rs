@@ -307,7 +307,7 @@ impl<const HAS_DATA: bool, T: IntoArrow> CreateTableBuilder<HAS_DATA, T> {
 
     /// Set the data storage version.
     ///
-    /// The default is `LanceFileVersion::Legacy`.
+    /// The default is `LanceFileVersion::Stable`.
     pub fn data_storage_version(mut self, data_storage_version: LanceFileVersion) -> Self {
         self.data_storage_version = Some(data_storage_version);
         self
@@ -315,13 +315,9 @@ impl<const HAS_DATA: bool, T: IntoArrow> CreateTableBuilder<HAS_DATA, T> {
 
     /// Set to true to use the v1 format for data files
     ///
-    /// This is currently defaulted to true and can be set to false to opt-in
-    /// to the new format.  This should only be used for experimentation and
-    /// evaluation.  The new format is still in beta and may change in ways that
-    /// are not backwards compatible.
-    ///
-    /// Once the new format is stable, the default will change to `false` for
-    /// several releases and then eventually this option will be removed.
+    /// This is set to false by default to enable the stable format.
+    /// This should only be used for experimentation and
+    /// evaluation. This option may be removed in the future releases.
     #[deprecated(since = "0.9.0", note = "use data_storage_version instead")]
     pub fn use_legacy_format(mut self, use_legacy_format: bool) -> Self {
         self.data_storage_version = if use_legacy_format {
@@ -1240,6 +1236,7 @@ mod tests {
 
         let tbl = db
             .create_table("v1_test", make_data())
+            .data_storage_version(LanceFileVersion::Legacy)
             .execute()
             .await
             .unwrap();

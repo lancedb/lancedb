@@ -594,7 +594,9 @@ async def test_create_in_v2_mode(tmp_path):
     db = await lancedb.connect_async(tmp_path)
 
     # Create table in v1 mode
-    tbl = await db.create_table("test", data=make_data(), schema=schema)
+    tbl = await db.create_table(
+        "test", data=make_data(), schema=schema, data_storage_version="legacy"
+    )
 
     async def is_in_v2_mode(tbl):
         batches = await tbl.query().to_batches(max_batch_length=1024 * 10)
@@ -626,7 +628,9 @@ async def test_create_in_v2_mode(tmp_path):
     assert await is_in_v2_mode(tbl)
 
     # Create empty table uses v1 mode by default
-    tbl = await db.create_table("test_empty_v2_default", data=None, schema=schema)
+    tbl = await db.create_table(
+        "test_empty_v2_default", data=None, schema=schema, data_storage_version="legacy"
+    )
     await tbl.add(make_table())
 
     assert not await is_in_v2_mode(tbl)

@@ -1,5 +1,5 @@
 [tool.bumpversion]
-current_version = "0.10.0"
+current_version = "0.11.0-beta.0"
 parse = """(?x)
     (?P<major>0|[1-9]\\d*)\\.
     (?P<minor>0|[1-9]\\d*)\\.
@@ -24,34 +24,56 @@ commit = true
 message = "Bump version: {current_version} → {new_version}"
 commit_args = ""
 
+# Java maven files
+pre_commit_hooks = [
+  """
+    NEW_VERSION="${BVHOOK_NEW_MAJOR}.${BVHOOK_NEW_MINOR}.${BVHOOK_NEW_PATCH}"
+    if [ ! -z "$BVHOOK_NEW_PRE_L" ] && [ ! -z "$BVHOOK_NEW_PRE_N" ]; then
+        NEW_VERSION="${NEW_VERSION}-${BVHOOK_NEW_PRE_L}.${BVHOOK_NEW_PRE_N}"
+    fi
+    echo "Constructed new version: $NEW_VERSION"
+    cd java && mvn versions:set -DnewVersion=$NEW_VERSION && mvn versions:commit
+
+    # Check for any modified but unstaged pom.xml files
+    MODIFIED_POMS=$(git ls-files -m | grep pom.xml)
+    if [ ! -z "$MODIFIED_POMS" ]; then
+        echo "The following pom.xml files were modified but not staged. Adding them now:"
+        echo "$MODIFIED_POMS" | while read -r file; do
+            git add "$file"
+            echo "Added: $file"
+        done
+    fi
+    """,
+]
+
 [tool.bumpversion.parts.pre_l]
-values = ["beta", "final"]
 optional_value = "final"
+values = ["beta", "final"]
 
 [[tool.bumpversion.files]]
 filename = "node/package.json"
-search = "\"version\": \"{current_version}\","
 replace = "\"version\": \"{new_version}\","
+search = "\"version\": \"{current_version}\","
 
 [[tool.bumpversion.files]]
 filename = "nodejs/package.json"
-search = "\"version\": \"{current_version}\","
 replace = "\"version\": \"{new_version}\","
+search = "\"version\": \"{current_version}\","
 
 # nodejs binary packages
 [[tool.bumpversion.files]]
 glob = "nodejs/npm/*/package.json"
-search = "\"version\": \"{current_version}\","
 replace = "\"version\": \"{new_version}\","
+search = "\"version\": \"{current_version}\","
 
 # Cargo files
 # ------------
 [[tool.bumpversion.files]]
 filename = "rust/ffi/node/Cargo.toml"
-search = "\nversion = \"{current_version}\""
 replace = "\nversion = \"{new_version}\""
+search = "\nversion = \"{current_version}\""
 
 [[tool.bumpversion.files]]
 filename = "rust/lancedb/Cargo.toml"
-search = "\nversion = \"{current_version}\""
 replace = "\nversion = \"{new_version}\""
+search = "\nversion = \"{current_version}\""

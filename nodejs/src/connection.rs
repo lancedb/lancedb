@@ -130,6 +130,7 @@ impl Connection {
             .map_err(|e| napi::Error::from_reason(format!("Failed to read IPC file: {}", e)))?;
         let mode = Self::parse_create_mode_str(&mode)?;
         let mut builder = self.get_inner()?.create_table(&name, batches).mode(mode);
+
         if let Some(storage_options) = storage_options {
             for (key, value) in storage_options {
                 builder = builder.storage_option(key, value);

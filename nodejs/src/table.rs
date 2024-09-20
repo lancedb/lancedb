@@ -156,7 +156,7 @@ impl Table {
         &self,
         only_if: Option<String>,
         columns: Vec<(String, String)>,
-    ) -> napi::Result<()> {
+    ) -> napi::Result<u64> {
         let mut op = self.inner_ref()?.update();
         if let Some(only_if) = only_if {
             op = op.only_if(only_if);
