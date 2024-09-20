@@ -4,6 +4,8 @@
 - **Knowledge**: Stores information in a **vector database** and provides LLMs with business context. (Here we will use LanceDB)
 - **Tools**: Enable LLMs to take actions like pulling data from an **API**, **sending emails** or **querying a database**, etc.
 
+![example](https://raw.githubusercontent.com/lancedb/assets/refs/heads/main/docs/assets/integration/phidata_assistant.png)
+
 Memory & knowledge make LLMs smarter while tools make them autonomous.
 
 LanceDB is a vector database and its integration into phidata makes it easy for us to provide a **knowledge base** to LLMs. It enables us to store information as [embeddings](../embeddings/understanding_embeddings.md) and search for the **results** similar to ours using **query**. 
