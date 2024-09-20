@@ -40,13 +40,22 @@ class EmbeddingFunction(BaseModel, ABC):
     def compute_query_embeddings(self, *args, **kwargs) -> list[Union[np.array, None]]:
         """
         Compute the embeddings for a given user query
+
+        Returns
+        -------
+        A list of embeddings for each input. The embedding of each input can be None
+        when the embedding is not valid.
         """
         pass
 
     @abstractmethod
     def compute_source_embeddings(self, *args, **kwargs) -> list[Union[np.array, None]]:
-        """
-        Compute the embeddings for the source column in the database
+        """Compute the embeddings for the source column in the database
+
+        Returns
+        -------
+        A list of embeddings for each input. The embedding of each input can be None
+        when the embedding is not valid.
         """
         pass
 
@@ -57,8 +66,8 @@ class EmbeddingFunction(BaseModel, ABC):
 
         Returns
         -------
-        A list of embeddings for each input. The embedding of each input can be None when
-        the embedding is not valid.
+        A list of embeddings for each input. The embedding of each input can be None
+        when the embedding is not valid.
         """
         return retry_with_exponential_backoff(
             self.compute_query_embeddings, max_retries=self.max_retries
@@ -74,8 +83,8 @@ class EmbeddingFunction(BaseModel, ABC):
 
         Returns
         -------
-        A list of embeddings for each input. The embedding of each input can be None when
-        the embedding is not valid.
+        A list of embeddings for each input. The embedding of each input can be None
+        when the embedding is not valid.
         """
         return retry_with_exponential_backoff(
             self.compute_source_embeddings, max_retries=self.max_retries

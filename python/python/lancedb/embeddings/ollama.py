@@ -10,6 +10,7 @@ from .registry import register
 
 if TYPE_CHECKING:
     import numpy as np
+    import ollama
 
 
 @register("ollama")
