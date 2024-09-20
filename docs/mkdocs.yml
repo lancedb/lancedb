@@ -34,6 +34,7 @@ theme:
     - navigation.footer
     - navigation.tracking
     - navigation.instant
+    - content.footnote.tooltips
   icon:
     repo: fontawesome/brands/github
     annotation: material/arrow-right-circle
@@ -65,6 +66,11 @@ plugins:
 markdown_extensions:
   - admonition
   - footnotes
+  - pymdownx.critic
+  - pymdownx.caret
+  - pymdownx.keys
+  - pymdownx.mark
+  - pymdownx.tilde
   - pymdownx.details
   - pymdownx.highlight:
       anchor_linenums: true
@@ -177,6 +183,7 @@ nav:
           - Voxel51: integrations/voxel51.md
           - PromptTools: integrations/prompttools.md
           - dlt: integrations/dlt.md
+          - phidata: integrations/phidata.md
       - 🎯 Examples:
           - Overview: examples/index.md
           - 🐍 Python:
@@ -299,6 +306,7 @@ nav:
       - Voxel51: integrations/voxel51.md
       - PromptTools: integrations/prompttools.md
       - dlt: integrations/dlt.md
+      - phidata: integrations/phidata.md
   - Examples:
       - examples/index.md
       - 🐍 Python:
