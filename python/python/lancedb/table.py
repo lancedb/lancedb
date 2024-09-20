@@ -2005,9 +2005,9 @@ def _sanitize_vector_column(
     elif not pa.types.is_fixed_size_list(vec_arr.type):
         raise TypeError(f"Unsupported vector column type: {vec_arr.type}")
 
-    if pa.cpp_version_info.major < 15:
-        # Use numpy to check for NaNs, because as pyarrow 14.0.2 does not have `is_nan`
-        # kernel over f16 types.
+    if pa.types.is_float16(vec_arr.values.type):
+        # Use numpy to check for NaNs, because as pyarrow does not have `is_nan`
+        # kernel over f16 types yet.
         values_np = vec_arr.values.to_numpy(zero_copy_only=True)
         if np.isnan(values_np).any():
             data = _sanitize_nans(
@@ -2061,8 +2061,15 @@ def _sanitize_jagged(data, fill_value, on_bad_vectors, vec_arr, vector_column_na
     return data
 
 
-def _sanitize_nans(data, fill_value, on_bad_vectors, vec_arr, vector_column_name):
+def _sanitize_nans(
+    data,
+    fill_value,
+    on_bad_vectors,
+    vec_arr: pa.FixedSizeListArray,
+    vector_column_name: str,
+):
     """Sanitize NaNs in vectors"""
+    assert pa.types.is_fixed_size_list(vec_arr.type)
     if on_bad_vectors == "error":
         raise ValueError(
             f"Vector column {vector_column_name} has NaNs. "
@@ -2082,8 +2089,10 @@ def _sanitize_nans(data, fill_value, on_bad_vectors, vec_arr, vector_column_name
             data.column_names.index(vector_column_name), vector_column_name, vec_arr
         )
     elif on_bad_vectors == "drop":
-        not_nulls = pc.true_unless_null(vec_arr)
-        data = data.filter(not_nulls)
+        np_arr = np.isnan(vec_arr.flatten().to_numpy(zero_copy_only=False))
+        np_arr = np_arr.reshape(-1, vec_arr.type.list_size)
+        not_nulls = np.any(np_arr, axis=1)
+        data = data.filter(~not_nulls)
     return data
 
 
