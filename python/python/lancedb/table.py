@@ -2089,7 +2089,8 @@ def _sanitize_nans(
             data.column_names.index(vector_column_name), vector_column_name, vec_arr
         )
     elif on_bad_vectors == "drop":
-        np_arr = np.isnan(vec_arr.flatten().to_numpy(zero_copy_only=False))
+        # Drop is very slow to be able to filter out NaNs in a fixed size list array
+        np_arr = np.isnan(vec_arr.values.to_numpy(zero_copy_only=False))
         np_arr = np_arr.reshape(-1, vec_arr.type.list_size)
         not_nulls = np.any(np_arr, axis=1)
         data = data.filter(~not_nulls)
