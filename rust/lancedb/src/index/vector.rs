@@ -17,7 +17,7 @@
 //!
 //! Vector indices are only supported on fixed-size-list (tensor) columns of floating point
 //! values
-use std::cmp::max;
+use std::{cmp::max, ops::Div};
 
 use lance::table::format::{Index, Manifest};
 
@@ -215,7 +215,7 @@ pub(crate) fn suggested_num_partitions(rows: usize) -> u32 {
 }
 
 pub(crate) fn suggested_num_partitions_for_hnsw(rows: usize, dim: u32) -> u32 {
-    let num_partitions = ((rows as f64) * (dim as f64)) / (256 * 5000000);
+    let num_partitions = ((rows as f64) * (dim as f64)).div((256 * 5000000) as f64) as u32;
     max(1, num_partitions)
 }
 
