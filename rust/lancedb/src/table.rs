@@ -1938,6 +1938,10 @@ impl TableInternal for NativeTable {
             Select::All => {}
         }
 
+        if query.base.with_row_id {
+            scanner.with_row_id();
+        }
+
         if let Some(opts) = options {
             scanner.batch_size(opts.max_batch_length as usize);
         }
