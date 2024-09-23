@@ -59,10 +59,6 @@ class LinearCombinationReranker(Reranker):
     def merge_results(
         self, vector_results: pa.Table, fts_results: pa.Table, fill: float
     ):
-        # If both are empty then just return an empty table
-        if len(vector_results) == 0 and len(fts_results) == 0:
-            return vector_results
-
         # If one is empty then return the other and add _relevance_score
         # column equal the existing vector or fts score
         if len(vector_results) == 0:
