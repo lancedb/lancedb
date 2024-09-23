@@ -1,6 +1,9 @@
 # Linear Combination Reranker
 
-This is the default re-ranker used by LanceDB hybrid search. It combines the results of semantic and full-text search using a linear combination of the scores. The weights for the linear combination can be specified. It defaults to 0.7, i.e, 70% weight for semantic search and 30% weight for full-text search.
+!!! note
+    This is depricated. It is recommended to use the `RRFReranker` instead, if you want to use a score based reranker.
+
+It combines the results of semantic and full-text search using a linear combination of the scores. The weights for the linear combination can be specified. It defaults to 0.7, i.e, 70% weight for semantic search and 30% weight for full-text search.
 
 !!! note
     Supported Query Types: Hybrid

@@ -105,7 +105,7 @@ class Reranker(ABC):
         query: str,
         vector_results: pa.Table,
         fts_results: pa.Table,
-    ):
+    ) -> pa.Table:
         """
         Rerank function receives the individual results from the vector and FTS search
         results. You can choose to use any of the results to generate the final results,
@@ -238,3 +238,9 @@ class Reranker(ABC):
             if "_distance" in combined_results.column_names:
                 combined_results = combined_results.drop_columns(["_distance"])
         return combined_results
+
+    def _rename_columns(self, results: pa.Table, remove_col: str, add_col: str):
+        col_names = results.column_names
+        col_names.remove(remove_col)
+        col_names.append(add_col)
+        return results.rename_columns(col_names)
