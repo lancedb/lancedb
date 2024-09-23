@@ -137,7 +137,9 @@ def _run_test_reranker(reranker, table, query, query_vector, schema):
         .to_arrow()
     )
     assert len(result) == 30
-    assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), err
+    assert np.all(
+        np.diff(result.column("_relevance_score").to_numpy()) <= 0
+    ), ascending_relevance_err
     result_explicit = (
         table.search(query_vector, vector_column_name="vector")
         .rerank(reranker=reranker, query_string=query)
@@ -160,7 +162,9 @@ def _run_test_reranker(reranker, table, query, query_vector, schema):
         .to_arrow()
     )
     assert len(result) > 0
-    assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), err
+    assert np.all(
+        np.diff(result.column("_relevance_score").to_numpy()) <= 0
+    ), ascending_relevance_err
 
     # empty FTS results
     query = "abcxyz" * 100

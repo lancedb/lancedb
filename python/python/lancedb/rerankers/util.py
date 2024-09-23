@@ -14,5 +14,6 @@ def check_reranker_result(result):
     # rerank_hybrid method
     if "_relevance_score" not in result.column_names:
         raise ValueError(
-            "rerank_hybrid must return a pyarrow.Table with a column named `_relevance_score`"
+            "rerank_hybrid must return a pyarrow.Table with a column"
+            "named `_relevance_score`"
         )
