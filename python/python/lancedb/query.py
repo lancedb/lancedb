@@ -1121,12 +1121,12 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
 
         Parameters
         ----------
+        reranker: Reranker, default RRFReranker()
+            The reranker to use. Must be an instance of Reranker class.
         normalize: str, default "score"
             The method to normalize the scores. Can be "rank" or "score". If "rank",
             the scores are converted to ranks and then normalized. If "score", the
             scores are normalized directly.
-        reranker: Reranker, default RRFReranker()
-            The reranker to use. Must be an instance of Reranker class.
         Returns
         -------
         LanceHybridQueryBuilder
