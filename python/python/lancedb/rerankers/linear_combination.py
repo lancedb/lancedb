@@ -64,7 +64,7 @@ class LinearCombinationReranker(Reranker):
         if len(vector_results) == 0:
             results = fts_results.append_column(
                 "_relevance_score",
-                pa.array(fts_results["_score"].to_pylist(), type=pa.float32()),
+                pa.array(fts_results["_score"], type=pa.float32()),
             )
             if self.score == "relevance":
                 results = self._keep_relevance_score(results)
