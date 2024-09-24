@@ -239,6 +239,7 @@ export class RemoteQuery<T = number[]> extends Query<T> {
       (this as any)._refineFactor,
       (this as any)._select,
       (this as any)._filter,
+      (this as any)._metricType,
       (this as any)._fastSearch
     )
 
