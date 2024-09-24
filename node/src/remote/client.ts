@@ -17,6 +17,7 @@ import axios, { type AxiosResponse, type ResponseType } from 'axios'
 import { tableFromIPC, type Table as ArrowTable } from 'apache-arrow'
 
 import { type RemoteResponse, type RemoteRequest, Method } from '../middleware'
+import { MetricType } from '..'
 
 interface HttpLancedbClientMiddleware {
   onRemoteRequest(
@@ -151,7 +152,8 @@ export class HttpLancedbClient {
     prefilter: boolean,
     refineFactor?: number,
     columns?: string[],
-    filter?: string
+    filter?: string,
+    metricType?: MetricType
   ): Promise<ArrowTable<any>> {
     const result = await this.post(
       `/v1/table/${tableName}/query/`,
@@ -159,10 +161,11 @@ export class HttpLancedbClient {
         vector,
         k,
         nprobes,
-        refineFactor,
+        refine_factor: refineFactor,
         columns,
         filter,
-        prefilter
+        prefilter,
+        metric: metricType
       },
       undefined,
       undefined,

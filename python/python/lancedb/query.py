@@ -576,12 +576,12 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         self._reranker = None
         self._str_query = str_query
 
-    def metric(self, metric: Literal["L2", "cosine"]) -> LanceVectorQueryBuilder:
+    def metric(self, metric: Literal["L2", "cosine", "dot"]) -> LanceVectorQueryBuilder:
         """Set the distance metric to use.
 
         Parameters
         ----------
-        metric: "L2" or "cosine"
+        metric: "L2" or "cosine" or "dot"
             The distance metric to use. By default "L2" is used.
 
         Returns
@@ -589,7 +589,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         LanceVectorQueryBuilder
             The LanceQueryBuilder object.
         """
-        self._metric = metric
+        self._metric = metric.lower()
         return self
 
     def nprobes(self, nprobes: int) -> LanceVectorQueryBuilder:
