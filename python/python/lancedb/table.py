@@ -1630,7 +1630,9 @@ class LanceTable(Table):
             and also the "_distance" column which is the distance between the query
             vector and the returned vector.
         """
-        if vector_column_name is None and query is not None and query_type != "fts":
+        if (
+            vector_column_name is None and query is not None and query_type != "fts"
+        ) or (vector_column_name is None and query_type == "hybrid"):
             try:
                 vector_column_name = inf_vector_column_query(self.schema)
             except Exception as e:

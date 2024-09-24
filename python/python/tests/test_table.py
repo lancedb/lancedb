@@ -973,7 +973,36 @@ def test_hybrid_search(db, tmp_path):
         .where("text='Arrrrggghhhhhhh'")
         .to_list()
     )
-    len(result) == 1
+    assert len(result) == 1
+
+    # with explicit query type
+    vector_query = list(range(emb.ndims()))
+    result = (
+        table.search(query_type="hybrid")
+        .vector(vector_query)
+        .text("Arrrrggghhhhhhh")
+        .to_arrow()
+    )
+    assert len(result) > 0
+    assert "_relevance_score" in result.column_names
+
+    # with vector_column_name
+    result = (
+        table.search(query_type="hybrid", vector_column_name="vector")
+        .vector(vector_query)
+        .text("Arrrrggghhhhhhh")
+        .to_arrow()
+    )
+    assert len(result) > 0
+    assert "_relevance_score" in result.column_names
+
+    # fail if only text or vector is provided
+    with pytest.raises(ValueError):
+        table.search(query_type="hybrid").to_list()
+    with pytest.raises(ValueError):
+        table.search(query_type="hybrid").vector(vector_query).to_list()
+    with pytest.raises(ValueError):
+        table.search(query_type="hybrid").text("Arrrrggghhhhhhh").to_list()
 
 
 @pytest.mark.parametrize(
