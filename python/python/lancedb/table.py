@@ -1632,7 +1632,7 @@ class LanceTable(Table):
         """
         if (
             vector_column_name is None and query is not None and query_type != "fts"
-        ) or (query_type == "hybrid"):
+        ) or (vector_column_name is None and query_type == "hybrid"):
             try:
                 vector_column_name = inf_vector_column_query(self.schema)
             except Exception as e:
