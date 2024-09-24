@@ -48,9 +48,7 @@ impl JsQuery {
 
         let fast_search = query_obj
             .get_opt::<JsBoolean, _, _>(&mut cx, "_fastSearch")?
-            .map(|val| {
-                val.value(&mut cx)
-            });
+            .map(|val| val.value(&mut cx));
 
         let is_electron = cx
             .argument::<JsBoolean>(1)
