@@ -46,6 +46,10 @@ impl JsQuery {
             .get::<JsBoolean, _, _>(&mut cx, "_prefilter")?
             .value(&mut cx);
 
+        let fast_search = query_obj
+            .get_opt::<JsBoolean, _, _>(&mut cx, "_fastSearch")?
+            .map(|val| val.value(&mut cx));
+
         let is_electron = cx
             .argument::<JsBoolean>(1)
             .or_throw(&mut cx)?
@@ -70,6 +74,9 @@ impl JsQuery {
         if let Some(limit) = limit {
             builder = builder.limit(limit as usize);
         };
+        if let Some(true) = fast_search {
+            builder = builder.fast_search();
+        }
 
         let query_vector = query_obj.get_opt::<JsArray, _, _>(&mut cx, "_queryVector")?;
         if let Some(query) = query_vector.map(|q| convert::js_array_to_vec(q.deref(), &mut cx)) {
