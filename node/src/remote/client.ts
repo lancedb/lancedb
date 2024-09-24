@@ -153,7 +153,7 @@ export class HttpLancedbClient {
     refineFactor?: number,
     columns?: string[],
     filter?: string,
-    metricType?: MetricType
+    metricType?: MetricType,
     fastSearch?: boolean
   ): Promise<ArrowTable<any>> {
     const result = await this.post(
@@ -166,7 +166,7 @@ export class HttpLancedbClient {
         columns,
         filter,
         prefilter,
-        metric: metricType
+        metric: metricType,
         fast_search: fastSearch
       },
       undefined,
