@@ -9,7 +9,7 @@ import pathlib
 import warnings
 from datetime import date, datetime
 from functools import singledispatch
-from typing import Tuple, Union, Optional
+from typing import Tuple, Union, Optional, Any
 from urllib.parse import urlparse
 
 import numpy as np
@@ -17,7 +17,6 @@ import pyarrow as pa
 import pyarrow.fs as pa_fs
 
 from ._lancedb import validate_table_name as native_validate_table_name
-from .common import VEC
 
 
 def safe_import_adlfs():
@@ -216,7 +215,7 @@ def inf_vector_column_query(schema: pa.Schema) -> str:
 def infer_vector_column_name(
     schema: pa.Schema,
     query_type: str,
-    query: Optional[Union[VEC, str]],
+    query: Optional[Any], # inferred later in query builder
     vector_column_name: Optional[str],
 ):
     if (vector_column_name is None and query is not None and query_type != "fts") or (
