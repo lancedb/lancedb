@@ -21,10 +21,21 @@ use reqwest::{
 
 use crate::error::{Error, Result};
 
-#[derive(Default, Debug)]
+#[derive(Debug)]
 pub struct ClientConfig {
     timeout_config: TimeoutConfig,
     retry_config: RetryConfig,
+    user_agent: String,
+}
+
+impl Default for ClientConfig {
+    fn default() -> Self {
+        Self {
+            timeout_config: TimeoutConfig::default(),
+            retry_config: RetryConfig::default(),
+            user_agent: concat!("LanceDB-Rust-Client/{}", env!("CARGO_PKG_VERSION")).into(),
+        }
+    }
 }
 
 #[derive(Default, Debug)]
@@ -123,12 +134,28 @@ impl HttpSend for Sender {
 }
 
 impl RestfulLanceDbClient<Sender> {
+    fn get_timeout(passed: Option<Duration>, env_var: &str, default: Duration) -> Result<Duration> {
+        if let Some(passed) = passed {
+            Ok(passed)
+        } else if let Ok(timeout) = std::env::var(env_var) {
+            let timeout = timeout.parse::<u64>().map_err(|_| Error::InvalidInput {
+                message: format!(
+                    "Invalid value for {} environment variable: '{}'",
+                    env_var, timeout
+                ),
+            })?;
+            Ok(Duration::from_secs(timeout))
+        } else {
+            Ok(default)
+        }
+    }
+
     pub fn try_new(
         db_url: &str,
         api_key: &str,
         region: &str,
         host_override: Option<String>,
-        _client_config: ClientConfig,
+        client_config: ClientConfig,
     ) -> Result<Self> {
         let parsed_url = url::Url::parse(db_url)?;
         debug_assert_eq!(parsed_url.scheme(), "db");
@@ -138,14 +165,37 @@ impl RestfulLanceDbClient<Sender> {
             });
         }
         let db_name = parsed_url.host_str().unwrap();
+
+        // Get the timeouts
+        let connect_timeout = Self::get_timeout(
+            client_config.timeout_config.connect_timeout,
+            "LANCE_CLIENT_CONNECT_TIMEOUT",
+            Duration::from_secs(120),
+        )?;
+        let read_timeout = Self::get_timeout(
+            client_config.timeout_config.read_timeout,
+            "LANCE_CLIENT_READ_TIMEOUT",
+            Duration::from_secs(300),
+        )?;
+        let pool_idle_timeout = Self::get_timeout(
+            client_config.timeout_config.pool_idle_timeout,
+            // Though it's confusing with the connect_timeout name, this is the
+            // legacy name for this in the Python sync client. So we keep as-is.
+            "LANCE_CLIENT_CONNECTION_TIMEOUT",
+            Duration::from_secs(300),
+        )?;
+
         let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(30))
+            .connect_timeout(connect_timeout)
+            .read_timeout(read_timeout)
+            .pool_idle_timeout(pool_idle_timeout)
             .default_headers(Self::default_headers(
                 api_key,
                 region,
                 db_name,
                 host_override.is_some(),
             )?)
+            .user_agent(client_config.user_agent)
             .build()?;
         let host = match host_override {
             Some(host_override) => host_override,
