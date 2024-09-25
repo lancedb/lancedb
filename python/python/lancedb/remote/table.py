@@ -25,7 +25,7 @@ from lancedb.merge import LanceMergeInsertBuilder
 from lancedb.embeddings import EmbeddingFunctionRegistry
 
 from ..query import LanceVectorQueryBuilder, LanceQueryBuilder
-from ..table import Query, Table, _sanitize_data, _LanceLatestDatasetRef
+from ..table import Query, Table, _sanitize_data
 from ..util import value_to_sql, infer_vector_column_name
 from .arrow import to_ipc_binary
 from .client import ARROW_STREAM_CONTENT_TYPE
