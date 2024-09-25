@@ -105,7 +105,7 @@ impl<S: HttpSend> ConnectionInternal for RemoteDatabase<S> {
         if let Some(start_after) = options.start_after {
             req = req.query(&[("page_token", start_after)]);
         }
-        let rsp = self.client.send(req).await?;
+        let rsp = self.client.send(req, true).await?;
         let rsp = self.client.check_response(rsp).await?;
         let tables = rsp.json::<ListTablesResponse>().await?.tables;
         for table in &tables {
@@ -133,7 +133,7 @@ impl<S: HttpSend> ConnectionInternal for RemoteDatabase<S> {
             .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE)
             // This is currently expected by LanceDb cloud but will be removed soon.
             .header("x-request-id", "na");
-        let rsp = self.client.send(req).await?;
+        let rsp = self.client.send(req, false).await?;
 
         if rsp.status() == StatusCode::BAD_REQUEST {
             let body = rsp.text().await?;
@@ -160,7 +160,7 @@ impl<S: HttpSend> ConnectionInternal for RemoteDatabase<S> {
             let req = self
                 .client
                 .get(&format!("/v1/table/{}/describe/", options.name));
-            let resp = self.client.send(req).await?;
+            let resp = self.client.send(req, true).await?;
             if resp.status() == StatusCode::NOT_FOUND {
                 return Err(crate::Error::TableNotFound { name: options.name });
             }
@@ -185,7 +185,7 @@ impl<S: HttpSend> ConnectionInternal for RemoteDatabase<S> {
 
     async fn drop_table(&self, name: &str) -> Result<()> {
         let req = self.client.post(&format!("/v1/table/{}/drop/", name));
-        let resp = self.client.send(req).await?;
+        let resp = self.client.send(req, true).await?;
         self.client.check_response(resp).await?;
         self.table_cache.remove(name).await;
         Ok(())

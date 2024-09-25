@@ -314,7 +314,7 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
         self.client.post(full_uri)
     }
 
-    pub async fn send(&self, req: RequestBuilder) -> Result<Response> {
+    pub async fn send(&self, req: RequestBuilder, with_retry: bool) -> Result<Response> {
         let (client, request) = req.build_split();
         let mut request = request.unwrap();
 
@@ -326,14 +326,18 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
             request.headers_mut().insert(REQUEST_ID_HEADER, request_id);
         }
 
-        if request.method() == reqwest::Method::GET {
-            self.send_with_retry(client, request).await
+        if with_retry {
+            self.send_with_retry_impl(client, request).await
         } else {
             Ok(self.sender.send(&client, request).await?)
         }
     }
 
-    async fn send_with_retry(&self, client: reqwest::Client, req: Request) -> Result<Response> {
+    async fn send_with_retry_impl(
+        &self,
+        client: reqwest::Client,
+        req: Request,
+    ) -> Result<Response> {
         let mut request_failures = 0;
         let mut connect_failures = 0;
         let mut read_failures = 0;
