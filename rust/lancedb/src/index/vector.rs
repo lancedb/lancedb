@@ -17,7 +17,7 @@
 //!
 //! Vector indices are only supported on fixed-size-list (tensor) columns of floating point
 //! values
-use std::{cmp::max, ops::Div};
+use std::cmp::max;
 
 use lance::table::format::{Index, Manifest};
 
