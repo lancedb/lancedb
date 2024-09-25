@@ -472,10 +472,11 @@ def test_ollama_embedding(tmp_path):
     assert "name" in dumped_model
     assert "max_retries" in dumped_model
     assert dumped_model["max_retries"] == 0
-    assert all(not k.startswith('_') for k in dumped_model.keys())
+    assert all(not k.startswith("_") for k in dumped_model.keys())
 
     # Test serialization of the dumped model
     import json
+
     try:
         json.dumps(dumped_model)
     except TypeError:
