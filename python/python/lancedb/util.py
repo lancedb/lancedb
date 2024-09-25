@@ -9,7 +9,7 @@ import pathlib
 import warnings
 from datetime import date, datetime
 from functools import singledispatch
-from typing import Tuple, Union, Optional, Any
+from typing import Tuple, Union, Optional
 from urllib.parse import urlparse
 
 import numpy as np
