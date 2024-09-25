@@ -28,7 +28,7 @@ use crate::embeddings::EmbeddingRegistry;
 use crate::error::Result;
 use crate::Table;
 
-use super::client::{HttpSend, RestfulLanceDbClient, Sender};
+use super::client::{ClientConfig, HttpSend, RestfulLanceDbClient, Sender};
 use super::table::RemoteTable;
 use super::util::batches_to_ipc_bytes;
 use super::ARROW_STREAM_CONTENT_TYPE;
@@ -49,8 +49,10 @@ impl RemoteDatabase {
         api_key: &str,
         region: &str,
         host_override: Option<String>,
+        client_config: ClientConfig,
     ) -> Result<Self> {
-        let client = RestfulLanceDbClient::try_new(uri, api_key, region, host_override)?;
+        let client =
+            RestfulLanceDbClient::try_new(uri, api_key, region, host_override, client_config)?;
         Ok(Self { client })
     }
 }

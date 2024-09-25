@@ -21,6 +21,84 @@ use reqwest::{
 
 use crate::error::{Error, Result};
 
+#[derive(Default, Debug)]
+pub struct ClientConfig {
+    timeout_config: TimeoutConfig,
+    retry_config: RetryConfig,
+}
+
+#[derive(Default, Debug)]
+pub struct TimeoutConfig {
+    /// The timeout for creating a connection to the server.
+    ///
+    /// You can also set the `LANCE_CLIENT_CONNECT_TIMEOUT` environment variable
+    /// to set this value. Use an integer value in seconds.
+    ///
+    /// The default is 120 seconds (2 minutes).
+    pub connect_timeout: Option<Duration>,
+    /// The timeout for reading a response from the server.
+    ///
+    /// You can also set the `LANCE_CLIENT_READ_TIMEOUT` environment variable
+    /// to set this value. Use an integer value in seconds.
+    ///
+    /// The default is 300 seconds (5 minutes).
+    pub read_timeout: Option<Duration>,
+    /// The timeout for keeping idle connections alive.
+    ///
+    /// You can also set the `LANCE_CLIENT_CONNECTION_TIMEOUT` environment variable
+    /// to set this value. Use an integer value in seconds.
+    ///
+    /// The default is 300 seconds (5 minutes).
+    pub pool_idle_timeout: Option<Duration>,
+}
+
+#[derive(Default, Debug)]
+pub struct RetryConfig {
+    /// The number of times to retry a request if it fails.
+    ///
+    /// You can also set the `LANCE_CLIENT_MAX_RETRIES` environment variable
+    /// to set this value. Use an integer value.
+    ///
+    /// The default is 3 retries.
+    pub retries: Option<u8>,
+    /// The number of times to retry a request if it fails to connect.
+    ///
+    /// You can also set the `LANCE_CLIENT_CONNECT_RETRIES` environment variable
+    /// to set this value. Use an integer value.
+    ///
+    /// The default is 3 retries.
+    pub connect_retries: Option<u8>,
+    /// The number of times to retry a request if it fails to read.
+    ///
+    /// You can also set the `LANCE_CLIENT_READ_RETRIES` environment variable
+    /// to set this value. Use an integer value.
+    ///
+    /// The default is 3 retries.
+    pub read_retries: Option<u8>,
+    /// The exponential backoff factor to use when retrying requests.
+    ///
+    /// You can also set the `LANCE_CLIENT_RETRY_BACKOFF_FACTOR` environment variable
+    /// to set this value. Use a float value.
+    ///
+    /// The default is 0.25.
+    pub backoff_factor: Option<f32>,
+    /// The backoff jitter factor to use when retrying requests.
+    ///
+    /// You can also set the `LANCE_CLIENT_RETRY_BACKOFF_JITTER` environment variable
+    /// to set this value. Use a float value.
+    ///
+    /// The default is 0.25.
+    pub backoff_jitter: Option<f32>,
+    /// The set of status codes to retry on.
+    ///
+    /// You can also set the `LANCE_CLIENT_RETRY_STATUSES` environment variable
+    /// to set this value. Use a comma-separated list of integer values.
+    ///
+    /// The default is 429, 500, 502, 503.
+    pub statuses: Option<Vec<u16>>,
+    // TODO: should we allow customizing methods?
+}
+
 // We use the `HttpSend` trait to abstract over the `reqwest::Client` so that
 // we can mock responses in tests. Based on the patterns from this blog post:
 // https://write.as/balrogboogie/testing-reqwest-based-clients
@@ -50,6 +128,7 @@ impl RestfulLanceDbClient<Sender> {
         api_key: &str,
         region: &str,
         host_override: Option<String>,
+        _client_config: ClientConfig,
     ) -> Result<Self> {
         let parsed_url = url::Url::parse(db_url)?;
         debug_assert_eq!(parsed_url.scheme(), "db");

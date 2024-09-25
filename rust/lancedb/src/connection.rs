@@ -32,6 +32,7 @@ use crate::embeddings::{
 };
 use crate::error::{CreateDirSnafu, Error, InvalidTableNameSnafu, Result};
 use crate::io::object_store::MirroringObjectStoreWrapper;
+use crate::remote::client::ClientConfig;
 use crate::table::{NativeTable, TableDefinition, WriteOptions};
 use crate::utils::validate_table_name;
 use crate::Table;
@@ -567,6 +568,7 @@ pub struct ConnectBuilder {
     region: Option<String>,
     /// LanceDB Cloud host override, only required if using an on-premises Lance Cloud instance
     host_override: Option<String>,
+    client_config: ClientConfig,
 
     storage_options: HashMap<String, String>,
 
@@ -592,6 +594,7 @@ impl ConnectBuilder {
             api_key: None,
             region: None,
             host_override: None,
+            client_config: Default::default(),
             read_consistency_interval: None,
             storage_options: HashMap::new(),
             embedding_registry: None,
@@ -610,6 +613,12 @@ impl ConnectBuilder {
 
     pub fn host_override(mut self, host_override: &str) -> Self {
         self.host_override = Some(host_override.to_string());
+        self
+    }
+
+    /// Set the LanceDB Cloud client configuration.
+    pub fn client_client(mut self, config: ClientConfig) -> Self {
+        self.client_config = config;
         self
     }
 
@@ -685,12 +694,14 @@ impl ConnectBuilder {
         let api_key = self.api_key.ok_or_else(|| Error::InvalidInput {
             message: "An api_key is required when connecting to LanceDb Cloud".to_string(),
         })?;
+        // TODO: remove this warning when the remote client is ready
         warn!("The rust implementation of the remote client is not yet ready for use.");
         let internal = Arc::new(crate::remote::db::RemoteDatabase::try_new(
             &self.uri,
             &api_key,
             &region,
             self.host_override,
+            self.client_config,
         )?);
         Ok(Connection {
             internal,
