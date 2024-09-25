@@ -32,6 +32,7 @@ use crate::embeddings::{
 };
 use crate::error::{CreateDirSnafu, Error, InvalidTableNameSnafu, Result};
 use crate::io::object_store::MirroringObjectStoreWrapper;
+#[cfg(feature = "remote")]
 use crate::remote::client::ClientConfig;
 use crate::table::{NativeTable, TableDefinition, WriteOptions};
 use crate::utils::validate_table_name;
@@ -568,6 +569,7 @@ pub struct ConnectBuilder {
     region: Option<String>,
     /// LanceDB Cloud host override, only required if using an on-premises Lance Cloud instance
     host_override: Option<String>,
+    #[cfg(feature = "remote")]
     client_config: ClientConfig,
 
     storage_options: HashMap<String, String>,
@@ -594,6 +596,7 @@ impl ConnectBuilder {
             api_key: None,
             region: None,
             host_override: None,
+            #[cfg(feature = "remote")]
             client_config: Default::default(),
             read_consistency_interval: None,
             storage_options: HashMap::new(),
@@ -617,6 +620,7 @@ impl ConnectBuilder {
     }
 
     /// Set the LanceDB Cloud client configuration.
+    #[cfg(feature = "remote")]
     pub fn client_client(mut self, config: ClientConfig) -> Self {
         self.client_config = config;
         self
