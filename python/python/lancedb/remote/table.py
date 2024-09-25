@@ -26,7 +26,7 @@ from lancedb.embeddings import EmbeddingFunctionRegistry
 
 from ..query import LanceVectorQueryBuilder, LanceQueryBuilder
 from ..table import Query, Table, _sanitize_data
-from ..util import inf_vector_column_query, value_to_sql
+from ..util import value_to_sql, infer_vector_column_name
 from .arrow import to_ipc_binary
 from .client import ARROW_STREAM_CONTENT_TYPE
 from .db import RemoteDBConnection
@@ -266,7 +266,7 @@ class RemoteTable(Table):
 
     def search(
         self,
-        query: Union[VEC, str],
+        query: Union[VEC, str] = None,
         vector_column_name: Optional[str] = None,
         query_type="auto",
         fts_columns: Optional[Union[str, List[str]]] = None,
@@ -329,11 +329,12 @@ class RemoteTable(Table):
             - and also the "_distance" column which is the distance between the query
             vector and the returned vector.
         """
-        if vector_column_name is None and query is not None and query_type != "fts":
-            try:
-                vector_column_name = inf_vector_column_query(self.schema)
-            except Exception as e:
-                raise e
+        vector_column_name = infer_vector_column_name(
+            schema=self.schema,
+            query_type=query_type,
+            query=query,
+            vector_column_name=vector_column_name,
+        )
 
         return LanceQueryBuilder.create(
             self,
