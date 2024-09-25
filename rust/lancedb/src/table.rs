@@ -54,7 +54,8 @@ use crate::embeddings::{EmbeddingDefinition, EmbeddingRegistry, MaybeEmbedded, M
 use crate::error::{Error, Result};
 use crate::index::scalar::FtsIndexBuilder;
 use crate::index::vector::{
-    IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder, IvfPqIndexBuilder, VectorIndex,
+    suggested_num_partitions_for_hnsw, IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder,
+    IvfPqIndexBuilder, VectorIndex,
 };
 use crate::index::IndexConfig;
 use crate::index::IndexStatistics;
@@ -1440,11 +1441,19 @@ impl NativeTable {
             });
         }
 
-        let num_partitions = if let Some(n) = index.num_partitions {
+        let num_partitions: u32 = if let Some(n) = index.num_partitions {
             n
         } else {
-            suggested_num_partitions(self.count_rows(None).await?)
+            match field.data_type() {
+                arrow_schema::DataType::FixedSizeList(_, n) => Ok::<u32, Error>(
+                    suggested_num_partitions_for_hnsw(self.count_rows(None).await?, *n as u32),
+                ),
+                _ => Err(Error::Schema {
+                    message: format!("Column '{}' is not a FixedSizeList", field.name()),
+                }),
+            }?
         };
+
         let num_sub_vectors: u32 = if let Some(n) = index.num_sub_vectors {
             n
         } else {
@@ -1503,10 +1512,17 @@ impl NativeTable {
             });
         }
 
-        let num_partitions = if let Some(n) = index.num_partitions {
+        let num_partitions: u32 = if let Some(n) = index.num_partitions {
             n
         } else {
-            suggested_num_partitions(self.count_rows(None).await?)
+            match field.data_type() {
+                arrow_schema::DataType::FixedSizeList(_, n) => Ok::<u32, Error>(
+                    suggested_num_partitions_for_hnsw(self.count_rows(None).await?, *n as u32),
+                ),
+                _ => Err(Error::Schema {
+                    message: format!("Column '{}' is not a FixedSizeList", field.name()),
+                }),
+            }?
         };
 
         let mut dataset = self.dataset.get_mut().await?;
