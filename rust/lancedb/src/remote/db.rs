@@ -17,6 +17,7 @@ use std::sync::Arc;
 use arrow_array::RecordBatchReader;
 use async_trait::async_trait;
 use http::StatusCode;
+use moka::future::Cache;
 use reqwest::header::CONTENT_TYPE;
 use serde::Deserialize;
 use tokio::task::spawn_blocking;
@@ -41,6 +42,7 @@ struct ListTablesResponse {
 #[derive(Debug)]
 pub struct RemoteDatabase<S: HttpSend = Sender> {
     client: RestfulLanceDbClient<S>,
+    table_cache: Cache<String, ()>,
 }
 
 impl RemoteDatabase {
@@ -53,7 +55,16 @@ impl RemoteDatabase {
     ) -> Result<Self> {
         let client =
             RestfulLanceDbClient::try_new(uri, api_key, region, host_override, client_config)?;
-        Ok(Self { client })
+
+        let table_cache = Cache::builder()
+            .time_to_live(std::time::Duration::from_secs(300))
+            .max_capacity(10_000)
+            .build();
+
+        Ok(Self {
+            client,
+            table_cache,
+        })
     }
 }
 
@@ -70,7 +81,10 @@ mod test_utils {
             T: Into<reqwest::Body>,
         {
             let client = client_with_handler(handler);
-            Self { client }
+            Self {
+                client,
+                table_cache: Cache::new(0),
+            }
         }
     }
 }
@@ -93,7 +107,11 @@ impl<S: HttpSend> ConnectionInternal for RemoteDatabase<S> {
         }
         let rsp = self.client.send(req).await?;
         let rsp = self.client.check_response(rsp).await?;
-        Ok(rsp.json::<ListTablesResponse>().await?.tables)
+        let tables = rsp.json::<ListTablesResponse>().await?.tables;
+        for table in &tables {
+            self.table_cache.insert(table.clone(), ()).await;
+        }
+        Ok(tables)
     }
 
     async fn do_create_table(
@@ -128,6 +146,8 @@ impl<S: HttpSend> ConnectionInternal for RemoteDatabase<S> {
 
         self.client.check_response(rsp).await?;
 
+        self.table_cache.insert(options.name.clone(), ()).await;
+
         Ok(Table::new(Arc::new(RemoteTable::new(
             self.client.clone(),
             options.name,
@@ -136,15 +156,17 @@ impl<S: HttpSend> ConnectionInternal for RemoteDatabase<S> {
 
     async fn do_open_table(&self, options: OpenTableBuilder) -> Result<Table> {
         // We describe the table to confirm it exists before moving on.
-        // TODO: a TTL cache of table existence
-        let req = self
-            .client
-            .get(&format!("/v1/table/{}/describe/", options.name));
-        let resp = self.client.send(req).await?;
-        if resp.status() == StatusCode::NOT_FOUND {
-            return Err(crate::Error::TableNotFound { name: options.name });
+        if self.table_cache.get(&options.name).is_none() {
+            let req = self
+                .client
+                .get(&format!("/v1/table/{}/describe/", options.name));
+            let resp = self.client.send(req).await?;
+            if resp.status() == StatusCode::NOT_FOUND {
+                return Err(crate::Error::TableNotFound { name: options.name });
+            }
+            self.client.check_response(resp).await?;
         }
-        self.client.check_response(resp).await?;
+
         Ok(Table::new(Arc::new(RemoteTable::new(
             self.client.clone(),
             options.name,
@@ -165,6 +187,7 @@ impl<S: HttpSend> ConnectionInternal for RemoteDatabase<S> {
         let req = self.client.post(&format!("/v1/table/{}/drop/", name));
         let resp = self.client.send(req).await?;
         self.client.check_response(resp).await?;
+        self.table_cache.remove(name).await;
         Ok(())
     }
 
