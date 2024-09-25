@@ -215,7 +215,7 @@ pub(crate) fn suggested_num_partitions(rows: usize) -> u32 {
 }
 
 pub(crate) fn suggested_num_partitions_for_hnsw(rows: usize, dim: u32) -> u32 {
-    let num_partitions = ((rows as f64) * (dim as f64)).div((256 * 5000000) as f64) as u32;
+    let num_partitions = (((rows as u64) * (dim as u64)) / (256 * 5_000_000)) as u32;
     max(1, num_partitions)
 }
 
