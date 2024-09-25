@@ -25,7 +25,7 @@ from lancedb.merge import LanceMergeInsertBuilder
 from lancedb.embeddings import EmbeddingFunctionRegistry
 
 from ..query import LanceVectorQueryBuilder, LanceQueryBuilder
-from ..table import Query, Table, _sanitize_data
+from ..table import Query, Table, _sanitize_data, _LanceLatestDatasetRef
 from ..util import value_to_sql, infer_vector_column_name
 from .arrow import to_ipc_binary
 from .client import ARROW_STREAM_CONTENT_TYPE
@@ -305,8 +305,6 @@ class RemoteTable(Table):
             - *default None*.
             Acceptable types are: list, np.ndarray, PIL.Image.Image
 
-            - If None then the select/where/limit clauses are applied to filter
-            the table
         vector_column_name: str, optional
             The name of the vector column to search.
 
@@ -329,6 +327,9 @@ class RemoteTable(Table):
             - and also the "_distance" column which is the distance between the query
             vector and the returned vector.
         """
+        # empty query builder is not supported in saas, raise error
+        if query is None and query_type != "hybrid":
+            raise ValueError("Empty query is not supported")
         vector_column_name = infer_vector_column_name(
             schema=self.schema,
             query_type=query_type,
