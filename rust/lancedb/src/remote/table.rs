@@ -976,7 +976,7 @@ mod tests {
             let mut expected_body = serde_json::json!({
                 "prefilter": true,
                 "k": 10,
-                "distance_type": "L2",
+                "distance_type": "l2",
                 "nprobes": 20,
                 "refine_factor": null,
             });
@@ -1019,7 +1019,7 @@ mod tests {
                 "vector_column": "my_vector",
                 "prefilter": false,
                 "k": 42,
-                "distance_type": "Cosine",
+                "distance_type": "cosine",
                 "bypass_vector_index": true,
                 "columns": ["a", "b"],
                 "nprobes": 12,
