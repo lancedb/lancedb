@@ -50,7 +50,7 @@ from .query import (
 from .util import (
     fs_from_uri,
     get_uri_scheme,
-    inf_vector_column_query,
+    infer_vector_column_name,
     join_uri,
     safe_import_pandas,
     safe_import_polars,
@@ -1630,13 +1630,12 @@ class LanceTable(Table):
             and also the "_distance" column which is the distance between the query
             vector and the returned vector.
         """
-        if (
-            vector_column_name is None and query is not None and query_type != "fts"
-        ) or (vector_column_name is None and query_type == "hybrid"):
-            try:
-                vector_column_name = inf_vector_column_query(self.schema)
-            except Exception as e:
-                raise e
+        vector_column_name = infer_vector_column_name(
+            schema=self.schema,
+            query_type=query_type,
+            query=query,
+            vector_column_name=vector_column_name,
+        )
 
         return LanceQueryBuilder.create(
             self,

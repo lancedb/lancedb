@@ -9,7 +9,7 @@ import pathlib
 import warnings
 from datetime import date, datetime
 from functools import singledispatch
-from typing import Tuple, Union
+from typing import Tuple, Union, Optional, Any
 from urllib.parse import urlparse
 
 import numpy as np
@@ -210,6 +210,23 @@ def inf_vector_column_query(schema: pa.Schema) -> str:
             "Please specify the vector column name for vector search"
         )
     return vector_col_name
+
+
+def infer_vector_column_name(
+    schema: pa.Schema,
+    query_type: str,
+    query: Optional[Any],  # inferred later in query builder
+    vector_column_name: Optional[str],
+):
+    if (vector_column_name is None and query is not None and query_type != "fts") or (
+        vector_column_name is None and query_type == "hybrid"
+    ):
+        try:
+            vector_column_name = inf_vector_column_query(schema)
+        except Exception as e:
+            raise e
+
+    return vector_column_name
 
 
 @singledispatch
