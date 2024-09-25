@@ -215,7 +215,7 @@ def inf_vector_column_query(schema: pa.Schema) -> str:
 def infer_vector_column_name(
     schema: pa.Schema,
     query_type: str,
-    query: Optional[Any], # inferred later in query builder
+    query: Optional[Any],  # inferred later in query builder
     vector_column_name: Optional[str],
 ):
     if (vector_column_name is None and query is not None and query_type != "fts") or (
