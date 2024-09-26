@@ -974,7 +974,6 @@ mod tests {
             let body: serde_json::Value = serde_json::from_slice(body).unwrap();
             let mut expected_body = serde_json::json!({
                 "prefilter": true,
-                "k": 10,
                 "distance_type": "l2",
                 "nprobes": 20,
                 "refine_factor": null,
