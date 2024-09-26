@@ -4,13 +4,12 @@ name = "lancedb"
 dependencies = [
     "deprecation",
     "pylance==0.18.2",
-    "requests>=2.31.0",
+    "requests>=2.31.0", # TODO: make this optional
     "retry>=0.9.2",
     "tqdm>=4.27.0",
     "pydantic>=1.10",
-    "attrs>=21.3.0",
+    "attrs>=21.3.0", # TODO: remove this
     "packaging",
-    "cachetools",
     "overrides>=0.7",
 ]
 description = "lancedb"
