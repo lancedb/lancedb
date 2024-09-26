@@ -888,7 +888,7 @@ describe("LanceDB client", function () {
       expect(indices[0].columns).to.have.lengthOf(1);
       expect(indices[0].columns[0]).to.equal("vector");
 
-      const stats = await table.indexStats(indices[0].uuid);
+      const stats = await table.indexStats(indices[0].name);
       expect(stats.numIndexedRows).to.equal(300);
       expect(stats.numUnindexedRows).to.equal(0);
     }).timeout(50_000);
