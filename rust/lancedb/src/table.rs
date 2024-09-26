@@ -57,12 +57,12 @@ use crate::index::vector::{
     suggested_num_partitions_for_hnsw, IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder,
     IvfPqIndexBuilder, VectorIndex,
 };
-use crate::index::IndexConfig;
 use crate::index::IndexStatistics;
 use crate::index::{
     vector::{suggested_num_partitions, suggested_num_sub_vectors},
     Index, IndexBuilder,
 };
+use crate::index::{IndexConfig, IndexStatisticsImpl};
 use crate::query::{
     IntoQueryVector, Query, QueryExecutionOptions, Select, VectorQuery, DEFAULT_TOP_K,
 };
@@ -2064,9 +2064,28 @@ impl TableInternal for NativeTable {
             Err(e) => return Err(Error::from(e)),
         };
 
-        serde_json::from_str(&stats).map_err(|e| Error::InvalidInput {
-            message: format!("error deserializing index statistics: {}", e),
-        })
+        let mut stats: IndexStatisticsImpl =
+            serde_json::from_str(&stats).map_err(|e| Error::InvalidInput {
+                message: format!("error deserializing index statistics: {}", e),
+            })?;
+
+        let first_index = stats.indices.pop().ok_or_else(|| Error::InvalidInput {
+            message: "index statistics is empty".to_string(),
+        })?;
+        // Index type should be present at one of the levels.
+        let index_type =
+            stats
+                .index_type
+                .or(first_index.index_type)
+                .ok_or_else(|| Error::InvalidInput {
+                    message: "index statistics was missing index type".to_string(),
+                })?;
+        Ok(Some(IndexStatistics {
+            num_indexed_rows: stats.num_indexed_rows,
+            num_unindexed_rows: stats.num_unindexed_rows,
+            index_type,
+            distance_type: first_index.metric_type,
+        }))
     }
 }
 
@@ -2727,7 +2746,7 @@ mod tests {
         assert_eq!(stats.num_indexed_rows, 512);
         assert_eq!(stats.num_unindexed_rows, 0);
         assert_eq!(stats.index_type, crate::index::IndexType::IvfPq);
-        assert_eq!(stats.distance_type, crate::DistanceType::L2);
+        assert_eq!(stats.distance_type, Some(crate::DistanceType::L2));
     }
 
     #[tokio::test]

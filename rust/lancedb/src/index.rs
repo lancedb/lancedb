@@ -122,6 +122,20 @@ pub enum IndexType {
     FTS,
 }
 
+impl std::fmt::Display for IndexType {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Self::IvfPq => write!(f, "IVF_PQ"),
+            Self::IvfHnswPq => write!(f, "IVF_HNSW_PQ"),
+            Self::IvfHnswSq => write!(f, "IVF_HNSW_SQ"),
+            Self::BTree => write!(f, "BTREE"),
+            Self::Bitmap => write!(f, "BITMAP"),
+            Self::LabelList => write!(f, "LABEL_LIST"),
+            Self::FTS => write!(f, "FTS"),
+        }
+    }
+}
+
 /// A description of an index currently configured on a column
 #[derive(Debug, PartialEq, Clone)]
 pub struct IndexConfig {
@@ -137,10 +151,33 @@ pub struct IndexConfig {
 }
 
 #[skip_serializing_none]
+#[derive(Debug, Deserialize)]
+pub(crate) struct IndexMetadata {
+    pub metric_type: Option<DistanceType>,
+    // Sometimes the index type is provided at this level.
+    pub index_type: Option<IndexType>,
+}
+
+// This struct is used to deserialize the JSON data returned from the Lance API
+// Dataset::index_statistics().
+#[skip_serializing_none]
+#[derive(Debug, Deserialize)]
+pub(crate) struct IndexStatisticsImpl {
+    pub num_indexed_rows: usize,
+    pub num_unindexed_rows: usize,
+    pub indices: Vec<IndexMetadata>,
+    // Sometimes, the index type is provided at this level.
+    pub index_type: Option<IndexType>,
+}
+
+#[skip_serializing_none]
 #[derive(Debug, Deserialize, PartialEq)]
 pub struct IndexStatistics {
     pub num_indexed_rows: usize,
     pub num_unindexed_rows: usize,
     pub index_type: IndexType,
-    pub distance_type: DistanceType,
+    /// The distance type used by the index.
+    ///
+    /// This is only present for vector indices.
+    pub distance_type: Option<DistanceType>,
 }

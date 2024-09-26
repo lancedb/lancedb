@@ -470,49 +470,31 @@ impl JsTable {
         Ok(promise)
     }
 
-    #[allow(deprecated)]
     pub(crate) fn js_index_stats(mut cx: FunctionContext) -> JsResult<JsPromise> {
         let js_table = cx.this().downcast_or_throw::<JsBox<Self>, _>(&mut cx)?;
         let rt = runtime(&mut cx)?;
         let (deferred, promise) = cx.promise();
-        let index_uuid = cx.argument::<JsString>(0)?.value(&mut cx);
+        let index_name = cx.argument::<JsString>(0)?.value(&mut cx);
         let channel = cx.channel();
         let table = js_table.table.clone();
 
         rt.spawn(async move {
-            let load_stats = futures::try_join!(
-                table.as_native().unwrap().count_indexed_rows(&index_uuid),
-                table.as_native().unwrap().count_unindexed_rows(&index_uuid)
-            );
+            let load_stats = table.index_stats(index_name).await;
 
             deferred.settle_with(&channel, move |mut cx| {
-                let (indexed_rows, unindexed_rows) = load_stats.or_throw(&mut cx)?;
+                let stats = load_stats.or_throw(&mut cx)?;
 
-                let output = JsObject::new(&mut cx);
+                if let Some(stats) = stats {
+                    let output = JsObject::new(&mut cx);
+                    let num_indexed_rows = cx.number(stats.num_indexed_rows as f64);
+                    output.set(&mut cx, "numIndexedRows", num_indexed_rows)?;
+                    let num_unindexed_rows = cx.number(stats.num_unindexed_rows as f64);
+                    output.set(&mut cx, "numUnindexedRows", num_unindexed_rows)?;
 
-                match indexed_rows {
-                    Some(x) => {
-                        let i = cx.number(x as f64);
-                        output.set(&mut cx, "numIndexedRows", i)?;
-                    }
-                    None => {
-                        let null = cx.null();
-                        output.set(&mut cx, "numIndexedRows", null)?;
-                    }
-                };
-
-                match unindexed_rows {
-                    Some(x) => {
-                        let i = cx.number(x as f64);
-                        output.set(&mut cx, "numUnindexedRows", i)?;
-                    }
-                    None => {
-                        let null = cx.null();
-                        output.set(&mut cx, "numUnindexedRows", null)?;
-                    }
-                };
-
-                Ok(output)
+                    Ok(output.as_value(&mut cx))
+                } else {
+                    Ok(JsNull::new(&mut cx).as_value(&mut cx))
+                }
             })
         });
 

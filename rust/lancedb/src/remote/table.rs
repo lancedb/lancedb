@@ -1202,7 +1202,7 @@ mod tests {
             num_indexed_rows: 100000,
             num_unindexed_rows: 0,
             index_type: IndexType::IvfPq,
-            distance_type: DistanceType::L2,
+            distance_type: Some(DistanceType::L2),
         };
         assert_eq!(indices, expected);
 
