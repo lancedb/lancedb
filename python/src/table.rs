@@ -8,8 +8,8 @@ use lancedb::table::{
 use pyo3::{
     exceptions::{PyRuntimeError, PyValueError},
     pyclass, pymethods,
-    types::{PyDict, PyString},
-    Bound, PyAny, PyRef, PyResult, Python,
+    types::{PyDict, PyDictMethods, PyString},
+    Bound, PyAny, PyRef, PyResult, Python, ToPyObject,
 };
 use pyo3_asyncio_0_21::tokio::future_into_py;
 
@@ -201,6 +201,29 @@ impl Table {
                 .into_iter()
                 .map(IndexConfig::from)
                 .collect::<Vec<_>>())
+        })
+    }
+
+    pub fn index_stats(self_: PyRef<'_, Self>, index_name: String) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let stats = inner.index_stats(&index_name).await.infer_error()?;
+            if let Some(stats) = stats {
+                Python::with_gil(|py| {
+                    let dict = PyDict::new_bound(py);
+                    dict.set_item("num_indexed_rows", stats.num_indexed_rows)?;
+                    dict.set_item("num_unindexed_rows", stats.num_unindexed_rows)?;
+                    dict.set_item("index_type", stats.index_type.to_string())?;
+
+                    if let Some(distance_type) = stats.distance_type {
+                        dict.set_item("distance_type", distance_type.to_string())?;
+                    }
+
+                    Ok(Some(dict.to_object(py)))
+                })
+            } else {
+                Ok(None)
+            }
         })
     }
 
