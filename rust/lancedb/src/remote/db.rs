@@ -149,6 +149,16 @@ impl<S: HttpSend> ConnectionInternal for RemoteDatabase<S> {
         ))))
     }
 
+    async fn rename_table(&self, current_name: &str, new_name: &str) -> Result<()> {
+        let req = self
+            .client
+            .post(&format!("/v1/table/{}/rename/", current_name));
+        let req = req.json(&serde_json::json!({ "new_table_name": new_name }));
+        let resp = self.client.send(req).await?;
+        self.client.check_response(resp).await?;
+        Ok(())
+    }
+
     async fn drop_table(&self, name: &str) -> Result<()> {
         let req = self.client.post(&format!("/v1/table/{}/drop/", name));
         let resp = self.client.send(req).await?;
@@ -174,7 +184,10 @@ mod tests {
     use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator};
     use arrow_schema::{DataType, Field, Schema};
 
-    use crate::{remote::db::ARROW_STREAM_CONTENT_TYPE, Connection};
+    use crate::{
+        remote::{ARROW_STREAM_CONTENT_TYPE, JSON_CONTENT_TYPE},
+        Connection,
+    };
 
     #[tokio::test]
     async fn test_table_names() {
@@ -333,5 +346,24 @@ mod tests {
         });
         conn.drop_table("table1").await.unwrap();
         // NOTE: the API will return 200 even if the table does not exist. So we shouldn't expect 404.
+    }
+
+    #[tokio::test]
+    async fn test_rename_table() {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(request.url().path(), "/v1/table/table1/rename/");
+            assert_eq!(
+                request.headers().get("Content-Type").unwrap(),
+                JSON_CONTENT_TYPE
+            );
+
+            let body = request.body().unwrap().as_bytes().unwrap();
+            let body: serde_json::Value = serde_json::from_slice(body).unwrap();
+            assert_eq!(body["new_table_name"], "table2");
+
+            http::Response::builder().status(200).body("").unwrap()
+        });
+        conn.rename_table("table1", "table2").await.unwrap();
     }
 }
