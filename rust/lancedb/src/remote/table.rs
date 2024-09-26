@@ -1,7 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use crate::index::Index;
-use crate::index::IndexStatistics;
+use crate::index::{Index, IndexStatistics};
 use crate::query::Select;
 use crate::table::AddDataMode;
 use crate::utils::{supported_btree_data_type, supported_vector_data_type};
