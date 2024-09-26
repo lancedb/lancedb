@@ -303,7 +303,6 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
         Self::apply_query_params(&mut body, &query.base)?;
 
         body["prefilter"] = query.prefilter.into();
-        body["k"] = query.base.limit.unwrap_or(10).into();
         body["distance_type"] = serde_json::json!(query.distance_type.unwrap_or_default());
         body["nprobes"] = query.nprobes.into();
         body["refine_factor"] = query.refine_factor.into();
@@ -1103,8 +1102,6 @@ mod tests {
             .execute()
             .await
             .unwrap();
-
-        // WAND factor and limit are not supported.
     }
 
     #[tokio::test]
@@ -1150,7 +1147,6 @@ mod tests {
                 http::Response::builder().status(200).body("{}").unwrap()
             });
 
-            // How should Auto be handled?
             table.create_index(&["a"], index).execute().await.unwrap();
         }
     }
