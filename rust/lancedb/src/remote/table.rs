@@ -1,7 +1,9 @@
 use std::sync::{Arc, Mutex};
 
 use crate::index::Index;
+use crate::index::IndexStatistics;
 use crate::query::Select;
+use crate::table::dataset::DatasetReadGuard;
 use crate::table::AddDataMode;
 use crate::utils::{supported_btree_data_type, supported_vector_data_type};
 use crate::Error;
@@ -523,6 +525,26 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
             message: "list_indices is not yet supported.".into(),
         })
     }
+    async fn index_stats(&self, index_name: &str) -> Result<Option<IndexStatistics>> {
+        let request = self
+            .client
+            .post(&format!("/table/{}/index/{}/stats/", self.name, index_name));
+        let response = self.client.send(request).await?;
+
+        if response.status() == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+
+        let response = self.check_table_response(response).await?;
+
+        let body = response.text().await?;
+
+        let stats = serde_json::from_str(&body).map_err(|e| Error::Http {
+            message: format!("Failed to parse index statistics: {}", e),
+        })?;
+
+        Ok(Some(stats))
+    }
     async fn table_definition(&self) -> Result<TableDefinition> {
         Err(Error::NotSupported {
             message: "table_definition is not supported on LanceDB cloud.".into(),
@@ -582,7 +604,7 @@ mod tests {
     use reqwest::Body;
 
     use crate::{
-        index::{vector::IvfPqIndexBuilder, Index},
+        index::{vector::IvfPqIndexBuilder, Index, IndexStatistics, IndexType},
         query::{ExecutableQuery, QueryBase},
         DistanceType, Error, Table,
     };
@@ -1151,5 +1173,49 @@ mod tests {
 
             table.create_index(&["a"], index).execute().await.unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn test_index_stats() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(
+                request.url().path(),
+                "/table/my_table/index/my_index/stats/"
+            );
+
+            let response_body = serde_json::json!({
+              "num_indexed_rows": 100000,
+              "num_unindexed_rows": 0,
+              "index_type": "IVF_PQ",
+              "distance_type": "l2"
+            });
+            let response_body = serde_json::to_string(&response_body).unwrap();
+
+            http::Response::builder()
+                .status(200)
+                .body(response_body)
+                .unwrap()
+        });
+        let indices = table.index_stats("my_index").await.unwrap().unwrap();
+        let expected = IndexStatistics {
+            num_indexed_rows: 100000,
+            num_unindexed_rows: 0,
+            index_type: IndexType::IvfPq,
+            distance_type: DistanceType::L2,
+        };
+        assert_eq!(indices, expected);
+
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(
+                request.url().path(),
+                "/table/my_table/index/my_index/stats/"
+            );
+
+            http::Response::builder().status(404).body("").unwrap()
+        });
+        let indices = table.index_stats("my_index").await.unwrap();
+        assert!(indices.is_none());
     }
 }

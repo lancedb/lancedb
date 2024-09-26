@@ -18,7 +18,7 @@ use scalar::FtsIndexBuilder;
 use serde::Deserialize;
 use serde_with::skip_serializing_none;
 
-use crate::{table::TableInternal, Result};
+use crate::{table::TableInternal, DistanceType, Result};
 
 use self::{
     scalar::{BTreeIndexBuilder, BitmapIndexBuilder, LabelListIndexBuilder},
@@ -102,19 +102,28 @@ impl IndexBuilder {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub enum IndexType {
     // Vector
+    #[serde(alias = "IVF_PQ")]
     IvfPq,
+    #[serde(alias = "IVF_HNSW_PQ")]
     IvfHnswPq,
+    #[serde(alias = "IVF_HNSW_SQ")]
     IvfHnswSq,
     // Scalar
+    #[serde(alias = "BTREE")]
     BTree,
+    #[serde(alias = "BITMAP")]
     Bitmap,
+    #[serde(alias = "LABEL_LIST")]
     LabelList,
+    // FTS
+    FTS,
 }
 
 /// A description of an index currently configured on a column
+#[derive(Debug, PartialEq, Clone)]
 pub struct IndexConfig {
     /// The name of the index
     pub name: String,
@@ -128,17 +137,10 @@ pub struct IndexConfig {
 }
 
 #[skip_serializing_none]
-#[derive(Debug, Deserialize)]
-pub struct IndexMetadata {
-    pub metric_type: Option<String>,
-    pub index_type: Option<String>,
-}
-
-#[skip_serializing_none]
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, PartialEq)]
 pub struct IndexStatistics {
     pub num_indexed_rows: usize,
     pub num_unindexed_rows: usize,
-    pub index_type: Option<String>,
-    pub indices: Vec<IndexMetadata>,
+    pub index_type: IndexType,
+    pub distance_type: DistanceType,
 }
