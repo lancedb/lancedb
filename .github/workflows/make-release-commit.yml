@@ -30,7 +30,7 @@ on:
         default: true
         type: boolean
       other:
-        description: 'Make a Node/Rust release'
+        description: 'Make a Node/Rust/Java release'
         required: true
         default: true
         type: boolean

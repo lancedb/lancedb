@@ -20,7 +20,11 @@ excluded_globs = [
     "../src/reranking/*.md",
     "../src/guides/tuning_retrievers/*.md",
     "../src/embeddings/available_embedding_models/text_embedding_functions/*.md",
-    "../src/embeddings/available_embedding_models/multimodal_embedding_functions/*.md"
+    "../src/embeddings/available_embedding_models/multimodal_embedding_functions/*.md",
+    "../src/rag/*.md",
+    "../src/rag/advanced_techniques/*.md"
+
+
 ]
 
 python_prefix = "py"

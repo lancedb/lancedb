@@ -12,9 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+import { readdirSync } from "fs";
 import { Field, Float64, Schema } from "apache-arrow";
 import * as tmp from "tmp";
 import { Connection, Table, connect } from "../lancedb";
+import { LocalTable } from "../lancedb/table";
 
 describe("when connecting", () => {
   let tmpDir: tmp.DirResult;
@@ -105,7 +107,7 @@ describe("given a connection", () => {
     const data = [...Array(10000).keys()].map((i) => ({ id: i }));
 
     // Create in v1 mode
-    let table = await db.createTable("test", data);
+    let table = await db.createTable("test", data, { useLegacyFormat: true });
 
     const isV2 = async (table: Table) => {
       const data = await table.query().toArrow({ maxBatchLength: 100000 });
@@ -116,7 +118,7 @@ describe("given a connection", () => {
     await expect(isV2(table)).resolves.toBe(false);
 
     // Create in v2 mode
-    table = await db.createTable("test_v2", data, { useLegacyFormat: false });
+    table = await db.createTable("test_v2", data);
 
     await expect(isV2(table)).resolves.toBe(true);
 
@@ -133,5 +135,58 @@ describe("given a connection", () => {
 
     await table.add(data);
     await expect(isV2(table)).resolves.toBe(true);
+  });
+
+  it("should be able to create tables with V2 manifest paths", async () => {
+    const db = await connect(tmpDir.name);
+    let table = (await db.createEmptyTable(
+      "test_manifest_paths_v2_empty",
+      new Schema([new Field("id", new Float64(), true)]),
+      {
+        enableV2ManifestPaths: true,
+      },
+    )) as LocalTable;
+    expect(await table.usesV2ManifestPaths()).toBe(true);
+
+    let manifestDir =
+      tmpDir.name + "/test_manifest_paths_v2_empty.lance/_versions";
+    readdirSync(manifestDir).forEach((file) => {
+      expect(file).toMatch(/^\d{20}\.manifest$/);
+    });
+
+    table = (await db.createTable("test_manifest_paths_v2", [{ id: 1 }], {
+      enableV2ManifestPaths: true,
+    })) as LocalTable;
+    expect(await table.usesV2ManifestPaths()).toBe(true);
+    manifestDir = tmpDir.name + "/test_manifest_paths_v2.lance/_versions";
+    readdirSync(manifestDir).forEach((file) => {
+      expect(file).toMatch(/^\d{20}\.manifest$/);
+    });
+  });
+
+  it("should be able to migrate tables to the V2 manifest paths", async () => {
+    const db = await connect(tmpDir.name);
+    const table = (await db.createEmptyTable(
+      "test_manifest_path_migration",
+      new Schema([new Field("id", new Float64(), true)]),
+      {
+        enableV2ManifestPaths: false,
+      },
+    )) as LocalTable;
+
+    expect(await table.usesV2ManifestPaths()).toBe(false);
+
+    const manifestDir =
+      tmpDir.name + "/test_manifest_path_migration.lance/_versions";
+    readdirSync(manifestDir).forEach((file) => {
+      expect(file).toMatch(/^\d\.manifest$/);
+    });
+
+    await table.migrateManifestPathsV2();
+    expect(await table.usesV2ManifestPaths()).toBe(true);
+
+    readdirSync(manifestDir).forEach((file) => {
+      expect(file).toMatch(/^\d{20}\.manifest$/);
+    });
   });
 });

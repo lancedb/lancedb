@@ -156,7 +156,7 @@ impl Table {
         &self,
         only_if: Option<String>,
         columns: Vec<(String, String)>,
-    ) -> napi::Result<()> {
+    ) -> napi::Result<u64> {
         let mut op = self.inner_ref()?.update();
         if let Some(only_if) = only_if {
             op = op.only_if(only_if);
@@ -346,6 +346,26 @@ impl Table {
     pub fn merge_insert(&self, on: Vec<String>) -> napi::Result<NativeMergeInsertBuilder> {
         let on: Vec<_> = on.iter().map(String::as_str).collect();
         Ok(self.inner_ref()?.merge_insert(on.as_slice()).into())
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn uses_v2_manifest_paths(&self) -> napi::Result<bool> {
+        self.inner_ref()?
+            .as_native()
+            .ok_or_else(|| napi::Error::from_reason("This cannot be run on a remote table"))?
+            .uses_v2_manifest_paths()
+            .await
+            .default_error()
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn migrate_manifest_paths_v2(&self) -> napi::Result<()> {
+        self.inner_ref()?
+            .as_native()
+            .ok_or_else(|| napi::Error::from_reason("This cannot be run on a remote table"))?
+            .migrate_manifest_paths_v2()
+            .await
+            .default_error()
     }
 }
 

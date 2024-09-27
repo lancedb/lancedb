@@ -26,6 +26,9 @@ class ColbertReranker(AnswerdotaiRerankers):
         The name of the column to use as input to the cross encoder model.
     return_score : str, default "relevance"
         options are "relevance" or "all". Only "relevance" is supported for now.
+    **kwargs
+        Additional keyword arguments to pass to the model, for example, 'device'.
+        See AnswerDotAI/rerankers for more information.
     """
 
     def __init__(
@@ -33,10 +36,12 @@ class ColbertReranker(AnswerdotaiRerankers):
         model_name: str = "colbert-ir/colbertv2.0",
         column: str = "text",
         return_score="relevance",
+        **kwargs,
     ):
         super().__init__(
             model_type="colbert",
             model_name=model_name,
             column=column,
             return_score=return_score,
+            **kwargs,
         )

@@ -74,21 +74,23 @@ async def test_e2e_with_mock_server():
     await mock_server.start()
 
     try:
-        client = RestfulLanceDBClient("lancedb+http://localhost:8111")
-        df = (
-            await client.query(
-                "test_table",
-                VectorQuery(
-                    vector=np.random.rand(128).tolist(),
-                    k=10,
-                    _metric="L2",
-                    columns=["id", "vector"],
-                ),
-            )
-        ).to_pandas()
+        with RestfulLanceDBClient("lancedb+http://localhost:8111") as client:
+            df = (
+                await client.query(
+                    "test_table",
+                    VectorQuery(
+                        vector=np.random.rand(128).tolist(),
+                        k=10,
+                        _metric="L2",
+                        columns=["id", "vector"],
+                    ),
+                )
+            ).to_pandas()
 
-        assert "vector" in df.columns
-        assert "id" in df.columns
+            assert "vector" in df.columns
+            assert "id" in df.columns
+
+        assert client.closed
     finally:
         # make sure we don't leak resources
         await mock_server.stop()

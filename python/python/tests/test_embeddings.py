@@ -10,7 +10,6 @@
 #  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
-import sys
 from typing import List, Union
 
 import lance
@@ -35,9 +34,6 @@ def mock_embed_func(input_data):
 
 def test_with_embeddings():
     for wrap_api in [True, False]:
-        if wrap_api and sys.version_info.minor >= 11:
-            # ratelimiter package doesn't work on 3.11
-            continue
         data = pa.Table.from_arrays(
             [
                 pa.array(["foo", "bar"]),
@@ -88,6 +84,47 @@ def test_embedding_function(tmp_path):
     expected = func.compute_query_embeddings("hello world")
 
     assert np.allclose(actual, expected)
+
+
+def test_embedding_with_bad_results(tmp_path):
+    @register("mock-embedding")
+    class MockEmbeddingFunction(TextEmbeddingFunction):
+        def ndims(self):
+            return 128
+
+        def generate_embeddings(
+            self, texts: Union[List[str], np.ndarray]
+        ) -> list[Union[np.array, None]]:
+            return [
+                None if i % 2 == 0 else np.random.randn(self.ndims())
+                for i in range(len(texts))
+            ]
+
+    db = lancedb.connect(tmp_path)
+    registry = EmbeddingFunctionRegistry.get_instance()
+    model = registry.get("mock-embedding").create()
+
+    class Schema(LanceModel):
+        text: str = model.SourceField()
+        vector: Vector(model.ndims()) = model.VectorField()
+
+    table = db.create_table("test", schema=Schema, mode="overwrite")
+    table.add(
+        [{"text": "hello world"}, {"text": "bar"}],
+        on_bad_vectors="drop",
+    )
+
+    df = table.to_pandas()
+    assert len(table) == 1
+    assert df.iloc[0]["text"] == "bar"
+
+    # table = db.create_table("test2", schema=Schema, mode="overwrite")
+    # table.add(
+    #     [{"text": "hello world"}, {"text": "bar"}],
+    # )
+    # assert len(table) == 2
+    # tbl = table.to_arrow()
+    # assert tbl["vector"].null_count == 1
 
 
 @pytest.mark.slow
@@ -146,3 +183,45 @@ def test_add_optional_vector(tmp_path):
     expected = LanceSchema(id="id", text="text")
     tbl.add([expected])
     assert not (np.abs(tbl.to_pandas()["vector"][0]) < 1e-6).all()
+
+
+@pytest.mark.parametrize(
+    "embedding_type",
+    [
+        "openai",
+        "sentence-transformers",
+        "huggingface",
+        "ollama",
+        "cohere",
+        "instructor",
+    ],
+)
+def test_embedding_function_safe_model_dump(embedding_type):
+    registry = get_registry()
+
+    # Note: Some embedding types might require specific parameters
+    try:
+        model = registry.get(embedding_type).create()
+    except Exception as e:
+        pytest.skip(f"Skipping {embedding_type} due to error: {str(e)}")
+
+    dumped_model = model.safe_model_dump()
+
+    assert all(
+        not k.startswith("_") for k in dumped_model.keys()
+    ), f"{embedding_type}: Dumped model contains keys starting with underscore"
+
+    assert (
+        "max_retries" in dumped_model
+    ), f"{embedding_type}: Essential field 'max_retries' is missing from dumped model"
+
+    assert isinstance(
+        dumped_model, dict
+    ), f"{embedding_type}: Dumped model is not a dictionary"
+
+    for key in model.__dict__:
+        if key.startswith("_"):
+            assert key not in dumped_model, (
+                f"{embedding_type}: Private attribute '{key}' "
+                f"is present in dumped model"
+            )

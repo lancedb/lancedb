@@ -34,6 +34,7 @@ theme:
     - navigation.footer
     - navigation.tracking
     - navigation.instant
+    - content.footnote.tooltips
   icon:
     repo: fontawesome/brands/github
     annotation: material/arrow-right-circle
@@ -65,6 +66,11 @@ plugins:
 markdown_extensions:
   - admonition
   - footnotes
+  - pymdownx.critic
+  - pymdownx.caret
+  - pymdownx.keys
+  - pymdownx.mark
+  - pymdownx.tilde
   - pymdownx.details
   - pymdownx.highlight:
       anchor_linenums: true
@@ -106,6 +112,17 @@ nav:
               - Overview: hybrid_search/hybrid_search.md
               - Comparing Rerankers: hybrid_search/eval.md
               - Airbnb financial data example: notebooks/hybrid_search.ipynb
+          - RAG:
+              - Vanilla RAG: rag/vanilla_rag.md
+              - Multi-head RAG: rag/multi_head_rag.md
+              - Corrective RAG: rag/corrective_rag.md
+              - Agentic RAG: rag/agentic_rag.md
+              - Graph RAG: rag/graph_rag.md
+              - Self RAG: rag/self_rag.md
+              - Adaptive RAG: rag/adaptive_rag.md
+              - Advanced Techniques:
+                - HyDE: rag/advanced_techniques/hyde.md
+                - FLARE: rag/advanced_techniques/flare.md
           - Reranking:
               - Quickstart: reranking/index.md
               - Cohere Reranker: reranking/cohere.md
@@ -127,7 +144,8 @@ nav:
               - Reranking: guides/tuning_retrievers/2_reranking.md
               - Embedding fine-tuning: guides/tuning_retrievers/3_embed_tuning.md
       - 🧬 Managing embeddings:
-          - Overview: embeddings/index.md
+          - Understand Embeddings: embeddings/understanding_embeddings.md 
+          - Get Started: embeddings/index.md
           - Embedding functions: embeddings/embedding_functions.md
           - Available models: 
               - Overview: embeddings/default_embedding_functions.md
@@ -165,6 +183,7 @@ nav:
           - Voxel51: integrations/voxel51.md
           - PromptTools: integrations/prompttools.md
           - dlt: integrations/dlt.md
+          - phidata: integrations/phidata.md
       - 🎯 Examples:
           - Overview: examples/index.md
           - 🐍 Python:
@@ -220,6 +239,17 @@ nav:
           - Overview: hybrid_search/hybrid_search.md
           - Comparing Rerankers: hybrid_search/eval.md
           - Airbnb financial data example: notebooks/hybrid_search.ipynb
+      - RAG:
+          - Vanilla RAG: rag/vanilla_rag.md
+          - Multi-head RAG: rag/multi_head_rag.md
+          - Corrective RAG: rag/corrective_rag.md
+          - Agentic RAG: rag/agentic_rag.md
+          - Graph RAG: rag/graph_rag.md
+          - Self RAG: rag/self_rag.md
+          - Adaptive RAG: rag/adaptive_rag.md
+          - Advanced Techniques:
+            - HyDE: rag/advanced_techniques/hyde.md
+            - FLARE: rag/advanced_techniques/flare.md
       - Reranking:
           - Quickstart: reranking/index.md
           - Cohere Reranker: reranking/cohere.md
@@ -241,7 +271,8 @@ nav:
           - Reranking: guides/tuning_retrievers/2_reranking.md
           - Embedding fine-tuning: guides/tuning_retrievers/3_embed_tuning.md
   - Managing Embeddings:
-      - Overview: embeddings/index.md
+      - Understand Embeddings: embeddings/understanding_embeddings.md 
+      - Get Started: embeddings/index.md
       - Embedding functions: embeddings/embedding_functions.md
       - Available models: 
           - Overview: embeddings/default_embedding_functions.md
@@ -275,6 +306,7 @@ nav:
       - Voxel51: integrations/voxel51.md
       - PromptTools: integrations/prompttools.md
       - dlt: integrations/dlt.md
+      - phidata: integrations/phidata.md
   - Examples:
       - examples/index.md
       - 🐍 Python:

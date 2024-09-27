@@ -78,8 +78,243 @@ class FTS:
     For example, it works with `title`, `description`, `content`, etc.
     """
 
-    def __init__(self):
-        self._inner = LanceDbIndex.fts()
+    def __init__(self, with_position: bool = True):
+        self._inner = LanceDbIndex.fts(with_position=with_position)
+
+
+class HnswPq:
+    """Describe a HNSW-PQ index configuration.
+
+    HNSW-PQ stands for Hierarchical Navigable Small World - Product Quantization.
+    It is a variant of the HNSW algorithm that uses product quantization to compress
+    the vectors. To create an HNSW-PQ index, you can specify the following parameters:
+
+    Parameters
+    ----------
+
+    distance_type: str, default "L2"
+
+        The distance metric used to train the index.
+
+        The following distance types are available:
+
+        "l2" - Euclidean distance. This is a very common distance metric that
+        accounts for both magnitude and direction when determining the distance
+        between vectors. L2 distance has a range of [0, ∞).
+
+        "cosine" - Cosine distance.  Cosine distance is a distance metric
+        calculated from the cosine similarity between two vectors. Cosine
+        similarity is a measure of similarity between two non-zero vectors of an
+        inner product space. It is defined to equal the cosine of the angle
+        between them.  Unlike L2, the cosine distance is not affected by the
+        magnitude of the vectors.  Cosine distance has a range of [0, 2].
+
+        "dot" - Dot product. Dot distance is the dot product of two vectors. Dot
+        distance has a range of (-∞, ∞). If the vectors are normalized (i.e. their
+        L2 norm is 1), then dot distance is equivalent to the cosine distance.
+
+    num_partitions, default sqrt(num_rows)
+
+        The number of IVF partitions to create.
+
+        For HNSW, we recommend a small number of partitions. Setting this to 1 works
+        well for most tables. For very large tables, training just one HNSW graph
+        will require too much memory. Each partition becomes its own HNSW graph, so
+        setting this value higher reduces the peak memory use of training.
+
+    num_sub_vectors, default is vector dimension / 16
+
+        Number of sub-vectors of PQ.
+
+        This value controls how much the vector is compressed during the
+        quantization step. The more sub vectors there are the less the vector is
+        compressed.  The default is the dimension of the vector divided by 16.
+        If the dimension is not evenly divisible by 16 we use the dimension
+        divided by 8.
+
+        The above two cases are highly preferred.  Having 8 or 16 values per
+        subvector allows us to use efficient SIMD instructions.
+
+        If the dimension is not visible by 8 then we use 1 subvector.  This is not
+        ideal and will likely result in poor performance.
+
+    max_iterations, default 50
+
+        Max iterations to train kmeans.
+
+        When training an IVF index we use kmeans to calculate the partitions.  This
+        parameter controls how many iterations of kmeans to run.
+
+        Increasing this might improve the quality of the index but in most cases the
+        parameter is unused because kmeans will converge with fewer iterations.  The
+        parameter is only used in cases where kmeans does not appear to converge.  In
+        those cases it is unlikely that setting this larger will lead to the index
+        converging anyways.
+
+    sample_rate, default 256
+
+        The rate used to calculate the number of training vectors for kmeans.
+
+        When an IVF index is trained, we need to calculate partitions.  These are
+        groups of vectors that are similar to each other.  To do this we use an
+        algorithm called kmeans.
+
+        Running kmeans on a large dataset can be slow.  To speed this up we
+        run kmeans on a random sample of the data.  This parameter controls the
+        size of the sample.  The total number of vectors used to train the index
+        is `sample_rate * num_partitions`.
+
+        Increasing this value might improve the quality of the index but in
+        most cases the default should be sufficient.
+
+    m, default 20
+
+        The number of neighbors to select for each vector in the HNSW graph.
+
+        This value controls the tradeoff between search speed and accuracy.
+        The higher the value the more accurate the search but the slower it will be.
+
+    ef_construction, default 300
+
+        The number of candidates to evaluate during the construction of the HNSW graph.
+
+        This value controls the tradeoff between build speed and accuracy.
+        The higher the value the more accurate the build but the slower it will be.
+        150 to 300 is the typical range. 100 is a minimum for good quality search
+        results. In most cases, there is no benefit to setting this higher than 500.
+        This value should be set to a value that is not less than `ef` in the
+        search phase.
+    """
+
+    def __init__(
+        self,
+        *,
+        distance_type: Optional[str] = None,
+        num_partitions: Optional[int] = None,
+        num_sub_vectors: Optional[int] = None,
+        max_iterations: Optional[int] = None,
+        sample_rate: Optional[int] = None,
+        m: Optional[int] = None,
+        ef_construction: Optional[int] = None,
+    ):
+        self._inner = LanceDbIndex.hnsw_pq(
+            distance_type=distance_type,
+            num_partitions=num_partitions,
+            num_sub_vectors=num_sub_vectors,
+            max_iterations=max_iterations,
+            sample_rate=sample_rate,
+            m=m,
+            ef_construction=ef_construction,
+        )
+
+
+class HnswSq:
+    """Describe a HNSW-SQ index configuration.
+
+    HNSW-SQ stands for Hierarchical Navigable Small World - Scalar Quantization.
+    It is a variant of the HNSW algorithm that uses scalar quantization to compress
+    the vectors.
+
+    Parameters
+    ----------
+
+    distance_type: str, default "L2"
+
+        The distance metric used to train the index.
+
+        The following distance types are available:
+
+        "l2" - Euclidean distance. This is a very common distance metric that
+        accounts for both magnitude and direction when determining the distance
+        between vectors. L2 distance has a range of [0, ∞).
+
+        "cosine" - Cosine distance.  Cosine distance is a distance metric
+        calculated from the cosine similarity between two vectors. Cosine
+        similarity is a measure of similarity between two non-zero vectors of an
+        inner product space. It is defined to equal the cosine of the angle
+        between them.  Unlike L2, the cosine distance is not affected by the
+        magnitude of the vectors.  Cosine distance has a range of [0, 2].
+
+        "dot" - Dot product. Dot distance is the dot product of two vectors. Dot
+        distance has a range of (-∞, ∞). If the vectors are normalized (i.e. their
+        L2 norm is 1), then dot distance is equivalent to the cosine distance.
+
+    num_partitions, default sqrt(num_rows)
+
+        The number of IVF partitions to create.
+
+        For HNSW, we recommend a small number of partitions. Setting this to 1 works
+        well for most tables. For very large tables, training just one HNSW graph
+        will require too much memory. Each partition becomes its own HNSW graph, so
+        setting this value higher reduces the peak memory use of training.
+
+    max_iterations, default 50
+
+        Max iterations to train kmeans.
+
+        When training an IVF index we use kmeans to calculate the partitions.
+        This parameter controls how many iterations of kmeans to run.
+
+        Increasing this might improve the quality of the index but in most cases
+        the parameter is unused because kmeans will converge with fewer iterations.
+        The parameter is only used in cases where kmeans does not appear to converge.
+        In those cases it is unlikely that setting this larger will lead to
+        the index converging anyways.
+
+    sample_rate, default 256
+
+        The rate used to calculate the number of training vectors for kmeans.
+
+        When an IVF index is trained, we need to calculate partitions.  These
+        are groups of vectors that are similar to each other.  To do this
+        we use an algorithm called kmeans.
+
+        Running kmeans on a large dataset can be slow.  To speed this up we
+        run kmeans on a random sample of the data.  This parameter controls the
+        size of the sample.  The total number of vectors used to train the index
+        is `sample_rate * num_partitions`.
+
+        Increasing this value might improve the quality of the index but in
+        most cases the default should be sufficient.
+
+    m, default 20
+
+        The number of neighbors to select for each vector in the HNSW graph.
+
+        This value controls the tradeoff between search speed and accuracy.
+        The higher the value the more accurate the search but the slower it will be.
+
+    ef_construction, default 300
+
+        The number of candidates to evaluate during the construction of the HNSW graph.
+
+        This value controls the tradeoff between build speed and accuracy.
+        The higher the value the more accurate the build but the slower it will be.
+        150 to 300 is the typical range. 100 is a minimum for good quality search
+        results. In most cases, there is no benefit to setting this higher than 500.
+        This value should be set to a value that is not less than `ef` in the search
+        phase.
+
+    """
+
+    def __init__(
+        self,
+        *,
+        distance_type: Optional[str] = None,
+        num_partitions: Optional[int] = None,
+        max_iterations: Optional[int] = None,
+        sample_rate: Optional[int] = None,
+        m: Optional[int] = None,
+        ef_construction: Optional[int] = None,
+    ):
+        self._inner = LanceDbIndex.hnsw_sq(
+            distance_type=distance_type,
+            num_partitions=num_partitions,
+            max_iterations=max_iterations,
+            sample_rate=sample_rate,
+            m=m,
+            ef_construction=ef_construction,
+        )
 
 
 class IvfPq:

@@ -112,8 +112,8 @@ describe("LanceDB client", function () {
           name: 'name_2',
           price: 10,
           is_active: true,
-          vector: [ 0, 0.1 ]
-        },
+          vector: [0, 0.1]
+        }
       ]);
       assert.equal(await table2.countRows(), 3);
     });

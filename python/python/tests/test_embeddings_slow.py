@@ -442,3 +442,42 @@ def test_watsonx_embedding(tmp_path):
         tbl.add(df)
         assert len(tbl.to_pandas()["vector"][0]) == model.ndims()
         assert tbl.search("hello").limit(1).to_pandas()["text"][0] == "hello world"
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(
+    importlib.util.find_spec("ollama") is None, reason="Ollama not installed"
+)
+def test_ollama_embedding(tmp_path):
+    model = get_registry().get("ollama").create(max_retries=0)
+
+    class TextModel(LanceModel):
+        text: str = model.SourceField()
+        vector: Vector(model.ndims()) = model.VectorField()
+
+    df = pd.DataFrame({"text": ["hello world", "goodbye world"]})
+    db = lancedb.connect(tmp_path)
+    tbl = db.create_table("test", schema=TextModel, mode="overwrite")
+
+    tbl.add(df)
+
+    assert len(tbl.to_pandas()["vector"][0]) == model.ndims()
+
+    result = tbl.search("hello").limit(1).to_pandas()
+    assert result["text"][0] == "hello world"
+
+    # Test safe_model_dump
+    dumped_model = model.safe_model_dump()
+    assert isinstance(dumped_model, dict)
+    assert "name" in dumped_model
+    assert "max_retries" in dumped_model
+    assert dumped_model["max_retries"] == 0
+    assert all(not k.startswith("_") for k in dumped_model.keys())
+
+    # Test serialization of the dumped model
+    import json
+
+    try:
+        json.dumps(dumped_model)
+    except TypeError:
+        pytest.fail("Failed to JSON serialize the dumped model")

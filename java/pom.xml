@@ -6,7 +6,7 @@
 
     <groupId>com.lancedb</groupId>
     <artifactId>lancedb-parent</artifactId>
-    <version>0.0.3</version>
+    <version>0.11.0-beta.1</version>
     <packaging>pom</packaging>
 
     <name>LanceDB Parent</name>
@@ -92,7 +92,7 @@
         </repository>
     </distributionManagement>
 
-     <build>
+    <build>
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
@@ -167,7 +167,8 @@
                     <version>3.2.5</version>
                     <configuration>
                         <argLine>--add-opens=java.base/java.nio=ALL-UNNAMED</argLine>
-                        <forkNode implementation="org.apache.maven.plugin.surefire.extensions.SurefireForkNodeFactory"/>
+                        <forkNode
+                            implementation="org.apache.maven.plugin.surefire.extensions.SurefireForkNodeFactory" />
                         <useSystemClassLoader>false</useSystemClassLoader>
                     </configuration>
                 </plugin>
@@ -183,7 +184,7 @@
         </pluginManagement>
     </build>
 
-   <profiles>
+    <profiles>
         <profile>
             <id>jdk8</id>
             <activation>
@@ -210,7 +211,8 @@
                         <version>3.2.5</version>
                         <configuration>
                             <argLine>--add-opens=java.base/java.nio=ALL-UNNAMED</argLine>
-                            <forkNode implementation="org.apache.maven.plugin.surefire.extensions.SurefireForkNodeFactory" />
+                            <forkNode
+                                implementation="org.apache.maven.plugin.surefire.extensions.SurefireForkNodeFactory" />
                             <useSystemClassLoader>false</useSystemClassLoader>
                         </configuration>
                     </plugin>

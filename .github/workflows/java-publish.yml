@@ -94,11 +94,16 @@ jobs:
           mkdir -p ./core/target/classes/nativelib/darwin-aarch64 ./core/target/classes/nativelib/linux-aarch64
           cp ../liblancedb_jni_darwin_aarch64.zip/liblancedb_jni.dylib ./core/target/classes/nativelib/darwin-aarch64/liblancedb_jni.dylib
           cp ../liblancedb_jni_linux_aarch64.zip/liblancedb_jni.so ./core/target/classes/nativelib/linux-aarch64/liblancedb_jni.so
+      - name: Dry run
+        if: github.event_name == 'pull_request'
+        run: |
+          mvn --batch-mode -DskipTests package
       - name: Set github
         run: |
           git config --global user.email "LanceDB Github Runner"
           git config --global user.name "dev+gha@lancedb.com"
       - name: Publish with Java 8
+        if: github.event_name == 'release'
         run: |
           echo "use-agent" >> ~/.gnupg/gpg.conf
           echo "pinentry-mode loopback" >> ~/.gnupg/gpg.conf

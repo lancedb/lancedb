@@ -697,4 +697,31 @@ export class LocalTable extends Table {
     on = Array.isArray(on) ? on : [on];
     return new MergeInsertBuilder(this.inner.mergeInsert(on));
   }
+
+  /**
+   * Check if the table uses the new manifest path scheme.
+   *
+   * This function will return true if the table uses the V2 manifest
+   * path scheme.
+   */
+  async usesV2ManifestPaths(): Promise<boolean> {
+    return await this.inner.usesV2ManifestPaths();
+  }
+
+  /**
+   * Migrate the table to use the new manifest path scheme.
+   *
+   * This function will rename all V1 manifests to V2 manifest paths.
+   * These paths provide more efficient opening of datasets with many versions
+   * on object stores.
+   *
+   * This function is idempotent, and can be run multiple times without
+   * changing the state of the object store.
+   *
+   * However, it should not be run while other concurrent operations are happening.
+   * And it should also run until completion before resuming other operations.
+   */
+  async migrateManifestPathsV2(): Promise<void> {
+    await this.inner.migrateManifestPathsV2();
+  }
 }

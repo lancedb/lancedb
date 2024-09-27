@@ -30,7 +30,6 @@ jobs:
     defaults:
       run:
         shell: bash
-        working-directory: rust
     env:
       # Need up-to-date compilers for kernels
       CC: gcc-12
@@ -50,7 +49,7 @@ jobs:
     - name: Run format
       run: cargo fmt --all -- --check
     - name: Run clippy
-      run: cargo clippy --all --all-features -- -D warnings
+      run: cargo clippy --workspace --tests --all-features -- -D warnings
   linux:
     timeout-minutes: 30
     # To build all features, we need more disk space than is available

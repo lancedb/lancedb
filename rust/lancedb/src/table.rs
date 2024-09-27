@@ -43,6 +43,7 @@ use lance_index::vector::pq::PQBuildParams;
 use lance_index::vector::sq::builder::SQBuildParams;
 use lance_index::DatasetIndexExt;
 use lance_index::IndexType;
+use lance_table::io::commit::ManifestNamingScheme;
 use log::info;
 use serde::{Deserialize, Serialize};
 use snafu::whatever;
@@ -51,8 +52,10 @@ use crate::arrow::IntoArrow;
 use crate::connection::NoData;
 use crate::embeddings::{EmbeddingDefinition, EmbeddingRegistry, MaybeEmbedded, MemoryRegistry};
 use crate::error::{Error, Result};
+use crate::index::scalar::FtsIndexBuilder;
 use crate::index::vector::{
-    IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder, IvfPqIndexBuilder, VectorIndex,
+    suggested_num_partitions_for_hnsw, IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder,
+    IvfPqIndexBuilder, VectorIndex,
 };
 use crate::index::IndexConfig;
 use crate::index::IndexStatistics;
@@ -347,8 +350,9 @@ impl UpdateBuilder {
         self
     }
 
-    /// Executes the update operation
-    pub async fn execute(self) -> Result<()> {
+    /// Executes the update operation.
+    /// Returns the number of rows that were updated.
+    pub async fn execute(self) -> Result<u64> {
         if self.columns.is_empty() {
             Err(Error::InvalidInput {
                 message: "at least one column must be specified in an update operation".to_string(),
@@ -394,7 +398,7 @@ pub(crate) trait TableInternal: std::fmt::Display + std::fmt::Debug + Send + Syn
         data: Box<dyn arrow_array::RecordBatchReader + Send>,
     ) -> Result<()>;
     async fn delete(&self, predicate: &str) -> Result<()>;
-    async fn update(&self, update: UpdateBuilder) -> Result<()>;
+    async fn update(&self, update: UpdateBuilder) -> Result<u64>;
     async fn create_index(&self, index: IndexBuilder) -> Result<()>;
     async fn list_indices(&self) -> Result<Vec<IndexConfig>>;
     async fn merge_insert(
@@ -424,6 +428,31 @@ pub(crate) trait TableInternal: std::fmt::Display + std::fmt::Debug + Send + Syn
 pub struct Table {
     inner: Arc<dyn TableInternal>,
     embedding_registry: Arc<dyn EmbeddingRegistry>,
+}
+
+#[cfg(all(test, feature = "remote"))]
+mod test_utils {
+    use super::*;
+
+    impl Table {
+        pub fn new_with_handler<T>(
+            name: impl Into<String>,
+            handler: impl Fn(reqwest::Request) -> http::Response<T> + Clone + Send + Sync + 'static,
+        ) -> Self
+        where
+            T: Into<reqwest::Body>,
+        {
+            let inner = Arc::new(crate::remote::table::RemoteTable::new_mock(
+                name.into(),
+                handler,
+            ));
+            Self {
+                inner,
+                // Registry is unused.
+                embedding_registry: Arc::new(MemoryRegistry::new()),
+            }
+        }
+    }
 }
 
 impl std::fmt::Display for Table {
@@ -1412,11 +1441,19 @@ impl NativeTable {
             });
         }
 
-        let num_partitions = if let Some(n) = index.num_partitions {
+        let num_partitions: u32 = if let Some(n) = index.num_partitions {
             n
         } else {
-            suggested_num_partitions(self.count_rows(None).await?)
+            match field.data_type() {
+                arrow_schema::DataType::FixedSizeList(_, n) => Ok::<u32, Error>(
+                    suggested_num_partitions_for_hnsw(self.count_rows(None).await?, *n as u32),
+                ),
+                _ => Err(Error::Schema {
+                    message: format!("Column '{}' is not a FixedSizeList", field.name()),
+                }),
+            }?
         };
+
         let num_sub_vectors: u32 = if let Some(n) = index.num_sub_vectors {
             n
         } else {
@@ -1475,10 +1512,17 @@ impl NativeTable {
             });
         }
 
-        let num_partitions = if let Some(n) = index.num_partitions {
+        let num_partitions: u32 = if let Some(n) = index.num_partitions {
             n
         } else {
-            suggested_num_partitions(self.count_rows(None).await?)
+            match field.data_type() {
+                arrow_schema::DataType::FixedSizeList(_, n) => Ok::<u32, Error>(
+                    suggested_num_partitions_for_hnsw(self.count_rows(None).await?, *n as u32),
+                ),
+                _ => Err(Error::Schema {
+                    message: format!("Column '{}' is not a FixedSizeList", field.name()),
+                }),
+            }?
         };
 
         let mut dataset = self.dataset.get_mut().await?;
@@ -1608,7 +1652,12 @@ impl NativeTable {
         Ok(())
     }
 
-    async fn create_fts_index(&self, field: &Field, opts: IndexBuilder) -> Result<()> {
+    async fn create_fts_index(
+        &self,
+        field: &Field,
+        fts_opts: FtsIndexBuilder,
+        replace: bool,
+    ) -> Result<()> {
         if !Self::supported_fts_data_type(field.data_type()) {
             return Err(Error::Schema {
                 message: format!(
@@ -1620,16 +1669,16 @@ impl NativeTable {
         }
 
         let mut dataset = self.dataset.get_mut().await?;
-        let lance_idx_params = lance_index::scalar::ScalarIndexParams {
-            force_index_type: Some(lance_index::scalar::ScalarIndexType::Inverted),
+        let fts_params = lance_index::scalar::InvertedIndexParams {
+            with_position: fts_opts.with_position,
         };
         dataset
             .create_index(
                 &[field.name()],
-                IndexType::Scalar,
+                IndexType::Inverted,
                 None,
-                &lance_idx_params,
-                opts.replace,
+                &fts_params,
+                replace,
             )
             .await?;
         Ok(())
@@ -1645,6 +1694,35 @@ impl NativeTable {
             plan,
             Default::default(),
         )?))
+    }
+
+    /// Check whether the table uses V2 manifest paths.
+    ///
+    /// See [Self::migrate_manifest_paths_v2] and [ManifestNamingScheme] for
+    /// more information.
+    pub async fn uses_v2_manifest_paths(&self) -> Result<bool> {
+        let dataset = self.dataset.get().await?;
+        Ok(dataset.manifest_naming_scheme == ManifestNamingScheme::V2)
+    }
+
+    /// Migrate the table to use the new manifest path scheme.
+    ///
+    /// This function will rename all V1 manifests to V2 manifest paths.
+    /// These paths provide more efficient opening of datasets with many versions
+    /// on object stores.
+    ///
+    /// This function is idempotent, and can be run multiple times without
+    /// changing the state of the object store.
+    ///
+    /// However, it should not be run while other concurrent operations are happening.
+    /// And it should also run until completion before resuming other operations.
+    ///
+    /// You can use [Self::uses_v2_manifest_paths] to check if the table is already
+    /// using V2 manifest paths.
+    pub async fn migrate_manifest_paths_v2(&self) -> Result<()> {
+        let mut dataset = self.dataset.get_mut().await?;
+        dataset.migrate_manifest_paths_v2().await?;
+        Ok(())
     }
 }
 
@@ -1721,9 +1799,6 @@ impl TableInternal for NativeTable {
         let data =
             MaybeEmbedded::try_new(data, self.table_definition().await?, add.embedding_registry)?;
 
-        // Still use the legacy lance format (v1) by default.
-        // We don't want to accidentally switch to v2 format during an add operation.
-        // If the table is already v2 this won't have any effect.
         let mut lance_params = add.write_options.lance_write_params.unwrap_or(WriteParams {
             mode: match add.mode {
                 AddDataMode::Append => WriteMode::Append,
@@ -1772,7 +1847,7 @@ impl TableInternal for NativeTable {
             Index::BTree(_) => self.create_btree_index(field, opts).await,
             Index::Bitmap(_) => self.create_bitmap_index(field, opts).await,
             Index::LabelList(_) => self.create_label_list_index(field, opts).await,
-            Index::FTS(_) => self.create_fts_index(field, opts).await,
+            Index::FTS(fts_opts) => self.create_fts_index(field, fts_opts, opts.replace).await,
             Index::IvfPq(ivf_pq) => self.create_ivf_pq_index(ivf_pq, field, opts.replace).await,
             Index::IvfHnswPq(ivf_hnsw_pq) => {
                 self.create_ivf_hnsw_pq_index(ivf_hnsw_pq, field, opts.replace)
@@ -1785,7 +1860,7 @@ impl TableInternal for NativeTable {
         }
     }
 
-    async fn update(&self, update: UpdateBuilder) -> Result<()> {
+    async fn update(&self, update: UpdateBuilder) -> Result<u64> {
         let dataset = self.dataset.get().await?.clone();
         let mut builder = LanceUpdateBuilder::new(Arc::new(dataset));
         if let Some(predicate) = update.filter {
@@ -1797,9 +1872,11 @@ impl TableInternal for NativeTable {
         }
 
         let operation = builder.build()?;
-        let ds = operation.execute().await?;
-        self.dataset.set_latest(ds.as_ref().clone()).await;
-        Ok(())
+        let res = operation.execute().await?;
+        self.dataset
+            .set_latest(res.new_dataset.as_ref().clone())
+            .await;
+        Ok(res.rows_updated)
     }
 
     async fn build_plan(
@@ -1875,6 +1952,10 @@ impl TableInternal for NativeTable {
                 scanner.project_with_transform(select_with_transform.as_slice())?;
             }
             Select::All => {}
+        }
+
+        if query.base.with_row_id {
+            scanner.with_row_id();
         }
 
         if let Some(opts) = options {
@@ -3169,7 +3250,7 @@ mod tests {
         let values_builder = StringBuilder::new();
         let mut builder = ListBuilder::new(values_builder);
         for i in 0..120 {
-            builder.values().append_value(TAGS[i % 3].to_string());
+            builder.values().append_value(TAGS[i % 3]);
             if i % 3 == 0 {
                 builder.append(true)
             }
