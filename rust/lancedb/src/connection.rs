@@ -621,7 +621,7 @@ impl ConnectBuilder {
 
     /// Set the LanceDB Cloud client configuration.
     #[cfg(feature = "remote")]
-    pub fn client_client(mut self, config: ClientConfig) -> Self {
+    pub fn client_config(mut self, config: ClientConfig) -> Self {
         self.client_config = config;
         self
     }
