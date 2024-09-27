@@ -17,7 +17,7 @@ import axios, { type AxiosResponse, type ResponseType } from 'axios'
 import { tableFromIPC, type Table as ArrowTable } from 'apache-arrow'
 
 import { type RemoteResponse, type RemoteRequest, Method } from '../middleware'
-import { MetricType } from '..'
+import type { MetricType } from '..'
 
 interface HttpLancedbClientMiddleware {
   onRemoteRequest(

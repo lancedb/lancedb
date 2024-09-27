@@ -173,8 +173,12 @@ pub(crate) struct IndexStatisticsImpl {
 #[skip_serializing_none]
 #[derive(Debug, Deserialize, PartialEq)]
 pub struct IndexStatistics {
+    /// The number of rows in the table that are covered by this index.
     pub num_indexed_rows: usize,
+    /// The number of rows in the table that are not covered by this index.
+    /// These are rows that haven't yet been added to the index.
     pub num_unindexed_rows: usize,
+    /// The type of the index.
     pub index_type: IndexType,
     /// The distance type used by the index.
     ///

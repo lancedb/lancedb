@@ -481,7 +481,9 @@ pub struct IndexStatistics {
     pub num_unindexed_rows: f64,
     /// The type of the index
     pub index_type: String,
-    /// The type of the distance function used by the index
+    /// The type of the distance function used by the index. This is only
+    /// present for vector indices. Scalar and full text search indices do
+    /// not have a distance function.
     pub distance_type: Option<String>,
 }
 impl From<lancedb::index::IndexStatistics> for IndexStatistics {

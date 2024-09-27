@@ -112,7 +112,7 @@ export class Query<T = number[]> {
     return this
   }
 
-  /** 
+  /**
    * Skip searching un-indexed data. This can make search faster, but will miss
    * any data that is not yet indexed.
    */

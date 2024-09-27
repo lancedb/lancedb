@@ -490,6 +490,12 @@ impl JsTable {
                     output.set(&mut cx, "numIndexedRows", num_indexed_rows)?;
                     let num_unindexed_rows = cx.number(stats.num_unindexed_rows as f64);
                     output.set(&mut cx, "numUnindexedRows", num_unindexed_rows)?;
+                    if let Some(distance_type) = stats.distance_type {
+                        let distance_type = cx.string(distance_type.to_string());
+                        output.set(&mut cx, "distanceType", distance_type)?;
+                    }
+                    let index_type = cx.string(stats.index_type.to_string());
+                    output.set(&mut cx, "indexType", index_type)?;
 
                     Ok(output.as_value(&mut cx))
                 } else {
