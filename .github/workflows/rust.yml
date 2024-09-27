@@ -26,14 +26,14 @@ env:
 jobs:
   lint:
     timeout-minutes: 30
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     defaults:
       run:
         shell: bash
     env:
       # Need up-to-date compilers for kernels
-      CC: gcc-12
-      CXX: g++-12
+      CC: clang-18
+      CXX: clang++-18
     steps:
     - uses: actions/checkout@v4
       with:
@@ -62,8 +62,8 @@ jobs:
         working-directory: rust
     env:
       # Need up-to-date compilers for kernels
-      CC: gcc-12
-      CXX: g++-12
+      CC: clang-18
+      CXX: clang++-18
     steps:
     - uses: actions/checkout@v4
       with:
