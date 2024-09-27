@@ -325,6 +325,9 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
             message: "table_definition is not supported on LanceDB cloud.".into(),
         })
     }
+    fn dataset_uri(&self) -> &str {
+        "NOT_SUPPORTED"
+    }
 }
 
 #[derive(Serialize)]

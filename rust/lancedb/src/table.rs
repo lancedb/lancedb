@@ -419,6 +419,7 @@ pub(crate) trait TableInternal: std::fmt::Display + std::fmt::Debug + Send + Syn
     async fn checkout_latest(&self) -> Result<()>;
     async fn restore(&self) -> Result<()>;
     async fn table_definition(&self) -> Result<TableDefinition>;
+    fn dataset_uri(&self) -> &str;
 }
 
 /// A Table is a collection of strong typed Rows.
@@ -949,6 +950,13 @@ impl Table {
     /// List all indices that have been created with [`Self::create_index`]
     pub async fn list_indices(&self) -> Result<Vec<IndexConfig>> {
         self.inner.list_indices().await
+    }
+
+    /// Get the underlying dataset URI
+    ///
+    /// Warning: This is an internal API and the return value is subject to change.
+    pub fn dataset_uri(&self) -> &str {
+        self.inner.dataset_uri()
     }
 }
 
@@ -2171,6 +2179,10 @@ impl TableInternal for NativeTable {
             let name = idx.name.clone();
             Ok(IndexConfig { index_type, columns, name })
         }).collect::<Result<Vec<_>>>()
+    }
+
+    fn dataset_uri(&self) -> &str {
+        self.uri.as_str()
     }
 }
 
