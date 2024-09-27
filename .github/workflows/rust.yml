@@ -53,9 +53,9 @@ jobs:
   linux:
     timeout-minutes: 30
     # To build all features, we need more disk space than is available
-    # on the GitHub-provided runner. This is mostly due to the the
+    # on the free OSS github runner. This is mostly due to the the
     # sentence-transformers feature.
-    runs-on: warp-ubuntu-latest-x64-4x
+    runs-on: ubuntu-2404-4x-x64
     defaults:
       run:
         shell: bash
