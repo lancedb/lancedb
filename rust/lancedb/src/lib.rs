@@ -213,7 +213,7 @@ pub mod ipc;
 mod polars_arrow_convertors;
 pub mod query;
 #[cfg(feature = "remote")]
-pub(crate) mod remote;
+pub mod remote;
 pub mod table;
 pub mod utils;
 

@@ -24,11 +24,14 @@ use crate::error::{Error, Result};
 
 const REQUEST_ID_HEADER: &str = "x-request-id";
 
+/// Configuration for the LanceDB Cloud HTTP client.
 #[derive(Debug)]
 pub struct ClientConfig {
-    timeout_config: TimeoutConfig,
-    retry_config: RetryConfig,
-    user_agent: String,
+    pub timeout_config: TimeoutConfig,
+    pub retry_config: RetryConfig,
+    /// User agent to use for requests. The default provides the libary
+    /// name and version.
+    pub user_agent: String,
     // TODO: how to configure request ids?
 }
 
@@ -42,6 +45,7 @@ impl Default for ClientConfig {
     }
 }
 
+/// How to handle timeouts for HTTP requests.
 #[derive(Default, Debug)]
 pub struct TimeoutConfig {
     /// The timeout for creating a connection to the server.
@@ -67,6 +71,7 @@ pub struct TimeoutConfig {
     pub pool_idle_timeout: Option<Duration>,
 }
 
+/// How to handle retries for HTTP requests.
 #[derive(Default, Debug)]
 pub struct RetryConfig {
     /// The number of times to retry a request if it fails.

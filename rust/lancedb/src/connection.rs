@@ -620,6 +620,23 @@ impl ConnectBuilder {
     }
 
     /// Set the LanceDB Cloud client configuration.
+    ///
+    /// ```
+    /// # use lancedb::connect;
+    /// # use lancedb::remote::*;
+    /// connect("db://my_database")
+    ///    .client_config(ClientConfig {
+    ///      timeout_config: TimeoutConfig {
+    ///        connect_timeout: Some(std::time::Duration::from_secs(5)),
+    ///        ..Default::default()
+    ///      },
+    ///      retry_config: RetryConfig {
+    ///        retries: Some(5),
+    ///        ..Default::default()
+    ///      },
+    ///      ..Default::default()
+    ///    });
+    /// ```
     #[cfg(feature = "remote")]
     pub fn client_config(mut self, config: ClientConfig) -> Self {
         self.client_config = config;
