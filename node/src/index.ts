@@ -726,6 +726,7 @@ export interface IndexStats {
   numUnindexedRows: number | null
   indexType: string
   distanceType?: string
+  numIndices?: number
 }
 
 /**

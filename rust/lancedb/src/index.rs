@@ -168,6 +168,7 @@ pub(crate) struct IndexStatisticsImpl {
     pub indices: Vec<IndexMetadata>,
     // Sometimes, the index type is provided at this level.
     pub index_type: Option<IndexType>,
+    pub num_indices: Option<u32>,
 }
 
 #[skip_serializing_none]
@@ -184,4 +185,6 @@ pub struct IndexStatistics {
     ///
     /// This is only present for vector indices.
     pub distance_type: Option<DistanceType>,
+    /// The number of parts this index is split into.
+    pub num_indices: Option<u32>,
 }

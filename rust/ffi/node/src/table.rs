@@ -497,6 +497,11 @@ impl JsTable {
                     let index_type = cx.string(stats.index_type.to_string());
                     output.set(&mut cx, "indexType", index_type)?;
 
+                    if let Some(num_indices) = stats.num_indices {
+                        let num_indices = cx.number(num_indices as f64);
+                        output.set(&mut cx, "numIndices", num_indices)?;
+                    }
+
                     Ok(output.as_value(&mut cx))
                 } else {
                     Ok(JsNull::new(&mut cx).as_value(&mut cx))

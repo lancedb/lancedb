@@ -485,6 +485,8 @@ pub struct IndexStatistics {
     /// present for vector indices. Scalar and full text search indices do
     /// not have a distance function.
     pub distance_type: Option<String>,
+    /// The number of parts this index is split into.
+    pub num_indices: Option<u32>,
 }
 impl From<lancedb::index::IndexStatistics> for IndexStatistics {
     fn from(value: lancedb::index::IndexStatistics) -> Self {
@@ -493,6 +495,7 @@ impl From<lancedb::index::IndexStatistics> for IndexStatistics {
             num_unindexed_rows: value.num_unindexed_rows as f64,
             index_type: value.index_type.to_string(),
             distance_type: value.distance_type.map(|d| d.to_string()),
+            num_indices: value.num_indices,
         }
     }
 }

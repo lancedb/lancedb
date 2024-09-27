@@ -219,6 +219,10 @@ impl Table {
                         dict.set_item("distance_type", distance_type.to_string())?;
                     }
 
+                    if let Some(num_indices) = stats.num_indices {
+                        dict.set_item("num_indices", num_indices)?;
+                    }
+
                     Ok(Some(dict.to_object(py)))
                 })
             } else {

@@ -2750,6 +2750,8 @@ class IndexStatistics:
         The type of index that was created.
     distance_type: Optional[str]
         The distance type used by the index.
+    num_indices: Optional[int]
+        The number of parts the index is split into.
     """
 
     num_indexed_rows: int
@@ -2758,3 +2760,4 @@ class IndexStatistics:
         "IVF_PQ", "IVF_HNSW_PQ", "IVF_HNSW_SQ", "FTS", "BTREE", "BITMAP", "LABEL_LIST"
     ]
     distance_type: Optional[Literal["l2", "cosine", "dot"]] = None
+    num_indices: Optional[int] = None

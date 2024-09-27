@@ -893,6 +893,7 @@ describe("LanceDB client", function () {
       expect(stats.numUnindexedRows).to.equal(0);
       expect(stats.indexType).to.equal("IVF_PQ");
       expect(stats.distanceType).to.equal("l2");
+      expect(stats.numIndices).to.equal(1);
     }).timeout(50_000);
   });
 

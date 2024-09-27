@@ -2085,6 +2085,7 @@ impl TableInternal for NativeTable {
             num_unindexed_rows: stats.num_unindexed_rows,
             index_type,
             distance_type: first_index.metric_type,
+            num_indices: stats.num_indices,
         }))
     }
 }
