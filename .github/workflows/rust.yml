@@ -55,7 +55,7 @@ jobs:
     # To build all features, we need more disk space than is available
     # on the free OSS github runner. This is mostly due to the the
     # sentence-transformers feature.
-    runs-on: ubuntu-2404-8x-x64
+    runs-on: ubuntu-2404-4x-x64
     defaults:
       run:
         shell: bash
@@ -76,6 +76,12 @@ jobs:
       run: |
           sudo apt update
           sudo apt install -y protobuf-compiler libssl-dev
+    - name: Make Swap
+      run: |
+        sudo fallocate -l 4G /swapfile
+        sudo chmod 600 /swapfile
+        sudo mkswap /swapfile
+        sudo swapon /swapfile
     - name: Start S3 integration test environment
       working-directory: .
       run: docker compose up --detach --wait
