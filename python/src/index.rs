@@ -200,6 +200,8 @@ pub struct IndexConfig {
     /// Currently this is always a list of size 1.  In the future there may
     /// be more columns to represent composite indices.
     pub columns: Vec<String>,
+    /// Name of the index.
+    pub name: String,
 }
 
 #[pymethods]
@@ -215,6 +217,7 @@ impl From<lancedb::index::IndexConfig> for IndexConfig {
         Self {
             index_type,
             columns: value.columns,
+            name: value.name,
         }
     }
 }

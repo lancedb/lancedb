@@ -888,9 +888,12 @@ describe("LanceDB client", function () {
       expect(indices[0].columns).to.have.lengthOf(1);
       expect(indices[0].columns[0]).to.equal("vector");
 
-      const stats = await table.indexStats(indices[0].uuid);
+      const stats = await table.indexStats(indices[0].name);
       expect(stats.numIndexedRows).to.equal(300);
       expect(stats.numUnindexedRows).to.equal(0);
+      expect(stats.indexType).to.equal("IVF_PQ");
+      expect(stats.distanceType).to.equal("l2");
+      expect(stats.numIndices).to.equal(1);
     }).timeout(50_000);
   });
 

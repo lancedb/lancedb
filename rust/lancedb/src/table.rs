@@ -47,7 +47,6 @@ use lance_index::IndexType;
 use lance_table::io::commit::ManifestNamingScheme;
 use log::info;
 use serde::{Deserialize, Serialize};
-use snafu::whatever;
 
 use crate::arrow::IntoArrow;
 use crate::connection::NoData;
@@ -58,12 +57,12 @@ use crate::index::vector::{
     suggested_num_partitions_for_hnsw, IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder,
     IvfPqIndexBuilder, VectorIndex,
 };
-use crate::index::IndexConfig;
 use crate::index::IndexStatistics;
 use crate::index::{
     vector::{suggested_num_partitions, suggested_num_sub_vectors},
     Index, IndexBuilder,
 };
+use crate::index::{IndexConfig, IndexStatisticsImpl};
 use crate::query::{
     IntoQueryVector, Query, QueryExecutionOptions, Select, VectorQuery, DEFAULT_TOP_K,
 };
@@ -405,6 +404,7 @@ pub(crate) trait TableInternal: std::fmt::Display + std::fmt::Debug + Send + Syn
     async fn update(&self, update: UpdateBuilder) -> Result<u64>;
     async fn create_index(&self, index: IndexBuilder) -> Result<()>;
     async fn list_indices(&self) -> Result<Vec<IndexConfig>>;
+    async fn index_stats(&self, index_name: &str) -> Result<Option<IndexStatistics>>;
     async fn merge_insert(
         &self,
         params: MergeInsertBuilder,
@@ -962,6 +962,15 @@ impl Table {
     pub fn dataset_uri(&self) -> &str {
         self.inner.dataset_uri()
     }
+
+    /// Get statistics about an index.
+    /// Returns None if the index does not exist.
+    pub async fn index_stats(
+        &self,
+        index_name: impl AsRef<str>,
+    ) -> Result<Option<IndexStatistics>> {
+        self.inner.index_stats(index_name.as_ref()).await
+    }
 }
 
 impl From<NativeTable> for Table {
@@ -1248,91 +1257,6 @@ impl NativeTable {
             .await?
             .num_small_files(max_rows_per_group)
             .await)
-    }
-
-    #[deprecated(since = "0.5.2", note = "Please use `index_stats` instead")]
-    pub async fn count_indexed_rows(&self, index_uuid: &str) -> Result<Option<usize>> {
-        #[allow(deprecated)]
-        match self.load_index_stats(index_uuid).await? {
-            Some(stats) => Ok(Some(stats.num_indexed_rows)),
-            None => Ok(None),
-        }
-    }
-
-    #[deprecated(since = "0.5.2", note = "Please use `index_stats` instead")]
-    pub async fn count_unindexed_rows(&self, index_uuid: &str) -> Result<Option<usize>> {
-        #[allow(deprecated)]
-        match self.load_index_stats(index_uuid).await? {
-            Some(stats) => Ok(Some(stats.num_unindexed_rows)),
-            None => Ok(None),
-        }
-    }
-
-    #[deprecated(since = "0.5.2", note = "Please use `index_stats` instead")]
-    pub async fn get_index_type(&self, index_uuid: &str) -> Result<Option<String>> {
-        #[allow(deprecated)]
-        match self.load_index_stats(index_uuid).await? {
-            Some(stats) => Ok(Some(stats.index_type.unwrap_or_default())),
-            None => Ok(None),
-        }
-    }
-
-    #[deprecated(since = "0.5.2", note = "Please use `index_stats` instead")]
-    pub async fn get_distance_type(&self, index_uuid: &str) -> Result<Option<String>> {
-        #[allow(deprecated)]
-        match self.load_index_stats(index_uuid).await? {
-            Some(stats) => Ok(Some(
-                stats
-                    .indices
-                    .iter()
-                    .filter_map(|i| i.metric_type.clone())
-                    .collect(),
-            )),
-            None => Ok(None),
-        }
-    }
-
-    #[deprecated(since = "0.5.2", note = "Please use `index_stats` instead")]
-    pub async fn load_index_stats(&self, index_uuid: &str) -> Result<Option<IndexStatistics>> {
-        let index = self
-            .load_indices()
-            .await?
-            .into_iter()
-            .find(|i| i.index_uuid == index_uuid);
-        if index.is_none() {
-            return Ok(None);
-        }
-        let dataset = self.dataset.get().await?;
-        let index_stats = dataset.index_statistics(&index.unwrap().index_name).await?;
-        let index_stats: IndexStatistics = whatever!(
-            serde_json::from_str(&index_stats),
-            "error deserializing index statistics {index_stats}",
-        );
-
-        Ok(Some(index_stats))
-    }
-
-    /// Get statistics about an index.
-    /// Returns an error if the index does not exist.
-    pub async fn index_stats(
-        &self,
-        index_name: impl AsRef<str>,
-    ) -> Result<Option<IndexStatistics>> {
-        let stats = match self
-            .dataset
-            .get()
-            .await?
-            .index_statistics(index_name.as_ref())
-            .await
-        {
-            Ok(stats) => stats,
-            Err(lance::error::Error::IndexNotFound { .. }) => return Ok(None),
-            Err(e) => return Err(Error::from(e)),
-        };
-
-        serde_json::from_str(&stats).map_err(|e| Error::InvalidInput {
-            message: format!("error deserializing index statistics: {}", e),
-        })
     }
 
     pub async fn load_indices(&self) -> Result<Vec<VectorIndex>> {
@@ -2126,6 +2050,44 @@ impl TableInternal for NativeTable {
     fn dataset_uri(&self) -> &str {
         self.uri.as_str()
     }
+
+    async fn index_stats(&self, index_name: &str) -> Result<Option<IndexStatistics>> {
+        let stats = match self
+            .dataset
+            .get()
+            .await?
+            .index_statistics(index_name.as_ref())
+            .await
+        {
+            Ok(stats) => stats,
+            Err(lance::error::Error::IndexNotFound { .. }) => return Ok(None),
+            Err(e) => return Err(Error::from(e)),
+        };
+
+        let mut stats: IndexStatisticsImpl =
+            serde_json::from_str(&stats).map_err(|e| Error::InvalidInput {
+                message: format!("error deserializing index statistics: {}", e),
+            })?;
+
+        let first_index = stats.indices.pop().ok_or_else(|| Error::InvalidInput {
+            message: "index statistics is empty".to_string(),
+        })?;
+        // Index type should be present at one of the levels.
+        let index_type =
+            stats
+                .index_type
+                .or(first_index.index_type)
+                .ok_or_else(|| Error::InvalidInput {
+                    message: "index statistics was missing index type".to_string(),
+                })?;
+        Ok(Some(IndexStatistics {
+            num_indexed_rows: stats.num_indexed_rows,
+            num_unindexed_rows: stats.num_unindexed_rows,
+            index_type,
+            distance_type: first_index.metric_type,
+            num_indices: stats.num_indices,
+        }))
+    }
 }
 
 #[cfg(test)]
@@ -2763,24 +2725,7 @@ mod tests {
 
         let table = conn.create_table("test", batches).execute().await.unwrap();
 
-        assert_eq!(
-            table
-                .as_native()
-                .unwrap()
-                .count_indexed_rows("my_index")
-                .await
-                .unwrap(),
-            None
-        );
-        assert_eq!(
-            table
-                .as_native()
-                .unwrap()
-                .count_unindexed_rows("my_index")
-                .await
-                .unwrap(),
-            None
-        );
+        assert_eq!(table.index_stats("my_index").await.unwrap(), None);
 
         table
             .create_index(&["embeddings"], Index::Auto)
@@ -2797,43 +2742,12 @@ mod tests {
         assert_eq!(table.name(), "test");
 
         let indices = table.as_native().unwrap().load_indices().await.unwrap();
-        let index_uuid = &indices[0].index_uuid;
-        assert_eq!(
-            table
-                .as_native()
-                .unwrap()
-                .count_indexed_rows(index_uuid)
-                .await
-                .unwrap(),
-            Some(512)
-        );
-        assert_eq!(
-            table
-                .as_native()
-                .unwrap()
-                .count_unindexed_rows(index_uuid)
-                .await
-                .unwrap(),
-            Some(0)
-        );
-        assert_eq!(
-            table
-                .as_native()
-                .unwrap()
-                .get_index_type(index_uuid)
-                .await
-                .unwrap(),
-            Some("IVF_PQ".to_string())
-        );
-        assert_eq!(
-            table
-                .as_native()
-                .unwrap()
-                .get_distance_type(index_uuid)
-                .await
-                .unwrap(),
-            Some(crate::DistanceType::L2.to_string())
-        );
+        let index_name = &indices[0].index_name;
+        let stats = table.index_stats(index_name).await.unwrap().unwrap();
+        assert_eq!(stats.num_indexed_rows, 512);
+        assert_eq!(stats.num_unindexed_rows, 0);
+        assert_eq!(stats.index_type, crate::index::IndexType::IvfPq);
+        assert_eq!(stats.distance_type, Some(crate::DistanceType::L2));
     }
 
     #[tokio::test]
@@ -2876,24 +2790,8 @@ mod tests {
 
         let table = conn.create_table("test", batches).execute().await.unwrap();
 
-        assert_eq!(
-            table
-                .as_native()
-                .unwrap()
-                .count_indexed_rows("my_index")
-                .await
-                .unwrap(),
-            None
-        );
-        assert_eq!(
-            table
-                .as_native()
-                .unwrap()
-                .count_unindexed_rows("my_index")
-                .await
-                .unwrap(),
-            None
-        );
+        let stats = table.index_stats("my_index").await.unwrap();
+        assert!(stats.is_none());
 
         let index = IvfHnswSqIndexBuilder::default();
         table
@@ -2911,25 +2809,10 @@ mod tests {
         assert_eq!(table.name(), "test");
 
         let indices = table.as_native().unwrap().load_indices().await.unwrap();
-        let index_uuid = &indices[0].index_uuid;
-        assert_eq!(
-            table
-                .as_native()
-                .unwrap()
-                .count_indexed_rows(index_uuid)
-                .await
-                .unwrap(),
-            Some(512)
-        );
-        assert_eq!(
-            table
-                .as_native()
-                .unwrap()
-                .count_unindexed_rows(index_uuid)
-                .await
-                .unwrap(),
-            Some(0)
-        );
+        let index_name = &indices[0].index_name;
+        let stats = table.index_stats(index_name).await.unwrap().unwrap();
+        assert_eq!(stats.num_indexed_rows, 512);
+        assert_eq!(stats.num_unindexed_rows, 0);
     }
 
     #[tokio::test]
@@ -2971,25 +2854,8 @@ mod tests {
         );
 
         let table = conn.create_table("test", batches).execute().await.unwrap();
-
-        assert_eq!(
-            table
-                .as_native()
-                .unwrap()
-                .count_indexed_rows("my_index")
-                .await
-                .unwrap(),
-            None
-        );
-        assert_eq!(
-            table
-                .as_native()
-                .unwrap()
-                .count_unindexed_rows("my_index")
-                .await
-                .unwrap(),
-            None
-        );
+        let stats = table.index_stats("my_index").await.unwrap();
+        assert!(stats.is_none());
 
         let index = IvfHnswPqIndexBuilder::default();
         table
@@ -3006,26 +2872,11 @@ mod tests {
         assert_eq!(table.count_rows(None).await.unwrap(), 512);
         assert_eq!(table.name(), "test");
 
-        let indices = table.as_native().unwrap().load_indices().await.unwrap();
-        let index_uuid = &indices[0].index_uuid;
-        assert_eq!(
-            table
-                .as_native()
-                .unwrap()
-                .count_indexed_rows(index_uuid)
-                .await
-                .unwrap(),
-            Some(512)
-        );
-        assert_eq!(
-            table
-                .as_native()
-                .unwrap()
-                .count_unindexed_rows(index_uuid)
-                .await
-                .unwrap(),
-            Some(0)
-        );
+        let indices: Vec<VectorIndex> = table.as_native().unwrap().load_indices().await.unwrap();
+        let index_name = &indices[0].index_name;
+        let stats = table.index_stats(index_name).await.unwrap().unwrap();
+        assert_eq!(stats.num_indexed_rows, 512);
+        assert_eq!(stats.num_unindexed_rows, 0);
     }
 
     fn create_fixed_size_list<T: Array>(values: T, list_size: i32) -> Result<FixedSizeListArray> {
@@ -3101,25 +2952,10 @@ mod tests {
         assert_eq!(index.columns, vec!["i".to_string()]);
 
         let indices = table.as_native().unwrap().load_indices().await.unwrap();
-        let index_uuid = &indices[0].index_uuid;
-        assert_eq!(
-            table
-                .as_native()
-                .unwrap()
-                .count_indexed_rows(index_uuid)
-                .await
-                .unwrap(),
-            Some(1)
-        );
-        assert_eq!(
-            table
-                .as_native()
-                .unwrap()
-                .count_unindexed_rows(index_uuid)
-                .await
-                .unwrap(),
-            Some(0)
-        );
+        let index_name = &indices[0].index_name;
+        let stats = table.index_stats(index_name).await.unwrap().unwrap();
+        assert_eq!(stats.num_indexed_rows, 1);
+        assert_eq!(stats.num_unindexed_rows, 0);
     }
 
     #[tokio::test]
