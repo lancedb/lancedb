@@ -178,8 +178,10 @@ impl<S: HttpSend> ConnectionInternal for RemoteDatabase<S> {
             .client
             .post(&format!("/v1/table/{}/rename/", current_name));
         let req = req.json(&serde_json::json!({ "new_table_name": new_name }));
-        let resp = self.client.send(req).await?;
+        let resp = self.client.send(req, false).await?;
         self.client.check_response(resp).await?;
+        self.table_cache.remove(current_name).await;
+        self.table_cache.insert(new_name.into(), ()).await;
         Ok(())
     }
 
