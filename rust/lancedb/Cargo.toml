@@ -19,6 +19,7 @@ arrow-ord = { workspace = true }
 arrow-cast = { workspace = true }
 arrow-ipc.workspace = true
 chrono = { workspace = true }
+datafusion-common.workspace = true
 datafusion-physical-plan.workspace = true
 object_store = { workspace = true }
 snafu = { workspace = true }

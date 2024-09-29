@@ -32,7 +32,6 @@ export {
   ColumnAlteration,
   ConnectionOptions,
   IndexStatistics,
-  IndexMetadata,
   IndexConfig,
 } from "./native.js";
 

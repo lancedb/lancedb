@@ -526,8 +526,7 @@ export class RemoteTable<T = number[]> implements Table<T> {
       numIndexedRows: body?.num_indexed_rows,
       numUnindexedRows: body?.num_unindexed_rows,
       indexType: body?.index_type,
-      distanceType: body?.distance_type,
-      completedAt: body?.completed_at
+      distanceType: body?.distance_type
     }
   }
 

@@ -66,6 +66,15 @@ async def test_create_bitmap_index(some_table: AsyncTable):
     # TODO: Fix via https://github.com/lancedb/lance/issues/2039
     # indices = await some_table.list_indices()
     # assert str(indices) == '[Index(Bitmap, columns=["id"])]'
+    indices = await some_table.list_indices()
+    assert len(indices) == 1
+    index_name = indices[0].name
+    stats = await some_table.index_stats(index_name)
+    assert stats.index_type == "BITMAP"
+    assert stats.distance_type is None
+    assert stats.num_indexed_rows == await some_table.count_rows()
+    assert stats.num_unindexed_rows == 0
+    assert stats.num_indices == 1
 
 
 @pytest.mark.asyncio
@@ -91,6 +100,14 @@ async def test_create_vector_index(some_table: AsyncTable):
     assert len(indices) == 1
     assert indices[0].index_type == "IvfPq"
     assert indices[0].columns == ["vector"]
+    assert indices[0].name == "vector_idx"
+
+    stats = await some_table.index_stats("vector_idx")
+    assert stats.index_type == "IVF_PQ"
+    assert stats.distance_type == "l2"
+    assert stats.num_indexed_rows == await some_table.count_rows()
+    assert stats.num_unindexed_rows == 0
+    assert stats.num_indices == 1
 
 
 @pytest.mark.asyncio
