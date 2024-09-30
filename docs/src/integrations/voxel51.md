@@ -1,6 +1,8 @@
 # FiftyOne
 
-FiftyOne is an open source toolkit that enables users to curate better data and build better models. It includes tools for data exploration, visualization, and management, as well as features for collaboration and sharing. Any developers, data scientists, and researchers who work with computer vision and machine learning can use FiftyOne to improve the quality of their datasets and deliver insights about their models.
+FiftyOne is an open source toolkit that enables users to curate better data and build better models. It includes tools for data exploration, visualization, and management, as well as features for collaboration and sharing. 
+
+Any developers, data scientists, and researchers who work with computer vision and machine learning can use FiftyOne to improve the quality of their datasets and deliver insights about their models.
 
 
 ![example](../assets/voxel.gif)
