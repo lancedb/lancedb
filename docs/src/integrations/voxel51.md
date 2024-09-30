@@ -2,11 +2,16 @@
 
 FiftyOne is an open source toolkit that enables users to curate better data and build better models. It includes tools for data exploration, visualization, and management, as well as features for collaboration and sharing. Any developers, data scientists, and researchers who work with computer vision and machine learning can use FiftyOne to improve the quality of their datasets and deliver insights about their models.
 
-FiftyOne provides an API to create LanceDB tables and run similarity queries, both **programmatically in Python** and via **point-and-click in the App**.
 
 ![example](../assets/voxel.gif)
 
-Let's get started and see how to use LanceDB to create a similarity index on your FiftyOne datasets.
+In FiftyOne, embeddings are managed by the [**FiftyOne Brain**](https://docs.voxel51.com/user_guide/brain.html), a library that provides powerful machine learning techniques designed to transform how you curate your data from an art into a measurable science.
+
+In order to search against our media, we need to **index** the data. In FiftyOne, we can do this via the `compute_similarity()` function. Specify the model you want to use to generate the embedding vectors, and what **vector search engine** you want to use on the **backend**. You can also give the similarity index a name(**`brain_key`**), which is useful if you want to run vector searches against multiple indexes.
+
+**FiftyOne** provides an API to create LanceDB tables and run similarity queries, both **programmatically in Python** and via **point-and-click in the App**.
+
+Let's get started and see how to use **LanceDB** to create a **similarity index** on your FiftyOne datasets.
 
 ## Prerequisites: install necessary dependencies
 
@@ -39,7 +44,7 @@ Let's get started and see how to use LanceDB to create a similarity index on you
 
 ## Understand basic workflow
 
-The FiftyOne Brain provides a `compute_similarity()` method that you can use to index the images or object patches in a dataset by similarity.
+The **FiftyOne Brain** provides a `compute_similarity()` method that you can use to index the images or object patches in a dataset by similarity.
 
 Once you’ve indexed a dataset by similarity, you can use the `sort_by_similarity()` view stage to programmatically sort your dataset by similarity to any image(s) or object patch(es) of your choice in your dataset.
 
@@ -152,7 +157,7 @@ In your terminal, set the environment variable using:
 
 Alternatively, you can **permanently** configure FiftyOne to use the LanceDB backend creating a `brain_config.json` at `~/.fiftyone/brain_config.json`. The JSON file may contain any desired subset of config fields that you wish to customize.
 
-```python
+```json
 {
     "default_similarity_backend": "lancedb"
 }
@@ -179,7 +184,7 @@ There are two ways to specify/customize the parameters:
 
 1. **Using `brain_config.json` file** 
 
-    ```python
+    ```json
     {
         "similarity_backends": {
             "lancedb": {
