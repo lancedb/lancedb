@@ -13,10 +13,13 @@
 // limitations under the License.
 
 import type OpenAI from "openai";
-import type { EmbeddingCreateParams } from "openai/resources/index";
 import { Float, Float32 } from "../arrow";
 import { EmbeddingFunction } from "./embedding_function";
 import { register } from "./registry";
+
+type EmbeddingCreateParams =
+  | import("openai/resources/embeddings").EmbeddingCreateParams
+  | Partial<{ model: string }>;
 
 export type OpenAIOptions = {
   apiKey: string;
@@ -87,8 +90,10 @@ export class OpenAIEmbeddingFunction extends EmbeddingFunction<
   }
 
   async computeSourceEmbeddings(data: string[]): Promise<number[][]> {
+    type EmbeddingCreateParams =
+      import("openai/resources/embeddings").EmbeddingCreateParams;
     const response = await this.#openai.embeddings.create({
-      model: this.#modelName,
+      model: this.#modelName as EmbeddingCreateParams["model"],
       input: data,
     });
 
@@ -100,11 +105,13 @@ export class OpenAIEmbeddingFunction extends EmbeddingFunction<
   }
 
   async computeQueryEmbeddings(data: string): Promise<number[]> {
+    type EmbeddingCreateParams =
+      import("openai/resources/embeddings").EmbeddingCreateParams;
     if (typeof data !== "string") {
       throw new Error("Data must be a string");
     }
     const response = await this.#openai.embeddings.create({
-      model: this.#modelName,
+      model: this.#modelName as EmbeddingCreateParams["model"],
       input: data,
     });
 
