@@ -204,7 +204,4 @@ There are two ways to specify/customize the parameters:
     )
     ```
 
-
-
-
 For a much more in depth walkthrough of the integration, visit the LanceDB x Voxel51 [docs page](https://docs.voxel51.com/integrations/lancedb.html).
