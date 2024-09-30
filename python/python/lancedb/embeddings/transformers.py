@@ -60,7 +60,9 @@ class TransformersEmbeddingFunction(EmbeddingFunction):
         self._ndims = None
         transformers = attempt_import_or_raise("transformers")
         self._tokenizer = transformers.AutoTokenizer.from_pretrained(self.name)
-        self._model = transformers.AutoModel.from_pretrained(self.name, trust_remote_code=self.trust_remote_code)
+        self._model = transformers.AutoModel.from_pretrained(
+            self.name, trust_remote_code=self.trust_remote_code
+        )
         self._model.to(self.device)
 
     if PYDANTIC_VERSION.major < 2:  # Pydantic 1.x compat
