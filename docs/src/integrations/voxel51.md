@@ -7,13 +7,34 @@ Any developers, data scientists, and researchers who work with computer vision a
 
 ![example](../assets/voxel.gif)
 
-In FiftyOne, embeddings are managed by the [**FiftyOne Brain**](https://docs.voxel51.com/user_guide/brain.html), a library that provides powerful machine learning techniques designed to transform how you curate your data from an art into a measurable science.
-
-In order to search against our media, we need to **index** the data. In FiftyOne, we can do this via the `compute_similarity()` function. Specify the model you want to use to generate the embedding vectors, and what **vector search engine** you want to use on the **backend**. You can also give the similarity index a name(**`brain_key`**), which is useful if you want to run vector searches against multiple indexes.
-
 **FiftyOne** provides an API to create LanceDB tables and run similarity queries, both **programmatically in Python** and via **point-and-click in the App**.
 
 Let's get started and see how to use **LanceDB** to create a **similarity index** on your FiftyOne datasets.
+
+## Overview 
+
+**[Embeddings](../embeddings/understanding_embeddings.md)** are foundational to all of the **vector search** features. In FiftyOne, embeddings are managed by the [**FiftyOne Brain**](https://docs.voxel51.com/user_guide/brain.html) that provides powerful machine learning techniques designed to transform how you curate your data from an art into a measurable science. 
+
+!!!question "Have you ever wanted to find the images most similar to an image in your dataset?"
+    The **FiftyOne Brain** makes computing **visual similarity** really easy. You can compute the similarity of samples in your dataset using an embedding model and store the results in the **brain key**. 
+
+    You can then sort your samples by similarity or use this information to find potential duplicate images.
+
+Here we will be doing the following : 
+
+1. **Create Index** - In order to run similarity queries against our media, we need to **index** the data. We can do this via the `compute_similarity()` function. 
+
+    -  In the function, specify the **model** you want to use to generate the embedding vectors, and what **vector search engine** you want to use on the **backend** (here LanceDB). 
+    
+    !!!tip
+        You can also give the similarity index a name(`brain_key`), which is useful if you want to run vector searches against multiple indexes.
+
+2. **Query** - Once you have generated your similarity index, you can query your dataset with `sort_by_similarity()`. The query can be any of the following:
+
+    - An ID (sample or patch)
+    - A query vector of same dimension as the index
+    - A list of IDs (samples or patches)
+    - A text prompt (search semantically)
 
 ## Prerequisites: install necessary dependencies
 
@@ -45,10 +66,6 @@ Let's get started and see how to use **LanceDB** to create a **similarity index*
 
 
 ## Understand basic workflow
-
-The **FiftyOne Brain** provides a `compute_similarity()` method that you can use to index the images or object patches in a dataset by similarity.
-
-Once you’ve indexed a dataset by similarity, you can use the `sort_by_similarity()` view stage to programmatically sort your dataset by similarity to any image(s) or object patch(es) of your choice in your dataset.
 
 The basic workflow shown below uses LanceDB to create a similarity index on your FiftyOne datasets:
 
@@ -105,9 +122,9 @@ view = dataset.sort_by_similarity(
 The returned result are of type - `DatasetView`.
 
 !!! note
-    DatasetView does not hold its contents in-memory. Views simply store the rule(s) that are applied to extract the content of interest from the underlying Dataset when the view is iterated/aggregated on.
+    `DatasetView` does not hold its contents in-memory. Views simply store the rule(s) that are applied to extract the content of interest from the underlying Dataset when the view is iterated/aggregated on.
 
-    This means, for example, that the contents of a DatasetView may change as the underlying Dataset is modified.
+    This means, for example, that the contents of a `DatasetView` may change as the underlying Dataset is modified.
 
 ??? question "Can you query a view instead of dataset?"
     Yes, you can also query a view.
@@ -128,9 +145,9 @@ dataset.delete_brain_run("lancedb_index")
 
 
 ## Using LanceDB backend
-By default, calling compute_similarity() or sort_by_similarity() will use an sklearn backend.
+By default, calling `compute_similarity()` or `sort_by_similarity()` will use an sklearn backend.
 
-To use the LanceDB backend, simply set the optional backend parameter of compute_similarity() to "lancedb":
+To use the LanceDB backend, simply set the optional `backend` parameter of `compute_similarity()` to `"lancedb"`:
 
 ```python
 import fiftyone.brain as fob
@@ -145,6 +162,7 @@ In your terminal, set the environment variable using:
 
     ```python
     $Env:FIFTYONE_BRAIN_DEFAULT_SIMILARITY_BACKEND="lancedb" //powershell
+
     set FIFTYONE_BRAIN_DEFAULT_SIMILARITY_BACKEND=lancedb //cmd
     ```
 
