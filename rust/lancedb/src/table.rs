@@ -2804,7 +2804,7 @@ mod tests {
         let index_configs = table.list_indices().await.unwrap();
         assert_eq!(index_configs.len(), 1);
         let index = index_configs.into_iter().next().unwrap();
-        assert_eq!(index.index_type, crate::index::IndexType::IvfPq);
+        assert_eq!(index.index_type, crate::index::IndexType::IvfHnswSq);
         assert_eq!(index.columns, vec!["embeddings".to_string()]);
         assert_eq!(table.count_rows(None).await.unwrap(), 512);
         assert_eq!(table.name(), "test");
@@ -2868,7 +2868,7 @@ mod tests {
         let index_configs = table.list_indices().await.unwrap();
         assert_eq!(index_configs.len(), 1);
         let index = index_configs.into_iter().next().unwrap();
-        assert_eq!(index.index_type, crate::index::IndexType::IvfPq);
+        assert_eq!(index.index_type, crate::index::IndexType::IvfHnswPq);
         assert_eq!(index.columns, vec!["embeddings".to_string()]);
         assert_eq!(table.count_rows(None).await.unwrap(), 512);
         assert_eq!(table.name(), "test");
