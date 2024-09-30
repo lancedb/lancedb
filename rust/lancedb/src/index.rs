@@ -18,7 +18,7 @@ use scalar::FtsIndexBuilder;
 use serde::Deserialize;
 use serde_with::skip_serializing_none;
 
-use crate::{table::TableInternal, DistanceType, Result};
+use crate::{table::TableInternal, DistanceType, Error, Result};
 
 use self::{
     scalar::{BTreeIndexBuilder, BitmapIndexBuilder, LabelListIndexBuilder},
@@ -132,6 +132,25 @@ impl std::fmt::Display for IndexType {
             Self::Bitmap => write!(f, "BITMAP"),
             Self::LabelList => write!(f, "LABEL_LIST"),
             Self::FTS => write!(f, "FTS"),
+        }
+    }
+}
+
+impl std::str::FromStr for IndexType {
+    type Err = Error;
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value.to_uppercase().as_str() {
+            "BTREE" => Ok(Self::BTree),
+            "BITMAP" => Ok(Self::Bitmap),
+            "LABEL_LIST" | "LABELLIST" => Ok(Self::LabelList),
+            "FTS" => Ok(Self::FTS),
+            "IVF_PQ" => Ok(Self::IvfPq),
+            "IVF_HNSW_PQ" => Ok(Self::IvfHnswPq),
+            "IVF_HNSW_SQ" => Ok(Self::IvfHnswSq),
+            _ => Err(Error::InvalidInput {
+                message: format!("the input value {} is not a valid IndexType", value),
+            }),
         }
     }
 }
