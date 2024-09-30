@@ -50,7 +50,7 @@ from .query import (
 from .util import (
     fs_from_uri,
     get_uri_scheme,
-    inf_vector_column_query,
+    infer_vector_column_name,
     join_uri,
     safe_import_pandas,
     safe_import_polars,
@@ -1630,11 +1630,12 @@ class LanceTable(Table):
             and also the "_distance" column which is the distance between the query
             vector and the returned vector.
         """
-        if vector_column_name is None and query is not None and query_type != "fts":
-            try:
-                vector_column_name = inf_vector_column_query(self.schema)
-            except Exception as e:
-                raise e
+        vector_column_name = infer_vector_column_name(
+            schema=self.schema,
+            query_type=query_type,
+            query=query,
+            vector_column_name=vector_column_name,
+        )
 
         return LanceQueryBuilder.create(
             self,
@@ -2682,6 +2683,26 @@ class AsyncTable:
         """
         return await self._inner.list_indices()
 
+    async def index_stats(self, index_name: str) -> Optional[IndexStatistics]:
+        """
+        Retrieve statistics about an index
+
+        Parameters
+        ----------
+        index_name: str
+            The name of the index to retrieve statistics for
+
+        Returns
+        -------
+        IndexStatistics or None
+            The statistics about the index. Returns None if the index does not exist.
+        """
+        stats = await self._inner.index_stats(index_name)
+        if stats is None:
+            return None
+        else:
+            return IndexStatistics(**stats)
+
     async def uses_v2_manifest_paths(self) -> bool:
         """
         Check if the table is using the new v2 manifest paths.
@@ -2712,3 +2733,31 @@ class AsyncTable:
         to check if the table is already using the new path style.
         """
         await self._inner.migrate_manifest_paths_v2()
+
+
+@dataclass
+class IndexStatistics:
+    """
+    Statistics about an index.
+
+    Attributes
+    ----------
+    num_indexed_rows: int
+        The number of rows that are covered by this index.
+    num_unindexed_rows: int
+        The number of rows that are not covered by this index.
+    index_type: str
+        The type of index that was created.
+    distance_type: Optional[str]
+        The distance type used by the index.
+    num_indices: Optional[int]
+        The number of parts the index is split into.
+    """
+
+    num_indexed_rows: int
+    num_unindexed_rows: int
+    index_type: Literal[
+        "IVF_PQ", "IVF_HNSW_PQ", "IVF_HNSW_SQ", "FTS", "BTREE", "BITMAP", "LABEL_LIST"
+    ]
+    distance_type: Optional[Literal["l2", "cosine", "dot"]] = None
+    num_indices: Optional[int] = None

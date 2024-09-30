@@ -33,6 +33,7 @@ export class Query<T = number[]> {
   private _filter?: string
   private _metricType?: MetricType
   private _prefilter: boolean
+  private _fastSearch: boolean
   protected readonly _embeddings?: EmbeddingFunction<T>
 
   constructor (query?: T, tbl?: any, embeddings?: EmbeddingFunction<T>) {
@@ -46,6 +47,7 @@ export class Query<T = number[]> {
     this._metricType = undefined
     this._embeddings = embeddings
     this._prefilter = false
+    this._fastSearch = false
   }
 
   /***
@@ -107,6 +109,15 @@ export class Query<T = number[]> {
 
   prefilter (value: boolean): Query<T> {
     this._prefilter = value
+    return this
+  }
+
+  /**
+   * Skip searching un-indexed data. This can make search faster, but will miss
+   * any data that is not yet indexed.
+   */
+  fastSearch (value: boolean): Query<T> {
+    this._fastSearch = value
     return this
   }
 

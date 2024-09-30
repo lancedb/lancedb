@@ -10,7 +10,7 @@
     "vector database",
     "ann"
   ],
-  "version": "0.11.0-beta.0",
+  "version": "0.11.0-beta.1",
   "main": "dist/index.js",
   "exports": {
     ".": "./dist/index.js",
@@ -66,8 +66,8 @@
   "os": ["darwin", "linux", "win32"],
   "scripts": {
     "artifacts": "napi artifacts",
-    "build:debug": "napi build --platform --dts ../lancedb/native.d.ts --js ../lancedb/native.js lancedb",
-    "build:release": "napi build --platform --release --dts ../lancedb/native.d.ts --js ../lancedb/native.js dist/",
+    "build:debug": "napi build --platform --no-const-enum --dts ../lancedb/native.d.ts --js ../lancedb/native.js lancedb",
+    "build:release": "napi build --platform --no-const-enum --release --dts ../lancedb/native.d.ts --js ../lancedb/native.js dist/",
     "build": "npm run build:debug && tsc -b && shx cp lancedb/native.d.ts dist/native.d.ts && shx cp lancedb/*.node dist/",
     "build-release": "npm run build:release && tsc -b && shx cp lancedb/native.d.ts dist/native.d.ts",
     "lint-ci": "biome ci .",

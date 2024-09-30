@@ -220,7 +220,8 @@ export async function connect(
     region: partOpts.region ?? defaultRegion,
     timeout: partOpts.timeout ?? defaultRequestTimeout,
     readConsistencyInterval: partOpts.readConsistencyInterval ?? undefined,
-    storageOptions: partOpts.storageOptions ?? undefined
+    storageOptions: partOpts.storageOptions ?? undefined,
+    hostOverride: partOpts.hostOverride ?? undefined
   }
   if (opts.uri.startsWith("db://")) {
     // Remote connection
@@ -723,9 +724,9 @@ export interface VectorIndex {
 export interface IndexStats {
   numIndexedRows: number | null
   numUnindexedRows: number | null
-  indexType: string | null
-  distanceType: string | null
-  completedAt: string | null
+  indexType: string
+  distanceType?: string
+  numIndices?: number
 }
 
 /**

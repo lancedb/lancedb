@@ -106,8 +106,14 @@ class EmbeddingFunction(BaseModel, ABC):
         from ..pydantic import PYDANTIC_VERSION
 
         if PYDANTIC_VERSION.major < 2:
-            return dict(self)
-        return self.model_dump()
+            return {k: v for k, v in self.__dict__.items() if not k.startswith("_")}
+        return self.model_dump(
+            exclude={
+                field_name
+                for field_name in self.model_fields
+                if field_name.startswith("_")
+            }
+        )
 
     @abstractmethod
     def ndims(self):

@@ -23,3 +23,4 @@ pub mod table;
 pub mod util;
 
 const ARROW_STREAM_CONTENT_TYPE: &str = "application/vnd.apache.arrow.stream";
+const JSON_CONTENT_TYPE: &str = "application/json";

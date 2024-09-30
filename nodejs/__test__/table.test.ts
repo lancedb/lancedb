@@ -479,6 +479,9 @@ describe("When creating an index", () => {
     expect(stats).toBeDefined();
     expect(stats?.numIndexedRows).toEqual(300);
     expect(stats?.numUnindexedRows).toEqual(0);
+    expect(stats?.distanceType).toBeUndefined();
+    expect(stats?.indexType).toEqual("BTREE");
+    expect(stats?.numIndices).toEqual(1);
   });
 
   test("when getting stats on non-existent index", async () => {

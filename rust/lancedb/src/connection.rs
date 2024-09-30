@@ -431,6 +431,7 @@ pub(crate) trait ConnectionInternal:
         data: Box<dyn RecordBatchReader + Send>,
     ) -> Result<Table>;
     async fn do_open_table(&self, options: OpenTableBuilder) -> Result<Table>;
+    async fn rename_table(&self, old_name: &str, new_name: &str) -> Result<()>;
     async fn drop_table(&self, name: &str) -> Result<()>;
     async fn drop_db(&self) -> Result<()>;
 
@@ -511,6 +512,19 @@ impl Connection {
     /// Created [`TableRef`], or [`Error::TableNotFound`] if the table does not exist.
     pub fn open_table(&self, name: impl Into<String>) -> OpenTableBuilder {
         OpenTableBuilder::new(self.internal.clone(), name.into())
+    }
+
+    /// Rename a table in the database.
+    ///
+    /// This is only supported in LanceDB Cloud.
+    pub async fn rename_table(
+        &self,
+        old_name: impl AsRef<str>,
+        new_name: impl AsRef<str>,
+    ) -> Result<()> {
+        self.internal
+            .rename_table(old_name.as_ref(), new_name.as_ref())
+            .await
     }
 
     /// Drop a table in the database.
@@ -1064,6 +1078,12 @@ impl ConnectionInternal for Database {
             .await?,
         );
         Ok(Table::new(native_table))
+    }
+
+    async fn rename_table(&self, _old_name: &str, _new_name: &str) -> Result<()> {
+        Err(Error::NotSupported {
+            message: "rename_table is not supported in LanceDB OSS".to_string(),
+        })
     }
 
     async fn drop_table(&self, name: &str) -> Result<()> {
