@@ -76,7 +76,7 @@ import fiftyone.zoo as foz
 # Step 1: Load your data into FiftyOne
 dataset = foz.load_zoo_dataset("quickstart")
 ```
-Make sure you install torch (guide here) before proceeding. 
+Make sure you install torch ([guide here](https://pytorch.org/get-started/locally/)) before proceeding. 
 
 ```python
 # Steps 2 and 3: Compute embeddings and create a similarity index
