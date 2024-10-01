@@ -40,7 +40,7 @@ impl Default for ClientConfig {
         Self {
             timeout_config: TimeoutConfig::default(),
             retry_config: RetryConfig::default(),
-            user_agent: concat!("LanceDB-Rust-Client/{}", env!("CARGO_PKG_VERSION")).into(),
+            user_agent: concat!("LanceDB-Rust-Client/", env!("CARGO_PKG_VERSION")).into(),
         }
     }
 }
