@@ -7,7 +7,6 @@ dependencies = [
     "requests>=2.31.0",
     "tqdm>=4.27.0",
     "pydantic>=1.10",
-    "attrs>=21.3.0", # TODO: remove this
     "packaging",
     "overrides>=0.7",
 ]

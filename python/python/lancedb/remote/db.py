@@ -53,14 +53,16 @@ class RemoteDBConnection(DBConnection):
         # here for backwards compatibility, but will remove them in a future release.
         if request_thread_pool is not None:
             logging.warning(
-                "request_thread_pool is no longer used and will be removed in a future release.",
+                "request_thread_pool is no longer used and will be removed in "
+                "a future release.",
                 DeprecationWarning,
             )
 
         if connection_timeout is not None:
             logging.warning(
-                "connection_timeout is deprecated and will be removed in a future release. "
-                "Please use client_config.timeout_config.connect_timeout instead.",
+                "connection_timeout is deprecated and will be removed in a future "
+                "release. Please use client_config.timeout_config.connect_timeout "
+                "instead.",
                 DeprecationWarning,
             )
             client_config.timeout_config.connect_timeout = connection_timeout
