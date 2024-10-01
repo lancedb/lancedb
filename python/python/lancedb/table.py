@@ -2478,7 +2478,7 @@ class AsyncTable:
         )
         if isinstance(data, pa.Table):
             data = pa.RecordBatchReader.from_batches(data.schema, data.to_batches())
-        return await self._inner.execute_merge_insert(
+        await self._inner.execute_merge_insert(
             data,
             dict(
                 on=merge._on,
