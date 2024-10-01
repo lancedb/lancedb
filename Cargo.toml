@@ -45,10 +45,12 @@ half = { "version" = "=2.4.1", default-features = false, features = [
 ] }
 futures = "0"
 log = "0.4"
+moka = { version = "0.11", features = ["future"] }
 object_store = "0.10.2"
 pin-project = "1.0.7"
 snafu = "0.7.4"
 url = "2"
 num-traits = "0.2"
+rand = "0.8"
 regex = "1.10"
 lazy_static = "1"
