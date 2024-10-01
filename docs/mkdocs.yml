@@ -120,6 +120,7 @@ nav:
               - Graph RAG: rag/graph_rag.md
               - Self RAG: rag/self_rag.md
               - Adaptive RAG: rag/adaptive_rag.md
+              - SFR RAG: rag/sfr_rag.md
               - Advanced Techniques:
                 - HyDE: rag/advanced_techniques/hyde.md
                 - FLARE: rag/advanced_techniques/flare.md
@@ -247,6 +248,7 @@ nav:
           - Graph RAG: rag/graph_rag.md
           - Self RAG: rag/self_rag.md
           - Adaptive RAG: rag/adaptive_rag.md
+          - SFR RAG: rag/sfr_rag.md
           - Advanced Techniques:
             - HyDE: rag/advanced_techniques/hyde.md
             - FLARE: rag/advanced_techniques/flare.md
@@ -362,4 +364,5 @@ extra:
     - icon: fontawesome/brands/x-twitter
       link: https://twitter.com/lancedb
     - icon: fontawesome/brands/linkedin
-      link: https://www.linkedin.com/company/lancedb
+      link: https://www.linkedin.com/company/lancedb      
+      
