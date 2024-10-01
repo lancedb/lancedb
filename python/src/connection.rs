@@ -6,7 +6,8 @@ use std::{collections::HashMap, str::FromStr, sync::Arc, time::Duration};
 use arrow::{datatypes::Schema, ffi_stream::ArrowArrayStreamReader, pyarrow::FromPyArrow};
 use lancedb::connection::{Connection as LanceConnection, CreateTableMode, LanceFileVersion};
 use pyo3::{
-    exceptions::{PyRuntimeError, PyValueError}, pyclass, pyfunction, pymethods, Bound, FromPyObject, PyAny, PyRef, PyResult, Python
+    exceptions::{PyRuntimeError, PyValueError},
+    pyclass, pyfunction, pymethods, Bound, FromPyObject, PyAny, PyRef, PyResult, Python,
 };
 use pyo3_asyncio_0_21::tokio::future_into_py;
 
