@@ -29,7 +29,7 @@ const REQUEST_ID_HEADER: &str = "x-request-id";
 pub struct ClientConfig {
     pub timeout_config: TimeoutConfig,
     pub retry_config: RetryConfig,
-    /// User agent to use for requests. The default provides the libary
+    /// User agent to use for requests. The default provides the library
     /// name and version.
     pub user_agent: String,
     // TODO: how to configure request ids?
