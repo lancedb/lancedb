@@ -122,7 +122,7 @@ async def connect_async(
     region: str = "us-east-1",
     host_override: Optional[str] = None,
     read_consistency_interval: Optional[timedelta] = None,
-    client_config: Optional[ClientConfig | Dict[str, Any]] = None,
+    client_config: Optional[Union[ClientConfig, Dict[str, Any]]] = None,
     storage_options: Optional[Dict[str, str]] = None,
 ) -> AsyncConnection:
     """Connect to a LanceDB database.
