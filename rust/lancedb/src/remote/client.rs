@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::time::Duration;
+use std::{future::Future, time::Duration};
 
 use reqwest::{
     header::{HeaderMap, HeaderValue},
@@ -21,13 +21,66 @@ use reqwest::{
 
 use crate::error::{Error, Result};
 
+// We use the `HttpSend` trait to abstract over the `reqwest::Client` so that
+// we can mock responses in tests. Based on the patterns from this blog post:
+// https://write.as/balrogboogie/testing-reqwest-based-clients
 #[derive(Clone, Debug)]
-pub struct RestfulLanceDbClient {
+pub struct RestfulLanceDbClient<S: HttpSend = Sender> {
     client: reqwest::Client,
     host: String,
+    sender: S,
 }
 
-impl RestfulLanceDbClient {
+pub trait HttpSend: Clone + Send + Sync + std::fmt::Debug + 'static {
+    fn send(&self, req: RequestBuilder) -> impl Future<Output = Result<Response>> + Send;
+}
+
+// Default implementation of HttpSend which sends the request normally with reqwest
+#[derive(Clone, Debug)]
+pub struct Sender;
+impl HttpSend for Sender {
+    async fn send(&self, request: reqwest::RequestBuilder) -> Result<reqwest::Response> {
+        Ok(request.send().await?)
+    }
+}
+
+impl RestfulLanceDbClient<Sender> {
+    pub fn try_new(
+        db_url: &str,
+        api_key: &str,
+        region: &str,
+        host_override: Option<String>,
+    ) -> Result<Self> {
+        let parsed_url = url::Url::parse(db_url)?;
+        debug_assert_eq!(parsed_url.scheme(), "db");
+        if !parsed_url.has_host() {
+            return Err(Error::Http {
+                message: format!("Invalid database URL (missing host) '{}'", db_url),
+            });
+        }
+        let db_name = parsed_url.host_str().unwrap();
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .default_headers(Self::default_headers(
+                api_key,
+                region,
+                db_name,
+                host_override.is_some(),
+            )?)
+            .build()?;
+        let host = match host_override {
+            Some(host_override) => host_override,
+            None => format!("https://{}.{}.api.lancedb.com", db_name, region),
+        };
+        Ok(Self {
+            client,
+            host,
+            sender: Sender,
+        })
+    }
+}
+
+impl<S: HttpSend> RestfulLanceDbClient<S> {
     pub fn host(&self) -> &str {
         &self.host
     }
@@ -66,36 +119,6 @@ impl RestfulLanceDbClient {
         Ok(headers)
     }
 
-    pub fn try_new(
-        db_url: &str,
-        api_key: &str,
-        region: &str,
-        host_override: Option<String>,
-    ) -> Result<Self> {
-        let parsed_url = url::Url::parse(db_url)?;
-        debug_assert_eq!(parsed_url.scheme(), "db");
-        if !parsed_url.has_host() {
-            return Err(Error::Http {
-                message: format!("Invalid database URL (missing host) '{}'", db_url),
-            });
-        }
-        let db_name = parsed_url.host_str().unwrap();
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(30))
-            .default_headers(Self::default_headers(
-                api_key,
-                region,
-                db_name,
-                host_override.is_some(),
-            )?)
-            .build()?;
-        let host = match host_override {
-            Some(host_override) => host_override,
-            None => format!("https://{}.{}.api.lancedb.com", db_name, region),
-        };
-        Ok(Self { client, host })
-    }
-
     pub fn get(&self, uri: &str) -> RequestBuilder {
         let full_uri = format!("{}{}", self.host, uri);
         self.client.get(full_uri)
@@ -104,6 +127,10 @@ impl RestfulLanceDbClient {
     pub fn post(&self, uri: &str) -> RequestBuilder {
         let full_uri = format!("{}{}", self.host, uri);
         self.client.post(full_uri)
+    }
+
+    pub async fn send(&self, req: RequestBuilder) -> Result<Response> {
+        self.sender.send(req).await
     }
 
     async fn rsp_to_str(response: Response) -> String {
@@ -123,6 +150,52 @@ impl RestfulLanceDbClient {
             })
         } else {
             Ok(response)
+        }
+    }
+}
+
+#[cfg(test)]
+pub mod test_utils {
+    use std::sync::Arc;
+
+    use super::*;
+
+    #[derive(Clone)]
+    pub struct MockSender {
+        f: Arc<dyn Fn(reqwest::Request) -> reqwest::Response + Send + Sync + 'static>,
+    }
+
+    impl std::fmt::Debug for MockSender {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "MockSender")
+        }
+    }
+
+    impl HttpSend for MockSender {
+        async fn send(&self, request: reqwest::RequestBuilder) -> Result<reqwest::Response> {
+            let request = request.build().unwrap();
+            let response = (self.f)(request);
+            Ok(response)
+        }
+    }
+
+    pub fn client_with_handler<T>(
+        handler: impl Fn(reqwest::Request) -> http::response::Response<T> + Send + Sync + 'static,
+    ) -> RestfulLanceDbClient<MockSender>
+    where
+        T: Into<reqwest::Body>,
+    {
+        let wrapper = move |req: reqwest::Request| {
+            let response = handler(req);
+            response.into()
+        };
+
+        RestfulLanceDbClient {
+            client: reqwest::Client::new(),
+            host: "http://localhost".to_string(),
+            sender: MockSender {
+                f: Arc::new(wrapper),
+            },
         }
     }
 }

@@ -20,12 +20,13 @@ keywords = ["lancedb", "lance", "database", "vector", "search"]
 categories = ["database-implementations"]
 
 [workspace.dependencies]
-lance = { "version" = "=0.16.1", "features" = ["dynamodb"] }
-lance-index = { "version" = "=0.16.1" }
-lance-linalg = { "version" = "=0.16.1" }
-lance-testing = { "version" = "=0.16.1" }
-lance-datafusion = { "version" = "=0.16.1" }
-lance-encoding = { "version" = "=0.16.1" }
+lance = { "version" = "=0.18.0", "features" = ["dynamodb"] }
+lance-index = { "version" = "=0.18.0" }
+lance-linalg = { "version" = "=0.18.0" }
+lance-table = { "version" = "=0.18.0" }
+lance-testing = { "version" = "=0.18.0" }
+lance-datafusion = { "version" = "=0.18.0" }
+lance-encoding = { "version" = "=0.18.0" }
 # Note that this one does not include pyarrow
 arrow = { version = "52.2", optional = false }
 arrow-array = "52.2"
@@ -37,6 +38,7 @@ arrow-arith = "52.2"
 arrow-cast = "52.2"
 async-trait = "0"
 chrono = "0.4.35"
+datafusion-common = "40.0"
 datafusion-physical-plan = "40.0"
 half = { "version" = "=2.4.1", default-features = false, features = [
     "num-traits",

@@ -228,6 +228,7 @@ pub use table::Table;
 
 #[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
+#[serde(rename_all = "lowercase")]
 pub enum DistanceType {
     /// Euclidean distance. This is a very common distance metric that
     /// accounts for both magnitude and direction when determining the distance
@@ -251,6 +252,12 @@ pub enum DistanceType {
     /// Hamming distance. Hamming distance is a distance metric that measures
     /// the number of positions at which the corresponding elements are different.
     Hamming,
+}
+
+impl Default for DistanceType {
+    fn default() -> Self {
+        Self::L2
+    }
 }
 
 impl From<DistanceType> for LanceDistanceType {

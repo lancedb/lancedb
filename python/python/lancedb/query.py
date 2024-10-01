@@ -36,15 +36,16 @@ from . import __version__
 from .arrow import AsyncRecordBatchReader
 from .rerankers.base import Reranker
 from .rerankers.rrf import RRFReranker
+from .rerankers.util import check_reranker_result
 from .util import safe_import_pandas
 
 if TYPE_CHECKING:
     import PIL
     import polars as pl
 
-    from .common import VEC
     from ._lancedb import Query as LanceQuery
     from ._lancedb import VectorQuery as LanceVectorQuery
+    from .common import VEC
     from .pydantic import LanceModel
     from .table import Table
 
@@ -575,12 +576,12 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         self._reranker = None
         self._str_query = str_query
 
-    def metric(self, metric: Literal["L2", "cosine"]) -> LanceVectorQueryBuilder:
+    def metric(self, metric: Literal["L2", "cosine", "dot"]) -> LanceVectorQueryBuilder:
         """Set the distance metric to use.
 
         Parameters
         ----------
-        metric: "L2" or "cosine"
+        metric: "L2" or "cosine" or "dot"
             The distance metric to use. By default "L2" is used.
 
         Returns
@@ -588,7 +589,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         LanceVectorQueryBuilder
             The LanceQueryBuilder object.
         """
-        self._metric = metric
+        self._metric = metric.lower()
         return self
 
     def nprobes(self, nprobes: int) -> LanceVectorQueryBuilder:
@@ -679,6 +680,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         if self._reranker is not None:
             rs_table = result_set.read_all()
             result_set = self._reranker.rerank_vector(self._str_query, rs_table)
+            check_reranker_result(result_set)
             # convert result_set back to RecordBatchReader
             result_set = pa.RecordBatchReader.from_batches(
                 result_set.schema, result_set.to_batches()
@@ -811,6 +813,7 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         results = results.read_all()
         if self._reranker is not None:
             results = self._reranker.rerank_fts(self._query, results)
+            check_reranker_result(results)
         return results
 
     def tantivy_to_arrow(self) -> pa.Table:
@@ -953,8 +956,8 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
     def __init__(
         self,
         table: "Table",
-        query: str = None,
-        vector_column: str = None,
+        query: Optional[str] = None,
+        vector_column: Optional[str] = None,
         fts_columns: Union[str, List[str]] = [],
     ):
         super().__init__(table)
@@ -965,6 +968,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         self._reranker = RRFReranker()
         self._nprobes = None
         self._refine_factor = None
+        self._phrase_query = False
 
     def _validate_query(self, query, vector=None, text=None):
         if query is not None and (vector is not None or text is not None):
@@ -985,6 +989,23 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             raise ValueError("Text query must be a string")
 
         return vector_query, text_query
+
+    def phrase_query(self, phrase_query: bool = True) -> LanceHybridQueryBuilder:
+        """Set whether to use phrase query.
+
+        Parameters
+        ----------
+        phrase_query: bool, default True
+            If True, then the query will be wrapped in quotes and
+            double quotes replaced by single quotes.
+
+        Returns
+        -------
+        LanceHybridQueryBuilder
+            The LanceHybridQueryBuilder object.
+        """
+        self._phrase_query = phrase_query
+        return self
 
     def to_arrow(self) -> pa.Table:
         vector_query, fts_query = self._validate_query(
@@ -1012,6 +1033,8 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         if self._with_row_id:
             self._vector_query.with_row_id(True)
             self._fts_query.with_row_id(True)
+        if self._phrase_query:
+            self._fts_query.phrase_query(True)
         if self._nprobes:
             self._vector_query.nprobes(self._nprobes)
         if self._refine_factor:
@@ -1040,10 +1063,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             self._fts_query._query, vector_results, fts_results
         )
 
-        if not isinstance(results, pa.Table):  # Enforce type
-            raise TypeError(
-                f"rerank_hybrid must return a pyarrow.Table, got {type(results)}"
-            )
+        check_reranker_result(results)
 
         # apply limit after reranking
         results = results.slice(length=self._limit)
@@ -1092,8 +1112,8 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
 
     def rerank(
         self,
-        normalize="score",
         reranker: Reranker = RRFReranker(),
+        normalize: str = "score",
     ) -> LanceHybridQueryBuilder:
         """
         Rerank the hybrid search results using the specified reranker. The reranker
@@ -1101,12 +1121,12 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
 
         Parameters
         ----------
+        reranker: Reranker, default RRFReranker()
+            The reranker to use. Must be an instance of Reranker class.
         normalize: str, default "score"
             The method to normalize the scores. Can be "rank" or "score". If "rank",
             the scores are converted to ranks and then normalized. If "score", the
             scores are normalized directly.
-        reranker: Reranker, default RRFReranker()
-            The reranker to use. Must be an instance of Reranker class.
         Returns
         -------
         LanceHybridQueryBuilder

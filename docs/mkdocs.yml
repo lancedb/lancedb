@@ -34,6 +34,7 @@ theme:
     - navigation.footer
     - navigation.tracking
     - navigation.instant
+    - content.footnote.tooltips
   icon:
     repo: fontawesome/brands/github
     annotation: material/arrow-right-circle
@@ -65,6 +66,11 @@ plugins:
 markdown_extensions:
   - admonition
   - footnotes
+  - pymdownx.critic
+  - pymdownx.caret
+  - pymdownx.keys
+  - pymdownx.mark
+  - pymdownx.tilde
   - pymdownx.details
   - pymdownx.highlight:
       anchor_linenums: true
@@ -138,7 +144,8 @@ nav:
               - Reranking: guides/tuning_retrievers/2_reranking.md
               - Embedding fine-tuning: guides/tuning_retrievers/3_embed_tuning.md
       - 🧬 Managing embeddings:
-          - Overview: embeddings/index.md
+          - Understand Embeddings: embeddings/understanding_embeddings.md 
+          - Get Started: embeddings/index.md
           - Embedding functions: embeddings/embedding_functions.md
           - Available models: 
               - Overview: embeddings/default_embedding_functions.md
@@ -176,6 +183,7 @@ nav:
           - Voxel51: integrations/voxel51.md
           - PromptTools: integrations/prompttools.md
           - dlt: integrations/dlt.md
+          - phidata: integrations/phidata.md
       - 🎯 Examples:
           - Overview: examples/index.md
           - 🐍 Python:
@@ -263,7 +271,8 @@ nav:
           - Reranking: guides/tuning_retrievers/2_reranking.md
           - Embedding fine-tuning: guides/tuning_retrievers/3_embed_tuning.md
   - Managing Embeddings:
-      - Overview: embeddings/index.md
+      - Understand Embeddings: embeddings/understanding_embeddings.md 
+      - Get Started: embeddings/index.md
       - Embedding functions: embeddings/embedding_functions.md
       - Available models: 
           - Overview: embeddings/default_embedding_functions.md
@@ -297,6 +306,7 @@ nav:
       - Voxel51: integrations/voxel51.md
       - PromptTools: integrations/prompttools.md
       - dlt: integrations/dlt.md
+      - phidata: integrations/phidata.md
   - Examples:
       - examples/index.md
       - 🐍 Python:

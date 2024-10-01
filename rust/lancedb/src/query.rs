@@ -402,6 +402,9 @@ pub trait QueryBase {
     ///
     /// By default, it is false.
     fn fast_search(self) -> Self;
+
+    /// Return the `_rowid` meta column from the Table.
+    fn with_row_id(self) -> Self;
 }
 
 pub trait HasQuery {
@@ -436,6 +439,11 @@ impl<T: HasQuery> QueryBase for T {
 
     fn fast_search(mut self) -> Self {
         self.mut_query().fast_search = true;
+        self
+    }
+
+    fn with_row_id(mut self) -> Self {
+        self.mut_query().with_row_id = true;
         self
     }
 }
@@ -548,6 +556,11 @@ pub struct Query {
     ///
     /// By default, this is false.
     pub(crate) fast_search: bool,
+
+    /// If set to true, the query will return the `_rowid` meta column.
+    ///
+    /// By default, this is false.
+    pub(crate) with_row_id: bool,
 }
 
 impl Query {
@@ -560,6 +573,7 @@ impl Query {
             full_text_search: None,
             select: Select::All,
             fast_search: false,
+            with_row_id: false,
         }
     }
 
@@ -1159,5 +1173,25 @@ mod tests {
             .await
             .unwrap();
         assert!(!plan.contains("Take"));
+    }
+
+    #[tokio::test]
+    async fn test_with_row_id() {
+        let tmp_dir = tempdir().unwrap();
+        let table = make_test_table(&tmp_dir).await;
+        let results = table
+            .vector_search(&[0.1, 0.2, 0.3, 0.4])
+            .unwrap()
+            .with_row_id()
+            .limit(10)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        for batch in results {
+            assert!(batch.column_by_name("_rowid").is_some());
+        }
     }
 }

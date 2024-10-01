@@ -51,9 +51,25 @@ pub struct LabelListIndexBuilder {}
 /// Builder for a full text search index
 ///
 /// A full text search index is an index on a string column that allows for full text search
-#[derive(Debug, Clone, Default)]
-pub struct FtsIndexBuilder {}
+#[derive(Debug, Clone)]
+pub struct FtsIndexBuilder {
+    pub(crate) with_position: bool,
+}
 
-impl FtsIndexBuilder {}
+impl Default for FtsIndexBuilder {
+    fn default() -> Self {
+        Self {
+            with_position: true,
+        }
+    }
+}
+
+impl FtsIndexBuilder {
+    /// Set the with_position flag
+    pub fn with_position(mut self, with_position: bool) -> Self {
+        self.with_position = with_position;
+        self
+    }
+}
 
 pub use lance_index::scalar::FullTextSearchQuery;

@@ -1,11 +1,11 @@
 # Release process
 
-There are five total packages we release. Three are the `lancedb` packages
-for Python, Rust, and Node.js. The other two are the legacy `vectordb`
-packages for Rust and node.js.
+There are five total packages we release. Four are the `lancedb` packages
+for Python, Rust, Java, and Node.js. The other one is the legacy `vectordb`
+package node.js.
 
-The Python package is versioned and released separately from the Rust and Node.js
-ones. For Rust and Node.js, the release process is shared between `lancedb` and
+The Python package is versioned and released separately from the Rust, Java, and Node.js
+ones. For Node.js the release process is shared between `lancedb` and
 `vectordb` for now.
 
 ## Preview releases
@@ -24,20 +24,23 @@ indexes.
 The release process uses a handful of GitHub actions to automate the process.
 
 ```text
-  ┌─────────────────────┐                                                
-  │Create Release Commit│                                                
-  └─┬───────────────────┘                                                
-    │                           ┌────────────┐ ┌──►Python GH Release     
-    ├──►(tag) python-vX.Y.Z ───►│PyPI Publish├─┤                         
-    │                           └────────────┘ └──►Python Wheels         
-    │                                                                    
-    │                           ┌───────────┐                            
-    └──►(tag) vX.Y.Z ───┬──────►│NPM Publish├──┬──►Rust/Node GH Release  
-                        │       └───────────┘  │                         
-                        │                      └──►NPM Packages          
-                        │       ┌─────────────┐                          
-                        └──────►│Cargo Publish├───►Cargo Release         
-                                └─────────────┘                          
+  ┌─────────────────────┐
+  │Create Release Commit│
+  └─┬───────────────────┘
+    │                           ┌────────────┐ ┌──►Python GH Release
+    ├──►(tag) python-vX.Y.Z ───►│PyPI Publish├─┤
+    │                           └────────────┘ └──►Python Wheels
+    │
+    │                           ┌───────────┐
+    └──►(tag) vX.Y.Z ───┬──────►│NPM Publish├──┬──►Rust/Node GH Release
+                        │       └───────────┘  │
+                        │                      └──►NPM Packages
+                        │       ┌─────────────┐
+                        ├──────►│Cargo Publish├───►Cargo Release
+                        │       └─────────────┘
+                        │       ┌─────────────┐
+                        └──────►│Maven Publish├───►Java Maven Repo Release
+                                └─────────────┘
 ```
 
 To start a release, trigger a `Create Release Commit` action from
@@ -56,10 +59,10 @@ To start a release, trigger a `Create Release Commit` action from
 ## Breaking changes
 
 We try to avoid breaking changes, but sometimes they are necessary. When there
-are breaking changes, we will increment the minor version. (This is valid 
+are breaking changes, we will increment the minor version. (This is valid
 semantic versioning because we are still in `0.x` versions.)
 
-When a PR makes a breaking change, the PR author should mark the PR using the 
+When a PR makes a breaking change, the PR author should mark the PR using the
 conventional commit markers: either exclamation mark after the type
 (such as `feat!: change signature of func`) or have `BREAKING CHANGE` in the
 body of the PR. A CI job will add a `breaking-change` label to the PR, which is

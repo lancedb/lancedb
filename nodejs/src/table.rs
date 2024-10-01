@@ -156,7 +156,7 @@ impl Table {
         &self,
         only_if: Option<String>,
         columns: Vec<(String, String)>,
-    ) -> napi::Result<()> {
+    ) -> napi::Result<u64> {
         let mut op = self.inner_ref()?.update();
         if let Some(only_if) = only_if {
             op = op.only_if(only_if);
@@ -337,7 +337,7 @@ impl Table {
 
     #[napi(catch_unwind)]
     pub async fn index_stats(&self, index_name: String) -> napi::Result<Option<IndexStatistics>> {
-        let tbl = self.inner_ref()?.as_native().unwrap();
+        let tbl = self.inner_ref()?;
         let stats = tbl.index_stats(&index_name).await.default_error()?;
         Ok(stats.map(IndexStatistics::from))
     }
@@ -346,6 +346,26 @@ impl Table {
     pub fn merge_insert(&self, on: Vec<String>) -> napi::Result<NativeMergeInsertBuilder> {
         let on: Vec<_> = on.iter().map(String::as_str).collect();
         Ok(self.inner_ref()?.merge_insert(on.as_slice()).into())
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn uses_v2_manifest_paths(&self) -> napi::Result<bool> {
+        self.inner_ref()?
+            .as_native()
+            .ok_or_else(|| napi::Error::from_reason("This cannot be run on a remote table"))?
+            .uses_v2_manifest_paths()
+            .await
+            .default_error()
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn migrate_manifest_paths_v2(&self) -> napi::Result<()> {
+        self.inner_ref()?
+            .as_native()
+            .ok_or_else(|| napi::Error::from_reason("This cannot be run on a remote table"))?
+            .migrate_manifest_paths_v2()
+            .await
+            .default_error()
     }
 }
 
@@ -460,32 +480,22 @@ pub struct IndexStatistics {
     /// The number of rows not indexed
     pub num_unindexed_rows: f64,
     /// The type of the index
-    pub index_type: Option<String>,
-    /// The metadata for each index
-    pub indices: Vec<IndexMetadata>,
+    pub index_type: String,
+    /// The type of the distance function used by the index. This is only
+    /// present for vector indices. Scalar and full text search indices do
+    /// not have a distance function.
+    pub distance_type: Option<String>,
+    /// The number of parts this index is split into.
+    pub num_indices: Option<u32>,
 }
 impl From<lancedb::index::IndexStatistics> for IndexStatistics {
     fn from(value: lancedb::index::IndexStatistics) -> Self {
         Self {
             num_indexed_rows: value.num_indexed_rows as f64,
             num_unindexed_rows: value.num_unindexed_rows as f64,
-            index_type: value.index_type.map(|t| format!("{:?}", t)),
-            indices: value.indices.into_iter().map(Into::into).collect(),
-        }
-    }
-}
-
-#[napi(object)]
-pub struct IndexMetadata {
-    pub metric_type: Option<String>,
-    pub index_type: Option<String>,
-}
-
-impl From<lancedb::index::IndexMetadata> for IndexMetadata {
-    fn from(value: lancedb::index::IndexMetadata) -> Self {
-        Self {
-            metric_type: value.metric_type,
-            index_type: value.index_type,
+            index_type: value.index_type.to_string(),
+            distance_type: value.distance_type.map(|d| d.to_string()),
+            num_indices: value.num_indices,
         }
     }
 }
