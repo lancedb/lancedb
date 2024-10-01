@@ -528,7 +528,7 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
         let request = self
             .client
             .post(&format!("/table/{}/index/{}/stats/", self.name, index_name));
-        let response = self.client.send(request).await?;
+        let response = self.client.send(request, true).await?;
 
         if response.status() == StatusCode::NOT_FOUND {
             return Ok(None);
