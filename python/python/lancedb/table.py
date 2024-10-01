@@ -2464,7 +2464,31 @@ class AsyncTable:
         on_bad_vectors: str,
         fill_value: float,
     ):
-        pass
+        schema = await self.schema()
+        if on_bad_vectors is None:
+            on_bad_vectors = "error"
+        if fill_value is None:
+            fill_value = 0.0
+        data, _ = _sanitize_data(
+            new_data,
+            schema,
+            metadata=schema.metadata,
+            on_bad_vectors=on_bad_vectors,
+            fill_value=fill_value,
+        )
+        if isinstance(data, pa.Table):
+            data = pa.RecordBatchReader.from_batches(data.schema, data.to_batches())
+        await self._inner.execute_merge_insert(
+            data,
+            dict(
+                on=merge._on,
+                when_matched_update_all=merge._when_matched_update_all,
+                when_matched_update_all_condition=merge._when_matched_update_all_condition,
+                when_not_matched_insert_all=merge._when_not_matched_insert_all,
+                when_not_matched_by_source_delete=merge._when_not_matched_by_source_delete,
+                when_not_matched_by_source_condition=merge._when_not_matched_by_source_condition,
+            ),
+        )
 
     async def delete(self, where: str):
         """Delete rows from the table.
