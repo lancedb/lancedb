@@ -63,14 +63,6 @@ def connect(
         the last check, then the table will be checked for updates. Note: this
         consistency only applies to read operations. Write operations are
         always consistent.
-    request_thread_pool: int or ThreadPoolExecutor, optional
-        The thread pool to use for making batch requests to the LanceDB Cloud API.
-        If an integer, then a ThreadPoolExecutor will be created with that
-        number of threads. If None, then a ThreadPoolExecutor will be created
-        with the default number of threads. If a ThreadPoolExecutor, then that
-        executor will be used for making requests. This is for LanceDB Cloud
-        only and is only used when making batch requests (i.e., passing in
-        multiple queries to the search method at once).
 
     Examples
     --------
@@ -100,14 +92,12 @@ def connect(
             api_key = os.environ.get("LANCEDB_API_KEY")
         if api_key is None:
             raise ValueError(f"api_key is required to connected LanceDB cloud: {uri}")
-        if isinstance(request_thread_pool, int):
-            request_thread_pool = ThreadPoolExecutor(request_thread_pool)
         return RemoteDBConnection(
             uri,
             api_key,
             region,
             host_override,
-            request_thread_pool=request_thread_pool,
+            request_thread_pool=request_thread_pool, # TODO: remove this.
             client_config=client_config,
             **kwargs,
         )
