@@ -9,7 +9,7 @@ use pyo3::{
     exceptions::{PyRuntimeError, PyValueError},
     pyclass, pymethods,
     types::{PyDict, PyDictMethods, PyString},
-    Bound, PyAny, PyRef, PyResult, Python, ToPyObject,
+    Bound, FromPyObject, PyAny, PyRef, PyResult, Python, ToPyObject,
 };
 use pyo3_asyncio_0_21::tokio::future_into_py;
 
@@ -331,6 +331,31 @@ impl Table {
         })
     }
 
+    pub fn execute_merge_insert<'a>(
+        self_: PyRef<'a, Self>,
+        data: Bound<'a, PyAny>,
+        parameters: MergeInsertParams,
+    ) -> PyResult<Bound<'a, PyAny>> {
+        let batches: ArrowArrayStreamReader = ArrowArrayStreamReader::from_pyarrow_bound(&data)?;
+        let on = parameters.on.iter().map(|s| s.as_str()).collect::<Vec<_>>();
+        let mut builder = self_.inner_ref()?.merge_insert(&on);
+        if parameters.when_matched_update_all {
+            builder.when_matched_update_all(parameters.when_matched_update_all_condition);
+        }
+        if parameters.when_not_matched_insert_all {
+            builder.when_not_matched_insert_all();
+        }
+        if parameters.when_not_matched_by_source_delete {
+            builder
+                .when_not_matched_by_source_delete(parameters.when_not_matched_by_source_condition);
+        }
+
+        future_into_py(self_.py(), async move {
+            builder.execute(Box::new(batches)).await.infer_error()?;
+            Ok(())
+        })
+    }
+
     pub fn uses_v2_manifest_paths(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
@@ -354,4 +379,15 @@ impl Table {
                 .infer_error()
         })
     }
+}
+
+#[derive(FromPyObject)]
+#[pyo3(from_item_all)]
+pub struct MergeInsertParams {
+    on: Vec<String>,
+    when_matched_update_all: bool,
+    when_matched_update_all_condition: Option<String>,
+    when_not_matched_insert_all: bool,
+    when_not_matched_by_source_delete: bool,
+    when_not_matched_by_source_condition: Option<String>,
 }

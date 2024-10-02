@@ -636,11 +636,13 @@ def test_merge_insert(db):
     new_data = pa.table({"a": [2, 4], "b": ["x", "z"]})
 
     # replace-range
-    table.merge_insert(
-        "a"
-    ).when_matched_update_all().when_not_matched_insert_all().when_not_matched_by_source_delete(
-        "a > 2"
-    ).execute(new_data)
+    (
+        table.merge_insert("a")
+        .when_matched_update_all()
+        .when_not_matched_insert_all()
+        .when_not_matched_by_source_delete("a > 2")
+        .execute(new_data)
+    )
 
     expected = pa.table({"a": [1, 2, 4], "b": ["a", "x", "z"]})
     assert table.to_arrow().sort_by("a") == expected
@@ -656,6 +658,75 @@ def test_merge_insert(db):
 
     expected = pa.table({"a": [2, 4], "b": ["x", "z"]})
     assert table.to_arrow().sort_by("a") == expected
+
+
+@pytest.mark.asyncio
+async def test_merge_insert_async(db_async: AsyncConnection):
+    data = pa.table({"a": [1, 2, 3], "b": ["a", "b", "c"]})
+    table = await db_async.create_table("some_table", data=data)
+    assert await table.count_rows() == 3
+    version = await table.version()
+
+    new_data = pa.table({"a": [2, 3, 4], "b": ["x", "y", "z"]})
+
+    # upsert
+    await (
+        table.merge_insert("a")
+        .when_matched_update_all()
+        .when_not_matched_insert_all()
+        .execute(new_data)
+    )
+    expected = pa.table({"a": [1, 2, 3, 4], "b": ["a", "x", "y", "z"]})
+    assert (await table.to_arrow()).sort_by("a") == expected
+
+    await table.checkout(version)
+    await table.restore()
+
+    # conditional update
+    await (
+        table.merge_insert("a")
+        .when_matched_update_all(where="target.b = 'b'")
+        .execute(new_data)
+    )
+    expected = pa.table({"a": [1, 2, 3], "b": ["a", "x", "c"]})
+    assert (await table.to_arrow()).sort_by("a") == expected
+
+    await table.checkout(version)
+    await table.restore()
+
+    # insert-if-not-exists
+    await table.merge_insert("a").when_not_matched_insert_all().execute(new_data)
+    expected = pa.table({"a": [1, 2, 3, 4], "b": ["a", "b", "c", "z"]})
+    assert (await table.to_arrow()).sort_by("a") == expected
+
+    await table.checkout(version)
+    await table.restore()
+
+    # replace-range
+    new_data = pa.table({"a": [2, 4], "b": ["x", "z"]})
+    await (
+        table.merge_insert("a")
+        .when_matched_update_all()
+        .when_not_matched_insert_all()
+        .when_not_matched_by_source_delete("a > 2")
+        .execute(new_data)
+    )
+    expected = pa.table({"a": [1, 2, 4], "b": ["a", "x", "z"]})
+    assert (await table.to_arrow()).sort_by("a") == expected
+
+    await table.checkout(version)
+    await table.restore()
+
+    # replace-range no condition
+    await (
+        table.merge_insert("a")
+        .when_matched_update_all()
+        .when_not_matched_insert_all()
+        .when_not_matched_by_source_delete()
+        .execute(new_data)
+    )
+    expected = pa.table({"a": [2, 4], "b": ["x", "z"]})
+    assert (await table.to_arrow()).sort_by("a") == expected
 
 
 def test_create_with_embedding_function(db):

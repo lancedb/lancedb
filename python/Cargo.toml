@@ -22,8 +22,6 @@ pyo3 = { version = "0.21", features = ["extension-module", "abi3-py38", "gil-ref
 # pyo3-asyncio = { version = "0.20", features = ["attributes", "tokio-runtime"] }
 pyo3-asyncio-0-21 = { version = "0.21.0", features = ["attributes", "tokio-runtime"] }
 
-# Prevent dynamic linking of lzma, which comes from datafusion
-lzma-sys = { version = "*", features = ["static"] }
 pin-project = "1.1.5"
 futures.workspace = true
 tokio = { version = "1.36.0", features = ["sync"] }
@@ -35,4 +33,6 @@ pyo3-build-config = { version = "0.20.3", features = [
 ] }
 
 [features]
+default = ["remote"]
 fp16kernels = ["lancedb/fp16kernels"]
+remote = ["lancedb/remote"]

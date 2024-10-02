@@ -25,6 +25,7 @@ use arrow_schema::{Field, Schema, SchemaRef};
 use async_trait::async_trait;
 use datafusion_physical_plan::display::DisplayableExecutionPlan;
 use datafusion_physical_plan::ExecutionPlan;
+use futures::{StreamExt, TryStreamExt};
 use lance::dataset::builder::DatasetBuilder;
 use lance::dataset::cleanup::RemovalStats;
 use lance::dataset::optimize::{compact_files, CompactionMetrics, IndexRemapperOptions};
@@ -2023,28 +2024,28 @@ impl TableInternal for NativeTable {
     async fn list_indices(&self) -> Result<Vec<IndexConfig>> {
         let dataset = self.dataset.get().await?;
         let indices = dataset.load_indices().await?;
-        indices.iter().map(|idx| {
-            let mut is_vector = false;
+        futures::stream::iter(indices.as_slice()).then(|idx| async {
+            let stats = dataset.index_statistics(idx.name.as_str()).await?;
+            let stats: serde_json::Value = serde_json::from_str(&stats).map_err(|e| Error::Runtime {
+                message: format!("error deserializing index statistics: {}", e),
+            })?;
+            let index_type = stats.get("index_type").and_then(|v| v.as_str())
+            .ok_or_else(|| Error::Runtime {
+                message: "index statistics was missing index type".to_string(),
+            })?;
+            let index_type: crate::index::IndexType = index_type.parse().map_err(|e| Error::Runtime {
+                message: format!("error parsing index type: {}", e),
+            })?;
+
             let mut columns = Vec::with_capacity(idx.fields.len());
             for field_id in &idx.fields {
                 let field = dataset.schema().field_by_id(*field_id).ok_or_else(|| Error::Runtime { message: format!("The index with name {} and uuid {} referenced a field with id {} which does not exist in the schema", idx.name, idx.uuid, field_id) })?;
-                if field.data_type().is_nested() {
-                    // Temporary hack to determine if an index is scalar or vector
-                    // Should be removed in https://github.com/lancedb/lance/issues/2039
-                    is_vector = true;
-                }
                 columns.push(field.name.clone());
             }
 
-            let index_type = if is_vector {
-                crate::index::IndexType::IvfPq
-            } else {
-                crate::index::IndexType::BTree
-            };
-
             let name = idx.name.clone();
             Ok(IndexConfig { index_type, columns, name })
-        }).collect::<Result<Vec<_>>>()
+        }).try_collect::<Vec<_>>().await
     }
 
     fn dataset_uri(&self) -> &str {
@@ -2803,7 +2804,7 @@ mod tests {
         let index_configs = table.list_indices().await.unwrap();
         assert_eq!(index_configs.len(), 1);
         let index = index_configs.into_iter().next().unwrap();
-        assert_eq!(index.index_type, crate::index::IndexType::IvfPq);
+        assert_eq!(index.index_type, crate::index::IndexType::IvfHnswSq);
         assert_eq!(index.columns, vec!["embeddings".to_string()]);
         assert_eq!(table.count_rows(None).await.unwrap(), 512);
         assert_eq!(table.name(), "test");
@@ -2867,7 +2868,7 @@ mod tests {
         let index_configs = table.list_indices().await.unwrap();
         assert_eq!(index_configs.len(), 1);
         let index = index_configs.into_iter().next().unwrap();
-        assert_eq!(index.index_type, crate::index::IndexType::IvfPq);
+        assert_eq!(index.index_type, crate::index::IndexType::IvfHnswPq);
         assert_eq!(index.columns, vec!["embeddings".to_string()]);
         assert_eq!(table.count_rows(None).await.unwrap(), 512);
         assert_eq!(table.name(), "test");

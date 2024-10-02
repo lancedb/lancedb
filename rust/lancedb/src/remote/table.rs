@@ -51,7 +51,7 @@ impl<S: HttpSend> RemoteTable<S> {
 
     async fn describe(&self) -> Result<TableDescription> {
         let request = self.client.post(&format!("/table/{}/describe/", self.name));
-        let response = self.client.send(request).await?;
+        let response = self.client.send(request, true).await?;
 
         let response = self.check_table_response(response).await?;
 
@@ -257,7 +257,7 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
             request = request.json(&serde_json::json!({}));
         }
 
-        let response = self.client.send(request).await?;
+        let response = self.client.send(request, true).await?;
 
         let response = self.check_table_response(response).await?;
 
@@ -286,7 +286,7 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
             }
         }
 
-        let response = self.client.send(request).await?;
+        let response = self.client.send(request, false).await?;
 
         self.check_table_response(response).await?;
 
@@ -337,7 +337,7 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
 
         let request = request.json(&body);
 
-        let response = self.client.send(request).await?;
+        let response = self.client.send(request, true).await?;
 
         let stream = self.read_arrow_stream(response).await?;
 
@@ -359,7 +359,7 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
 
         let request = request.json(&body);
 
-        let response = self.client.send(request).await?;
+        let response = self.client.send(request, true).await?;
 
         let stream = self.read_arrow_stream(response).await?;
 
@@ -379,7 +379,7 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
             "only_if": update.filter,
         }));
 
-        let response = self.client.send(request).await?;
+        let response = self.client.send(request, false).await?;
 
         let response = self.check_table_response(response).await?;
 
@@ -398,7 +398,7 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
             .client
             .post(&format!("/table/{}/delete/", self.name))
             .json(&body);
-        let response = self.client.send(request).await?;
+        let response = self.client.send(request, false).await?;
         self.check_table_response(response).await?;
         Ok(())
     }
@@ -468,7 +468,7 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
 
         let request = request.json(&body);
 
-        let response = self.client.send(request).await?;
+        let response = self.client.send(request, false).await?;
 
         self.check_table_response(response).await?;
 
@@ -489,7 +489,7 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
             .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE)
             .body(body);
 
-        let response = self.client.send(request).await?;
+        let response = self.client.send(request, false).await?;
 
         self.check_table_response(response).await?;
 
@@ -528,7 +528,7 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
         let request = self
             .client
             .post(&format!("/table/{}/index/{}/stats/", self.name, index_name));
-        let response = self.client.send(request).await?;
+        let response = self.client.send(request, true).await?;
 
         if response.status() == StatusCode::NOT_FOUND {
             return Ok(None);
