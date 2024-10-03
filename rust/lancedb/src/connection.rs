@@ -39,9 +39,6 @@ use crate::utils::validate_table_name;
 use crate::Table;
 pub use lance_encoding::version::LanceFileVersion;
 
-#[cfg(feature = "remote")]
-use log::warn;
-
 pub const LANCE_FILE_EXTENSION: &str = "lance";
 
 pub type TableBuilderCallback = Box<dyn FnOnce(OpenTableBuilder) -> OpenTableBuilder + Send>;

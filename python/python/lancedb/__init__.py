@@ -97,7 +97,7 @@ def connect(
             api_key,
             region,
             host_override,
-            request_thread_pool=request_thread_pool, # TODO: remove this.
+            request_thread_pool=request_thread_pool,  # TODO: remove this.
             client_config=client_config,
             **kwargs,
         )
