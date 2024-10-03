@@ -46,8 +46,37 @@ pub enum Error {
     ObjectStore { source: object_store::Error },
     #[snafu(display("lance error: {source}"))]
     Lance { source: lance::Error },
-    #[snafu(display("Http error: {message}"))]
-    Http { message: String },
+    #[cfg(feature = "remote")]
+    #[snafu(display("Http error: (request_id={request_id}) {source}"))]
+    Http {
+        #[snafu(source(from(reqwest::Error, Box::new)))]
+        source: Box<dyn std::error::Error + Send + Sync>,
+        request_id: String,
+        /// Status code associated with the error, if available.
+        /// This is not always available, for example when the error is due to a
+        /// connection failure. It may also be missing if the request was
+        /// successful but there was an error decoding the response.
+        status_code: Option<reqwest::StatusCode>,
+    },
+    #[cfg(feature = "remote")]
+    #[snafu(display(
+        "Hit retry limit for request_id={request_id} (\
+        request_failures={request_failures}/{max_request_failures}, \
+        connect_failures={connect_failures}/{max_connect_failures}, \
+        read_failures={read_failures}/{max_read_failures})"
+    ))]
+    Retry {
+        request_id: String,
+        request_failures: u8,
+        max_request_failures: u8,
+        connect_failures: u8,
+        max_connect_failures: u8,
+        read_failures: u8,
+        max_read_failures: u8,
+        #[snafu(source(from(reqwest::Error, Box::new)))]
+        source: Box<dyn std::error::Error + Send + Sync>,
+        status_code: Option<reqwest::StatusCode>,
+    },
     #[snafu(display("Arrow error: {source}"))]
     Arrow { source: ArrowError },
     #[snafu(display("LanceDBError: not supported: {message}"))]
@@ -93,24 +122,6 @@ impl From<object_store::path::Error> for Error {
 impl<T> From<PoisonError<T>> for Error {
     fn from(e: PoisonError<T>) -> Self {
         Self::Runtime {
-            message: e.to_string(),
-        }
-    }
-}
-
-#[cfg(feature = "remote")]
-impl From<reqwest::Error> for Error {
-    fn from(e: reqwest::Error) -> Self {
-        Self::Http {
-            message: e.to_string(),
-        }
-    }
-}
-
-#[cfg(feature = "remote")]
-impl From<url::ParseError> for Error {
-    fn from(e: url::ParseError) -> Self {
-        Self::Http {
             message: e.to_string(),
         }
     }

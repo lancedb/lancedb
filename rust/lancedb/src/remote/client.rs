@@ -216,10 +216,12 @@ impl RestfulLanceDbClient<Sender> {
         host_override: Option<String>,
         client_config: ClientConfig,
     ) -> Result<Self> {
-        let parsed_url = url::Url::parse(db_url)?;
+        let parsed_url = url::Url::parse(db_url).map_err(|err| Error::InvalidInput {
+            message: format!("db_url is not a valid URL. '{db_url}'. Error: {err}"),
+        })?;
         debug_assert_eq!(parsed_url.scheme(), "db");
         if !parsed_url.has_host() {
-            return Err(Error::Http {
+            return Err(Error::InvalidInput {
                 message: format!("Invalid database URL (missing host) '{}'", db_url),
             });
         }
@@ -255,7 +257,11 @@ impl RestfulLanceDbClient<Sender> {
                 host_override.is_some(),
             )?)
             .user_agent(client_config.user_agent)
-            .build()?;
+            .build()
+            .map_err(|err| Error::Other {
+                message: "Failed to build HTTP client".into(),
+                source: Some(Box::new(err)),
+            })?;
         let host = match host_override {
             Some(host_override) => host_override,
             None => format!("https://{}.{}.api.lancedb.com", db_name, region),
@@ -284,7 +290,7 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
         let mut headers = HeaderMap::new();
         headers.insert(
             "x-api-key",
-            HeaderValue::from_str(api_key).map_err(|_| Error::Http {
+            HeaderValue::from_str(api_key).map_err(|_| Error::InvalidInput {
                 message: "non-ascii api key provided".to_string(),
             })?,
         );
@@ -292,7 +298,7 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
             let host = format!("{}.local.api.lancedb.com", db_name);
             headers.insert(
                 "Host",
-                HeaderValue::from_str(&host).map_err(|_| Error::Http {
+                HeaderValue::from_str(&host).map_err(|_| Error::InvalidInput {
                     message: format!("non-ascii database name '{}' provided", db_name),
                 })?,
             );
@@ -300,7 +306,7 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
         if has_host_override {
             headers.insert(
                 "x-lancedb-database",
-                HeaderValue::from_str(db_name).map_err(|_| Error::Http {
+                HeaderValue::from_str(db_name).map_err(|_| Error::InvalidInput {
                     message: format!("non-ascii database name '{}' provided", db_name),
                 })?,
             );
@@ -319,22 +325,30 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
         self.client.post(full_uri)
     }
 
-    pub async fn send(&self, req: RequestBuilder, with_retry: bool) -> Result<Response> {
+    pub async fn send(&self, req: RequestBuilder, with_retry: bool) -> Result<(String, Response)> {
         let (client, request) = req.build_split();
         let mut request = request.unwrap();
 
         // Set a request id.
         // TODO: allow the user to supply this, through middleware?
-        if request.headers().get(REQUEST_ID_HEADER).is_none() {
-            let request_id = uuid::Uuid::new_v4();
-            let request_id = HeaderValue::from_str(&request_id.to_string()).unwrap();
-            request.headers_mut().insert(REQUEST_ID_HEADER, request_id);
-        }
+        let request_id = if let Some(request_id) = request.headers().get(REQUEST_ID_HEADER) {
+            request_id.to_str().unwrap().to_string()
+        } else {
+            let request_id = uuid::Uuid::new_v4().to_string();
+            let header = HeaderValue::from_str(&request_id).unwrap();
+            request.headers_mut().insert(REQUEST_ID_HEADER, header);
+            request_id
+        };
 
         if with_retry {
-            self.send_with_retry_impl(client, request).await
+            self.send_with_retry_impl(client, request, request_id).await
         } else {
-            Ok(self.sender.send(&client, request).await?)
+            let response = self
+                .sender
+                .send(&client, request)
+                .await
+                .err_to_http(request_id.clone())?;
+            Ok((request_id, response))
         }
     }
 
@@ -342,97 +356,177 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
         &self,
         client: reqwest::Client,
         req: Request,
-    ) -> Result<Response> {
-        let mut request_failures = 0;
-        let mut connect_failures = 0;
-        let mut read_failures = 0;
+        request_id: String,
+    ) -> Result<(String, Response)> {
+        let mut retry_counter = RetryCounter::new(&self.retry_config, request_id);
 
         loop {
             // This only works if the request body is not a stream. If it is
             // a stream, we can't use the retry path. We would need to implement
             // an outer retry.
-            let request = req.try_clone().ok_or_else(|| Error::Http {
+            let request = req.try_clone().ok_or_else(|| Error::Runtime {
                 message: "Attempted to retry a request that cannot be cloned".to_string(),
             })?;
-            let response = self.sender.send(&client, request).await;
-            let status_code = response.as_ref().map(|r| r.status());
-            match status_code {
-                Ok(status) if status.is_success() => return Ok(response?),
-                Ok(status) if self.retry_config.statuses.contains(&status) => {
-                    request_failures += 1;
-                    if request_failures >= self.retry_config.retries {
-                        // TODO: better error
-                        return Err(Error::Runtime {
-                            message: format!(
-                                "Request failed after {} retries with status code {}",
-                                request_failures, status
-                            ),
-                        });
-                    }
+            let response = self
+                .sender
+                .send(&client, request)
+                .await
+                .map(|r| (r.status(), r));
+            match response {
+                Ok((status, response)) if status.is_success() => {
+                    return Ok((retry_counter.request_id, response))
+                }
+                Ok((status, response)) if self.retry_config.statuses.contains(&status) => {
+                    let source = self
+                        .check_response(&retry_counter.request_id, response)
+                        .await
+                        .unwrap_err();
+                    retry_counter.increment_request_failures(source)?;
                 }
                 Err(err) if err.is_connect() => {
-                    connect_failures += 1;
-                    if connect_failures >= self.retry_config.connect_retries {
-                        return Err(Error::Runtime {
-                            message: format!(
-                                "Request failed after {} connect retries with error: {}",
-                                connect_failures, err
-                            ),
-                        });
-                    }
+                    retry_counter.increment_connect_failures(err)?;
                 }
                 Err(err) if err.is_timeout() || err.is_body() || err.is_decode() => {
-                    read_failures += 1;
-                    if read_failures >= self.retry_config.read_retries {
-                        return Err(Error::Runtime {
-                            message: format!(
-                                "Request failed after {} read retries with error: {}",
-                                read_failures, err
-                            ),
-                        });
-                    }
+                    retry_counter.increment_read_failures(err)?;
                 }
-                Ok(_) | Err(_) => return Ok(response?),
+                Err(err) => {
+                    let status_code = err.status();
+                    return Err(Error::Http {
+                        source: Box::new(err),
+                        request_id: retry_counter.request_id,
+                        status_code,
+                    });
+                }
+                Ok((_, response)) => return Ok((retry_counter.request_id, response)),
             }
 
-            let backoff = self.retry_config.backoff_factor * (2.0f32.powi(request_failures as i32));
-            let jitter = rand::random::<f32>() * self.retry_config.backoff_jitter;
-            let sleep_time = Duration::from_secs_f32(backoff + jitter);
-            debug!(
-                "Retrying request {:?} ({}/{} connect, {}/{} read, {}/{} read) in {:?}",
-                req.headers()
-                    .get("x-request-id")
-                    .and_then(|v| v.to_str().ok()),
-                connect_failures,
-                self.retry_config.connect_retries,
-                request_failures,
-                self.retry_config.retries,
-                read_failures,
-                self.retry_config.read_retries,
-                sleep_time
-            );
+            let sleep_time = retry_counter.next_sleep_time();
             tokio::time::sleep(sleep_time).await;
         }
     }
 
-    async fn rsp_to_str(response: Response) -> String {
+    pub async fn check_response(&self, request_id: &str, response: Response) -> Result<Response> {
+        // Try to get the response text, but if that fails, just return the status code
         let status = response.status();
-        response.text().await.unwrap_or_else(|_| status.to_string())
+        if status.is_success() {
+            Ok(response)
+        } else {
+            let response_text = response.text().await.ok();
+            let message = if let Some(response_text) = response_text {
+                format!("{}: {}", status, response_text)
+            } else {
+                status.to_string()
+            };
+            Err(Error::Http {
+                source: message.into(),
+                request_id: request_id.into(),
+                status_code: Some(status),
+            })
+        }
+    }
+}
+
+struct RetryCounter<'a> {
+    request_failures: u8,
+    connect_failures: u8,
+    read_failures: u8,
+    config: &'a ResolvedRetryConfig,
+    request_id: String,
+}
+
+impl<'a> RetryCounter<'a> {
+    fn new(config: &'a ResolvedRetryConfig, request_id: String) -> Self {
+        Self {
+            request_failures: 0,
+            connect_failures: 0,
+            read_failures: 0,
+            config,
+            request_id,
+        }
     }
 
-    pub async fn check_response(&self, response: Response) -> Result<Response> {
-        let status_int: u16 = u16::from(response.status());
-        if (400..500).contains(&status_int) {
-            Err(Error::InvalidInput {
-                message: Self::rsp_to_str(response).await,
-            })
-        } else if status_int != 200 {
-            Err(Error::Runtime {
-                message: Self::rsp_to_str(response).await,
+    fn check_out_of_retries(
+        &self,
+        source: Box<dyn std::error::Error + Send + Sync>,
+        status_code: Option<reqwest::StatusCode>,
+    ) -> Result<()> {
+        if self.request_failures >= self.config.retries
+            || self.connect_failures >= self.config.connect_retries
+            || self.read_failures >= self.config.read_retries
+        {
+            Err(Error::Retry {
+                request_id: self.request_id.clone(),
+                request_failures: self.request_failures,
+                max_request_failures: self.config.retries,
+                connect_failures: self.connect_failures,
+                max_connect_failures: self.config.connect_retries,
+                read_failures: self.read_failures,
+                max_read_failures: self.config.read_retries,
+                source,
+                status_code,
             })
         } else {
-            Ok(response)
+            Ok(())
         }
+    }
+
+    fn increment_request_failures(&mut self, source: crate::Error) -> Result<()> {
+        self.request_failures += 1;
+        let status_code = if let crate::Error::Http { status_code, .. } = &source {
+            *status_code
+        } else {
+            None
+        };
+        self.check_out_of_retries(Box::new(source), status_code)
+    }
+
+    fn increment_connect_failures(&mut self, source: reqwest::Error) -> Result<()> {
+        self.connect_failures += 1;
+        let status_code = source.status();
+        self.check_out_of_retries(Box::new(source), status_code)
+    }
+
+    fn increment_read_failures(&mut self, source: reqwest::Error) -> Result<()> {
+        self.read_failures += 1;
+        let status_code = source.status();
+        self.check_out_of_retries(Box::new(source), status_code)
+    }
+
+    fn next_sleep_time(&self) -> Duration {
+        let backoff = self.config.backoff_factor * (2.0f32.powi(self.request_failures as i32));
+        let jitter = rand::random::<f32>() * self.config.backoff_jitter;
+        let sleep_time = Duration::from_secs_f32(backoff + jitter);
+        debug!(
+            "Retrying request {:?} ({}/{} connect, {}/{} read, {}/{} read) in {:?}",
+            self.request_id,
+            self.connect_failures,
+            self.config.connect_retries,
+            self.request_failures,
+            self.config.retries,
+            self.read_failures,
+            self.config.read_retries,
+            sleep_time
+        );
+        sleep_time
+    }
+}
+
+pub trait RequestResultExt {
+    type Output;
+    fn err_to_http(self, request_id: String) -> Result<Self::Output>;
+}
+
+impl<T> RequestResultExt for reqwest::Result<T> {
+    type Output = T;
+    fn err_to_http(self, request_id: String) -> Result<T> {
+        self.map_err(|err| {
+            let status_code = err.status();
+            Error::Http {
+                source: Box::new(err),
+                request_id,
+                status_code,
+            }
+        })
     }
 }
 

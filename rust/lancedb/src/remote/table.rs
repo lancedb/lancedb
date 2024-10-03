@@ -34,6 +34,7 @@ use crate::{
     },
 };
 
+use super::client::RequestResultExt;
 use super::client::{HttpSend, RestfulLanceDbClient, Sender};
 use super::{ARROW_STREAM_CONTENT_TYPE, JSON_CONTENT_TYPE};
 
@@ -53,15 +54,25 @@ impl<S: HttpSend> RemoteTable<S> {
         let request = self
             .client
             .post(&format!("/v1/table/{}/describe/", self.name));
-        let response = self.client.send(request, true).await?;
+        let (request_id, response) = self.client.send(request, true).await?;
 
-        let response = self.check_table_response(response).await?;
+        let response = self.check_table_response(&request_id, response).await?;
 
-        let body = response.text().await?;
-
-        serde_json::from_str(&body).map_err(|e| Error::Http {
-            message: format!("Failed to parse table description: {}", e),
-        })
+        match response.text().await {
+            Ok(body) => serde_json::from_str(&body).map_err(|e| Error::Http {
+                source: format!("Failed to parse table description: {}", e).into(),
+                request_id,
+                status_code: None,
+            }),
+            Err(err) => {
+                let status_code = err.status();
+                Err(Error::Http {
+                    source: Box::new(err),
+                    request_id,
+                    status_code,
+                })
+            }
+        }
     }
 
     fn reader_as_body(data: Box<dyn RecordBatchReader + Send>) -> Result<reqwest::Body> {
@@ -87,18 +98,23 @@ impl<S: HttpSend> RemoteTable<S> {
         Ok(reqwest::Body::wrap_stream(body_stream))
     }
 
-    async fn check_table_response(&self, response: reqwest::Response) -> Result<reqwest::Response> {
+    async fn check_table_response(
+        &self,
+        request_id: &str,
+        response: reqwest::Response,
+    ) -> Result<reqwest::Response> {
         if response.status() == StatusCode::NOT_FOUND {
             return Err(Error::TableNotFound {
                 name: self.name.clone(),
             });
         }
 
-        self.client.check_response(response).await
+        self.client.check_response(request_id, response).await
     }
 
     async fn read_arrow_stream(
         &self,
+        request_id: &str,
         body: reqwest::Response,
     ) -> Result<SendableRecordBatchStream> {
         // Assert that the content type is correct
@@ -106,24 +122,31 @@ impl<S: HttpSend> RemoteTable<S> {
             .headers()
             .get(CONTENT_TYPE)
             .ok_or_else(|| Error::Http {
-                message: "Missing content type".into(),
+                source: "Missing content type".into(),
+                request_id: request_id.to_string(),
+                status_code: None,
             })?
             .to_str()
             .map_err(|e| Error::Http {
-                message: format!("Failed to parse content type: {}", e),
+                source: format!("Failed to parse content type: {}", e).into(),
+                request_id: request_id.to_string(),
+                status_code: None,
             })?;
         if content_type != ARROW_STREAM_CONTENT_TYPE {
             return Err(Error::Http {
-                message: format!(
+                source: format!(
                     "Expected content type {}, got {}",
                     ARROW_STREAM_CONTENT_TYPE, content_type
-                ),
+                )
+                .into(),
+                request_id: request_id.to_string(),
+                status_code: None,
             });
         }
 
         // There isn't a way to actually stream this data yet. I have an upstream issue:
         // https://github.com/apache/arrow-rs/issues/6420
-        let body = body.bytes().await?;
+        let body = body.bytes().await.err_to_http(request_id.into())?;
         let reader = StreamReader::try_new(body.reader(), None)?;
         let schema = reader.schema();
         let stream = futures::stream::iter(reader).map_err(DataFusionError::from);
@@ -259,14 +282,16 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
             request = request.json(&serde_json::json!({}));
         }
 
-        let response = self.client.send(request, true).await?;
+        let (request_id, response) = self.client.send(request, true).await?;
 
-        let response = self.check_table_response(response).await?;
+        let response = self.check_table_response(&request_id, response).await?;
 
-        let body = response.text().await?;
+        let body = response.text().await.err_to_http(request_id.clone())?;
 
         serde_json::from_str(&body).map_err(|e| Error::Http {
-            message: format!("Failed to parse row count: {}", e),
+            source: format!("Failed to parse row count: {}", e).into(),
+            request_id,
+            status_code: None,
         })
     }
     async fn add(
@@ -288,9 +313,9 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
             }
         }
 
-        let response = self.client.send(request, false).await?;
+        let (request_id, response) = self.client.send(request, false).await?;
 
-        self.check_table_response(response).await?;
+        self.check_table_response(&request_id, response).await?;
 
         Ok(())
     }
@@ -339,9 +364,9 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
 
         let request = request.json(&body);
 
-        let response = self.client.send(request, true).await?;
+        let (request_id, response) = self.client.send(request, true).await?;
 
-        let stream = self.read_arrow_stream(response).await?;
+        let stream = self.read_arrow_stream(&request_id, response).await?;
 
         Ok(Arc::new(OneShotExec::new(stream)))
     }
@@ -361,9 +386,9 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
 
         let request = request.json(&body);
 
-        let response = self.client.send(request, true).await?;
+        let (request_id, response) = self.client.send(request, true).await?;
 
-        let stream = self.read_arrow_stream(response).await?;
+        let stream = self.read_arrow_stream(&request_id, response).await?;
 
         Ok(DatasetRecordBatchStream::new(stream))
     }
@@ -383,17 +408,20 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
             "only_if": update.filter,
         }));
 
-        let response = self.client.send(request, false).await?;
+        let (request_id, response) = self.client.send(request, false).await?;
 
-        let response = self.check_table_response(response).await?;
+        let response = self.check_table_response(&request_id, response).await?;
 
-        let body = response.text().await?;
+        let body = response.text().await.err_to_http(request_id.clone())?;
 
         serde_json::from_str(&body).map_err(|e| Error::Http {
-            message: format!(
+            source: format!(
                 "Failed to parse updated rows result from response {}: {}",
                 body, e
-            ),
+            )
+            .into(),
+            request_id,
+            status_code: None,
         })
     }
     async fn delete(&self, predicate: &str) -> Result<()> {
@@ -402,8 +430,8 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
             .client
             .post(&format!("/v1/table/{}/delete/", self.name))
             .json(&body);
-        let response = self.client.send(request, false).await?;
-        self.check_table_response(response).await?;
+        let (request_id, response) = self.client.send(request, false).await?;
+        self.check_table_response(&request_id, response).await?;
         Ok(())
     }
 
@@ -474,9 +502,9 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
 
         let request = request.json(&body);
 
-        let response = self.client.send(request, false).await?;
+        let (request_id, response) = self.client.send(request, false).await?;
 
-        self.check_table_response(response).await?;
+        self.check_table_response(&request_id, response).await?;
 
         Ok(())
     }
@@ -495,9 +523,9 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
             .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE)
             .body(body);
 
-        let response = self.client.send(request, false).await?;
+        let (request_id, response) = self.client.send(request, false).await?;
 
-        self.check_table_response(response).await?;
+        self.check_table_response(&request_id, response).await?;
 
         Ok(())
     }
@@ -581,18 +609,20 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
             "/v1/table/{}/index/{}/stats/",
             self.name, index_name
         ));
-        let response = self.client.send(request, true).await?;
+        let (request_id, response) = self.client.send(request, true).await?;
 
         if response.status() == StatusCode::NOT_FOUND {
             return Ok(None);
         }
 
-        let response = self.check_table_response(response).await?;
+        let response = self.check_table_response(&request_id, response).await?;
 
-        let body = response.text().await?;
+        let body = response.text().await.err_to_http(request_id.clone())?;
 
         let stats = serde_json::from_str(&body).map_err(|e| Error::Http {
-            message: format!("Failed to parse index statistics: {}", e),
+            source: format!("Failed to parse index statistics: {}", e).into(),
+            request_id,
+            status_code: None,
         })?;
 
         Ok(Some(stats))
