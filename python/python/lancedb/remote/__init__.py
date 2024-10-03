@@ -11,7 +11,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import List, Optional
 
@@ -116,8 +116,8 @@ class RetryConfig:
 @dataclass
 class ClientConfig:
     user_agent: str = f"LanceDB-Python-Client/{__version__}"
-    retry_config: Optional[RetryConfig] = None
-    timeout_config: Optional[TimeoutConfig] = None
+    retry_config: RetryConfig = field(default_factory=RetryConfig)
+    timeout_config: Optional[TimeoutConfig] = field(default_factory=TimeoutConfig)
 
     def __post_init__(self):
         if isinstance(self.retry_config, dict):

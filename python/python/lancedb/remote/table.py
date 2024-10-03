@@ -51,12 +51,12 @@ class RemoteTable(Table):
         of this Table
 
         """
-        return self._loop.run(self._table.schema())
+        return self._loop.run_until_complete(self._table.schema())
 
     @property
     def version(self) -> int:
         """Get the current version of the table"""
-        return self._loop.run(self._table.version())
+        return self._loop.run_until_complete(self._table.version())
 
     @cached_property
     def embedding_functions(self) -> dict:
@@ -83,11 +83,11 @@ class RemoteTable(Table):
 
     def list_indices(self):
         """List all the indices on the table"""
-        return self._loop.run(self._table.list_indices())
+        return self._loop.run_until_complete(self._table.list_indices())
 
     def index_stats(self, index_uuid: str):
         """List all the stats of a specified index"""
-        return self._loop.run(self._table.index_stats(index_uuid))
+        return self._loop.run_until_complete(self._table.index_stats(index_uuid))
 
     def create_scalar_index(
         self,
@@ -117,7 +117,7 @@ class RemoteTable(Table):
         else:
             raise ValueError(f"Unknown index type: {index_type}")
 
-        self._loop.run(self._table.create_index(column, config=config, replace=replace))
+        self._loop.run_until_complete(self._table.create_index(column, config=config, replace=replace))
 
     def create_fts_index(
         self,
@@ -127,7 +127,7 @@ class RemoteTable(Table):
         with_position: bool = True,
     ):
         config = FTS(with_position=with_position)
-        self._loop.run(self._table.create_index(column, config=config, replace=replace))
+        self._loop.run_until_complete(self._table.create_index(column, config=config, replace=replace))
 
     def create_index(
         self,
@@ -208,7 +208,7 @@ class RemoteTable(Table):
                 " 'IVF_PQ', 'IVF_HNSW_PQ', 'IVF_HNSW_SQ'"
             )
 
-        self._loop.run(self._table.create_index(vector_column_name, config=config))
+        self._loop.run_until_complete(self._table.create_index(vector_column_name, config=config))
 
     def add(
         self,
@@ -240,7 +240,7 @@ class RemoteTable(Table):
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
 
         """
-        self._loop.run(
+        self._loop.run_until_complete(
             self._table.add(
                 data, mode=mode, on_bad_vectors=on_bad_vectors, fill_value=fill_value
             )
@@ -330,7 +330,7 @@ class RemoteTable(Table):
     def _execute_query(
         self, query: Query, batch_size: Optional[int] = None
     ) -> pa.RecordBatchReader:
-        return self._loop.run(self._table._execute_query(query, batch_size=batch_size))
+        return self._loop.run_until_complete(self._table._execute_query(query, batch_size=batch_size))
 
     def merge_insert(self, on: Union[str, Iterable[str]]) -> LanceMergeInsertBuilder:
         """Returns a [`LanceMergeInsertBuilder`][lancedb.merge.LanceMergeInsertBuilder]
@@ -347,7 +347,7 @@ class RemoteTable(Table):
         on_bad_vectors: str,
         fill_value: float,
     ):
-        self._loop.run(
+        self._loop.run_until_complete(
             self._table._do_merge(merge, new_data, on_bad_vectors, fill_value)
         )
 
@@ -398,7 +398,7 @@ class RemoteTable(Table):
            x      vector  _distance # doctest: +SKIP
         0  2  [3.0, 4.0]       85.0 # doctest: +SKIP
         """
-        self._loop.run(self._table.delete(predicate))
+        self._loop.run_until_complete(self._table.delete(predicate))
 
     def update(
         self,
@@ -448,7 +448,7 @@ class RemoteTable(Table):
         2  2  [10.0, 10.0] # doctest: +SKIP
 
         """
-        self._loop.run(self._table.update(where, values, values_sql))
+        self._loop.run_until_complete(self._table.update(where, values, values_sql))
 
     def cleanup_old_versions(self, *_):
         """cleanup_old_versions() is not supported on the LanceDB cloud"""
@@ -463,7 +463,7 @@ class RemoteTable(Table):
         )
 
     def count_rows(self, filter: Optional[str] = None) -> int:
-        return self._loop.run(self._table.count_rows(filter))
+        return self._loop.run_until_complete(self._table.count_rows(filter))
 
     def add_columns(self, transforms: Dict[str, str]):
         raise NotImplementedError(
