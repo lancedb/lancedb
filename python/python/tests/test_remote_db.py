@@ -2,11 +2,13 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import contextlib
+from datetime import timedelta
 import http.server
 import threading
 import uuid
 
 import lancedb
+from lancedb.remote import ClientConfig
 from lancedb.remote.errors import HttpError, RetryError
 import pytest
 
@@ -112,3 +114,45 @@ async def test_retry_error():
         assert "Try again later" in str(cause)
         assert cause.request_id == request_id_holder["request_id"]
         assert cause.status_code == 429
+
+
+def test_create_client():
+    mandatory_args = {
+        "uri": "db://dev",
+        "api_key": "fake-api-key",
+        "region": "us-east-1",
+    }
+    
+    db = lancedb.connect(**mandatory_args)
+    assert isinstance(db.client_config, ClientConfig)
+
+    db = lancedb.connect(**mandatory_args, client_config={})
+    assert isinstance(db.client_config, ClientConfig)
+
+    db = lancedb.connect(**mandatory_args, client_config=ClientConfig(timeout_config={"connect_timeout": 42}))
+    assert isinstance(db.client_config, ClientConfig)
+    assert db.client_config.timeout_config.connect_timeout == timedelta(seconds=42)
+
+    db = lancedb.connect(**mandatory_args, client_config={"timeout_config": {"connect_timeout": timedelta(seconds=42)}})
+    assert isinstance(db.client_config, ClientConfig)
+    assert db.client_config.timeout_config.connect_timeout == timedelta(seconds=42)
+
+    db = lancedb.connect(**mandatory_args, client_config=ClientConfig(retry_config={"retries": 42}))
+    assert isinstance(db.client_config, ClientConfig)
+    assert db.client_config.retry_config.retries == 42
+
+    db = lancedb.connect(**mandatory_args, client_config={"retry_config": {"retries": 42}})
+    assert isinstance(db.client_config, ClientConfig)
+    assert db.client_config.retry_config.retries == 42
+
+    with pytest.warns(DeprecationWarning):
+        db = lancedb.connect(**mandatory_args, connection_timeout=42)
+        assert db.client_config.timeout_config.connect_timeout == timedelta(seconds=42)
+    
+    with pytest.warns(DeprecationWarning):
+        db = lancedb.connect(**mandatory_args, read_timeout=42)
+        assert db.client_config.timeout_config.read_timeout == timedelta(seconds=42)
+    
+    with pytest.warns(DeprecationWarning):
+        lancedb.connect(**mandatory_args, request_thread_pool=10)
+    
