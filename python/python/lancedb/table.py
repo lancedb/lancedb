@@ -31,7 +31,6 @@ import pyarrow.compute as pc
 import pyarrow.fs as pa_fs
 from lance import LanceDataset
 from lance.dependencies import _check_for_hugging_face
-from lance.vector import vec_to_table
 
 from .common import DATA, VEC, VECTOR_COLUMN_NAME
 from .embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
