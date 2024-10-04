@@ -68,6 +68,27 @@ impl Connection {
                 builder = builder.storage_option(key, value);
             }
         }
+
+        if let Some(client_config) = options.client_config {
+            {
+                builder = builder.client_config(client_config.into());
+            }
+        }
+
+        if let Some(api_key) = options.api_key {
+            builder = builder.api_key(&api_key);
+        }
+
+        if let Some(region) = options.region {
+            builder = builder.region(&region);
+        } else {
+            builder = builder.region("us-east-1");
+        }
+
+        if let Some(host_override) = options.host_override {
+            builder = builder.host_override(&host_override);
+        }
+
         Ok(Self::inner_new(
             builder
                 .execute()

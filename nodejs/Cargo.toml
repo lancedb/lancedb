@@ -14,7 +14,7 @@ crate-type = ["cdylib"]
 [dependencies]
 arrow-ipc.workspace = true
 futures.workspace = true
-lancedb = { path = "../rust/lancedb" }
+lancedb = { path = "../rust/lancedb", features = ["remote"] }
 napi = { version = "2.16.8", default-features = false, features = [
     "napi9",
     "async",

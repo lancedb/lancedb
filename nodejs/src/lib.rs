@@ -22,6 +22,7 @@ mod index;
 mod iterator;
 pub mod merge;
 mod query;
+pub mod remote;
 mod table;
 mod util;
 
@@ -42,6 +43,19 @@ pub struct ConnectionOptions {
     ///
     /// The available options are described at https://lancedb.github.io/lancedb/guides/storage/
     pub storage_options: Option<HashMap<String, String>>,
+
+    /// (For LanceDB cloud only): configuration for the remote HTTP client.
+    pub client_config: Option<remote::ClientConfig>,
+    /// (For LanceDB cloud only): the API key to use with LanceDB Cloud.
+    ///
+    /// Can also be set via the environment variable `LANCEDB_API_KEY`.
+    pub api_key: Option<String>,
+    /// (For LanceDB cloud only): the region to use for LanceDB cloud.
+    /// Defaults to 'us-east-1'.
+    pub region: Option<String>,
+    /// (For LanceDB cloud only): the host to use for LanceDB cloud. Used
+    /// for testing purposes.
+    pub host_override: Option<String>,
 }
 
 /// Write mode for writing a table.
