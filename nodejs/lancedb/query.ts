@@ -239,6 +239,17 @@ export class QueryBase<NativeQueryType extends NativeQuery | NativeVectorQuery>
     return this;
   }
 
+  /**
+   * Skip searching un-indexed data. This can make search faster, but will miss
+   * any data that is not yet indexed.
+   *
+   * Use {@link lancedb.Table#optimize} to index all un-indexed data.
+   */
+  fastSearch(): this {
+    this.doCall((inner: NativeQueryType) => inner.fastSearch());
+    return this;
+  }
+
   protected nativeExecute(
     options?: Partial<QueryExecutionOptions>,
   ): Promise<NativeBatchIterator> {
