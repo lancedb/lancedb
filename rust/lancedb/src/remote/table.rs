@@ -536,7 +536,7 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
 
         #[derive(Deserialize)]
         struct ListIndicesResponse {
-            indices: Vec<IndexConfigResponse>,
+            indexes: Vec<IndexConfigResponse>,
         }
 
         #[derive(Deserialize)]
@@ -555,8 +555,8 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
 
         // Make request to get stats for each index, so we get the index type.
         // This is a bit inefficient, but it's the only way to get the index type.
-        let mut futures = Vec::with_capacity(body.indices.len());
-        for index in body.indices {
+        let mut futures = Vec::with_capacity(body.indexes.len());
+        for index in body.indexes {
             let future = async move {
                 match self.index_stats(&index.index_name).await {
                     Ok(Some(stats)) => Ok(Some(IndexConfig {
@@ -1235,7 +1235,7 @@ mod tests {
             let response_body = match request.url().path() {
                 "/v1/table/my_table/index/list/" => {
                     serde_json::json!({
-                        "indices": [
+                        "indexes": [
                             {
                                 "index_name": "vector_idx",
                                 "index_uuid": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
