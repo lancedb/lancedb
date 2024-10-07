@@ -69,11 +69,8 @@ impl Connection {
             }
         }
 
-        if let Some(client_config) = options.client_config {
-            {
-                builder = builder.client_config(client_config.into());
-            }
-        }
+        let client_config = options.client_config.unwrap_or_default();
+        builder = builder.client_config(client_config.into());
 
         if let Some(api_key) = options.api_key {
             builder = builder.api_key(&api_key);

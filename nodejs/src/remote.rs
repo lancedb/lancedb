@@ -73,7 +73,7 @@ pub struct RetryConfig {
 }
 
 #[napi(object)]
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct ClientConfig {
     pub user_agent: Option<String>,
     pub retry_config: Option<RetryConfig>,

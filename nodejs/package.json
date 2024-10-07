@@ -40,6 +40,7 @@
     "@napi-rs/cli": "^2.18.3",
     "@types/axios": "^0.14.0",
     "@types/jest": "^29.1.2",
+    "@types/node": "^22.7.4",
     "@types/tmp": "^0.2.6",
     "apache-arrow-13": "npm:apache-arrow@13.0.0",
     "apache-arrow-14": "npm:apache-arrow@14.0.0",
