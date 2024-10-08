@@ -1406,7 +1406,7 @@ class LanceTable(Table):
 
         Parameters
         ----------
-        data: list-of-dict, dict, pd.DataFrame
+        data: list-of-dict, pd.DataFrame
             The data to insert into the table.
         mode: str
             The mode to use when writing the data. Valid values are
