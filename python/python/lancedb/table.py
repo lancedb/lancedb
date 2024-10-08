@@ -86,6 +86,9 @@ def _coerce_to_table(data, schema: Optional[pa.Schema] = None) -> pa.Table:
     if isinstance(data, LanceModel):
         raise ValueError("Cannot add a single LanceModel to a table. Use a list.")
 
+    if isinstance(data, dict):
+        raise ValueError("Cannot add a single dictionary to a table. Use a list.")
+
     if isinstance(data, list):
         # convert to list of dict if data is a bunch of LanceModels
         if isinstance(data[0], LanceModel):
