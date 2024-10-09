@@ -14,6 +14,7 @@
 
 import { describe } from 'mocha'
 import * as chai from 'chai'
+import { assert } from 'chai'
 import * as chaiAsPromised from 'chai-as-promised'
 import { v4 as uuidv4 } from 'uuid'
 
@@ -22,7 +23,6 @@ import { tmpdir } from 'os'
 import * as fs from 'fs'
 import * as path from 'path'
 
-const assert = chai.assert
 chai.use(chaiAsPromised)
 
 describe('LanceDB AWS Integration test', function () {

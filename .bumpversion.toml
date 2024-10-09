@@ -66,6 +66,32 @@ glob = "nodejs/npm/*/package.json"
 replace = "\"version\": \"{new_version}\","
 search = "\"version\": \"{current_version}\","
 
+# vectodb node binary packages
+[[tool.bumpversion.files]]
+glob = "node/package.json"
+replace = "\"@lancedb/vectordb-darwin-arm64\": \"{new_version}\""
+search = "\"@lancedb/vectordb-darwin-arm64\": \"{current_version}\""
+
+[[tool.bumpversion.files]]
+glob = "node/package.json"
+replace = "\"@lancedb/vectordb-darwin-x64\": \"{new_version}\""
+search = "\"@lancedb/vectordb-darwin-x64\": \"{current_version}\""
+
+[[tool.bumpversion.files]]
+glob = "node/package.json"
+replace = "\"@lancedb/vectordb-linux-arm64-gnu\": \"{new_version}\""
+search = "\"@lancedb/vectordb-linux-arm64-gnu\": \"{current_version}\""
+
+[[tool.bumpversion.files]]
+glob = "node/package.json"
+replace = "\"@lancedb/vectordb-linux-x64-gnu\": \"{new_version}\""
+search = "\"@lancedb/vectordb-linux-x64-gnu\": \"{current_version}\""
+
+[[tool.bumpversion.files]]
+glob = "node/package.json"
+replace = "\"@lancedb/vectordb-win32-x64-msvc\": \"{new_version}\""
+search = "\"@lancedb/vectordb-win32-x64-msvc\": \"{current_version}\""
+
 # Cargo files
 # ------------
 [[tool.bumpversion.files]]
