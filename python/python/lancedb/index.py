@@ -437,7 +437,7 @@ class IvfPq:
             The default value is 256.
         """
         self._inner = LanceDbIndex.ivf_pq(
-            distance_type=distance_type,
+            distance_type=distance_type.lower(),
             num_partitions=num_partitions,
             num_sub_vectors=num_sub_vectors,
             max_iterations=max_iterations,

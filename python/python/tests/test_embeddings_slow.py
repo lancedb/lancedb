@@ -18,7 +18,6 @@ import lancedb
 import numpy as np
 import pandas as pd
 import pytest
-import requests
 from lancedb.embeddings import get_registry
 from lancedb.pydantic import LanceModel, Vector
 
@@ -108,6 +107,7 @@ def test_basic_text_embeddings(alias, tmp_path):
 
 @pytest.mark.slow
 def test_openclip(tmp_path):
+    import requests
     from PIL import Image
 
     db = lancedb.connect(tmp_path)

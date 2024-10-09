@@ -25,7 +25,6 @@ from typing import Callable, List, Union
 import numpy as np
 import pyarrow as pa
 from lance.vector import vec_to_table
-from retry import retry
 
 from ..util import deprecated, safe_import_pandas
 
@@ -136,6 +135,7 @@ class FunctionWrapper:
     def __call__(self, text):
         # Get the embedding with retry
         if len(self.retry_kwargs) > 0:
+            from retry import retry
 
             @retry(**self.retry_kwargs)
             def embed_func(c):
