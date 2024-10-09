@@ -559,8 +559,8 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
         let request = self
             .client
             .post(&format!("/v1/table/{}/index/list/", self.name));
-        let response = self.client.send(request, true).await?;
-        let response = self.check_table_response(response).await?;
+        let (request_id, response) = self.client.send(request, true).await?;
+        let response = self.check_table_response(&request_id, response).await?;
 
         #[derive(Deserialize)]
         struct ListIndicesResponse {
@@ -573,12 +573,15 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
             columns: Vec<String>,
         }
 
-        let body = response.text().await?;
+        let body = response.text().await.err_to_http(request_id.clone())?;
         let body: ListIndicesResponse = serde_json::from_str(&body).map_err(|err| Error::Http {
-            message: format!(
+            source: format!(
                 "Failed to parse list_indices response: {}, body: {}",
                 err, body
-            ),
+            )
+            .into(),
+            request_id,
+            status_code: None,
         })?;
 
         // Make request to get stats for each index, so we get the index type.
