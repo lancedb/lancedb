@@ -226,6 +226,7 @@ class JinaEmbeddings(EmbeddingFunction):
 
     def _init_client(self):
         import requests
+
         if JinaEmbeddings._session is None:
             if self.api_key is None and os.environ.get("JINA_API_KEY") is None:
                 api_key_not_found_help("jina")
