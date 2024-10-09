@@ -117,7 +117,9 @@ class RemoteTable(Table):
         else:
             raise ValueError(f"Unknown index type: {index_type}")
 
-        self._loop.run_until_complete(self._table.create_index(column, config=config, replace=replace))
+        self._loop.run_until_complete(
+            self._table.create_index(column, config=config, replace=replace)
+        )
 
     def create_fts_index(
         self,
@@ -127,7 +129,9 @@ class RemoteTable(Table):
         with_position: bool = True,
     ):
         config = FTS(with_position=with_position)
-        self._loop.run_until_complete(self._table.create_index(column, config=config, replace=replace))
+        self._loop.run_until_complete(
+            self._table.create_index(column, config=config, replace=replace)
+        )
 
     def create_index(
         self,
@@ -208,7 +212,9 @@ class RemoteTable(Table):
                 " 'IVF_PQ', 'IVF_HNSW_PQ', 'IVF_HNSW_SQ'"
             )
 
-        self._loop.run_until_complete(self._table.create_index(vector_column_name, config=config))
+        self._loop.run_until_complete(
+            self._table.create_index(vector_column_name, config=config)
+        )
 
     def add(
         self,
@@ -338,7 +344,9 @@ class RemoteTable(Table):
     def _execute_query(
         self, query: Query, batch_size: Optional[int] = None
     ) -> pa.RecordBatchReader:
-        return self._loop.run_until_complete(self._table._execute_query(query, batch_size=batch_size))
+        return self._loop.run_until_complete(
+            self._table._execute_query(query, batch_size=batch_size)
+        )
 
     def merge_insert(self, on: Union[str, Iterable[str]]) -> LanceMergeInsertBuilder:
         """Returns a [`LanceMergeInsertBuilder`][lancedb.merge.LanceMergeInsertBuilder]
