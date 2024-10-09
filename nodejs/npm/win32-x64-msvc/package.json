@@ -1,6 +1,6 @@
 {
 	"name": "@lancedb/lancedb-win32-x64-msvc",
-	"version": "0.11.0-beta.1",
+	"version": "0.11.0-beta.2",
 	"os": ["win32"],
 	"cpu": ["x64"],
 	"main": "lancedb.win32-x64-msvc.node",
