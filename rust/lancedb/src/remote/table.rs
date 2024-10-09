@@ -525,11 +525,57 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
             message: "drop_columns is not yet supported.".into(),
         })
     }
+
     async fn list_indices(&self) -> Result<Vec<IndexConfig>> {
-        Err(Error::NotSupported {
-            message: "list_indices is not yet supported.".into(),
-        })
+        // Make request to list the indices
+        let request = self
+            .client
+            .post(&format!("/v1/table/{}/index/list/", self.name));
+        let response = self.client.send(request, true).await?;
+        let response = self.check_table_response(response).await?;
+
+        #[derive(Deserialize)]
+        struct ListIndicesResponse {
+            indexes: Vec<IndexConfigResponse>,
+        }
+
+        #[derive(Deserialize)]
+        struct IndexConfigResponse {
+            index_name: String,
+            columns: Vec<String>,
+        }
+
+        let body = response.text().await?;
+        let body: ListIndicesResponse = serde_json::from_str(&body).map_err(|err| Error::Http {
+            message: format!(
+                "Failed to parse list_indices response: {}, body: {}",
+                err, body
+            ),
+        })?;
+
+        // Make request to get stats for each index, so we get the index type.
+        // This is a bit inefficient, but it's the only way to get the index type.
+        let mut futures = Vec::with_capacity(body.indexes.len());
+        for index in body.indexes {
+            let future = async move {
+                match self.index_stats(&index.index_name).await {
+                    Ok(Some(stats)) => Ok(Some(IndexConfig {
+                        name: index.index_name,
+                        index_type: stats.index_type,
+                        columns: index.columns,
+                    })),
+                    Ok(None) => Ok(None), // The index must have been deleted since we listed it.
+                    Err(e) => Err(e),
+                }
+            };
+            futures.push(future);
+        }
+        let results = futures::future::try_join_all(futures).await?;
+        let index_configs = results.into_iter().flatten().collect();
+
+        Ok(index_configs)
     }
+
     async fn index_stats(&self, index_name: &str) -> Result<Option<IndexStatistics>> {
         let request = self.client.post(&format!(
             "/v1/table/{}/index/{}/stats/",
@@ -1179,6 +1225,69 @@ mod tests {
 
             table.create_index(&["a"], index).execute().await.unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn test_list_indices() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "POST");
+
+            let response_body = match request.url().path() {
+                "/v1/table/my_table/index/list/" => {
+                    serde_json::json!({
+                        "indexes": [
+                            {
+                                "index_name": "vector_idx",
+                                "index_uuid": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+                                "columns": ["vector"],
+                                "index_status": "done",
+                            },
+                            {
+                                "index_name": "my_idx",
+                                "index_uuid": "34255f64-5717-4562-b3fc-2c963f66afa6",
+                                "columns": ["my_column"],
+                                "index_status": "done",
+                            },
+                        ]
+                    })
+                }
+                "/v1/table/my_table/index/vector_idx/stats/" => {
+                    serde_json::json!({
+                        "num_indexed_rows": 100000,
+                        "num_unindexed_rows": 0,
+                        "index_type": "IVF_PQ",
+                        "distance_type": "l2"
+                    })
+                }
+                "/v1/table/my_table/index/my_idx/stats/" => {
+                    serde_json::json!({
+                        "num_indexed_rows": 100000,
+                        "num_unindexed_rows": 0,
+                        "index_type": "LABEL_LIST"
+                    })
+                }
+                path => panic!("Unexpected path: {}", path),
+            };
+            http::Response::builder()
+                .status(200)
+                .body(serde_json::to_string(&response_body).unwrap())
+                .unwrap()
+        });
+
+        let indices = table.list_indices().await.unwrap();
+        let expected = vec![
+            IndexConfig {
+                name: "vector_idx".into(),
+                index_type: IndexType::IvfPq,
+                columns: vec!["vector".into()],
+            },
+            IndexConfig {
+                name: "my_idx".into(),
+                index_type: IndexType::LabelList,
+                columns: vec!["my_column".into()],
+            },
+        ];
+        assert_eq!(indices, expected);
     }
 
     #[tokio::test]
