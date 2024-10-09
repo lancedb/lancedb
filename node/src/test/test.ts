@@ -116,6 +116,10 @@ describe("LanceDB client", function () {
         }
       ]);
       assert.equal(await table2.countRows(), 3);
+
+      await table1.delete("id <> 3")
+
+      assert.equal(await table2.countRows(), 1);
     });
   });
 
