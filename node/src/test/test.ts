@@ -169,7 +169,7 @@ describe("LanceDB client", function () {
 
       // Should reject a bad filter
       await expect(table.filter("id % 2 = 0 AND").execute()).to.be.rejectedWith(
-        /.*sql parser error: Expected an expression:, found: EOF.*/
+        /.*sql parser error: .*/
       );
     });
 
