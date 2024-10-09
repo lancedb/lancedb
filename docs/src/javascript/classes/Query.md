@@ -19,6 +19,7 @@ A builder for nearest neighbor queries for LanceDB.
 ### Properties
 
 - [\_embeddings](Query.md#_embeddings)
+- [\_fastSearch](Query.md#_fastsearch)
 - [\_filter](Query.md#_filter)
 - [\_limit](Query.md#_limit)
 - [\_metricType](Query.md#_metrictype)
@@ -34,6 +35,7 @@ A builder for nearest neighbor queries for LanceDB.
 ### Methods
 
 - [execute](Query.md#execute)
+- [fastSearch](Query.md#fastsearch)
 - [filter](Query.md#filter)
 - [isElectron](Query.md#iselectron)
 - [limit](Query.md#limit)
@@ -65,7 +67,7 @@ A builder for nearest neighbor queries for LanceDB.
 
 #### Defined in
 
-[query.ts:38](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/query.ts#L38)
+[query.ts:39](https://github.com/lancedb/lancedb/blob/92179835/node/src/query.ts#L39)
 
 ## Properties
 
@@ -75,7 +77,17 @@ A builder for nearest neighbor queries for LanceDB.
 
 #### Defined in
 
-[query.ts:36](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/query.ts#L36)
+[query.ts:37](https://github.com/lancedb/lancedb/blob/92179835/node/src/query.ts#L37)
+
+___
+
+### \_fastSearch
+
+• `Private` **\_fastSearch**: `boolean`
+
+#### Defined in
+
+[query.ts:36](https://github.com/lancedb/lancedb/blob/92179835/node/src/query.ts#L36)
 
 ___
 
@@ -85,7 +97,7 @@ ___
 
 #### Defined in
 
-[query.ts:33](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/query.ts#L33)
+[query.ts:33](https://github.com/lancedb/lancedb/blob/92179835/node/src/query.ts#L33)
 
 ___
 
@@ -95,7 +107,7 @@ ___
 
 #### Defined in
 
-[query.ts:29](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/query.ts#L29)
+[query.ts:29](https://github.com/lancedb/lancedb/blob/92179835/node/src/query.ts#L29)
 
 ___
 
@@ -105,7 +117,7 @@ ___
 
 #### Defined in
 
-[query.ts:34](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/query.ts#L34)
+[query.ts:34](https://github.com/lancedb/lancedb/blob/92179835/node/src/query.ts#L34)
 
 ___
 
@@ -115,7 +127,7 @@ ___
 
 #### Defined in
 
-[query.ts:31](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/query.ts#L31)
+[query.ts:31](https://github.com/lancedb/lancedb/blob/92179835/node/src/query.ts#L31)
 
 ___
 
@@ -125,7 +137,7 @@ ___
 
 #### Defined in
 
-[query.ts:35](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/query.ts#L35)
+[query.ts:35](https://github.com/lancedb/lancedb/blob/92179835/node/src/query.ts#L35)
 
 ___
 
@@ -135,7 +147,7 @@ ___
 
 #### Defined in
 
-[query.ts:26](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/query.ts#L26)
+[query.ts:26](https://github.com/lancedb/lancedb/blob/92179835/node/src/query.ts#L26)
 
 ___
 
@@ -145,7 +157,7 @@ ___
 
 #### Defined in
 
-[query.ts:28](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/query.ts#L28)
+[query.ts:28](https://github.com/lancedb/lancedb/blob/92179835/node/src/query.ts#L28)
 
 ___
 
@@ -155,7 +167,7 @@ ___
 
 #### Defined in
 
-[query.ts:30](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/query.ts#L30)
+[query.ts:30](https://github.com/lancedb/lancedb/blob/92179835/node/src/query.ts#L30)
 
 ___
 
@@ -165,7 +177,7 @@ ___
 
 #### Defined in
 
-[query.ts:32](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/query.ts#L32)
+[query.ts:32](https://github.com/lancedb/lancedb/blob/92179835/node/src/query.ts#L32)
 
 ___
 
@@ -175,7 +187,7 @@ ___
 
 #### Defined in
 
-[query.ts:27](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/query.ts#L27)
+[query.ts:27](https://github.com/lancedb/lancedb/blob/92179835/node/src/query.ts#L27)
 
 ___
 
@@ -201,7 +213,7 @@ A filter statement to be applied to this query.
 
 #### Defined in
 
-[query.ts:87](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/query.ts#L87)
+[query.ts:90](https://github.com/lancedb/lancedb/blob/92179835/node/src/query.ts#L90)
 
 ## Methods
 
@@ -223,7 +235,30 @@ Execute the query and return the results as an Array of Objects
 
 #### Defined in
 
-[query.ts:115](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/query.ts#L115)
+[query.ts:127](https://github.com/lancedb/lancedb/blob/92179835/node/src/query.ts#L127)
+
+___
+
+### fastSearch
+
+▸ **fastSearch**(`value`): [`Query`](Query.md)\<`T`\>
+
+Skip searching un-indexed data. This can make search faster, but will miss
+any data that is not yet indexed.
+
+#### Parameters
+
+| Name | Type |
+| :------ | :------ |
+| `value` | `boolean` |
+
+#### Returns
+
+[`Query`](Query.md)\<`T`\>
+
+#### Defined in
+
+[query.ts:119](https://github.com/lancedb/lancedb/blob/92179835/node/src/query.ts#L119)
 
 ___
 
@@ -245,7 +280,7 @@ A filter statement to be applied to this query.
 
 #### Defined in
 
-[query.ts:82](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/query.ts#L82)
+[query.ts:85](https://github.com/lancedb/lancedb/blob/92179835/node/src/query.ts#L85)
 
 ___
 
@@ -259,7 +294,7 @@ ___
 
 #### Defined in
 
-[query.ts:142](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/query.ts#L142)
+[query.ts:155](https://github.com/lancedb/lancedb/blob/92179835/node/src/query.ts#L155)
 
 ___
 
@@ -268,6 +303,7 @@ ___
 ▸ **limit**(`value`): [`Query`](Query.md)\<`T`\>
 
 Sets the number of results that will be returned
+default value is 10
 
 #### Parameters
 
@@ -281,7 +317,7 @@ Sets the number of results that will be returned
 
 #### Defined in
 
-[query.ts:55](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/query.ts#L55)
+[query.ts:58](https://github.com/lancedb/lancedb/blob/92179835/node/src/query.ts#L58)
 
 ___
 
@@ -307,7 +343,7 @@ MetricType for the different options
 
 #### Defined in
 
-[query.ts:102](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/query.ts#L102)
+[query.ts:105](https://github.com/lancedb/lancedb/blob/92179835/node/src/query.ts#L105)
 
 ___
 
@@ -329,7 +365,7 @@ The number of probes used. A higher number makes search more accurate but also s
 
 #### Defined in
 
-[query.ts:73](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/query.ts#L73)
+[query.ts:76](https://github.com/lancedb/lancedb/blob/92179835/node/src/query.ts#L76)
 
 ___
 
@@ -349,7 +385,7 @@ ___
 
 #### Defined in
 
-[query.ts:107](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/query.ts#L107)
+[query.ts:110](https://github.com/lancedb/lancedb/blob/92179835/node/src/query.ts#L110)
 
 ___
 
@@ -371,7 +407,7 @@ Refine the results by reading extra elements and re-ranking them in memory.
 
 #### Defined in
 
-[query.ts:64](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/query.ts#L64)
+[query.ts:67](https://github.com/lancedb/lancedb/blob/92179835/node/src/query.ts#L67)
 
 ___
 
@@ -393,4 +429,4 @@ Return only the specified columns.
 
 #### Defined in
 
-[query.ts:93](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/query.ts#L93)
+[query.ts:96](https://github.com/lancedb/lancedb/blob/92179835/node/src/query.ts#L96)
