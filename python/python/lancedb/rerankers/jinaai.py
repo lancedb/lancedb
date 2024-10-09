@@ -57,6 +57,7 @@ class JinaReranker(Reranker):
     @cached_property
     def _client(self):
         import requests
+
         if os.environ.get("JINA_API_KEY") is None and self.api_key is None:
             raise ValueError(
                 "JINA_API_KEY not set. Either set it in your environment or \
