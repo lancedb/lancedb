@@ -23,7 +23,7 @@ class LanceDBClientError(RuntimeError):
     message: str
         The error message.
     request_id: str
-        The request id of the failed. This can be provided in error reports
+        The id of the request that failed. This can be provided in error reports
         to help diagnose the issue.
     status_code: int
         The HTTP status code of the response. May be None if the request
@@ -46,7 +46,7 @@ class HttpError(LanceDBClientError):
     message: str
         The error message.
     request_id: str
-        The request id of the failed. This can be provided in error reports
+        The id of the request that failed. This can be provided in error reports
         to help diagnose the issue.
     status_code: int
         The HTTP status code of the response. May be None if the request
@@ -71,9 +71,9 @@ class RetryError(LanceDBClientError):
     Attributes
     ----------
     message: str
-        The error message.
+        The retry error message, which will describe which retry limit was hit.
     request_id: str
-        The request id of the failed. This can be provided in error reports
+        The id of the request that failed. This can be provided in error reports
         to help diagnose the issue.
     request_failures: int
         The number of request failures.
