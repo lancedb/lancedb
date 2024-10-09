@@ -548,7 +548,7 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
         let body = response.text().await?;
         let body: ListIndicesResponse = serde_json::from_str(&body).map_err(|err| Error::Http {
             message: format!(
-                "Failed to parse index list response: {}, body: {}",
+                "Failed to parse list_indices response: {}, body: {}",
                 err, body
             ),
         })?;
