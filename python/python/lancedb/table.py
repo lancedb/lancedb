@@ -31,7 +31,6 @@ import pyarrow.compute as pc
 import pyarrow.fs as pa_fs
 from lance import LanceDataset
 from lance.dependencies import _check_for_hugging_face
-from lance.vector import vec_to_table
 
 from .common import DATA, VEC, VECTOR_COLUMN_NAME
 from .embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
@@ -87,6 +86,9 @@ def _coerce_to_table(data, schema: Optional[pa.Schema] = None) -> pa.Table:
     if isinstance(data, LanceModel):
         raise ValueError("Cannot add a single LanceModel to a table. Use a list.")
 
+    if isinstance(data, dict):
+        raise ValueError("Cannot add a single dictionary to a table. Use a list.")
+
     if isinstance(data, list):
         # convert to list of dict if data is a bunch of LanceModels
         if isinstance(data[0], LanceModel):
@@ -98,8 +100,6 @@ def _coerce_to_table(data, schema: Optional[pa.Schema] = None) -> pa.Table:
             return pa.Table.from_batches(data, schema=schema)
         else:
             return pa.Table.from_pylist(data)
-    elif isinstance(data, dict):
-        return vec_to_table(data)
     elif _check_for_pandas(data) and isinstance(data, pd.DataFrame):
         # Do not add schema here, since schema may contains the vector column
         table = pa.Table.from_pandas(data, preserve_index=False)
@@ -554,7 +554,7 @@ class Table(ABC):
         data: DATA
             The data to insert into the table. Acceptable types are:
 
-            - dict or list-of-dict
+            - list-of-dict
 
             - pandas.DataFrame
 
@@ -1409,7 +1409,7 @@ class LanceTable(Table):
 
         Parameters
         ----------
-        data: list-of-dict, dict, pd.DataFrame
+        data: list-of-dict, pd.DataFrame
             The data to insert into the table.
         mode: str
             The mode to use when writing the data. Valid values are
@@ -2348,7 +2348,7 @@ class AsyncTable:
         data: DATA
             The data to insert into the table. Acceptable types are:
 
-            - dict or list-of-dict
+            - list-of-dict
 
             - pandas.DataFrame
 
