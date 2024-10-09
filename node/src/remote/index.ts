@@ -247,9 +247,9 @@ export class RemoteQuery<T = number[]> extends Query<T> {
       const newObject: Record<string, unknown> = {}
       Object.keys(entry).forEach((key: string) => {
         if (entry[key] instanceof Vector) {
-          newObject[key] = (entry[key] as Vector).toArray()
+          newObject[key] = (entry[key] as any).toArray()
         } else {
-          newObject[key] = entry[key]
+          newObject[key] = entry[key] as any
         }
       })
       return newObject as unknown as T

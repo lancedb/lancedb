@@ -142,9 +142,9 @@ export class Query<T = number[]> {
       Object.keys(entry).forEach((key: string) => {
         if (entry[key] instanceof Vector) {
           // toJSON() returns f16 array correctly
-          newObject[key] = (entry[key] as Vector).toJSON()
+          newObject[key] = (entry[key] as any).toJSON()
         } else {
-          newObject[key] = entry[key]
+          newObject[key] = entry[key] as any
         }
       })
       return newObject as unknown as T
