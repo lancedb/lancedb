@@ -69,7 +69,9 @@ class RemoteDBConnection(DBConnection):
                 "instead.",
                 DeprecationWarning,
             )
-            client_config.timeout_config.connect_timeout = timedelta(seconds=connection_timeout)
+            client_config.timeout_config.connect_timeout = timedelta(
+                seconds=connection_timeout
+            )
 
         if read_timeout is not None:
             warnings.warn(
