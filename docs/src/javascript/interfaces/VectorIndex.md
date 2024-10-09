@@ -8,6 +8,7 @@
 
 - [columns](VectorIndex.md#columns)
 - [name](VectorIndex.md#name)
+- [status](VectorIndex.md#status)
 - [uuid](VectorIndex.md#uuid)
 
 ## Properties
@@ -18,7 +19,7 @@
 
 #### Defined in
 
-[index.ts:472](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L472)
+[index.ts:718](https://github.com/lancedb/lancedb/blob/92179835/node/src/index.ts#L718)
 
 ___
 
@@ -28,7 +29,17 @@ ___
 
 #### Defined in
 
-[index.ts:473](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L473)
+[index.ts:719](https://github.com/lancedb/lancedb/blob/92179835/node/src/index.ts#L719)
+
+___
+
+### status
+
+• **status**: [`IndexStatus`](../enums/IndexStatus.md)
+
+#### Defined in
+
+[index.ts:721](https://github.com/lancedb/lancedb/blob/92179835/node/src/index.ts#L721)
 
 ___
 
@@ -38,4 +49,4 @@ ___
 
 #### Defined in
 
-[index.ts:474](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L474)
+[index.ts:720](https://github.com/lancedb/lancedb/blob/92179835/node/src/index.ts#L720)
