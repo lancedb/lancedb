@@ -193,6 +193,24 @@ def test_empty_table(db):
     tbl.add(data=data)
 
 
+def test_add_dictionary(db):
+    schema = pa.schema(
+        [
+            pa.field("vector", pa.list_(pa.float32(), 2)),
+            pa.field("item", pa.string()),
+            pa.field("price", pa.float32()),
+        ]
+    )
+    tbl = LanceTable.create(db, "test", schema=schema)
+    data = {"vector": [3.1, 4.1], "item": "foo", "price": 10.0}
+    with pytest.raises(ValueError) as excep_info:
+        tbl.add(data=data)
+    assert (
+        str(excep_info.value)
+        == "Cannot add a single dictionary to a table. Use a list."
+    )
+
+
 def test_add(db):
     schema = pa.schema(
         [

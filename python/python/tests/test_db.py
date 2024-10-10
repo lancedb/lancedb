@@ -354,7 +354,7 @@ async def test_create_mode_async(tmp_path):
     )
     await db.create_table("test", data=data)
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(ValueError, match="already exists"):
         await db.create_table("test", data=data)
 
     new_data = pd.DataFrame(
@@ -382,7 +382,7 @@ async def test_create_exist_ok_async(tmp_path):
     )
     tbl = await db.create_table("test", data=data)
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(ValueError, match="already exists"):
         await db.create_table("test", data=data)
 
     # open the table but don't add more rows

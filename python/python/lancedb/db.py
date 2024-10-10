@@ -96,7 +96,7 @@ class DBConnection(EnforceOverrides):
             User must provide at least one of `data` or `schema`.
             Acceptable types are:
 
-            - dict or list-of-dict
+            - list-of-dict
 
             - pandas.DataFrame
 
@@ -579,7 +579,7 @@ class AsyncConnection(object):
             User must provide at least one of `data` or `schema`.
             Acceptable types are:
 
-            - dict or list-of-dict
+            - list-of-dict
 
             - pandas.DataFrame
 
