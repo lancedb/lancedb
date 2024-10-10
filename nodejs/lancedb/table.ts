@@ -456,10 +456,12 @@ export abstract class Table {
 
 export class LocalTable extends Table {
   private readonly inner: _NativeTable;
+  private readonly registeredEmbeddings: Map<string, EmbeddingFunctionConfig>;
 
-  constructor(inner: _NativeTable) {
+  constructor(inner: _NativeTable, schema: Schema) {
     super();
     this.inner = inner;
+    this.registeredEmbeddings = getRegistry().parseFunctions(schema.metadata);
   }
   get name(): string {
     return this.inner.name;
@@ -476,12 +478,8 @@ export class LocalTable extends Table {
     return this.inner.display();
   }
 
-  private async getEmbeddingFunctions(): Promise<
-    Map<string, EmbeddingFunctionConfig>
-  > {
-    const schema = await this.schema();
-    const registry = getRegistry();
-    return registry.parseFunctions(schema.metadata);
+  private getEmbeddingFunctions(): Map<string, EmbeddingFunctionConfig> {
+    return this.registeredEmbeddings;
   }
 
   /** Get the schema of the table. */
@@ -495,7 +493,7 @@ export class LocalTable extends Table {
     const mode = options?.mode ?? "append";
     const schema = await this.schema();
     const registry = getRegistry();
-    const functions = await registry.parseFunctions(schema.metadata);
+    const functions = registry.parseFunctions(schema.metadata);
 
     const buffer = await fromDataToBuffer(
       data,
@@ -603,29 +601,20 @@ export class LocalTable extends Table {
       });
     }
 
-    // The query type is auto or vector
-    // fall back to full text search if no embedding functions are defined and the query is a string
-    if (queryType === "auto" && getRegistry().length() === 0) {
-      return this.query().fullTextSearch(query, {
-        columns: ftsColumns,
-      });
+    // TODO: Support multiple embedding functions
+    const embeddingFunc: EmbeddingFunctionConfig | undefined =
+      this.getEmbeddingFunctions().values().next().value;
+    if (!embeddingFunc) {
+      // The query type is auto and string
+      // fall back to full text search if no embedding functions are defined and the query is a string
+      if (queryType === "auto" && typeof query === "string") {
+        return this.query().fullTextSearch(query, {
+          columns: ftsColumns,
+        });
+      }
+      throw new Error("No embedding functions are defined in the table");
     }
-
-    const queryPromise = this.getEmbeddingFunctions().then(
-      async (functions) => {
-        // TODO: Support multiple embedding functions
-        const embeddingFunc: EmbeddingFunctionConfig | undefined = functions
-          .values()
-          .next().value;
-        if (!embeddingFunc) {
-          return Promise.reject(
-            new Error("No embedding functions are defined in the table"),
-          );
-        }
-        return await embeddingFunc.function.computeQueryEmbeddings(query);
-      },
-    );
-
+    const queryPromise = embeddingFunc.function.computeQueryEmbeddings(query);
     return this.query().nearestTo(queryPromise);
   }
 
