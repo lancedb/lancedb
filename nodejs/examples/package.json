@@ -6,7 +6,6 @@
     "type": "module",
     "scripts": {
       "test": "jest",
-      "build": "tsc",
       "lint": "biome check *.ts && biome format *.ts",
       "lint-fix": "biome check --write *.ts && npm run format",
       "format": "biome format --write *.ts"
@@ -24,14 +23,5 @@
       "jest": "^29.7.0",
       "ts-jest": "^29.2.5",
       "typescript": "^5.5.4"
-    },
-    "compilerOptions": {
-      "target": "ESNext",
-      "module": "ESNext",
-      "moduleResolution": "Node",
-      "strict": true,
-      "esModuleInterop": true,
-      "skipLibCheck": true,
-      "forceConsistentCasingInFileNames": true
     }
   }

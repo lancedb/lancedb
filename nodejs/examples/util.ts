@@ -1,6 +1,8 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
 import * as fs from "fs";
-import * as path from "path";
 import { tmpdir } from "os";
+import * as path from "path";
 
 export async function withTempDirectory(
   fn: (tempDir: string) => Promise<void>,
@@ -9,6 +11,6 @@ export async function withTempDirectory(
   try {
     await fn(tmpDirPath);
   } finally {
-    fs.rmdirSync(tmpDirPath, { recursive: true });
+    fs.rmSync(tmpDirPath, { recursive: true });
   }
 }

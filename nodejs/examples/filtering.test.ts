@@ -1,5 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
+import { expect, test } from "@jest/globals";
 import * as lancedb from "@lancedb/lancedb";
-import { describe, expect, test } from "@jest/globals";
 import { withTempDirectory } from "./util.ts";
 
 test("filtering examples", async () => {
@@ -24,7 +26,9 @@ test("filtering examples", async () => {
     // --8<-- [end:search]
 
     // --8<-- [start:vec_search]
-    let result = await (tbl.search(Array(1536).fill(0)) as lancedb.VectorQuery)
+    const result = await (
+      tbl.search(Array(1536).fill(0)) as lancedb.VectorQuery
+    )
       .where("(item IN ('item 0', 'item 2')) AND (id > 10)")
       .postfilter()
       .toArray();

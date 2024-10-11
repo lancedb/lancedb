@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
+import { expect, test } from "@jest/globals";
 // --8<-- [start:imports]
 import * as lancedb from "@lancedb/lancedb";
 import "@lancedb/lancedb/embedding/transformers";
@@ -9,7 +12,6 @@ import {
 } from "@lancedb/lancedb/embedding";
 import { pipeline } from "@xenova/transformers";
 // --8<-- [end:imports]
-import { describe, expect, test } from "@jest/globals";
 import { withTempDirectory } from "./util.ts";
 
 // --8<-- [start:embedding_impl]
@@ -67,7 +69,7 @@ test("Registry examples", async () => {
     await table.add([{ text: "hello" }, { text: "world" }]);
 
     const results = await table.search("greeting").limit(1).toArray();
-    console.log(results[0].text);
     // -8<-- [end:call_custom_function]
+    expect(results.length).toBe(1);
   });
 });

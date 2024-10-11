@@ -1,19 +1,7 @@
-// Copyright 2024 Lance Developers.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
-import * as lancedb from "@lancedb/lancedb";
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
 import { expect, test } from "@jest/globals";
+import * as lancedb from "@lancedb/lancedb";
 import { withTempDirectory } from "./util.ts";
 
 test("full text search", async () => {
@@ -45,12 +33,12 @@ test("full text search", async () => {
     });
 
     // --8<-- [start:full_text_search]
-    let result = await tbl
+    const result = await tbl
       .search("apple")
       .select(["id", "doc"])
       .limit(10)
       .toArray();
-    console.log(result);
+    expect(result.length).toBe(10);
     // --8<-- [end:full_text_search]
   });
 });

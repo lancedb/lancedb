@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
+import { expect, test } from "@jest/globals";
 // --8<-- [start:imports]
 import * as lancedb from "@lancedb/lancedb";
 import "@lancedb/lancedb/embedding/openai";
@@ -5,7 +8,6 @@ import { LanceSchema, getRegistry, register } from "@lancedb/lancedb/embedding";
 import { EmbeddingFunction } from "@lancedb/lancedb/embedding";
 import { type Float, Float32, Utf8 } from "apache-arrow";
 // --8<-- [end:imports]
-import { describe, expect, test } from "@jest/globals";
 import { withTempDirectory } from "./util.ts";
 
 test("openai embeddings", async () => {
@@ -27,9 +29,9 @@ test("openai embeddings", async () => {
     await tbl.add([{ text: "hello world" }, { text: "goodbye world" }]);
 
     const query = "greetings";
-    const actual = (await (await tbl.search(query)).limit(1).toArray())[0];
-
+    const actual = (await tbl.search(query).limit(1).toArray())[0];
     // --8<-- [end:openai_embeddings]
+    expect(actual.text).toBe("greetings");
   });
 });
 
@@ -87,5 +89,7 @@ test("custom embedding function", async () => {
       mode: "overwrite",
     });
     // --8<-- [end:embedding_function]
+    expect(await table.countRows()).toBe(2);
+    expect(await table2.countRows()).toBe(2);
   });
 });

@@ -1,8 +1,10 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
+import { expect, test } from "@jest/globals";
 // --8<-- [start:import]
 import * as lancedb from "@lancedb/lancedb";
 import { VectorQuery } from "@lancedb/lancedb";
 // --8<-- [end:import]
-import { expect, test } from "@jest/globals";
 import { withTempDirectory } from "./util.ts";
 
 test("ann index examples", async () => {
@@ -32,7 +34,7 @@ test("ann index examples", async () => {
     const search = table.search(Array(128).fill(1.2)).limit(2) as VectorQuery;
     const results1 = await search.nprobes(20).refineFactor(10).toArray();
     // --8<-- [end:search1]
-    expect(results1.length).toBe(10);
+    expect(results1.length).toBe(2);
 
     // --8<-- [start:search2]
     const results2 = await table

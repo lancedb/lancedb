@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
+import { expect, test } from "@jest/globals";
 // --8<--  [start:imports]
 import * as lancedb from "@lancedb/lancedb";
 import * as arrow from "apache-arrow";
@@ -10,7 +13,6 @@ import {
   Utf8,
 } from "apache-arrow";
 // --8<-- [end:imports]
-import { describe, expect, test } from "@jest/globals";
 import { withTempDirectory } from "./util.ts";
 
 test("basic table examples", async () => {
@@ -49,8 +51,11 @@ test("basic table examples", async () => {
           mode: "overwrite",
         });
         // --8<-- [end:create_table_overwrite]
+        expect(await tbl.countRows()).toBe(2);
       }
     }
+
+    await db.dropTable("myTable");
 
     {
       // --8<-- [start:create_table_with_schema]
@@ -69,10 +74,11 @@ test("basic table examples", async () => {
         { vector: [3.1, 4.1], item: "foo", price: 10.0 },
         { vector: [5.9, 26.5], item: "bar", price: 20.0 },
       ];
-      const _tbl = await db.createTable("myTable", data, {
+      const tbl = await db.createTable("myTable", data, {
         schema,
       });
       // --8<-- [end:create_table_with_schema]
+      expect(await tbl.countRows()).toBe(2);
     }
 
     {
@@ -85,6 +91,7 @@ test("basic table examples", async () => {
 
       const emptyTbl = await db.createEmptyTable("empty_table", schema);
       // --8<-- [end:create_empty_table]
+      expect(await emptyTbl.countRows()).toBe(0);
     }
     {
       // --8<-- [start:open_table]
@@ -95,8 +102,8 @@ test("basic table examples", async () => {
     {
       // --8<-- [start:table_names]
       const tableNames = await db.tableNames();
-      console.log(tableNames);
       // --8<-- [end:table_names]
+      expect(tableNames).toEqual(["empty_table", "myTable"]);
     }
 
     const tbl = await db.openTable("myTable");
@@ -111,8 +118,9 @@ test("basic table examples", async () => {
     }
     {
       // --8<-- [start:vector_search]
-      const _res = tbl.search([100, 100]).limit(2).toArray();
+      const res = await tbl.search([100, 100]).limit(2).toArray();
       // --8<-- [end:vector_search]
+      expect(res.length).toBe(2);
     }
     {
       const data = Array.from({ length: 1000 })
@@ -141,7 +149,7 @@ test("basic table examples", async () => {
 
     {
       // --8<-- [start:create_f16_table]
-      const db = await lancedb.connect("/tmp/lancedb");
+      const db = await lancedb.connect(databaseDir);
       const dim = 16;
       const total = 10;
       const f16Schema = new Schema([
