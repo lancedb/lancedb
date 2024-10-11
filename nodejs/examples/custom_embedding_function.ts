@@ -1,5 +1,6 @@
 // --8<-- [start:imports]
 import * as lancedb from "@lancedb/lancedb";
+import "@lancedb/lancedb/embedding/transformers";
 import {
   LanceSchema,
   TextEmbeddingFunction,

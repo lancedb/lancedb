@@ -19,8 +19,6 @@ import { EmbeddingFunctionConfig, getRegistry } from "./registry";
 
 export { EmbeddingFunction, TextEmbeddingFunction } from "./embedding_function";
 
-// We need to explicitly export '*' so that the `register` decorator actually registers the class.
-export * from "./transformers";
 export * from "./registry";
 
 /**
