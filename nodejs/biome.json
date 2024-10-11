@@ -9,7 +9,8 @@
       "**/native.js",
       "**/native.d.ts",
       "**/npm/**/*",
-      "**/.vscode/**"
+      "**/.vscode/**",
+      "./examples/*"
     ]
   },
   "formatter": {
