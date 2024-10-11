@@ -9,6 +9,8 @@ import {
 } from "@lancedb/lancedb/embedding";
 import { pipeline } from "@xenova/transformers";
 // --8<-- [end:imports]
+import { describe, expect, test } from "@jest/globals";
+import { withTempDirectory } from "./util.ts";
 
 // --8<-- [start:embedding_impl]
 @register("sentence-transformers")
@@ -43,23 +45,29 @@ class SentenceTransformersEmbeddings extends TextEmbeddingFunction {
 }
 // -8<-- [end:embedding_impl]
 
-// --8<-- [start:call_custom_function]
-const registry = getRegistry();
+test("Registry examples", async () => {
+  await withTempDirectory(async (databaseDir) => {
+    // --8<-- [start:call_custom_function]
+    const registry = getRegistry();
 
-const sentenceTransformer = await registry
-  .get<SentenceTransformersEmbeddings>("sentence-transformers")!
-  .create();
+    const sentenceTransformer = await registry
+      .get<SentenceTransformersEmbeddings>("sentence-transformers")!
+      .create();
 
-const schema = LanceSchema({
-  vector: sentenceTransformer.vectorField(),
-  text: sentenceTransformer.sourceField(),
+    const schema = LanceSchema({
+      vector: sentenceTransformer.vectorField(),
+      text: sentenceTransformer.sourceField(),
+    });
+
+    const db = await lancedb.connect(databaseDir);
+    const table = await db.createEmptyTable("table", schema, {
+      mode: "overwrite",
+    });
+
+    await table.add([{ text: "hello" }, { text: "world" }]);
+
+    const results = await table.search("greeting").limit(1).toArray();
+    console.log(results[0].text);
+    // -8<-- [end:call_custom_function]
+  });
 });
-
-const db = await lancedb.connect("/tmp/db");
-const table = await db.createEmptyTable("table", schema, { mode: "overwrite" });
-
-await table.add([{ text: "hello" }, { text: "world" }]);
-
-const results = await table.search("greeting").limit(1).toArray();
-console.log(results[0].text);
-// -8<-- [end:call_custom_function]
