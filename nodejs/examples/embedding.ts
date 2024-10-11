@@ -1,5 +1,6 @@
 // --8<-- [start:imports]
 import * as lancedb from "@lancedb/lancedb";
+import "@lancedb/lancedb/embedding/openai";
 import { LanceSchema, getRegistry, register } from "@lancedb/lancedb/embedding";
 import { EmbeddingFunction } from "@lancedb/lancedb/embedding";
 import { type Float, Float32, Utf8 } from "apache-arrow";

@@ -14,7 +14,8 @@
   "main": "dist/index.js",
   "exports": {
     ".": "./dist/index.js",
-    "./embedding": "./dist/embedding/index.js"
+    "./embedding": "./dist/embedding/index.js",
+    "./embedding/openai": "./dist/embedding/openai.js"
   },
   "types": "dist/index.d.ts",
   "napi": {
