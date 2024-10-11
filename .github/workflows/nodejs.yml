@@ -55,7 +55,7 @@ jobs:
         npm run lint-ci
     - name: Lint examples
       working-directory: nodejs/examples
-      run: npm ci && npm run lint
+      run: npm ci && npm run lint-ci
   linux:
     name: Linux (NodeJS ${{ matrix.node-version }})
     timeout-minutes: 30

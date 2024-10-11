@@ -7,6 +7,7 @@
     "scripts": {
       "test": "jest",
       "lint": "biome check *.ts && biome format *.ts",
+      "lint-ci": "biome ci .",
       "lint-fix": "biome check --write *.ts && npm run format",
       "format": "biome format --write *.ts"
     },
