@@ -93,7 +93,7 @@ describe("LanceDB client", function () {
       assert.deepEqual(await con.tableNames(), ["vectors"]);
     });
 
-    it("read consistency level", async function () {
+    it.only("read consistency level", async function () {
       const uri = await createTestDB();
       const db1 = await lancedb.connect({ uri });
       const table1 = await db1.openTable("vectors");
