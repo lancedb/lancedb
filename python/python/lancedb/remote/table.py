@@ -270,7 +270,7 @@ class RemoteTable(Table):
         vector_column_name: Optional[str] = None,
         query_type="auto",
         fts_columns: Optional[Union[str, List[str]]] = None,
-        fast_search: bool = False
+        fast_search: bool = False,
     ) -> LanceVectorQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support [vector search][search]
@@ -350,7 +350,7 @@ class RemoteTable(Table):
             query_type,
             vector_column_name=vector_column_name,
             fts_columns=fts_columns,
-            fast_search=fast_search
+            fast_search=fast_search,
         )
 
     def _execute_query(

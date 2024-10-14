@@ -206,7 +206,9 @@ class LanceQueryBuilder(ABC):
         else:
             raise TypeError(f"Unsupported query type: {type(query)}")
 
-        return LanceVectorQueryBuilder(table, query, vector_column_name, str_query, fast_search)
+        return LanceVectorQueryBuilder(
+            table, query, vector_column_name, str_query, fast_search
+        )
 
     @classmethod
     def _resolve_query(cls, table, query, query_type, vector_column_name):
