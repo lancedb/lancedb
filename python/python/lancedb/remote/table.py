@@ -316,7 +316,7 @@ class RemoteTable(Table):
             needs to be specified. Otherwise, an error is raised.
 
         fast_search: bool, optional
-            If set, search will skip a flat search of unindexed data. This will improve
+            Skip a flat search of unindexed data. This may improve
             search performance but search results will not include unindexed data.
 
             - *default False*.
