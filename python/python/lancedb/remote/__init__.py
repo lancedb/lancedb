@@ -50,6 +50,8 @@ class VectorQuery(BaseModel):
 
     vector_column: str = VECTOR_COLUMN_NAME
 
+    fast_search: bool = False
+
 
 @attrs.define
 class VectorQueryResult:
