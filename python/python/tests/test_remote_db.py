@@ -2,91 +2,15 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import contextlib
+from datetime import timedelta
 import http.server
 import threading
-from unittest.mock import MagicMock
 import uuid
 
 import lancedb
+from lancedb.remote import ClientConfig
 from lancedb.remote.errors import HttpError, RetryError
-import pyarrow as pa
-from lancedb.remote.client import VectorQuery, VectorQueryResult
 import pytest
-
-
-class FakeLanceDBClient:
-    def close(self):
-        pass
-
-    def query(self, table_name: str, query: VectorQuery) -> VectorQueryResult:
-        assert table_name == "test"
-        t = pa.schema([]).empty_table()
-        return VectorQueryResult(t)
-
-    def post(self, path: str):
-        pass
-
-    def mount_retry_adapter_for_table(self, table_name: str):
-        pass
-
-
-def test_remote_db():
-    conn = lancedb.connect("db://client-will-be-injected", api_key="fake")
-    setattr(conn, "_client", FakeLanceDBClient())
-
-    table = conn["test"]
-    table.schema = pa.schema([pa.field("vector", pa.list_(pa.float32(), 2))])
-    table.search([1.0, 2.0]).to_pandas()
-
-
-def test_create_empty_table():
-    client = MagicMock()
-    conn = lancedb.connect("db://client-will-be-injected", api_key="fake")
-
-    conn._client = client
-
-    schema = pa.schema([pa.field("vector", pa.list_(pa.float32(), 2))])
-
-    client.post.return_value = {"status": "ok"}
-    table = conn.create_table("test", schema=schema)
-    assert table.name == "test"
-    assert client.post.call_args[0][0] == "/v1/table/test/create/"
-
-    json_schema = {
-        "fields": [
-            {
-                "name": "vector",
-                "nullable": True,
-                "type": {
-                    "type": "fixed_size_list",
-                    "fields": [
-                        {"name": "item", "nullable": True, "type": {"type": "float"}}
-                    ],
-                    "length": 2,
-                },
-            },
-        ]
-    }
-    client.post.return_value = {"schema": json_schema}
-    assert table.schema == schema
-    assert client.post.call_args[0][0] == "/v1/table/test/describe/"
-
-    client.post.return_value = 0
-    assert table.count_rows(None) == 0
-
-
-def test_create_table_with_recordbatches():
-    client = MagicMock()
-    conn = lancedb.connect("db://client-will-be-injected", api_key="fake")
-
-    conn._client = client
-
-    batch = pa.RecordBatch.from_arrays([pa.array([[1.0, 2.0], [3.0, 4.0]])], ["vector"])
-
-    client.post.return_value = {"status": "ok"}
-    table = conn.create_table("test", [batch], schema=batch.schema)
-    assert table.name == "test"
-    assert client.post.call_args[0][0] == "/v1/table/test/create/"
 
 
 def make_mock_http_handler(handler):
@@ -190,3 +114,54 @@ async def test_retry_error():
         assert "Try again later" in str(cause)
         assert cause.request_id == request_id_holder["request_id"]
         assert cause.status_code == 429
+
+
+def test_create_client():
+    mandatory_args = {
+        "uri": "db://dev",
+        "api_key": "fake-api-key",
+        "region": "us-east-1",
+    }
+
+    db = lancedb.connect(**mandatory_args)
+    assert isinstance(db.client_config, ClientConfig)
+
+    db = lancedb.connect(**mandatory_args, client_config={})
+    assert isinstance(db.client_config, ClientConfig)
+
+    db = lancedb.connect(
+        **mandatory_args,
+        client_config=ClientConfig(timeout_config={"connect_timeout": 42}),
+    )
+    assert isinstance(db.client_config, ClientConfig)
+    assert db.client_config.timeout_config.connect_timeout == timedelta(seconds=42)
+
+    db = lancedb.connect(
+        **mandatory_args,
+        client_config={"timeout_config": {"connect_timeout": timedelta(seconds=42)}},
+    )
+    assert isinstance(db.client_config, ClientConfig)
+    assert db.client_config.timeout_config.connect_timeout == timedelta(seconds=42)
+
+    db = lancedb.connect(
+        **mandatory_args, client_config=ClientConfig(retry_config={"retries": 42})
+    )
+    assert isinstance(db.client_config, ClientConfig)
+    assert db.client_config.retry_config.retries == 42
+
+    db = lancedb.connect(
+        **mandatory_args, client_config={"retry_config": {"retries": 42}}
+    )
+    assert isinstance(db.client_config, ClientConfig)
+    assert db.client_config.retry_config.retries == 42
+
+    with pytest.warns(DeprecationWarning):
+        db = lancedb.connect(**mandatory_args, connection_timeout=42)
+        assert db.client_config.timeout_config.connect_timeout == timedelta(seconds=42)
+
+    with pytest.warns(DeprecationWarning):
+        db = lancedb.connect(**mandatory_args, read_timeout=42)
+        assert db.client_config.timeout_config.read_timeout == timedelta(seconds=42)
+
+    with pytest.warns(DeprecationWarning):
+        lancedb.connect(**mandatory_args, request_thread_pool=10)

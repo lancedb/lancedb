@@ -61,7 +61,7 @@ if TYPE_CHECKING:
     from lance.dataset import CleanupStats, ReaderLike
     from ._lancedb import Table as LanceDBTable, OptimizeStats
     from .db import LanceDBConnection
-    from .index import BTree, IndexConfig, IvfPq, Bitmap, LabelList, FTS
+    from .index import BTree, IndexConfig, IvfPq, Bitmap, LabelList, FTS, HnswPq, HnswSq
 
 pd = safe_import_pandas()
 pl = safe_import_polars()
@@ -2302,7 +2302,9 @@ class AsyncTable:
         column: str,
         *,
         replace: Optional[bool] = None,
-        config: Optional[Union[IvfPq, BTree, Bitmap, LabelList, FTS]] = None,
+        config: Optional[
+            Union[IvfPq, HnswPq, HnswSq, BTree, Bitmap, LabelList, FTS]
+        ] = None,
     ):
         """Create an index to speed up queries
 
@@ -2701,7 +2703,7 @@ class AsyncTable:
             cleanup_older_than = round(cleanup_older_than.total_seconds() * 1000)
         return await self._inner.optimize(cleanup_older_than, delete_unverified)
 
-    async def list_indices(self) -> IndexConfig:
+    async def list_indices(self) -> Iterable[IndexConfig]:
         """
         List all indices that have been created with Self::create_index
         """

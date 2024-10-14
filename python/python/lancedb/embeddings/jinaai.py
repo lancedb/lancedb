@@ -13,7 +13,6 @@
 
 import os
 import io
-import requests
 import base64
 from urllib.parse import urlparse
 from pathlib import Path
@@ -226,6 +225,8 @@ class JinaEmbeddings(EmbeddingFunction):
         return [result["embedding"] for result in sorted_embeddings]
 
     def _init_client(self):
+        import requests
+
         if JinaEmbeddings._session is None:
             if self.api_key is None and os.environ.get("JINA_API_KEY") is None:
                 api_key_not_found_help("jina")
