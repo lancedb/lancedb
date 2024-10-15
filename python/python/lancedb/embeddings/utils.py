@@ -21,13 +21,31 @@ import time
 import urllib.error
 import weakref
 import logging
+from functools import wraps
 from typing import Callable, List, Union
 import numpy as np
 import pyarrow as pa
 from lance.vector import vec_to_table
-from retry import retry
 
 from ..util import deprecated, safe_import_pandas
+
+
+# ruff: noqa: PERF203
+def retry(tries=10, delay=1, max_delay=30, backoff=3, jitter=1):
+    def wrapper(fn):
+        @wraps(fn)
+        def wrapped(*args, **kwargs):
+            for i in range(tries):
+                try:
+                    return fn(*args, **kwargs)
+                except Exception:
+                    if i + 1 == tries:
+                        raise
+                    else:
+                        sleep = min(delay * (backoff ** i) + jitter, max_delay)
+                        time.sleep(sleep)
+        return wrapped
+    return wrapper
 
 pd = safe_import_pandas()
 
