@@ -25,22 +25,26 @@ from lancedb.embeddings import EmbeddingFunctionRegistry
 
 from ..query import LanceVectorQueryBuilder, LanceQueryBuilder
 from ..table import AsyncTable, Query, Table
-from ..util import infer_vector_column_name
 
 
 class RemoteTable(Table):
     def __init__(
         self,
         table: AsyncTable,
-        name: str,
+        db_name: str,
         loop: Optional[asyncio.AbstractEventLoop] = None,
     ):
         self._loop = loop
         self._table = table
-        self.name = name
+        self.db_name = db_name
+
+    @property
+    def name(self) -> str:
+        """The name of the table"""
+        return self._table.name
 
     def __repr__(self) -> str:
-        return f"RemoteTable({self._conn.db_name}.{self.name})"
+        return f"RemoteTable({self.db_name}.{self.name})"
 
     def __len__(self) -> int:
         self.count_rows(None)
@@ -318,12 +322,6 @@ class RemoteTable(Table):
         # empty query builder is not supported in saas, raise error
         if query is None and query_type != "hybrid":
             raise ValueError("Empty query is not supported")
-        vector_column_name = infer_vector_column_name(
-            schema=self.schema,
-            query_type=query_type,
-            query=query,
-            vector_column_name=vector_column_name,
-        )
 
         return LanceQueryBuilder.create(
             self,
