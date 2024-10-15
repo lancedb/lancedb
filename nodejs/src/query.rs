@@ -79,6 +79,11 @@ impl Query {
         Ok(VectorQuery { inner })
     }
 
+    #[napi]
+    pub fn fast_search(&mut self) {
+        self.inner = self.inner.clone().fast_search();
+    }
+
     #[napi(catch_unwind)]
     pub async fn execute(
         &self,
@@ -174,6 +179,11 @@ impl VectorQuery {
     #[napi]
     pub fn offset(&mut self, offset: u32) {
         self.inner = self.inner.clone().offset(offset as usize);
+    }
+
+    #[napi]
+    pub fn fast_search(&mut self) {
+        self.inner = self.inner.clone().fast_search();
     }
 
     #[napi(catch_unwind)]

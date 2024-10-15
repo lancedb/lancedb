@@ -402,6 +402,29 @@ describe("When creating an index", () => {
     expect(rst.numRows).toBe(1);
   });
 
+  it("should be able to query unindexed data", async () => {
+    await tbl.createIndex("vec");
+    await tbl.add([
+      {
+        id: 300,
+        vec: Array(32)
+          .fill(1)
+          .map(() => Math.random()),
+        tags: [],
+      },
+    ]);
+
+    const plan1 = await tbl.query().nearestTo(queryVec).explainPlan(true);
+    expect(plan1).toMatch("LanceScan");
+
+    const plan2 = await tbl
+      .query()
+      .nearestTo(queryVec)
+      .fastSearch()
+      .explainPlan(true);
+    expect(plan2).not.toMatch("LanceScan");
+  });
+
   it("should allow parameters to be specified", async () => {
     await tbl.createIndex("vec", {
       config: Index.ivfPq({
