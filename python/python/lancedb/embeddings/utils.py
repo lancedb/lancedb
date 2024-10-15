@@ -42,10 +42,13 @@ def retry(tries=10, delay=1, max_delay=30, backoff=3, jitter=1):
                     if i + 1 == tries:
                         raise
                     else:
-                        sleep = min(delay * (backoff ** i) + jitter, max_delay)
+                        sleep = min(delay * (backoff**i) + jitter, max_delay)
                         time.sleep(sleep)
+
         return wrapped
+
     return wrapper
+
 
 pd = safe_import_pandas()
 

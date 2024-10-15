@@ -228,10 +228,11 @@ def test_embedding_function_safe_model_dump(embedding_type):
                 f"is present in dumped model"
             )
 
-@patch('time.sleep')
+
+@patch("time.sleep")
 def test_retry(mock_sleep):
-    test_function = MagicMock(side_effect=[Exception] * 9 + ['result'])
+    test_function = MagicMock(side_effect=[Exception] * 9 + ["result"])
     test_function = retry()(test_function)
     result = test_function()
     assert mock_sleep.call_count == 9
-    assert result == 'result'
+    assert result == "result"
