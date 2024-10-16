@@ -12,7 +12,7 @@
     "experimentalDecorators": true,
     "moduleResolution": "Node"
   },
-  "exclude": ["./dist/*"],
+  "exclude": ["./dist/*", "./examples/*"],
   "typedocOptions": {
     "entryPoints": ["lancedb/index.ts"],
     "out": "../docs/src/javascript/",
