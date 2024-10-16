@@ -1,7 +1,7 @@
 -e ../../python
 numpy
 pandas
-pylance>=0.18
+pylance==0.18.3-beta.2
 duckdb
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch
