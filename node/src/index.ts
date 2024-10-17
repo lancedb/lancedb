@@ -564,7 +564,7 @@ export interface Table<T = number[]> {
   /**
    * Get statistics about an index.
    */
-  indexStats: (indexUuid: string) => Promise<IndexStats>
+  indexStats: (indexName: string) => Promise<IndexStats>
 
   filter(value: string): Query<T>
 
@@ -1164,8 +1164,8 @@ export class LocalTable<T = number[]> implements Table<T> {
     return tableListIndices.call(this._tbl);
   }
 
-  async indexStats(indexUuid: string): Promise<IndexStats> {
-    return tableIndexStats.call(this._tbl, indexUuid);
+  async indexStats(indexName: string): Promise<IndexStats> {
+    return tableIndexStats.call(this._tbl, indexName);
   }
 
   get schema(): Promise<Schema> {

@@ -29,7 +29,7 @@ The column to be indexed
 
 #### Defined in
 
-[index.ts:942](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L942)
+[index.ts:1282](https://github.com/lancedb/lancedb/blob/92179835/node/src/index.ts#L1282)
 
 ___
 
@@ -41,7 +41,7 @@ Cache size of the index
 
 #### Defined in
 
-[index.ts:991](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L991)
+[index.ts:1331](https://github.com/lancedb/lancedb/blob/92179835/node/src/index.ts#L1331)
 
 ___
 
@@ -53,7 +53,7 @@ A unique name for the index
 
 #### Defined in
 
-[index.ts:947](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L947)
+[index.ts:1287](https://github.com/lancedb/lancedb/blob/92179835/node/src/index.ts#L1287)
 
 ___
 
@@ -65,7 +65,7 @@ The max number of iterations for kmeans training.
 
 #### Defined in
 
-[index.ts:962](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L962)
+[index.ts:1302](https://github.com/lancedb/lancedb/blob/92179835/node/src/index.ts#L1302)
 
 ___
 
@@ -77,7 +77,7 @@ Max number of iterations to train OPQ, if `use_opq` is true.
 
 #### Defined in
 
-[index.ts:981](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L981)
+[index.ts:1321](https://github.com/lancedb/lancedb/blob/92179835/node/src/index.ts#L1321)
 
 ___
 
@@ -89,7 +89,7 @@ Metric type, L2 or Cosine
 
 #### Defined in
 
-[index.ts:952](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L952)
+[index.ts:1292](https://github.com/lancedb/lancedb/blob/92179835/node/src/index.ts#L1292)
 
 ___
 
@@ -101,7 +101,7 @@ The number of bits to present one PQ centroid.
 
 #### Defined in
 
-[index.ts:976](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L976)
+[index.ts:1316](https://github.com/lancedb/lancedb/blob/92179835/node/src/index.ts#L1316)
 
 ___
 
@@ -113,7 +113,7 @@ The number of partitions this index
 
 #### Defined in
 
-[index.ts:957](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L957)
+[index.ts:1297](https://github.com/lancedb/lancedb/blob/92179835/node/src/index.ts#L1297)
 
 ___
 
@@ -125,7 +125,7 @@ Number of subvectors to build PQ code
 
 #### Defined in
 
-[index.ts:972](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L972)
+[index.ts:1312](https://github.com/lancedb/lancedb/blob/92179835/node/src/index.ts#L1312)
 
 ___
 
@@ -137,7 +137,7 @@ Replace an existing index with the same name if it exists.
 
 #### Defined in
 
-[index.ts:986](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L986)
+[index.ts:1326](https://github.com/lancedb/lancedb/blob/92179835/node/src/index.ts#L1326)
 
 ___
 
@@ -147,7 +147,7 @@ ___
 
 #### Defined in
 
-[index.ts:993](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L993)
+[index.ts:1333](https://github.com/lancedb/lancedb/blob/92179835/node/src/index.ts#L1333)
 
 ___
 
@@ -159,4 +159,4 @@ Train as optimized product quantization.
 
 #### Defined in
 
-[index.ts:967](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L967)
+[index.ts:1307](https://github.com/lancedb/lancedb/blob/92179835/node/src/index.ts#L1307)
