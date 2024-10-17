@@ -44,6 +44,10 @@ export class EmbeddingFunctionRegistry {
     return this.#functions.size;
   }
 
+  functions() {
+    return this.#functions;
+  }
+
   /**
    * Register an embedding function
    * @param name The name of the function
@@ -122,10 +126,10 @@ export class EmbeddingFunctionRegistry {
   /**
    * @ignore
    */
-  async parseFunctions(
+  parseFunctions(
     this: EmbeddingFunctionRegistry,
     metadata: Map<string, string>,
-  ): Promise<Map<string, EmbeddingFunctionConfig>> {
+  ): Map<string, EmbeddingFunctionConfig> {
     if (!metadata.has("embedding_functions")) {
       return new Map();
     } else {
@@ -140,23 +144,21 @@ export class EmbeddingFunctionRegistry {
         JSON.parse(metadata.get("embedding_functions")!)
       );
 
-      const items: [string, EmbeddingFunctionConfig][] = await Promise.all(
-        functions.map(async (f) => {
-          const fn = this.get(f.name);
-          if (!fn) {
-            throw new Error(`Function "${f.name}" not found in registry`);
-          }
-          const func = await this.get(f.name)!.create(f.model);
-          return [
-            f.name,
-            {
-              sourceColumn: f.sourceColumn,
-              vectorColumn: f.vectorColumn,
-              function: func,
-            },
-          ];
-        }),
-      );
+      const items: [string, EmbeddingFunctionConfig][] = functions.map((f) => {
+        const fn = this.get(f.name);
+        if (!fn) {
+          throw new Error(`Function "${f.name}" not found in registry`);
+        }
+        const func = this.get(f.name)!.create(f.model);
+        return [
+          f.name,
+          {
+            sourceColumn: f.sourceColumn,
+            vectorColumn: f.vectorColumn,
+            function: func,
+          },
+        ];
+      });
 
       return new Map(items);
     }
