@@ -49,7 +49,7 @@ class RemoteTable(Table):
     def __len__(self) -> int:
         self.count_rows(None)
 
-    @cached_property
+    @property
     def schema(self) -> pa.Schema:
         """The [Arrow Schema](https://arrow.apache.org/docs/python/api/datatypes.html#)
         of this Table
