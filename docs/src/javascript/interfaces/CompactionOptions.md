@@ -24,7 +24,7 @@ Default is true.
 
 #### Defined in
 
-[index.ts:901](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L901)
+[index.ts:1241](https://github.com/lancedb/lancedb/blob/92179835/node/src/index.ts#L1241)
 
 ___
 
@@ -38,7 +38,7 @@ the deleted rows. Default is 10%.
 
 #### Defined in
 
-[index.ts:907](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L907)
+[index.ts:1247](https://github.com/lancedb/lancedb/blob/92179835/node/src/index.ts#L1247)
 
 ___
 
@@ -46,11 +46,11 @@ ___
 
 • `Optional` **maxRowsPerGroup**: `number`
 
-The maximum number of rows per group. Defaults to 1024.
+The maximum number of T per group. Defaults to 1024.
 
 #### Defined in
 
-[index.ts:895](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L895)
+[index.ts:1235](https://github.com/lancedb/lancedb/blob/92179835/node/src/index.ts#L1235)
 
 ___
 
@@ -63,7 +63,7 @@ the number of cores on the machine.
 
 #### Defined in
 
-[index.ts:912](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L912)
+[index.ts:1252](https://github.com/lancedb/lancedb/blob/92179835/node/src/index.ts#L1252)
 
 ___
 
@@ -77,4 +77,4 @@ Defaults to 1024 * 1024.
 
 #### Defined in
 
-[index.ts:891](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L891)
+[index.ts:1231](https://github.com/lancedb/lancedb/blob/92179835/node/src/index.ts#L1231)
