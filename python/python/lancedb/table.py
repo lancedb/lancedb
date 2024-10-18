@@ -61,7 +61,7 @@ if TYPE_CHECKING:
     from lance.dataset import CleanupStats, ReaderLike
     from ._lancedb import Table as LanceDBTable, OptimizeStats
     from .db import LanceDBConnection
-    from .index import BTree, IndexConfig, IvfPq, Bitmap, LabelList, FTS
+    from .index import BTree, IndexConfig, IvfPq, Bitmap, LabelList, FTS, HnswPq, HnswSq
 
 pd = safe_import_pandas()
 pl = safe_import_polars()
@@ -2302,7 +2302,9 @@ class AsyncTable:
         column: str,
         *,
         replace: Optional[bool] = None,
-        config: Optional[Union[IvfPq, BTree, Bitmap, LabelList, FTS]] = None,
+        config: Optional[
+            Union[IvfPq, HnswPq, HnswSq, BTree, Bitmap, LabelList, FTS]
+        ] = None,
     ):
         """Create an index to speed up queries
 
@@ -2455,7 +2457,33 @@ class AsyncTable:
     async def _execute_query(
         self, query: Query, batch_size: Optional[int] = None
     ) -> pa.RecordBatchReader:
-        pass
+        # The sync remote table calls into this method, so we need to map the
+        # query to the async version of the query and run that here. This is only
+        # used for that code path right now.
+        async_query = self.query().limit(query.k)
+        if query.offset > 0:
+            async_query = async_query.offset(query.offset)
+        if query.columns:
+            async_query = async_query.select(query.columns)
+        if query.filter:
+            async_query = async_query.where(query.filter)
+
+        if query.vector:
+            async_query = (
+                async_query.nearest_to(query.vector)
+                .distance_type(query.metric)
+                .nprobes(query.nprobes)
+            )
+            if query.refine_factor:
+                async_query = async_query.refine_factor(query.refine_factor)
+            if query.vector_column:
+                async_query = async_query.column(query.vector_column)
+
+        if not query.prefilter:
+            async_query = async_query.postfilter()
+
+        table = await async_query.to_arrow()
+        return table.to_reader()
 
     async def _do_merge(
         self,
@@ -2701,7 +2729,7 @@ class AsyncTable:
             cleanup_older_than = round(cleanup_older_than.total_seconds() * 1000)
         return await self._inner.optimize(cleanup_older_than, delete_unverified)
 
-    async def list_indices(self) -> IndexConfig:
+    async def list_indices(self) -> Iterable[IndexConfig]:
         """
         List all indices that have been created with Self::create_index
         """
@@ -2785,3 +2813,6 @@ class IndexStatistics:
     ]
     distance_type: Optional[Literal["l2", "cosine", "dot"]] = None
     num_indices: Optional[int] = None
+
+    def __getitem__(self, key):
+        return getattr(self, key)

@@ -11,62 +11,13 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
-import abc
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import List, Optional
 
-import attrs
 from lancedb import __version__
-import pyarrow as pa
-from pydantic import BaseModel
 
-from lancedb.common import VECTOR_COLUMN_NAME
-
-__all__ = ["LanceDBClient", "VectorQuery", "VectorQueryResult"]
-
-
-class VectorQuery(BaseModel):
-    # vector to search for
-    vector: List[float]
-
-    # sql filter to refine the query with
-    filter: Optional[str] = None
-
-    # top k results to return
-    k: int
-
-    # # metrics
-    _metric: str = "L2"
-
-    # which columns to return in the results
-    columns: Optional[List[str]] = None
-
-    # optional query parameters for tuning the results,
-    # e.g. `{"nprobes": "10", "refine_factor": "10"}`
-    nprobes: int = 10
-
-    refine_factor: Optional[int] = None
-
-    vector_column: str = VECTOR_COLUMN_NAME
-
-    fast_search: bool = False
-
-
-@attrs.define
-class VectorQueryResult:
-    # for now the response is directly seralized into a pandas dataframe
-    tbl: pa.Table
-
-    def to_arrow(self) -> pa.Table:
-        return self.tbl
-
-
-class LanceDBClient(abc.ABC):
-    @abc.abstractmethod
-    def query(self, table_name: str, query: VectorQuery) -> VectorQueryResult:
-        """Query the LanceDB server for the given table and query."""
-        pass
+__all__ = ["TimeoutConfig", "RetryConfig", "ClientConfig"]
 
 
 @dataclass
@@ -165,8 +116,8 @@ class RetryConfig:
 @dataclass
 class ClientConfig:
     user_agent: str = f"LanceDB-Python-Client/{__version__}"
-    retry_config: Optional[RetryConfig] = None
-    timeout_config: Optional[TimeoutConfig] = None
+    retry_config: RetryConfig = field(default_factory=RetryConfig)
+    timeout_config: Optional[TimeoutConfig] = field(default_factory=TimeoutConfig)
 
     def __post_init__(self):
         if isinstance(self.retry_config, dict):
