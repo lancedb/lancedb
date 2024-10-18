@@ -157,8 +157,6 @@ class FunctionWrapper:
     def __call__(self, text):
         # Get the embedding with retry
         if len(self.retry_kwargs) > 0:
-            from retry import retry
-
             @retry(**self.retry_kwargs)
             def embed_func(c):
                 return self.func(c.tolist())
