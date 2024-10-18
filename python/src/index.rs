@@ -215,7 +215,7 @@ impl IndexConfig {
 
     // For backwards-compatibility with the old sync SDK, we also support getting
     // attributes via __getitem__.
-    pub fn __getitem__<'py>(&self, key: String, py: Python<'py>) -> PyResult<PyObject> {
+    pub fn __getitem__(&self, key: String, py: Python<'_>) -> PyResult<PyObject> {
         match key.as_str() {
             "index_type" => Ok(self.index_type.clone().into_py(py)),
             "columns" => Ok(self.columns.clone().into_py(py)),

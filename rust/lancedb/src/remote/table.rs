@@ -114,10 +114,12 @@ impl<S: HttpSend> RemoteTable<S> {
     async fn read_arrow_stream(
         &self,
         request_id: &str,
-        body: reqwest::Response,
+        response: reqwest::Response,
     ) -> Result<SendableRecordBatchStream> {
+        let response = self.check_table_response(request_id, response).await?;
+
         // Assert that the content type is correct
-        let content_type = body
+        let content_type = response
             .headers()
             .get(CONTENT_TYPE)
             .ok_or_else(|| Error::Http {
@@ -145,7 +147,7 @@ impl<S: HttpSend> RemoteTable<S> {
 
         // There isn't a way to actually stream this data yet. I have an upstream issue:
         // https://github.com/apache/arrow-rs/issues/6420
-        let body = body.bytes().await.err_to_http(request_id.into())?;
+        let body = response.bytes().await.err_to_http(request_id.into())?;
         let reader = StreamReader::try_new(body.reader(), None)?;
         let schema = reader.schema();
         let stream = futures::stream::iter(reader).map_err(DataFusionError::from);
