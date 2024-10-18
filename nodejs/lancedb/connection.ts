@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { Data, Schema, SchemaLike, TableLike } from "./arrow";
+import { Data, Schema, SchemaLike, TableLike, tableFromIPC } from "./arrow";
 import { fromTableToBuffer, makeEmptyTable } from "./arrow";
 import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
 import { Connection as LanceDbConnection } from "./native";
@@ -248,7 +248,10 @@ export class LocalConnection extends Connection {
       options?.indexCacheSize,
     );
 
-    return new LocalTable(innerTable);
+    const schemaBuf = await innerTable.schema();
+    const tbl = tableFromIPC(schemaBuf);
+
+    return new LocalTable(innerTable, tbl.schema);
   }
 
   async createTable(
@@ -261,7 +264,7 @@ export class LocalConnection extends Connection {
     if (typeof nameOrOptions !== "string" && "name" in nameOrOptions) {
       const { name, data, ...options } = nameOrOptions;
 
-      return this.createTable(name, data, options);
+      return await this.createTable(name, data, options);
     }
     if (data === undefined) {
       throw new Error("data is required");
@@ -283,7 +286,10 @@ export class LocalConnection extends Connection {
       options?.enableV2ManifestPaths,
     );
 
-    return new LocalTable(innerTable);
+    const schemaBuf = await innerTable.schema();
+    const tbl = tableFromIPC(schemaBuf);
+
+    return new LocalTable(innerTable, tbl.schema);
   }
 
   async createEmptyTable(
@@ -321,7 +327,10 @@ export class LocalConnection extends Connection {
       dataStorageVersion,
       options?.enableV2ManifestPaths,
     );
-    return new LocalTable(innerTable);
+    const schemaBuf = await innerTable.schema();
+    const tbl = tableFromIPC(schemaBuf);
+
+    return new LocalTable(innerTable, tbl.schema);
   }
 
   async dropTable(name: string): Promise<void> {
