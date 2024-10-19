@@ -19,8 +19,8 @@ Deliver personalized experiences with Recommender Systems. 🎁
 [movie_python]: https://github.com/lancedb/vectordb-recipes/blob/main/examples/movie-recommender/main.py
 
 
-[genre_github]: https://github.com/lancedb/vectordb-recipes/blob/main/examples/movie-recommendation-with-genres
-[genre_colab]: https://colab.research.google.com/github/lancedb/vectordb-recipes/blob/main/examples/movie-recommendation-with-genres/movie_recommendation_with_doc2vec_and_lancedb.ipynb
+[genre_github]: https://github.com/lancedb/vectordb-recipes/tree/main/examples/archived_examples/movie-recommendation-with-genres
+[genre_colab]: https://colab.research.google.com/github/lancedb/vectordb-recipes/blob/main/examples/archived_examples/movie-recommendation-with-genres/movie_recommendation_with_doc2vec_and_lancedb.ipynb
 [genre_ghost]: https://blog.lancedb.com/movie-recommendation-system-using-lancedb-and-doc2vec/
 
 [product_github]: https://github.com/lancedb/vectordb-recipes/blob/main/examples/product-recommender
@@ -33,5 +33,5 @@ Deliver personalized experiences with Recommender Systems. 🎁
 [arxiv_python]: https://github.com/lancedb/vectordb-recipes/blob/main/examples/arxiv-recommender/main.py
  
 
-[food_github]: https://github.com/lancedb/vectordb-recipes/blob/main/examples/Food_recommendation
-[food_colab]: https://colab.research.google.com/github/lancedb/vectordb-recipes/blob/main/examples/Food_recommendation/main.ipynb
+[food_github]: https://github.com/lancedb/vectordb-recipes/tree/main/examples/archived_examples/Food_recommendation
+[food_colab]: https://colab.research.google.com/github/lancedb/vectordb-recipes/blob/main/examples/archived_examples/Food_recommendation/main.ipynb
