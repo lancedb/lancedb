@@ -370,7 +370,7 @@ describe("When creating an index", () => {
     expect(indices.length).toBe(1);
     expect(indices[0]).toEqual({
       name: "vec_idx",
-      indexType: "IvfPq",
+      indexType: "IVF_PQ",
       columns: ["vec"],
     });
 

@@ -213,7 +213,7 @@ impl IndexConfig {
 
 impl From<lancedb::index::IndexConfig> for IndexConfig {
     fn from(value: lancedb::index::IndexConfig) -> Self {
-        let index_type = format!("{:?}", value.index_type);
+        let index_type = format!("{}", value.index_type);
         Self {
             index_type,
             columns: value.columns,

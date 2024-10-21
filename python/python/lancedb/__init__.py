@@ -35,7 +35,7 @@ def connect(
     host_override: Optional[str] = None,
     read_consistency_interval: Optional[timedelta] = None,
     request_thread_pool: Optional[Union[int, ThreadPoolExecutor]] = None,
-    client_config: Optional[ClientConfig | Dict[str, Any]] = None,
+    client_config: Union[ClientConfig, Dict[str, Any], None] = None,
     **kwargs: Any,
 ) -> DBConnection:
     """Connect to a LanceDB database.
