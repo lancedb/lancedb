@@ -20,7 +20,7 @@ new values to set as SQL expressions.
 
 #### Defined in
 
-[index.ts:468](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L468)
+[index.ts:666](https://github.com/lancedb/lancedb/blob/92179835/node/src/index.ts#L666)
 
 ___
 
@@ -33,4 +33,4 @@ in which case all rows will be updated.
 
 #### Defined in
 
-[index.ts:462](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L462)
+[index.ts:660](https://github.com/lancedb/lancedb/blob/92179835/node/src/index.ts#L660)

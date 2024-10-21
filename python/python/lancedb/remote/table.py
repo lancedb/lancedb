@@ -25,27 +25,31 @@ from lancedb.embeddings import EmbeddingFunctionRegistry
 
 from ..query import LanceVectorQueryBuilder, LanceQueryBuilder
 from ..table import AsyncTable, Query, Table
-from ..util import infer_vector_column_name
 
 
 class RemoteTable(Table):
     def __init__(
         self,
         table: AsyncTable,
-        name: str,
+        db_name: str,
         loop: Optional[asyncio.AbstractEventLoop] = None,
     ):
         self._loop = loop
         self._table = table
-        self.name = name
+        self.db_name = db_name
+
+    @property
+    def name(self) -> str:
+        """The name of the table"""
+        return self._table.name
 
     def __repr__(self) -> str:
-        return f"RemoteTable({self._conn.db_name}.{self.name})"
+        return f"RemoteTable({self.db_name}.{self.name})"
 
     def __len__(self) -> int:
         self.count_rows(None)
 
-    @cached_property
+    @property
     def schema(self) -> pa.Schema:
         """The [Arrow Schema](https://arrow.apache.org/docs/python/api/datatypes.html#)
         of this Table
@@ -258,6 +262,7 @@ class RemoteTable(Table):
         vector_column_name: Optional[str] = None,
         query_type="auto",
         fts_columns: Optional[Union[str, List[str]]] = None,
+        fast_search: bool = False,
     ) -> LanceVectorQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support [vector search][search]
@@ -302,6 +307,12 @@ class RemoteTable(Table):
             - If the table has multiple vector columns then the *vector_column_name*
             needs to be specified. Otherwise, an error is raised.
 
+        fast_search: bool, optional
+            Skip a flat search of unindexed data. This may improve
+            search performance but search results will not include unindexed data.
+
+            - *default False*.
+
         Returns
         -------
         LanceQueryBuilder
@@ -318,12 +329,6 @@ class RemoteTable(Table):
         # empty query builder is not supported in saas, raise error
         if query is None and query_type != "hybrid":
             raise ValueError("Empty query is not supported")
-        vector_column_name = infer_vector_column_name(
-            schema=self.schema,
-            query_type=query_type,
-            query=query,
-            vector_column_name=vector_column_name,
-        )
 
         return LanceQueryBuilder.create(
             self,
@@ -331,6 +336,7 @@ class RemoteTable(Table):
             query_type,
             vector_column_name=vector_column_name,
             fts_columns=fts_columns,
+            fast_search=fast_search,
         )
 
     def _execute_query(

@@ -26,7 +26,7 @@
 
 #### Defined in
 
-[index.ts:116](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L116)
+[index.ts:163](https://github.com/lancedb/lancedb/blob/92179835/node/src/index.ts#L163)
 
 ___
 
@@ -36,7 +36,7 @@ ___
 
 #### Defined in
 
-[index.ts:122](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L122)
+[index.ts:169](https://github.com/lancedb/lancedb/blob/92179835/node/src/index.ts#L169)
 
 ___
 
@@ -46,7 +46,7 @@ ___
 
 #### Defined in
 
-[index.ts:113](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L113)
+[index.ts:160](https://github.com/lancedb/lancedb/blob/92179835/node/src/index.ts#L160)
 
 ___
 
@@ -56,7 +56,7 @@ ___
 
 #### Defined in
 
-[index.ts:119](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L119)
+[index.ts:166](https://github.com/lancedb/lancedb/blob/92179835/node/src/index.ts#L166)
 
 ___
 
@@ -66,4 +66,4 @@ ___
 
 #### Defined in
 
-[index.ts:125](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L125)
+[index.ts:172](https://github.com/lancedb/lancedb/blob/92179835/node/src/index.ts#L172)

@@ -84,6 +84,7 @@ class RemoteDBConnection(DBConnection):
         parsed = urlparse(db_url)
         if parsed.scheme != "db":
             raise ValueError(f"Invalid scheme: {parsed.scheme}, only accepts db://")
+        self.db_name = parsed.netloc
 
         try:
             self._loop = asyncio.get_running_loop()
@@ -149,7 +150,7 @@ class RemoteDBConnection(DBConnection):
             )
 
         table = self._loop.run_until_complete(self._conn.open_table(name))
-        return RemoteTable(table, name, self._loop)
+        return RemoteTable(table, self.db_name, self._loop)
 
     @override
     def create_table(
@@ -274,7 +275,7 @@ class RemoteDBConnection(DBConnection):
                 fill_value=fill_value,
             )
         )
-        return RemoteTable(table, name, self._loop)
+        return RemoteTable(table, self.db_name, self._loop)
 
     @override
     def drop_table(self, name: str):

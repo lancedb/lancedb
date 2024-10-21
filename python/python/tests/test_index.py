@@ -49,9 +49,11 @@ async def test_create_scalar_index(some_table: AsyncTable):
     # Can recreate if replace=True
     await some_table.create_index("id", replace=True)
     indices = await some_table.list_indices()
-    assert str(indices) == '[Index(BTREE, columns=["id"])]'
+    assert str(indices) == '[Index(BTREE, columns=["id"], name="id_idx")]'
     assert len(indices) == 1
     assert indices[0].index_type == "BTREE"
+    # Also support indexing
+    assert indices[0]["index_type"] == "BTREE"
     assert indices[0].columns == ["id"]
     # Can't recreate if replace=False
     with pytest.raises(RuntimeError, match="already exists"):
@@ -64,10 +66,12 @@ async def test_create_scalar_index(some_table: AsyncTable):
 async def test_create_bitmap_index(some_table: AsyncTable):
     await some_table.create_index("id", config=Bitmap())
     indices = await some_table.list_indices()
-    assert str(indices) == '[Index(BITMAP, columns=["id"])]'
+    assert str(indices) == '[Index(BITMAP, columns=["id"], name="id_idx")]'
     indices = await some_table.list_indices()
     assert len(indices) == 1
     index_name = indices[0].name
+    assert indices[0].index_type == "BITMAP"
+    assert indices[0].columns == ["id"]
     stats = await some_table.index_stats(index_name)
     assert stats.index_type == "BITMAP"
     assert stats.distance_type is None
@@ -80,7 +84,7 @@ async def test_create_bitmap_index(some_table: AsyncTable):
 async def test_create_label_list_index(some_table: AsyncTable):
     await some_table.create_index("tags", config=LabelList())
     indices = await some_table.list_indices()
-    assert str(indices) == '[Index(LABEL_LIST, columns=["tags"])]'
+    assert str(indices) == '[Index(LABEL_LIST, columns=["tags"], name="tags_idx")]'
 
 
 @pytest.mark.asyncio

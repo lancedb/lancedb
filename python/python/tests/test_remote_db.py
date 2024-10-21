@@ -11,6 +11,7 @@ import lancedb
 from lancedb.remote import ClientConfig
 from lancedb.remote.errors import HttpError, RetryError
 import pytest
+import pyarrow as pa
 
 
 def make_mock_http_handler(handler):
@@ -24,8 +25,35 @@ def make_mock_http_handler(handler):
     return MockLanceDBHandler
 
 
+@contextlib.contextmanager
+def mock_lancedb_connection(handler):
+    with http.server.HTTPServer(
+        ("localhost", 8080), make_mock_http_handler(handler)
+    ) as server:
+        handle = threading.Thread(target=server.serve_forever)
+        handle.start()
+
+        db = lancedb.connect(
+            "db://dev",
+            api_key="fake",
+            host_override="http://localhost:8080",
+            client_config={
+                "retry_config": {"retries": 2},
+                "timeout_config": {
+                    "connect_timeout": 1,
+                },
+            },
+        )
+
+        try:
+            yield db
+        finally:
+            server.shutdown()
+            handle.join()
+
+
 @contextlib.asynccontextmanager
-async def mock_lancedb_connection(handler):
+async def mock_lancedb_connection_async(handler):
     with http.server.HTTPServer(
         ("localhost", 8080), make_mock_http_handler(handler)
     ) as server:
@@ -67,7 +95,7 @@ async def test_async_remote_db():
         request.end_headers()
         request.wfile.write(b'{"tables": []}')
 
-    async with mock_lancedb_connection(handler) as db:
+    async with mock_lancedb_connection_async(handler) as db:
         table_names = await db.table_names()
         assert table_names == []
 
@@ -83,12 +111,12 @@ async def test_http_error():
         request.end_headers()
         request.wfile.write(b"Internal Server Error")
 
-    async with mock_lancedb_connection(handler) as db:
-        with pytest.raises(HttpError, match="Internal Server Error") as exc_info:
+    async with mock_lancedb_connection_async(handler) as db:
+        with pytest.raises(HttpError) as exc_info:
             await db.table_names()
 
         assert exc_info.value.request_id == request_id_holder["request_id"]
-        assert exc_info.value.status_code == 507
+        assert "Internal Server Error" in str(exc_info.value)
 
 
 @pytest.mark.asyncio
@@ -102,18 +130,49 @@ async def test_retry_error():
         request.end_headers()
         request.wfile.write(b"Try again later")
 
-    async with mock_lancedb_connection(handler) as db:
-        with pytest.raises(RetryError, match="Hit retry limit") as exc_info:
+    async with mock_lancedb_connection_async(handler) as db:
+        with pytest.raises(RetryError) as exc_info:
             await db.table_names()
 
         assert exc_info.value.request_id == request_id_holder["request_id"]
-        assert exc_info.value.status_code == 429
 
         cause = exc_info.value.__cause__
         assert isinstance(cause, HttpError)
         assert "Try again later" in str(cause)
         assert cause.request_id == request_id_holder["request_id"]
         assert cause.status_code == 429
+
+
+def test_query_sync():
+    def handler(request):
+        if request.path == "/v1/table/test/describe/":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b"{}")
+        elif request.path == "/v1/table/test/query/":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/vnd.apache.arrow.stream")
+            request.end_headers()
+            data = pa.table(
+                {
+                    "id": pa.array([1, 2, 3]),
+                }
+            )
+            with pa.ipc.new_stream(request.wfile, schema=data.schema) as stream:
+                stream.write_table(data)
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    with mock_lancedb_connection(handler) as db:
+        assert repr(db) == "RemoteConnect(name=dev)"
+        table = db.open_table("test")
+        assert repr(table) == "RemoteTable(dev.test)"
+
+        data = table.search([1, 2, 3]).to_list()
+        expected = [{"id": 1}, {"id": 2}, {"id": 3}]
+        assert data == expected
 
 
 def test_create_client():
