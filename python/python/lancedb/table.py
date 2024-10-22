@@ -55,6 +55,7 @@ from .util import (
     safe_import_polars,
     value_to_sql,
 )
+from .fts import lang_mapping
 
 if TYPE_CHECKING:
     import PIL
@@ -497,10 +498,18 @@ class Table(ABC):
         ordering_field_names: Union[str, List[str]] = None,
         *,
         replace: bool = False,
-        with_position: bool = True,
         writer_heap_size: Optional[int] = 1024 * 1024 * 1024,
-        tokenizer_name: str = "default",
         use_tantivy: bool = True,
+        tokenizer_name: Optional[str] = None,
+        with_position: bool = True,
+        # tokenizer configs:
+        base_tokenizer: str = "simple",
+        language: str = "English",
+        max_token_length: Optional[int] = 40,
+        lower_case: bool = True,
+        stem: bool = False,
+        remove_stop_words: bool = False,
+        ascii_folding: bool = False,
     ):
         """Create a full-text search index on the table.
 
@@ -526,7 +535,6 @@ class Table(ABC):
             The tokenizer to use for the index. Can be "raw", "default" or the 2 letter
             language code followed by "_stem". So for english it would be "en_stem".
             For available languages see: https://docs.rs/tantivy/latest/tantivy/tokenizer/enum.Language.html
-            only available with use_tantivy=True for now
         use_tantivy: bool, default True
             If True, use the legacy full-text search implementation based on tantivy.
             If False, use the new full-text search implementation based on lance-index.
@@ -1341,14 +1349,33 @@ class LanceTable(Table):
         ordering_field_names: Union[str, List[str]] = None,
         *,
         replace: bool = False,
-        with_position: bool = True,
         writer_heap_size: Optional[int] = 1024 * 1024 * 1024,
-        tokenizer_name: str = "default",
         use_tantivy: bool = True,
+        tokenizer_name: Optional[str] = None,
+        with_position: bool = True,
+        # tokenizer configs:
+        base_tokenizer: str = "simple",
+        language: str = "English",
+        max_token_length: Optional[int] = 40,
+        lower_case: bool = True,
+        stem: bool = False,
+        remove_stop_words: bool = False,
+        ascii_folding: bool = False,
     ):
         if not use_tantivy:
             if not isinstance(field_names, str):
                 raise ValueError("field_names must be a string when use_tantivy=False")
+            tokenizer_configs = {
+                "base_tokenizer": base_tokenizer,
+                "language": language,
+                "max_token_length": max_token_length,
+                "lower_case": lower_case,
+                "stem": stem,
+                "remove_stop_words": remove_stop_words,
+                "ascii_folding": ascii_folding,
+            }
+            if tokenizer_name is not None:
+                tokenizer_configs = self.infer_tokenizer_configs(tokenizer_name)
             # delete the existing legacy index if it exists
             if replace:
                 path, fs, exist = self._get_fts_index_path()
@@ -1359,6 +1386,7 @@ class LanceTable(Table):
                 index_type="INVERTED",
                 replace=replace,
                 with_position=with_position,
+                **tokenizer_configs,
             )
             return
 
@@ -1381,6 +1409,8 @@ class LanceTable(Table):
                 "Full-text search is only supported on the local filesystem"
             )
 
+        if tokenizer_name is None:
+            tokenizer_name = "default"
         index = create_index(
             path,
             field_names,
@@ -1394,6 +1424,56 @@ class LanceTable(Table):
             ordering_fields=ordering_field_names,
             writer_heap_size=writer_heap_size,
         )
+
+    def infer_tokenizer_configs(tokenizer_name: str) -> dict:
+        if tokenizer_name == "default":
+            return {
+                "base_tokenizer": "simple",
+                "language": "English",
+                "max_token_length": 40,
+                "lower_case": True,
+                "stem": False,
+                "remove_stop_words": False,
+                "ascii_folding": False,
+            }
+        elif tokenizer_name == "raw":
+            return {
+                "base_tokenizer": "raw",
+                "language": "English",
+                "max_token_length": None,
+                "lower_case": False,
+                "stem": False,
+                "remove_stop_words": False,
+                "ascii_folding": False,
+            }
+        elif tokenizer_name == "whitespace":
+            return {
+                "base_tokenizer": "whitespace",
+                "language": "English",
+                "max_token_length": None,
+                "lower_case": False,
+                "stem": False,
+                "remove_stop_words": False,
+                "ascii_folding": False,
+            }
+
+        # or it's with language stemming with pattern like "en_stem"
+        if len(tokenizer_name) != 7:
+            raise ValueError(f"Invalid tokenizer name {tokenizer_name}")
+        lang = tokenizer_name[:2]
+        if tokenizer_name[-5:] != "_stem":
+            raise ValueError(f"Invalid tokenizer name {tokenizer_name}")
+        if lang not in lang_mapping:
+            raise ValueError(f"Invalid language code {lang}")
+        return {
+            "base_tokenizer": "simple",
+            "language": lang_mapping[lang],
+            "max_token_length": 40,
+            "lower_case": True,
+            "stem": True,
+            "remove_stop_words": False,
+            "ascii_folding": False,
+        }
 
     def add(
         self,
