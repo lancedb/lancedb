@@ -92,6 +92,11 @@ glob = "node/package.json"
 replace = "\"@lancedb/vectordb-win32-x64-msvc\": \"{new_version}\""
 search = "\"@lancedb/vectordb-win32-x64-msvc\": \"{current_version}\""
 
+[[tool.bumpversion.files]]
+glob = "node/package.json"
+replace = "\"@lancedb/vectordb-win32-arm64-msvc\": \"{new_version}\""
+search = "\"@lancedb/vectordb-win32-arm64-msvc\": \"{current_version}\""
+
 # Cargo files
 # ------------
 [[tool.bumpversion.files]]
