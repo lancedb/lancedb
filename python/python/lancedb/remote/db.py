@@ -42,7 +42,7 @@ class RemoteDBConnection(DBConnection):
         region: str,
         host_override: Optional[str] = None,
         request_thread_pool: Optional[ThreadPoolExecutor] = None,
-        client_config: Optional[ClientConfig | Dict[str, Any]] = None,
+        client_config: Union[ClientConfig, Dict[str, Any], None] = None,
         connection_timeout: Optional[float] = None,
         read_timeout: Optional[float] = None,
     ):
