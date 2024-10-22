@@ -35,21 +35,21 @@ jobs:
       CC: clang-18
       CXX: clang++-18
     steps:
-    - uses: actions/checkout@v4
-      with:
+      - uses: actions/checkout@v4
+        with:
           fetch-depth: 0
           lfs: true
-    - uses: Swatinem/rust-cache@v2
-      with:
-        workspaces: rust
-    - name: Install dependencies
-      run: |
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Install dependencies
+        run: |
           sudo apt update
           sudo apt install -y protobuf-compiler libssl-dev
-    - name: Run format
-      run: cargo fmt --all -- --check
-    - name: Run clippy
-      run: cargo clippy --workspace --tests --all-features -- -D warnings
+      - name: Run format
+        run: cargo fmt --all -- --check
+      - name: Run clippy
+        run: cargo clippy --workspace --tests --all-features -- -D warnings
   linux:
     timeout-minutes: 30
     # To build all features, we need more disk space than is available
@@ -65,37 +65,37 @@ jobs:
       CC: clang-18
       CXX: clang++-18
     steps:
-    - uses: actions/checkout@v4
-      with:
+      - uses: actions/checkout@v4
+        with:
           fetch-depth: 0
           lfs: true
-    - uses: Swatinem/rust-cache@v2
-      with:
+      - uses: Swatinem/rust-cache@v2
+        with:
           workspaces: rust
-    - name: Install dependencies
-      run: |
+      - name: Install dependencies
+        run: |
           sudo apt update
           sudo apt install -y protobuf-compiler libssl-dev
-    - name: Make Swap
-      run: |
-        sudo fallocate -l 16G /swapfile
-        sudo chmod 600 /swapfile
-        sudo mkswap /swapfile
-        sudo swapon /swapfile
-    - name: Start S3 integration test environment
-      working-directory: .
-      run: docker compose up --detach --wait
-    - name: Build
-      run: cargo build --all-features
-    - name: Run tests
-      run: cargo test --all-features
-    - name: Run examples
-      run: cargo run --example simple
+      - name: Make Swap
+        run: |
+          sudo fallocate -l 16G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+      - name: Start S3 integration test environment
+        working-directory: .
+        run: docker compose up --detach --wait
+      - name: Build
+        run: cargo build --all-features
+      - name: Run tests
+        run: cargo test --all-features
+      - name: Run examples
+        run: cargo run --example simple
   macos:
     timeout-minutes: 30
     strategy:
       matrix:
-        mac-runner: [ "macos-13", "macos-14" ]
+        mac-runner: ["macos-13", "macos-14"]
     runs-on: "${{ matrix.mac-runner }}"
     defaults:
       run:
@@ -104,8 +104,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-            fetch-depth: 0
-            lfs: true
+          fetch-depth: 0
+          lfs: true
       - name: CPU features
         run: sysctl -a | grep cpu
       - uses: Swatinem/rust-cache@v2
@@ -139,3 +139,24 @@ jobs:
           $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
           cargo build
           cargo test
+  windows-arm64:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Install Protoc v21.12
+        working-directory: C:\
+        run: |
+          New-Item -Path 'C:\protoc' -ItemType Directory
+          Set-Location C:\protoc
+          Invoke-WebRequest https://github.com/protocolbuffers/protobuf/releases/download/v21.12/protoc-21.12-win64.zip -OutFile C:\protoc\protoc.zip
+          7z x protoc.zip
+          Add-Content $env:GITHUB_PATH "C:\protoc\bin"
+        shell: powershell
+      - name: Run tests
+        run: |
+          $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
+          cargo build --target aarch64-pc-windows-msvc
+          cargo test --target aarch64-pc-windows-msvc
