@@ -1568,6 +1568,7 @@ impl NativeTable {
         let mut dataset = self.dataset.get_mut().await?;
         let fts_params = lance_index::scalar::InvertedIndexParams {
             with_position: fts_opts.with_position,
+            tokenizer_config: Default::default(),
         };
         dataset
             .create_index(
@@ -2002,7 +2003,7 @@ impl TableInternal for NativeTable {
         self.dataset
             .get_mut()
             .await?
-            .add_columns(transforms, read_columns)
+            .add_columns(transforms, read_columns, None)
             .await?;
         Ok(())
     }
