@@ -146,13 +146,32 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust
-      - name: Install Protoc v21.12
+      - name: Install Visual Studio 2022
+        uses: microsoft/setup-msbuild@v1.1
+      - name: Install CMake
+        uses: lukka/get-cmake@latest
+      - name: Install and Compile Protoc for ARM64
         working-directory: C:\
         run: |
-          New-Item -Path 'C:\protoc' -ItemType Directory
-          Set-Location C:\protoc
-          Invoke-WebRequest https://github.com/protocolbuffers/protobuf/releases/download/v21.12/protoc-21.12-win64.zip -OutFile C:\protoc\protoc.zip
-          7z x protoc.zip
+          # Download Protobuf source
+          $protobuf_version = "21.12"
+          $protobuf_url = "https://github.com/protocolbuffers/protobuf/archive/refs/tags/v$protobuf_version.zip"
+          Invoke-WebRequest $protobuf_url -OutFile C:\protobuf.zip
+          Expand-Archive C:\protobuf.zip -DestinationPath C:\
+          cd C:\protobuf-$protobuf_version
+
+          # Create build directory
+          mkdir build
+          cd build
+
+          # Configure CMake for ARM64
+          cmake -A ARM64 -DCMAKE_INSTALL_PREFIX=C:\protoc -Dprotobuf_BUILD_TESTS=OFF ..
+
+          # Build and install
+          cmake --build . --config Release
+          cmake --install .
+
+          # Add to PATH
           Add-Content $env:GITHUB_PATH "C:\protoc\bin"
         shell: powershell
       - name: Run tests
