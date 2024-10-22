@@ -22,7 +22,7 @@ categories = ["database-implementations"]
 [workspace.dependencies]
 lance = { "version" = "=0.19.1", "features" = [
     "dynamodb",
-], git = "https://github.com/lancedb/lance.git"}
+], git = "https://github.com/lancedb/lance.git", tag = "v0.19.1"}
 lance-index = { "version" = "=0.19.1", git = "https://github.com/lancedb/lance.git" }
 lance-linalg = { "version" = "=0.19.1", git = "https://github.com/lancedb/lance.git" }
 lance-table = { "version" = "=0.19.1", git = "https://github.com/lancedb/lance.git" }
