@@ -54,12 +54,14 @@ pub struct LabelListIndexBuilder {}
 #[derive(Debug, Clone)]
 pub struct FtsIndexBuilder {
     pub(crate) with_position: bool,
+    pub tokenizer_configs: TokenizerConfig,
 }
 
 impl Default for FtsIndexBuilder {
     fn default() -> Self {
         Self {
             with_position: true,
+            tokenizer_configs: TokenizerConfig::default(),
         }
     }
 }
@@ -72,4 +74,5 @@ impl FtsIndexBuilder {
     }
 }
 
+use lance_index::scalar::inverted::TokenizerConfig;
 pub use lance_index::scalar::FullTextSearchQuery;

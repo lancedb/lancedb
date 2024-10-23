@@ -49,7 +49,8 @@ The following pages go deeper into the internal of LanceDB and how to use it.
 * [Working with tables](guides/tables.md): Learn how to work with tables and their associated functions
 * [Indexing](ann_indexes.md): Understand how to create indexes
 * [Vector search](search.md): Learn how to perform vector similarity search
-* [Full-text search](fts.md): Learn how to perform full-text search
+* [Full-text search (native)](fts.md): Learn how to perform full-text search
+* [Full-text search (tantivy-based)](fts_tantivy.md): Learn how to perform full-text search using Tantivy
 * [Managing embeddings](embeddings/index.md): Managing embeddings and the embedding functions API in LanceDB
 * [Ecosystem Integrations](integrations/index.md): Integrate LanceDB with other tools in the data ecosystem
 * [Python API Reference](python/python.md): Python OSS and Cloud API references
