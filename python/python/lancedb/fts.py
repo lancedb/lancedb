@@ -27,6 +27,7 @@ except ImportError:
 
 from .table import LanceTable
 
+
 def create_index(
     index_path: str,
     text_fields: List[str],

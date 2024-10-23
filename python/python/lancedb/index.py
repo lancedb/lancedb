@@ -28,6 +28,7 @@ lang_mapping = {
     "tr": "Turkish",
 }
 
+
 class BTree:
     """Describes a btree index configuration
 
