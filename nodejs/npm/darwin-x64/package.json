@@ -1,6 +1,6 @@
 {
 	"name": "@lancedb/lancedb-darwin-x64",
-	"version": "0.11.1-beta.0",
+	"version": "0.11.1-beta.1",
 	"os": ["darwin"],
 	"cpu": ["x64"],
 	"main": "lancedb.darwin-x64.node",
