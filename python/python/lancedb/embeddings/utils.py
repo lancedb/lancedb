@@ -161,7 +161,6 @@ class FunctionWrapper:
             @retry(**self.retry_kwargs)
             def embed_func(c):
                 return self.func(c.tolist())
-
         else:
 
             def embed_func(c):

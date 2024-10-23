@@ -1,7 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use crate::index::Index;
-use crate::index::IndexStatistics;
+use crate::index::{Index, IndexStatistics};
 use crate::query::Select;
 use crate::table::AddDataMode;
 use crate::utils::{supported_btree_data_type, supported_vector_data_type};
@@ -115,10 +114,12 @@ impl<S: HttpSend> RemoteTable<S> {
     async fn read_arrow_stream(
         &self,
         request_id: &str,
-        body: reqwest::Response,
+        response: reqwest::Response,
     ) -> Result<SendableRecordBatchStream> {
+        let response = self.check_table_response(request_id, response).await?;
+
         // Assert that the content type is correct
-        let content_type = body
+        let content_type = response
             .headers()
             .get(CONTENT_TYPE)
             .ok_or_else(|| Error::Http {
@@ -146,7 +147,7 @@ impl<S: HttpSend> RemoteTable<S> {
 
         // There isn't a way to actually stream this data yet. I have an upstream issue:
         // https://github.com/apache/arrow-rs/issues/6420
-        let body = body.bytes().await.err_to_http(request_id.into())?;
+        let body = response.bytes().await.err_to_http(request_id.into())?;
         let reader = StreamReader::try_new(body.reader(), None)?;
         let schema = reader.schema();
         let stream = futures::stream::iter(reader).map_err(DataFusionError::from);
@@ -277,7 +278,7 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
             .post(&format!("/v1/table/{}/count_rows/", self.name));
 
         if let Some(filter) = filter {
-            request = request.json(&serde_json::json!({ "filter": filter }));
+            request = request.json(&serde_json::json!({ "predicate": filter }));
         } else {
             request = request.json(&serde_json::json!({}));
         }
@@ -804,7 +805,7 @@ mod tests {
             );
             assert_eq!(
                 request.body().unwrap().as_bytes().unwrap(),
-                br#"{"filter":"a > 10"}"#
+                br#"{"predicate":"a > 10"}"#
             );
 
             http::Response::builder().status(200).body("42").unwrap()
