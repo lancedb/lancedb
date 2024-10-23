@@ -7,6 +7,26 @@ from ._lancedb import (
     IndexConfig,
 )
 
+lang_mapping = {
+    "ar": "Arabic",
+    "da": "Danish",
+    "du": "Dutch",
+    "en": "English",
+    "fi": "Finnish",
+    "fr": "French",
+    "de": "German",
+    "gr": "Greek",
+    "hu": "Hungarian",
+    "it": "Italian",
+    "no": "Norwegian",
+    "pt": "Portuguese",
+    "ro": "Romanian",
+    "ru": "Russian",
+    "es": "Spanish",
+    "sv": "Swedish",
+    "ta": "Tamil",
+    "tr": "Turkish",
+}
 
 class BTree:
     """Describes a btree index configuration

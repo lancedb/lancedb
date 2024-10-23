@@ -55,7 +55,7 @@ from .util import (
     safe_import_polars,
     value_to_sql,
 )
-from .fts import lang_mapping
+from .index import lang_mapping
 
 if TYPE_CHECKING:
     import PIL

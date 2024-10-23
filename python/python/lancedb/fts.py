@@ -27,28 +27,6 @@ except ImportError:
 
 from .table import LanceTable
 
-lang_mapping = {
-    "ar": "Arabic",
-    "da": "Danish",
-    "du": "Dutch",
-    "en": "English",
-    "fi": "Finnish",
-    "fr": "French",
-    "de": "German",
-    "gr": "Greek",
-    "hu": "Hungarian",
-    "it": "Italian",
-    "no": "Norwegian",
-    "pt": "Portuguese",
-    "ro": "Romanian",
-    "ru": "Russian",
-    "es": "Spanish",
-    "sv": "Swedish",
-    "ta": "Tamil",
-    "tr": "Turkish",
-}
-
-
 def create_index(
     index_path: str,
     text_fields: List[str],
