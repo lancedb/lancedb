@@ -2004,7 +2004,7 @@ impl TableInternal for NativeTable {
         self.dataset
             .get_mut()
             .await?
-            .add_columns(transforms, read_columns)
+            .add_columns(transforms, read_columns, None)
             .await?;
         Ok(())
     }
