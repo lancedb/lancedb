@@ -82,6 +82,7 @@ pub mod merge;
 pub use chrono::Duration;
 pub use lance::dataset::optimize::CompactionOptions;
 pub use lance_index::optimize::OptimizeOptions;
+use lance_index::scalar::inverted::TokenizerConfig;
 
 /// Defines the type of column
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1568,6 +1569,7 @@ impl NativeTable {
         let mut dataset = self.dataset.get_mut().await?;
         let fts_params = lance_index::scalar::InvertedIndexParams {
             with_position: fts_opts.with_position,
+            tokenizer_config: TokenizerConfig::default()
         };
         dataset
             .create_index(
