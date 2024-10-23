@@ -106,6 +106,7 @@ impl Index {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     #[staticmethod]
     pub fn fts(
         with_position: Option<bool>,
