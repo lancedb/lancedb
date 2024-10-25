@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import time
 from abc import ABC, abstractmethod
@@ -32,7 +33,7 @@ import pyarrow.fs as pa_fs
 from lance import LanceDataset
 from lance.dependencies import _check_for_hugging_face
 
-from .common import DATA, VEC, VECTOR_COLUMN_NAME
+from .common import DATA, VEC, VECTOR_COLUMN_NAME, sanitize_uri
 from .embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
 from .merge import LanceMergeInsertBuilder
 from .pydantic import LanceModel, model_to_dict
@@ -55,6 +56,8 @@ from .util import (
     safe_import_polars,
     value_to_sql,
 )
+
+from ._lancedb import connect as lancedb_connect
 
 if TYPE_CHECKING:
     import PIL
@@ -882,6 +885,22 @@ class Table(ABC):
         for faster reads.
 
         Arguments are passed onto :meth:`lance.dataset.DatasetOptimizer.compact_files`.
+        For most cases, the default should be fine.
+        """
+
+    @abstractmethod
+    def optimize_indices(self, **kwargs):
+        """
+        Optimize the indices of the table.
+
+        This incrementally updates the indices of the table,
+        to make queries faster.
+
+        Note: This function is not available in LanceDb Cloud (since LanceDb
+        Cloud manages index optimization for you automatically)
+
+        Arguments are passed onto
+        :meth:`lance.dataset.DatasetOptimizer.optimize_indices`.
         For most cases, the default should be fine.
         """
 
@@ -1888,6 +1907,27 @@ class LanceTable(Table):
         should be fine.
         """
         return self.to_lance().optimize.compact_files(*args, **kwargs)
+
+    def optimize_indices(self, **kwargs):
+        try:
+            asyncio.get_running_loop()
+            return self.to_lance().optimize.optimize_indices(**kwargs)
+        except RuntimeError:
+            result = asyncio.run(self._async_optimize_indices(**kwargs))
+            # need to update the ref to make the changes visible
+            self._ref = _LanceLatestDatasetRef(
+                uri=self._dataset_uri,
+                read_consistency_interval=self._ref.read_consistency_interval,
+                index_cache_size=self._ref.index_cache_size,
+            )
+            return result
+
+    async def _async_optimize_indices(self, **kwargs):
+        conn = await lancedb_connect(
+            sanitize_uri(self._conn.uri),
+        )
+        table = AsyncTable(await conn.open_table(self.name))
+        return await table.optimize()
 
     def add_columns(self, transforms: Dict[str, str]):
         self._dataset_mut.add_columns(transforms)
