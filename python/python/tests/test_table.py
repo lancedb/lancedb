@@ -1219,6 +1219,26 @@ def test_sync_optimize(db):
     stats = table.to_lance().stats.index_stats("price_idx")
     assert stats["num_indexed_rows"] == 3
 
+@pytest.mark.asyncio
+async def test_sync_optimize_in_async(db):
+    table = LanceTable.create(
+        db,
+        "test",
+        data=[
+            {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+            {"vector": [5.9, 26.5], "item": "bar", "price": 20.0},
+        ],
+    )
+
+    table.create_scalar_index("price", index_type="BTREE")
+    stats = table.to_lance().stats.index_stats("price_idx")
+    assert stats["num_indexed_rows"] == 2
+
+    table.add([{"vector": [2.0, 2.0], "item": "baz", "price": 30.0}])
+    assert table.count_rows() == 3
+    table.optimize_indices()
+    stats = table.to_lance().stats.index_stats("price_idx")
+    assert stats["num_indexed_rows"] == 3
 
 @pytest.mark.asyncio
 async def test_optimize(db_async: AsyncConnection):
