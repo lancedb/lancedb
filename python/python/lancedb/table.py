@@ -1914,12 +1914,8 @@ class LanceTable(Table):
             return self.to_lance().optimize.optimize_indices(**kwargs)
         except RuntimeError:
             result = asyncio.run(self._async_optimize_indices(**kwargs))
-            # need to update the ref to make the changes visible
-            self._ref = _LanceLatestDatasetRef(
-                uri=self._dataset_uri,
-                read_consistency_interval=self._ref.read_consistency_interval,
-                index_cache_size=self._ref.index_cache_size,
-            )
+            # need to checkout to the latest version to make the changes visible
+            self.checkout_latest()
             return result
 
     async def _async_optimize_indices(self, **kwargs):
