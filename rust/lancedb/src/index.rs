@@ -121,6 +121,7 @@ pub enum IndexType {
     // FTS
     #[serde(alias = "INVERTED")]
     FTS,
+    INVERTED,
 }
 
 impl std::fmt::Display for IndexType {
