@@ -564,6 +564,12 @@ class RemoteTable(Table):
             "compact_files() is not supported on the LanceDB cloud"
         )
 
+    def optimize_indices(self, **kwargs):
+        """optimize_indices() is not supported on the LanceDB cloud"""
+        raise NotImplementedError(
+            "optimize_indices() is not supported on the LanceDB cloud"
+        )
+
     def count_rows(self, filter: Optional[str] = None) -> int:
         payload = {"predicate": filter}
         resp = self._conn._client.post(
