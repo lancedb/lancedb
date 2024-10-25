@@ -120,7 +120,7 @@ pub enum IndexType {
     LabelList,
     // FTS
     FTS,
-    #[serde(alias = "LABEL_LIST")]
+    #[serde(alias = "INVERTED")]
     Inverted,
 }
 
