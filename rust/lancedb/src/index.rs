@@ -120,6 +120,8 @@ pub enum IndexType {
     LabelList,
     // FTS
     FTS,
+    #[serde(alias = "LABEL_LIST")]
+    Inverted,
 }
 
 impl std::fmt::Display for IndexType {
