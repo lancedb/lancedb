@@ -1219,6 +1219,7 @@ def test_sync_optimize(db):
     stats = table.to_lance().stats.index_stats("price_idx")
     assert stats["num_indexed_rows"] == 3
 
+
 @pytest.mark.asyncio
 async def test_sync_optimize_in_async(db):
     table = LanceTable.create(
@@ -1239,6 +1240,7 @@ async def test_sync_optimize_in_async(db):
     table.optimize_indices()
     stats = table.to_lance().stats.index_stats("price_idx")
     assert stats["num_indexed_rows"] == 3
+
 
 @pytest.mark.asyncio
 async def test_optimize(db_async: AsyncConnection):
