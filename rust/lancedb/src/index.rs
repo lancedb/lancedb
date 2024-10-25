@@ -133,7 +133,6 @@ impl std::fmt::Display for IndexType {
             Self::Bitmap => write!(f, "BITMAP"),
             Self::LabelList => write!(f, "LABEL_LIST"),
             Self::FTS => write!(f, "FTS"),
-            Self::Inverted => write!(f, "FTS"),
         }
     }
 }
