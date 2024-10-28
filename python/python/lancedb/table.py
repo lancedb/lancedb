@@ -57,12 +57,17 @@ from .util import (
     value_to_sql,
 )
 
-from ._lancedb import connect as lancedb_connect
+from ._lancedb import (
+    CompactionStats,
+    OptimizeStats,
+    RemovalStats,
+    connect as lancedb_connect,
+)
 
 if TYPE_CHECKING:
     import PIL
     from lance.dataset import CleanupStats, ReaderLike
-    from ._lancedb import Table as LanceDBTable, OptimizeStats
+    from ._lancedb import Table as LanceDBTable
     from .db import LanceDBConnection
     from .index import BTree, IndexConfig, IvfPq, Bitmap, LabelList, FTS
 
@@ -889,7 +894,7 @@ class Table(ABC):
         """
 
     @abstractmethod
-    def optimize_indices(self, **kwargs):
+    def optimize(self, **kwargs):
         """
         Optimize the indices of the table.
 
@@ -1908,22 +1913,96 @@ class LanceTable(Table):
         """
         return self.to_lance().optimize.compact_files(*args, **kwargs)
 
-    def optimize_indices(self, **kwargs):
+    def optimize(
+        self,
+        *,
+        cleanup_older_than: Optional[timedelta] = None,
+        delete_unverified: bool = False,
+    ) -> OptimizeStats:
+        """
+        Optimize the on-disk data and indices for better performance.
+
+        Modeled after ``VACUUM`` in PostgreSQL.
+
+        Optimization covers three operations:
+
+         * Compaction: Merges small files into larger ones
+         * Prune: Removes old versions of the dataset
+         * Index: Optimizes the indices, adding new data to existing indices
+
+        Parameters
+        ----------
+        cleanup_older_than: timedelta, optional default 7 days
+            All files belonging to versions older than this will be removed.  Set
+            to 0 days to remove all versions except the latest.  The latest version
+            is never removed.
+        delete_unverified: bool, default False
+            Files leftover from a failed transaction may appear to be part of an
+            in-progress operation (e.g. appending new data) and these files will not
+            be deleted unless they are at least 7 days old. If delete_unverified is True
+            then these files will be deleted regardless of their age.
+
+        Experimental API
+        ----------------
+
+        The optimization process is undergoing active development and may change.
+        Our goal with these changes is to improve the performance of optimization and
+        reduce the complexity.
+
+        That being said, it is essential today to run optimize if you want the best
+        performance.  It should be stable and safe to use in production, but it our
+        hope that the API may be simplified (or not even need to be called) in the
+        future.
+
+        The frequency an application shoudl call optimize is based on the frequency of
+        data modifications.  If data is frequently added, deleted, or updated then
+        optimize should be run frequently.  A good rule of thumb is to run optimize if
+        you have added or modified 100,000 or more records or run more than 20 data
+        modification operations.
+        """
         try:
             asyncio.get_running_loop()
-            return self.to_lance().optimize.optimize_indices(**kwargs)
+            compact_results = self.compact_files()
+            cleanup_results = self.cleanup_old_versions(older_than=cleanup_older_than)
+            self.to_lance().optimize.optimize_indices()
+
+            compact_stats = CompactionStats()
+            compact_stats.fragments_removed = compact_results.fragments_removed
+            compact_stats.fragments_added = compact_results.fragments_added
+            compact_stats.files_removed = compact_results.files_removed
+            compact_stats.files_added = compact_results.files_added
+
+            removal_stats = RemovalStats()
+            removal_stats.bytes_removed = cleanup_results.bytes_removed
+            removal_stats.old_versions_removed = cleanup_results.old_versions
+
+            optimize_stats = OptimizeStats()
+            optimize_stats.compaction = compact_stats
+            optimize_stats.prune = removal_stats
+            return optimize_stats
+
         except RuntimeError:
-            result = asyncio.run(self._async_optimize_indices(**kwargs))
-            # need to checkout to the latest version to make the changes visible
+            result = asyncio.run(
+                self._async_optimize(
+                    cleanup_older_than=cleanup_older_than,
+                    delete_unverified=delete_unverified,
+                )
+            )
             self.checkout_latest()
             return result
 
-    async def _async_optimize_indices(self, **kwargs):
+    async def _async_optimize(
+        self,
+        cleanup_older_than: Optional[timedelta] = None,
+        delete_unverified: bool = False,
+    ):
         conn = await lancedb_connect(
             sanitize_uri(self._conn.uri),
         )
         table = AsyncTable(await conn.open_table(self.name))
-        return await table.optimize()
+        return await table.optimize(
+            cleanup_older_than=cleanup_older_than, delete_unverified=delete_unverified
+        )
 
     def add_columns(self, transforms: Dict[str, str]):
         self._dataset_mut.add_columns(transforms)
