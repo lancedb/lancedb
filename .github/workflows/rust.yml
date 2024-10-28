@@ -26,15 +26,14 @@ env:
 jobs:
   lint:
     timeout-minutes: 30
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     defaults:
       run:
         shell: bash
-        working-directory: rust
     env:
       # Need up-to-date compilers for kernels
-      CC: gcc-12
-      CXX: g++-12
+      CC: clang-18
+      CXX: clang++-18
     steps:
     - uses: actions/checkout@v4
       with:
@@ -50,21 +49,21 @@ jobs:
     - name: Run format
       run: cargo fmt --all -- --check
     - name: Run clippy
-      run: cargo clippy --all --all-features -- -D warnings
+      run: cargo clippy --workspace --tests --all-features -- -D warnings
   linux:
     timeout-minutes: 30
     # To build all features, we need more disk space than is available
-    # on the GitHub-provided runner. This is mostly due to the the
+    # on the free OSS github runner. This is mostly due to the the
     # sentence-transformers feature.
-    runs-on: warp-ubuntu-latest-x64-4x
+    runs-on: ubuntu-2404-4x-x64
     defaults:
       run:
         shell: bash
         working-directory: rust
     env:
       # Need up-to-date compilers for kernels
-      CC: gcc-12
-      CXX: g++-12
+      CC: clang-18
+      CXX: clang++-18
     steps:
     - uses: actions/checkout@v4
       with:
@@ -77,6 +76,12 @@ jobs:
       run: |
           sudo apt update
           sudo apt install -y protobuf-compiler libssl-dev
+    - name: Make Swap
+      run: |
+        sudo fallocate -l 16G /swapfile
+        sudo chmod 600 /swapfile
+        sudo mkswap /swapfile
+        sudo swapon /swapfile
     - name: Start S3 integration test environment
       working-directory: .
       run: docker compose up --detach --wait

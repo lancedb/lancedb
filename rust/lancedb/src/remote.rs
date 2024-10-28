@@ -17,7 +17,12 @@
 //! building client/server applications with LanceDB or as a client for some
 //! other custom LanceDB service.
 
-pub mod client;
-pub mod db;
-pub mod table;
-pub mod util;
+pub(crate) mod client;
+pub(crate) mod db;
+pub(crate) mod table;
+pub(crate) mod util;
+
+const ARROW_STREAM_CONTENT_TYPE: &str = "application/vnd.apache.arrow.stream";
+const JSON_CONTENT_TYPE: &str = "application/json";
+
+pub use client::{ClientConfig, RetryConfig, TimeoutConfig};

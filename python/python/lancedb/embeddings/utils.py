@@ -16,17 +16,39 @@ import math
 import random
 import socket
 import sys
+import threading
 import time
 import urllib.error
 import weakref
 import logging
+from functools import wraps
 from typing import Callable, List, Union
 import numpy as np
 import pyarrow as pa
 from lance.vector import vec_to_table
-from retry import retry
 
 from ..util import deprecated, safe_import_pandas
+
+
+# ruff: noqa: PERF203
+def retry(tries=10, delay=1, max_delay=30, backoff=3, jitter=1):
+    def wrapper(fn):
+        @wraps(fn)
+        def wrapped(*args, **kwargs):
+            for i in range(tries):
+                try:
+                    return fn(*args, **kwargs)
+                except Exception:
+                    if i + 1 == tries:
+                        raise
+                    else:
+                        sleep = min(delay * (backoff**i) + jitter, max_delay)
+                        time.sleep(sleep)
+
+        return wrapped
+
+    return wrapper
+
 
 pd = safe_import_pandas()
 
@@ -36,6 +58,42 @@ IMAGES = Union[
     str, bytes, List[str], List[bytes], pa.Array, pa.ChunkedArray, np.ndarray
 ]
 AUDIO = Union[str, bytes, List[str], List[bytes], pa.Array, pa.ChunkedArray, np.ndarray]
+
+
+class RateLimiter:
+    def __init__(self, max_calls: int = 1, period: float = 1.0):
+        self.period = period
+        self.max_calls = max(1, min(sys.maxsize, math.floor(max_calls)))
+
+        self._last_reset = time.time()
+        self._num_calls = 0
+        self._lock = threading.RLock()
+
+    def _check_sleep(self) -> float:
+        current_time = time.time()
+        elapsed = current_time - self._last_reset
+        period_remaining = self.period - elapsed
+
+        # If the time window has elapsed then reset.
+        if period_remaining <= 0:
+            self._num_calls = 0
+            self._last_reset = current_time
+
+        self._num_calls += 1
+
+        if self._num_calls > self.max_calls:
+            return period_remaining
+
+        return 0.0
+
+    def __call__(self, func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            with self._lock:
+                time.sleep(self._check_sleep())
+            return func(*args, **kwargs)
+
+        return wrapper
 
 
 @deprecated
@@ -109,21 +167,12 @@ class FunctionWrapper:
             def embed_func(c):
                 return self.func(c.tolist())
 
-        if len(self.rate_limiter_kwargs) > 0:
-            v = int(sys.version_info.minor)
-            if v >= 11:
-                print(
-                    "WARNING: rate limit only support up to 3.10, proceeding "
-                    "without rate limiter"
-                )
-            else:
-                import ratelimiter
-
-                max_calls = self.rate_limiter_kwargs["max_calls"]
-                limiter = ratelimiter.RateLimiter(
-                    max_calls, period=self.rate_limiter_kwargs["period"]
-                )
-                embed_func = limiter(embed_func)
+        if self.rate_limiter_kwargs:
+            limiter = RateLimiter(
+                max_calls=self.rate_limiter_kwargs["max_calls"],
+                period=self.rate_limiter_kwargs["period"],
+            )
+            embed_func = limiter(embed_func)
         batches = self.to_batches(text)
         embeds = [emb for c in batches for emb in embed_func(c)]
         return embeds

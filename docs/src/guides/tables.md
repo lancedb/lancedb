@@ -416,7 +416,6 @@ You can create an empty table for scenarios where you want to add data to the ta
 
 === "Python"
 
-    ```python
 
     An empty table can be initialized via a PyArrow schema.
 

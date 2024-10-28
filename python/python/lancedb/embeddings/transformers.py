@@ -40,6 +40,11 @@ class TransformersEmbeddingFunction(EmbeddingFunction):
         The device to use for the model. Default is "cpu".
     show_progress_bar : bool
         Whether to show a progress bar when loading the model. Default is True.
+    trust_remote_code : bool
+        Whether or not to allow for custom models defined on the HuggingFace
+        Hub in their own modeling files. This option should only be set to True
+        for repositories you trust and in which you have read the code, as it
+        will execute code present on the Hub on your local machine.
 
     to download package, run :
         `pip install transformers`
@@ -49,6 +54,7 @@ class TransformersEmbeddingFunction(EmbeddingFunction):
 
     name: str = "colbert-ir/colbertv2.0"
     device: str = "cpu"
+    trust_remote_code: bool = False
     _tokenizer: Any = PrivateAttr()
     _model: Any = PrivateAttr()
 
@@ -57,7 +63,9 @@ class TransformersEmbeddingFunction(EmbeddingFunction):
         self._ndims = None
         transformers = attempt_import_or_raise("transformers")
         self._tokenizer = transformers.AutoTokenizer.from_pretrained(self.name)
-        self._model = transformers.AutoModel.from_pretrained(self.name)
+        self._model = transformers.AutoModel.from_pretrained(
+            self.name, trust_remote_code=self.trust_remote_code
+        )
         self._model.to(self.device)
 
     if PYDANTIC_VERSION.major < 2:  # Pydantic 1.x compat

@@ -60,7 +60,7 @@ export {
   type MakeArrowTableOptions
 } from "./arrow";
 
-const defaultAwsRegion = "us-west-2";
+const defaultAwsRegion = "us-east-1";
 
 const defaultRequestTimeout = 10_000
 
@@ -111,7 +111,7 @@ export interface ConnectionOptions {
    */
   apiKey?: string
 
-  /** Region to connect */
+  /** Region to connect. Default is 'us-east-1' */
   region?: string
 
   /**
@@ -197,28 +197,32 @@ export async function connect(
 export async function connect(
   arg: string | Partial<ConnectionOptions>
 ): Promise<Connection> {
-  let opts: ConnectionOptions;
+  let partOpts: Partial<ConnectionOptions>;
   if (typeof arg === "string") {
-    opts = { uri: arg };
+    partOpts = { uri: arg };
   } else {
     const keys = Object.keys(arg);
     if (keys.length === 1 && keys[0] === "uri" && typeof arg.uri === "string") {
-      opts = { uri: arg.uri };
+      partOpts = { uri: arg.uri };
     } else {
-      opts = Object.assign(
-        {
-          uri: "",
-          awsCredentials: undefined,
-          awsRegion: defaultAwsRegion,
-          apiKey: undefined,
-          region: defaultAwsRegion,
-          timeout: defaultRequestTimeout 
-        },
-        arg
-      );
+      partOpts = arg;
     }
   }
 
+  let defaultRegion = process.env.AWS_REGION ?? process.env.AWS_DEFAULT_REGION;
+  defaultRegion = (defaultRegion ?? "").trim() !== "" ? defaultRegion : defaultAwsRegion;
+
+  const opts: ConnectionOptions = {
+    uri: partOpts.uri ?? "",
+    awsCredentials: partOpts.awsCredentials ?? undefined,
+    awsRegion: partOpts.awsRegion ?? defaultRegion,
+    apiKey: partOpts.apiKey ?? undefined,
+    region: partOpts.region ?? defaultRegion,
+    timeout: partOpts.timeout ?? defaultRequestTimeout,
+    readConsistencyInterval: partOpts.readConsistencyInterval ?? undefined,
+    storageOptions: partOpts.storageOptions ?? undefined,
+    hostOverride: partOpts.hostOverride ?? undefined
+  }
   if (opts.uri.startsWith("db://")) {
     // Remote connection
     return new RemoteConnection(opts);
@@ -560,7 +564,7 @@ export interface Table<T = number[]> {
   /**
    * Get statistics about an index.
    */
-  indexStats: (indexUuid: string) => Promise<IndexStats>
+  indexStats: (indexName: string) => Promise<IndexStats>
 
   filter(value: string): Query<T>
 
@@ -720,9 +724,9 @@ export interface VectorIndex {
 export interface IndexStats {
   numIndexedRows: number | null
   numUnindexedRows: number | null
-  indexType: string | null
-  distanceType: string | null
-  completedAt: string | null
+  indexType: string
+  distanceType?: string
+  numIndices?: number
 }
 
 /**
@@ -1160,8 +1164,8 @@ export class LocalTable<T = number[]> implements Table<T> {
     return tableListIndices.call(this._tbl);
   }
 
-  async indexStats(indexUuid: string): Promise<IndexStats> {
-    return tableIndexStats.call(this._tbl, indexUuid);
+  async indexStats(indexName: string): Promise<IndexStats> {
+    return tableIndexStats.call(this._tbl, indexName);
   }
 
   get schema(): Promise<Schema> {

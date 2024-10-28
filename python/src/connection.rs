@@ -7,7 +7,7 @@ use arrow::{datatypes::Schema, ffi_stream::ArrowArrayStreamReader, pyarrow::From
 use lancedb::connection::{Connection as LanceConnection, CreateTableMode, LanceFileVersion};
 use pyo3::{
     exceptions::{PyRuntimeError, PyValueError},
-    pyclass, pyfunction, pymethods, Bound, PyAny, PyRef, PyResult, Python,
+    pyclass, pyfunction, pymethods, Bound, FromPyObject, PyAny, PyRef, PyResult, Python,
 };
 use pyo3_asyncio_0_21::tokio::future_into_py;
 
@@ -81,6 +81,7 @@ impl Connection {
         data: Bound<'_, PyAny>,
         storage_options: Option<HashMap<String, String>>,
         data_storage_version: Option<String>,
+        enable_v2_manifest_paths: Option<bool>,
     ) -> PyResult<Bound<'a, PyAny>> {
         let inner = self_.get_inner()?.clone();
 
@@ -91,6 +92,10 @@ impl Connection {
 
         if let Some(storage_options) = storage_options {
             builder = builder.storage_options(storage_options);
+        }
+
+        if let Some(enable_v2_manifest_paths) = enable_v2_manifest_paths {
+            builder = builder.enable_v2_manifest_paths(enable_v2_manifest_paths);
         }
 
         if let Some(data_storage_version) = data_storage_version.as_ref() {
@@ -113,6 +118,7 @@ impl Connection {
         schema: Bound<'_, PyAny>,
         storage_options: Option<HashMap<String, String>>,
         data_storage_version: Option<String>,
+        enable_v2_manifest_paths: Option<bool>,
     ) -> PyResult<Bound<'a, PyAny>> {
         let inner = self_.get_inner()?.clone();
 
@@ -124,6 +130,10 @@ impl Connection {
 
         if let Some(storage_options) = storage_options {
             builder = builder.storage_options(storage_options);
+        }
+
+        if let Some(enable_v2_manifest_paths) = enable_v2_manifest_paths {
+            builder = builder.enable_v2_manifest_paths(enable_v2_manifest_paths);
         }
 
         if let Some(data_storage_version) = data_storage_version.as_ref() {
@@ -177,6 +187,7 @@ impl Connection {
 }
 
 #[pyfunction]
+#[allow(clippy::too_many_arguments)]
 pub fn connect(
     py: Python,
     uri: String,
@@ -184,6 +195,7 @@ pub fn connect(
     region: Option<String>,
     host_override: Option<String>,
     read_consistency_interval: Option<f64>,
+    client_config: Option<PyClientConfig>,
     storage_options: Option<HashMap<String, String>>,
 ) -> PyResult<Bound<'_, PyAny>> {
     future_into_py(py, async move {
@@ -204,6 +216,70 @@ pub fn connect(
         if let Some(storage_options) = storage_options {
             builder = builder.storage_options(storage_options);
         }
+        #[cfg(feature = "remote")]
+        if let Some(client_config) = client_config {
+            builder = builder.client_config(client_config.into());
+        }
         Ok(Connection::new(builder.execute().await.infer_error()?))
     })
+}
+
+#[derive(FromPyObject)]
+pub struct PyClientConfig {
+    user_agent: String,
+    retry_config: Option<PyClientRetryConfig>,
+    timeout_config: Option<PyClientTimeoutConfig>,
+}
+
+#[derive(FromPyObject)]
+pub struct PyClientRetryConfig {
+    retries: Option<u8>,
+    connect_retries: Option<u8>,
+    read_retries: Option<u8>,
+    backoff_factor: Option<f32>,
+    backoff_jitter: Option<f32>,
+    statuses: Option<Vec<u16>>,
+}
+
+#[derive(FromPyObject)]
+pub struct PyClientTimeoutConfig {
+    connect_timeout: Option<Duration>,
+    read_timeout: Option<Duration>,
+    pool_idle_timeout: Option<Duration>,
+}
+
+#[cfg(feature = "remote")]
+impl From<PyClientRetryConfig> for lancedb::remote::RetryConfig {
+    fn from(value: PyClientRetryConfig) -> Self {
+        Self {
+            retries: value.retries,
+            connect_retries: value.connect_retries,
+            read_retries: value.read_retries,
+            backoff_factor: value.backoff_factor,
+            backoff_jitter: value.backoff_jitter,
+            statuses: value.statuses,
+        }
+    }
+}
+
+#[cfg(feature = "remote")]
+impl From<PyClientTimeoutConfig> for lancedb::remote::TimeoutConfig {
+    fn from(value: PyClientTimeoutConfig) -> Self {
+        Self {
+            connect_timeout: value.connect_timeout,
+            read_timeout: value.read_timeout,
+            pool_idle_timeout: value.pool_idle_timeout,
+        }
+    }
+}
+
+#[cfg(feature = "remote")]
+impl From<PyClientConfig> for lancedb::remote::ClientConfig {
+    fn from(value: PyClientConfig) -> Self {
+        Self {
+            user_agent: value.user_agent,
+            retry_config: value.retry_config.map(Into::into).unwrap_or_default(),
+            timeout_config: value.timeout_config.map(Into::into).unwrap_or_default(),
+        }
+    }
 }

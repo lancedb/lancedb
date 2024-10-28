@@ -1,15 +1,6 @@
-#  Copyright (c) 2023. LanceDB Developers
-#
-#  Licensed under the Apache License, Version 2.0 (the "License");
-#  you may not use this file except in compliance with the License.
-#  You may obtain a copy of the License at
-#      http://www.apache.org/licenses/LICENSE-2.0
-#
-#  Unless required by applicable law or agreed to in writing, software
-#  distributed under the License is distributed on an "AS IS" BASIS,
-#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-#  See the License for the specific language governing permissions and
-#  limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright The LanceDB Authors
+
 from abc import ABC, abstractmethod
 from typing import List, Union
 
@@ -34,7 +25,7 @@ class EmbeddingFunction(BaseModel, ABC):
 
     __slots__ = ("__weakref__",)  # pydantic 1.x compatibility
     max_retries: int = (
-        7  # Setitng 0 disables retires. Maybe this should not be enabled by default,
+        7  # Setting 0 disables retires. Maybe this should not be enabled by default,
     )
     _ndims: int = PrivateAttr()
 
@@ -46,22 +37,37 @@ class EmbeddingFunction(BaseModel, ABC):
         return cls(**kwargs)
 
     @abstractmethod
-    def compute_query_embeddings(self, *args, **kwargs) -> List[np.array]:
+    def compute_query_embeddings(self, *args, **kwargs) -> list[Union[np.array, None]]:
         """
         Compute the embeddings for a given user query
+
+        Returns
+        -------
+        A list of embeddings for each input. The embedding of each input can be None
+        when the embedding is not valid.
         """
         pass
 
     @abstractmethod
-    def compute_source_embeddings(self, *args, **kwargs) -> List[np.array]:
-        """
-        Compute the embeddings for the source column in the database
+    def compute_source_embeddings(self, *args, **kwargs) -> list[Union[np.array, None]]:
+        """Compute the embeddings for the source column in the database
+
+        Returns
+        -------
+        A list of embeddings for each input. The embedding of each input can be None
+        when the embedding is not valid.
         """
         pass
 
-    def compute_query_embeddings_with_retry(self, *args, **kwargs) -> List[np.array]:
-        """
-        Compute the embeddings for a given user query with retries
+    def compute_query_embeddings_with_retry(
+        self, *args, **kwargs
+    ) -> list[Union[np.array, None]]:
+        """Compute the embeddings for a given user query with retries
+
+        Returns
+        -------
+        A list of embeddings for each input. The embedding of each input can be None
+        when the embedding is not valid.
         """
         return retry_with_exponential_backoff(
             self.compute_query_embeddings, max_retries=self.max_retries
@@ -70,9 +76,15 @@ class EmbeddingFunction(BaseModel, ABC):
             **kwargs,
         )
 
-    def compute_source_embeddings_with_retry(self, *args, **kwargs) -> List[np.array]:
-        """
-        Compute the embeddings for the source column in the database with retries
+    def compute_source_embeddings_with_retry(
+        self, *args, **kwargs
+    ) -> list[Union[np.array, None]]:
+        """Compute the embeddings for the source column in the database with retries.
+
+        Returns
+        -------
+        A list of embeddings for each input. The embedding of each input can be None
+        when the embedding is not valid.
         """
         return retry_with_exponential_backoff(
             self.compute_source_embeddings, max_retries=self.max_retries
@@ -94,8 +106,14 @@ class EmbeddingFunction(BaseModel, ABC):
         from ..pydantic import PYDANTIC_VERSION
 
         if PYDANTIC_VERSION.major < 2:
-            return dict(self)
-        return self.model_dump()
+            return {k: v for k, v in self.__dict__.items() if not k.startswith("_")}
+        return self.model_dump(
+            exclude={
+                field_name
+                for field_name in self.model_fields
+                if field_name.startswith("_")
+            }
+        )
 
     @abstractmethod
     def ndims(self):
@@ -144,18 +162,20 @@ class TextEmbeddingFunction(EmbeddingFunction):
     A callable ABC for embedding functions that take text as input
     """
 
-    def compute_query_embeddings(self, query: str, *args, **kwargs) -> List[np.array]:
+    def compute_query_embeddings(
+        self, query: str, *args, **kwargs
+    ) -> list[Union[np.array, None]]:
         return self.compute_source_embeddings(query, *args, **kwargs)
 
-    def compute_source_embeddings(self, texts: TEXT, *args, **kwargs) -> List[np.array]:
+    def compute_source_embeddings(
+        self, texts: TEXT, *args, **kwargs
+    ) -> list[Union[np.array, None]]:
         texts = self.sanitize_input(texts)
         return self.generate_embeddings(texts)
 
     @abstractmethod
     def generate_embeddings(
         self, texts: Union[List[str], np.ndarray], *args, **kwargs
-    ) -> List[np.array]:
-        """
-        Generate the embeddings for the given texts
-        """
+    ) -> list[Union[np.array, None]]:
+        """Generate the embeddings for the given texts"""
         pass

@@ -14,6 +14,7 @@
 
 import { describe } from "mocha";
 import { track } from "temp";
+import { assert, expect } from 'chai'
 import * as chai from "chai";
 import * as chaiAsPromised from "chai-as-promised";
 
@@ -44,8 +45,6 @@ import {
 } from "apache-arrow";
 import type { RemoteRequest, RemoteResponse } from "../middleware";
 
-const expect = chai.expect;
-const assert = chai.assert;
 chai.use(chaiAsPromised);
 
 describe("LanceDB client", function () {
@@ -112,8 +111,8 @@ describe("LanceDB client", function () {
           name: 'name_2',
           price: 10,
           is_active: true,
-          vector: [ 0, 0.1 ]
-        },
+          vector: [0, 0.1]
+        }
       ]);
       assert.equal(await table2.countRows(), 3);
     });
@@ -169,7 +168,7 @@ describe("LanceDB client", function () {
 
       // Should reject a bad filter
       await expect(table.filter("id % 2 = 0 AND").execute()).to.be.rejectedWith(
-        /.*sql parser error: Expected an expression:, found: EOF.*/
+        /.*sql parser error: .*/
       );
     });
 
@@ -888,9 +887,12 @@ describe("LanceDB client", function () {
       expect(indices[0].columns).to.have.lengthOf(1);
       expect(indices[0].columns[0]).to.equal("vector");
 
-      const stats = await table.indexStats(indices[0].uuid);
+      const stats = await table.indexStats(indices[0].name);
       expect(stats.numIndexedRows).to.equal(300);
       expect(stats.numUnindexedRows).to.equal(0);
+      expect(stats.indexType).to.equal("IVF_PQ");
+      expect(stats.distanceType).to.equal("l2");
+      expect(stats.numIndices).to.equal(1);
     }).timeout(50_000);
   });
 

@@ -79,6 +79,13 @@ class RestfulLanceDBClient:
             or f"https://{self.db_name}.{self.region}.api.lancedb.com"
         )
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
+        return False  # Do not suppress exceptions
+
     def close(self):
         self.session.close()
         self.closed = True
@@ -96,19 +103,29 @@ class RestfulLanceDBClient:
 
     @staticmethod
     def _check_status(resp: requests.Response):
+        # Leaving request id empty for now, as we'll be replacing this impl
+        # with the Rust one shortly.
         if resp.status_code == 404:
-            raise LanceDBClientError(f"Not found: {resp.text}")
+            raise LanceDBClientError(
+                f"Not found: {resp.text}", request_id="", status_code=404
+            )
         elif 400 <= resp.status_code < 500:
             raise LanceDBClientError(
-                f"Bad Request: {resp.status_code}, error: {resp.text}"
+                f"Bad Request: {resp.status_code}, error: {resp.text}",
+                request_id="",
+                status_code=resp.status_code,
             )
         elif 500 <= resp.status_code < 600:
             raise LanceDBClientError(
-                f"Internal Server Error: {resp.status_code}, error: {resp.text}"
+                f"Internal Server Error: {resp.status_code}, error: {resp.text}",
+                request_id="",
+                status_code=resp.status_code,
             )
         elif resp.status_code != 200:
             raise LanceDBClientError(
-                f"Unknown Error: {resp.status_code}, error: {resp.text}"
+                f"Unknown Error: {resp.status_code}, error: {resp.text}",
+                request_id="",
+                status_code=resp.status_code,
             )
 
     @_check_not_closed

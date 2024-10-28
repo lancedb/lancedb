@@ -498,7 +498,7 @@ This can also be done with the ``AWS_ENDPOINT`` and ``AWS_DEFAULT_REGION`` envir
 
 #### S3 Express
 
-LanceDB supports [S3 Express One Zone](https://aws.amazon.com/s3/storage-classes/express-one-zone/) endpoints, but requires additional configuration. Also, S3 Express endpoints only support connecting from an EC2 instance within the same region.
+LanceDB supports [S3 Express One Zone](https://aws.amazon.com/s3/storage-classes/express-one-zone/) endpoints, but requires additional infrastructure configuration for the compute service, such as EC2 or Lambda. Please refer to [Networking requirements for S3 Express One Zone](https://docs.aws.amazon.com/AmazonS3/latest/userguide/s3-express-networking.html).
 
 To configure LanceDB to use an S3 Express endpoint, you must set the storage option `s3_express`. The bucket name in your table URI should **include the suffix**.
 

@@ -68,6 +68,24 @@ impl Connection {
                 builder = builder.storage_option(key, value);
             }
         }
+
+        let client_config = options.client_config.unwrap_or_default();
+        builder = builder.client_config(client_config.into());
+
+        if let Some(api_key) = options.api_key {
+            builder = builder.api_key(&api_key);
+        }
+
+        if let Some(region) = options.region {
+            builder = builder.region(&region);
+        } else {
+            builder = builder.region("us-east-1");
+        }
+
+        if let Some(host_override) = options.host_override {
+            builder = builder.host_override(&host_override);
+        }
+
         Ok(Self::inner_new(
             builder
                 .execute()
@@ -124,11 +142,13 @@ impl Connection {
         mode: String,
         storage_options: Option<HashMap<String, String>>,
         data_storage_options: Option<String>,
+        enable_v2_manifest_paths: Option<bool>,
     ) -> napi::Result<Table> {
         let batches = ipc_file_to_batches(buf.to_vec())
             .map_err(|e| napi::Error::from_reason(format!("Failed to read IPC file: {}", e)))?;
         let mode = Self::parse_create_mode_str(&mode)?;
         let mut builder = self.get_inner()?.create_table(&name, batches).mode(mode);
+
         if let Some(storage_options) = storage_options {
             for (key, value) in storage_options {
                 builder = builder.storage_option(key, value);
@@ -139,6 +159,9 @@ impl Connection {
                 LanceFileVersion::from_str(data_storage_option)
                     .map_err(|e| napi::Error::from_reason(format!("{}", e)))?,
             );
+        }
+        if let Some(enable_v2_manifest_paths) = enable_v2_manifest_paths {
+            builder = builder.enable_v2_manifest_paths(enable_v2_manifest_paths);
         }
         let tbl = builder
             .execute()
@@ -155,6 +178,7 @@ impl Connection {
         mode: String,
         storage_options: Option<HashMap<String, String>>,
         data_storage_options: Option<String>,
+        enable_v2_manifest_paths: Option<bool>,
     ) -> napi::Result<Table> {
         let schema = ipc_file_to_schema(schema_buf.to_vec()).map_err(|e| {
             napi::Error::from_reason(format!("Failed to marshal schema from JS to Rust: {}", e))
@@ -174,6 +198,9 @@ impl Connection {
                 LanceFileVersion::from_str(data_storage_option)
                     .map_err(|e| napi::Error::from_reason(format!("{}", e)))?,
             );
+        }
+        if let Some(enable_v2_manifest_paths) = enable_v2_manifest_paths {
+            builder = builder.enable_v2_manifest_paths(enable_v2_manifest_paths);
         }
         let tbl = builder
             .execute()

@@ -8,8 +8,8 @@ use lancedb::table::{
 use pyo3::{
     exceptions::{PyRuntimeError, PyValueError},
     pyclass, pymethods,
-    types::{PyDict, PyString},
-    Bound, PyAny, PyRef, PyResult, Python,
+    types::{PyDict, PyDictMethods, PyString},
+    Bound, FromPyObject, PyAny, PyRef, PyResult, Python, ToPyObject,
 };
 use pyo3_asyncio_0_21::tokio::future_into_py;
 
@@ -204,6 +204,33 @@ impl Table {
         })
     }
 
+    pub fn index_stats(self_: PyRef<'_, Self>, index_name: String) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let stats = inner.index_stats(&index_name).await.infer_error()?;
+            if let Some(stats) = stats {
+                Python::with_gil(|py| {
+                    let dict = PyDict::new_bound(py);
+                    dict.set_item("num_indexed_rows", stats.num_indexed_rows)?;
+                    dict.set_item("num_unindexed_rows", stats.num_unindexed_rows)?;
+                    dict.set_item("index_type", stats.index_type.to_string())?;
+
+                    if let Some(distance_type) = stats.distance_type {
+                        dict.set_item("distance_type", distance_type.to_string())?;
+                    }
+
+                    if let Some(num_indices) = stats.num_indices {
+                        dict.set_item("num_indices", num_indices)?;
+                    }
+
+                    Ok(Some(dict.to_object(py)))
+                })
+            } else {
+                Ok(None)
+            }
+        })
+    }
+
     pub fn __repr__(&self) -> String {
         match &self.inner {
             None => format!("ClosedTable({})", self.name),
@@ -303,4 +330,64 @@ impl Table {
             })
         })
     }
+
+    pub fn execute_merge_insert<'a>(
+        self_: PyRef<'a, Self>,
+        data: Bound<'a, PyAny>,
+        parameters: MergeInsertParams,
+    ) -> PyResult<Bound<'a, PyAny>> {
+        let batches: ArrowArrayStreamReader = ArrowArrayStreamReader::from_pyarrow_bound(&data)?;
+        let on = parameters.on.iter().map(|s| s.as_str()).collect::<Vec<_>>();
+        let mut builder = self_.inner_ref()?.merge_insert(&on);
+        if parameters.when_matched_update_all {
+            builder.when_matched_update_all(parameters.when_matched_update_all_condition);
+        }
+        if parameters.when_not_matched_insert_all {
+            builder.when_not_matched_insert_all();
+        }
+        if parameters.when_not_matched_by_source_delete {
+            builder
+                .when_not_matched_by_source_delete(parameters.when_not_matched_by_source_condition);
+        }
+
+        future_into_py(self_.py(), async move {
+            builder.execute(Box::new(batches)).await.infer_error()?;
+            Ok(())
+        })
+    }
+
+    pub fn uses_v2_manifest_paths(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            inner
+                .as_native()
+                .ok_or_else(|| PyValueError::new_err("This cannot be run on a remote table"))?
+                .uses_v2_manifest_paths()
+                .await
+                .infer_error()
+        })
+    }
+
+    pub fn migrate_manifest_paths_v2(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            inner
+                .as_native()
+                .ok_or_else(|| PyValueError::new_err("This cannot be run on a remote table"))?
+                .migrate_manifest_paths_v2()
+                .await
+                .infer_error()
+        })
+    }
+}
+
+#[derive(FromPyObject)]
+#[pyo3(from_item_all)]
+pub struct MergeInsertParams {
+    on: Vec<String>,
+    when_matched_update_all: bool,
+    when_matched_update_all_condition: Option<String>,
+    when_not_matched_insert_all: bool,
+    when_not_matched_by_source_delete: bool,
+    when_not_matched_by_source_condition: Option<String>,
 }

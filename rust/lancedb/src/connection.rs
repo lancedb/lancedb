@@ -32,6 +32,8 @@ use crate::embeddings::{
 };
 use crate::error::{CreateDirSnafu, Error, InvalidTableNameSnafu, Result};
 use crate::io::object_store::MirroringObjectStoreWrapper;
+#[cfg(feature = "remote")]
+use crate::remote::client::ClientConfig;
 use crate::table::{NativeTable, TableDefinition, WriteOptions};
 use crate::utils::validate_table_name;
 use crate::Table;
@@ -142,6 +144,7 @@ pub struct CreateTableBuilder<const HAS_DATA: bool, T: IntoArrow> {
     pub(crate) table_definition: Option<TableDefinition>,
     pub(crate) embeddings: Vec<(EmbeddingDefinition, Arc<dyn EmbeddingFunction>)>,
     pub(crate) data_storage_version: Option<LanceFileVersion>,
+    pub(crate) enable_v2_manifest_paths: Option<bool>,
 }
 
 // Builder methods that only apply when we have initial data
@@ -156,6 +159,7 @@ impl<T: IntoArrow> CreateTableBuilder<true, T> {
             table_definition: None,
             embeddings: Vec::new(),
             data_storage_version: None,
+            enable_v2_manifest_paths: None,
         }
     }
 
@@ -188,24 +192,9 @@ impl<T: IntoArrow> CreateTableBuilder<true, T> {
             write_options: self.write_options,
             embeddings: self.embeddings,
             data_storage_version: self.data_storage_version,
+            enable_v2_manifest_paths: self.enable_v2_manifest_paths,
         };
         Ok((data, builder))
-    }
-
-    pub fn add_embedding(mut self, definition: EmbeddingDefinition) -> Result<Self> {
-        // Early verification of the embedding name
-        let embedding_func = self
-            .parent
-            .embedding_registry()
-            .get(&definition.embedding_name)
-            .ok_or_else(|| Error::EmbeddingFunctionNotFound {
-                name: definition.embedding_name.clone(),
-                reason: "No embedding function found in the connection's embedding_registry"
-                    .to_string(),
-            })?;
-
-        self.embeddings.push((definition, embedding_func));
-        Ok(self)
     }
 }
 
@@ -222,6 +211,7 @@ impl CreateTableBuilder<false, NoData> {
             write_options: WriteOptions::default(),
             embeddings: Vec::new(),
             data_storage_version: None,
+            enable_v2_manifest_paths: None,
         }
     }
 
@@ -284,9 +274,26 @@ impl<const HAS_DATA: bool, T: IntoArrow> CreateTableBuilder<HAS_DATA, T> {
         self
     }
 
+    /// Set whether to use V2 manifest paths for the table. (default: false)
+    ///
+    /// These paths provide more efficient opening of tables with many
+    /// versions on object stores.
+    ///
+    /// <div class="warning">Turning this on will make the dataset unreadable
+    /// for older versions of LanceDB (prior to 0.10.0).</div>
+    ///
+    /// To migrate an existing dataset, instead use the
+    /// [[NativeTable::migrate_manifest_paths_v2]].
+    ///
+    /// This has no effect in LanceDB Cloud.
+    pub fn enable_v2_manifest_paths(mut self, use_v2_manifest_paths: bool) -> Self {
+        self.enable_v2_manifest_paths = Some(use_v2_manifest_paths);
+        self
+    }
+
     /// Set the data storage version.
     ///
-    /// The default is `LanceFileVersion::Legacy`.
+    /// The default is `LanceFileVersion::Stable`.
     pub fn data_storage_version(mut self, data_storage_version: LanceFileVersion) -> Self {
         self.data_storage_version = Some(data_storage_version);
         self
@@ -294,13 +301,9 @@ impl<const HAS_DATA: bool, T: IntoArrow> CreateTableBuilder<HAS_DATA, T> {
 
     /// Set to true to use the v1 format for data files
     ///
-    /// This is currently defaulted to true and can be set to false to opt-in
-    /// to the new format.  This should only be used for experimentation and
-    /// evaluation.  The new format is still in beta and may change in ways that
-    /// are not backwards compatible.
-    ///
-    /// Once the new format is stable, the default will change to `false` for
-    /// several releases and then eventually this option will be removed.
+    /// This is set to false by default to enable the stable format.
+    /// This should only be used for experimentation and
+    /// evaluation. This option may be removed in the future releases.
     #[deprecated(since = "0.9.0", note = "use data_storage_version instead")]
     pub fn use_legacy_format(mut self, use_legacy_format: bool) -> Self {
         self.data_storage_version = if use_legacy_format {
@@ -310,12 +313,32 @@ impl<const HAS_DATA: bool, T: IntoArrow> CreateTableBuilder<HAS_DATA, T> {
         };
         self
     }
+
+    /// Add an embedding definition to the table.
+    ///
+    /// The `embedding_name` must match the name of an embedding function that
+    /// was previously registered with the connection's [`EmbeddingRegistry`].
+    pub fn add_embedding(mut self, definition: EmbeddingDefinition) -> Result<Self> {
+        // Early verification of the embedding name
+        let embedding_func = self
+            .parent
+            .embedding_registry()
+            .get(&definition.embedding_name)
+            .ok_or_else(|| Error::EmbeddingFunctionNotFound {
+                name: definition.embedding_name.clone(),
+                reason: "No embedding function found in the connection's embedding_registry"
+                    .to_string(),
+            })?;
+
+        self.embeddings.push((definition, embedding_func));
+        Ok(self)
+    }
 }
 
 #[derive(Clone, Debug)]
 pub struct OpenTableBuilder {
-    parent: Arc<dyn ConnectionInternal>,
-    name: String,
+    pub(crate) parent: Arc<dyn ConnectionInternal>,
+    pub(crate) name: String,
     index_cache_size: u32,
     lance_read_params: Option<ReadParams>,
 }
@@ -414,6 +437,7 @@ pub(crate) trait ConnectionInternal:
         data: Box<dyn RecordBatchReader + Send>,
     ) -> Result<Table>;
     async fn do_open_table(&self, options: OpenTableBuilder) -> Result<Table>;
+    async fn rename_table(&self, old_name: &str, new_name: &str) -> Result<()>;
     async fn drop_table(&self, name: &str) -> Result<()>;
     async fn drop_db(&self) -> Result<()>;
 
@@ -496,6 +520,19 @@ impl Connection {
         OpenTableBuilder::new(self.internal.clone(), name.into())
     }
 
+    /// Rename a table in the database.
+    ///
+    /// This is only supported in LanceDB Cloud.
+    pub async fn rename_table(
+        &self,
+        old_name: impl AsRef<str>,
+        new_name: impl AsRef<str>,
+    ) -> Result<()> {
+        self.internal
+            .rename_table(old_name.as_ref(), new_name.as_ref())
+            .await
+    }
+
     /// Drop a table in the database.
     ///
     /// # Arguments
@@ -536,6 +573,8 @@ pub struct ConnectBuilder {
     region: Option<String>,
     /// LanceDB Cloud host override, only required if using an on-premises Lance Cloud instance
     host_override: Option<String>,
+    #[cfg(feature = "remote")]
+    client_config: ClientConfig,
 
     storage_options: HashMap<String, String>,
 
@@ -561,6 +600,8 @@ impl ConnectBuilder {
             api_key: None,
             region: None,
             host_override: None,
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
             read_consistency_interval: None,
             storage_options: HashMap::new(),
             embedding_registry: None,
@@ -579,6 +620,30 @@ impl ConnectBuilder {
 
     pub fn host_override(mut self, host_override: &str) -> Self {
         self.host_override = Some(host_override.to_string());
+        self
+    }
+
+    /// Set the LanceDB Cloud client configuration.
+    ///
+    /// ```
+    /// # use lancedb::connect;
+    /// # use lancedb::remote::*;
+    /// connect("db://my_database")
+    ///    .client_config(ClientConfig {
+    ///      timeout_config: TimeoutConfig {
+    ///        connect_timeout: Some(std::time::Duration::from_secs(5)),
+    ///        ..Default::default()
+    ///      },
+    ///      retry_config: RetryConfig {
+    ///        retries: Some(5),
+    ///        ..Default::default()
+    ///      },
+    ///      ..Default::default()
+    ///    });
+    /// ```
+    #[cfg(feature = "remote")]
+    pub fn client_config(mut self, config: ClientConfig) -> Self {
+        self.client_config = config;
         self
     }
 
@@ -654,12 +719,14 @@ impl ConnectBuilder {
         let api_key = self.api_key.ok_or_else(|| Error::InvalidInput {
             message: "An api_key is required when connecting to LanceDb Cloud".to_string(),
         })?;
+        // TODO: remove this warning when the remote client is ready
         warn!("The rust implementation of the remote client is not yet ready for use.");
         let internal = Arc::new(crate::remote::db::RemoteDatabase::try_new(
             &self.uri,
             &api_key,
             &region,
             self.host_override,
+            self.client_config,
         )?);
         Ok(Connection {
             internal,
@@ -976,7 +1043,10 @@ impl ConnectionInternal for Database {
         if matches!(&options.mode, CreateTableMode::Overwrite) {
             write_params.mode = WriteMode::Overwrite;
         }
+
         write_params.data_storage_version = options.data_storage_version;
+        write_params.enable_v2_manifest_paths =
+            options.enable_v2_manifest_paths.unwrap_or_default();
 
         match NativeTable::create(
             &table_uri,
@@ -1046,6 +1116,12 @@ impl ConnectionInternal for Database {
         Ok(Table::new(native_table))
     }
 
+    async fn rename_table(&self, _old_name: &str, _new_name: &str) -> Result<()> {
+        Err(Error::NotSupported {
+            message: "rename_table is not supported in LanceDB OSS".to_string(),
+        })
+    }
+
     async fn drop_table(&self, name: &str) -> Result<()> {
         let dir_name = format!("{}.{}", name, LANCE_EXTENSION);
         let full_path = self.base_path.child(dir_name.clone());
@@ -1068,6 +1144,25 @@ impl ConnectionInternal for Database {
             .remove_dir_all(self.base_path.clone())
             .await?;
         Ok(())
+    }
+}
+
+#[cfg(all(test, feature = "remote"))]
+mod test_utils {
+    use super::*;
+    impl Connection {
+        pub fn new_with_handler<T>(
+            handler: impl Fn(reqwest::Request) -> http::Response<T> + Clone + Send + Sync + 'static,
+        ) -> Self
+        where
+            T: Into<reqwest::Body>,
+        {
+            let internal = Arc::new(crate::remote::db::RemoteDatabase::new_mock(handler));
+            Self {
+                internal,
+                uri: "db://test".to_string(),
+            }
+        }
     }
 }
 
@@ -1184,9 +1279,9 @@ mod tests {
         assert_eq!(tables, vec!["table1".to_owned()]);
     }
 
-    fn make_data() -> impl RecordBatchReader + Send + 'static {
+    fn make_data() -> Box<dyn RecordBatchReader + Send + 'static> {
         let id = Box::new(IncrementingInt32::new().named("id".to_string()));
-        BatchGenerator::new().col(id).batches(10, 2000)
+        Box::new(BatchGenerator::new().col(id).batches(10, 2000))
     }
 
     #[tokio::test]
@@ -1197,6 +1292,7 @@ mod tests {
 
         let tbl = db
             .create_table("v1_test", make_data())
+            .data_storage_version(LanceFileVersion::Legacy)
             .execute()
             .await
             .unwrap();

@@ -13,6 +13,7 @@
 
 import re
 from datetime import timedelta
+import os
 
 import lancedb
 import numpy as np
@@ -233,6 +234,43 @@ def test_create_mode(tmp_path):
     assert tbl.to_pandas().item.tolist() == ["fizz", "buzz"]
 
 
+def test_create_table_from_iterator(tmp_path):
+    db = lancedb.connect(tmp_path)
+
+    def gen_data():
+        for _ in range(10):
+            yield pa.RecordBatch.from_arrays(
+                [
+                    pa.array([[3.1, 4.1]], pa.list_(pa.float32(), 2)),
+                    pa.array(["foo"]),
+                    pa.array([10.0]),
+                ],
+                ["vector", "item", "price"],
+            )
+
+    table = db.create_table("test", data=gen_data())
+    assert table.count_rows() == 10
+
+
+@pytest.mark.asyncio
+async def test_create_table_from_iterator_async(tmp_path):
+    db = await lancedb.connect_async(tmp_path)
+
+    def gen_data():
+        for _ in range(10):
+            yield pa.RecordBatch.from_arrays(
+                [
+                    pa.array([[3.1, 4.1]], pa.list_(pa.float32(), 2)),
+                    pa.array(["foo"]),
+                    pa.array([10.0]),
+                ],
+                ["vector", "item", "price"],
+            )
+
+    table = await db.create_table("test", data=gen_data())
+    assert await table.count_rows() == 10
+
+
 def test_create_exist_ok(tmp_path):
     db = lancedb.connect(tmp_path)
     data = pd.DataFrame(
@@ -316,7 +354,7 @@ async def test_create_mode_async(tmp_path):
     )
     await db.create_table("test", data=data)
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(ValueError, match="already exists"):
         await db.create_table("test", data=data)
 
     new_data = pd.DataFrame(
@@ -344,7 +382,7 @@ async def test_create_exist_ok_async(tmp_path):
     )
     tbl = await db.create_table("test", data=data)
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(ValueError, match="already exists"):
         await db.create_table("test", data=data)
 
     # open the table but don't add more rows
@@ -374,6 +412,40 @@ async def test_create_exist_ok_async(tmp_path):
     # )
     # with pytest.raises(ValueError):
     #     await db.create_table("test", schema=bad_schema, exist_ok=True)
+
+
+@pytest.mark.asyncio
+async def test_create_table_v2_manifest_paths_async(tmp_path):
+    db = await lancedb.connect_async(tmp_path)
+    # Create table in v2 mode with v2 manifest paths enabled
+    tbl = await db.create_table(
+        "test_v2_manifest_paths",
+        data=[{"id": 0}],
+        use_legacy_format=False,
+        enable_v2_manifest_paths=True,
+    )
+    assert await tbl.uses_v2_manifest_paths()
+    manifests_dir = tmp_path / "test_v2_manifest_paths.lance" / "_versions"
+    for manifest in os.listdir(manifests_dir):
+        assert re.match(r"\d{20}\.manifest", manifest)
+
+    # Start a table in V1 mode then migrate
+    tbl = await db.create_table(
+        "test_v2_migration",
+        data=[{"id": 0}],
+        use_legacy_format=False,
+        enable_v2_manifest_paths=False,
+    )
+    assert not await tbl.uses_v2_manifest_paths()
+    manifests_dir = tmp_path / "test_v2_migration.lance" / "_versions"
+    for manifest in os.listdir(manifests_dir):
+        assert re.match(r"\d\.manifest", manifest)
+
+    await tbl.migrate_manifest_paths_v2()
+    assert await tbl.uses_v2_manifest_paths()
+
+    for manifest in os.listdir(manifests_dir):
+        assert re.match(r"\d{20}\.manifest", manifest)
 
 
 def test_open_table_sync(tmp_path):
@@ -522,7 +594,9 @@ async def test_create_in_v2_mode(tmp_path):
     db = await lancedb.connect_async(tmp_path)
 
     # Create table in v1 mode
-    tbl = await db.create_table("test", data=make_data(), schema=schema)
+    tbl = await db.create_table(
+        "test", data=make_data(), schema=schema, data_storage_version="legacy"
+    )
 
     async def is_in_v2_mode(tbl):
         batches = await tbl.query().to_batches(max_batch_length=1024 * 10)
@@ -554,7 +628,9 @@ async def test_create_in_v2_mode(tmp_path):
     assert await is_in_v2_mode(tbl)
 
     # Create empty table uses v1 mode by default
-    tbl = await db.create_table("test_empty_v2_default", data=None, schema=schema)
+    tbl = await db.create_table(
+        "test_empty_v2_default", data=None, schema=schema, data_storage_version="legacy"
+    )
     await tbl.add(make_table())
 
     assert not await is_in_v2_mode(tbl)

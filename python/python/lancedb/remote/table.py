@@ -26,7 +26,7 @@ from lancedb.embeddings import EmbeddingFunctionRegistry
 
 from ..query import LanceVectorQueryBuilder, LanceQueryBuilder
 from ..table import Query, Table, _sanitize_data
-from ..util import inf_vector_column_query, value_to_sql
+from ..util import value_to_sql, infer_vector_column_name
 from .arrow import to_ipc_binary
 from .client import ARROW_STREAM_CONTENT_TYPE
 from .db import RemoteDBConnection
@@ -126,6 +126,7 @@ class RemoteTable(Table):
         column: str,
         *,
         replace: bool = False,
+        with_position: bool = True,
     ):
         data = {
             "column": column,
@@ -265,10 +266,11 @@ class RemoteTable(Table):
 
     def search(
         self,
-        query: Union[VEC, str],
+        query: Union[VEC, str] = None,
         vector_column_name: Optional[str] = None,
         query_type="auto",
         fts_columns: Optional[Union[str, List[str]]] = None,
+        fast_search: bool = False,
     ) -> LanceVectorQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support [vector search][search]
@@ -304,8 +306,6 @@ class RemoteTable(Table):
             - *default None*.
             Acceptable types are: list, np.ndarray, PIL.Image.Image
 
-            - If None then the select/where/limit clauses are applied to filter
-            the table
         vector_column_name: str, optional
             The name of the vector column to search.
 
@@ -314,6 +314,12 @@ class RemoteTable(Table):
 
             - If the table has multiple vector columns then the *vector_column_name*
             needs to be specified. Otherwise, an error is raised.
+
+        fast_search: bool, optional
+            Skip a flat search of unindexed data. This may improve
+            search performance but search results will not include unindexed data.
+
+            - *default False*.
 
         Returns
         -------
@@ -328,11 +334,15 @@ class RemoteTable(Table):
             - and also the "_distance" column which is the distance between the query
             vector and the returned vector.
         """
-        if vector_column_name is None and query is not None and query_type != "fts":
-            try:
-                vector_column_name = inf_vector_column_query(self.schema)
-            except Exception as e:
-                raise e
+        # empty query builder is not supported in saas, raise error
+        if query is None and query_type != "hybrid":
+            raise ValueError("Empty query is not supported")
+        vector_column_name = infer_vector_column_name(
+            schema=self.schema,
+            query_type=query_type,
+            query=query,
+            vector_column_name=vector_column_name,
+        )
 
         return LanceQueryBuilder.create(
             self,
@@ -340,6 +350,7 @@ class RemoteTable(Table):
             query_type,
             vector_column_name=vector_column_name,
             fts_columns=fts_columns,
+            fast_search=fast_search,
         )
 
     def _execute_query(

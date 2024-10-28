@@ -20,12 +20,15 @@ keywords = ["lancedb", "lance", "database", "vector", "search"]
 categories = ["database-implementations"]
 
 [workspace.dependencies]
-lance = { "version" = "=0.16.1", "features" = ["dynamodb"] }
-lance-index = { "version" = "=0.16.1" }
-lance-linalg = { "version" = "=0.16.1" }
-lance-testing = { "version" = "=0.16.1" }
-lance-datafusion = { "version" = "=0.16.1" }
-lance-encoding = { "version" = "=0.16.1" }
+lance = { "version" = "=0.18.3", "features" = [
+    "dynamodb",
+], git = "https://github.com/lancedb/lance.git", tag = "v0.18.3-beta.2" }
+lance-index = { "version" = "=0.18.3", git = "https://github.com/lancedb/lance.git", tag = "v0.18.3-beta.2" }
+lance-linalg = { "version" = "=0.18.3", git = "https://github.com/lancedb/lance.git", tag = "v0.18.3-beta.2" }
+lance-table = { "version" = "=0.18.3", git = "https://github.com/lancedb/lance.git", tag = "v0.18.3-beta.2" }
+lance-testing = { "version" = "=0.18.3", git = "https://github.com/lancedb/lance.git", tag = "v0.18.3-beta.2" }
+lance-datafusion = { "version" = "=0.18.3", git = "https://github.com/lancedb/lance.git", tag = "v0.18.3-beta.2" }
+lance-encoding = { "version" = "=0.18.3", git = "https://github.com/lancedb/lance.git", tag = "v0.18.3-beta.2" }
 # Note that this one does not include pyarrow
 arrow = { version = "52.2", optional = false }
 arrow-array = "52.2"
@@ -37,16 +40,19 @@ arrow-arith = "52.2"
 arrow-cast = "52.2"
 async-trait = "0"
 chrono = "0.4.35"
-datafusion-physical-plan = "40.0"
+datafusion-common = "41.0"
+datafusion-physical-plan = "41.0"
 half = { "version" = "=2.4.1", default-features = false, features = [
     "num-traits",
 ] }
 futures = "0"
 log = "0.4"
+moka = { version = "0.11", features = ["future"] }
 object_store = "0.10.2"
 pin-project = "1.0.7"
 snafu = "0.7.4"
 url = "2"
 num-traits = "0.2"
+rand = "0.8"
 regex = "1.10"
 lazy_static = "1"

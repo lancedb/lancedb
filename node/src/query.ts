@@ -33,6 +33,7 @@ export class Query<T = number[]> {
   private _filter?: string
   private _metricType?: MetricType
   private _prefilter: boolean
+  private _fastSearch: boolean
   protected readonly _embeddings?: EmbeddingFunction<T>
 
   constructor (query?: T, tbl?: any, embeddings?: EmbeddingFunction<T>) {
@@ -46,6 +47,7 @@ export class Query<T = number[]> {
     this._metricType = undefined
     this._embeddings = embeddings
     this._prefilter = false
+    this._fastSearch = false
   }
 
   /***
@@ -111,6 +113,15 @@ export class Query<T = number[]> {
   }
 
   /**
+   * Skip searching un-indexed data. This can make search faster, but will miss
+   * any data that is not yet indexed.
+   */
+  fastSearch (value: boolean): Query<T> {
+    this._fastSearch = value
+    return this
+  }
+
+  /**
      * Execute the query and return the results as an Array of Objects
      */
   async execute<T = Record<string, unknown>> (): Promise<T[]> {
@@ -131,9 +142,9 @@ export class Query<T = number[]> {
       Object.keys(entry).forEach((key: string) => {
         if (entry[key] instanceof Vector) {
           // toJSON() returns f16 array correctly
-          newObject[key] = (entry[key] as Vector).toJSON()
+          newObject[key] = (entry[key] as any).toJSON()
         } else {
-          newObject[key] = entry[key]
+          newObject[key] = entry[key] as any
         }
       })
       return newObject as unknown as T

@@ -21,9 +21,11 @@ use std::sync::Arc;
 use arrow::array::AsArray;
 use arrow::datatypes::Float32Type;
 use arrow_array::{RecordBatchIterator, RecordBatchReader};
-use arrow_schema::{DataType, Field, Schema, SchemaRef};
+use arrow_schema::{Field, Schema, SchemaRef};
 use async_trait::async_trait;
+use datafusion_physical_plan::display::DisplayableExecutionPlan;
 use datafusion_physical_plan::ExecutionPlan;
+use futures::{StreamExt, TryStreamExt};
 use lance::dataset::builder::DatasetBuilder;
 use lance::dataset::cleanup::RemovalStats;
 use lance::dataset::optimize::{compact_files, CompactionMetrics, IndexRemapperOptions};
@@ -43,29 +45,35 @@ use lance_index::vector::pq::PQBuildParams;
 use lance_index::vector::sq::builder::SQBuildParams;
 use lance_index::DatasetIndexExt;
 use lance_index::IndexType;
+use lance_table::io::commit::ManifestNamingScheme;
 use log::info;
 use serde::{Deserialize, Serialize};
-use snafu::whatever;
 
 use crate::arrow::IntoArrow;
 use crate::connection::NoData;
 use crate::embeddings::{EmbeddingDefinition, EmbeddingRegistry, MaybeEmbedded, MemoryRegistry};
 use crate::error::{Error, Result};
+use crate::index::scalar::FtsIndexBuilder;
 use crate::index::vector::{
-    IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder, IvfPqIndexBuilder, VectorIndex,
+    suggested_num_partitions_for_hnsw, IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder,
+    IvfPqIndexBuilder, VectorIndex,
 };
-use crate::index::IndexConfig;
 use crate::index::IndexStatistics;
 use crate::index::{
     vector::{suggested_num_partitions, suggested_num_sub_vectors},
     Index, IndexBuilder,
 };
+use crate::index::{IndexConfig, IndexStatisticsImpl};
 use crate::query::{
     IntoQueryVector, Query, QueryExecutionOptions, Select, VectorQuery, DEFAULT_TOP_K,
 };
-use crate::utils::{default_vector_column, PatchReadParam, PatchWriteParam};
+use crate::utils::{
+    default_vector_column, supported_bitmap_data_type, supported_btree_data_type,
+    supported_fts_data_type, supported_label_list_data_type, supported_vector_data_type,
+    PatchReadParam, PatchWriteParam,
+};
 
-use self::dataset::{DatasetConsistencyWrapper, DatasetReadGuard};
+use self::dataset::DatasetConsistencyWrapper;
 use self::merge::MergeInsertBuilder;
 
 pub(crate) mod dataset;
@@ -347,8 +355,9 @@ impl UpdateBuilder {
         self
     }
 
-    /// Executes the update operation
-    pub async fn execute(self) -> Result<()> {
+    /// Executes the update operation.
+    /// Returns the number of rows that were updated.
+    pub async fn execute(self) -> Result<u64> {
         if self.columns.is_empty() {
             Err(Error::InvalidInput {
                 message: "at least one column must be specified in an update operation".to_string(),
@@ -371,12 +380,6 @@ pub(crate) trait TableInternal: std::fmt::Display + std::fmt::Debug + Send + Syn
     async fn schema(&self) -> Result<SchemaRef>;
     /// Count the number of rows in this table.
     async fn count_rows(&self, filter: Option<String>) -> Result<usize>;
-    async fn build_plan(
-        &self,
-        ds_ref: &DatasetReadGuard,
-        query: &VectorQuery,
-        options: Option<QueryExecutionOptions>,
-    ) -> Result<Scanner>;
     async fn create_plan(
         &self,
         query: &VectorQuery,
@@ -387,16 +390,22 @@ pub(crate) trait TableInternal: std::fmt::Display + std::fmt::Debug + Send + Syn
         query: &Query,
         options: QueryExecutionOptions,
     ) -> Result<DatasetRecordBatchStream>;
-    async fn explain_plan(&self, query: &VectorQuery, verbose: bool) -> Result<String>;
+    async fn explain_plan(&self, query: &VectorQuery, verbose: bool) -> Result<String> {
+        let plan = self.create_plan(query, Default::default()).await?;
+        let display = DisplayableExecutionPlan::new(plan.as_ref());
+
+        Ok(format!("{}", display.indent(verbose)))
+    }
     async fn add(
         &self,
         add: AddDataBuilder<NoData>,
         data: Box<dyn arrow_array::RecordBatchReader + Send>,
     ) -> Result<()>;
     async fn delete(&self, predicate: &str) -> Result<()>;
-    async fn update(&self, update: UpdateBuilder) -> Result<()>;
+    async fn update(&self, update: UpdateBuilder) -> Result<u64>;
     async fn create_index(&self, index: IndexBuilder) -> Result<()>;
     async fn list_indices(&self) -> Result<Vec<IndexConfig>>;
+    async fn index_stats(&self, index_name: &str) -> Result<Option<IndexStatistics>>;
     async fn merge_insert(
         &self,
         params: MergeInsertBuilder,
@@ -415,6 +424,7 @@ pub(crate) trait TableInternal: std::fmt::Display + std::fmt::Debug + Send + Syn
     async fn checkout_latest(&self) -> Result<()>;
     async fn restore(&self) -> Result<()>;
     async fn table_definition(&self) -> Result<TableDefinition>;
+    fn dataset_uri(&self) -> &str;
 }
 
 /// A Table is a collection of strong typed Rows.
@@ -424,6 +434,31 @@ pub(crate) trait TableInternal: std::fmt::Display + std::fmt::Debug + Send + Syn
 pub struct Table {
     inner: Arc<dyn TableInternal>,
     embedding_registry: Arc<dyn EmbeddingRegistry>,
+}
+
+#[cfg(all(test, feature = "remote"))]
+mod test_utils {
+    use super::*;
+
+    impl Table {
+        pub fn new_with_handler<T>(
+            name: impl Into<String>,
+            handler: impl Fn(reqwest::Request) -> http::Response<T> + Clone + Send + Sync + 'static,
+        ) -> Self
+        where
+            T: Into<reqwest::Body>,
+        {
+            let inner = Arc::new(crate::remote::table::RemoteTable::new_mock(
+                name.into(),
+                handler,
+            ));
+            Self {
+                inner,
+                // Registry is unused.
+                embedding_registry: Arc::new(MemoryRegistry::new()),
+            }
+        }
+    }
 }
 
 impl std::fmt::Display for Table {
@@ -921,6 +956,22 @@ impl Table {
     pub async fn list_indices(&self) -> Result<Vec<IndexConfig>> {
         self.inner.list_indices().await
     }
+
+    /// Get the underlying dataset URI
+    ///
+    /// Warning: This is an internal API and the return value is subject to change.
+    pub fn dataset_uri(&self) -> &str {
+        self.inner.dataset_uri()
+    }
+
+    /// Get statistics about an index.
+    /// Returns None if the index does not exist.
+    pub async fn index_stats(
+        &self,
+        index_name: impl AsRef<str>,
+    ) -> Result<Option<IndexStatistics>> {
+        self.inner.index_stats(index_name.as_ref()).await
+    }
 }
 
 impl From<NativeTable> for Table {
@@ -1049,46 +1100,6 @@ impl NativeTable {
                 reason: "Table name is not valid URL".to_string(),
             })?;
         Ok(name.to_string())
-    }
-
-    fn supported_btree_data_type(dtype: &DataType) -> bool {
-        dtype.is_integer()
-            || dtype.is_floating()
-            || matches!(
-                dtype,
-                DataType::Boolean
-                    | DataType::Utf8
-                    | DataType::Time32(_)
-                    | DataType::Time64(_)
-                    | DataType::Date32
-                    | DataType::Date64
-                    | DataType::Timestamp(_, _)
-            )
-    }
-
-    fn supported_bitmap_data_type(dtype: &DataType) -> bool {
-        dtype.is_integer() || matches!(dtype, DataType::Utf8)
-    }
-
-    fn supported_label_list_data_type(dtype: &DataType) -> bool {
-        match dtype {
-            DataType::List(field) => Self::supported_bitmap_data_type(field.data_type()),
-            DataType::FixedSizeList(field, _) => {
-                Self::supported_bitmap_data_type(field.data_type())
-            }
-            _ => false,
-        }
-    }
-
-    fn supported_fts_data_type(dtype: &DataType) -> bool {
-        matches!(dtype, DataType::Utf8 | DataType::LargeUtf8)
-    }
-
-    fn supported_vector_data_type(dtype: &DataType) -> bool {
-        match dtype {
-            DataType::FixedSizeList(inner, _) => DataType::is_floating(inner.data_type()),
-            _ => false,
-        }
     }
 
     /// Creates a new Table
@@ -1249,91 +1260,6 @@ impl NativeTable {
             .await)
     }
 
-    #[deprecated(since = "0.5.2", note = "Please use `index_stats` instead")]
-    pub async fn count_indexed_rows(&self, index_uuid: &str) -> Result<Option<usize>> {
-        #[allow(deprecated)]
-        match self.load_index_stats(index_uuid).await? {
-            Some(stats) => Ok(Some(stats.num_indexed_rows)),
-            None => Ok(None),
-        }
-    }
-
-    #[deprecated(since = "0.5.2", note = "Please use `index_stats` instead")]
-    pub async fn count_unindexed_rows(&self, index_uuid: &str) -> Result<Option<usize>> {
-        #[allow(deprecated)]
-        match self.load_index_stats(index_uuid).await? {
-            Some(stats) => Ok(Some(stats.num_unindexed_rows)),
-            None => Ok(None),
-        }
-    }
-
-    #[deprecated(since = "0.5.2", note = "Please use `index_stats` instead")]
-    pub async fn get_index_type(&self, index_uuid: &str) -> Result<Option<String>> {
-        #[allow(deprecated)]
-        match self.load_index_stats(index_uuid).await? {
-            Some(stats) => Ok(Some(stats.index_type.unwrap_or_default())),
-            None => Ok(None),
-        }
-    }
-
-    #[deprecated(since = "0.5.2", note = "Please use `index_stats` instead")]
-    pub async fn get_distance_type(&self, index_uuid: &str) -> Result<Option<String>> {
-        #[allow(deprecated)]
-        match self.load_index_stats(index_uuid).await? {
-            Some(stats) => Ok(Some(
-                stats
-                    .indices
-                    .iter()
-                    .filter_map(|i| i.metric_type.clone())
-                    .collect(),
-            )),
-            None => Ok(None),
-        }
-    }
-
-    #[deprecated(since = "0.5.2", note = "Please use `index_stats` instead")]
-    pub async fn load_index_stats(&self, index_uuid: &str) -> Result<Option<IndexStatistics>> {
-        let index = self
-            .load_indices()
-            .await?
-            .into_iter()
-            .find(|i| i.index_uuid == index_uuid);
-        if index.is_none() {
-            return Ok(None);
-        }
-        let dataset = self.dataset.get().await?;
-        let index_stats = dataset.index_statistics(&index.unwrap().index_name).await?;
-        let index_stats: IndexStatistics = whatever!(
-            serde_json::from_str(&index_stats),
-            "error deserializing index statistics {index_stats}",
-        );
-
-        Ok(Some(index_stats))
-    }
-
-    /// Get statistics about an index.
-    /// Returns an error if the index does not exist.
-    pub async fn index_stats(
-        &self,
-        index_name: impl AsRef<str>,
-    ) -> Result<Option<IndexStatistics>> {
-        let stats = match self
-            .dataset
-            .get()
-            .await?
-            .index_statistics(index_name.as_ref())
-            .await
-        {
-            Ok(stats) => stats,
-            Err(lance::error::Error::IndexNotFound { .. }) => return Ok(None),
-            Err(e) => return Err(Error::from(e)),
-        };
-
-        serde_json::from_str(&stats).map_err(|e| Error::InvalidInput {
-            message: format!("error deserializing index statistics: {}", e),
-        })
-    }
-
     pub async fn load_indices(&self) -> Result<Vec<VectorIndex>> {
         let dataset = self.dataset.get().await?;
         let (indices, mf) = futures::try_join!(dataset.load_indices(), dataset.latest_manifest())?;
@@ -1349,7 +1275,7 @@ impl NativeTable {
         field: &Field,
         replace: bool,
     ) -> Result<()> {
-        if !Self::supported_vector_data_type(field.data_type()) {
+        if !supported_vector_data_type(field.data_type()) {
             return Err(Error::InvalidInput {
                 message: format!(
                     "An IVF PQ index cannot be created on the column `{}` which has data type {}",
@@ -1402,7 +1328,7 @@ impl NativeTable {
         field: &Field,
         replace: bool,
     ) -> Result<()> {
-        if !Self::supported_vector_data_type(field.data_type()) {
+        if !supported_vector_data_type(field.data_type()) {
             return Err(Error::InvalidInput {
                 message: format!(
                     "An IVF HNSW PQ index cannot be created on the column `{}` which has data type {}",
@@ -1412,11 +1338,19 @@ impl NativeTable {
             });
         }
 
-        let num_partitions = if let Some(n) = index.num_partitions {
+        let num_partitions: u32 = if let Some(n) = index.num_partitions {
             n
         } else {
-            suggested_num_partitions(self.count_rows(None).await?)
+            match field.data_type() {
+                arrow_schema::DataType::FixedSizeList(_, n) => Ok::<u32, Error>(
+                    suggested_num_partitions_for_hnsw(self.count_rows(None).await?, *n as u32),
+                ),
+                _ => Err(Error::Schema {
+                    message: format!("Column '{}' is not a FixedSizeList", field.name()),
+                }),
+            }?
         };
+
         let num_sub_vectors: u32 = if let Some(n) = index.num_sub_vectors {
             n
         } else {
@@ -1465,7 +1399,7 @@ impl NativeTable {
         field: &Field,
         replace: bool,
     ) -> Result<()> {
-        if !Self::supported_vector_data_type(field.data_type()) {
+        if !supported_vector_data_type(field.data_type()) {
             return Err(Error::InvalidInput {
                 message: format!(
                     "An IVF HNSW SQ index cannot be created on the column `{}` which has data type {}",
@@ -1475,10 +1409,17 @@ impl NativeTable {
             });
         }
 
-        let num_partitions = if let Some(n) = index.num_partitions {
+        let num_partitions: u32 = if let Some(n) = index.num_partitions {
             n
         } else {
-            suggested_num_partitions(self.count_rows(None).await?)
+            match field.data_type() {
+                arrow_schema::DataType::FixedSizeList(_, n) => Ok::<u32, Error>(
+                    suggested_num_partitions_for_hnsw(self.count_rows(None).await?, *n as u32),
+                ),
+                _ => Err(Error::Schema {
+                    message: format!("Column '{}' is not a FixedSizeList", field.name()),
+                }),
+            }?
         };
 
         let mut dataset = self.dataset.get_mut().await?;
@@ -1511,10 +1452,10 @@ impl NativeTable {
     }
 
     async fn create_auto_index(&self, field: &Field, opts: IndexBuilder) -> Result<()> {
-        if Self::supported_vector_data_type(field.data_type()) {
+        if supported_vector_data_type(field.data_type()) {
             self.create_ivf_pq_index(IvfPqIndexBuilder::default(), field, opts.replace)
                 .await
-        } else if Self::supported_btree_data_type(field.data_type()) {
+        } else if supported_btree_data_type(field.data_type()) {
             self.create_btree_index(field, opts).await
         } else {
             Err(Error::InvalidInput {
@@ -1528,7 +1469,7 @@ impl NativeTable {
     }
 
     async fn create_btree_index(&self, field: &Field, opts: IndexBuilder) -> Result<()> {
-        if !Self::supported_btree_data_type(field.data_type()) {
+        if !supported_btree_data_type(field.data_type()) {
             return Err(Error::Schema {
                 message: format!(
                     "A BTree index cannot be created on the field `{}` which has data type {}",
@@ -1555,7 +1496,7 @@ impl NativeTable {
     }
 
     async fn create_bitmap_index(&self, field: &Field, opts: IndexBuilder) -> Result<()> {
-        if !Self::supported_bitmap_data_type(field.data_type()) {
+        if !supported_bitmap_data_type(field.data_type()) {
             return Err(Error::Schema {
                 message: format!(
                     "A Bitmap index cannot be created on the field `{}` which has data type {}",
@@ -1582,7 +1523,7 @@ impl NativeTable {
     }
 
     async fn create_label_list_index(&self, field: &Field, opts: IndexBuilder) -> Result<()> {
-        if !Self::supported_label_list_data_type(field.data_type()) {
+        if !supported_label_list_data_type(field.data_type()) {
             return Err(Error::Schema {
                 message: format!(
                     "A LabelList index cannot be created on the field `{}` which has data type {}",
@@ -1608,8 +1549,13 @@ impl NativeTable {
         Ok(())
     }
 
-    async fn create_fts_index(&self, field: &Field, opts: IndexBuilder) -> Result<()> {
-        if !Self::supported_fts_data_type(field.data_type()) {
+    async fn create_fts_index(
+        &self,
+        field: &Field,
+        fts_opts: FtsIndexBuilder,
+        replace: bool,
+    ) -> Result<()> {
+        if !supported_fts_data_type(field.data_type()) {
             return Err(Error::Schema {
                 message: format!(
                     "A FTS index cannot be created on the field `{}` which has data type {}",
@@ -1620,16 +1566,16 @@ impl NativeTable {
         }
 
         let mut dataset = self.dataset.get_mut().await?;
-        let lance_idx_params = lance_index::scalar::ScalarIndexParams {
-            force_index_type: Some(lance_index::scalar::ScalarIndexType::Inverted),
+        let fts_params = lance_index::scalar::InvertedIndexParams {
+            with_position: fts_opts.with_position,
         };
         dataset
             .create_index(
                 &[field.name()],
-                IndexType::Scalar,
+                IndexType::Inverted,
                 None,
-                &lance_idx_params,
-                opts.replace,
+                &fts_params,
+                replace,
             )
             .await?;
         Ok(())
@@ -1645,6 +1591,35 @@ impl NativeTable {
             plan,
             Default::default(),
         )?))
+    }
+
+    /// Check whether the table uses V2 manifest paths.
+    ///
+    /// See [Self::migrate_manifest_paths_v2] and [ManifestNamingScheme] for
+    /// more information.
+    pub async fn uses_v2_manifest_paths(&self) -> Result<bool> {
+        let dataset = self.dataset.get().await?;
+        Ok(dataset.manifest_naming_scheme == ManifestNamingScheme::V2)
+    }
+
+    /// Migrate the table to use the new manifest path scheme.
+    ///
+    /// This function will rename all V1 manifests to V2 manifest paths.
+    /// These paths provide more efficient opening of datasets with many versions
+    /// on object stores.
+    ///
+    /// This function is idempotent, and can be run multiple times without
+    /// changing the state of the object store.
+    ///
+    /// However, it should not be run while other concurrent operations are happening.
+    /// And it should also run until completion before resuming other operations.
+    ///
+    /// You can use [Self::uses_v2_manifest_paths] to check if the table is already
+    /// using V2 manifest paths.
+    pub async fn migrate_manifest_paths_v2(&self) -> Result<()> {
+        let mut dataset = self.dataset.get_mut().await?;
+        dataset.migrate_manifest_paths_v2().await?;
+        Ok(())
     }
 }
 
@@ -1721,9 +1696,6 @@ impl TableInternal for NativeTable {
         let data =
             MaybeEmbedded::try_new(data, self.table_definition().await?, add.embedding_registry)?;
 
-        // Still use the legacy lance format (v1) by default.
-        // We don't want to accidentally switch to v2 format during an add operation.
-        // If the table is already v2 this won't have any effect.
         let mut lance_params = add.write_options.lance_write_params.unwrap_or(WriteParams {
             mode: match add.mode {
                 AddDataMode::Append => WriteMode::Append,
@@ -1772,7 +1744,7 @@ impl TableInternal for NativeTable {
             Index::BTree(_) => self.create_btree_index(field, opts).await,
             Index::Bitmap(_) => self.create_bitmap_index(field, opts).await,
             Index::LabelList(_) => self.create_label_list_index(field, opts).await,
-            Index::FTS(_) => self.create_fts_index(field, opts).await,
+            Index::FTS(fts_opts) => self.create_fts_index(field, fts_opts, opts.replace).await,
             Index::IvfPq(ivf_pq) => self.create_ivf_pq_index(ivf_pq, field, opts.replace).await,
             Index::IvfHnswPq(ivf_hnsw_pq) => {
                 self.create_ivf_hnsw_pq_index(ivf_hnsw_pq, field, opts.replace)
@@ -1785,7 +1757,7 @@ impl TableInternal for NativeTable {
         }
     }
 
-    async fn update(&self, update: UpdateBuilder) -> Result<()> {
+    async fn update(&self, update: UpdateBuilder) -> Result<u64> {
         let dataset = self.dataset.get().await?.clone();
         let mut builder = LanceUpdateBuilder::new(Arc::new(dataset));
         if let Some(predicate) = update.filter {
@@ -1797,17 +1769,20 @@ impl TableInternal for NativeTable {
         }
 
         let operation = builder.build()?;
-        let ds = operation.execute().await?;
-        self.dataset.set_latest(ds.as_ref().clone()).await;
-        Ok(())
+        let res = operation.execute().await?;
+        self.dataset
+            .set_latest(res.new_dataset.as_ref().clone())
+            .await;
+        Ok(res.rows_updated)
     }
 
-    async fn build_plan(
+    async fn create_plan(
         &self,
-        ds_ref: &DatasetReadGuard,
         query: &VectorQuery,
-        options: Option<QueryExecutionOptions>,
-    ) -> Result<Scanner> {
+        options: QueryExecutionOptions,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        let ds_ref = self.dataset.get().await?;
+
         let mut scanner: Scanner = ds_ref.scan();
 
         if let Some(query_vector) = query.query_vector.as_ref() {
@@ -1852,9 +1827,16 @@ impl TableInternal for NativeTable {
                 query_vector,
                 query.base.limit.unwrap_or(DEFAULT_TOP_K),
             )?;
+            scanner.limit(
+                query.base.limit.map(|limit| limit as i64),
+                query.base.offset.map(|offset| offset as i64),
+            )?;
         } else {
             // If there is no vector query, it's ok to not have a limit
-            scanner.limit(query.base.limit.map(|limit| limit as i64), None)?;
+            scanner.limit(
+                query.base.limit.map(|limit| limit as i64),
+                query.base.offset.map(|offset| offset as i64),
+            )?;
         }
 
         scanner.nprobs(query.nprobes);
@@ -1870,24 +1852,15 @@ impl TableInternal for NativeTable {
             Select::All => {}
         }
 
-        if let Some(opts) = options {
-            scanner.batch_size(opts.max_batch_length as usize);
+        if query.base.with_row_id {
+            scanner.with_row_id();
         }
+
+        scanner.batch_size(options.max_batch_length as usize);
+
         if query.base.fast_search {
             scanner.fast_search();
         }
-
-        Ok(scanner)
-    }
-
-    async fn create_plan(
-        &self,
-        query: &VectorQuery,
-        options: QueryExecutionOptions,
-    ) -> Result<Arc<dyn ExecutionPlan>> {
-        let ds_ref = self.dataset.get().await?;
-
-        let mut scanner = self.build_plan(&ds_ref, query, Some(options)).await?;
 
         match &query.base.select {
             Select::Columns(select) => {
@@ -1925,16 +1898,6 @@ impl TableInternal for NativeTable {
     ) -> Result<DatasetRecordBatchStream> {
         self.generic_query(&query.clone().into_vector(), options)
             .await
-    }
-
-    async fn explain_plan(&self, query: &VectorQuery, verbose: bool) -> Result<String> {
-        let ds_ref = self.dataset.get().await?;
-
-        let scanner = self.build_plan(&ds_ref, query, None).await?;
-
-        let plan = scanner.explain_plan(verbose).await?;
-
-        Ok(plan)
     }
 
     async fn merge_insert(
@@ -2061,28 +2024,70 @@ impl TableInternal for NativeTable {
     async fn list_indices(&self) -> Result<Vec<IndexConfig>> {
         let dataset = self.dataset.get().await?;
         let indices = dataset.load_indices().await?;
-        indices.iter().map(|idx| {
-            let mut is_vector = false;
+        futures::stream::iter(indices.as_slice()).then(|idx| async {
+            let stats = dataset.index_statistics(idx.name.as_str()).await?;
+            let stats: serde_json::Value = serde_json::from_str(&stats).map_err(|e| Error::Runtime {
+                message: format!("error deserializing index statistics: {}", e),
+            })?;
+            let index_type = stats.get("index_type").and_then(|v| v.as_str())
+            .ok_or_else(|| Error::Runtime {
+                message: "index statistics was missing index type".to_string(),
+            })?;
+            let index_type: crate::index::IndexType = index_type.parse().map_err(|e| Error::Runtime {
+                message: format!("error parsing index type: {}", e),
+            })?;
+
             let mut columns = Vec::with_capacity(idx.fields.len());
             for field_id in &idx.fields {
                 let field = dataset.schema().field_by_id(*field_id).ok_or_else(|| Error::Runtime { message: format!("The index with name {} and uuid {} referenced a field with id {} which does not exist in the schema", idx.name, idx.uuid, field_id) })?;
-                if field.data_type().is_nested() {
-                    // Temporary hack to determine if an index is scalar or vector
-                    // Should be removed in https://github.com/lancedb/lance/issues/2039
-                    is_vector = true;
-                }
                 columns.push(field.name.clone());
             }
 
-            let index_type = if is_vector {
-                crate::index::IndexType::IvfPq
-            } else {
-                crate::index::IndexType::BTree
-            };
-
             let name = idx.name.clone();
             Ok(IndexConfig { index_type, columns, name })
-        }).collect::<Result<Vec<_>>>()
+        }).try_collect::<Vec<_>>().await
+    }
+
+    fn dataset_uri(&self) -> &str {
+        self.uri.as_str()
+    }
+
+    async fn index_stats(&self, index_name: &str) -> Result<Option<IndexStatistics>> {
+        let stats = match self
+            .dataset
+            .get()
+            .await?
+            .index_statistics(index_name.as_ref())
+            .await
+        {
+            Ok(stats) => stats,
+            Err(lance::error::Error::IndexNotFound { .. }) => return Ok(None),
+            Err(e) => return Err(Error::from(e)),
+        };
+
+        let mut stats: IndexStatisticsImpl =
+            serde_json::from_str(&stats).map_err(|e| Error::InvalidInput {
+                message: format!("error deserializing index statistics: {}", e),
+            })?;
+
+        let first_index = stats.indices.pop().ok_or_else(|| Error::InvalidInput {
+            message: "index statistics is empty".to_string(),
+        })?;
+        // Index type should be present at one of the levels.
+        let index_type =
+            stats
+                .index_type
+                .or(first_index.index_type)
+                .ok_or_else(|| Error::InvalidInput {
+                    message: "index statistics was missing index type".to_string(),
+                })?;
+        Ok(Some(IndexStatistics {
+            num_indexed_rows: stats.num_indexed_rows,
+            num_unindexed_rows: stats.num_unindexed_rows,
+            index_type,
+            distance_type: first_index.metric_type,
+            num_indices: stats.num_indices,
+        }))
     }
 }
 
@@ -2105,7 +2110,6 @@ mod tests {
     use arrow_schema::{DataType, Field, Schema, TimeUnit};
     use futures::TryStreamExt;
     use lance::dataset::{Dataset, WriteMode};
-    use lance::index::DatasetIndexInternalExt;
     use lance::io::{ObjectStoreParams, WrappingObjectStore};
     use rand::Rng;
     use tempfile::tempdir;
@@ -2721,24 +2725,7 @@ mod tests {
 
         let table = conn.create_table("test", batches).execute().await.unwrap();
 
-        assert_eq!(
-            table
-                .as_native()
-                .unwrap()
-                .count_indexed_rows("my_index")
-                .await
-                .unwrap(),
-            None
-        );
-        assert_eq!(
-            table
-                .as_native()
-                .unwrap()
-                .count_unindexed_rows("my_index")
-                .await
-                .unwrap(),
-            None
-        );
+        assert_eq!(table.index_stats("my_index").await.unwrap(), None);
 
         table
             .create_index(&["embeddings"], Index::Auto)
@@ -2755,43 +2742,12 @@ mod tests {
         assert_eq!(table.name(), "test");
 
         let indices = table.as_native().unwrap().load_indices().await.unwrap();
-        let index_uuid = &indices[0].index_uuid;
-        assert_eq!(
-            table
-                .as_native()
-                .unwrap()
-                .count_indexed_rows(index_uuid)
-                .await
-                .unwrap(),
-            Some(512)
-        );
-        assert_eq!(
-            table
-                .as_native()
-                .unwrap()
-                .count_unindexed_rows(index_uuid)
-                .await
-                .unwrap(),
-            Some(0)
-        );
-        assert_eq!(
-            table
-                .as_native()
-                .unwrap()
-                .get_index_type(index_uuid)
-                .await
-                .unwrap(),
-            Some("IVF".to_string())
-        );
-        assert_eq!(
-            table
-                .as_native()
-                .unwrap()
-                .get_distance_type(index_uuid)
-                .await
-                .unwrap(),
-            Some(crate::DistanceType::L2.to_string())
-        );
+        let index_name = &indices[0].index_name;
+        let stats = table.index_stats(index_name).await.unwrap().unwrap();
+        assert_eq!(stats.num_indexed_rows, 512);
+        assert_eq!(stats.num_unindexed_rows, 0);
+        assert_eq!(stats.index_type, crate::index::IndexType::IvfPq);
+        assert_eq!(stats.distance_type, Some(crate::DistanceType::L2));
     }
 
     #[tokio::test]
@@ -2834,24 +2790,8 @@ mod tests {
 
         let table = conn.create_table("test", batches).execute().await.unwrap();
 
-        assert_eq!(
-            table
-                .as_native()
-                .unwrap()
-                .count_indexed_rows("my_index")
-                .await
-                .unwrap(),
-            None
-        );
-        assert_eq!(
-            table
-                .as_native()
-                .unwrap()
-                .count_unindexed_rows("my_index")
-                .await
-                .unwrap(),
-            None
-        );
+        let stats = table.index_stats("my_index").await.unwrap();
+        assert!(stats.is_none());
 
         let index = IvfHnswSqIndexBuilder::default();
         table
@@ -2863,31 +2803,16 @@ mod tests {
         let index_configs = table.list_indices().await.unwrap();
         assert_eq!(index_configs.len(), 1);
         let index = index_configs.into_iter().next().unwrap();
-        assert_eq!(index.index_type, crate::index::IndexType::IvfPq);
+        assert_eq!(index.index_type, crate::index::IndexType::IvfHnswSq);
         assert_eq!(index.columns, vec!["embeddings".to_string()]);
         assert_eq!(table.count_rows(None).await.unwrap(), 512);
         assert_eq!(table.name(), "test");
 
         let indices = table.as_native().unwrap().load_indices().await.unwrap();
-        let index_uuid = &indices[0].index_uuid;
-        assert_eq!(
-            table
-                .as_native()
-                .unwrap()
-                .count_indexed_rows(index_uuid)
-                .await
-                .unwrap(),
-            Some(512)
-        );
-        assert_eq!(
-            table
-                .as_native()
-                .unwrap()
-                .count_unindexed_rows(index_uuid)
-                .await
-                .unwrap(),
-            Some(0)
-        );
+        let index_name = &indices[0].index_name;
+        let stats = table.index_stats(index_name).await.unwrap().unwrap();
+        assert_eq!(stats.num_indexed_rows, 512);
+        assert_eq!(stats.num_unindexed_rows, 0);
     }
 
     #[tokio::test]
@@ -2929,25 +2854,8 @@ mod tests {
         );
 
         let table = conn.create_table("test", batches).execute().await.unwrap();
-
-        assert_eq!(
-            table
-                .as_native()
-                .unwrap()
-                .count_indexed_rows("my_index")
-                .await
-                .unwrap(),
-            None
-        );
-        assert_eq!(
-            table
-                .as_native()
-                .unwrap()
-                .count_unindexed_rows("my_index")
-                .await
-                .unwrap(),
-            None
-        );
+        let stats = table.index_stats("my_index").await.unwrap();
+        assert!(stats.is_none());
 
         let index = IvfHnswPqIndexBuilder::default();
         table
@@ -2959,31 +2867,16 @@ mod tests {
         let index_configs = table.list_indices().await.unwrap();
         assert_eq!(index_configs.len(), 1);
         let index = index_configs.into_iter().next().unwrap();
-        assert_eq!(index.index_type, crate::index::IndexType::IvfPq);
+        assert_eq!(index.index_type, crate::index::IndexType::IvfHnswPq);
         assert_eq!(index.columns, vec!["embeddings".to_string()]);
         assert_eq!(table.count_rows(None).await.unwrap(), 512);
         assert_eq!(table.name(), "test");
 
-        let indices = table.as_native().unwrap().load_indices().await.unwrap();
-        let index_uuid = &indices[0].index_uuid;
-        assert_eq!(
-            table
-                .as_native()
-                .unwrap()
-                .count_indexed_rows(index_uuid)
-                .await
-                .unwrap(),
-            Some(512)
-        );
-        assert_eq!(
-            table
-                .as_native()
-                .unwrap()
-                .count_unindexed_rows(index_uuid)
-                .await
-                .unwrap(),
-            Some(0)
-        );
+        let indices: Vec<VectorIndex> = table.as_native().unwrap().load_indices().await.unwrap();
+        let index_name = &indices[0].index_name;
+        let stats = table.index_stats(index_name).await.unwrap().unwrap();
+        assert_eq!(stats.num_indexed_rows, 512);
+        assert_eq!(stats.num_unindexed_rows, 0);
     }
 
     fn create_fixed_size_list<T: Array>(values: T, list_size: i32) -> Result<FixedSizeListArray> {
@@ -3059,25 +2952,10 @@ mod tests {
         assert_eq!(index.columns, vec!["i".to_string()]);
 
         let indices = table.as_native().unwrap().load_indices().await.unwrap();
-        let index_uuid = &indices[0].index_uuid;
-        assert_eq!(
-            table
-                .as_native()
-                .unwrap()
-                .count_indexed_rows(index_uuid)
-                .await
-                .unwrap(),
-            Some(1)
-        );
-        assert_eq!(
-            table
-                .as_native()
-                .unwrap()
-                .count_unindexed_rows(index_uuid)
-                .await
-                .unwrap(),
-            Some(0)
-        );
+        let index_name = &indices[0].index_name;
+        let stats = table.index_stats(index_name).await.unwrap().unwrap();
+        assert_eq!(stats.num_indexed_rows, 1);
+        assert_eq!(stats.num_unindexed_rows, 0);
     }
 
     #[tokio::test]
@@ -3123,22 +3001,8 @@ mod tests {
         let index_configs = table.list_indices().await.unwrap();
         assert_eq!(index_configs.len(), 1);
         let index = index_configs.into_iter().next().unwrap();
-        // TODO: Fix via https://github.com/lancedb/lance/issues/2039
-        // assert_eq!(index.index_type, crate::index::IndexType::Bitmap);
+        assert_eq!(index.index_type, crate::index::IndexType::Bitmap);
         assert_eq!(index.columns, vec!["category".to_string()]);
-
-        // For now, just open the index to verify its type
-        let lance_dataset = table.as_native().unwrap().dataset.get().await.unwrap();
-        let indices = lance_dataset
-            .load_indices_by_name(&index.name)
-            .await
-            .unwrap();
-        let index_meta = &indices[0];
-        let idx = lance_dataset
-            .open_scalar_index("category", &index_meta.uuid.to_string())
-            .await
-            .unwrap();
-        assert_eq!(idx.index_type(), IndexType::Bitmap);
     }
 
     #[tokio::test]
@@ -3162,7 +3026,7 @@ mod tests {
         let values_builder = StringBuilder::new();
         let mut builder = ListBuilder::new(values_builder);
         for i in 0..120 {
-            builder.values().append_value(TAGS[i % 3].to_string());
+            builder.values().append_value(TAGS[i % 3]);
             if i % 3 == 0 {
                 builder.append(true)
             }
@@ -3207,22 +3071,57 @@ mod tests {
         let index_configs = table.list_indices().await.unwrap();
         assert_eq!(index_configs.len(), 1);
         let index = index_configs.into_iter().next().unwrap();
-        // TODO: Fix via https://github.com/lancedb/lance/issues/2039
-        // assert_eq!(index.index_type, crate::index::IndexType::LabelList);
+        assert_eq!(index.index_type, crate::index::IndexType::LabelList);
         assert_eq!(index.columns, vec!["tags".to_string()]);
+    }
 
-        // For now, just open the index to verify its type
-        let lance_dataset = table.as_native().unwrap().dataset.get().await.unwrap();
-        let indices = lance_dataset
-            .load_indices_by_name(&index.name)
+    #[tokio::test]
+    async fn test_create_inverted_index() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        let conn = ConnectBuilder::new(uri).execute().await.unwrap();
+        const WORDS: [&str; 3] = ["cat", "dog", "fish"];
+        let mut text_builder = StringBuilder::new();
+        let num_rows = 120;
+        for i in 0..num_rows {
+            text_builder.append_value(WORDS[i % 3]);
+        }
+        let text = Arc::new(text_builder.finish());
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("text", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from_iter_values(0..num_rows as i32)),
+                text,
+            ],
+        )
+        .unwrap();
+
+        let table = conn
+            .create_table(
+                "test_bitmap",
+                RecordBatchIterator::new(vec![Ok(batch.clone())], batch.schema()),
+            )
+            .execute()
             .await
             .unwrap();
-        let index_meta = &indices[0];
-        let idx = lance_dataset
-            .open_scalar_index("tags", &index_meta.uuid.to_string())
+
+        table
+            .create_index(&["text"], Index::FTS(Default::default()))
+            .execute()
             .await
             .unwrap();
-        assert_eq!(idx.index_type(), IndexType::LabelList);
+        let index_configs = table.list_indices().await.unwrap();
+        assert_eq!(index_configs.len(), 1);
+        let index = index_configs.into_iter().next().unwrap();
+        assert_eq!(index.index_type, crate::index::IndexType::FTS);
+        assert_eq!(index.columns, vec!["text".to_string()]);
+        assert_eq!(index.name, "text_idx");
     }
 
     #[tokio::test]

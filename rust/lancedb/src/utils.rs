@@ -14,7 +14,7 @@
 
 use std::sync::Arc;
 
-use arrow_schema::Schema;
+use arrow_schema::{DataType, Schema};
 use lance::dataset::{ReadParams, WriteParams};
 use lance::io::{ObjectStoreParams, WrappingObjectStore};
 use lazy_static::lazy_static;
@@ -134,6 +134,44 @@ pub(crate) fn default_vector_column(schema: &Schema, dim: Option<i32>) -> Result
         })
     } else {
         Ok(candidates[0].to_string())
+    }
+}
+
+pub fn supported_btree_data_type(dtype: &DataType) -> bool {
+    dtype.is_integer()
+        || dtype.is_floating()
+        || matches!(
+            dtype,
+            DataType::Boolean
+                | DataType::Utf8
+                | DataType::Time32(_)
+                | DataType::Time64(_)
+                | DataType::Date32
+                | DataType::Date64
+                | DataType::Timestamp(_, _)
+        )
+}
+
+pub fn supported_bitmap_data_type(dtype: &DataType) -> bool {
+    dtype.is_integer() || matches!(dtype, DataType::Utf8)
+}
+
+pub fn supported_label_list_data_type(dtype: &DataType) -> bool {
+    match dtype {
+        DataType::List(field) => supported_bitmap_data_type(field.data_type()),
+        DataType::FixedSizeList(field, _) => supported_bitmap_data_type(field.data_type()),
+        _ => false,
+    }
+}
+
+pub fn supported_fts_data_type(dtype: &DataType) -> bool {
+    matches!(dtype, DataType::Utf8 | DataType::LargeUtf8)
+}
+
+pub fn supported_vector_data_type(dtype: &DataType) -> bool {
+    match dtype {
+        DataType::FixedSizeList(inner, _) => DataType::is_floating(inner.data_type()),
+        _ => false,
     }
 }
 

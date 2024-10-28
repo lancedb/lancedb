@@ -105,7 +105,7 @@ class Reranker(ABC):
         query: str,
         vector_results: pa.Table,
         fts_results: pa.Table,
-    ):
+    ) -> pa.Table:
         """
         Rerank function receives the individual results from the vector and FTS search
         results. You can choose to use any of the results to generate the final results,

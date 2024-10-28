@@ -23,8 +23,6 @@ import {
   Connection as LanceDbConnection,
 } from "./native.js";
 
-import { RemoteConnection, RemoteConnectionOptions } from "./remote";
-
 export {
   WriteOptions,
   WriteMode,
@@ -32,8 +30,10 @@ export {
   ColumnAlteration,
   ConnectionOptions,
   IndexStatistics,
-  IndexMetadata,
   IndexConfig,
+  ClientConfig,
+  TimeoutConfig,
+  RetryConfig,
 } from "./native.js";
 
 export {
@@ -88,7 +88,7 @@ export * as embedding from "./embedding";
  */
 export async function connect(
   uri: string,
-  opts?: Partial<ConnectionOptions | RemoteConnectionOptions>,
+  opts?: Partial<ConnectionOptions>,
 ): Promise<Connection>;
 /**
  * Connect to a LanceDB instance at the given URI.
@@ -109,13 +109,11 @@ export async function connect(
  * ```
  */
 export async function connect(
-  opts: Partial<RemoteConnectionOptions | ConnectionOptions> & { uri: string },
+  opts: Partial<ConnectionOptions> & { uri: string },
 ): Promise<Connection>;
 export async function connect(
-  uriOrOptions:
-    | string
-    | (Partial<RemoteConnectionOptions | ConnectionOptions> & { uri: string }),
-  opts: Partial<ConnectionOptions | RemoteConnectionOptions> = {},
+  uriOrOptions: string | (Partial<ConnectionOptions> & { uri: string }),
+  opts: Partial<ConnectionOptions> = {},
 ): Promise<Connection> {
   let uri: string | undefined;
   if (typeof uriOrOptions !== "string") {
@@ -130,9 +128,6 @@ export async function connect(
     throw new Error("uri is required");
   }
 
-  if (uri?.startsWith("db://")) {
-    return new RemoteConnection(uri, opts as RemoteConnectionOptions);
-  }
   opts = (opts as ConnectionOptions) ?? {};
   (<ConnectionOptions>opts).storageOptions = cleanseStorageOptions(
     (<ConnectionOptions>opts).storageOptions,

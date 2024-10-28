@@ -14,7 +14,6 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import os
 from abc import abstractmethod
 from pathlib import Path
@@ -27,8 +26,13 @@ from pyarrow import fs
 from lancedb.common import data_to_reader, validate_schema
 
 from ._lancedb import connect as lancedb_connect
-from .pydantic import LanceModel
-from .table import AsyncTable, LanceTable, Table, _sanitize_data, _table_path
+from .table import (
+    AsyncTable,
+    LanceTable,
+    Table,
+    _table_path,
+    sanitize_create_table,
+)
 from .util import (
     fs_from_uri,
     get_uri_location,
@@ -37,6 +41,7 @@ from .util import (
 )
 
 if TYPE_CHECKING:
+    from .pydantic import LanceModel
     from datetime import timedelta
 
     from ._lancedb import Connection as LanceDbConnection
@@ -91,7 +96,7 @@ class DBConnection(EnforceOverrides):
             User must provide at least one of `data` or `schema`.
             Acceptable types are:
 
-            - dict or list-of-dict
+            - list-of-dict
 
             - pandas.DataFrame
 
@@ -562,6 +567,7 @@ class AsyncConnection(object):
         *,
         data_storage_version: Optional[str] = None,
         use_legacy_format: Optional[bool] = None,
+        enable_v2_manifest_paths: Optional[bool] = None,
     ) -> AsyncTable:
         """Create an [AsyncTable][lancedb.table.AsyncTable] in the database.
 
@@ -573,7 +579,7 @@ class AsyncConnection(object):
             User must provide at least one of `data` or `schema`.
             Acceptable types are:
 
-            - dict or list-of-dict
+            - list-of-dict
 
             - pandas.DataFrame
 
@@ -604,15 +610,22 @@ class AsyncConnection(object):
             connection will be inherited by the table, but can be overridden here.
             See available options at
             https://lancedb.github.io/lancedb/guides/storage/
-        data_storage_version: optional, str, default "legacy"
+        data_storage_version: optional, str, default "stable"
             The version of the data storage format to use. Newer versions are more
             efficient but require newer versions of lance to read.  The default is
-            "legacy" which will use the legacy v1 version.  See the user guide
+            "stable" which will use the legacy v2 version.  See the user guide
             for more details.
-        use_legacy_format: bool, optional, default True. (Deprecated)
+        use_legacy_format: bool, optional, default False. (Deprecated)
             If True, use the legacy format for the table. If False, use the new format.
-            The default is True while the new format is in beta.
             This method is deprecated, use `data_storage_version` instead.
+        enable_v2_manifest_paths: bool, optional, default False
+            Use the new V2 manifest paths. These paths provide more efficient
+            opening of datasets with many versions on object stores.  WARNING:
+            turning this on will make the dataset unreadable for older versions
+            of LanceDB (prior to 0.13.0). To migrate an existing dataset, instead
+            use the
+            [AsyncTable.migrate_manifest_paths_v2][lancedb.table.AsyncTable.migrate_manifest_paths_v2]
+            method.
 
 
         Returns
@@ -722,12 +735,6 @@ class AsyncConnection(object):
         ...     await db.create_table("table4", make_batches(), schema=schema)
         >>> asyncio.run(iterable_example())
         """
-        if inspect.isclass(schema) and issubclass(schema, LanceModel):
-            # convert LanceModel to pyarrow schema
-            # note that it's possible this contains
-            # embedding function metadata already
-            schema = schema.to_arrow_schema()
-
         metadata = None
 
         # Defining defaults here and not in function prototype.  In the future
@@ -738,31 +745,9 @@ class AsyncConnection(object):
         if fill_value is None:
             fill_value = 0.0
 
-        if data is not None:
-            data, schema = _sanitize_data(
-                data,
-                schema,
-                metadata=metadata,
-                on_bad_vectors=on_bad_vectors,
-                fill_value=fill_value,
-            )
-
-        if schema is None:
-            if data is None:
-                raise ValueError("Either data or schema must be provided")
-            elif hasattr(data, "schema"):
-                schema = data.schema
-            elif isinstance(data, Iterable):
-                if metadata:
-                    raise TypeError(
-                        (
-                            "Persistent embedding functions not yet "
-                            "supported for generator data input"
-                        )
-                    )
-
-        if metadata:
-            schema = schema.with_metadata(metadata)
+        data, schema = sanitize_create_table(
+            data, schema, metadata, on_bad_vectors, fill_value
+        )
         validate_schema(schema)
 
         if exist_ok is None:
@@ -773,9 +758,7 @@ class AsyncConnection(object):
             mode = "exist_ok"
 
         if not data_storage_version:
-            data_storage_version = (
-                "legacy" if use_legacy_format is None or use_legacy_format else "stable"
-            )
+            data_storage_version = "legacy" if use_legacy_format else "stable"
 
         if data is None:
             new_table = await self._inner.create_empty_table(
@@ -784,6 +767,7 @@ class AsyncConnection(object):
                 schema,
                 storage_options=storage_options,
                 data_storage_version=data_storage_version,
+                enable_v2_manifest_paths=enable_v2_manifest_paths,
             )
         else:
             data = data_to_reader(data, schema)
@@ -793,6 +777,7 @@ class AsyncConnection(object):
                 data,
                 storage_options=storage_options,
                 data_storage_version=data_storage_version,
+                enable_v2_manifest_paths=enable_v2_manifest_paths,
             )
 
         return AsyncTable(new_table)

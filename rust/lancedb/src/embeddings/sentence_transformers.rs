@@ -145,7 +145,7 @@ impl SentenceTransformersEmbeddingsBuilder {
         let device = self.device.unwrap_or(Device::Cpu);
 
         let repo = if let Some(revision) = self.revision {
-            Repo::with_revision(model_id, RepoType::Model, revision.to_string())
+            Repo::with_revision(model_id, RepoType::Model, revision)
         } else {
             Repo::new(model_id, RepoType::Model)
         };
