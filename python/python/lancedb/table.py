@@ -57,17 +57,20 @@ from .util import (
     value_to_sql,
 )
 
+from ._lancedb import connect as lancedb_connect
 from ._lancedb import (
     CompactionStats,
     OptimizeStats,
     RemovalStats,
-    connect as lancedb_connect,
 )
+
 
 if TYPE_CHECKING:
     import PIL
     from lance.dataset import CleanupStats, ReaderLike
-    from ._lancedb import Table as LanceDBTable
+    from ._lancedb import (
+        Table as LanceDBTable,
+    )
     from .db import LanceDBConnection
     from .index import BTree, IndexConfig, IvfPq, Bitmap, LabelList, FTS
 
