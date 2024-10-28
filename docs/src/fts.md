@@ -160,13 +160,3 @@ To search for a phrase, the index must be created with `with_position=True`:
 table.create_fts_index("text", use_tantivy=False, with_position=True)
 ```
 This will allow you to search for phrases, but it will also significantly increase the index size and indexing time.
-
-## Incremental indexing
-
-Adding new rows to the table and conducting a full text search with unindexed rows can be expensive. LanceDB supports incremental indexing, which allows you to add new rows to the table and update the FTS index without re-indexing the entire table:
-
-```python
-table.create_fts_index("text", use_tantivy=False)
-table.add({"vector": [1.1, 2.2], "text": "A new text"})
-table.opti
-```
