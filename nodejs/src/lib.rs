@@ -14,6 +14,7 @@
 
 use std::collections::HashMap;
 
+use env_logger::Env;
 use napi_derive::*;
 
 mod connection;
@@ -76,4 +77,12 @@ pub struct WriteOptions {
 #[napi(object)]
 pub struct OpenTableOptions {
     pub storage_options: Option<HashMap<String, String>>,
+}
+
+#[napi::module_init]
+fn init() {
+    let env = Env::new()
+        .filter_or("LANCEDB_LOG", "trace")
+        .write_style("LANCEDB_LOG_STYLE");
+    env_logger::init_from_env(env);
 }

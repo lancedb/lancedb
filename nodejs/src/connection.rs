@@ -18,6 +18,7 @@ use std::str::FromStr;
 use napi::bindgen_prelude::*;
 use napi_derive::*;
 
+use crate::error::{convert_error, NapiErrorExt};
 use crate::table::Table;
 use crate::ConnectionOptions;
 use lancedb::connection::{
@@ -86,12 +87,7 @@ impl Connection {
             builder = builder.host_override(&host_override);
         }
 
-        Ok(Self::inner_new(
-            builder
-                .execute()
-                .await
-                .map_err(|e| napi::Error::from_reason(format!("{}", e)))?,
-        ))
+        Ok(Self::inner_new(builder.execute().await.default_error()?))
     }
 
     #[napi]
@@ -123,9 +119,7 @@ impl Connection {
         if let Some(limit) = limit {
             op = op.limit(limit);
         }
-        op.execute()
-            .await
-            .map_err(|e| napi::Error::from_reason(format!("{}", e)))
+        op.execute().await.default_error()
     }
 
     /// Create table from a Apache Arrow IPC (file) buffer.
@@ -156,17 +150,13 @@ impl Connection {
         }
         if let Some(data_storage_option) = data_storage_options.as_ref() {
             builder = builder.data_storage_version(
-                LanceFileVersion::from_str(data_storage_option)
-                    .map_err(|e| napi::Error::from_reason(format!("{}", e)))?,
+                LanceFileVersion::from_str(data_storage_option).map_err(|e| convert_error(&e))?,
             );
         }
         if let Some(enable_v2_manifest_paths) = enable_v2_manifest_paths {
             builder = builder.enable_v2_manifest_paths(enable_v2_manifest_paths);
         }
-        let tbl = builder
-            .execute()
-            .await
-            .map_err(|e| napi::Error::from_reason(format!("{}", e)))?;
+        let tbl = builder.execute().await.default_error()?;
         Ok(Table::new(tbl))
     }
 
@@ -195,17 +185,13 @@ impl Connection {
         }
         if let Some(data_storage_option) = data_storage_options.as_ref() {
             builder = builder.data_storage_version(
-                LanceFileVersion::from_str(data_storage_option)
-                    .map_err(|e| napi::Error::from_reason(format!("{}", e)))?,
+                LanceFileVersion::from_str(data_storage_option).map_err(|e| convert_error(&e))?,
             );
         }
         if let Some(enable_v2_manifest_paths) = enable_v2_manifest_paths {
             builder = builder.enable_v2_manifest_paths(enable_v2_manifest_paths);
         }
-        let tbl = builder
-            .execute()
-            .await
-            .map_err(|e| napi::Error::from_reason(format!("{}", e)))?;
+        let tbl = builder.execute().await.default_error()?;
         Ok(Table::new(tbl))
     }
 
@@ -225,19 +211,13 @@ impl Connection {
         if let Some(index_cache_size) = index_cache_size {
             builder = builder.index_cache_size(index_cache_size);
         }
-        let tbl = builder
-            .execute()
-            .await
-            .map_err(|e| napi::Error::from_reason(format!("{}", e)))?;
+        let tbl = builder.execute().await.default_error()?;
         Ok(Table::new(tbl))
     }
 
     /// Drop table with the name. Or raise an error if the table does not exist.
     #[napi(catch_unwind)]
     pub async fn drop_table(&self, name: String) -> napi::Result<()> {
-        self.get_inner()?
-            .drop_table(&name)
-            .await
-            .map_err(|e| napi::Error::from_reason(format!("{}", e)))
+        self.get_inner()?.drop_table(&name).await.default_error()
     }
 }

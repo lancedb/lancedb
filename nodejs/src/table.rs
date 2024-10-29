@@ -72,10 +72,7 @@ impl Table {
     /// Return Schema as empty Arrow IPC file.
     #[napi(catch_unwind)]
     pub async fn schema(&self) -> napi::Result<Buffer> {
-        let schema =
-            self.inner_ref()?.schema().await.map_err(|e| {
-                napi::Error::from_reason(format!("Failed to create IPC file: {}", e))
-            })?;
+        let schema = self.inner_ref()?.schema().await.default_error()?;
         let mut writer = FileWriter::try_new(vec![], &schema)
             .map_err(|e| napi::Error::from_reason(format!("Failed to create IPC file: {}", e)))?;
         writer
@@ -100,12 +97,7 @@ impl Table {
             return Err(napi::Error::from_reason(format!("Invalid mode: {}", mode)));
         };
 
-        op.execute().await.map_err(|e| {
-            napi::Error::from_reason(format!(
-                "Failed to add batches to table {}: {}",
-                self.name, e
-            ))
-        })
+        op.execute().await.default_error()
     }
 
     #[napi(catch_unwind)]
@@ -114,22 +106,12 @@ impl Table {
             .count_rows(filter)
             .await
             .map(|val| val as i64)
-            .map_err(|e| {
-                napi::Error::from_reason(format!(
-                    "Failed to count rows in table {}: {}",
-                    self.name, e
-                ))
-            })
+            .default_error()
     }
 
     #[napi(catch_unwind)]
     pub async fn delete(&self, predicate: String) -> napi::Result<()> {
-        self.inner_ref()?.delete(&predicate).await.map_err(|e| {
-            napi::Error::from_reason(format!(
-                "Failed to delete rows in table {}: predicate={}",
-                self.name, e
-            ))
-        })
+        self.inner_ref()?.delete(&predicate).await.default_error()
     }
 
     #[napi(catch_unwind)]
@@ -187,12 +169,7 @@ impl Table {
         self.inner_ref()?
             .add_columns(transforms, None)
             .await
-            .map_err(|err| {
-                napi::Error::from_reason(format!(
-                    "Failed to add columns to table {}: {}",
-                    self.name, err
-                ))
-            })?;
+            .default_error()?;
         Ok(())
     }
 
@@ -213,12 +190,7 @@ impl Table {
         self.inner_ref()?
             .alter_columns(&alterations)
             .await
-            .map_err(|err| {
-                napi::Error::from_reason(format!(
-                    "Failed to alter columns in table {}: {}",
-                    self.name, err
-                ))
-            })?;
+            .default_error()?;
         Ok(())
     }
 
@@ -228,12 +200,7 @@ impl Table {
         self.inner_ref()?
             .drop_columns(&col_refs)
             .await
-            .map_err(|err| {
-                napi::Error::from_reason(format!(
-                    "Failed to drop columns from table {}: {}",
-                    self.name, err
-                ))
-            })?;
+            .default_error()?;
         Ok(())
     }
 

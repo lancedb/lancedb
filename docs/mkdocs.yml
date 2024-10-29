@@ -211,9 +211,10 @@ nav:
               - TransformersJS Embedding Search: examples/transformerjs_embedding_search_nodejs.md
           - 🦀 Rust:
               - Overview: examples/examples_rust.md
-      - Studies:
+      - 📓 Studies:
           - ↗Improve retrievers with hybrid search and reranking: https://blog.lancedb.com/hybrid-search-and-reranking-report/
       - 💭 FAQs: faq.md
+      - 🔍 Troubleshooting: troubleshooting.md
       - ⚙️ API reference:
           - 🐍 Python: python/python.md
           - 👾 JavaScript (vectordb): javascript/modules.md
