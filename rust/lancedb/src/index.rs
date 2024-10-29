@@ -144,7 +144,7 @@ impl std::str::FromStr for IndexType {
             "BTREE" => Ok(Self::BTree),
             "BITMAP" => Ok(Self::Bitmap),
             "LABEL_LIST" | "LABELLIST" => Ok(Self::LabelList),
-            "FTS" => Ok(Self::FTS),
+            "FTS" | "INVERTED" => Ok(Self::FTS),
             "IVF_PQ" => Ok(Self::IvfPq),
             "IVF_HNSW_PQ" => Ok(Self::IvfHnswPq),
             "IVF_HNSW_SQ" => Ok(Self::IvfHnswSq),

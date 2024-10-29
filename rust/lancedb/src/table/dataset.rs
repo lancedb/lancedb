@@ -54,9 +54,7 @@ impl DatasetRef {
                 last_consistency_check,
                 ..
             } => {
-                *dataset = dataset
-                    .checkout_version(dataset.latest_version_id().await?)
-                    .await?;
+                dataset.checkout_latest().await?;
                 last_consistency_check.replace(Instant::now());
             }
             Self::TimeTravel { dataset, version } => {

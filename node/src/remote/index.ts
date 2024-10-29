@@ -517,9 +517,9 @@ export class RemoteTable<T = number[]> implements Table<T> {
     }))
   }
 
-  async indexStats (indexUuid: string): Promise<IndexStats> {
+  async indexStats (indexName: string): Promise<IndexStats> {
     const results = await this._client.post(
-      `/v1/table/${encodeURIComponent(this._name)}/index/${indexUuid}/stats/`
+      `/v1/table/${encodeURIComponent(this._name)}/index/${indexName}/stats/`
     )
     const body = await results.body()
     return {

@@ -106,11 +106,40 @@ impl Index {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     #[staticmethod]
-    pub fn fts(with_position: Option<bool>) -> Self {
+    pub fn fts(
+        with_position: Option<bool>,
+        base_tokenizer: Option<String>,
+        language: Option<String>,
+        max_token_length: Option<usize>,
+        lower_case: Option<bool>,
+        stem: Option<bool>,
+        remove_stop_words: Option<bool>,
+        ascii_folding: Option<bool>,
+    ) -> Self {
         let mut opts = FtsIndexBuilder::default();
         if let Some(with_position) = with_position {
             opts = opts.with_position(with_position);
+        }
+        if let Some(base_tokenizer) = base_tokenizer {
+            opts.tokenizer_configs = opts.tokenizer_configs.base_tokenizer(base_tokenizer);
+        }
+        if let Some(language) = language {
+            opts.tokenizer_configs = opts.tokenizer_configs.language(&language).unwrap();
+        }
+        opts.tokenizer_configs = opts.tokenizer_configs.max_token_length(max_token_length);
+        if let Some(lower_case) = lower_case {
+            opts.tokenizer_configs = opts.tokenizer_configs.lower_case(lower_case);
+        }
+        if let Some(stem) = stem {
+            opts.tokenizer_configs = opts.tokenizer_configs.stem(stem);
+        }
+        if let Some(remove_stop_words) = remove_stop_words {
+            opts.tokenizer_configs = opts.tokenizer_configs.remove_stop_words(remove_stop_words);
+        }
+        if let Some(ascii_folding) = ascii_folding {
+            opts.tokenizer_configs = opts.tokenizer_configs.ascii_folding(ascii_folding);
         }
         Self {
             inner: Mutex::new(Some(LanceDbIndex::FTS(opts))),
