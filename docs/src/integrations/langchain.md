@@ -64,7 +64,7 @@ vector_store = LanceDB(
     api_key=api_key, #(dont include for local API)
     region=region, #(dont include for local API)
     embedding=embeddings,
-    table_name='langchain_test' #Optional
+    table_name='langchain_test' # Optional
     )
 ```
 
