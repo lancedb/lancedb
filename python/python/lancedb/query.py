@@ -983,6 +983,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         self._reranker = RRFReranker()
         self._nprobes = None
         self._refine_factor = None
+        self._metric = None
         self._phrase_query = False
 
     def _validate_query(self, query, vector=None, text=None):
@@ -1050,6 +1051,8 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             self._fts_query.with_row_id(True)
         if self._phrase_query:
             self._fts_query.phrase_query(True)
+        if self._metric:
+            self._vector_query.metric(self._metric)
         if self._nprobes:
             self._vector_query.nprobes(self._nprobes)
         if self._refine_factor:
@@ -1067,6 +1070,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         if self._norm == "rank":
             vector_results = self._rank(vector_results, "_distance")
             fts_results = self._rank(fts_results, "_score")
+
         # normalize the scores to be between 0 and 1, 0 being most relevant
         vector_results = self._normalize_scores(vector_results, "_distance")
 
@@ -1115,7 +1119,9 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             rng = max
         else:
             rng = max - min
-        scores = (scores - min) / rng
+        # If rng is 0 then min and max are both 0 and so we can leave the scores as is
+        if rng != 0:
+            scores = (scores - min) / rng
         if invert:
             scores = 1 - scores
         # replace the _score column with the ranks
@@ -1175,6 +1181,22 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             The LanceHybridQueryBuilder object.
         """
         self._nprobes = nprobes
+        return self
+
+    def metric(self, metric: Literal["L2", "cosine", "dot"]) -> LanceHybridQueryBuilder:
+        """Set the distance metric to use.
+
+        Parameters
+        ----------
+        metric: "L2" or "cosine" or "dot"
+            The distance metric to use. By default "L2" is used.
+
+        Returns
+        -------
+        LanceVectorQueryBuilder
+            The LanceQueryBuilder object.
+        """
+        self._metric = metric.lower()
         return self
 
     def refine_factor(self, refine_factor: int) -> LanceHybridQueryBuilder:

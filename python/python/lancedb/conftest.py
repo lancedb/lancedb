@@ -26,7 +26,7 @@ registry = EmbeddingFunctionRegistry.get_instance()
 @registry.register("test")
 class MockTextEmbeddingFunction(TextEmbeddingFunction):
     """
-    Return the hash of the first 10 characters
+    Return the hash of the first 10 characters (normalized)
     """
 
     def generate_embeddings(self, texts):
@@ -35,6 +35,23 @@ class MockTextEmbeddingFunction(TextEmbeddingFunction):
     def _compute_one_embedding(self, row):
         emb = np.array([float(hash(c)) for c in row[:10]])
         emb /= np.linalg.norm(emb)
+        return emb if len(emb) == 10 else [0] * 10
+
+    def ndims(self):
+        return 10
+
+
+@registry.register("nonnorm")
+class MockNonNormTextEmbeddingFunction(TextEmbeddingFunction):
+    """
+    Return the ord of the first 10 characters (not normalized)
+    """
+
+    def generate_embeddings(self, texts):
+        return [self._compute_one_embedding(row) for row in texts]
+
+    def _compute_one_embedding(self, row):
+        emb = np.array([float(ord(c)) for c in row[:10]])
         return emb if len(emb) == 10 else [0] * 10
 
     def ndims(self):
