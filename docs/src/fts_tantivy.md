@@ -34,7 +34,7 @@ table = db.create_table(
 # passing `use_tantivy=False` to use lance FTS index
 # `use_tantivy=True` by default
 table.create_fts_index("content", use_tantivy=True)
-table.search("puppy").limit(10).select(["text"]).to_list()
+table.search("puppy").limit(10).select(["content"]).to_list()
 # [{'text': 'Frodo was a happy puppy', '_score': 0.6931471824645996}]
 # ...
 ```
