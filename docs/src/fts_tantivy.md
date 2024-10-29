@@ -81,9 +81,9 @@ creating the full-text search index. Once pre-sorted, you can then specify
 field. For example,
 
 ```python
-table.create_fts_index(["content"], use_tantivy=True, ordering_field_names=["content"], replace=True)
+table.create_fts_index(["content"], use_tantivy=True, ordering_field_names=["title"], replace=True)
 
-(table.search("puppy", ordering_field_name="content")
+(table.search("puppy", ordering_field_name="title")
  .limit(20)
  .to_list())
 ```
