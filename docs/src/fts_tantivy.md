@@ -15,7 +15,7 @@ pip install tantivy==0.20.1
 
 ## Example
 
-Consider that we have a LanceDB table named `my_table`, whose string column `text` we want to index and query via keyword search, the FTS index must be created before you can search via keywords.
+Consider that we have a LanceDB table named `my_table`, whose string column `content` we want to index and query via keyword search, the FTS index must be created before you can search via keywords.
 
 ```python
 import lancedb
@@ -26,21 +26,20 @@ db = lancedb.connect(uri)
 table = db.create_table(
     "my_table",
     data=[
-        {"vector": [3.1, 4.1], "text": "Frodo was a happy puppy"},
-        {"vector": [5.9, 26.5], "text": "There are several kittens playing"},
+        {"vector": [3.1, 4.1], "title": "happy puppy", "content": "Frodo was a happy puppy"},
+        {"vector": [5.9, 26.5], "title": "playing kittens", "content": "There are several kittens playing"},
     ],
 )
 
 # passing `use_tantivy=False` to use lance FTS index
 # `use_tantivy=True` by default
-table.create_fts_index("text", use_tantivy=True)
+table.create_fts_index("content", use_tantivy=True)
 table.search("puppy").limit(10).select(["text"]).to_list()
 # [{'text': 'Frodo was a happy puppy', '_score': 0.6931471824645996}]
 # ...
 ```
 
 It would search on all indexed columns by default, so it's useful when there are multiple indexed columns.
-For now, this is supported in tantivy way only.
 
 !!! note
     LanceDB automatically searches on the existing FTS index if the input to the search is of type `str`. If you provide a vector as input, LanceDB will search the ANN index instead.
@@ -49,7 +48,7 @@ For now, this is supported in tantivy way only.
 By default the text is tokenized by splitting on punctuation and whitespaces and then removing tokens that are longer than 40 chars. For more language specific tokenization then provide the argument tokenizer_name with the 2 letter language code followed by "_stem". So for english it would be "en_stem".
 
 ```python
-table.create_fts_index("text", use_tantivy=True, tokenizer_name="en_stem", replace=True)
+table.create_fts_index("content", use_tantivy=True, tokenizer_name="en_stem", replace=True)
 ```
 
 the following [languages](https://docs.rs/tantivy/latest/tantivy/tokenizer/enum.Language.html) are currently supported.
@@ -59,7 +58,7 @@ the following [languages](https://docs.rs/tantivy/latest/tantivy/tokenizer/enum.
 If you have multiple string columns to index, there's no need to combine them manually -- simply pass them all as a list to `create_fts_index`:
 
 ```python
-table.create_fts_index(["text1", "text2"], use_tantivy=True, replace=True)
+table.create_fts_index(["title", "content"], use_tantivy=True, replace=True)
 ```
 
 Note that the search API call does not change - you can search over all indexed columns at once.
@@ -149,7 +148,7 @@ indexing a larger corpus.
 ```python
 # configure a 512MB heap size
 heap = 1024 * 1024 * 512
-table.create_fts_index(["text1", "text2"], use_tantivy=True, writer_heap_size=heap, replace=True)
+table.create_fts_index(["title", "content"], use_tantivy=True, writer_heap_size=heap, replace=True)
 ```
 
 ## Current limitations
