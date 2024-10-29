@@ -500,7 +500,11 @@ class LanceQueryBuilder(ABC):
             nearest={
                 "column": self._vector_column,
                 "q": self._query,
+                "k": self._limit,
+                "nprobes": self._nprobes,
             },
+            prefilter=self._prefilter,
+            filter=self._str_query,
         ).explain_plan(verbose)
 
     def vector(self, vector: Union[np.ndarray, list]) -> LanceQueryBuilder:
