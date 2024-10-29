@@ -1076,15 +1076,11 @@ def test_hybrid_search(db, tmp_path):
     assert "_relevance_score" in result.column_names
 
     # with custom metric
-    result = (
-        table.search(query_type="hybrid")
-        .vector(vector_query)
-        .metric("dot")
-        .text("Arrrrggghhhhhhh")
-        .to_arrow()
-    )
-    assert len(result) > 0
-    assert "_relevance_score" in result.column_names
+    result_dot = table.search("feeling", query_type="hybrid").metric("dot").to_arrow()
+    result_l2 = table.search("feeling", query_type="hybrid").to_arrow()
+    assert len(result_dot) > 0
+    assert len(result_l2) > 0
+    assert result_dot["_relevance_score"] != result_l2["_relevance_score"]
 
     # with vector_column_name
     result = (
