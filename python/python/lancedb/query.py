@@ -1070,6 +1070,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         if self._norm == "rank":
             vector_results = self._rank(vector_results, "_distance")
             fts_results = self._rank(fts_results, "_score")
+
         # normalize the scores to be between 0 and 1, 0 being most relevant
         vector_results = self._normalize_scores(vector_results, "_distance")
 
