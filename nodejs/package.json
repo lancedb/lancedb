@@ -76,7 +76,7 @@
     "lint": "biome check . && biome format .",
     "lint-fix": "biome check --write . && biome format --write .",
     "prepublishOnly": "napi prepublish -t npm",
-    "test": "LANCEDB_LOG=trace jest --verbose",
+    "test": "jest --verbose",
     "integration": "S3_TEST=1 npm run test",
     "universal": "napi universal",
     "version": "napi version"

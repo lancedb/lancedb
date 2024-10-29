@@ -100,7 +100,7 @@ nav:
       - 🏃🏼‍♂️ Quick start: basic.md
       - 📚 Concepts:
           - Vector search: concepts/vector_search.md
-          - Indexing: 
+          - Indexing:
             - IVFPQ: concepts/index_ivfpq.md
             - HNSW: concepts/index_hnsw.md
           - Storage: concepts/storage.md
@@ -148,10 +148,10 @@ nav:
               - Reranking: guides/tuning_retrievers/2_reranking.md
               - Embedding fine-tuning: guides/tuning_retrievers/3_embed_tuning.md
       - 🧬 Managing embeddings:
-          - Understand Embeddings: embeddings/understanding_embeddings.md 
+          - Understand Embeddings: embeddings/understanding_embeddings.md
           - Get Started: embeddings/index.md
           - Embedding functions: embeddings/embedding_functions.md
-          - Available models: 
+          - Available models:
               - Overview: embeddings/default_embedding_functions.md
               - Text Embedding Functions:
                   - Sentence Transformers: embeddings/available_embedding_models/text_embedding_functions/sentence_transformers.md
@@ -200,7 +200,7 @@ nav:
               - Evaluation: examples/python_examples/evaluations.md
               - AI Agent: examples/python_examples/aiagent.md
               - Recommender System: examples/python_examples/recommendersystem.md
-              - Miscellaneous: 
+              - Miscellaneous:
                   - Serverless QA Bot with S3 and Lambda: examples/serverless_lancedb_with_s3_and_lambda.md
                   - Serverless QA Bot with Modal: examples/serverless_qa_bot_with_modal_and_langchain.md
           - 👾 JavaScript:
@@ -210,9 +210,10 @@ nav:
               - TransformersJS Embedding Search: examples/transformerjs_embedding_search_nodejs.md
           - 🦀 Rust:
               - Overview: examples/examples_rust.md
-      - Studies:
+      - 📓 Studies:
           - ↗Improve retrievers with hybrid search and reranking: https://blog.lancedb.com/hybrid-search-and-reranking-report/
       - 💭 FAQs: faq.md
+      - 🔍 Troubleshooting: troubleshooting.md
       - ⚙️ API reference:
           - 🐍 Python: python/python.md
           - 👾 JavaScript (vectordb): javascript/modules.md
@@ -228,7 +229,7 @@ nav:
   - Quick start: basic.md
   - Concepts:
       - Vector search: concepts/vector_search.md
-      - Indexing: 
+      - Indexing:
         - IVFPQ: concepts/index_ivfpq.md
         - HNSW: concepts/index_hnsw.md
       - Storage: concepts/storage.md
@@ -276,10 +277,10 @@ nav:
           - Reranking: guides/tuning_retrievers/2_reranking.md
           - Embedding fine-tuning: guides/tuning_retrievers/3_embed_tuning.md
   - Managing Embeddings:
-      - Understand Embeddings: embeddings/understanding_embeddings.md 
+      - Understand Embeddings: embeddings/understanding_embeddings.md
       - Get Started: embeddings/index.md
       - Embedding functions: embeddings/embedding_functions.md
-      - Available models: 
+      - Available models:
           - Overview: embeddings/default_embedding_functions.md
           - Text Embedding Functions:
               - Sentence Transformers: embeddings/available_embedding_models/text_embedding_functions/sentence_transformers.md
@@ -324,7 +325,7 @@ nav:
           - Evaluation: examples/python_examples/evaluations.md
           - AI Agent: examples/python_examples/aiagent.md
           - Recommender System: examples/python_examples/recommendersystem.md
-          - Miscellaneous: 
+          - Miscellaneous:
               - Serverless QA Bot with S3 and Lambda: examples/serverless_lancedb_with_s3_and_lambda.md
               - Serverless QA Bot with Modal: examples/serverless_qa_bot_with_modal_and_langchain.md
       - 👾 JavaScript:
@@ -367,5 +368,4 @@ extra:
     - icon: fontawesome/brands/x-twitter
       link: https://twitter.com/lancedb
     - icon: fontawesome/brands/linkedin
-      link: https://www.linkedin.com/company/lancedb      
-      
+      link: https://www.linkedin.com/company/lancedb
