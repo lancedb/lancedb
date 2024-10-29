@@ -85,5 +85,4 @@ fn init() {
         .filter_or("LANCEDB_LOG", "trace")
         .write_style("LANCEDB_LOG_STYLE");
     env_logger::init_from_env(env);
-    log::info!("hello world!");
 }

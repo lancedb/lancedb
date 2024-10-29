@@ -2,6 +2,8 @@ use lancedb::{arrow::IntoArrow, ipc::ipc_file_to_batches, table::merge::MergeIns
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
+use crate::error::convert_error;
+
 #[napi]
 #[derive(Clone)]
 /// A builder used to create and run a merge insert operation
@@ -35,14 +37,18 @@ impl NativeMergeInsertBuilder {
     pub async fn execute(&self, buf: Buffer) -> napi::Result<()> {
         let data = ipc_file_to_batches(buf.to_vec())
             .and_then(IntoArrow::into_arrow)
-            .map_err(|e| napi::Error::from_reason(format!("Failed to read IPC file: {}", e)))?;
+            .map_err(|e| {
+                napi::Error::from_reason(format!("Failed to read IPC file: {}", convert_error(&e)))
+            })?;
 
         let this = self.clone();
 
-        this.inner
-            .execute(data)
-            .await
-            .map_err(|e| napi::Error::from_reason(format!("Failed to execute merge insert: {}", e)))
+        this.inner.execute(data).await.map_err(|e| {
+            napi::Error::from_reason(format!(
+                "Failed to execute merge insert: {}",
+                convert_error(&e)
+            ))
+        })
     }
 }
 
