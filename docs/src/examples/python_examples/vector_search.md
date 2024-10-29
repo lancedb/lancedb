@@ -37,16 +37,16 @@ LanceDB implements vector search algorithms for efficient document retrieval and
 [NER_colab]: https://colab.research.google.com/github/lancedb/vectordb-recipes/blob/main/tutorials/NER-powered-Semantic-Search/NER_powered_Semantic_Search_with_LanceDB.ipynb
 [NER_ghost]: https://blog.lancedb.com/ner-powered-semantic-search-using-lancedb-51051dc3e493
 
-[audio_search_github]: https://github.com/lancedb/vectordb-recipes/blob/main/examples/audio_search
-[audio_search_colab]: https://colab.research.google.com/github/lancedb/vectordb-recipes/blob/main/examples/audio_search/main.ipynb
-[audio_search_python]: https://github.com/lancedb/vectordb-recipes/blob/main/examples/audio_search/main.py
+[audio_search_github]: https://github.com/lancedb/vectordb-recipes/tree/main/examples/archived_examples/audio_search
+[audio_search_colab]: https://colab.research.google.com/github/lancedb/vectordb-recipes/blob/main/examples/archived_examples/audio_search/main.ipynb
+[audio_search_python]: https://github.com/lancedb/vectordb-recipes/blob/main/examples/archived_examples/audio_search/main.py
 
-[mls_github]: https://github.com/lancedb/vectordb-recipes/blob/main/examples/multi-lingual-wiki-qa
-[mls_colab]: https://colab.research.google.com/github/lancedb/vectordb-recipes/blob/main/examples/multi-lingual-wiki-qa/main.ipynb
-[mls_python]: https://github.com/lancedb/vectordb-recipes/blob/main/examples/multi-lingual-wiki-qa/main.py
+[mls_github]: https://github.com/lancedb/vectordb-recipes/tree/main/examples/archived_examples/multi-lingual-wiki-qa
+[mls_colab]: https://colab.research.google.com/github/lancedb/vectordb-recipes/blob/main/examples/archived_examples/multi-lingual-wiki-qa/main.ipynb
+[mls_python]: https://github.com/lancedb/vectordb-recipes/blob/main/examples/archived_examples/multi-lingual-wiki-qa/main.py
 
-[fr_github]: https://github.com/lancedb/vectordb-recipes/blob/main/examples/facial_recognition
-[fr_colab]: https://colab.research.google.com/github/lancedb/vectordb-recipes/blob/main/examples/facial_recognition/main.ipynb
+[fr_github]: https://github.com/lancedb/vectordb-recipes/tree/main/examples/archived_examples/facial_recognition
+[fr_colab]: https://colab.research.google.com/github/lancedb/vectordb-recipes/blob/main/examples/archived_examples/facial_recognition/main.ipynb
 
 [sentiment_analysis_github]: https://github.com/lancedb/vectordb-recipes/blob/main/examples/Sentiment-Analysis-Analyse-Hotel-Reviews
 [sentiment_analysis_colab]: https://colab.research.google.com/github/lancedb/vectordb-recipes/blob/main/examples/Sentiment-Analysis-Analyse-Hotel-Reviews/Sentiment_Analysis_using_LanceDB.ipynb
@@ -70,8 +70,8 @@ LanceDB implements vector search algorithms for efficient document retrieval and
 [openvino_colab]: https://colab.research.google.com/github/lancedb/vectordb-recipes/blob/main/examples/Accelerate-Vector-Search-Applications-Using-OpenVINO/clip_text_image_search.ipynb
 [openvino_ghost]: https://blog.lancedb.com/accelerate-vector-search-applications-using-openvino-lancedb/
 
-[zsic_github]: https://github.com/lancedb/vectordb-recipes/blob/main/examples/zero-shot-image-classification
-[zsic_colab]: https://colab.research.google.com/github/lancedb/vectordb-recipes/blob/main/examples/zero-shot-image-classification/main.ipynb
+[zsic_github]: https://github.com/lancedb/vectordb-recipes/tree/main/examples/archived_examples/zero-shot-image-classification
+[zsic_colab]: https://colab.research.google.com/github/lancedb/vectordb-recipes/blob/main/examples/archived_examples/zero-shot-image-classification/main.ipynb
 [zsic_ghost]: https://blog.lancedb.com/zero-shot-image-classification-with-vector-search/
 
 
