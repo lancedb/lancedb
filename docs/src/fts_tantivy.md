@@ -26,8 +26,8 @@ db = lancedb.connect(uri)
 table = db.create_table(
     "my_table",
     data=[
-        {"vector": [3.1, 4.1], "title": "happy puppy", "content": "Frodo was a happy puppy"},
-        {"vector": [5.9, 26.5], "title": "playing kittens", "content": "There are several kittens playing"},
+        {"vector": [3.1, 4.1], "title": "happy puppy", "content": "Frodo was a happy puppy", "meta": "foo"},
+        {"vector": [5.9, 26.5], "title": "playing kittens", "content": "There are several kittens playing around the puppy", "meta": "bar"},
     ],
 )
 
@@ -81,9 +81,9 @@ creating the full-text search index. Once pre-sorted, you can then specify
 field. For example,
 
 ```python
-table.create_fts_index(["text_field"], use_tantivy=True, ordering_field_names=["sort_by_field"], replace=True)
+table.create_fts_index(["content"], use_tantivy=True, ordering_field_names=["content"], replace=True)
 
-(table.search("terms", ordering_field_name="sort_by_field")
+(table.search("puppy", ordering_field_name="content")
  .limit(20)
  .to_list())
 ```
