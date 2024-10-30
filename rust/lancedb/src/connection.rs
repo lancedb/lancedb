@@ -1077,6 +1077,7 @@ impl ConnectionInternal for Database {
 
     async fn do_open_table(&self, mut options: OpenTableBuilder) -> Result<Table> {
         let table_uri = self.table_uri(&options.name)?;
+        let embedding_registry = self.embedding_registry.clone();
 
         // Inherit storage options from the connection
         let storage_options = options
@@ -1113,7 +1114,7 @@ impl ConnectionInternal for Database {
             )
             .await?,
         );
-        Ok(Table::new(native_table))
+        Ok(Table::new_with_embedding_registry(native_table, embedding_registry))
     }
 
     async fn rename_table(&self, _old_name: &str, _new_name: &str) -> Result<()> {
