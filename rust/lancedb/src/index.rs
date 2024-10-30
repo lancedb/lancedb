@@ -119,6 +119,7 @@ pub enum IndexType {
     #[serde(alias = "LABEL_LIST")]
     LabelList,
     // FTS
+    #[serde(alias = "INVERTED", alias = "Inverted")]
     FTS,
 }
 

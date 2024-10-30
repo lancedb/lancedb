@@ -3123,6 +3123,12 @@ mod tests {
         assert_eq!(index.index_type, crate::index::IndexType::FTS);
         assert_eq!(index.columns, vec!["text".to_string()]);
         assert_eq!(index.name, "text_idx");
+
+        let stats = table.index_stats("text_idx").await.unwrap().unwrap();
+        assert_eq!(stats.num_indexed_rows, num_rows);
+        assert_eq!(stats.num_unindexed_rows, 0);
+        assert_eq!(stats.index_type, crate::index::IndexType::FTS);
+        assert_eq!(stats.distance_type, None);
     }
 
     #[tokio::test]
