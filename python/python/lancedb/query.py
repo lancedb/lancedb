@@ -501,10 +501,15 @@ class LanceQueryBuilder(ABC):
                 "column": self._vector_column,
                 "q": self._query,
                 "k": self._limit,
+                "metric": self._metric,
                 "nprobes": self._nprobes,
+                "refine_factor": self._refine_factor,
             },
             prefilter=self._prefilter,
             filter=self._str_query,
+            limit=self._limit,
+            with_row_id=self._with_row_id,
+            offset=self._offset,
         ).explain_plan(verbose)
 
     def vector(self, vector: Union[np.ndarray, list]) -> LanceQueryBuilder:
