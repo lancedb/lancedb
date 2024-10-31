@@ -19,12 +19,10 @@ from typing import Dict, Optional, Union, Any
 
 __version__ = importlib.metadata.version("lancedb")
 
-from lancedb.remote import ClientConfig
-
 from ._lancedb import connect as lancedb_connect
 from .common import URI, sanitize_uri
 from .db import AsyncConnection, DBConnection, LanceDBConnection
-from .remote.db import RemoteDBConnection
+from .remote import ClientConfig
 from .schema import vector
 from .table import AsyncTable
 
@@ -37,6 +35,7 @@ def connect(
     host_override: Optional[str] = None,
     read_consistency_interval: Optional[timedelta] = None,
     request_thread_pool: Optional[Union[int, ThreadPoolExecutor]] = None,
+    client_config: Union[ClientConfig, Dict[str, Any], None] = None,
     **kwargs: Any,
 ) -> DBConnection:
     """Connect to a LanceDB database.
@@ -64,14 +63,10 @@ def connect(
         the last check, then the table will be checked for updates. Note: this
         consistency only applies to read operations. Write operations are
         always consistent.
-    request_thread_pool: int or ThreadPoolExecutor, optional
-        The thread pool to use for making batch requests to the LanceDB Cloud API.
-        If an integer, then a ThreadPoolExecutor will be created with that
-        number of threads. If None, then a ThreadPoolExecutor will be created
-        with the default number of threads. If a ThreadPoolExecutor, then that
-        executor will be used for making requests. This is for LanceDB Cloud
-        only and is only used when making batch requests (i.e., passing in
-        multiple queries to the search method at once).
+    client_config: ClientConfig or dict, optional
+        Configuration options for the LanceDB Cloud HTTP client. If a dict, then
+        the keys are the attributes of the ClientConfig class. If None, then the
+        default configuration is used.
 
     Examples
     --------
@@ -94,6 +89,8 @@ def connect(
     conn : DBConnection
         A connection to a LanceDB database.
     """
+    from .remote.db import RemoteDBConnection
+
     if isinstance(uri, str) and uri.startswith("db://"):
         if api_key is None:
             api_key = os.environ.get("LANCEDB_API_KEY")
@@ -106,7 +103,9 @@ def connect(
             api_key,
             region,
             host_override,
+            # TODO: remove this (deprecation warning downstream)
             request_thread_pool=request_thread_pool,
+            client_config=client_config,
             **kwargs,
         )
 

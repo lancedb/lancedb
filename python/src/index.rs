@@ -24,8 +24,8 @@ use lancedb::{
     DistanceType,
 };
 use pyo3::{
-    exceptions::{PyRuntimeError, PyValueError},
-    pyclass, pymethods, PyResult,
+    exceptions::{PyKeyError, PyRuntimeError, PyValueError},
+    pyclass, pymethods, IntoPy, PyObject, PyResult, Python,
 };
 
 use crate::util::parse_distance_type;
@@ -236,7 +236,21 @@ pub struct IndexConfig {
 #[pymethods]
 impl IndexConfig {
     pub fn __repr__(&self) -> String {
-        format!("Index({}, columns={:?})", self.index_type, self.columns)
+        format!(
+            "Index({:?}, columns={:?}, name=\"{}\")",
+            self.index_type, self.columns, self.name
+        )
+    }
+
+    // For backwards-compatibility with the old sync SDK, we also support getting
+    // attributes via __getitem__.
+    pub fn __getitem__(&self, key: String, py: Python<'_>) -> PyResult<PyObject> {
+        match key.as_str() {
+            "index_type" => Ok(self.index_type.clone().into_py(py)),
+            "columns" => Ok(self.columns.clone().into_py(py)),
+            "name" | "index_name" => Ok(self.name.clone().into_py(py)),
+            _ => Err(PyKeyError::new_err(format!("Invalid key: {}", key))),
+        }
     }
 }
 

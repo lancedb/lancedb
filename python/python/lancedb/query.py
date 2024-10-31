@@ -1068,13 +1068,23 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         if self._refine_factor:
             self._vector_query.refine_factor(self._refine_factor)
 
-        with ThreadPoolExecutor() as executor:
-            fts_future = executor.submit(self._fts_query.with_row_id(True).to_arrow)
-            vector_future = executor.submit(
-                self._vector_query.with_row_id(True).to_arrow
-            )
-            fts_results = fts_future.result()
-            vector_results = vector_future.result()
+        from .remote.table import RemoteTable
+
+        if isinstance(self._table, RemoteTable):
+            # Remote table uses AsyncTable. The event loop complains about nesting
+            # if we use that in combination with ThreadPoolExecutor. Eventually,
+            # we should push down the hybrid query logic into Rust so this
+            # won't be an issue.
+            fts_results = self._fts_query.with_row_id(True).to_arrow()
+            vector_results = self._vector_query.with_row_id(True).to_arrow()
+        else:
+            with ThreadPoolExecutor() as executor:
+                fts_future = executor.submit(self._fts_query.with_row_id(True).to_arrow)
+                vector_future = executor.submit(
+                    self._vector_query.with_row_id(True).to_arrow
+                )
+                fts_results = fts_future.result()
+                vector_results = vector_future.result()
 
         # convert to ranks first if needed
         if self._norm == "rank":
