@@ -399,8 +399,7 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
 
         let mut updates = Vec::new();
         for (column, expression) in update.columns {
-            updates.push(column);
-            updates.push(expression);
+            updates.push(vec![column, expression]);
         }
 
         let request = request.json(&serde_json::json!({
@@ -410,19 +409,9 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
 
         let (request_id, response) = self.client.send(request, false).await?;
 
-        let response = self.check_table_response(&request_id, response).await?;
+        self.check_table_response(&request_id, response).await?;
 
-        let body = response.text().await.err_to_http(request_id.clone())?;
-
-        serde_json::from_str(&body).map_err(|e| Error::Http {
-            source: format!(
-                "Failed to parse updated rows result from response {}: {}",
-                body, e
-            )
-            .into(),
-            request_id,
-            status_code: None,
-        })
+        Ok(0) // TODO: support returning number of modified rows once supported in SaaS.
     }
     async fn delete(&self, predicate: &str) -> Result<()> {
         let body = serde_json::json!({ "predicate": predicate });
@@ -947,21 +936,27 @@ mod tests {
                 let updates = value.get("updates").unwrap().as_array().unwrap();
                 assert!(updates.len() == 2);
 
-                let col_name = updates[0].as_str().unwrap();
-                let expression = updates[1].as_str().unwrap();
+                let col_name = updates[0][0].as_str().unwrap();
+                let expression = updates[0][1].as_str().unwrap();
                 assert_eq!(col_name, "a");
                 assert_eq!(expression, "a + 1");
+
+                let col_name = updates[1][0].as_str().unwrap();
+                let expression = updates[1][1].as_str().unwrap();
+                assert_eq!(col_name, "b");
+                assert_eq!(expression, "b - 1");
 
                 let only_if = value.get("only_if").unwrap().as_str().unwrap();
                 assert_eq!(only_if, "b > 10");
             }
 
-            http::Response::builder().status(200).body("1").unwrap()
+            http::Response::builder().status(200).body("{}").unwrap()
         });
 
         table
             .update()
             .column("a", "a + 1")
+            .column("b", "b - 1")
             .only_if("b > 10")
             .execute()
             .await
