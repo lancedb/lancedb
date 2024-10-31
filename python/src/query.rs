@@ -68,15 +68,15 @@ impl Query {
         self.inner = self.inner.clone().offset(offset as usize);
     }
 
+    pub fn fast_search(&mut self) {
+        self.inner = self.inner.clone().fast_search();
+    }
+
     pub fn nearest_to(&mut self, vector: Bound<'_, PyAny>) -> PyResult<VectorQuery> {
         let data: ArrayData = ArrayData::from_pyarrow_bound(&vector)?;
         let array = make_array(data);
         let inner = self.inner.clone().nearest_to(array).infer_error()?;
         Ok(VectorQuery { inner })
-    }
-
-    pub fn fast_search(&mut self) {
-        self.inner = self.inner.clone().fast_search();
     }
 
     pub fn nearest_to_text(&mut self, query: Bound<'_, PyDict>) -> PyResult<()> {
@@ -148,6 +148,10 @@ impl VectorQuery {
 
     pub fn offset(&mut self, offset: u32) {
         self.inner = self.inner.clone().offset(offset as usize);
+    }
+
+    pub fn fast_search(&mut self) {
+        self.inner = self.inner.clone().fast_search();
     }
 
     pub fn column(&mut self, column: String) {
