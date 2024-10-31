@@ -1329,6 +1329,27 @@ class AsyncQueryBase(object):
         self._inner.fast_search()
         return self
 
+    def postfilter(self) -> AsyncQuery:
+        """
+        If this is called then filtering will happen after the search instead of
+        before.
+        By default filtering will be performed before the search.  This is how
+        filtering is typically understood to work.  This prefilter step does add some
+        additional latency.  Creating a scalar index on the filter column(s) can
+        often improve this latency.  However, sometimes a filter is too complex or
+        scalar indices cannot be applied to the column.  In these cases postfiltering
+        can be used instead of prefiltering to improve latency.
+        Post filtering applies the filter to the results of the search.  This
+        means we only run the filter on a much smaller set of data.  However, it can
+        cause the query to return fewer than `limit` results (or even no results) if
+        none of the nearest results match the filter.
+        Post filtering happens during the "refine stage" (described in more detail in
+        @see {@link VectorQuery#refineFactor}).  This means that setting a higher refine
+        factor can often help restore some of the results lost by post filtering.
+        """
+        self._inner.postfilter()
+        return self
+
     async def to_batches(
         self, *, max_batch_length: Optional[int] = None
     ) -> AsyncRecordBatchReader:
@@ -1630,30 +1651,6 @@ class AsyncVectorQuery(AsyncQueryBase):
         By default "l2" is used.
         """
         self._inner.distance_type(distance_type)
-        return self
-
-    def postfilter(self) -> AsyncVectorQuery:
-        """
-        If this is called then filtering will happen after the vector search instead of
-        before.
-
-        By default filtering will be performed before the vector search.  This is how
-        filtering is typically understood to work.  This prefilter step does add some
-        additional latency.  Creating a scalar index on the filter column(s) can
-        often improve this latency.  However, sometimes a filter is too complex or
-        scalar indices cannot be applied to the column.  In these cases postfiltering
-        can be used instead of prefiltering to improve latency.
-
-        Post filtering applies the filter to the results of the vector search.  This
-        means we only run the filter on a much smaller set of data.  However, it can
-        cause the query to return fewer than `limit` results (or even no results) if
-        none of the nearest results match the filter.
-
-        Post filtering happens during the "refine stage" (described in more detail in
-        @see {@link VectorQuery#refineFactor}).  This means that setting a higher refine
-        factor can often help restore some of the results lost by post filtering.
-        """
-        self._inner.postfilter()
         return self
 
     def bypass_vector_index(self) -> AsyncVectorQuery:

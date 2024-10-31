@@ -1842,7 +1842,7 @@ impl TableInternal for NativeTable {
 
         scanner.nprobs(query.nprobes);
         scanner.use_index(query.use_index);
-        scanner.prefilter(query.prefilter);
+        scanner.prefilter(query.base.prefilter);
         match query.base.select {
             Select::Columns(ref columns) => {
                 scanner.project(columns.as_slice())?;

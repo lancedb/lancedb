@@ -72,6 +72,10 @@ impl Query {
         self.inner = self.inner.clone().fast_search();
     }
 
+    pub fn postfilter(&mut self) {
+        self.inner = self.inner.clone().postfilter();
+    }
+
     pub fn nearest_to(&mut self, vector: Bound<'_, PyAny>) -> PyResult<VectorQuery> {
         let data: ArrayData = ArrayData::from_pyarrow_bound(&vector)?;
         let array = make_array(data);

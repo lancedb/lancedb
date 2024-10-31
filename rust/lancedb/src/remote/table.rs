@@ -305,7 +305,7 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
         let mut body = serde_json::Value::Object(Default::default());
         Self::apply_query_params(&mut body, &query.base)?;
 
-        body["prefilter"] = query.prefilter.into();
+        body["prefilter"] = query.base.prefilter.into();
         body["distance_type"] = serde_json::json!(query.distance_type.unwrap_or_default());
         body["nprobes"] = query.nprobes.into();
         body["refine_factor"] = query.refine_factor.into();
