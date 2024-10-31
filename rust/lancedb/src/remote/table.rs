@@ -277,7 +277,7 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
             .post(&format!("/v1/table/{}/count_rows/", self.name));
 
         if let Some(filter) = filter {
-            request = request.json(&serde_json::json!({ "filter": filter }));
+            request = request.json(&serde_json::json!({ "predicate": filter }));
         } else {
             request = request.json(&serde_json::json!({}));
         }
@@ -804,7 +804,7 @@ mod tests {
             );
             assert_eq!(
                 request.body().unwrap().as_bytes().unwrap(),
-                br#"{"filter":"a > 10"}"#
+                br#"{"predicate":"a > 10"}"#
             );
 
             http::Response::builder().status(200).body("42").unwrap()
