@@ -20,7 +20,7 @@ from .util import safe_import_pandas
 
 pd = safe_import_pandas()
 
-DATA = Union[List[dict], dict, "pd.DataFrame", pa.Table, Iterable[pa.RecordBatch]]
+DATA = Union[List[dict], "pd.DataFrame", pa.Table, Iterable[pa.RecordBatch]]
 VEC = Union[list, np.ndarray, pa.Array, pa.ChunkedArray]
 URI = Union[str, Path]
 VECTOR_COLUMN_NAME = "vector"

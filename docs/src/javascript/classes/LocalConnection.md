@@ -30,6 +30,7 @@ A connection to a LanceDB database.
 - [dropTable](LocalConnection.md#droptable)
 - [openTable](LocalConnection.md#opentable)
 - [tableNames](LocalConnection.md#tablenames)
+- [withMiddleware](LocalConnection.md#withmiddleware)
 
 ## Constructors
 
@@ -46,7 +47,7 @@ A connection to a LanceDB database.
 
 #### Defined in
 
-[index.ts:489](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L489)
+[index.ts:739](https://github.com/lancedb/lancedb/blob/92179835/node/src/index.ts#L739)
 
 ## Properties
 
@@ -56,7 +57,7 @@ A connection to a LanceDB database.
 
 #### Defined in
 
-[index.ts:487](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L487)
+[index.ts:737](https://github.com/lancedb/lancedb/blob/92179835/node/src/index.ts#L737)
 
 ___
 
@@ -74,7 +75,7 @@ ___
 
 #### Defined in
 
-[index.ts:486](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L486)
+[index.ts:736](https://github.com/lancedb/lancedb/blob/92179835/node/src/index.ts#L736)
 
 ## Accessors
 
@@ -92,7 +93,7 @@ ___
 
 #### Defined in
 
-[index.ts:494](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L494)
+[index.ts:744](https://github.com/lancedb/lancedb/blob/92179835/node/src/index.ts#L744)
 
 ## Methods
 
@@ -113,7 +114,7 @@ Creates a new Table, optionally initializing it with new data.
 | Name | Type |
 | :------ | :------ |
 | `name` | `string` \| [`CreateTableOptions`](../interfaces/CreateTableOptions.md)\<`T`\> |
-| `data?` | `Record`\<`string`, `unknown`\>[] |
+| `data?` | `Table`\<`any`\> \| `Record`\<`string`, `unknown`\>[] |
 | `optsOrEmbedding?` | [`WriteOptions`](../interfaces/WriteOptions.md) \| [`EmbeddingFunction`](../interfaces/EmbeddingFunction.md)\<`T`\> |
 | `opt?` | [`WriteOptions`](../interfaces/WriteOptions.md) |
 
@@ -127,7 +128,7 @@ Creates a new Table, optionally initializing it with new data.
 
 #### Defined in
 
-[index.ts:542](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L542)
+[index.ts:788](https://github.com/lancedb/lancedb/blob/92179835/node/src/index.ts#L788)
 
 ___
 
@@ -158,7 +159,7 @@ ___
 
 #### Defined in
 
-[index.ts:576](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L576)
+[index.ts:822](https://github.com/lancedb/lancedb/blob/92179835/node/src/index.ts#L822)
 
 ___
 
@@ -184,7 +185,7 @@ Drop an existing table.
 
 #### Defined in
 
-[index.ts:630](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L630)
+[index.ts:876](https://github.com/lancedb/lancedb/blob/92179835/node/src/index.ts#L876)
 
 ___
 
@@ -210,7 +211,7 @@ Open a table in the database.
 
 #### Defined in
 
-[index.ts:510](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L510)
+[index.ts:760](https://github.com/lancedb/lancedb/blob/92179835/node/src/index.ts#L760)
 
 ▸ **openTable**\<`T`\>(`name`, `embeddings`): `Promise`\<[`Table`](../interfaces/Table.md)\<`T`\>\>
 
@@ -239,7 +240,7 @@ Connection.openTable
 
 #### Defined in
 
-[index.ts:518](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L518)
+[index.ts:768](https://github.com/lancedb/lancedb/blob/92179835/node/src/index.ts#L768)
 
 ▸ **openTable**\<`T`\>(`name`, `embeddings?`): `Promise`\<[`Table`](../interfaces/Table.md)\<`T`\>\>
 
@@ -266,7 +267,7 @@ Connection.openTable
 
 #### Defined in
 
-[index.ts:522](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L522)
+[index.ts:772](https://github.com/lancedb/lancedb/blob/92179835/node/src/index.ts#L772)
 
 ___
 
@@ -286,4 +287,36 @@ Get the names of all tables in the database.
 
 #### Defined in
 
-[index.ts:501](https://github.com/lancedb/lancedb/blob/c89d5e6/node/src/index.ts#L501)
+[index.ts:751](https://github.com/lancedb/lancedb/blob/92179835/node/src/index.ts#L751)
+
+___
+
+### withMiddleware
+
+▸ **withMiddleware**(`middleware`): [`Connection`](../interfaces/Connection.md)
+
+Instrument the behavior of this Connection with middleware.
+
+The middleware will be called in the order they are added.
+
+Currently this functionality is only supported for remote Connections.
+
+#### Parameters
+
+| Name | Type |
+| :------ | :------ |
+| `middleware` | `HttpMiddleware` |
+
+#### Returns
+
+[`Connection`](../interfaces/Connection.md)
+
+- this Connection instrumented by the passed middleware
+
+#### Implementation of
+
+[Connection](../interfaces/Connection.md).[withMiddleware](../interfaces/Connection.md#withmiddleware)
+
+#### Defined in
+
+[index.ts:880](https://github.com/lancedb/lancedb/blob/92179835/node/src/index.ts#L880)

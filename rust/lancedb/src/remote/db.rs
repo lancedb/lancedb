@@ -17,6 +17,7 @@ use std::sync::Arc;
 use arrow_array::RecordBatchReader;
 use async_trait::async_trait;
 use http::StatusCode;
+use moka::future::Cache;
 use reqwest::header::CONTENT_TYPE;
 use serde::Deserialize;
 use tokio::task::spawn_blocking;
@@ -28,7 +29,7 @@ use crate::embeddings::EmbeddingRegistry;
 use crate::error::Result;
 use crate::Table;
 
-use super::client::{HttpSend, RestfulLanceDbClient, Sender};
+use super::client::{ClientConfig, HttpSend, RequestResultExt, RestfulLanceDbClient, Sender};
 use super::table::RemoteTable;
 use super::util::batches_to_ipc_bytes;
 use super::ARROW_STREAM_CONTENT_TYPE;
@@ -41,6 +42,7 @@ struct ListTablesResponse {
 #[derive(Debug)]
 pub struct RemoteDatabase<S: HttpSend = Sender> {
     client: RestfulLanceDbClient<S>,
+    table_cache: Cache<String, ()>,
 }
 
 impl RemoteDatabase {
@@ -49,9 +51,20 @@ impl RemoteDatabase {
         api_key: &str,
         region: &str,
         host_override: Option<String>,
+        client_config: ClientConfig,
     ) -> Result<Self> {
-        let client = RestfulLanceDbClient::try_new(uri, api_key, region, host_override)?;
-        Ok(Self { client })
+        let client =
+            RestfulLanceDbClient::try_new(uri, api_key, region, host_override, client_config)?;
+
+        let table_cache = Cache::builder()
+            .time_to_live(std::time::Duration::from_secs(300))
+            .max_capacity(10_000)
+            .build();
+
+        Ok(Self {
+            client,
+            table_cache,
+        })
     }
 }
 
@@ -68,7 +81,10 @@ mod test_utils {
             T: Into<reqwest::Body>,
         {
             let client = client_with_handler(handler);
-            Self { client }
+            Self {
+                client,
+                table_cache: Cache::new(0),
+            }
         }
     }
 }
@@ -89,9 +105,17 @@ impl<S: HttpSend> ConnectionInternal for RemoteDatabase<S> {
         if let Some(start_after) = options.start_after {
             req = req.query(&[("page_token", start_after)]);
         }
-        let rsp = self.client.send(req).await?;
-        let rsp = self.client.check_response(rsp).await?;
-        Ok(rsp.json::<ListTablesResponse>().await?.tables)
+        let (request_id, rsp) = self.client.send(req, true).await?;
+        let rsp = self.client.check_response(&request_id, rsp).await?;
+        let tables = rsp
+            .json::<ListTablesResponse>()
+            .await
+            .err_to_http(request_id)?
+            .tables;
+        for table in &tables {
+            self.table_cache.insert(table.clone(), ()).await;
+        }
+        Ok(tables)
     }
 
     async fn do_create_table(
@@ -110,13 +134,11 @@ impl<S: HttpSend> ConnectionInternal for RemoteDatabase<S> {
             .client
             .post(&format!("/v1/table/{}/create/", options.name))
             .body(data_buffer)
-            .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE)
-            // This is currently expected by LanceDb cloud but will be removed soon.
-            .header("x-request-id", "na");
-        let rsp = self.client.send(req).await?;
+            .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE);
+        let (request_id, rsp) = self.client.send(req, false).await?;
 
         if rsp.status() == StatusCode::BAD_REQUEST {
-            let body = rsp.text().await?;
+            let body = rsp.text().await.err_to_http(request_id.clone())?;
             if body.contains("already exists") {
                 return Err(crate::Error::TableAlreadyExists { name: options.name });
             } else {
@@ -124,7 +146,9 @@ impl<S: HttpSend> ConnectionInternal for RemoteDatabase<S> {
             }
         }
 
-        self.client.check_response(rsp).await?;
+        self.client.check_response(&request_id, rsp).await?;
+
+        self.table_cache.insert(options.name.clone(), ()).await;
 
         Ok(Table::new(Arc::new(RemoteTable::new(
             self.client.clone(),
@@ -134,15 +158,17 @@ impl<S: HttpSend> ConnectionInternal for RemoteDatabase<S> {
 
     async fn do_open_table(&self, options: OpenTableBuilder) -> Result<Table> {
         // We describe the table to confirm it exists before moving on.
-        // TODO: a TTL cache of table existence
-        let req = self
-            .client
-            .get(&format!("/v1/table/{}/describe/", options.name));
-        let resp = self.client.send(req).await?;
-        if resp.status() == StatusCode::NOT_FOUND {
-            return Err(crate::Error::TableNotFound { name: options.name });
+        if self.table_cache.get(&options.name).is_none() {
+            let req = self
+                .client
+                .get(&format!("/v1/table/{}/describe/", options.name));
+            let (request_id, resp) = self.client.send(req, true).await?;
+            if resp.status() == StatusCode::NOT_FOUND {
+                return Err(crate::Error::TableNotFound { name: options.name });
+            }
+            self.client.check_response(&request_id, resp).await?;
         }
-        self.client.check_response(resp).await?;
+
         Ok(Table::new(Arc::new(RemoteTable::new(
             self.client.clone(),
             options.name,
@@ -154,15 +180,18 @@ impl<S: HttpSend> ConnectionInternal for RemoteDatabase<S> {
             .client
             .post(&format!("/v1/table/{}/rename/", current_name));
         let req = req.json(&serde_json::json!({ "new_table_name": new_name }));
-        let resp = self.client.send(req).await?;
-        self.client.check_response(resp).await?;
+        let (request_id, resp) = self.client.send(req, false).await?;
+        self.client.check_response(&request_id, resp).await?;
+        self.table_cache.remove(current_name).await;
+        self.table_cache.insert(new_name.into(), ()).await;
         Ok(())
     }
 
     async fn drop_table(&self, name: &str) -> Result<()> {
         let req = self.client.post(&format!("/v1/table/{}/drop/", name));
-        let resp = self.client.send(req).await?;
-        self.client.check_response(resp).await?;
+        let (request_id, resp) = self.client.send(req, true).await?;
+        self.client.check_response(&request_id, resp).await?;
+        self.table_cache.remove(name).await;
         Ok(())
     }
 
@@ -179,15 +208,56 @@ impl<S: HttpSend> ConnectionInternal for RemoteDatabase<S> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, OnceLock};
 
     use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator};
     use arrow_schema::{DataType, Field, Schema};
 
     use crate::{
         remote::{ARROW_STREAM_CONTENT_TYPE, JSON_CONTENT_TYPE},
-        Connection,
+        Connection, Error,
     };
+
+    #[tokio::test]
+    async fn test_retries() {
+        // We'll record the request_id here, to check it matches the one in the error.
+        let seen_request_id = Arc::new(OnceLock::new());
+        let seen_request_id_ref = seen_request_id.clone();
+        let conn = Connection::new_with_handler(move |request| {
+            // Request id should be the same on each retry.
+            let request_id = request.headers()["x-request-id"]
+                .to_str()
+                .unwrap()
+                .to_string();
+            let seen_id = seen_request_id_ref.get_or_init(|| request_id.clone());
+            assert_eq!(&request_id, seen_id);
+
+            http::Response::builder()
+                .status(500)
+                .body("internal server error")
+                .unwrap()
+        });
+        let result = conn.table_names().execute().await;
+        if let Err(Error::Retry {
+            request_id,
+            request_failures,
+            max_request_failures,
+            source,
+            ..
+        }) = result
+        {
+            let expected_id = seen_request_id.get().unwrap();
+            assert_eq!(&request_id, expected_id);
+            assert_eq!(request_failures, max_request_failures);
+            assert!(
+                source.to_string().contains("internal server error"),
+                "source: {:?}",
+                source
+            );
+        } else {
+            panic!("unexpected result: {:?}", result);
+        };
+    }
 
     #[tokio::test]
     async fn test_table_names() {

@@ -11,6 +11,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 from typing import List, Union
+from unittest.mock import MagicMock, patch
 
 import lance
 import lancedb
@@ -25,6 +26,7 @@ from lancedb.embeddings import (
 )
 from lancedb.embeddings.base import TextEmbeddingFunction
 from lancedb.embeddings.registry import get_registry, register
+from lancedb.embeddings.utils import retry
 from lancedb.pydantic import LanceModel, Vector
 
 
@@ -225,3 +227,12 @@ def test_embedding_function_safe_model_dump(embedding_type):
                 f"{embedding_type}: Private attribute '{key}' "
                 f"is present in dumped model"
             )
+
+
+@patch("time.sleep")
+def test_retry(mock_sleep):
+    test_function = MagicMock(side_effect=[Exception] * 9 + ["result"])
+    test_function = retry()(test_function)
+    result = test_function()
+    assert mock_sleep.call_count == 9
+    assert result == "result"

@@ -70,12 +70,12 @@ Build RAG (Retrieval-Augmented Generation) with  LanceDB, a powerful solution fo
 [flare_colab]: https://colab.research.google.com/github/lancedb/vectordb-recipes/blob/main/examples/better-rag-FLAIR/main.ipynb
 [flare_ghost]: https://blog.lancedb.com/better-rag-with-active-retrieval-augmented-generation-flare-3b66646e2a9f/
 
-[query_github]: https://github.com/lancedb/vectordb-recipes/blob/main/examples/QueryExpansion&Reranker
-[query_colab]: https://colab.research.google.com/github/lancedb/vectordb-recipes/blob/main/examples/QueryExpansion&Reranker/main.ipynb
+[query_github]: https://github.com/lancedb/vectordb-recipes/tree/main/examples/archived_examples/QueryExpansion%26Reranker
+[query_colab]: https://colab.research.google.com/github/lancedb/vectordb-recipes/blob/main/examples/archived_examples/QueryExpansion&Reranker/main.ipynb
 
 
-[fusion_github]: https://github.com/lancedb/vectordb-recipes/blob/main/examples/RAG_Fusion
-[fusion_colab]: https://colab.research.google.com/github/lancedb/vectordb-recipes/blob/main/examples/RAG_Fusion/main.ipynb
+[fusion_github]: https://github.com/lancedb/vectordb-recipes/tree/main/examples/archived_examples/RAG_Fusion
+[fusion_colab]: https://colab.research.google.com/github/lancedb/vectordb-recipes/blob/main/examples/archived_examples/RAG_Fusion/main.ipynb
 
 [agentic_github]: https://github.com/lancedb/vectordb-recipes/blob/main/tutorials/Agentic_RAG
 [agentic_colab]: https://colab.research.google.com/github/lancedb/vectordb-recipes/blob/main/tutorials/Agentic_RAG/main.ipynb

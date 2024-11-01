@@ -193,6 +193,24 @@ def test_empty_table(db):
     tbl.add(data=data)
 
 
+def test_add_dictionary(db):
+    schema = pa.schema(
+        [
+            pa.field("vector", pa.list_(pa.float32(), 2)),
+            pa.field("item", pa.string()),
+            pa.field("price", pa.float32()),
+        ]
+    )
+    tbl = LanceTable.create(db, "test", schema=schema)
+    data = {"vector": [3.1, 4.1], "item": "foo", "price": 10.0}
+    with pytest.raises(ValueError) as excep_info:
+        tbl.add(data=data)
+    assert (
+        str(excep_info.value)
+        == "Cannot add a single dictionary to a table. Use a list."
+    )
+
+
 def test_add(db):
     schema = pa.schema(
         [
@@ -636,11 +654,13 @@ def test_merge_insert(db):
     new_data = pa.table({"a": [2, 4], "b": ["x", "z"]})
 
     # replace-range
-    table.merge_insert(
-        "a"
-    ).when_matched_update_all().when_not_matched_insert_all().when_not_matched_by_source_delete(
-        "a > 2"
-    ).execute(new_data)
+    (
+        table.merge_insert("a")
+        .when_matched_update_all()
+        .when_not_matched_insert_all()
+        .when_not_matched_by_source_delete("a > 2")
+        .execute(new_data)
+    )
 
     expected = pa.table({"a": [1, 2, 4], "b": ["a", "x", "z"]})
     assert table.to_arrow().sort_by("a") == expected
@@ -656,6 +676,75 @@ def test_merge_insert(db):
 
     expected = pa.table({"a": [2, 4], "b": ["x", "z"]})
     assert table.to_arrow().sort_by("a") == expected
+
+
+@pytest.mark.asyncio
+async def test_merge_insert_async(db_async: AsyncConnection):
+    data = pa.table({"a": [1, 2, 3], "b": ["a", "b", "c"]})
+    table = await db_async.create_table("some_table", data=data)
+    assert await table.count_rows() == 3
+    version = await table.version()
+
+    new_data = pa.table({"a": [2, 3, 4], "b": ["x", "y", "z"]})
+
+    # upsert
+    await (
+        table.merge_insert("a")
+        .when_matched_update_all()
+        .when_not_matched_insert_all()
+        .execute(new_data)
+    )
+    expected = pa.table({"a": [1, 2, 3, 4], "b": ["a", "x", "y", "z"]})
+    assert (await table.to_arrow()).sort_by("a") == expected
+
+    await table.checkout(version)
+    await table.restore()
+
+    # conditional update
+    await (
+        table.merge_insert("a")
+        .when_matched_update_all(where="target.b = 'b'")
+        .execute(new_data)
+    )
+    expected = pa.table({"a": [1, 2, 3], "b": ["a", "x", "c"]})
+    assert (await table.to_arrow()).sort_by("a") == expected
+
+    await table.checkout(version)
+    await table.restore()
+
+    # insert-if-not-exists
+    await table.merge_insert("a").when_not_matched_insert_all().execute(new_data)
+    expected = pa.table({"a": [1, 2, 3, 4], "b": ["a", "b", "c", "z"]})
+    assert (await table.to_arrow()).sort_by("a") == expected
+
+    await table.checkout(version)
+    await table.restore()
+
+    # replace-range
+    new_data = pa.table({"a": [2, 4], "b": ["x", "z"]})
+    await (
+        table.merge_insert("a")
+        .when_matched_update_all()
+        .when_not_matched_insert_all()
+        .when_not_matched_by_source_delete("a > 2")
+        .execute(new_data)
+    )
+    expected = pa.table({"a": [1, 2, 4], "b": ["a", "x", "z"]})
+    assert (await table.to_arrow()).sort_by("a") == expected
+
+    await table.checkout(version)
+    await table.restore()
+
+    # replace-range no condition
+    await (
+        table.merge_insert("a")
+        .when_matched_update_all()
+        .when_not_matched_insert_all()
+        .when_not_matched_by_source_delete()
+        .execute(new_data)
+    )
+    expected = pa.table({"a": [2, 4], "b": ["x", "z"]})
+    assert (await table.to_arrow()).sort_by("a") == expected
 
 
 def test_create_with_embedding_function(db):
@@ -902,13 +991,10 @@ def test_count_rows(db):
     assert table.count_rows(filter="text='bar'") == 1
 
 
-def test_hybrid_search(db, tmp_path):
-    # This test uses an FTS index
-    pytest.importorskip("lancedb.fts")
-
+def setup_hybrid_search_table(tmp_path, embedding_func):
     db = MockDB(str(tmp_path))
     # Create a LanceDB table schema with a vector and a text column
-    emb = EmbeddingFunctionRegistry.get_instance().get("test")()
+    emb = EmbeddingFunctionRegistry.get_instance().get(embedding_func)()
 
     class MyTable(LanceModel):
         text: str = emb.SourceField()
@@ -940,6 +1026,15 @@ def test_hybrid_search(db, tmp_path):
 
     # Create a fts index
     table.create_fts_index("text")
+
+    return table, MyTable, emb
+
+
+def test_hybrid_search(tmp_path):
+    # This test uses an FTS index
+    pytest.importorskip("lancedb.fts")
+
+    table, MyTable, emb = setup_hybrid_search_table(tmp_path, "test")
 
     result1 = (
         table.search("Our father who art in heaven", query_type="hybrid")
@@ -1003,6 +1098,24 @@ def test_hybrid_search(db, tmp_path):
         table.search(query_type="hybrid").vector(vector_query).to_list()
     with pytest.raises(ValueError):
         table.search(query_type="hybrid").text("Arrrrggghhhhhhh").to_list()
+
+
+def test_hybrid_search_metric_type(db, tmp_path):
+    # This test uses an FTS index
+    pytest.importorskip("lancedb.fts")
+
+    # Need to use nonnorm as the embedding function so L2 and dot results
+    # are different
+    table, _, _ = setup_hybrid_search_table(tmp_path, "nonnorm")
+
+    # with custom metric
+    result_dot = (
+        table.search("feeling lucky", query_type="hybrid").metric("dot").to_arrow()
+    )
+    result_l2 = table.search("feeling lucky", query_type="hybrid").to_arrow()
+    assert len(result_dot) > 0
+    assert len(result_l2) > 0
+    assert result_dot["_relevance_score"] != result_l2["_relevance_score"]
 
 
 @pytest.mark.parametrize(

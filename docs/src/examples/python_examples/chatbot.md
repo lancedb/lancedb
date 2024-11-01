@@ -36,6 +36,6 @@
 [aware_colab]: https://colab.research.google.com/github/lancedb/vectordb-recipes/blob/main/tutorials/chatbot_using_Llama2_&_lanceDB/main.ipynb
 [aware_ghost]: https://blog.lancedb.com/context-aware-chatbot-using-llama-2-lancedb-as-vector-database-4d771d95c755
 
-[csv_github]: https://github.com/lancedb/vectordb-recipes/blob/main/tutorials/Chat_with_csv_file
-[csv_colab]: https://colab.research.google.com/github/lancedb/vectordb-recipes/blob/main/tutorials/Chat_with_csv_file/main.ipynb
+[csv_github]: https://github.com/lancedb/vectordb-recipes/tree/main/examples/archived_examples/Chat_with_csv_file
+[csv_colab]: https://colab.research.google.com/github/lancedb/vectordb-recipes/blob/main/examples/archived_examples/Chat_with_csv_file/main.ipynb
 [csv_ghost]: https://blog.lancedb.com/p/d8c71df4-e55f-479a-819e-cde13354a6a3/

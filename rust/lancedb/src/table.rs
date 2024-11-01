@@ -25,6 +25,7 @@ use arrow_schema::{Field, Schema, SchemaRef};
 use async_trait::async_trait;
 use datafusion_physical_plan::display::DisplayableExecutionPlan;
 use datafusion_physical_plan::ExecutionPlan;
+use futures::{StreamExt, TryStreamExt};
 use lance::dataset::builder::DatasetBuilder;
 use lance::dataset::cleanup::RemovalStats;
 use lance::dataset::optimize::{compact_files, CompactionMetrics, IndexRemapperOptions};
@@ -1567,6 +1568,7 @@ impl NativeTable {
         let mut dataset = self.dataset.get_mut().await?;
         let fts_params = lance_index::scalar::InvertedIndexParams {
             with_position: fts_opts.with_position,
+            tokenizer_config: fts_opts.tokenizer_configs,
         };
         dataset
             .create_index(
@@ -2001,7 +2003,7 @@ impl TableInternal for NativeTable {
         self.dataset
             .get_mut()
             .await?
-            .add_columns(transforms, read_columns)
+            .add_columns(transforms, read_columns, None)
             .await?;
         Ok(())
     }
@@ -2023,28 +2025,28 @@ impl TableInternal for NativeTable {
     async fn list_indices(&self) -> Result<Vec<IndexConfig>> {
         let dataset = self.dataset.get().await?;
         let indices = dataset.load_indices().await?;
-        indices.iter().map(|idx| {
-            let mut is_vector = false;
+        futures::stream::iter(indices.as_slice()).then(|idx| async {
+            let stats = dataset.index_statistics(idx.name.as_str()).await?;
+            let stats: serde_json::Value = serde_json::from_str(&stats).map_err(|e| Error::Runtime {
+                message: format!("error deserializing index statistics: {}", e),
+            })?;
+            let index_type = stats.get("index_type").and_then(|v| v.as_str())
+            .ok_or_else(|| Error::Runtime {
+                message: "index statistics was missing index type".to_string(),
+            })?;
+            let index_type: crate::index::IndexType = index_type.parse().map_err(|e| Error::Runtime {
+                message: format!("error parsing index type: {}", e),
+            })?;
+
             let mut columns = Vec::with_capacity(idx.fields.len());
             for field_id in &idx.fields {
                 let field = dataset.schema().field_by_id(*field_id).ok_or_else(|| Error::Runtime { message: format!("The index with name {} and uuid {} referenced a field with id {} which does not exist in the schema", idx.name, idx.uuid, field_id) })?;
-                if field.data_type().is_nested() {
-                    // Temporary hack to determine if an index is scalar or vector
-                    // Should be removed in https://github.com/lancedb/lance/issues/2039
-                    is_vector = true;
-                }
                 columns.push(field.name.clone());
             }
 
-            let index_type = if is_vector {
-                crate::index::IndexType::IvfPq
-            } else {
-                crate::index::IndexType::BTree
-            };
-
             let name = idx.name.clone();
             Ok(IndexConfig { index_type, columns, name })
-        }).collect::<Result<Vec<_>>>()
+        }).try_collect::<Vec<_>>().await
     }
 
     fn dataset_uri(&self) -> &str {
@@ -2109,7 +2111,6 @@ mod tests {
     use arrow_schema::{DataType, Field, Schema, TimeUnit};
     use futures::TryStreamExt;
     use lance::dataset::{Dataset, WriteMode};
-    use lance::index::DatasetIndexInternalExt;
     use lance::io::{ObjectStoreParams, WrappingObjectStore};
     use rand::Rng;
     use tempfile::tempdir;
@@ -2803,7 +2804,7 @@ mod tests {
         let index_configs = table.list_indices().await.unwrap();
         assert_eq!(index_configs.len(), 1);
         let index = index_configs.into_iter().next().unwrap();
-        assert_eq!(index.index_type, crate::index::IndexType::IvfPq);
+        assert_eq!(index.index_type, crate::index::IndexType::IvfHnswSq);
         assert_eq!(index.columns, vec!["embeddings".to_string()]);
         assert_eq!(table.count_rows(None).await.unwrap(), 512);
         assert_eq!(table.name(), "test");
@@ -2867,7 +2868,7 @@ mod tests {
         let index_configs = table.list_indices().await.unwrap();
         assert_eq!(index_configs.len(), 1);
         let index = index_configs.into_iter().next().unwrap();
-        assert_eq!(index.index_type, crate::index::IndexType::IvfPq);
+        assert_eq!(index.index_type, crate::index::IndexType::IvfHnswPq);
         assert_eq!(index.columns, vec!["embeddings".to_string()]);
         assert_eq!(table.count_rows(None).await.unwrap(), 512);
         assert_eq!(table.name(), "test");
@@ -3001,22 +3002,8 @@ mod tests {
         let index_configs = table.list_indices().await.unwrap();
         assert_eq!(index_configs.len(), 1);
         let index = index_configs.into_iter().next().unwrap();
-        // TODO: Fix via https://github.com/lancedb/lance/issues/2039
-        // assert_eq!(index.index_type, crate::index::IndexType::Bitmap);
+        assert_eq!(index.index_type, crate::index::IndexType::Bitmap);
         assert_eq!(index.columns, vec!["category".to_string()]);
-
-        // For now, just open the index to verify its type
-        let lance_dataset = table.as_native().unwrap().dataset.get().await.unwrap();
-        let indices = lance_dataset
-            .load_indices_by_name(&index.name)
-            .await
-            .unwrap();
-        let index_meta = &indices[0];
-        let idx = lance_dataset
-            .open_scalar_index("category", &index_meta.uuid.to_string())
-            .await
-            .unwrap();
-        assert_eq!(idx.index_type(), IndexType::Bitmap);
     }
 
     #[tokio::test]
@@ -3085,22 +3072,63 @@ mod tests {
         let index_configs = table.list_indices().await.unwrap();
         assert_eq!(index_configs.len(), 1);
         let index = index_configs.into_iter().next().unwrap();
-        // TODO: Fix via https://github.com/lancedb/lance/issues/2039
-        // assert_eq!(index.index_type, crate::index::IndexType::LabelList);
+        assert_eq!(index.index_type, crate::index::IndexType::LabelList);
         assert_eq!(index.columns, vec!["tags".to_string()]);
+    }
 
-        // For now, just open the index to verify its type
-        let lance_dataset = table.as_native().unwrap().dataset.get().await.unwrap();
-        let indices = lance_dataset
-            .load_indices_by_name(&index.name)
+    #[tokio::test]
+    async fn test_create_inverted_index() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        let conn = ConnectBuilder::new(uri).execute().await.unwrap();
+        const WORDS: [&str; 3] = ["cat", "dog", "fish"];
+        let mut text_builder = StringBuilder::new();
+        let num_rows = 120;
+        for i in 0..num_rows {
+            text_builder.append_value(WORDS[i % 3]);
+        }
+        let text = Arc::new(text_builder.finish());
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("text", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from_iter_values(0..num_rows as i32)),
+                text,
+            ],
+        )
+        .unwrap();
+
+        let table = conn
+            .create_table(
+                "test_bitmap",
+                RecordBatchIterator::new(vec![Ok(batch.clone())], batch.schema()),
+            )
+            .execute()
             .await
             .unwrap();
-        let index_meta = &indices[0];
-        let idx = lance_dataset
-            .open_scalar_index("tags", &index_meta.uuid.to_string())
+
+        table
+            .create_index(&["text"], Index::FTS(Default::default()))
+            .execute()
             .await
             .unwrap();
-        assert_eq!(idx.index_type(), IndexType::LabelList);
+        let index_configs = table.list_indices().await.unwrap();
+        assert_eq!(index_configs.len(), 1);
+        let index = index_configs.into_iter().next().unwrap();
+        assert_eq!(index.index_type, crate::index::IndexType::FTS);
+        assert_eq!(index.columns, vec!["text".to_string()]);
+        assert_eq!(index.name, "text_idx");
+
+        let stats = table.index_stats("text_idx").await.unwrap().unwrap();
+        assert_eq!(stats.num_indexed_rows, num_rows);
+        assert_eq!(stats.num_unindexed_rows, 0);
+        assert_eq!(stats.index_type, crate::index::IndexType::FTS);
+        assert_eq!(stats.distance_type, None);
     }
 
     #[tokio::test]

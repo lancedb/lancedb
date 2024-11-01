@@ -88,6 +88,11 @@ class Query(pydantic.BaseModel):
           tuning advice.
     offset: int
         The offset to start fetching results from
+    fast_search: bool
+        Skip a flat search of unindexed data. This will improve
+        search performance but search results will not include unindexed data.
+
+        - *default False*.
     """
 
     vector_column: Optional[str] = None
@@ -124,6 +129,8 @@ class Query(pydantic.BaseModel):
 
     offset: int = 0
 
+    fast_search: bool = False
+
 
 class LanceQueryBuilder(ABC):
     """An abstract query builder. Subclasses are defined for vector search,
@@ -139,6 +146,7 @@ class LanceQueryBuilder(ABC):
         vector_column_name: str,
         ordering_field_name: Optional[str] = None,
         fts_columns: Union[str, List[str]] = [],
+        fast_search: bool = False,
     ) -> LanceQueryBuilder:
         """
         Create a query builder based on the given query and query type.
@@ -155,6 +163,8 @@ class LanceQueryBuilder(ABC):
             If "auto", the query type is inferred based on the query.
         vector_column_name: str
             The name of the vector column to use for vector search.
+        fast_search: bool
+            Skip flat search of unindexed data.
         """
         # Check hybrid search first as it supports empty query pattern
         if query_type == "hybrid":
@@ -196,7 +206,9 @@ class LanceQueryBuilder(ABC):
         else:
             raise TypeError(f"Unsupported query type: {type(query)}")
 
-        return LanceVectorQueryBuilder(table, query, vector_column_name, str_query)
+        return LanceVectorQueryBuilder(
+            table, query, vector_column_name, str_query, fast_search
+        )
 
     @classmethod
     def _resolve_query(cls, table, query, query_type, vector_column_name):
@@ -565,6 +577,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         query: Union[np.ndarray, list, "PIL.Image.Image"],
         vector_column: str,
         str_query: Optional[str] = None,
+        fast_search: bool = False,
     ):
         super().__init__(table)
         self._query = query
@@ -575,6 +588,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         self._prefilter = False
         self._reranker = None
         self._str_query = str_query
+        self._fast_search = fast_search
 
     def metric(self, metric: Literal["L2", "cosine", "dot"]) -> LanceVectorQueryBuilder:
         """Set the distance metric to use.
@@ -675,6 +689,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             vector_column=self._vector_column,
             with_row_id=self._with_row_id,
             offset=self._offset,
+            fast_search=self._fast_search,
         )
         result_set = self._table._execute_query(query, batch_size)
         if self._reranker is not None:
@@ -968,6 +983,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         self._reranker = RRFReranker()
         self._nprobes = None
         self._refine_factor = None
+        self._metric = None
         self._phrase_query = False
 
     def _validate_query(self, query, vector=None, text=None):
@@ -1035,6 +1051,8 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             self._fts_query.with_row_id(True)
         if self._phrase_query:
             self._fts_query.phrase_query(True)
+        if self._metric:
+            self._vector_query.metric(self._metric)
         if self._nprobes:
             self._vector_query.nprobes(self._nprobes)
         if self._refine_factor:
@@ -1052,6 +1070,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         if self._norm == "rank":
             vector_results = self._rank(vector_results, "_distance")
             fts_results = self._rank(fts_results, "_score")
+
         # normalize the scores to be between 0 and 1, 0 being most relevant
         vector_results = self._normalize_scores(vector_results, "_distance")
 
@@ -1100,7 +1119,9 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             rng = max
         else:
             rng = max - min
-        scores = (scores - min) / rng
+        # If rng is 0 then min and max are both 0 and so we can leave the scores as is
+        if rng != 0:
+            scores = (scores - min) / rng
         if invert:
             scores = 1 - scores
         # replace the _score column with the ranks
@@ -1160,6 +1181,22 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             The LanceHybridQueryBuilder object.
         """
         self._nprobes = nprobes
+        return self
+
+    def metric(self, metric: Literal["L2", "cosine", "dot"]) -> LanceHybridQueryBuilder:
+        """Set the distance metric to use.
+
+        Parameters
+        ----------
+        metric: "L2" or "cosine" or "dot"
+            The distance metric to use. By default "L2" is used.
+
+        Returns
+        -------
+        LanceVectorQueryBuilder
+            The LanceQueryBuilder object.
+        """
+        self._metric = metric.lower()
         return self
 
     def refine_factor(self, refine_factor: int) -> LanceHybridQueryBuilder:

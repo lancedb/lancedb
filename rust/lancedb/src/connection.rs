@@ -32,6 +32,8 @@ use crate::embeddings::{
 };
 use crate::error::{CreateDirSnafu, Error, InvalidTableNameSnafu, Result};
 use crate::io::object_store::MirroringObjectStoreWrapper;
+#[cfg(feature = "remote")]
+use crate::remote::client::ClientConfig;
 use crate::table::{NativeTable, TableDefinition, WriteOptions};
 use crate::utils::validate_table_name;
 use crate::Table;
@@ -194,22 +196,6 @@ impl<T: IntoArrow> CreateTableBuilder<true, T> {
         };
         Ok((data, builder))
     }
-
-    pub fn add_embedding(mut self, definition: EmbeddingDefinition) -> Result<Self> {
-        // Early verification of the embedding name
-        let embedding_func = self
-            .parent
-            .embedding_registry()
-            .get(&definition.embedding_name)
-            .ok_or_else(|| Error::EmbeddingFunctionNotFound {
-                name: definition.embedding_name.clone(),
-                reason: "No embedding function found in the connection's embedding_registry"
-                    .to_string(),
-            })?;
-
-        self.embeddings.push((definition, embedding_func));
-        Ok(self)
-    }
 }
 
 // Builder methods that only apply when we do not have initial data
@@ -326,6 +312,26 @@ impl<const HAS_DATA: bool, T: IntoArrow> CreateTableBuilder<HAS_DATA, T> {
             Some(LanceFileVersion::Stable)
         };
         self
+    }
+
+    /// Add an embedding definition to the table.
+    ///
+    /// The `embedding_name` must match the name of an embedding function that
+    /// was previously registered with the connection's [`EmbeddingRegistry`].
+    pub fn add_embedding(mut self, definition: EmbeddingDefinition) -> Result<Self> {
+        // Early verification of the embedding name
+        let embedding_func = self
+            .parent
+            .embedding_registry()
+            .get(&definition.embedding_name)
+            .ok_or_else(|| Error::EmbeddingFunctionNotFound {
+                name: definition.embedding_name.clone(),
+                reason: "No embedding function found in the connection's embedding_registry"
+                    .to_string(),
+            })?;
+
+        self.embeddings.push((definition, embedding_func));
+        Ok(self)
     }
 }
 
@@ -567,6 +573,8 @@ pub struct ConnectBuilder {
     region: Option<String>,
     /// LanceDB Cloud host override, only required if using an on-premises Lance Cloud instance
     host_override: Option<String>,
+    #[cfg(feature = "remote")]
+    client_config: ClientConfig,
 
     storage_options: HashMap<String, String>,
 
@@ -592,6 +600,8 @@ impl ConnectBuilder {
             api_key: None,
             region: None,
             host_override: None,
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
             read_consistency_interval: None,
             storage_options: HashMap::new(),
             embedding_registry: None,
@@ -610,6 +620,30 @@ impl ConnectBuilder {
 
     pub fn host_override(mut self, host_override: &str) -> Self {
         self.host_override = Some(host_override.to_string());
+        self
+    }
+
+    /// Set the LanceDB Cloud client configuration.
+    ///
+    /// ```
+    /// # use lancedb::connect;
+    /// # use lancedb::remote::*;
+    /// connect("db://my_database")
+    ///    .client_config(ClientConfig {
+    ///      timeout_config: TimeoutConfig {
+    ///        connect_timeout: Some(std::time::Duration::from_secs(5)),
+    ///        ..Default::default()
+    ///      },
+    ///      retry_config: RetryConfig {
+    ///        retries: Some(5),
+    ///        ..Default::default()
+    ///      },
+    ///      ..Default::default()
+    ///    });
+    /// ```
+    #[cfg(feature = "remote")]
+    pub fn client_config(mut self, config: ClientConfig) -> Self {
+        self.client_config = config;
         self
     }
 
@@ -685,12 +719,14 @@ impl ConnectBuilder {
         let api_key = self.api_key.ok_or_else(|| Error::InvalidInput {
             message: "An api_key is required when connecting to LanceDb Cloud".to_string(),
         })?;
+        // TODO: remove this warning when the remote client is ready
         warn!("The rust implementation of the remote client is not yet ready for use.");
         let internal = Arc::new(crate::remote::db::RemoteDatabase::try_new(
             &self.uri,
             &api_key,
             &region,
             self.host_override,
+            self.client_config,
         )?);
         Ok(Connection {
             internal,

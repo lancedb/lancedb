@@ -1,7 +1,7 @@
 [package]
 name = "lancedb-nodejs"
 edition.workspace = true
-version = "0.0.0"
+version = "0.12.0"
 license.workspace = true
 description.workspace = true
 repository.workspace = true
@@ -13,8 +13,9 @@ crate-type = ["cdylib"]
 
 [dependencies]
 arrow-ipc.workspace = true
+env_logger.workspace = true
 futures.workspace = true
-lancedb = { path = "../rust/lancedb" }
+lancedb = { path = "../rust/lancedb", features = ["remote"] }
 napi = { version = "2.16.8", default-features = false, features = [
     "napi9",
     "async",
@@ -22,6 +23,7 @@ napi = { version = "2.16.8", default-features = false, features = [
 napi-derive = "2.16.4"
 # Prevent dynamic linking of lzma, which comes from datafusion
 lzma-sys = { version = "*", features = ["static"] }
+log.workspace = true
 
 [build-dependencies]
 napi-build = "2.1"

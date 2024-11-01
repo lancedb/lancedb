@@ -63,9 +63,8 @@ async def test_create_scalar_index(some_table: AsyncTable):
 @pytest.mark.asyncio
 async def test_create_bitmap_index(some_table: AsyncTable):
     await some_table.create_index("id", config=Bitmap())
-    # TODO: Fix via https://github.com/lancedb/lance/issues/2039
-    # indices = await some_table.list_indices()
-    # assert str(indices) == '[Index(Bitmap, columns=["id"])]'
+    indices = await some_table.list_indices()
+    assert str(indices) == '[Index(Bitmap, columns=["id"])]'
     indices = await some_table.list_indices()
     assert len(indices) == 1
     index_name = indices[0].name
@@ -80,9 +79,8 @@ async def test_create_bitmap_index(some_table: AsyncTable):
 @pytest.mark.asyncio
 async def test_create_label_list_index(some_table: AsyncTable):
     await some_table.create_index("tags", config=LabelList())
-    # TODO: Fix via https://github.com/lancedb/lance/issues/2039
-    # indices = await some_table.list_indices()
-    # assert str(indices) == '[Index(LabelList, columns=["id"])]'
+    indices = await some_table.list_indices()
+    assert str(indices) == '[Index(LabelList, columns=["tags"])]'
 
 
 @pytest.mark.asyncio

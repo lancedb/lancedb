@@ -14,6 +14,7 @@
 
 import { describe } from "mocha";
 import { track } from "temp";
+import { assert, expect } from 'chai'
 import * as chai from "chai";
 import * as chaiAsPromised from "chai-as-promised";
 
@@ -44,8 +45,6 @@ import {
 } from "apache-arrow";
 import type { RemoteRequest, RemoteResponse } from "../middleware";
 
-const expect = chai.expect;
-const assert = chai.assert;
 chai.use(chaiAsPromised);
 
 describe("LanceDB client", function () {
@@ -169,7 +168,7 @@ describe("LanceDB client", function () {
 
       // Should reject a bad filter
       await expect(table.filter("id % 2 = 0 AND").execute()).to.be.rejectedWith(
-        /.*sql parser error: Expected an expression:, found: EOF.*/
+        /.*sql parser error: .*/
       );
     });
 

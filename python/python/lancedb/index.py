@@ -7,6 +7,27 @@ from ._lancedb import (
     IndexConfig,
 )
 
+lang_mapping = {
+    "ar": "Arabic",
+    "da": "Danish",
+    "du": "Dutch",
+    "en": "English",
+    "fi": "Finnish",
+    "fr": "French",
+    "de": "German",
+    "gr": "Greek",
+    "hu": "Hungarian",
+    "it": "Italian",
+    "no": "Norwegian",
+    "pt": "Portuguese",
+    "ro": "Romanian",
+    "ru": "Russian",
+    "es": "Spanish",
+    "sv": "Swedish",
+    "ta": "Tamil",
+    "tr": "Turkish",
+}
+
 
 class BTree:
     """Describes a btree index configuration
@@ -78,7 +99,17 @@ class FTS:
     For example, it works with `title`, `description`, `content`, etc.
     """
 
-    def __init__(self, with_position: bool = True):
+    def __init__(
+        self,
+        with_position: bool = True,
+        base_tokenizer: str = "simple",
+        language: str = "English",
+        max_token_length: Optional[int] = 40,
+        lower_case: bool = True,
+        stem: bool = False,
+        remove_stop_words: bool = False,
+        ascii_folding: bool = False,
+    ):
         self._inner = LanceDbIndex.fts(with_position=with_position)
 
 

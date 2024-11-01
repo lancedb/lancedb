@@ -1,3 +1,4 @@
+use std::io::Cursor;
 use std::sync::{Arc, Mutex};
 
 use crate::index::Index;
@@ -7,10 +8,9 @@ use crate::table::AddDataMode;
 use crate::utils::{supported_btree_data_type, supported_vector_data_type};
 use crate::Error;
 use arrow_array::RecordBatchReader;
-use arrow_ipc::reader::StreamReader;
+use arrow_ipc::reader::FileReader;
 use arrow_schema::{DataType, SchemaRef};
 use async_trait::async_trait;
-use bytes::Buf;
 use datafusion_common::DataFusionError;
 use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion_physical_plan::{ExecutionPlan, SendableRecordBatchStream};
@@ -34,6 +34,7 @@ use crate::{
     },
 };
 
+use super::client::RequestResultExt;
 use super::client::{HttpSend, RestfulLanceDbClient, Sender};
 use super::{ARROW_STREAM_CONTENT_TYPE, JSON_CONTENT_TYPE};
 
@@ -50,16 +51,28 @@ impl<S: HttpSend> RemoteTable<S> {
     }
 
     async fn describe(&self) -> Result<TableDescription> {
-        let request = self.client.post(&format!("/table/{}/describe/", self.name));
-        let response = self.client.send(request).await?;
+        let request = self
+            .client
+            .post(&format!("/v1/table/{}/describe/", self.name));
+        let (request_id, response) = self.client.send(request, true).await?;
 
-        let response = self.check_table_response(response).await?;
+        let response = self.check_table_response(&request_id, response).await?;
 
-        let body = response.text().await?;
-
-        serde_json::from_str(&body).map_err(|e| Error::Http {
-            message: format!("Failed to parse table description: {}", e),
-        })
+        match response.text().await {
+            Ok(body) => serde_json::from_str(&body).map_err(|e| Error::Http {
+                source: format!("Failed to parse table description: {}", e).into(),
+                request_id,
+                status_code: None,
+            }),
+            Err(err) => {
+                let status_code = err.status();
+                Err(Error::Http {
+                    source: Box::new(err),
+                    request_id,
+                    status_code,
+                })
+            }
+        }
     }
 
     fn reader_as_body(data: Box<dyn RecordBatchReader + Send>) -> Result<reqwest::Body> {
@@ -85,44 +98,31 @@ impl<S: HttpSend> RemoteTable<S> {
         Ok(reqwest::Body::wrap_stream(body_stream))
     }
 
-    async fn check_table_response(&self, response: reqwest::Response) -> Result<reqwest::Response> {
+    async fn check_table_response(
+        &self,
+        request_id: &str,
+        response: reqwest::Response,
+    ) -> Result<reqwest::Response> {
         if response.status() == StatusCode::NOT_FOUND {
             return Err(Error::TableNotFound {
                 name: self.name.clone(),
             });
         }
 
-        self.client.check_response(response).await
+        self.client.check_response(request_id, response).await
     }
 
     async fn read_arrow_stream(
         &self,
-        body: reqwest::Response,
+        request_id: &str,
+        response: reqwest::Response,
     ) -> Result<SendableRecordBatchStream> {
-        // Assert that the content type is correct
-        let content_type = body
-            .headers()
-            .get(CONTENT_TYPE)
-            .ok_or_else(|| Error::Http {
-                message: "Missing content type".into(),
-            })?
-            .to_str()
-            .map_err(|e| Error::Http {
-                message: format!("Failed to parse content type: {}", e),
-            })?;
-        if content_type != ARROW_STREAM_CONTENT_TYPE {
-            return Err(Error::Http {
-                message: format!(
-                    "Expected content type {}, got {}",
-                    ARROW_STREAM_CONTENT_TYPE, content_type
-                ),
-            });
-        }
+        let response = self.check_table_response(request_id, response).await?;
 
         // There isn't a way to actually stream this data yet. I have an upstream issue:
         // https://github.com/apache/arrow-rs/issues/6420
-        let body = body.bytes().await?;
-        let reader = StreamReader::try_new(body.reader(), None)?;
+        let body = response.bytes().await.err_to_http(request_id.into())?;
+        let reader = FileReader::try_new(Cursor::new(body), None)?;
         let schema = reader.schema();
         let stream = futures::stream::iter(reader).map_err(DataFusionError::from);
         Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
@@ -249,22 +249,24 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
     async fn count_rows(&self, filter: Option<String>) -> Result<usize> {
         let mut request = self
             .client
-            .post(&format!("/table/{}/count_rows/", self.name));
+            .post(&format!("/v1/table/{}/count_rows/", self.name));
 
         if let Some(filter) = filter {
-            request = request.json(&serde_json::json!({ "filter": filter }));
+            request = request.json(&serde_json::json!({ "predicate": filter }));
         } else {
             request = request.json(&serde_json::json!({}));
         }
 
-        let response = self.client.send(request).await?;
+        let (request_id, response) = self.client.send(request, true).await?;
 
-        let response = self.check_table_response(response).await?;
+        let response = self.check_table_response(&request_id, response).await?;
 
-        let body = response.text().await?;
+        let body = response.text().await.err_to_http(request_id.clone())?;
 
         serde_json::from_str(&body).map_err(|e| Error::Http {
-            message: format!("Failed to parse row count: {}", e),
+            source: format!("Failed to parse row count: {}", e).into(),
+            request_id,
+            status_code: None,
         })
     }
     async fn add(
@@ -275,7 +277,7 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
         let body = Self::reader_as_body(data)?;
         let mut request = self
             .client
-            .post(&format!("/table/{}/insert/", self.name))
+            .post(&format!("/v1/table/{}/insert/", self.name))
             .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE)
             .body(body);
 
@@ -286,9 +288,9 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
             }
         }
 
-        let response = self.client.send(request).await?;
+        let (request_id, response) = self.client.send(request, false).await?;
 
-        self.check_table_response(response).await?;
+        self.check_table_response(&request_id, response).await?;
 
         Ok(())
     }
@@ -298,7 +300,7 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
         query: &VectorQuery,
         _options: QueryExecutionOptions,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        let request = self.client.post(&format!("/table/{}/query/", self.name));
+        let request = self.client.post(&format!("/v1/table/{}/query/", self.name));
 
         let mut body = serde_json::Value::Object(Default::default());
         Self::apply_query_params(&mut body, &query.base)?;
@@ -337,9 +339,9 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
 
         let request = request.json(&body);
 
-        let response = self.client.send(request).await?;
+        let (request_id, response) = self.client.send(request, true).await?;
 
-        let stream = self.read_arrow_stream(response).await?;
+        let stream = self.read_arrow_stream(&request_id, response).await?;
 
         Ok(Arc::new(OneShotExec::new(stream)))
     }
@@ -351,7 +353,7 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
     ) -> Result<DatasetRecordBatchStream> {
         let request = self
             .client
-            .post(&format!("/table/{}/query/", self.name))
+            .post(&format!("/v1/table/{}/query/", self.name))
             .header(CONTENT_TYPE, JSON_CONTENT_TYPE);
 
         let mut body = serde_json::Value::Object(Default::default());
@@ -359,19 +361,20 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
 
         let request = request.json(&body);
 
-        let response = self.client.send(request).await?;
+        let (request_id, response) = self.client.send(request, true).await?;
 
-        let stream = self.read_arrow_stream(response).await?;
+        let stream = self.read_arrow_stream(&request_id, response).await?;
 
         Ok(DatasetRecordBatchStream::new(stream))
     }
     async fn update(&self, update: UpdateBuilder) -> Result<u64> {
-        let request = self.client.post(&format!("/table/{}/update/", self.name));
+        let request = self
+            .client
+            .post(&format!("/v1/table/{}/update/", self.name));
 
         let mut updates = Vec::new();
         for (column, expression) in update.columns {
-            updates.push(column);
-            updates.push(expression);
+            updates.push(vec![column, expression]);
         }
 
         let request = request.json(&serde_json::json!({
@@ -379,34 +382,27 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
             "only_if": update.filter,
         }));
 
-        let response = self.client.send(request).await?;
+        let (request_id, response) = self.client.send(request, false).await?;
 
-        let response = self.check_table_response(response).await?;
+        self.check_table_response(&request_id, response).await?;
 
-        let body = response.text().await?;
-
-        serde_json::from_str(&body).map_err(|e| Error::Http {
-            message: format!(
-                "Failed to parse updated rows result from response {}: {}",
-                body, e
-            ),
-        })
+        Ok(0) // TODO: support returning number of modified rows once supported in SaaS.
     }
     async fn delete(&self, predicate: &str) -> Result<()> {
         let body = serde_json::json!({ "predicate": predicate });
         let request = self
             .client
-            .post(&format!("/table/{}/delete/", self.name))
+            .post(&format!("/v1/table/{}/delete/", self.name))
             .json(&body);
-        let response = self.client.send(request).await?;
-        self.check_table_response(response).await?;
+        let (request_id, response) = self.client.send(request, false).await?;
+        self.check_table_response(&request_id, response).await?;
         Ok(())
     }
 
     async fn create_index(&self, mut index: IndexBuilder) -> Result<()> {
         let request = self
             .client
-            .post(&format!("/table/{}/create_index/", self.name));
+            .post(&format!("/v1/table/{}/create_index/", self.name));
 
         let column = match index.columns.len() {
             0 => {
@@ -463,14 +459,16 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
         };
         body["index_type"] = serde_json::Value::String(index_type.into());
         if let Some(distance_type) = distance_type {
-            body["distance_type"] = serde_json::Value::String(distance_type.to_string());
+            // Phalanx expects this to be lowercase right now.
+            body["metric_type"] =
+                serde_json::Value::String(distance_type.to_string().to_lowercase());
         }
 
         let request = request.json(&body);
 
-        let response = self.client.send(request).await?;
+        let (request_id, response) = self.client.send(request, false).await?;
 
-        self.check_table_response(response).await?;
+        self.check_table_response(&request_id, response).await?;
 
         Ok(())
     }
@@ -484,14 +482,14 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
         let body = Self::reader_as_body(new_data)?;
         let request = self
             .client
-            .post(&format!("/table/{}/merge_insert/", self.name))
+            .post(&format!("/v1/table/{}/merge_insert/", self.name))
             .query(&query)
             .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE)
             .body(body);
 
-        let response = self.client.send(request).await?;
+        let (request_id, response) = self.client.send(request, false).await?;
 
-        self.check_table_response(response).await?;
+        self.check_table_response(&request_id, response).await?;
 
         Ok(())
     }
@@ -519,27 +517,79 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
             message: "drop_columns is not yet supported.".into(),
         })
     }
+
     async fn list_indices(&self) -> Result<Vec<IndexConfig>> {
-        Err(Error::NotSupported {
-            message: "list_indices is not yet supported.".into(),
-        })
-    }
-    async fn index_stats(&self, index_name: &str) -> Result<Option<IndexStatistics>> {
+        // Make request to list the indices
         let request = self
             .client
-            .post(&format!("/table/{}/index/{}/stats/", self.name, index_name));
-        let response = self.client.send(request).await?;
+            .post(&format!("/v1/table/{}/index/list/", self.name));
+        let (request_id, response) = self.client.send(request, true).await?;
+        let response = self.check_table_response(&request_id, response).await?;
+
+        #[derive(Deserialize)]
+        struct ListIndicesResponse {
+            indexes: Vec<IndexConfigResponse>,
+        }
+
+        #[derive(Deserialize)]
+        struct IndexConfigResponse {
+            index_name: String,
+            columns: Vec<String>,
+        }
+
+        let body = response.text().await.err_to_http(request_id.clone())?;
+        let body: ListIndicesResponse = serde_json::from_str(&body).map_err(|err| Error::Http {
+            source: format!(
+                "Failed to parse list_indices response: {}, body: {}",
+                err, body
+            )
+            .into(),
+            request_id,
+            status_code: None,
+        })?;
+
+        // Make request to get stats for each index, so we get the index type.
+        // This is a bit inefficient, but it's the only way to get the index type.
+        let mut futures = Vec::with_capacity(body.indexes.len());
+        for index in body.indexes {
+            let future = async move {
+                match self.index_stats(&index.index_name).await {
+                    Ok(Some(stats)) => Ok(Some(IndexConfig {
+                        name: index.index_name,
+                        index_type: stats.index_type,
+                        columns: index.columns,
+                    })),
+                    Ok(None) => Ok(None), // The index must have been deleted since we listed it.
+                    Err(e) => Err(e),
+                }
+            };
+            futures.push(future);
+        }
+        let results = futures::future::try_join_all(futures).await?;
+        let index_configs = results.into_iter().flatten().collect();
+
+        Ok(index_configs)
+    }
+
+    async fn index_stats(&self, index_name: &str) -> Result<Option<IndexStatistics>> {
+        let request = self.client.post(&format!(
+            "/v1/table/{}/index/{}/stats/",
+            self.name, index_name
+        ));
+        let (request_id, response) = self.client.send(request, true).await?;
 
         if response.status() == StatusCode::NOT_FOUND {
             return Ok(None);
         }
 
-        let response = self.check_table_response(response).await?;
+        let response = self.check_table_response(&request_id, response).await?;
 
-        let body = response.text().await?;
+        let body = response.text().await.err_to_http(request_id.clone())?;
 
         let stats = serde_json::from_str(&body).map_err(|e| Error::Http {
-            message: format!("Failed to parse index statistics: {}", e),
+            source: format!("Failed to parse index statistics: {}", e).into(),
+            request_id,
+            status_code: None,
         })?;
 
         Ok(Some(stats))
@@ -605,6 +655,7 @@ mod tests {
     use crate::{
         index::{vector::IvfPqIndexBuilder, Index, IndexStatistics, IndexType},
         query::{ExecutableQuery, QueryBase},
+        remote::ARROW_FILE_CONTENT_TYPE,
         DistanceType, Error, Table,
     };
 
@@ -651,7 +702,7 @@ mod tests {
     async fn test_version() {
         let table = Table::new_with_handler("my_table", |request| {
             assert_eq!(request.method(), "POST");
-            assert_eq!(request.url().path(), "/table/my_table/describe/");
+            assert_eq!(request.url().path(), "/v1/table/my_table/describe/");
 
             http::Response::builder()
                 .status(200)
@@ -667,7 +718,7 @@ mod tests {
     async fn test_schema() {
         let table = Table::new_with_handler("my_table", |request| {
             assert_eq!(request.method(), "POST");
-            assert_eq!(request.url().path(), "/table/my_table/describe/");
+            assert_eq!(request.url().path(), "/v1/table/my_table/describe/");
 
             http::Response::builder()
                 .status(200)
@@ -696,7 +747,7 @@ mod tests {
     async fn test_count_rows() {
         let table = Table::new_with_handler("my_table", |request| {
             assert_eq!(request.method(), "POST");
-            assert_eq!(request.url().path(), "/table/my_table/count_rows/");
+            assert_eq!(request.url().path(), "/v1/table/my_table/count_rows/");
             assert_eq!(
                 request.headers().get("Content-Type").unwrap(),
                 JSON_CONTENT_TYPE
@@ -711,14 +762,14 @@ mod tests {
 
         let table = Table::new_with_handler("my_table", |request| {
             assert_eq!(request.method(), "POST");
-            assert_eq!(request.url().path(), "/table/my_table/count_rows/");
+            assert_eq!(request.url().path(), "/v1/table/my_table/count_rows/");
             assert_eq!(
                 request.headers().get("Content-Type").unwrap(),
                 JSON_CONTENT_TYPE
             );
             assert_eq!(
                 request.body().unwrap().as_bytes().unwrap(),
-                br#"{"filter":"a > 10"}"#
+                br#"{"predicate":"a > 10"}"#
             );
 
             http::Response::builder().status(200).body("42").unwrap()
@@ -753,6 +804,17 @@ mod tests {
         body
     }
 
+    fn write_ipc_file(data: &RecordBatch) -> Vec<u8> {
+        let mut body = Vec::new();
+        {
+            let mut writer = arrow_ipc::writer::FileWriter::try_new(&mut body, &data.schema())
+                .expect("Failed to create writer");
+            writer.write(data).expect("Failed to write data");
+            writer.finish().expect("Failed to finish");
+        }
+        body
+    }
+
     #[tokio::test]
     async fn test_add_append() {
         let data = RecordBatch::try_new(
@@ -764,7 +826,7 @@ mod tests {
         let (sender, receiver) = std::sync::mpsc::channel();
         let table = Table::new_with_handler("my_table", move |mut request| {
             assert_eq!(request.method(), "POST");
-            assert_eq!(request.url().path(), "/table/my_table/insert/");
+            assert_eq!(request.url().path(), "/v1/table/my_table/insert/");
             // If mode is specified, it should be "append". Append is default
             // so it's not required.
             assert!(request
@@ -808,7 +870,7 @@ mod tests {
         let (sender, receiver) = std::sync::mpsc::channel();
         let table = Table::new_with_handler("my_table", move |mut request| {
             assert_eq!(request.method(), "POST");
-            assert_eq!(request.url().path(), "/table/my_table/insert/");
+            assert_eq!(request.url().path(), "/v1/table/my_table/insert/");
             assert_eq!(
                 request
                     .url()
@@ -849,7 +911,7 @@ mod tests {
     async fn test_update() {
         let table = Table::new_with_handler("my_table", |request| {
             assert_eq!(request.method(), "POST");
-            assert_eq!(request.url().path(), "/table/my_table/update/");
+            assert_eq!(request.url().path(), "/v1/table/my_table/update/");
             assert_eq!(
                 request.headers().get("Content-Type").unwrap(),
                 JSON_CONTENT_TYPE
@@ -861,21 +923,27 @@ mod tests {
                 let updates = value.get("updates").unwrap().as_array().unwrap();
                 assert!(updates.len() == 2);
 
-                let col_name = updates[0].as_str().unwrap();
-                let expression = updates[1].as_str().unwrap();
+                let col_name = updates[0][0].as_str().unwrap();
+                let expression = updates[0][1].as_str().unwrap();
                 assert_eq!(col_name, "a");
                 assert_eq!(expression, "a + 1");
+
+                let col_name = updates[1][0].as_str().unwrap();
+                let expression = updates[1][1].as_str().unwrap();
+                assert_eq!(col_name, "b");
+                assert_eq!(expression, "b - 1");
 
                 let only_if = value.get("only_if").unwrap().as_str().unwrap();
                 assert_eq!(only_if, "b > 10");
             }
 
-            http::Response::builder().status(200).body("1").unwrap()
+            http::Response::builder().status(200).body("{}").unwrap()
         });
 
         table
             .update()
             .column("a", "a + 1")
+            .column("b", "b - 1")
             .only_if("b > 10")
             .execute()
             .await
@@ -897,7 +965,7 @@ mod tests {
         // Default parameters
         let table = Table::new_with_handler("my_table", |request| {
             assert_eq!(request.method(), "POST");
-            assert_eq!(request.url().path(), "/table/my_table/merge_insert/");
+            assert_eq!(request.url().path(), "/v1/table/my_table/merge_insert/");
 
             let params = request.url().query_pairs().collect::<HashMap<_, _>>();
             assert_eq!(params["on"], "some_col");
@@ -920,7 +988,7 @@ mod tests {
         let (sender, receiver) = std::sync::mpsc::channel();
         let table = Table::new_with_handler("my_table", move |mut request| {
             assert_eq!(request.method(), "POST");
-            assert_eq!(request.url().path(), "/table/my_table/merge_insert/");
+            assert_eq!(request.url().path(), "/v1/table/my_table/merge_insert/");
             assert_eq!(
                 request.headers().get("Content-Type").unwrap(),
                 ARROW_STREAM_CONTENT_TYPE
@@ -960,7 +1028,7 @@ mod tests {
     async fn test_delete() {
         let table = Table::new_with_handler("my_table", |request| {
             assert_eq!(request.method(), "POST");
-            assert_eq!(request.url().path(), "/table/my_table/delete/");
+            assert_eq!(request.url().path(), "/v1/table/my_table/delete/");
             assert_eq!(
                 request.headers().get("Content-Type").unwrap(),
                 JSON_CONTENT_TYPE
@@ -988,7 +1056,7 @@ mod tests {
 
         let table = Table::new_with_handler("my_table", move |request| {
             assert_eq!(request.method(), "POST");
-            assert_eq!(request.url().path(), "/table/my_table/query/");
+            assert_eq!(request.url().path(), "/v1/table/my_table/query/");
             assert_eq!(
                 request.headers().get("Content-Type").unwrap(),
                 JSON_CONTENT_TYPE
@@ -1006,10 +1074,10 @@ mod tests {
             expected_body["vector"] = vec![0.1f32, 0.2, 0.3].into();
             assert_eq!(body, expected_body);
 
-            let response_body = write_ipc_stream(&expected_data_ref);
+            let response_body = write_ipc_file(&expected_data_ref);
             http::Response::builder()
                 .status(200)
-                .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE)
+                .header(CONTENT_TYPE, ARROW_FILE_CONTENT_TYPE)
                 .body(response_body)
                 .unwrap()
         });
@@ -1029,7 +1097,7 @@ mod tests {
     async fn test_query_vector_all_params() {
         let table = Table::new_with_handler("my_table", |request| {
             assert_eq!(request.method(), "POST");
-            assert_eq!(request.url().path(), "/table/my_table/query/");
+            assert_eq!(request.url().path(), "/v1/table/my_table/query/");
             assert_eq!(
                 request.headers().get("Content-Type").unwrap(),
                 JSON_CONTENT_TYPE
@@ -1056,10 +1124,10 @@ mod tests {
                 vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
             )
             .unwrap();
-            let response_body = write_ipc_stream(&data);
+            let response_body = write_ipc_file(&data);
             http::Response::builder()
                 .status(200)
-                .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE)
+                .header(CONTENT_TYPE, ARROW_FILE_CONTENT_TYPE)
                 .body(response_body)
                 .unwrap()
         });
@@ -1085,7 +1153,7 @@ mod tests {
     async fn test_query_fts() {
         let table = Table::new_with_handler("my_table", |request| {
             assert_eq!(request.method(), "POST");
-            assert_eq!(request.url().path(), "/table/my_table/query/");
+            assert_eq!(request.url().path(), "/v1/table/my_table/query/");
             assert_eq!(
                 request.headers().get("Content-Type").unwrap(),
                 JSON_CONTENT_TYPE
@@ -1107,10 +1175,10 @@ mod tests {
                 vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
             )
             .unwrap();
-            let response_body = write_ipc_stream(&data);
+            let response_body = write_ipc_file(&data);
             http::Response::builder()
                 .status(200)
-                .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE)
+                .header(CONTENT_TYPE, ARROW_FILE_CONTENT_TYPE)
                 .body(response_body)
                 .unwrap()
         });
@@ -1151,7 +1219,7 @@ mod tests {
         for (index_type, distance_type, index) in cases {
             let table = Table::new_with_handler("my_table", move |request| {
                 assert_eq!(request.method(), "POST");
-                assert_eq!(request.url().path(), "/table/my_table/create_index/");
+                assert_eq!(request.url().path(), "/v1/table/my_table/create_index/");
                 assert_eq!(
                     request.headers().get("Content-Type").unwrap(),
                     JSON_CONTENT_TYPE
@@ -1163,7 +1231,7 @@ mod tests {
                     "index_type": index_type,
                 });
                 if let Some(distance_type) = distance_type {
-                    expected_body["distance_type"] = distance_type.into();
+                    expected_body["metric_type"] = distance_type.to_lowercase().into();
                 }
                 assert_eq!(body, expected_body);
 
@@ -1175,12 +1243,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_list_indices() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "POST");
+
+            let response_body = match request.url().path() {
+                "/v1/table/my_table/index/list/" => {
+                    serde_json::json!({
+                        "indexes": [
+                            {
+                                "index_name": "vector_idx",
+                                "index_uuid": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+                                "columns": ["vector"],
+                                "index_status": "done",
+                            },
+                            {
+                                "index_name": "my_idx",
+                                "index_uuid": "34255f64-5717-4562-b3fc-2c963f66afa6",
+                                "columns": ["my_column"],
+                                "index_status": "done",
+                            },
+                        ]
+                    })
+                }
+                "/v1/table/my_table/index/vector_idx/stats/" => {
+                    serde_json::json!({
+                        "num_indexed_rows": 100000,
+                        "num_unindexed_rows": 0,
+                        "index_type": "IVF_PQ",
+                        "distance_type": "l2"
+                    })
+                }
+                "/v1/table/my_table/index/my_idx/stats/" => {
+                    serde_json::json!({
+                        "num_indexed_rows": 100000,
+                        "num_unindexed_rows": 0,
+                        "index_type": "LABEL_LIST"
+                    })
+                }
+                path => panic!("Unexpected path: {}", path),
+            };
+            http::Response::builder()
+                .status(200)
+                .body(serde_json::to_string(&response_body).unwrap())
+                .unwrap()
+        });
+
+        let indices = table.list_indices().await.unwrap();
+        let expected = vec![
+            IndexConfig {
+                name: "vector_idx".into(),
+                index_type: IndexType::IvfPq,
+                columns: vec!["vector".into()],
+            },
+            IndexConfig {
+                name: "my_idx".into(),
+                index_type: IndexType::LabelList,
+                columns: vec!["my_column".into()],
+            },
+        ];
+        assert_eq!(indices, expected);
+    }
+
+    #[tokio::test]
     async fn test_index_stats() {
         let table = Table::new_with_handler("my_table", |request| {
             assert_eq!(request.method(), "POST");
             assert_eq!(
                 request.url().path(),
-                "/table/my_table/index/my_index/stats/"
+                "/v1/table/my_table/index/my_index/stats/"
             );
 
             let response_body = serde_json::json!({
@@ -1210,7 +1341,7 @@ mod tests {
             assert_eq!(request.method(), "POST");
             assert_eq!(
                 request.url().path(),
-                "/table/my_table/index/my_index/stats/"
+                "/v1/table/my_table/index/my_index/stats/"
             );
 
             http::Response::builder().status(404).body("").unwrap()

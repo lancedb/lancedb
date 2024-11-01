@@ -247,9 +247,9 @@ export class RemoteQuery<T = number[]> extends Query<T> {
       const newObject: Record<string, unknown> = {}
       Object.keys(entry).forEach((key: string) => {
         if (entry[key] instanceof Vector) {
-          newObject[key] = (entry[key] as Vector).toArray()
+          newObject[key] = (entry[key] as any).toArray()
         } else {
-          newObject[key] = entry[key]
+          newObject[key] = entry[key] as any
         }
       })
       return newObject as unknown as T
@@ -517,9 +517,9 @@ export class RemoteTable<T = number[]> implements Table<T> {
     }))
   }
 
-  async indexStats (indexUuid: string): Promise<IndexStats> {
+  async indexStats (indexName: string): Promise<IndexStats> {
     const results = await this._client.post(
-      `/v1/table/${encodeURIComponent(this._name)}/index/${indexUuid}/stats/`
+      `/v1/table/${encodeURIComponent(this._name)}/index/${indexName}/stats/`
     )
     const body = await results.body()
     return {
