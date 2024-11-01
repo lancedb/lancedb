@@ -49,7 +49,7 @@ async def test_create_scalar_index(some_table: AsyncTable):
     # Can recreate if replace=True
     await some_table.create_index("id", replace=True)
     indices = await some_table.list_indices()
-    assert str(indices) == '[Index(BTree, columns=["id"])]'
+    assert str(indices) == '[Index(BTree, columns=["id"], name="id_idx")]'
     assert len(indices) == 1
     assert indices[0].index_type == "BTree"
     assert indices[0].columns == ["id"]
@@ -64,7 +64,7 @@ async def test_create_scalar_index(some_table: AsyncTable):
 async def test_create_bitmap_index(some_table: AsyncTable):
     await some_table.create_index("id", config=Bitmap())
     indices = await some_table.list_indices()
-    assert str(indices) == '[Index(Bitmap, columns=["id"])]'
+    assert str(indices) == '[Index(Bitmap, columns=["id"], name="id_idx")]'
     indices = await some_table.list_indices()
     assert len(indices) == 1
     index_name = indices[0].name
@@ -80,7 +80,7 @@ async def test_create_bitmap_index(some_table: AsyncTable):
 async def test_create_label_list_index(some_table: AsyncTable):
     await some_table.create_index("tags", config=LabelList())
     indices = await some_table.list_indices()
-    assert str(indices) == '[Index(LabelList, columns=["tags"])]'
+    assert str(indices) == '[Index(LabelList, columns=["tags"], name="tags_idx")]'
 
 
 @pytest.mark.asyncio

@@ -237,7 +237,7 @@ pub struct IndexConfig {
 impl IndexConfig {
     pub fn __repr__(&self) -> String {
         format!(
-            "Index({:?}, columns={:?}, name=\"{}\")",
+            "Index({}, columns={:?}, name=\"{}\")",
             self.index_type, self.columns, self.name
         )
     }
