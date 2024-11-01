@@ -167,6 +167,10 @@ impl<S: HttpSend> RemoteTable<S> {
             body["fast_search"] = serde_json::Value::Bool(true);
         }
 
+        if params.with_row_id {
+            body["with_row_id"] = serde_json::Value::Bool(true);
+        }
+
         if let Some(full_text_search) = &params.full_text_search {
             if full_text_search.wand_factor.is_some() {
                 return Err(Error::NotSupported {
@@ -1173,6 +1177,7 @@ mod tests {
                 },
                 "k": 10,
                 "vector": [],
+                "with_row_id": true,
             });
             assert_eq!(body, expected_body);
 
@@ -1195,6 +1200,7 @@ mod tests {
                 FullTextSearchQuery::new("hello world".into())
                     .columns(Some(vec!["a".into(), "b".into()])),
             )
+            .with_row_id()
             .limit(10)
             .execute()
             .await
