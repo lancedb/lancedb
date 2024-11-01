@@ -1,0 +1,110 @@
+[tool.bumpversion]
+current_version = "0.12.0"
+parse = """(?x)
+    (?P<major>0|[1-9]\\d*)\\.
+    (?P<minor>0|[1-9]\\d*)\\.
+    (?P<patch>0|[1-9]\\d*)
+    (?:-(?P<pre_l>[a-zA-Z-]+)\\.(?P<pre_n>0|[1-9]\\d*))?
+"""
+serialize = [
+    "{major}.{minor}.{patch}-{pre_l}.{pre_n}",
+    "{major}.{minor}.{patch}",
+]
+search = "{current_version}"
+replace = "{new_version}"
+regex = false
+ignore_missing_version = false
+ignore_missing_files = false
+tag = true
+sign_tags = false
+tag_name = "v{new_version}"
+tag_message = "Bump version: {current_version} → {new_version}"
+allow_dirty = true
+commit = true
+message = "Bump version: {current_version} → {new_version}"
+commit_args = ""
+
+# Java maven files
+pre_commit_hooks = [
+  """
+    NEW_VERSION="${BVHOOK_NEW_MAJOR}.${BVHOOK_NEW_MINOR}.${BVHOOK_NEW_PATCH}"
+    if [ ! -z "$BVHOOK_NEW_PRE_L" ] && [ ! -z "$BVHOOK_NEW_PRE_N" ]; then
+        NEW_VERSION="${NEW_VERSION}-${BVHOOK_NEW_PRE_L}.${BVHOOK_NEW_PRE_N}"
+    fi
+    echo "Constructed new version: $NEW_VERSION"
+    cd java && mvn versions:set -DnewVersion=$NEW_VERSION && mvn versions:commit
+
+    # Check for any modified but unstaged pom.xml files
+    MODIFIED_POMS=$(git ls-files -m | grep pom.xml)
+    if [ ! -z "$MODIFIED_POMS" ]; then
+        echo "The following pom.xml files were modified but not staged. Adding them now:"
+        echo "$MODIFIED_POMS" | while read -r file; do
+            git add "$file"
+            echo "Added: $file"
+        done
+    fi
+    """,
+]
+
+[tool.bumpversion.parts.pre_l]
+optional_value = "final"
+values = ["beta", "final"]
+
+[[tool.bumpversion.files]]
+filename = "node/package.json"
+replace = "\"version\": \"{new_version}\","
+search = "\"version\": \"{current_version}\","
+
+[[tool.bumpversion.files]]
+filename = "nodejs/package.json"
+replace = "\"version\": \"{new_version}\","
+search = "\"version\": \"{current_version}\","
+
+# nodejs binary packages
+[[tool.bumpversion.files]]
+glob = "nodejs/npm/*/package.json"
+replace = "\"version\": \"{new_version}\","
+search = "\"version\": \"{current_version}\","
+
+# vectodb node binary packages
+[[tool.bumpversion.files]]
+glob = "node/package.json"
+replace = "\"@lancedb/vectordb-darwin-arm64\": \"{new_version}\""
+search = "\"@lancedb/vectordb-darwin-arm64\": \"{current_version}\""
+
+[[tool.bumpversion.files]]
+glob = "node/package.json"
+replace = "\"@lancedb/vectordb-darwin-x64\": \"{new_version}\""
+search = "\"@lancedb/vectordb-darwin-x64\": \"{current_version}\""
+
+[[tool.bumpversion.files]]
+glob = "node/package.json"
+replace = "\"@lancedb/vectordb-linux-arm64-gnu\": \"{new_version}\""
+search = "\"@lancedb/vectordb-linux-arm64-gnu\": \"{current_version}\""
+
+[[tool.bumpversion.files]]
+glob = "node/package.json"
+replace = "\"@lancedb/vectordb-linux-x64-gnu\": \"{new_version}\""
+search = "\"@lancedb/vectordb-linux-x64-gnu\": \"{current_version}\""
+
+[[tool.bumpversion.files]]
+glob = "node/package.json"
+replace = "\"@lancedb/vectordb-win32-x64-msvc\": \"{new_version}\""
+search = "\"@lancedb/vectordb-win32-x64-msvc\": \"{current_version}\""
+
+# Cargo files
+# ------------
+[[tool.bumpversion.files]]
+filename = "rust/ffi/node/Cargo.toml"
+replace = "\nversion = \"{new_version}\""
+search = "\nversion = \"{current_version}\""
+
+[[tool.bumpversion.files]]
+filename = "rust/lancedb/Cargo.toml"
+replace = "\nversion = \"{new_version}\""
+search = "\nversion = \"{current_version}\""
+
+[[tool.bumpversion.files]]
+filename = "nodejs/Cargo.toml"
+replace = "\nversion = \"{new_version}\""
+search = "\nversion = \"{current_version}\""
