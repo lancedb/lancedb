@@ -481,7 +481,7 @@ class LanceQueryBuilder(ABC):
         >>> plan = table.search(query).explain_plan(True)
         >>> print(plan) # doctest: +ELLIPSIS, +NORMALIZE_WHITESPACE
         ProjectionExec: expr=[vector@0 as vector, _distance@2 as _distance]
-        GlobalLimitExec: skip=0, fetch=10 
+        GlobalLimitExec: skip=0, fetch=10
           FilterExec: _distance@2 IS NOT NULL
             SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST], preserve_partitioning=[false]
               KNNVectorDistance: metric=l2
