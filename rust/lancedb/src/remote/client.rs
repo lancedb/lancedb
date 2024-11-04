@@ -266,6 +266,7 @@ impl RestfulLanceDbClient<Sender> {
             Some(host_override) => host_override,
             None => format!("https://{}.{}.api.lancedb.com", db_name, region),
         };
+        debug!("Created client for host: {}", host);
         let retry_config = client_config.retry_config.try_into()?;
         Ok(Self {
             client,
@@ -340,6 +341,23 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
             request_id
         };
 
+        if log::log_enabled!(log::Level::Debug) {
+            let content_type = request
+                .headers()
+                .get("content-type")
+                .map(|v| v.to_str().unwrap());
+            if content_type == Some("application/json") {
+                let body = request.body().as_ref().unwrap().as_bytes().unwrap();
+                let body = String::from_utf8_lossy(body);
+                debug!(
+                    "Sending request_id={}: {:?} with body {}",
+                    request_id, request, body
+                );
+            } else {
+                debug!("Sending request_id={}: {:?}", request_id, request);
+            }
+        }
+
         if with_retry {
             self.send_with_retry_impl(client, request, request_id).await
         } else {
@@ -348,6 +366,10 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
                 .send(&client, request)
                 .await
                 .err_to_http(request_id.clone())?;
+            debug!(
+                "Received response for request_id={}: {:?}",
+                request_id, &response
+            );
             Ok((request_id, response))
         }
     }
@@ -374,7 +396,11 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
                 .map(|r| (r.status(), r));
             match response {
                 Ok((status, response)) if status.is_success() => {
-                    return Ok((retry_counter.request_id, response))
+                    debug!(
+                        "Received response for request_id={}: {:?}",
+                        retry_counter.request_id, &response
+                    );
+                    return Ok((retry_counter.request_id, response));
                 }
                 Ok((status, response)) if self.retry_config.statuses.contains(&status) => {
                     let source = self

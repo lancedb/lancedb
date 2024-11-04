@@ -481,6 +481,7 @@ class LanceQueryBuilder(ABC):
         >>> plan = table.search(query).explain_plan(True)
         >>> print(plan) # doctest: +ELLIPSIS, +NORMALIZE_WHITESPACE
         ProjectionExec: expr=[vector@0 as vector, _distance@2 as _distance]
+        GlobalLimitExec: skip=0, fetch=10
           FilterExec: _distance@2 IS NOT NULL
             SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST], preserve_partitioning=[false]
               KNNVectorDistance: metric=l2
@@ -500,7 +501,16 @@ class LanceQueryBuilder(ABC):
             nearest={
                 "column": self._vector_column,
                 "q": self._query,
+                "k": self._limit,
+                "metric": self._metric,
+                "nprobes": self._nprobes,
+                "refine_factor": self._refine_factor,
             },
+            prefilter=self._prefilter,
+            filter=self._str_query,
+            limit=self._limit,
+            with_row_id=self._with_row_id,
+            offset=self._offset,
         ).explain_plan(verbose)
 
     def vector(self, vector: Union[np.ndarray, list]) -> LanceQueryBuilder:
@@ -983,6 +993,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         self._reranker = RRFReranker()
         self._nprobes = None
         self._refine_factor = None
+        self._metric = None
         self._phrase_query = False
 
     def _validate_query(self, query, vector=None, text=None):
@@ -1050,6 +1061,8 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             self._fts_query.with_row_id(True)
         if self._phrase_query:
             self._fts_query.phrase_query(True)
+        if self._metric:
+            self._vector_query.metric(self._metric)
         if self._nprobes:
             self._vector_query.nprobes(self._nprobes)
         if self._refine_factor:
@@ -1067,6 +1080,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         if self._norm == "rank":
             vector_results = self._rank(vector_results, "_distance")
             fts_results = self._rank(fts_results, "_score")
+
         # normalize the scores to be between 0 and 1, 0 being most relevant
         vector_results = self._normalize_scores(vector_results, "_distance")
 
@@ -1115,7 +1129,9 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             rng = max
         else:
             rng = max - min
-        scores = (scores - min) / rng
+        # If rng is 0 then min and max are both 0 and so we can leave the scores as is
+        if rng != 0:
+            scores = (scores - min) / rng
         if invert:
             scores = 1 - scores
         # replace the _score column with the ranks
@@ -1175,6 +1191,22 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             The LanceHybridQueryBuilder object.
         """
         self._nprobes = nprobes
+        return self
+
+    def metric(self, metric: Literal["L2", "cosine", "dot"]) -> LanceHybridQueryBuilder:
+        """Set the distance metric to use.
+
+        Parameters
+        ----------
+        metric: "L2" or "cosine" or "dot"
+            The distance metric to use. By default "L2" is used.
+
+        Returns
+        -------
+        LanceVectorQueryBuilder
+            The LanceQueryBuilder object.
+        """
+        self._metric = metric.lower()
         return self
 
     def refine_factor(self, refine_factor: int) -> LanceHybridQueryBuilder:
@@ -1291,6 +1323,48 @@ class AsyncQueryBase(object):
             The offset to start fetching results from.
         """
         self._inner.offset(offset)
+        return self
+
+    def fast_search(self) -> AsyncQuery:
+        """
+        Skip searching un-indexed data.
+
+        This can make queries faster, but will miss any data that has not been
+        indexed.
+
+        !!! tip
+            You can add new data into an existing index by calling
+            [AsyncTable.optimize][lancedb.table.AsyncTable.optimize].
+        """
+        self._inner.fast_search()
+        return self
+
+    def with_row_id(self) -> AsyncQuery:
+        """
+        Include the _rowid column in the results.
+        """
+        self._inner.with_row_id()
+        return self
+
+    def postfilter(self) -> AsyncQuery:
+        """
+        If this is called then filtering will happen after the search instead of
+        before.
+        By default filtering will be performed before the search.  This is how
+        filtering is typically understood to work.  This prefilter step does add some
+        additional latency.  Creating a scalar index on the filter column(s) can
+        often improve this latency.  However, sometimes a filter is too complex or
+        scalar indices cannot be applied to the column.  In these cases postfiltering
+        can be used instead of prefiltering to improve latency.
+        Post filtering applies the filter to the results of the search.  This
+        means we only run the filter on a much smaller set of data.  However, it can
+        cause the query to return fewer than `limit` results (or even no results) if
+        none of the nearest results match the filter.
+        Post filtering happens during the "refine stage" (described in more detail in
+        @see {@link VectorQuery#refineFactor}).  This means that setting a higher refine
+        factor can often help restore some of the results lost by post filtering.
+        """
+        self._inner.postfilter()
         return self
 
     async def to_batches(
@@ -1594,30 +1668,6 @@ class AsyncVectorQuery(AsyncQueryBase):
         By default "l2" is used.
         """
         self._inner.distance_type(distance_type)
-        return self
-
-    def postfilter(self) -> AsyncVectorQuery:
-        """
-        If this is called then filtering will happen after the vector search instead of
-        before.
-
-        By default filtering will be performed before the vector search.  This is how
-        filtering is typically understood to work.  This prefilter step does add some
-        additional latency.  Creating a scalar index on the filter column(s) can
-        often improve this latency.  However, sometimes a filter is too complex or
-        scalar indices cannot be applied to the column.  In these cases postfiltering
-        can be used instead of prefiltering to improve latency.
-
-        Post filtering applies the filter to the results of the vector search.  This
-        means we only run the filter on a much smaller set of data.  However, it can
-        cause the query to return fewer than `limit` results (or even no results) if
-        none of the nearest results match the filter.
-
-        Post filtering happens during the "refine stage" (described in more detail in
-        @see {@link VectorQuery#refineFactor}).  This means that setting a higher refine
-        factor can often help restore some of the results lost by post filtering.
-        """
-        self._inner.postfilter()
         return self
 
     def bypass_vector_index(self) -> AsyncVectorQuery:

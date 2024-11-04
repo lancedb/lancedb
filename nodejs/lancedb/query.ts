@@ -239,6 +239,29 @@ export class QueryBase<NativeQueryType extends NativeQuery | NativeVectorQuery>
     return this;
   }
 
+  /**
+   * Skip searching un-indexed data. This can make search faster, but will miss
+   * any data that is not yet indexed.
+   *
+   * Use {@link lancedb.Table#optimize} to index all un-indexed data.
+   */
+  fastSearch(): this {
+    this.doCall((inner: NativeQueryType) => inner.fastSearch());
+    return this;
+  }
+
+  /**
+   * Whether to return the row id in the results.
+   *
+   * This column can be used to match results between different queries. For
+   * example, to match results from a full text search and a vector search in
+   * order to perform hybrid search.
+   */
+  withRowId(): this {
+    this.doCall((inner: NativeQueryType) => inner.withRowId());
+    return this;
+  }
+
   protected nativeExecute(
     options?: Partial<QueryExecutionOptions>,
   ): Promise<NativeBatchIterator> {

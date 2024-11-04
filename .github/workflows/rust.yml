@@ -140,7 +140,7 @@ jobs:
           cargo build
           cargo test
   windows-arm64:
-    runs-on: windows-latest
+    runs-on: windows-4x-arm
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2

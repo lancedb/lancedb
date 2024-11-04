@@ -45,7 +45,7 @@ Let's see how using LanceDB inside phidata helps in making LLM more useful:
 
 **Install the following packages in the virtual environment**
 ```python
-pip install lancedb phidata youtube_transcript_api openai ollama pandas numpy
+pip install lancedb phidata youtube_transcript_api openai ollama numpy pandas
 ```
 
 **Create python files and import necessary libraries**

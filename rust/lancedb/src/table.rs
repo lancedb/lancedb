@@ -1568,6 +1568,7 @@ impl NativeTable {
         let mut dataset = self.dataset.get_mut().await?;
         let fts_params = lance_index::scalar::InvertedIndexParams {
             with_position: fts_opts.with_position,
+            tokenizer_config: fts_opts.tokenizer_configs,
         };
         dataset
             .create_index(
@@ -1841,7 +1842,7 @@ impl TableInternal for NativeTable {
 
         scanner.nprobs(query.nprobes);
         scanner.use_index(query.use_index);
-        scanner.prefilter(query.prefilter);
+        scanner.prefilter(query.base.prefilter);
         match query.base.select {
             Select::Columns(ref columns) => {
                 scanner.project(columns.as_slice())?;
@@ -2002,7 +2003,7 @@ impl TableInternal for NativeTable {
         self.dataset
             .get_mut()
             .await?
-            .add_columns(transforms, read_columns)
+            .add_columns(transforms, read_columns, None)
             .await?;
         Ok(())
     }
@@ -3122,6 +3123,12 @@ mod tests {
         assert_eq!(index.index_type, crate::index::IndexType::FTS);
         assert_eq!(index.columns, vec!["text".to_string()]);
         assert_eq!(index.name, "text_idx");
+
+        let stats = table.index_stats("text_idx").await.unwrap().unwrap();
+        assert_eq!(stats.num_indexed_rows, num_rows);
+        assert_eq!(stats.num_unindexed_rows, 0);
+        assert_eq!(stats.index_type, crate::index::IndexType::FTS);
+        assert_eq!(stats.distance_type, None);
     }
 
     #[tokio::test]

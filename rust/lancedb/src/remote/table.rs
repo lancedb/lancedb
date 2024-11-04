@@ -1,3 +1,4 @@
+use std::io::Cursor;
 use std::sync::{Arc, Mutex};
 
 use crate::index::Index;
@@ -7,10 +8,9 @@ use crate::table::AddDataMode;
 use crate::utils::{supported_btree_data_type, supported_vector_data_type};
 use crate::Error;
 use arrow_array::RecordBatchReader;
-use arrow_ipc::reader::StreamReader;
+use arrow_ipc::reader::FileReader;
 use arrow_schema::{DataType, SchemaRef};
 use async_trait::async_trait;
-use bytes::Buf;
 use datafusion_common::DataFusionError;
 use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion_physical_plan::{ExecutionPlan, SendableRecordBatchStream};
@@ -115,39 +115,14 @@ impl<S: HttpSend> RemoteTable<S> {
     async fn read_arrow_stream(
         &self,
         request_id: &str,
-        body: reqwest::Response,
+        response: reqwest::Response,
     ) -> Result<SendableRecordBatchStream> {
-        // Assert that the content type is correct
-        let content_type = body
-            .headers()
-            .get(CONTENT_TYPE)
-            .ok_or_else(|| Error::Http {
-                source: "Missing content type".into(),
-                request_id: request_id.to_string(),
-                status_code: None,
-            })?
-            .to_str()
-            .map_err(|e| Error::Http {
-                source: format!("Failed to parse content type: {}", e).into(),
-                request_id: request_id.to_string(),
-                status_code: None,
-            })?;
-        if content_type != ARROW_STREAM_CONTENT_TYPE {
-            return Err(Error::Http {
-                source: format!(
-                    "Expected content type {}, got {}",
-                    ARROW_STREAM_CONTENT_TYPE, content_type
-                )
-                .into(),
-                request_id: request_id.to_string(),
-                status_code: None,
-            });
-        }
+        let response = self.check_table_response(request_id, response).await?;
 
         // There isn't a way to actually stream this data yet. I have an upstream issue:
         // https://github.com/apache/arrow-rs/issues/6420
-        let body = body.bytes().await.err_to_http(request_id.into())?;
-        let reader = StreamReader::try_new(body.reader(), None)?;
+        let body = response.bytes().await.err_to_http(request_id.into())?;
+        let reader = FileReader::try_new(Cursor::new(body), None)?;
         let schema = reader.schema();
         let stream = futures::stream::iter(reader).map_err(DataFusionError::from);
         Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
@@ -190,6 +165,10 @@ impl<S: HttpSend> RemoteTable<S> {
 
         if params.fast_search {
             body["fast_search"] = serde_json::Value::Bool(true);
+        }
+
+        if params.with_row_id {
+            body["with_row_id"] = serde_json::Value::Bool(true);
         }
 
         if let Some(full_text_search) = &params.full_text_search {
@@ -277,7 +256,7 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
             .post(&format!("/v1/table/{}/count_rows/", self.name));
 
         if let Some(filter) = filter {
-            request = request.json(&serde_json::json!({ "filter": filter }));
+            request = request.json(&serde_json::json!({ "predicate": filter }));
         } else {
             request = request.json(&serde_json::json!({}));
         }
@@ -330,13 +309,13 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
         let mut body = serde_json::Value::Object(Default::default());
         Self::apply_query_params(&mut body, &query.base)?;
 
-        body["prefilter"] = query.prefilter.into();
+        body["prefilter"] = query.base.prefilter.into();
         body["distance_type"] = serde_json::json!(query.distance_type.unwrap_or_default());
         body["nprobes"] = query.nprobes.into();
         body["refine_factor"] = query.refine_factor.into();
 
-        if let Some(vector) = query.query_vector.as_ref() {
-            let vector: Vec<f32> = match vector.data_type() {
+        let vector: Vec<f32> = if let Some(vector) = query.query_vector.as_ref() {
+            match vector.data_type() {
                 DataType::Float32 => vector
                     .as_any()
                     .downcast_ref::<arrow_array::Float32Array>()
@@ -350,9 +329,12 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
                         message: "VectorQuery vector must be of type Float32".into(),
                     })
                 }
-            };
-            body["vector"] = serde_json::json!(vector);
-        }
+            }
+        } else {
+            // Server takes empty vector, not null or undefined.
+            Vec::new()
+        };
+        body["vector"] = serde_json::json!(vector);
 
         if let Some(vector_column) = query.column.as_ref() {
             body["vector_column"] = serde_json::Value::String(vector_column.clone());
@@ -383,6 +365,8 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
 
         let mut body = serde_json::Value::Object(Default::default());
         Self::apply_query_params(&mut body, query)?;
+        // Empty vector can be passed if no vector search is performed.
+        body["vector"] = serde_json::Value::Array(Vec::new());
 
         let request = request.json(&body);
 
@@ -399,30 +383,19 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
 
         let mut updates = Vec::new();
         for (column, expression) in update.columns {
-            updates.push(column);
-            updates.push(expression);
+            updates.push(vec![column, expression]);
         }
 
         let request = request.json(&serde_json::json!({
             "updates": updates,
-            "only_if": update.filter,
+            "predicate": update.filter,
         }));
 
         let (request_id, response) = self.client.send(request, false).await?;
 
-        let response = self.check_table_response(&request_id, response).await?;
+        self.check_table_response(&request_id, response).await?;
 
-        let body = response.text().await.err_to_http(request_id.clone())?;
-
-        serde_json::from_str(&body).map_err(|e| Error::Http {
-            source: format!(
-                "Failed to parse updated rows result from response {}: {}",
-                body, e
-            )
-            .into(),
-            request_id,
-            status_code: None,
-        })
+        Ok(0) // TODO: support returning number of modified rows once supported in SaaS.
     }
     async fn delete(&self, predicate: &str) -> Result<()> {
         let body = serde_json::json!({ "predicate": predicate });
@@ -691,6 +664,7 @@ mod tests {
     use crate::{
         index::{vector::IvfPqIndexBuilder, Index, IndexStatistics, IndexType},
         query::{ExecutableQuery, QueryBase},
+        remote::ARROW_FILE_CONTENT_TYPE,
         DistanceType, Error, Table,
     };
 
@@ -804,7 +778,7 @@ mod tests {
             );
             assert_eq!(
                 request.body().unwrap().as_bytes().unwrap(),
-                br#"{"filter":"a > 10"}"#
+                br#"{"predicate":"a > 10"}"#
             );
 
             http::Response::builder().status(200).body("42").unwrap()
@@ -832,6 +806,17 @@ mod tests {
         let mut body = Vec::new();
         {
             let mut writer = arrow_ipc::writer::StreamWriter::try_new(&mut body, &data.schema())
+                .expect("Failed to create writer");
+            writer.write(data).expect("Failed to write data");
+            writer.finish().expect("Failed to finish");
+        }
+        body
+    }
+
+    fn write_ipc_file(data: &RecordBatch) -> Vec<u8> {
+        let mut body = Vec::new();
+        {
+            let mut writer = arrow_ipc::writer::FileWriter::try_new(&mut body, &data.schema())
                 .expect("Failed to create writer");
             writer.write(data).expect("Failed to write data");
             writer.finish().expect("Failed to finish");
@@ -947,21 +932,27 @@ mod tests {
                 let updates = value.get("updates").unwrap().as_array().unwrap();
                 assert!(updates.len() == 2);
 
-                let col_name = updates[0].as_str().unwrap();
-                let expression = updates[1].as_str().unwrap();
+                let col_name = updates[0][0].as_str().unwrap();
+                let expression = updates[0][1].as_str().unwrap();
                 assert_eq!(col_name, "a");
                 assert_eq!(expression, "a + 1");
 
-                let only_if = value.get("only_if").unwrap().as_str().unwrap();
+                let col_name = updates[1][0].as_str().unwrap();
+                let expression = updates[1][1].as_str().unwrap();
+                assert_eq!(col_name, "b");
+                assert_eq!(expression, "b - 1");
+
+                let only_if = value.get("predicate").unwrap().as_str().unwrap();
                 assert_eq!(only_if, "b > 10");
             }
 
-            http::Response::builder().status(200).body("1").unwrap()
+            http::Response::builder().status(200).body("{}").unwrap()
         });
 
         table
             .update()
             .column("a", "a + 1")
+            .column("b", "b - 1")
             .only_if("b > 10")
             .execute()
             .await
@@ -1092,10 +1083,10 @@ mod tests {
             expected_body["vector"] = vec![0.1f32, 0.2, 0.3].into();
             assert_eq!(body, expected_body);
 
-            let response_body = write_ipc_stream(&expected_data_ref);
+            let response_body = write_ipc_file(&expected_data_ref);
             http::Response::builder()
                 .status(200)
-                .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE)
+                .header(CONTENT_TYPE, ARROW_FILE_CONTENT_TYPE)
                 .body(response_body)
                 .unwrap()
         });
@@ -1142,10 +1133,10 @@ mod tests {
                 vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
             )
             .unwrap();
-            let response_body = write_ipc_stream(&data);
+            let response_body = write_ipc_file(&data);
             http::Response::builder()
                 .status(200)
-                .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE)
+                .header(CONTENT_TYPE, ARROW_FILE_CONTENT_TYPE)
                 .body(response_body)
                 .unwrap()
         });
@@ -1185,6 +1176,8 @@ mod tests {
                     "query": "hello world",
                 },
                 "k": 10,
+                "vector": [],
+                "with_row_id": true,
             });
             assert_eq!(body, expected_body);
 
@@ -1193,10 +1186,10 @@ mod tests {
                 vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
             )
             .unwrap();
-            let response_body = write_ipc_stream(&data);
+            let response_body = write_ipc_file(&data);
             http::Response::builder()
                 .status(200)
-                .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE)
+                .header(CONTENT_TYPE, ARROW_FILE_CONTENT_TYPE)
                 .body(response_body)
                 .unwrap()
         });
@@ -1207,6 +1200,7 @@ mod tests {
                 FullTextSearchQuery::new("hello world".into())
                     .columns(Some(vec!["a".into(), "b".into()])),
             )
+            .with_row_id()
             .limit(10)
             .execute()
             .await

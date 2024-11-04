@@ -22,6 +22,7 @@ use lancedb::query::VectorQuery as LanceDbVectorQuery;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
+use crate::error::convert_error;
 use crate::error::NapiErrorExt;
 use crate::iterator::RecordBatchIterator;
 use crate::util::parse_distance_type;
@@ -79,6 +80,16 @@ impl Query {
         Ok(VectorQuery { inner })
     }
 
+    #[napi]
+    pub fn fast_search(&mut self) {
+        self.inner = self.inner.clone().fast_search();
+    }
+
+    #[napi]
+    pub fn with_row_id(&mut self) {
+        self.inner = self.inner.clone().with_row_id();
+    }
+
     #[napi(catch_unwind)]
     pub async fn execute(
         &self,
@@ -93,7 +104,10 @@ impl Query {
             .execute_with_options(execution_opts)
             .await
             .map_err(|e| {
-                napi::Error::from_reason(format!("Failed to execute query stream: {}", e))
+                napi::Error::from_reason(format!(
+                    "Failed to execute query stream: {}",
+                    convert_error(&e)
+                ))
             })?;
         Ok(RecordBatchIterator::new(inner_stream))
     }
@@ -101,7 +115,10 @@ impl Query {
     #[napi]
     pub async fn explain_plan(&self, verbose: bool) -> napi::Result<String> {
         self.inner.explain_plan(verbose).await.map_err(|e| {
-            napi::Error::from_reason(format!("Failed to retrieve the query plan: {}", e))
+            napi::Error::from_reason(format!(
+                "Failed to retrieve the query plan: {}",
+                convert_error(&e)
+            ))
         })
     }
 }
@@ -176,6 +193,16 @@ impl VectorQuery {
         self.inner = self.inner.clone().offset(offset as usize);
     }
 
+    #[napi]
+    pub fn fast_search(&mut self) {
+        self.inner = self.inner.clone().fast_search();
+    }
+
+    #[napi]
+    pub fn with_row_id(&mut self) {
+        self.inner = self.inner.clone().with_row_id();
+    }
+
     #[napi(catch_unwind)]
     pub async fn execute(
         &self,
@@ -190,7 +217,10 @@ impl VectorQuery {
             .execute_with_options(execution_opts)
             .await
             .map_err(|e| {
-                napi::Error::from_reason(format!("Failed to execute query stream: {}", e))
+                napi::Error::from_reason(format!(
+                    "Failed to execute query stream: {}",
+                    convert_error(&e)
+                ))
             })?;
         Ok(RecordBatchIterator::new(inner_stream))
     }
@@ -198,7 +228,10 @@ impl VectorQuery {
     #[napi]
     pub async fn explain_plan(&self, verbose: bool) -> napi::Result<String> {
         self.inner.explain_plan(verbose).await.map_err(|e| {
-            napi::Error::from_reason(format!("Failed to retrieve the query plan: {}", e))
+            napi::Error::from_reason(format!(
+                "Failed to retrieve the query plan: {}",
+                convert_error(&e)
+            ))
         })
     }
 }

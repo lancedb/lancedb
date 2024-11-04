@@ -403,6 +403,26 @@ pub trait QueryBase {
     /// By default, it is false.
     fn fast_search(self) -> Self;
 
+    /// If this is called then filtering will happen after the vector search instead of
+    /// before.
+    ///
+    /// By default filtering will be performed before the vector search.  This is how
+    /// filtering is typically understood to work.  This prefilter step does add some
+    /// additional latency.  Creating a scalar index on the filter column(s) can
+    /// often improve this latency.  However, sometimes a filter is too complex or scalar
+    /// indices cannot be applied to the column.  In these cases postfiltering can be
+    /// used instead of prefiltering to improve latency.
+    ///
+    /// Post filtering applies the filter to the results of the vector search.  This means
+    /// we only run the filter on a much smaller set of data.  However, it can cause the
+    /// query to return fewer than `limit` results (or even no results) if none of the nearest
+    /// results match the filter.
+    ///
+    /// Post filtering happens during the "refine stage" (described in more detail in
+    /// [`Self::refine_factor`]).  This means that setting a higher refine factor can often
+    /// help restore some of the results lost by post filtering.
+    fn postfilter(self) -> Self;
+
     /// Return the `_rowid` meta column from the Table.
     fn with_row_id(self) -> Self;
 }
@@ -439,6 +459,11 @@ impl<T: HasQuery> QueryBase for T {
 
     fn fast_search(mut self) -> Self {
         self.mut_query().fast_search = true;
+        self
+    }
+
+    fn postfilter(mut self) -> Self {
+        self.mut_query().prefilter = false;
         self
     }
 
@@ -561,6 +586,9 @@ pub struct Query {
     ///
     /// By default, this is false.
     pub(crate) with_row_id: bool,
+
+    /// If set to false, the filter will be applied after the vector search.
+    pub(crate) prefilter: bool,
 }
 
 impl Query {
@@ -574,6 +602,7 @@ impl Query {
             select: Select::All,
             fast_search: false,
             with_row_id: false,
+            prefilter: true,
         }
     }
 
@@ -678,8 +707,6 @@ pub struct VectorQuery {
     pub(crate) distance_type: Option<DistanceType>,
     /// Default is true. Set to false to enforce a brute force search.
     pub(crate) use_index: bool,
-    /// Apply filter before ANN search/
-    pub(crate) prefilter: bool,
 }
 
 impl VectorQuery {
@@ -692,7 +719,6 @@ impl VectorQuery {
             refine_factor: None,
             distance_type: None,
             use_index: true,
-            prefilter: true,
         }
     }
 
@@ -779,29 +805,6 @@ impl VectorQuery {
     /// By default [`DistanceType::L2`] is used.
     pub fn distance_type(mut self, distance_type: DistanceType) -> Self {
         self.distance_type = Some(distance_type);
-        self
-    }
-
-    /// If this is called then filtering will happen after the vector search instead of
-    /// before.
-    ///
-    /// By default filtering will be performed before the vector search.  This is how
-    /// filtering is typically understood to work.  This prefilter step does add some
-    /// additional latency.  Creating a scalar index on the filter column(s) can
-    /// often improve this latency.  However, sometimes a filter is too complex or scalar
-    /// indices cannot be applied to the column.  In these cases postfiltering can be
-    /// used instead of prefiltering to improve latency.
-    ///
-    /// Post filtering applies the filter to the results of the vector search.  This means
-    /// we only run the filter on a much smaller set of data.  However, it can cause the
-    /// query to return fewer than `limit` results (or even no results) if none of the nearest
-    /// results match the filter.
-    ///
-    /// Post filtering happens during the "refine stage" (described in more detail in
-    /// [`Self::refine_factor`]).  This means that setting a higher refine factor can often
-    /// help restore some of the results lost by post filtering.
-    pub fn postfilter(mut self) -> Self {
-        self.prefilter = false;
         self
     }
 
