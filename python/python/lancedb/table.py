@@ -1995,7 +1995,7 @@ class LanceTable(Table):
         *,
         cleanup_older_than: Optional[timedelta] = None,
         delete_unverified: bool = False,
-    ) -> OptimizeStats:
+    ):
         """
         Optimize the on-disk data and indices for better performance.
 
@@ -2039,30 +2039,18 @@ class LanceTable(Table):
         """
         try:
             asyncio.get_running_loop()
-            compact_results = self.compact_files()
-            cleanup_results = self.cleanup_old_versions(older_than=cleanup_older_than)
+            self.compact_files()
+            self.cleanup_old_versions(older_than=cleanup_older_than)
             self.to_lance().optimize.optimize_indices()
 
-            optimize_stats = OptimizeStats()
-            optimize_stats.compaction.fragments_removed = (
-                compact_results.fragments_removed
-            )
-            optimize_stats.compaction.fragments_added = compact_results.fragments_added
-            optimize_stats.compaction.files_removed = compact_results.files_removed
-            optimize_stats.compaction.files_added = compact_results.files_added
-            optimize_stats.prune.bytes_removed = cleanup_results.bytes_removed
-            optimize_stats.prune.old_versions_removed = cleanup_results.old_versions
-            return optimize_stats
-
         except RuntimeError:
-            result = asyncio.run(
+            asyncio.run(
                 self._async_optimize(
                     cleanup_older_than=cleanup_older_than,
                     delete_unverified=delete_unverified,
                 )
             )
             self.checkout_latest()
-            return result
 
     async def _async_optimize(
         self,
