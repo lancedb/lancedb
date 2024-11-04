@@ -1339,6 +1339,13 @@ class AsyncQueryBase(object):
         self._inner.fast_search()
         return self
 
+    def with_row_id(self) -> AsyncQuery:
+        """
+        Include the _rowid column in the results.
+        """
+        self._inner.with_row_id()
+        return self
+
     def postfilter(self) -> AsyncQuery:
         """
         If this is called then filtering will happen after the search instead of

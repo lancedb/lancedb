@@ -331,6 +331,12 @@ async def test_query_async(table_async: AsyncTable):
     # Also check an empty query
     await check_query(table_async.query().where("id < 0"), expected_num_rows=0)
 
+    # with row id
+    await check_query(
+        table_async.query().select(["id", "vector"]).with_row_id(),
+        expected_columns=["id", "vector", "_rowid"],
+    )
+
 
 @pytest.mark.asyncio
 async def test_query_to_arrow_async(table_async: AsyncTable):
