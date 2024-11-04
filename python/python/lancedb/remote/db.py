@@ -87,6 +87,7 @@ class RemoteDBConnection(DBConnection):
         self.db_name = parsed.netloc
 
         import nest_asyncio
+
         nest_asyncio.apply()
         try:
             self._loop = asyncio.get_running_loop()
