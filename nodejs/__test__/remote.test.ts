@@ -90,4 +90,29 @@ describe("remote connection", () => {
       },
     );
   });
+
+  it("shows the full error messages on retry errors", async () => {
+    await withMockDatabase(
+      (_req, res) => {
+        // We retry on 500 errors, so we return 500s until the client gives up.
+        res.writeHead(500).end("Internal Server Error");
+      },
+      async (db) => {
+        try {
+          await db.tableNames();
+          fail("expected an error");
+          // biome-ignore lint/suspicious/noExplicitAny: skip
+        } catch (e: any) {
+          expect(e.message).toContain("Hit retry limit for request_id=");
+          expect(e.message).toContain("Caused by: Http error");
+          expect(e.message).toContain("500 Internal Server Error");
+        }
+      },
+      {
+        clientConfig: {
+          retryConfig: { retries: 2 },
+        },
+      },
+    );
+  });
 });

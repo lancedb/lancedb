@@ -41,6 +41,7 @@ async-trait = "0"
 chrono = "0.4.35"
 datafusion-common = "41.0"
 datafusion-physical-plan = "41.0"
+env_logger = "0.10"
 half = { "version" = "=2.4.1", default-features = false, features = [
     "num-traits",
 ] }
