@@ -146,13 +146,20 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust
+      - name: Install 7-Zip ARM
+        run: |
+          New-Item -Path 'C:\7zip' -ItemType Directory
+          Invoke-WebRequest https://7-zip.org/a/7z2408-arm64.exe -OutFile C:\7zip\7z-installer.exe
+          Start-Process -FilePath C:\7zip\7z-installer.exe -ArgumentList '/S' -Wait
+          Add-Content $env:GITHUB_PATH "C:\Program Files\7-Zip"
+        shell: powershell
       - name: Install Protoc v21.12
         working-directory: C:\
         run: |
           New-Item -Path 'C:\protoc' -ItemType Directory
           Set-Location C:\protoc
           Invoke-WebRequest https://github.com/protocolbuffers/protobuf/releases/download/v21.12/protoc-21.12-win64.zip -OutFile C:\protoc\protoc.zip
-          7z x protoc.zip
+          & 'C:\Program Files\7-Zip\7z.exe' x protoc.zip
           Add-Content $env:GITHUB_PATH "C:\protoc\bin"
         shell: powershell
       - name: Run tests
