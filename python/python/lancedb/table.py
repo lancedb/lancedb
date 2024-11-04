@@ -897,7 +897,12 @@ class Table(ABC):
         """
 
     @abstractmethod
-    def optimize(self, **kwargs):
+    def optimize(
+        self,
+        *,
+        cleanup_older_than: Optional[timedelta] = None,
+        delete_unverified: bool = False,
+    ):
         """
         Optimize the indices of the table.
 

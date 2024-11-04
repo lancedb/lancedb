@@ -11,6 +11,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
+from datetime import timedelta
 import logging
 import uuid
 from concurrent.futures import Future
@@ -569,6 +570,15 @@ class RemoteTable(Table):
         raise NotImplementedError(
             "optimize_indices() is not supported on the LanceDB cloud"
         )
+
+    def optimize(
+        self,
+        *,
+        cleanup_older_than: Optional[timedelta] = None,
+        delete_unverified: bool = False,
+    ):
+        """optimize() is not supported on the LanceDB cloud"""
+        raise NotImplementedError("optimize() is not supported on the LanceDB cloud")
 
     def count_rows(self, filter: Optional[str] = None) -> int:
         payload = {"predicate": filter}
