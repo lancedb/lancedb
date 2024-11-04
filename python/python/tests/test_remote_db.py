@@ -210,6 +210,7 @@ def test_query_sync_maximal():
             "columns": ["id", "name"],
             "vector_column": "vector2",
             "fast_search": True,
+            "with_row_id": True,
         }
 
         return pa.table({"id": [1, 2, 3], "name": ["a", "b", "c"]})
@@ -236,6 +237,7 @@ def test_query_sync_fts():
                 "columns": [],
             },
             "k": 10,
+            "vector": [],
         }
 
         return pa.table({"id": [1, 2, 3]})
@@ -250,6 +252,8 @@ def test_query_sync_fts():
                 "columns": ["name", "description"],
             },
             "k": 42,
+            "vector": [],
+            "with_row_id": True,
         }
 
         return pa.table({"id": [1, 2, 3]})
@@ -257,6 +261,7 @@ def test_query_sync_fts():
     with query_test_table(handler) as table:
         (
             table.search("puppy", query_type="fts", fts_columns=["name", "description"])
+            .with_row_id(True)
             .limit(42)
             .to_list()
         )
@@ -272,6 +277,8 @@ def test_query_sync_hybrid():
                     "columns": [],
                 },
                 "k": 42,
+                "vector": [],
+                "with_row_id": True,
             }
             return pa.table({"_rowid": [1, 2, 3], "_score": [0.1, 0.2, 0.3]})
         else:
@@ -283,6 +290,7 @@ def test_query_sync_hybrid():
                 "refine_factor": None,
                 "vector": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
                 "nprobes": 20,
+                "with_row_id": True,
             }
             return pa.table({"_rowid": [1, 2, 3], "_distance": [0.1, 0.2, 0.3]})
 

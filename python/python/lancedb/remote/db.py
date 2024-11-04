@@ -86,6 +86,8 @@ class RemoteDBConnection(DBConnection):
             raise ValueError(f"Invalid scheme: {parsed.scheme}, only accepts db://")
         self.db_name = parsed.netloc
 
+        import nest_asyncio
+        nest_asyncio.apply()
         try:
             self._loop = asyncio.get_running_loop()
         except RuntimeError:

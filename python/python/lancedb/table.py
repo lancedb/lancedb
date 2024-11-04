@@ -2551,6 +2551,8 @@ class AsyncTable:
             async_query = async_query.where(query.filter)
         if query.fast_search:
             async_query = async_query.fast_search()
+        if query.with_row_id:
+            async_query = async_query.with_row_id()
 
         if query.vector:
             async_query = (
