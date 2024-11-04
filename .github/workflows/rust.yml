@@ -143,6 +143,16 @@ jobs:
     runs-on: windows-4x-arm
     steps:
       - uses: actions/checkout@v4
+      - name: Install Rust
+        run: |
+          Invoke-WebRequest https://win.rustup.rs/x86_64 -OutFile rustup-init.exe
+          .\rustup-init.exe -y --default-host aarch64-pc-windows-msvc
+          Remove-Item rustup-init.exe
+        shell: powershell
+      - name: Add Rust to PATH
+        run: |
+          Add-Content $env:GITHUB_PATH "$env:USERPROFILE\.cargo\bin"
+        shell: powershell
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust
