@@ -58,14 +58,12 @@ from .util import (
 )
 from .index import lang_mapping
 
-from ._lancedb import connect as lancedb_connect, OptimizeStats
+from ._lancedb import connect as lancedb_connect
 
 if TYPE_CHECKING:
     import PIL
     from lance.dataset import CleanupStats, ReaderLike
-    from ._lancedb import (
-        Table as LanceDBTable,
-    )
+    from ._lancedb import Table as LanceDBTable, OptimizeStats
     from .db import LanceDBConnection
     from .index import BTree, IndexConfig, IvfPq, Bitmap, LabelList, FTS
 
