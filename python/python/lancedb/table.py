@@ -58,13 +58,7 @@ from .util import (
 )
 from .index import lang_mapping
 
-from ._lancedb import connect as lancedb_connect
-from ._lancedb import (
-    CompactionStats,
-    OptimizeStats,
-    RemovalStats,
-)
-
+from ._lancedb import connect as lancedb_connect, OptimizeStats
 
 if TYPE_CHECKING:
     import PIL
@@ -2049,19 +2043,15 @@ class LanceTable(Table):
             cleanup_results = self.cleanup_old_versions(older_than=cleanup_older_than)
             self.to_lance().optimize.optimize_indices()
 
-            compact_stats = CompactionStats()
-            compact_stats.fragments_removed = compact_results.fragments_removed
-            compact_stats.fragments_added = compact_results.fragments_added
-            compact_stats.files_removed = compact_results.files_removed
-            compact_stats.files_added = compact_results.files_added
-
-            removal_stats = RemovalStats()
-            removal_stats.bytes_removed = cleanup_results.bytes_removed
-            removal_stats.old_versions_removed = cleanup_results.old_versions
-
             optimize_stats = OptimizeStats()
-            optimize_stats.compaction = compact_stats
-            optimize_stats.prune = removal_stats
+            optimize_stats.compaction.fragments_removed = (
+                compact_results.fragments_removed
+            )
+            optimize_stats.compaction.fragments_added = compact_results.fragments_added
+            optimize_stats.compaction.files_removed = compact_results.files_removed
+            optimize_stats.compaction.files_added = compact_results.files_added
+            optimize_stats.prune.bytes_removed = cleanup_results.bytes_removed
+            optimize_stats.prune.old_versions_removed = cleanup_results.old_versions
             return optimize_stats
 
         except RuntimeError:
