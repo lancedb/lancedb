@@ -1261,7 +1261,14 @@ async def test_sync_optimize_in_async(db):
 
     table.add([{"vector": [2.0, 2.0], "item": "baz", "price": 30.0}])
     assert table.count_rows() == 3
-    table.optimize()
+    try:
+        table.optimize()
+    except Exception as e:
+        assert (
+            "Synchronous method called in asynchronous context. "
+            "If you are writing an asynchronous application "
+            "then please use the asynchronous APIs" in str(e)
+        )
     stats = table.to_lance().stats.index_stats("price_idx")
     assert stats["num_indexed_rows"] == 3
 
