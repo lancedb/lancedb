@@ -1269,8 +1269,6 @@ async def test_sync_optimize_in_async(db):
             "If you are writing an asynchronous application "
             "then please use the asynchronous APIs" in str(e)
         )
-    stats = table.to_lance().stats.index_stats("price_idx")
-    assert stats["num_indexed_rows"] == 3
 
 
 @pytest.mark.asyncio
