@@ -151,6 +151,27 @@ jobs:
             "--add", "Microsoft.VisualStudio.Component.VC.Tools.ARM64", `
             "--add", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64" -Wait
         shell: powershell
+      - name: Setup Visual Studio Environment
+        run: |
+          # Import environment from Visual Studio Build Tools
+          $vsPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          $vcvarspath = Join-Path $vsPath "VC\Auxiliary\Build\vcvars64.bat"
+          # Create a batch file to run vcvars64.bat and export environment variables
+          @"
+          @echo off
+          call "$vcvarspath"
+          set > %TEMP%\vsenv.txt
+          "@ | Out-File -FilePath $env:TEMP\vcvars.bat -Encoding ASCII
+
+          # Run the batch file and import environment variables
+          cmd /c "$env:TEMP\vcvars.bat"
+          Get-Content $env:TEMP\vsenv.txt | ForEach-Object {
+            $name, $value = $_.split('=')
+            if ($name -and $value) {
+              Set-Item -Path "env:$name" -Value $value
+            }
+          }
+        shell: powershell
       - name: Install Rust
         run: |
           Invoke-WebRequest https://win.rustup.rs/x86_64 -OutFile rustup-init.exe
@@ -160,6 +181,7 @@ jobs:
         run: |
           Add-Content $env:GITHUB_PATH "$env:USERPROFILE\.cargo\bin"
         shell: powershell
+
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust
