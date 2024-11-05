@@ -566,9 +566,11 @@ class RemoteTable(Table):
         )
 
     def optimize_indices(self, **kwargs):
-        """optimize_indices() is not supported on the LanceDB cloud"""
+        """optimize_indices() is not supported on the LanceDB cloud.
+        Indices are optimized automatically."""
         raise NotImplementedError(
-            "optimize_indices() is not supported on the LanceDB cloud"
+            "optimize_indices() is not supported on the LanceDB cloud. "
+            "Indices are optimized automatically."
         )
 
     def optimize(
@@ -577,8 +579,12 @@ class RemoteTable(Table):
         cleanup_older_than: Optional[timedelta] = None,
         delete_unverified: bool = False,
     ):
-        """optimize() is not supported on the LanceDB cloud"""
-        raise NotImplementedError("optimize() is not supported on the LanceDB cloud")
+        """optimize() is not supported on the LanceDB cloud.
+        Indices are optimized automatically."""
+        raise NotImplementedError(
+            "optimize() is not supported on the LanceDB cloud. "
+            "Indices are optimized automatically."
+        )
 
     def count_rows(self, filter: Optional[str] = None) -> int:
         payload = {"predicate": filter}

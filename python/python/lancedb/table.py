@@ -904,17 +904,45 @@ class Table(ABC):
         delete_unverified: bool = False,
     ):
         """
-        Optimize the indices of the table.
+        Optimize the on-disk data and indices for better performance.
 
-        This incrementally updates the indices of the table,
-        to make queries faster.
+        Modeled after ``VACUUM`` in PostgreSQL.
 
-        Note: This function is not available in LanceDb Cloud (since LanceDb
-        Cloud manages index optimization for you automatically)
+        Optimization covers three operations:
 
-        Arguments are passed onto
-        :meth:`lance.dataset.DatasetOptimizer.optimize_indices`.
-        For most cases, the default should be fine.
+         * Compaction: Merges small files into larger ones
+         * Prune: Removes old versions of the dataset
+         * Index: Optimizes the indices, adding new data to existing indices
+
+        Parameters
+        ----------
+        cleanup_older_than: timedelta, optional default 7 days
+            All files belonging to versions older than this will be removed.  Set
+            to 0 days to remove all versions except the latest.  The latest version
+            is never removed.
+        delete_unverified: bool, default False
+            Files leftover from a failed transaction may appear to be part of an
+            in-progress operation (e.g. appending new data) and these files will not
+            be deleted unless they are at least 7 days old. If delete_unverified is True
+            then these files will be deleted regardless of their age.
+
+        Experimental API
+        ----------------
+
+        The optimization process is undergoing active development and may change.
+        Our goal with these changes is to improve the performance of optimization and
+        reduce the complexity.
+
+        That being said, it is essential today to run optimize if you want the best
+        performance.  It should be stable and safe to use in production, but it our
+        hope that the API may be simplified (or not even need to be called) in the
+        future.
+
+        The frequency an application shoudl call optimize is based on the frequency of
+        data modifications.  If data is frequently added, deleted, or updated then
+        optimize should be run frequently.  A good rule of thumb is to run optimize if
+        you have added or modified 100,000 or more records or run more than 20 data
+        modification operations.
         """
 
     @abstractmethod
@@ -2042,9 +2070,11 @@ class LanceTable(Table):
         """
         try:
             asyncio.get_running_loop()
-            self.compact_files()
-            self.cleanup_old_versions(older_than=cleanup_older_than)
-            self.to_lance().optimize.optimize_indices()
+            raise AssertionError(
+                "Synchronous method called in asynchronous context. "
+                "If you are writing an asynchronous application "
+                "then please use the asynchronous APIs"
+            )
 
         except RuntimeError:
             asyncio.run(
