@@ -143,6 +143,14 @@ jobs:
     runs-on: windows-4x-arm
     steps:
       - uses: actions/checkout@v4
+      - name: Install Visual Studio Build Tools
+        run: |
+          Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vs_buildtools.exe" -OutFile "vs_buildtools.exe"
+          Start-Process -FilePath "vs_buildtools.exe" -ArgumentList "--quiet", "--wait", "--norestart", "--nocache", `
+            "--installPath", "C:\BuildTools", `
+            "--add", "Microsoft.VisualStudio.Component.VC.Tools.ARM64", `
+            "--add", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64" -Wait
+        shell: powershell
       - name: Install Rust
         run: |
           Invoke-WebRequest https://win.rustup.rs/x86_64 -OutFile rustup-init.exe
