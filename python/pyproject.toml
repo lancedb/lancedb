@@ -3,13 +3,11 @@ name = "lancedb"
 # version in Cargo.toml
 dependencies = [
     "deprecation",
+    "nest-asyncio~=1.0",
     "pylance==0.19.2-beta.3",
-    "requests>=2.31.0",
     "tqdm>=4.27.0",
     "pydantic>=1.10",
-    "attrs>=21.3.0",
     "packaging",
-    "cachetools",
     "overrides>=0.7",
 ]
 description = "lancedb"
@@ -61,6 +59,7 @@ dev = ["ruff", "pre-commit"]
 docs = ["mkdocs", "mkdocs-jupyter", "mkdocs-material", "mkdocstrings[python]"]
 clip = ["torch", "pillow", "open-clip"]
 embeddings = [
+    "requests>=2.31.0",
     "openai>=1.6.1",
     "sentence-transformers",
     "torch",
