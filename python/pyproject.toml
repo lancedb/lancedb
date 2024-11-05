@@ -3,7 +3,7 @@ name = "lancedb"
 # version in Cargo.toml
 dependencies = [
     "deprecation",
-    "pylance==0.19.1",
+    "pylance==0.19.2-beta.3",
     "requests>=2.31.0",
     "tqdm>=4.27.0",
     "pydantic>=1.10",

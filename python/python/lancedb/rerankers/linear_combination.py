@@ -11,7 +11,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
-from numpy import NaN
+from numpy import nan
 import pyarrow as pa
 
 from .base import Reranker
@@ -71,7 +71,7 @@ class LinearCombinationReranker(Reranker):
             elif self.score == "all":
                 results = results.append_column(
                     "_distance",
-                    pa.array([NaN] * len(fts_results), type=pa.float32()),
+                    pa.array([nan] * len(fts_results), type=pa.float32()),
                 )
             return results
 
@@ -92,7 +92,7 @@ class LinearCombinationReranker(Reranker):
             elif self.score == "all":
                 results = results.append_column(
                     "_score",
-                    pa.array([NaN] * len(vector_results), type=pa.float32()),
+                    pa.array([nan] * len(vector_results), type=pa.float32()),
                 )
             return results
 
