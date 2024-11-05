@@ -34,7 +34,7 @@ class VoyageAIReranker(Reranker):
         - rerank-2-lite
     column : str, default "text"
         The name of the column to use as input to the cross encoder model.
-    top_n : str, default None
+    top_n : int, default None
         The number of results to return. If None, will return all results.
     return_score : str, default "relevance"
         options are "relevance" or "all". Only "relevance" is supported for now.
@@ -47,9 +47,9 @@ class VoyageAIReranker(Reranker):
         self,
         model_name: str,
         column: str = "text",
-        top_n: Union[int, None] = None,
+        top_n: Optional[int] = None,
         return_score="relevance",
-        api_key: Union[str, None] = None,
+        api_key: Optional[str] = None,
         truncation: Optional[bool] = True,
     ):
         super().__init__(return_score)
