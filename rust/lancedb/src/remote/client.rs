@@ -341,7 +341,22 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
             request_id
         };
 
-        debug!("Sending request_id={}: {:?}", request_id, &request);
+        if log::log_enabled!(log::Level::Debug) {
+            let content_type = request
+                .headers()
+                .get("content-type")
+                .map(|v| v.to_str().unwrap());
+            if content_type == Some("application/json") {
+                let body = request.body().as_ref().unwrap().as_bytes().unwrap();
+                let body = String::from_utf8_lossy(body);
+                debug!(
+                    "Sending request_id={}: {:?} with body {}",
+                    request_id, request, body
+                );
+            } else {
+                debug!("Sending request_id={}: {:?}", request_id, request);
+            }
+        }
 
         if with_retry {
             self.send_with_retry_impl(client, request, request_id).await

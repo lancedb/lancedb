@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import axios, { type AxiosResponse, type ResponseType } from 'axios'
+import axios, { type AxiosError, type AxiosResponse, type ResponseType } from 'axios'
 
 import { tableFromIPC, type Table as ArrowTable } from 'apache-arrow'
 
@@ -197,7 +197,7 @@ export class HttpLancedbClient {
       response = await callWithMiddlewares(req, this._middlewares)
       return response
     } catch (err: any) {
-      console.error('error: ', err)
+      console.error(serializeErrorAsJson(err))
       if (err.response === undefined) {
         throw new Error(`Network Error: ${err.message as string}`)
       }
@@ -247,7 +247,8 @@ export class HttpLancedbClient {
 
       // return response
     } catch (err: any) {
-      console.error('error: ', err)
+      console.error(serializeErrorAsJson(err))
+
       if (err.response === undefined) {
         throw new Error(`Network Error: ${err.message as string}`)
       }
@@ -286,4 +287,16 @@ export class HttpLancedbClient {
     }
     return clone
   }
+}
+
+function serializeErrorAsJson(err: AxiosError) {
+  const error = JSON.parse(JSON.stringify(err, Object.getOwnPropertyNames(err)))
+  error.response = err.response != null
+      ? JSON.parse(JSON.stringify(
+        err.response,
+        // config contains the request data, too noisy
+        Object.getOwnPropertyNames(err.response).filter(prop => prop !== 'config')
+      ))
+      : null
+  return JSON.stringify({ error })
 }

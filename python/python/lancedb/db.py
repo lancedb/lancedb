@@ -817,6 +817,18 @@ class AsyncConnection(object):
         table = await self._inner.open_table(name, storage_options, index_cache_size)
         return AsyncTable(table)
 
+    async def rename_table(self, old_name: str, new_name: str):
+        """Rename a table in the database.
+
+        Parameters
+        ----------
+        old_name: str
+            The current name of the table.
+        new_name: str
+            The new name of the table.
+        """
+        await self._inner.rename_table(old_name, new_name)
+
     async def drop_table(self, name: str):
         """Drop a table from the database.
 

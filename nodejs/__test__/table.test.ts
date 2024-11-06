@@ -425,6 +425,17 @@ describe("When creating an index", () => {
     expect(plan2).not.toMatch("LanceScan");
   });
 
+  it("should be able to query with row id", async () => {
+    const results = await tbl
+      .query()
+      .nearestTo(queryVec)
+      .withRowId()
+      .limit(1)
+      .toArray();
+    expect(results.length).toBe(1);
+    expect(results[0]).toHaveProperty("_rowid");
+  });
+
   it("should allow parameters to be specified", async () => {
     await tbl.createIndex("vec", {
       config: Index.ivfPq({
