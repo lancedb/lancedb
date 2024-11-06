@@ -62,7 +62,7 @@ if TYPE_CHECKING:
     from lance.dataset import CleanupStats, ReaderLike
     from ._lancedb import Table as LanceDBTable, OptimizeStats
     from .db import LanceDBConnection
-    from .index import BTree, IndexConfig, IvfPq, Bitmap, LabelList, FTS
+    from .index import BTree, IndexConfig, IvfPq, Bitmap, LabelList, FTS, HnswPq, HnswSq
 
 pd = safe_import_pandas()
 pl = safe_import_polars()
@@ -948,7 +948,9 @@ class Table(ABC):
         return _table_uri(self._conn.uri, self.name)
 
     def _get_fts_index_path(self) -> Tuple[str, pa_fs.FileSystem, bool]:
-        if get_uri_scheme(self._dataset_uri) != "file":
+        from .remote.table import RemoteTable
+
+        if isinstance(self, RemoteTable) or get_uri_scheme(self._dataset_uri) != "file":
             return ("", None, False)
         path = join_uri(self._dataset_uri, "_indices", "fts")
         fs, path = fs_from_uri(path)
@@ -2382,7 +2384,9 @@ class AsyncTable:
         column: str,
         *,
         replace: Optional[bool] = None,
-        config: Optional[Union[IvfPq, BTree, Bitmap, LabelList, FTS]] = None,
+        config: Optional[
+            Union[IvfPq, HnswPq, HnswSq, BTree, Bitmap, LabelList, FTS]
+        ] = None,
     ):
         """Create an index to speed up queries
 
@@ -2535,7 +2539,44 @@ class AsyncTable:
     async def _execute_query(
         self, query: Query, batch_size: Optional[int] = None
     ) -> pa.RecordBatchReader:
-        pass
+        # The sync remote table calls into this method, so we need to map the
+        # query to the async version of the query and run that here. This is only
+        # used for that code path right now.
+        async_query = self.query().limit(query.k)
+        if query.offset > 0:
+            async_query = async_query.offset(query.offset)
+        if query.columns:
+            async_query = async_query.select(query.columns)
+        if query.filter:
+            async_query = async_query.where(query.filter)
+        if query.fast_search:
+            async_query = async_query.fast_search()
+        if query.with_row_id:
+            async_query = async_query.with_row_id()
+
+        if query.vector:
+            async_query = (
+                async_query.nearest_to(query.vector)
+                .distance_type(query.metric)
+                .nprobes(query.nprobes)
+            )
+            if query.refine_factor:
+                async_query = async_query.refine_factor(query.refine_factor)
+            if query.vector_column:
+                async_query = async_query.column(query.vector_column)
+
+        if not query.prefilter:
+            async_query = async_query.postfilter()
+
+        if isinstance(query.full_text_query, str):
+            async_query = async_query.nearest_to_text(query.full_text_query)
+        elif isinstance(query.full_text_query, dict):
+            fts_query = query.full_text_query["query"]
+            fts_columns = query.full_text_query.get("columns", []) or []
+            async_query = async_query.nearest_to_text(fts_query, columns=fts_columns)
+
+        table = await async_query.to_arrow()
+        return table.to_reader()
 
     async def _do_merge(
         self,
@@ -2781,7 +2822,7 @@ class AsyncTable:
             cleanup_older_than = round(cleanup_older_than.total_seconds() * 1000)
         return await self._inner.optimize(cleanup_older_than, delete_unverified)
 
-    async def list_indices(self) -> IndexConfig:
+    async def list_indices(self) -> Iterable[IndexConfig]:
         """
         List all indices that have been created with Self::create_index
         """
@@ -2865,3 +2906,8 @@ class IndexStatistics:
     ]
     distance_type: Optional[Literal["l2", "cosine", "dot"]] = None
     num_indices: Optional[int] = None
+
+    # This exists for backwards compatibility with an older API, which returned
+    # a dictionary instead of a class.
+    def __getitem__(self, key):
+        return getattr(self, key)

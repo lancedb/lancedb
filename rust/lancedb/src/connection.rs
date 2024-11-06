@@ -39,9 +39,6 @@ use crate::utils::validate_table_name;
 use crate::Table;
 pub use lance_encoding::version::LanceFileVersion;
 
-#[cfg(feature = "remote")]
-use log::warn;
-
 pub const LANCE_FILE_EXTENSION: &str = "lance";
 
 pub type TableBuilderCallback = Box<dyn FnOnce(OpenTableBuilder) -> OpenTableBuilder + Send>;
@@ -719,8 +716,7 @@ impl ConnectBuilder {
         let api_key = self.api_key.ok_or_else(|| Error::InvalidInput {
             message: "An api_key is required when connecting to LanceDb Cloud".to_string(),
         })?;
-        // TODO: remove this warning when the remote client is ready
-        warn!("The rust implementation of the remote client is not yet ready for use.");
+
         let internal = Arc::new(crate::remote::db::RemoteDatabase::try_new(
             &self.uri,
             &api_key,
