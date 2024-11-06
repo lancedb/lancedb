@@ -1,5 +1,5 @@
-use std::{borrow::Cow, fmt::Formatter, str::FromStr, sync::Arc};
 use aws_sdk_bedrockruntime::Client as BedrockClient;
+use std::{borrow::Cow, fmt::Formatter, str::FromStr, sync::Arc};
 
 use arrow::array::{AsArray, Float32Builder};
 use arrow_array::{Array, ArrayRef, FixedSizeListArray, Float32Array};
@@ -7,18 +7,17 @@ use arrow_data::ArrayData;
 use arrow_schema::DataType;
 use serde_json::{json, Value};
 
-use crate::{Error, Result};
 use super::EmbeddingFunction;
+use crate::{Error, Result};
 
-use tokio::task::block_in_place;
 use tokio::runtime::Handle;
+use tokio::task::block_in_place;
 
 #[derive(Debug)]
 pub enum BedrockEmbeddingModel {
     TitanEmbedding,
     CohereLarge,
 }
-
 
 impl BedrockEmbeddingModel {
     fn ndims(&self) -> usize {
@@ -27,7 +26,7 @@ impl BedrockEmbeddingModel {
             Self::CohereLarge => 1024,
         }
     }
-    
+
     fn model_id(&self) -> &str {
         match self {
             Self::TitanEmbedding => "amazon.titan-embed-text-v1",
@@ -92,7 +91,7 @@ impl EmbeddingFunction for BedrockEmbeddingFunction {
         let inner = self.compute_inner(source)?;
 
         let fsl = DataType::new_fixed_size_list(DataType::Float32, n_dims as i32, false);
-        
+
         let array_data = ArrayData::builder(fsl)
             .len(len)
             .add_child_data(inner.into_data())
@@ -140,7 +139,7 @@ impl BedrockEmbeddingFunction {
                 .collect::<Vec<String>>(),
             DataType::LargeUtf8 => source
                 .as_string::<i64>()
-                .into_iter() 
+                .into_iter()
                 .map(|s| s.expect("array is non-nullable").to_string())
                 .collect::<Vec<String>>(),
             _ => unreachable!(),
@@ -152,12 +151,12 @@ impl BedrockEmbeddingFunction {
                     json!({
                         "inputText": text
                     })
-                },
+                }
                 BedrockEmbeddingModel::CohereLarge => {
                     json!({
                         "texts": [text],
                         "input_type": "search_document"
-                    }) 
+                    })
                 }
             };
 
@@ -176,32 +175,31 @@ impl BedrockEmbeddingFunction {
                         .send()
                         .await
                 })
-            }).unwrap();
+            })
+            .unwrap();
 
-            let response_json: Value = serde_json::from_slice(response.body.as_ref())
-                .map_err(|e| Error::Runtime {
-                    message: format!("Failed to parse response: {}", e)
+            let response_json: Value =
+                serde_json::from_slice(response.body.as_ref()).map_err(|e| Error::Runtime {
+                    message: format!("Failed to parse response: {}", e),
                 })?;
 
             let embedding = match self.model {
-                BedrockEmbeddingModel::TitanEmbedding => {
-                    response_json["embedding"].as_array()
-                        .ok_or_else(|| Error::Runtime {
-                            message: "Missing embedding in response".to_string()
-                        })?
-                        .iter()
-                        .map(|v| v.as_f64().unwrap() as f32)
-                        .collect::<Vec<f32>>()
-                },
-                BedrockEmbeddingModel::CohereLarge => {
-                    response_json["embeddings"][0].as_array()
-                        .ok_or_else(|| Error::Runtime {
-                            message: "Missing embeddings in response".to_string()
-                        })?
-                        .iter()
-                        .map(|v| v.as_f64().unwrap() as f32)
-                        .collect::<Vec<f32>>()
-                }
+                BedrockEmbeddingModel::TitanEmbedding => response_json["embedding"]
+                    .as_array()
+                    .ok_or_else(|| Error::Runtime {
+                        message: "Missing embedding in response".to_string(),
+                    })?
+                    .iter()
+                    .map(|v| v.as_f64().unwrap() as f32)
+                    .collect::<Vec<f32>>(),
+                BedrockEmbeddingModel::CohereLarge => response_json["embeddings"][0]
+                    .as_array()
+                    .ok_or_else(|| Error::Runtime {
+                        message: "Missing embeddings in response".to_string(),
+                    })?
+                    .iter()
+                    .map(|v| v.as_f64().unwrap() as f32)
+                    .collect::<Vec<f32>>(),
             };
 
             builder.append_slice(&embedding);

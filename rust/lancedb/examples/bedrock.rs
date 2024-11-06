@@ -4,13 +4,13 @@ use std::{iter::once, sync::Arc};
 
 use arrow_array::{Float64Array, Int32Array, RecordBatch, RecordBatchIterator, StringArray};
 use arrow_schema::{DataType, Field, Schema};
-use futures::StreamExt;
 use aws_config::Region;
 use aws_sdk_bedrockruntime::Client;
+use futures::StreamExt;
 use lancedb::{
     arrow::IntoArrow,
     connect,
-    embeddings::{bedrock::BedrockEmbeddingFunction, EmbeddingDefinition,EmbeddingFunction},
+    embeddings::{bedrock::BedrockEmbeddingFunction, EmbeddingDefinition, EmbeddingFunction},
     query::{ExecutableQuery, QueryBase},
     Result,
 };
@@ -22,17 +22,16 @@ use lancedb::{
 async fn main() -> Result<()> {
     let tempdir = tempfile::tempdir().unwrap();
     let tempdir = tempdir.path().to_str().unwrap();
-    
-    // 创建 Bedrock 嵌入函数
-    let region: String ="us-east-1".to_string();
-        let config = aws_config::defaults(aws_config::BehaviorVersion::latest())
-            .region(Region::new(region))
-            .load()
-            .await;
-    
+
+    // create Bedrock embedding function
+    let region: String = "us-east-1".to_string();
+    let config = aws_config::defaults(aws_config::BehaviorVersion::latest())
+        .region(Region::new(region))
+        .load()
+        .await;
+
     let embedding = Arc::new(BedrockEmbeddingFunction::new(
-        Client::new(&config)          // AWS 区域
-        //"amazon.titan-embed-text-v1", // Bedrock 模型 ID
+        Client::new(&config), // AWS Region
     ));
 
     let db = connect(tempdir).execute().await?;
@@ -49,7 +48,7 @@ async fn main() -> Result<()> {
         .execute()
         .await?;
 
-    // 执行向量搜索
+    // execute vector search
     let query = Arc::new(StringArray::from_iter_values(once("something warm")));
     let query_vector = embedding.compute_query_embeddings(query)?;
     let mut results = table
