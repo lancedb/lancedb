@@ -17,6 +17,7 @@ from typing import Optional
 
 import lance
 import lancedb
+from lancedb.index import IvfPq
 import numpy as np
 import pandas.testing as tm
 import pyarrow as pa
@@ -330,6 +331,12 @@ async def test_query_async(table_async: AsyncTable):
     # Also check an empty query
     await check_query(table_async.query().where("id < 0"), expected_num_rows=0)
 
+    # with row id
+    await check_query(
+        table_async.query().select(["id", "vector"]).with_row_id(),
+        expected_columns=["id", "vector", "_rowid"],
+    )
+
 
 @pytest.mark.asyncio
 async def test_query_to_arrow_async(table_async: AsyncTable):
@@ -356,6 +363,25 @@ async def test_query_to_pandas_async(table_async: AsyncTable):
 
     df = await table_async.query().where("id < 0").to_pandas()
     assert df.shape == (0, 4)
+
+
+@pytest.mark.asyncio
+async def test_fast_search_async(tmp_path):
+    db = await lancedb.connect_async(tmp_path)
+    vectors = pa.FixedShapeTensorArray.from_numpy_ndarray(
+        np.random.rand(256, 32)
+    ).storage
+    table = await db.create_table("test", pa.table({"vector": vectors}))
+    await table.create_index(
+        "vector", config=IvfPq(num_partitions=1, num_sub_vectors=1)
+    )
+    await table.add(pa.table({"vector": vectors}))
+
+    q = [1.0] * 32
+    plan = await table.query().nearest_to(q).explain_plan(True)
+    assert "LanceScan" in plan
+    plan = await table.query().nearest_to(q).fast_search().explain_plan(True)
+    assert "LanceScan" not in plan
 
 
 def test_explain_plan(table):

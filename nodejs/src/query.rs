@@ -80,6 +80,16 @@ impl Query {
         Ok(VectorQuery { inner })
     }
 
+    #[napi]
+    pub fn fast_search(&mut self) {
+        self.inner = self.inner.clone().fast_search();
+    }
+
+    #[napi]
+    pub fn with_row_id(&mut self) {
+        self.inner = self.inner.clone().with_row_id();
+    }
+
     #[napi(catch_unwind)]
     pub async fn execute(
         &self,
@@ -181,6 +191,16 @@ impl VectorQuery {
     #[napi]
     pub fn offset(&mut self, offset: u32) {
         self.inner = self.inner.clone().offset(offset as usize);
+    }
+
+    #[napi]
+    pub fn fast_search(&mut self) {
+        self.inner = self.inner.clone().fast_search();
+    }
+
+    #[napi]
+    pub fn with_row_id(&mut self) {
+        self.inner = self.inner.clone().with_row_id();
     }
 
     #[napi(catch_unwind)]
