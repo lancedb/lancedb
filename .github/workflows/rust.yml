@@ -142,35 +142,47 @@ jobs:
   windows-arm64:
     runs-on: windows-4x-arm
     steps:
+      - name: Install Git
+        run: |
+          Invoke-WebRequest -Uri "https://github.com/git-for-windows/git/releases/download/v2.44.0.windows.1/Git-2.44.0-64-bit.exe" -OutFile "git-installer.exe"
+          Start-Process -FilePath "git-installer.exe" -ArgumentList "/VERYSILENT", "/NORESTART" -Wait
+          Add-Content $env:GITHUB_PATH "C:\Program Files\Git\bin"
+          # Refresh PATH
+          $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+        shell: powershell
+      - name: Configure Git symlinks
+        run: |
+          git config --global core.symlinks true
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
       - name: Install Visual Studio Build Tools
         run: |
           Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vs_buildtools.exe" -OutFile "vs_buildtools.exe"
           Start-Process -FilePath "vs_buildtools.exe" -ArgumentList "--quiet", "--wait", "--norestart", "--nocache", `
             "--installPath", "C:\BuildTools", `
             "--add", "Microsoft.VisualStudio.Component.VC.Tools.ARM64", `
-            "--add", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64" -Wait
+            "--add", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64", `
+            "--add", "Microsoft.VisualStudio.Component.Windows11SDK.22621", `
+            "--add", "Microsoft.VisualStudio.Component.VC.ATL", `
+            "--add", "Microsoft.VisualStudio.Component.VC.ATLMFC", `
+            "--add", "Microsoft.VisualStudio.Component.VC.Llvm.Clang" -Wait
         shell: powershell
-      - name: Setup Visual Studio Environment
+      - name: Add Visual Studio Build Tools to PATH
         run: |
-          # Import environment from Visual Studio Build Tools
-          $vsPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
-          $vcvarspath = Join-Path $vsPath "VC\Auxiliary\Build\vcvars64.bat"
-          # Create a batch file to run vcvars64.bat and export environment variables
-          @"
-          @echo off
-          call "$vcvarspath"
-          set > %TEMP%\vsenv.txt
-          "@ | Out-File -FilePath $env:TEMP\vcvars.bat -Encoding ASCII
+          $vsPath = "C:\BuildTools\VC\Tools\MSVC"
+          $latestVersion = (Get-ChildItem $vsPath | Sort-Object {[version]$_.Name} -Descending)[0].Name
+          Add-Content $env:GITHUB_PATH "C:\BuildTools\VC\Tools\MSVC\$latestVersion\bin\Hostx64\arm64"
+          Add-Content $env:GITHUB_PATH "C:\BuildTools\VC\Tools\MSVC\$latestVersion\bin\Hostx64\x64"
+          Add-Content $env:GITHUB_PATH "C:\Program Files (x86)\Windows Kits\10\bin\10.0.22621.0\arm64"
+          Add-Content $env:GITHUB_PATH "C:\Program Files (x86)\Windows Kits\10\bin\10.0.22621.0\x64"
+          # Add Clang to PATH
+          Add-Content $env:GITHUB_PATH "C:\BuildTools\VC\Tools\Llvm\x64\bin"
 
-          # Run the batch file and import environment variables
-          cmd /c "$env:TEMP\vcvars.bat"
-          Get-Content $env:TEMP\vsenv.txt | ForEach-Object {
-            $name, $value = $_.split('=')
-            if ($name -and $value) {
-              Set-Item -Path "env:$name" -Value $value
-            }
-          }
+          # Create LIB environment variable if it doesn't exist
+          $env:LIB = ""
+          Add-Content $env:GITHUB_ENV "LIB=C:\Program Files (x86)\Windows Kits\10\Lib\10.0.22621.0\um\arm64;C:\Program Files (x86)\Windows Kits\10\Lib\10.0.22621.0\ucrt\arm64"
         shell: powershell
       - name: Install Rust
         run: |
