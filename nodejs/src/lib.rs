@@ -82,7 +82,7 @@ pub struct OpenTableOptions {
 #[napi::module_init]
 fn init() {
     let env = Env::new()
-        .filter_or("LANCEDB_LOG", "trace")
+        .filter_or("LANCEDB_LOG", "warn")
         .write_style("LANCEDB_LOG_STYLE");
     env_logger::init_from_env(env);
 }
