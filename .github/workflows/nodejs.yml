@@ -98,6 +98,7 @@ jobs:
       working-directory: nodejs/examples
       run: npm ci
     - name: Test examples
+      working-directory: ./
       env:
         OPENAI_API_KEY: test
         OPENAI_BASE_URL: http://localhost:8000
