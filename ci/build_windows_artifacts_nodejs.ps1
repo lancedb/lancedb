@@ -3,6 +3,7 @@
 # Targets supported:
 # - x86_64-pc-windows-msvc
 # - i686-pc-windows-msvc
+# - aarch64-pc-windows-msvc
 
 function Prebuild-Rust {
     param (
@@ -31,7 +32,7 @@ function Build-NodeBinaries {
 
 $targets = $args[0]
 if (-not $targets) {
-    $targets = "x86_64-pc-windows-msvc"
+    $targets = "x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"
 }
 
 Write-Host "Building artifacts for targets: $targets"
