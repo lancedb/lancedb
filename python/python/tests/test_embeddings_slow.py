@@ -488,11 +488,7 @@ def test_ollama_embedding(tmp_path):
     os.environ.get("VOYAGE_API_KEY") is None, reason="VOYAGE_API_KEY not set"
 )
 def test_voyageai_embedding_function():
-    voyageai = (
-        get_registry()
-        .get("voyageai")
-        .create(name="voyage-3", max_retries=0)
-    )
+    voyageai = get_registry().get("voyageai").create(name="voyage-3", max_retries=0)
 
     class TextModel(LanceModel):
         text: str = voyageai.SourceField()
@@ -504,5 +500,3 @@ def test_voyageai_embedding_function():
 
     tbl.add(df)
     assert len(tbl.to_pandas()["vector"][0]) == voyageai.ndims()
-
-

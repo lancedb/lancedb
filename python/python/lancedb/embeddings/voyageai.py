@@ -71,15 +71,15 @@ class VoyageAIEmbeddingFunction(TextEmbeddingFunction):
     client: ClassVar = None
 
     def ndims(self):
-        if self.name == 'voyage-3-lite':
+        if self.name == "voyage-3-lite":
             return 512
-        elif self.name == 'voyage-code-2':
+        elif self.name == "voyage-code-2":
             return 1536
         elif self.name in [
-            'voyage-3',
-            'voyage-finance-2',
-            'voyage-multilingual-2',
-            'voyage-law-2',
+            "voyage-3",
+            "voyage-finance-2",
+            "voyage-multilingual-2",
+            "voyage-law-2",
         ]:
             return 1024
         else:
@@ -96,9 +96,7 @@ class VoyageAIEmbeddingFunction(TextEmbeddingFunction):
         return self.generate_embeddings(texts, input_type=input_type)
 
     def generate_embeddings(
-        self,
-        texts: Union[List[str], np.ndarray],
-        *args, **kwargs
+        self, texts: Union[List[str], np.ndarray], *args, **kwargs
     ) -> List[np.array]:
         """
         Get the embeddings for the given texts
@@ -124,4 +122,6 @@ class VoyageAIEmbeddingFunction(TextEmbeddingFunction):
             voyageai = attempt_import_or_raise("voyageai")
             if os.environ.get("VOYAGE_API_KEY") is None:
                 api_key_not_found_help("voyageai")
-            VoyageAIEmbeddingFunction.client = voyageai.Client(os.environ["VOYAGE_API_KEY"])
+            VoyageAIEmbeddingFunction.client = voyageai.Client(
+                os.environ["VOYAGE_API_KEY"]
+            )

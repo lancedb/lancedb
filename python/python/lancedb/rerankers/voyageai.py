@@ -78,7 +78,7 @@ class VoyageAIReranker(Reranker):
             documents=docs,
             top_k=self.top_n,
             model=self.model_name,
-            truncation=self.truncation
+            truncation=self.truncation,
         )
         results = (
             response.results
