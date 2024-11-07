@@ -1,3 +1,4 @@
+import { FeatureExtractionPipeline, pipeline } from "@huggingface/transformers";
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 import { expect, test } from "@jest/globals";
@@ -9,7 +10,6 @@ import {
   getRegistry,
   register,
 } from "@lancedb/lancedb/embedding";
-import { FeatureExtractionPipeline, pipeline } from "@xenova/transformers";
 // --8<-- [end:imports]
 import { withTempDirectory } from "./util.ts";
 
@@ -21,7 +21,9 @@ class SentenceTransformersEmbeddings extends TextEmbeddingFunction {
   extractor!: FeatureExtractionPipeline;
 
   async init() {
-    this.extractor = await pipeline("feature-extraction", this.name);
+    this.extractor = await pipeline("feature-extraction", this.name, {
+      dtype: "fp32",
+    });
     this.#ndims = await this.generateEmbeddings(["hello"]).then(
       (e) => e[0].length,
     );

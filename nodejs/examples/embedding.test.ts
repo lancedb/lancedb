@@ -32,6 +32,7 @@ openAiTest("openai embeddings", async () => {
     const query = "greetings";
     const actual = (await tbl.search(query).limit(1).toArray())[0];
     // --8<-- [end:openai_embeddings]
+    expect(actual).toHaveProperty("text");
   });
 });
 
