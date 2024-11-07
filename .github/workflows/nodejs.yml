@@ -101,11 +101,13 @@ jobs:
       working-directory: ./
       env:
         OPENAI_API_KEY: test
-        OPENAI_BASE_URL: http://localhost:8000
+        OPENAI_BASE_URL: http://0.0.0.0:8000
       run: |
-        python ci/mock_openai.py &
+        python ci/mock_openai.py > server.log 2>&1 &
+        ss -ltnp | grep :8000
         cd nodejs/examples
         npm test
+        cat server.log
   macos:
     timeout-minutes: 30
     runs-on: "macos-14"
