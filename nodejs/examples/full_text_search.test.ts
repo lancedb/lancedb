@@ -34,7 +34,8 @@ test("full text search", async () => {
 
     // --8<-- [start:full_text_search]
     const result = await tbl
-      .search("apple")
+      .query()
+      .nearestToText("apple")
       .select(["id", "doc"])
       .limit(10)
       .toArray();
