@@ -5,9 +5,9 @@
   "main": "index.js",
   "type": "module",
   "scripts": {
-    "//": "--experimental-vm-modules is needed to run jest with sentence-transformers",
-    "//": "--testEnvironment is needed to run jest with sentence-transformers",
-    "//": "See: https://github.com/huggingface/transformers.js/issues/57",
+    "//1": "--experimental-vm-modules is needed to run jest with sentence-transformers",
+    "//2": "--testEnvironment is needed to run jest with sentence-transformers",
+    "//3": "See: https://github.com/huggingface/transformers.js/issues/57",
     "test": "node --experimental-vm-modules node_modules/.bin/jest --testEnvironment jest-environment-node-single-context --verbose",
     "lint": "biome check *.ts && biome format *.ts",
     "lint-ci": "biome ci .",
