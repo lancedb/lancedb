@@ -104,6 +104,7 @@ export class TransformersEmbeddingFunction extends EmbeddingFunction<
     try {
       this.#model = await transformers.AutoModel.from_pretrained(
         this.#modelName,
+        { dtype: "fp32" },
       );
     } catch (e) {
       throw new Error(

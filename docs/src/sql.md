@@ -49,7 +49,7 @@ const tbl = await db.createTable('myVectors', data)
     === "@lancedb/lancedb"
 
         ```ts
-        --8<-- "nodejs/examples/filtering.ts:search"
+        --8<-- "nodejs/examples/filtering.test.ts:search"
         ```
 
     === "vectordb (deprecated)"
@@ -91,7 +91,7 @@ For example, the following filter string is acceptable:
     === "@lancedb/lancedb"
 
         ```ts
-        --8<-- "nodejs/examples/filtering.ts:vec_search"
+        --8<-- "nodejs/examples/filtering.test.ts:vec_search"
         ```
 
     === "vectordb (deprecated)"
@@ -169,7 +169,7 @@ You can also filter your data without search.
     === "@lancedb/lancedb"
 
         ```ts
-        --8<-- "nodejs/examples/filtering.ts:sql_search"
+        --8<-- "nodejs/examples/filtering.test.ts:sql_search"
         ```
 
     === "vectordb (deprecated)"

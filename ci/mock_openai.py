@@ -44,9 +44,6 @@ class MockOpenAIRequestHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(json.dumps(response).encode("utf-8"))
 
 
-
-
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Mock OpenAI embeddings API endpoint")
     parser.add_argument("--port", type=int, default=8000, help="Port to listen on")
