@@ -479,14 +479,6 @@ class RemoteTable(Table):
             "compact_files() is not supported on the LanceDB cloud"
         )
 
-    def optimize_indices(self, **kwargs):
-        """optimize_indices() is not supported on the LanceDB cloud.
-        Indices are optimized automatically."""
-        raise NotImplementedError(
-            "optimize_indices() is not supported on the LanceDB cloud. "
-            "Indices are optimized automatically."
-        )
-
     def optimize(
         self,
         *,
