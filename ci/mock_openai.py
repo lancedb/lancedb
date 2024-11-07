@@ -53,5 +53,5 @@ if __name__ == "__main__":
     print(f"server started on port {port}. Press Ctrl-C to stop.")
     print(f"To use, set OPENAI_BASE_URL=http://localhost:{port} in your environment.")
 
-    with http.server.HTTPServer(("localhost", port), MockOpenAIRequestHandler) as server:
+    with http.server.HTTPServer(("0.0.0.0", port), MockOpenAIRequestHandler) as server:
         server.serve_forever()

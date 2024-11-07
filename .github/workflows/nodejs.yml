@@ -105,9 +105,7 @@ jobs:
       run: |
         python ci/mock_openai.py &
         cd nodejs/examples
-        ls
-        # npm test
-        ps
+        npm test
   macos:
     timeout-minutes: 30
     runs-on: "macos-14"
