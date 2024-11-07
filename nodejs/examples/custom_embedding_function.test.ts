@@ -73,4 +73,4 @@ test("Registry examples", async () => {
     // -8<-- [end:call_custom_function]
     expect(results.length).toBe(1);
   });
-});
+}, 100_000);

@@ -97,15 +97,14 @@ jobs:
     - name: Setup examples
       working-directory: nodejs/examples
       run: npm ci
-    - name: Start mock openAI server
-      working-directory: ci
-      run: python mock_openai.py &
     - name: Test examples
       working-directory: nodejs/examples
       env:
         OPENAI_API_KEY: test
         OPENAI_BASE_URL: http://localhost:8000
-      run: npm test
+      run: |
+        python mock_openai.py &
+        npm test
   macos:
     timeout-minutes: 30
     runs-on: "macos-14"
