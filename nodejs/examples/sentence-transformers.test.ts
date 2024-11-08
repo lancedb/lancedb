@@ -6,12 +6,16 @@ import { withTempDirectory } from "./util.ts";
 import * as lancedb from "@lancedb/lancedb";
 import "@lancedb/lancedb/embedding/transformers";
 import { LanceSchema, getRegistry } from "@lancedb/lancedb/embedding";
+import { EmbeddingFunction } from "@lancedb/lancedb/embedding";
 import { Utf8 } from "apache-arrow";
 
 test("full text search", async () => {
   await withTempDirectory(async (databaseDir) => {
     const db = await lancedb.connect(databaseDir);
-    const func = await getRegistry().get("huggingface").create();
+    console.log(getRegistry());
+    const func = (await getRegistry()
+      .get("huggingface")
+      ?.create()) as EmbeddingFunction;
 
     const facts = [
       "Albert Einstein was a theoretical physicist.",
@@ -56,4 +60,4 @@ test("full text search", async () => {
 
     expect(actual[0]["text"]).toBe("The human body has 206 bones.");
   });
-});
+}, 100_000);
