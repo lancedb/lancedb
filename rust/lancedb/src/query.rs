@@ -475,6 +475,7 @@ impl<T: HasQuery> QueryBase for T {
 
 /// Options for controlling the execution of a query
 #[non_exhaustive]
+#[derive(Debug, Clone)]
 pub struct QueryExecutionOptions {
     /// The maximum number of rows that will be contained in a single
     /// `RecordBatch` delivered by the query.
@@ -734,6 +735,15 @@ impl VectorQuery {
         self
     }
 
+    /// Add another query vector to the search.
+    ///
+    /// Multiple searches will be dispatched as part of the query.
+    pub fn nearest_to(mut self, vector: impl IntoQueryVector) -> Result<Self> {
+        let query_vector = vector.to_query_vector(&DataType::Float32, "default")?;
+        self.query_vector.push(query_vector);
+        Ok(self)
+    }
+
     /// Set the number of partitions to search (probe)
     ///
     /// This argument is only used when the vector column has an IVF PQ index.
@@ -854,6 +864,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
+    use arrow::{compute::concat_batches, datatypes::Int32Type};
     use arrow_array::{
         cast::AsArray, Float32Array, Int32Array, RecordBatch, RecordBatchIterator,
         RecordBatchReader,
@@ -883,7 +894,10 @@ mod tests {
 
         let vector = Float32Array::from_iter_values([0.1, 0.2]);
         let query = table.query().nearest_to(&[0.1, 0.2]).unwrap();
-        assert_eq!(*query.query_vector.first().unwrap().as_ref().as_primitive(), vector);
+        assert_eq!(
+            *query.query_vector.first().unwrap().as_ref().as_primitive(),
+            vector
+        );
 
         let new_vector = Float32Array::from_iter_values([9.8, 8.7]);
 
@@ -1196,5 +1210,35 @@ mod tests {
         for batch in results {
             assert!(batch.column_by_name("_rowid").is_some());
         }
+    }
+
+    #[tokio::test]
+    async fn test_multiple_query_vectors() {
+        let tmp_dir = tempdir().unwrap();
+        let table = make_test_table(&tmp_dir).await;
+        let query = table
+            .query()
+            .nearest_to(&[0.1, 0.2, 0.3, 0.4])
+            .unwrap()
+            .nearest_to(&[0.5, 0.6, 0.7, 0.8])
+            .unwrap()
+            .limit(1);
+
+        let plan = query.explain_plan(true).await.unwrap();
+        assert!(plan.contains("UnionExec"));
+
+        let results = query
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let results = concat_batches(&results[0].schema(), &results).unwrap();
+        assert_eq!(results.num_rows(), 2); // One result for each query vector.
+        let query_index = results["query_index"].as_primitive::<Int32Type>();
+        // We don't guarantee order.
+        assert!(query_index.values().contains(&0));
+        assert!(query_index.values().contains(&1));
     }
 }
