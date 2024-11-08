@@ -650,7 +650,7 @@ impl Query {
     pub fn nearest_to(self, vector: impl IntoQueryVector) -> Result<VectorQuery> {
         let mut vector_query = self.into_vector();
         let query_vector = vector.to_query_vector(&DataType::Float32, "default")?;
-        vector_query.query_vector = Some(query_vector);
+        vector_query.query_vector.push(query_vector);
         Ok(vector_query)
     }
 }
@@ -701,7 +701,7 @@ pub struct VectorQuery {
     // the column based on the dataset's schema.
     pub(crate) column: Option<String>,
     // IVF PQ - ANN search.
-    pub(crate) query_vector: Option<Arc<dyn Array>>,
+    pub(crate) query_vector: Vec<Arc<dyn Array>>,
     pub(crate) nprobes: usize,
     pub(crate) refine_factor: Option<u32>,
     pub(crate) distance_type: Option<DistanceType>,
@@ -714,7 +714,7 @@ impl VectorQuery {
         Self {
             base,
             column: None,
-            query_vector: None,
+            query_vector: Vec::new(),
             nprobes: 20,
             refine_factor: None,
             distance_type: None,
@@ -883,7 +883,7 @@ mod tests {
 
         let vector = Float32Array::from_iter_values([0.1, 0.2]);
         let query = table.query().nearest_to(&[0.1, 0.2]).unwrap();
-        assert_eq!(*query.query_vector.unwrap().as_ref().as_primitive(), vector);
+        assert_eq!(*query.query_vector.first().unwrap().as_ref().as_primitive(), vector);
 
         let new_vector = Float32Array::from_iter_values([9.8, 8.7]);
 
@@ -899,7 +899,7 @@ mod tests {
             .refine_factor(999);
 
         assert_eq!(
-            *query.query_vector.unwrap().as_ref().as_primitive(),
+            *query.query_vector.first().unwrap().as_ref().as_primitive(),
             new_vector
         );
         assert_eq!(query.base.limit.unwrap(), 100);
