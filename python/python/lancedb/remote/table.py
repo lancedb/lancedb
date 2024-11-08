@@ -131,8 +131,25 @@ class RemoteTable(Table):
         *,
         replace: bool = False,
         with_position: bool = True,
+        # tokenizer configs:
+        base_tokenizer: str = "simple",
+        language: str = "English",
+        max_token_length: Optional[int] = 40,
+        lower_case: bool = True,
+        stem: bool = False,
+        remove_stop_words: bool = False,
+        ascii_folding: bool = False,
     ):
-        config = FTS(with_position=with_position)
+        config = FTS(
+            with_position=with_position,
+            base_tokenizer=base_tokenizer,
+            language=language,
+            max_token_length=max_token_length,
+            lower_case=lower_case,
+            stem=stem,
+            remove_stop_words=remove_stop_words,
+            ascii_folding=ascii_folding,
+        )
         self._loop.run_until_complete(
             self._table.create_index(column, config=config, replace=replace)
         )
