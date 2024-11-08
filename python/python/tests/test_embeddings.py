@@ -196,6 +196,7 @@ def test_add_optional_vector(tmp_path):
         "ollama",
         "cohere",
         "instructor",
+        "voyageai",
     ],
 )
 def test_embedding_function_safe_model_dump(embedding_type):
