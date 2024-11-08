@@ -285,8 +285,18 @@ jobs:
           Add-Content $env:GITHUB_PATH "C:\Program Files (x86)\Windows Kits\10\bin\10.0.22621.0\x64"
           Add-Content $env:GITHUB_PATH "C:\BuildTools\VC\Tools\Llvm\x64\bin"
 
-          $env:LIB = ""
-          Add-Content $env:GITHUB_ENV "LIB=C:\Program Files (x86)\Windows Kits\10\Lib\10.0.22621.0\um\arm64;C:\Program Files (x86)\Windows Kits\10\Lib\10.0.22621.0\ucrt\arm64"
+          # Add MSVC runtime libraries to LIB
+          $env:LIB = "C:\BuildTools\VC\Tools\MSVC\$latestVersion\lib\arm64;" + 
+                     "C:\Program Files (x86)\Windows Kits\10\Lib\10.0.22621.0\um\arm64;" +
+                     "C:\Program Files (x86)\Windows Kits\10\Lib\10.0.22621.0\ucrt\arm64"
+          Add-Content $env:GITHUB_ENV "LIB=$env:LIB"
+
+          # Add INCLUDE paths
+          $env:INCLUDE = "C:\BuildTools\VC\Tools\MSVC\$latestVersion\include;" +
+                        "C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\ucrt;" +
+                        "C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\um;" +
+                        "C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\shared"
+          Add-Content $env:GITHUB_ENV "INCLUDE=$env:INCLUDE"
         shell: powershell
       - name: Install Rust
         run: |
