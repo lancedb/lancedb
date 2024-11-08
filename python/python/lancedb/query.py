@@ -1491,7 +1491,7 @@ class AsyncQuery(AsyncQueryBase):
         return pa.array(vec)
 
     def nearest_to(
-        self, query_vector: Optional[Union[VEC, Tuple]] = None
+        self, query_vector: Optional[Union[VEC, Tuple, List[VEC]]] = None
     ) -> AsyncVectorQuery:
         """
         Find the nearest vectors to the given query vector.
@@ -1530,9 +1530,21 @@ class AsyncQuery(AsyncQueryBase):
         Vector searches always have a [limit][].  If `limit` has not been called then
         a default `limit` of 10 will be used.
         """
-        return AsyncVectorQuery(
-            self._inner.nearest_to(AsyncQuery._query_vec_to_array(query_vector))
-        )
+        if (
+            query_vector is not None
+            and len(query_vector) > 0
+            and not isinstance(query_vector[0], float)
+        ):
+            # multiple have been passed
+            query_vectors = [AsyncQuery._query_vec_to_array(v) for v in query_vector]
+            new_self = self._inner.nearest_to(query_vectors[0])
+            for v in query_vectors[1:]:
+                new_self.add_query_vector(v)
+            return AsyncVectorQuery(new_self)
+        else:
+            return AsyncVectorQuery(
+                self._inner.nearest_to(AsyncQuery._query_vec_to_array(query_vector))
+            )
 
     def nearest_to_text(
         self, query: str, columns: Union[str, List[str]] = []

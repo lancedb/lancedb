@@ -142,6 +142,13 @@ impl VectorQuery {
         self.inner = self.inner.clone().only_if(predicate);
     }
 
+    pub fn add_query_vector(&mut self, vector: Bound<'_, PyAny>) -> PyResult<()> {
+        let data: ArrayData = ArrayData::from_pyarrow_bound(&vector)?;
+        let array = make_array(data);
+        self.inner = self.inner.clone().nearest_to(array).infer_error()?;
+        Ok(())
+    }
+
     pub fn select(&mut self, columns: Vec<(String, String)>) {
         self.inner = self.inner.clone().select(Select::dynamic(&columns));
     }

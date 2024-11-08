@@ -981,7 +981,6 @@ impl Table {
     pub(crate) fn multi_vector_plan(
         plans: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        // TODO: add query_index column.
         if plans.is_empty() {
             return Err(Error::InvalidInput {
                 message: "No plans provided".to_string(),
