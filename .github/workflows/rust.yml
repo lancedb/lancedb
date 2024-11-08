@@ -225,6 +225,10 @@ jobs:
         if: steps.cache-installs.outputs.cache-hit != 'true'
         working-directory: C:\
         run: |
+          if (Test-Path 'C:\protoc') {
+              Write-Host "Protoc directory exists, skipping installation"
+              return
+          }
           New-Item -Path 'C:\protoc' -ItemType Directory
           Set-Location C:\protoc
           Invoke-WebRequest https://github.com/protocolbuffers/protobuf/releases/download/v21.12/protoc-21.12-win64.zip -OutFile C:\protoc\protoc.zip
