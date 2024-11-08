@@ -110,7 +110,16 @@ class FTS:
         remove_stop_words: bool = False,
         ascii_folding: bool = False,
     ):
-        self._inner = LanceDbIndex.fts(with_position=with_position)
+        self._inner = LanceDbIndex.fts(
+            with_position=with_position,
+            base_tokenizer=base_tokenizer,
+            language=language,
+            max_token_length=max_token_length,
+            lower_case=lower_case,
+            stem=stem,
+            remove_stop_words=remove_stop_words,
+            ascii_folding=ascii_folding,
+        )
 
 
 class HnswPq:
