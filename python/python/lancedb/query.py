@@ -481,6 +481,7 @@ class LanceQueryBuilder(ABC):
         >>> plan = table.search(query).explain_plan(True)
         >>> print(plan) # doctest: +ELLIPSIS, +NORMALIZE_WHITESPACE
         ProjectionExec: expr=[vector@0 as vector, _distance@2 as _distance]
+        GlobalLimitExec: skip=0, fetch=10
           FilterExec: _distance@2 IS NOT NULL
             SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST], preserve_partitioning=[false]
               KNNVectorDistance: metric=l2
@@ -500,7 +501,16 @@ class LanceQueryBuilder(ABC):
             nearest={
                 "column": self._vector_column,
                 "q": self._query,
+                "k": self._limit,
+                "metric": self._metric,
+                "nprobes": self._nprobes,
+                "refine_factor": self._refine_factor,
             },
+            prefilter=self._prefilter,
+            filter=self._str_query,
+            limit=self._limit,
+            with_row_id=self._with_row_id,
+            offset=self._offset,
         ).explain_plan(verbose)
 
     def vector(self, vector: Union[np.ndarray, list]) -> LanceQueryBuilder:
@@ -1315,6 +1325,48 @@ class AsyncQueryBase(object):
         self._inner.offset(offset)
         return self
 
+    def fast_search(self) -> AsyncQuery:
+        """
+        Skip searching un-indexed data.
+
+        This can make queries faster, but will miss any data that has not been
+        indexed.
+
+        !!! tip
+            You can add new data into an existing index by calling
+            [AsyncTable.optimize][lancedb.table.AsyncTable.optimize].
+        """
+        self._inner.fast_search()
+        return self
+
+    def with_row_id(self) -> AsyncQuery:
+        """
+        Include the _rowid column in the results.
+        """
+        self._inner.with_row_id()
+        return self
+
+    def postfilter(self) -> AsyncQuery:
+        """
+        If this is called then filtering will happen after the search instead of
+        before.
+        By default filtering will be performed before the search.  This is how
+        filtering is typically understood to work.  This prefilter step does add some
+        additional latency.  Creating a scalar index on the filter column(s) can
+        often improve this latency.  However, sometimes a filter is too complex or
+        scalar indices cannot be applied to the column.  In these cases postfiltering
+        can be used instead of prefiltering to improve latency.
+        Post filtering applies the filter to the results of the search.  This
+        means we only run the filter on a much smaller set of data.  However, it can
+        cause the query to return fewer than `limit` results (or even no results) if
+        none of the nearest results match the filter.
+        Post filtering happens during the "refine stage" (described in more detail in
+        @see {@link VectorQuery#refineFactor}).  This means that setting a higher refine
+        factor can often help restore some of the results lost by post filtering.
+        """
+        self._inner.postfilter()
+        return self
+
     async def to_batches(
         self, *, max_batch_length: Optional[int] = None
     ) -> AsyncRecordBatchReader:
@@ -1616,30 +1668,6 @@ class AsyncVectorQuery(AsyncQueryBase):
         By default "l2" is used.
         """
         self._inner.distance_type(distance_type)
-        return self
-
-    def postfilter(self) -> AsyncVectorQuery:
-        """
-        If this is called then filtering will happen after the vector search instead of
-        before.
-
-        By default filtering will be performed before the vector search.  This is how
-        filtering is typically understood to work.  This prefilter step does add some
-        additional latency.  Creating a scalar index on the filter column(s) can
-        often improve this latency.  However, sometimes a filter is too complex or
-        scalar indices cannot be applied to the column.  In these cases postfiltering
-        can be used instead of prefiltering to improve latency.
-
-        Post filtering applies the filter to the results of the vector search.  This
-        means we only run the filter on a much smaller set of data.  However, it can
-        cause the query to return fewer than `limit` results (or even no results) if
-        none of the nearest results match the filter.
-
-        Post filtering happens during the "refine stage" (described in more detail in
-        @see {@link VectorQuery#refineFactor}).  This means that setting a higher refine
-        factor can often help restore some of the results lost by post filtering.
-        """
-        self._inner.postfilter()
         return self
 
     def bypass_vector_index(self) -> AsyncVectorQuery:

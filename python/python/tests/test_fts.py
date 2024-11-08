@@ -235,6 +235,29 @@ async def test_search_fts_async(async_table):
     results = await async_table.query().nearest_to_text("puppy").limit(5).to_list()
     assert len(results) == 5
 
+    expected_count = await async_table.count_rows(
+        "count > 5000 and contains(text, 'puppy')"
+    )
+    expected_count = min(expected_count, 10)
+
+    limited_results_pre_filter = await (
+        async_table.query()
+        .nearest_to_text("puppy")
+        .where("count > 5000")
+        .limit(10)
+        .to_list()
+    )
+    assert len(limited_results_pre_filter) == expected_count
+    limited_results_post_filter = await (
+        async_table.query()
+        .nearest_to_text("puppy")
+        .where("count > 5000")
+        .limit(10)
+        .postfilter()
+        .to_list()
+    )
+    assert len(limited_results_post_filter) <= expected_count
+
 
 @pytest.mark.asyncio
 async def test_search_fts_specify_column_async(async_table):
