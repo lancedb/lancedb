@@ -738,7 +738,14 @@ impl VectorQuery {
     /// Add another query vector to the search.
     ///
     /// Multiple searches will be dispatched as part of the query.
-    pub fn nearest_to(mut self, vector: impl IntoQueryVector) -> Result<Self> {
+    /// This is a convenience method for adding multiple query vectors
+    /// to the search. It is not expected to be faster than issuing
+    /// multiple queries concurrently.
+    ///
+    /// The output data will contain an additional columns `query_index` which
+    /// will contain the index of the query vector that was used to generate the
+    /// result.
+    pub fn add_query_vector(mut self, vector: impl IntoQueryVector) -> Result<Self> {
         let query_vector = vector.to_query_vector(&DataType::Float32, "default")?;
         self.query_vector.push(query_vector);
         Ok(self)
@@ -1220,7 +1227,7 @@ mod tests {
             .query()
             .nearest_to(&[0.1, 0.2, 0.3, 0.4])
             .unwrap()
-            .nearest_to(&[0.5, 0.6, 0.7, 0.8])
+            .add_query_vector(&[0.5, 0.6, 0.7, 0.8])
             .unwrap()
             .limit(1);
 

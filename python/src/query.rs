@@ -145,7 +145,7 @@ impl VectorQuery {
     pub fn add_query_vector(&mut self, vector: Bound<'_, PyAny>) -> PyResult<()> {
         let data: ArrayData = ArrayData::from_pyarrow_bound(&vector)?;
         let array = make_array(data);
-        self.inner = self.inner.clone().nearest_to(array).infer_error()?;
+        self.inner = self.inner.clone().add_query_vector(array).infer_error()?;
         Ok(())
     }
 

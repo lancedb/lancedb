@@ -1003,7 +1003,7 @@ describe("column name options", () => {
     const results = await table
       .query()
       .nearestTo([0.1, 0.2])
-      .nearestTo([0.1, 0.2])
+      .addQueryVector([0.1, 0.2])
       .limit(1)
       .toArray();
     console.log(results);

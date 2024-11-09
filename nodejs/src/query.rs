@@ -140,7 +140,7 @@ impl VectorQuery {
         self.inner = self
             .inner
             .clone()
-            .nearest_to(vector.as_ref())
+            .add_query_vector(vector.as_ref())
             .default_error()?;
         Ok(())
     }

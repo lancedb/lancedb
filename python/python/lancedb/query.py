@@ -1529,11 +1529,19 @@ class AsyncQuery(AsyncQueryBase):
 
         Vector searches always have a [limit][].  If `limit` has not been called then
         a default `limit` of 10 will be used.
+
+        Typically, a single vector is passed in as the query. However, you can also
+        pass in multiple vectors.  This can be useful if you want to find the nearest
+        vectors to multiple query vectors. This is not expected to be faster than
+        making multiple queries concurrently; it is just a convenience method.
+        If multiple vectors are passed in then an additional column `query_index`
+        will be added to the results.  This column will contain the index of the
+        query vector that the result is nearest to.
         """
         if (
-            query_vector is not None
+            isinstance(query_vector, list)
             and len(query_vector) > 0
-            and not isinstance(query_vector[0], float)
+            and not isinstance(query_vector[0], (float, int))
         ):
             # multiple have been passed
             query_vectors = [AsyncQuery._query_vec_to_array(v) for v in query_vector]
