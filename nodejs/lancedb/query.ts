@@ -513,7 +513,7 @@ export class VectorQuery extends QueryBase<NativeVectorQuery> {
       return new VectorQuery(res);
     } else {
       super.doCall((inner) => {
-        inner.nearestTo(Float32Array.from(vector));
+        inner.addQueryVector(Float32Array.from(vector));
       });
       return this;
     }

@@ -136,8 +136,9 @@ impl VectorQuery {
     }
 
     #[napi]
-    pub fn nearest_to(&mut self, vector: Float32Array) -> Result<()> {
-        self.inner
+    pub fn add_query_vector(&mut self, vector: Float32Array) -> Result<()> {
+        self.inner = self
+            .inner
             .clone()
             .nearest_to(vector.as_ref())
             .default_error()?;
