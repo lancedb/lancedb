@@ -1,5 +1,3 @@
-// --8<-- [start:imports]
-
 use std::{iter::once, sync::Arc};
 
 use arrow_array::{Float64Array, Int32Array, RecordBatch, RecordBatchIterator, StringArray};
@@ -15,9 +13,6 @@ use lancedb::{
     Result,
 };
 
-// --8<-- [end:imports]
-
-// --8<-- [start:bedrock_embeddings]
 #[tokio::main]
 async fn main() -> Result<()> {
     let tempdir = tempfile::tempdir().unwrap();
@@ -68,7 +63,6 @@ async fn main() -> Result<()> {
     println!("Closest match: {}", text);
     Ok(())
 }
-// --8<-- [end:bedrock_embeddings]
 
 fn make_data() -> impl IntoArrow {
     let schema = Schema::new(vec![
