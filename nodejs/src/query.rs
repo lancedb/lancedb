@@ -136,6 +136,15 @@ impl VectorQuery {
     }
 
     #[napi]
+    pub fn nearest_to(&mut self, vector: Float32Array) -> Result<()> {
+        self.inner
+            .clone()
+            .nearest_to(vector.as_ref())
+            .default_error()?;
+        Ok(())
+    }
+
+    #[napi]
     pub fn distance_type(&mut self, distance_type: String) -> napi::Result<()> {
         let distance_type = parse_distance_type(distance_type)?;
         self.inner = self.inner.clone().distance_type(distance_type);

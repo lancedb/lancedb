@@ -492,6 +492,32 @@ export class VectorQuery extends QueryBase<NativeVectorQuery> {
     super.doCall((inner) => inner.bypassVectorIndex());
     return this;
   }
+
+  nearestTo(vector: IntoVector): VectorQuery {
+    if (vector instanceof Promise) {
+      const res = (async () => {
+        try {
+          const v = await vector;
+          const arr = Float32Array.from(v);
+          //
+          // biome-ignore lint/suspicious/noExplicitAny: we need to get the `inner`, but js has no package scoping
+          const value: any = this.nearestTo(arr);
+          const inner = value.inner as
+            | NativeVectorQuery
+            | Promise<NativeVectorQuery>;
+          return inner;
+        } catch (e) {
+          return Promise.reject(e);
+        }
+      })();
+      return new VectorQuery(res);
+    } else {
+      super.doCall((inner) => {
+        inner.nearestTo(Float32Array.from(vector));
+      });
+      return this;
+    }
+  }
 }
 
 /** A builder for LanceDB queries. */
