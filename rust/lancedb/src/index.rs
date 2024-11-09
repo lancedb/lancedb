@@ -29,6 +29,7 @@ pub mod scalar;
 pub mod vector;
 
 /// Supported index types.
+#[derive(Debug, Clone)]
 pub enum Index {
     Auto,
     /// A `BTree` index is an sorted index on scalar columns.

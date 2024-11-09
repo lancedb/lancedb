@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import time
 from abc import ABC, abstractmethod
@@ -32,7 +33,7 @@ import pyarrow.fs as pa_fs
 from lance import LanceDataset
 from lance.dependencies import _check_for_hugging_face
 
-from .common import DATA, VEC, VECTOR_COLUMN_NAME
+from .common import DATA, VEC, VECTOR_COLUMN_NAME, sanitize_uri
 from .embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
 from .merge import LanceMergeInsertBuilder
 from .pydantic import LanceModel, model_to_dict
@@ -56,6 +57,8 @@ from .util import (
     value_to_sql,
 )
 from .index import lang_mapping
+
+from ._lancedb import connect as lancedb_connect
 
 if TYPE_CHECKING:
     import PIL
@@ -891,6 +894,55 @@ class Table(ABC):
 
         Arguments are passed onto :meth:`lance.dataset.DatasetOptimizer.compact_files`.
         For most cases, the default should be fine.
+        """
+
+    @abstractmethod
+    def optimize(
+        self,
+        *,
+        cleanup_older_than: Optional[timedelta] = None,
+        delete_unverified: bool = False,
+    ):
+        """
+        Optimize the on-disk data and indices for better performance.
+
+        Modeled after ``VACUUM`` in PostgreSQL.
+
+        Optimization covers three operations:
+
+         * Compaction: Merges small files into larger ones
+         * Prune: Removes old versions of the dataset
+         * Index: Optimizes the indices, adding new data to existing indices
+
+        Parameters
+        ----------
+        cleanup_older_than: timedelta, optional default 7 days
+            All files belonging to versions older than this will be removed.  Set
+            to 0 days to remove all versions except the latest.  The latest version
+            is never removed.
+        delete_unverified: bool, default False
+            Files leftover from a failed transaction may appear to be part of an
+            in-progress operation (e.g. appending new data) and these files will not
+            be deleted unless they are at least 7 days old. If delete_unverified is True
+            then these files will be deleted regardless of their age.
+
+        Experimental API
+        ----------------
+
+        The optimization process is undergoing active development and may change.
+        Our goal with these changes is to improve the performance of optimization and
+        reduce the complexity.
+
+        That being said, it is essential today to run optimize if you want the best
+        performance.  It should be stable and safe to use in production, but it our
+        hope that the API may be simplified (or not even need to be called) in the
+        future.
+
+        The frequency an application shoudl call optimize is based on the frequency of
+        data modifications.  If data is frequently added, deleted, or updated then
+        optimize should be run frequently.  A good rule of thumb is to run optimize if
+        you have added or modified 100,000 or more records or run more than 20 data
+        modification operations.
         """
 
     @abstractmethod
@@ -1970,6 +2022,83 @@ class LanceTable(Table):
         should be fine.
         """
         return self.to_lance().optimize.compact_files(*args, **kwargs)
+
+    def optimize(
+        self,
+        *,
+        cleanup_older_than: Optional[timedelta] = None,
+        delete_unverified: bool = False,
+    ):
+        """
+        Optimize the on-disk data and indices for better performance.
+
+        Modeled after ``VACUUM`` in PostgreSQL.
+
+        Optimization covers three operations:
+
+         * Compaction: Merges small files into larger ones
+         * Prune: Removes old versions of the dataset
+         * Index: Optimizes the indices, adding new data to existing indices
+
+        Parameters
+        ----------
+        cleanup_older_than: timedelta, optional default 7 days
+            All files belonging to versions older than this will be removed.  Set
+            to 0 days to remove all versions except the latest.  The latest version
+            is never removed.
+        delete_unverified: bool, default False
+            Files leftover from a failed transaction may appear to be part of an
+            in-progress operation (e.g. appending new data) and these files will not
+            be deleted unless they are at least 7 days old. If delete_unverified is True
+            then these files will be deleted regardless of their age.
+
+        Experimental API
+        ----------------
+
+        The optimization process is undergoing active development and may change.
+        Our goal with these changes is to improve the performance of optimization and
+        reduce the complexity.
+
+        That being said, it is essential today to run optimize if you want the best
+        performance.  It should be stable and safe to use in production, but it our
+        hope that the API may be simplified (or not even need to be called) in the
+        future.
+
+        The frequency an application shoudl call optimize is based on the frequency of
+        data modifications.  If data is frequently added, deleted, or updated then
+        optimize should be run frequently.  A good rule of thumb is to run optimize if
+        you have added or modified 100,000 or more records or run more than 20 data
+        modification operations.
+        """
+        try:
+            asyncio.get_running_loop()
+            raise AssertionError(
+                "Synchronous method called in asynchronous context. "
+                "If you are writing an asynchronous application "
+                "then please use the asynchronous APIs"
+            )
+
+        except RuntimeError:
+            asyncio.run(
+                self._async_optimize(
+                    cleanup_older_than=cleanup_older_than,
+                    delete_unverified=delete_unverified,
+                )
+            )
+            self.checkout_latest()
+
+    async def _async_optimize(
+        self,
+        cleanup_older_than: Optional[timedelta] = None,
+        delete_unverified: bool = False,
+    ):
+        conn = await lancedb_connect(
+            sanitize_uri(self._conn.uri),
+        )
+        table = AsyncTable(await conn.open_table(self.name))
+        return await table.optimize(
+            cleanup_older_than=cleanup_older_than, delete_unverified=delete_unverified
+        )
 
     def add_columns(self, transforms: Dict[str, str]):
         self._dataset_mut.add_columns(transforms)

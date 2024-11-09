@@ -18,7 +18,7 @@ futures.workspace = true
 lancedb = { path = "../rust/lancedb", features = ["remote"] }
 napi = { version = "2.16.8", default-features = false, features = [
     "napi9",
-    "async",
+    "async"
 ] }
 napi-derive = "2.16.4"
 # Prevent dynamic linking of lzma, which comes from datafusion
