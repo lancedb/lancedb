@@ -1,0 +1,23 @@
+name: NPM Publish
+on: [push]
+
+jobs:
+  node-linux:
+    name: vectordb (${{ matrix.config.arch}}-unknown-linux-musl)
+    runs-on: ${{ matrix.config.runner }}
+    container: ${{ matrix.config.container }}
+    strategy:
+      fail-fast: false
+      matrix:
+        config:
+          - arch: x86_64
+            runner: ubuntu-latest
+            container: alpine:edge
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup upterm session
+        uses: lhotari/action-upterm@v1
+        with:
+          ## limits ssh access and adds the ssh public key for the user which triggered the workflow
+          limit-access-to-actor: true
