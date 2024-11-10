@@ -1,0 +1,13 @@
+{
+	"name": "@lancedb/lancedb-linux-x64-musl",
+	"version": "0.13.0-beta.1",
+	"os": ["linux"],
+	"cpu": ["x64"],
+	"main": "lancedb.linux-x64-musl.node",
+	"files": ["lancedb.linux-x64-musl.node"],
+	"license": "Apache 2.0",
+	"engines": {
+		"node": ">= 18"
+	},
+	"libc": ["musl"]
+}

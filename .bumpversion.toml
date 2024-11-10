@@ -89,6 +89,16 @@ search = "\"@lancedb/vectordb-linux-x64-gnu\": \"{current_version}\""
 
 [[tool.bumpversion.files]]
 glob = "node/package.json"
+replace = "\"@lancedb/vectordb-linux-arm64-musl\": \"{new_version}\""
+search = "\"@lancedb/vectordb-linux-arm64-musl\": \"{current_version}\""
+
+[[tool.bumpversion.files]]
+glob = "node/package.json"
+replace = "\"@lancedb/vectordb-linux-x64-musl\": \"{new_version}\""
+search = "\"@lancedb/vectordb-linux-x64-musl\": \"{current_version}\""
+
+[[tool.bumpversion.files]]
+glob = "node/package.json"
 replace = "\"@lancedb/vectordb-win32-x64-msvc\": \"{new_version}\""
 search = "\"@lancedb/vectordb-win32-x64-msvc\": \"{current_version}\""
 
