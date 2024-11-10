@@ -16,11 +16,7 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Install bash
-        run: |
-            apk add bash
-      - name: Setup upterm session
-        uses: lhotari/action-upterm@v1
+      - name: Setup tmate session
+        uses: mxschmitt/action-tmate@v3
         with:
-          ## limits ssh access and adds the ssh public key for the user which triggered the workflow
           limit-access-to-actor: true
