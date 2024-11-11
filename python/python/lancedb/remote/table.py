@@ -11,6 +11,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
+from datetime import timedelta
 import asyncio
 import logging
 from functools import cached_property
@@ -493,6 +494,19 @@ class RemoteTable(Table):
         """compact_files() is not supported on the LanceDB cloud"""
         raise NotImplementedError(
             "compact_files() is not supported on the LanceDB cloud"
+        )
+
+    def optimize(
+        self,
+        *,
+        cleanup_older_than: Optional[timedelta] = None,
+        delete_unverified: bool = False,
+    ):
+        """optimize() is not supported on the LanceDB cloud.
+        Indices are optimized automatically."""
+        raise NotImplementedError(
+            "optimize() is not supported on the LanceDB cloud. "
+            "Indices are optimized automatically."
         )
 
     def count_rows(self, filter: Optional[str] = None) -> int:

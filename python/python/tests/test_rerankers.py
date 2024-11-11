@@ -16,6 +16,7 @@ from lancedb.rerankers import (
     OpenaiReranker,
     JinaReranker,
     AnswerdotaiRerankers,
+    VoyageAIReranker,
 )
 from lancedb.table import LanceTable
 
@@ -343,4 +344,15 @@ def test_jina_reranker(tmp_path, use_tantivy):
     pytest.importorskip("jina")
     table, schema = get_test_table(tmp_path, use_tantivy)
     reranker = JinaReranker()
+    _run_test_reranker(reranker, table, "single player experience", None, schema)
+
+
+@pytest.mark.skipif(
+    os.environ.get("VOYAGE_API_KEY") is None, reason="VOYAGE_API_KEY not set"
+)
+@pytest.mark.parametrize("use_tantivy", [True, False])
+def test_voyageai_reranker(tmp_path, use_tantivy):
+    pytest.importorskip("voyageai")
+    reranker = VoyageAIReranker(model_name="rerank-2")
+    table, schema = get_test_table(tmp_path, use_tantivy)
     _run_test_reranker(reranker, table, "single player experience", None, schema)
