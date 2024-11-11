@@ -18,7 +18,7 @@ jobs:
         uses: actions/checkout@v4
       - name: Install Dependencies and Build
         run: |
-            apk add bash npm protobuf-dev gcc musl-dev
+            apk add bash npm protobuf-dev rustup gcc musl-dev
             rustup-init -y --default-toolchain nightly
             source "$HOME/.cargo/env"
             bash ci/manylinux_node/build_vectordb.sh ${{ matrix.config.arch }}
