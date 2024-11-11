@@ -5,13 +5,16 @@ ARCH=${1:-x86_64}
 
 if [ "$ARCH" = "x86_64" ]; then
     export OPENSSL_LIB_DIR=/usr/local/lib64/
-else 
+else
     export OPENSSL_LIB_DIR=/usr/local/lib/
 fi
 export OPENSSL_STATIC=1
 export OPENSSL_INCLUDE_DIR=/usr/local/include/openssl
 
-source $HOME/.bashrc
+include () { #Alpine doesn't have .bashrc
+    [[ -f "$1" ]] && source "$1"
+}
+include $HOME/.bashrc
 
 cd node
 npm ci
