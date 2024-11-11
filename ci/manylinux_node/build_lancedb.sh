@@ -11,10 +11,8 @@ fi
 export OPENSSL_STATIC=1
 export OPENSSL_INCLUDE_DIR=/usr/local/include/openssl
 
-include () { #Alpine doesn't have .bashrc
-    [[ -f "$1" ]] && source "$1"
-}
-include $HOME/.bashrc
+#Alpine doesn't have .bashrc
+FILE=$HOME/.bashrc && test -f $FILE && source $FILE
 
 cd nodejs
 npm ci

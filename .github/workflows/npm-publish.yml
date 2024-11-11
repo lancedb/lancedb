@@ -19,7 +19,7 @@ jobs:
       - name: Install Dependencies and Build
         run: |
             apk add bash npm cargo protobuf-dev
-            bash ci/manylinux_node/build_vectordb.sh
+            bash ci/manylinux_node/build_vectordb.sh ${{ matrix.config.arch }}
       - name: Upload Linux Artifacts
         uses: actions/upload-artifact@v4
         with:
