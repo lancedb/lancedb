@@ -481,6 +481,7 @@ class LanceQueryBuilder(ABC):
         >>> plan = table.search(query).explain_plan(True)
         >>> print(plan) # doctest: +ELLIPSIS, +NORMALIZE_WHITESPACE
         ProjectionExec: expr=[vector@0 as vector, _distance@2 as _distance]
+        GlobalLimitExec: skip=0, fetch=10
           FilterExec: _distance@2 IS NOT NULL
             SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST], preserve_partitioning=[false]
               KNNVectorDistance: metric=l2
@@ -500,7 +501,16 @@ class LanceQueryBuilder(ABC):
             nearest={
                 "column": self._vector_column,
                 "q": self._query,
+                "k": self._limit,
+                "metric": self._metric,
+                "nprobes": self._nprobes,
+                "refine_factor": self._refine_factor,
             },
+            prefilter=self._prefilter,
+            filter=self._str_query,
+            limit=self._limit,
+            with_row_id=self._with_row_id,
+            offset=self._offset,
         ).explain_plan(verbose)
 
     def vector(self, vector: Union[np.ndarray, list]) -> LanceQueryBuilder:
@@ -1327,6 +1337,13 @@ class AsyncQueryBase(object):
             [AsyncTable.optimize][lancedb.table.AsyncTable.optimize].
         """
         self._inner.fast_search()
+        return self
+
+    def with_row_id(self) -> AsyncQuery:
+        """
+        Include the _rowid column in the results.
+        """
+        self._inner.with_row_id()
         return self
 
     def postfilter(self) -> AsyncQuery:

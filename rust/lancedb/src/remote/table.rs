@@ -167,6 +167,10 @@ impl<S: HttpSend> RemoteTable<S> {
             body["fast_search"] = serde_json::Value::Bool(true);
         }
 
+        if params.with_row_id {
+            body["with_row_id"] = serde_json::Value::Bool(true);
+        }
+
         if let Some(full_text_search) = &params.full_text_search {
             if full_text_search.wand_factor.is_some() {
                 return Err(Error::NotSupported {
@@ -310,8 +314,8 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
         body["nprobes"] = query.nprobes.into();
         body["refine_factor"] = query.refine_factor.into();
 
-        if let Some(vector) = query.query_vector.as_ref() {
-            let vector: Vec<f32> = match vector.data_type() {
+        let vector: Vec<f32> = if let Some(vector) = query.query_vector.as_ref() {
+            match vector.data_type() {
                 DataType::Float32 => vector
                     .as_any()
                     .downcast_ref::<arrow_array::Float32Array>()
@@ -325,9 +329,12 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
                         message: "VectorQuery vector must be of type Float32".into(),
                     })
                 }
-            };
-            body["vector"] = serde_json::json!(vector);
-        }
+            }
+        } else {
+            // Server takes empty vector, not null or undefined.
+            Vec::new()
+        };
+        body["vector"] = serde_json::json!(vector);
 
         if let Some(vector_column) = query.column.as_ref() {
             body["vector_column"] = serde_json::Value::String(vector_column.clone());
@@ -358,6 +365,8 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
 
         let mut body = serde_json::Value::Object(Default::default());
         Self::apply_query_params(&mut body, query)?;
+        // Empty vector can be passed if no vector search is performed.
+        body["vector"] = serde_json::Value::Array(Vec::new());
 
         let request = request.json(&body);
 
@@ -379,7 +388,7 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
 
         let request = request.json(&serde_json::json!({
             "updates": updates,
-            "only_if": update.filter,
+            "predicate": update.filter,
         }));
 
         let (request_id, response) = self.client.send(request, false).await?;
@@ -933,7 +942,7 @@ mod tests {
                 assert_eq!(col_name, "b");
                 assert_eq!(expression, "b - 1");
 
-                let only_if = value.get("only_if").unwrap().as_str().unwrap();
+                let only_if = value.get("predicate").unwrap().as_str().unwrap();
                 assert_eq!(only_if, "b > 10");
             }
 
@@ -1167,6 +1176,8 @@ mod tests {
                     "query": "hello world",
                 },
                 "k": 10,
+                "vector": [],
+                "with_row_id": true,
             });
             assert_eq!(body, expected_body);
 
@@ -1189,6 +1200,7 @@ mod tests {
                 FullTextSearchQuery::new("hello world".into())
                     .columns(Some(vec!["a".into(), "b".into()])),
             )
+            .with_row_id()
             .limit(10)
             .execute()
             .await

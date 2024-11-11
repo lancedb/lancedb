@@ -6,7 +6,7 @@
 
     <groupId>com.lancedb</groupId>
     <artifactId>lancedb-parent</artifactId>
-    <version>0.12.0-final.0</version>
+    <version>0.13.0-beta.1</version>
     <packaging>pom</packaging>
 
     <name>LanceDB Parent</name>

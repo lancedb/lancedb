@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import time
 from abc import ABC, abstractmethod
@@ -32,7 +33,7 @@ import pyarrow.fs as pa_fs
 from lance import LanceDataset
 from lance.dependencies import _check_for_hugging_face
 
-from .common import DATA, VEC, VECTOR_COLUMN_NAME
+from .common import DATA, VEC, VECTOR_COLUMN_NAME, sanitize_uri
 from .embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
 from .merge import LanceMergeInsertBuilder
 from .pydantic import LanceModel, model_to_dict
@@ -57,12 +58,14 @@ from .util import (
 )
 from .index import lang_mapping
 
+from ._lancedb import connect as lancedb_connect
+
 if TYPE_CHECKING:
     import PIL
     from lance.dataset import CleanupStats, ReaderLike
     from ._lancedb import Table as LanceDBTable, OptimizeStats
     from .db import LanceDBConnection
-    from .index import BTree, IndexConfig, IvfPq, Bitmap, LabelList, FTS
+    from .index import BTree, IndexConfig, IvfPq, Bitmap, LabelList, FTS, HnswPq, HnswSq
 
 pd = safe_import_pandas()
 pl = safe_import_polars()
@@ -894,6 +897,55 @@ class Table(ABC):
         """
 
     @abstractmethod
+    def optimize(
+        self,
+        *,
+        cleanup_older_than: Optional[timedelta] = None,
+        delete_unverified: bool = False,
+    ):
+        """
+        Optimize the on-disk data and indices for better performance.
+
+        Modeled after ``VACUUM`` in PostgreSQL.
+
+        Optimization covers three operations:
+
+         * Compaction: Merges small files into larger ones
+         * Prune: Removes old versions of the dataset
+         * Index: Optimizes the indices, adding new data to existing indices
+
+        Parameters
+        ----------
+        cleanup_older_than: timedelta, optional default 7 days
+            All files belonging to versions older than this will be removed.  Set
+            to 0 days to remove all versions except the latest.  The latest version
+            is never removed.
+        delete_unverified: bool, default False
+            Files leftover from a failed transaction may appear to be part of an
+            in-progress operation (e.g. appending new data) and these files will not
+            be deleted unless they are at least 7 days old. If delete_unverified is True
+            then these files will be deleted regardless of their age.
+
+        Experimental API
+        ----------------
+
+        The optimization process is undergoing active development and may change.
+        Our goal with these changes is to improve the performance of optimization and
+        reduce the complexity.
+
+        That being said, it is essential today to run optimize if you want the best
+        performance.  It should be stable and safe to use in production, but it our
+        hope that the API may be simplified (or not even need to be called) in the
+        future.
+
+        The frequency an application shoudl call optimize is based on the frequency of
+        data modifications.  If data is frequently added, deleted, or updated then
+        optimize should be run frequently.  A good rule of thumb is to run optimize if
+        you have added or modified 100,000 or more records or run more than 20 data
+        modification operations.
+        """
+
+    @abstractmethod
     def add_columns(self, transforms: Dict[str, str]):
         """
         Add new columns with defined values.
@@ -948,7 +1000,9 @@ class Table(ABC):
         return _table_uri(self._conn.uri, self.name)
 
     def _get_fts_index_path(self) -> Tuple[str, pa_fs.FileSystem, bool]:
-        if get_uri_scheme(self._dataset_uri) != "file":
+        from .remote.table import RemoteTable
+
+        if isinstance(self, RemoteTable) or get_uri_scheme(self._dataset_uri) != "file":
             return ("", None, False)
         path = join_uri(self._dataset_uri, "_indices", "fts")
         fs, path = fs_from_uri(path)
@@ -1969,6 +2023,83 @@ class LanceTable(Table):
         """
         return self.to_lance().optimize.compact_files(*args, **kwargs)
 
+    def optimize(
+        self,
+        *,
+        cleanup_older_than: Optional[timedelta] = None,
+        delete_unverified: bool = False,
+    ):
+        """
+        Optimize the on-disk data and indices for better performance.
+
+        Modeled after ``VACUUM`` in PostgreSQL.
+
+        Optimization covers three operations:
+
+         * Compaction: Merges small files into larger ones
+         * Prune: Removes old versions of the dataset
+         * Index: Optimizes the indices, adding new data to existing indices
+
+        Parameters
+        ----------
+        cleanup_older_than: timedelta, optional default 7 days
+            All files belonging to versions older than this will be removed.  Set
+            to 0 days to remove all versions except the latest.  The latest version
+            is never removed.
+        delete_unverified: bool, default False
+            Files leftover from a failed transaction may appear to be part of an
+            in-progress operation (e.g. appending new data) and these files will not
+            be deleted unless they are at least 7 days old. If delete_unverified is True
+            then these files will be deleted regardless of their age.
+
+        Experimental API
+        ----------------
+
+        The optimization process is undergoing active development and may change.
+        Our goal with these changes is to improve the performance of optimization and
+        reduce the complexity.
+
+        That being said, it is essential today to run optimize if you want the best
+        performance.  It should be stable and safe to use in production, but it our
+        hope that the API may be simplified (or not even need to be called) in the
+        future.
+
+        The frequency an application shoudl call optimize is based on the frequency of
+        data modifications.  If data is frequently added, deleted, or updated then
+        optimize should be run frequently.  A good rule of thumb is to run optimize if
+        you have added or modified 100,000 or more records or run more than 20 data
+        modification operations.
+        """
+        try:
+            asyncio.get_running_loop()
+            raise AssertionError(
+                "Synchronous method called in asynchronous context. "
+                "If you are writing an asynchronous application "
+                "then please use the asynchronous APIs"
+            )
+
+        except RuntimeError:
+            asyncio.run(
+                self._async_optimize(
+                    cleanup_older_than=cleanup_older_than,
+                    delete_unverified=delete_unverified,
+                )
+            )
+            self.checkout_latest()
+
+    async def _async_optimize(
+        self,
+        cleanup_older_than: Optional[timedelta] = None,
+        delete_unverified: bool = False,
+    ):
+        conn = await lancedb_connect(
+            sanitize_uri(self._conn.uri),
+        )
+        table = AsyncTable(await conn.open_table(self.name))
+        return await table.optimize(
+            cleanup_older_than=cleanup_older_than, delete_unverified=delete_unverified
+        )
+
     def add_columns(self, transforms: Dict[str, str]):
         self._dataset_mut.add_columns(transforms)
 
@@ -2382,7 +2513,9 @@ class AsyncTable:
         column: str,
         *,
         replace: Optional[bool] = None,
-        config: Optional[Union[IvfPq, BTree, Bitmap, LabelList, FTS]] = None,
+        config: Optional[
+            Union[IvfPq, HnswPq, HnswSq, BTree, Bitmap, LabelList, FTS]
+        ] = None,
     ):
         """Create an index to speed up queries
 
@@ -2535,7 +2668,44 @@ class AsyncTable:
     async def _execute_query(
         self, query: Query, batch_size: Optional[int] = None
     ) -> pa.RecordBatchReader:
-        pass
+        # The sync remote table calls into this method, so we need to map the
+        # query to the async version of the query and run that here. This is only
+        # used for that code path right now.
+        async_query = self.query().limit(query.k)
+        if query.offset > 0:
+            async_query = async_query.offset(query.offset)
+        if query.columns:
+            async_query = async_query.select(query.columns)
+        if query.filter:
+            async_query = async_query.where(query.filter)
+        if query.fast_search:
+            async_query = async_query.fast_search()
+        if query.with_row_id:
+            async_query = async_query.with_row_id()
+
+        if query.vector:
+            async_query = (
+                async_query.nearest_to(query.vector)
+                .distance_type(query.metric)
+                .nprobes(query.nprobes)
+            )
+            if query.refine_factor:
+                async_query = async_query.refine_factor(query.refine_factor)
+            if query.vector_column:
+                async_query = async_query.column(query.vector_column)
+
+        if not query.prefilter:
+            async_query = async_query.postfilter()
+
+        if isinstance(query.full_text_query, str):
+            async_query = async_query.nearest_to_text(query.full_text_query)
+        elif isinstance(query.full_text_query, dict):
+            fts_query = query.full_text_query["query"]
+            fts_columns = query.full_text_query.get("columns", []) or []
+            async_query = async_query.nearest_to_text(fts_query, columns=fts_columns)
+
+        table = await async_query.to_arrow()
+        return table.to_reader()
 
     async def _do_merge(
         self,
@@ -2781,7 +2951,7 @@ class AsyncTable:
             cleanup_older_than = round(cleanup_older_than.total_seconds() * 1000)
         return await self._inner.optimize(cleanup_older_than, delete_unverified)
 
-    async def list_indices(self) -> IndexConfig:
+    async def list_indices(self) -> Iterable[IndexConfig]:
         """
         List all indices that have been created with Self::create_index
         """
@@ -2865,3 +3035,8 @@ class IndexStatistics:
     ]
     distance_type: Optional[Literal["l2", "cosine", "dot"]] = None
     num_indices: Optional[int] = None
+
+    # This exists for backwards compatibility with an older API, which returned
+    # a dictionary instead of a class.
+    def __getitem__(self, key):
+        return getattr(self, key)

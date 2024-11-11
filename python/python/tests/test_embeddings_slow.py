@@ -18,7 +18,6 @@ import lancedb
 import numpy as np
 import pandas as pd
 import pytest
-import requests
 from lancedb.embeddings import get_registry
 from lancedb.pydantic import LanceModel, Vector
 
@@ -108,6 +107,7 @@ def test_basic_text_embeddings(alias, tmp_path):
 
 @pytest.mark.slow
 def test_openclip(tmp_path):
+    import requests
     from PIL import Image
 
     db = lancedb.connect(tmp_path)
@@ -481,3 +481,22 @@ def test_ollama_embedding(tmp_path):
         json.dumps(dumped_model)
     except TypeError:
         pytest.fail("Failed to JSON serialize the dumped model")
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(
+    os.environ.get("VOYAGE_API_KEY") is None, reason="VOYAGE_API_KEY not set"
+)
+def test_voyageai_embedding_function():
+    voyageai = get_registry().get("voyageai").create(name="voyage-3", max_retries=0)
+
+    class TextModel(LanceModel):
+        text: str = voyageai.SourceField()
+        vector: Vector(voyageai.ndims()) = voyageai.VectorField()
+
+    df = pd.DataFrame({"text": ["hello world", "goodbye world"]})
+    db = lancedb.connect("~/lancedb")
+    tbl = db.create_table("test", schema=TextModel, mode="overwrite")
+
+    tbl.add(df)
+    assert len(tbl.to_pandas()["vector"][0]) == voyageai.ndims()

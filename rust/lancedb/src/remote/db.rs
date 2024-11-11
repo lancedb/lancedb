@@ -161,7 +161,7 @@ impl<S: HttpSend> ConnectionInternal for RemoteDatabase<S> {
         if self.table_cache.get(&options.name).is_none() {
             let req = self
                 .client
-                .get(&format!("/v1/table/{}/describe/", options.name));
+                .post(&format!("/v1/table/{}/describe/", options.name));
             let (request_id, resp) = self.client.send(req, true).await?;
             if resp.status() == StatusCode::NOT_FOUND {
                 return Err(crate::Error::TableNotFound { name: options.name });
@@ -301,7 +301,7 @@ mod tests {
     #[tokio::test]
     async fn test_open_table() {
         let conn = Connection::new_with_handler(|request| {
-            assert_eq!(request.method(), &reqwest::Method::GET);
+            assert_eq!(request.method(), &reqwest::Method::POST);
             assert_eq!(request.url().path(), "/v1/table/table1/describe/");
             assert_eq!(request.url().query(), None);
 

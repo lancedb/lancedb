@@ -250,6 +250,18 @@ export class QueryBase<NativeQueryType extends NativeQuery | NativeVectorQuery>
     return this;
   }
 
+  /**
+   * Whether to return the row id in the results.
+   *
+   * This column can be used to match results between different queries. For
+   * example, to match results from a full text search and a vector search in
+   * order to perform hybrid search.
+   */
+  withRowId(): this {
+    this.doCall((inner: NativeQueryType) => inner.withRowId());
+    return this;
+  }
+
   protected nativeExecute(
     options?: Partial<QueryExecutionOptions>,
   ): Promise<NativeBatchIterator> {
