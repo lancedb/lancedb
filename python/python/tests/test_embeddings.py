@@ -121,6 +121,31 @@ def test_embedding_with_bad_results(tmp_path):
     # assert tbl["vector"].null_count == 1
 
 
+def test_with_existing_vectors(tmp_path):
+    @register("mock-embedding")
+    class MockEmbeddingFunction(TextEmbeddingFunction):
+        def ndims(self):
+            return 128
+
+        def generate_embeddings(
+            self, texts: Union[List[str], np.ndarray]
+        ) -> List[np.array]:
+            return [np.random.randn(self.ndims()).tolist() for _ in range(len(texts))]
+
+    registry = get_registry()
+    model = registry.get("mock-embedding").create()
+
+    class Schema(LanceModel):
+        text: str = model.SourceField()
+        vector: Vector(model.ndims()) = model.VectorField()
+
+    db = lancedb.connect(tmp_path)
+    tbl = db.create_table("test", schema=Schema, mode="overwrite")
+    tbl.add([{"text": "hello world", "vector": np.zeros(128).tolist()}])
+
+    print(tbl.to_arrow())
+
+
 def test_embedding_function_with_pandas(tmp_path):
     @register("mock-embedding")
     class _MockEmbeddingFunction(TextEmbeddingFunction):
@@ -166,6 +191,69 @@ def test_embedding_function_with_pandas(tmp_path):
     assert tbl.count_rows() == 4
     embeddings = tbl.to_arrow()["vector"]
     assert embeddings.null_count == 0
+
+    df = pd.DataFrame(
+        {
+            "text": ["with", "embeddings"],
+            "val": [6, 7],
+            "vector": [np.zeros(128).tolist(), np.zeros(128).tolist()],
+        }
+    )
+    tbl.add(df)
+
+    embeddings = tbl.search().where("val > 5").to_arrow()["vector"].to_pylist()
+    assert not np.any(embeddings), "all zeros"
+
+
+def test_multiple_embeddings_for_pandas(tmp_path):
+    @register("mock-embedding")
+    class MockFunc1(TextEmbeddingFunction):
+        def ndims(self):
+            return 128
+
+        def generate_embeddings(
+            self, texts: Union[List[str], np.ndarray]
+        ) -> List[np.array]:
+            return [np.random.randn(self.ndims()).tolist() for _ in range(len(texts))]
+
+    @register("mock-embedding2")
+    class MockFunc2(TextEmbeddingFunction):
+        def ndims(self):
+            return 512
+
+        def generate_embeddings(
+            self, texts: Union[List[str], np.ndarray]
+        ) -> List[np.array]:
+            return [np.random.randn(self.ndims()).tolist() for _ in range(len(texts))]
+
+    registery = get_registry()
+    func1 = registery.get("mock-embedding").create()
+    func2 = registery.get("mock-embedding2").create()
+
+    class TestSchema(LanceModel):
+        text: str = func1.SourceField()
+        val: int
+        vec1: Vector(func1.ndims()) = func1.VectorField()
+        prompt: str = func2.SourceField()
+        vec2: Vector(func2.ndims()) = func2.VectorField()
+
+    df = pd.DataFrame(
+        {
+            "text": ["hello world", "goodbye world"],
+            "val": [1, 2],
+            "prompt": ["hello", "goodbye"],
+        }
+    )
+    db = lancedb.connect(tmp_path)
+    tbl = db.create_table("test", schema=TestSchema, mode="overwrite", data=df)
+
+    schema = tbl.schema
+    assert schema.field("text").type == pa.string()
+    assert schema.field("val").type == pa.int64()
+    assert schema.field("vec1").type == pa.list_(pa.float32(), 128)
+    assert schema.field("prompt").type == pa.string()
+    assert schema.field("vec2").type == pa.list_(pa.float32(), 512)
+    assert tbl.count_rows() == 2
 
 
 @pytest.mark.slow

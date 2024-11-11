@@ -73,7 +73,9 @@ pl = safe_import_polars()
 QueryType = Literal["vector", "fts", "hybrid", "auto"]
 
 
-def _schema_without_embedding_funcs(schema: Optional[pa.Schema]) -> Optional[pa.Schema]:
+def _pd_schema_without_embedding_funcs(
+    schema: Optional[pa.Schema], columns: List[str]
+) -> Optional[pa.Schema]:
     """Return a schema without any embedding function columns"""
     if schema is None:
         return None
@@ -82,10 +84,8 @@ def _schema_without_embedding_funcs(schema: Optional[pa.Schema]) -> Optional[pa.
     )
     if not embedding_functions:
         return schema
-
-    return pa.schema(
-        [field for field in schema if field.name not in embedding_functions]
-    )
+    columns = set(columns)
+    return pa.schema([field for field in schema if field.name in columns])
 
 
 def _coerce_to_table(data, schema: Optional[pa.Schema] = None) -> pa.Table:
@@ -120,7 +120,7 @@ def _coerce_to_table(data, schema: Optional[pa.Schema] = None) -> pa.Table:
         else:
             return pa.Table.from_pylist(data, schema=schema)
     elif _check_for_pandas(data) and isinstance(data, pd.DataFrame):
-        raw_schema = _schema_without_embedding_funcs(schema)
+        raw_schema = _pd_schema_without_embedding_funcs(schema, data.columns.to_list())
         table = pa.Table.from_pandas(data, preserve_index=False, schema=raw_schema)
         # Do not serialize Pandas metadata
         meta = table.schema.metadata if table.schema.metadata is not None else {}
