@@ -143,7 +143,8 @@ def test_with_existing_vectors(tmp_path):
     tbl = db.create_table("test", schema=Schema, mode="overwrite")
     tbl.add([{"text": "hello world", "vector": np.zeros(128).tolist()}])
 
-    print(tbl.to_arrow())
+    embeddings = tbl.to_arrow()["vector"].to_pylist()
+    assert not np.any(embeddings), "all zeros"
 
 
 def test_embedding_function_with_pandas(tmp_path):
