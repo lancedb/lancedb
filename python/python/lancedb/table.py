@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -73,6 +74,22 @@ pl = safe_import_polars()
 QueryType = Literal["vector", "fts", "hybrid", "auto"]
 
 
+def _schema_without_embedding_funcs(schema: Optional[pa.Schema]) -> Optional[pa.Schema]:
+    """Return a schema without any embedding function columns"""
+    if schema is None:
+        return None
+    embedding_metadata = (
+        json.loads(schema.metadata.get(b"embedding_functions", b"[]").decode("utf-8"))
+        if schema.metadata
+        else {}
+    )
+    if not embedding_metadata:
+        return schema
+
+    vector_columns = set([meta.get("vector_column") for meta in embedding_metadata])
+    return pa.schema([field for field in schema if field.name not in vector_columns])
+
+
 def _coerce_to_table(data, schema: Optional[pa.Schema] = None) -> pa.Table:
     if _check_for_hugging_face(data):
         # Huggingface datasets
@@ -103,10 +120,10 @@ def _coerce_to_table(data, schema: Optional[pa.Schema] = None) -> pa.Table:
         elif isinstance(data[0], pa.RecordBatch):
             return pa.Table.from_batches(data, schema=schema)
         else:
-            return pa.Table.from_pylist(data)
+            return pa.Table.from_pylist(data, schema=schema)
     elif _check_for_pandas(data) and isinstance(data, pd.DataFrame):
-        # Do not add schema here, since schema may contains the vector column
-        table = pa.Table.from_pandas(data, preserve_index=False)
+        raw_schema = _schema_without_embedding_funcs(schema)
+        table = pa.Table.from_pandas(data, preserve_index=False, schema=raw_schema)
         # Do not serialize Pandas metadata
         meta = table.schema.metadata if table.schema.metadata is not None else {}
         meta = {k: v for k, v in meta.items() if k != b"pandas"}
@@ -172,6 +189,8 @@ def sanitize_create_table(
         schema = schema.to_arrow_schema()
 
     if data is not None:
+        if metadata is None:
+            metadata = schema.metadata
         data, schema = _sanitize_data(
             data,
             schema,

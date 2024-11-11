@@ -1,15 +1,6 @@
-#  Copyright 2023 LanceDB Developers
-#
-#  Licensed under the Apache License, Version 2.0 (the "License");
-#  you may not use this file except in compliance with the License.
-#  You may obtain a copy of the License at
-#      http://www.apache.org/licenses/LICENSE-2.0
-#
-#  Unless required by applicable law or agreed to in writing, software
-#  distributed under the License is distributed on an "AS IS" BASIS,
-#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-#  See the License for the specific language governing permissions and
-#  limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright The LanceDB Authors
+
 from typing import List, Union
 from unittest.mock import MagicMock, patch
 
@@ -18,6 +9,7 @@ import lancedb
 import numpy as np
 import pyarrow as pa
 import pytest
+import pandas as pd
 from lancedb.conftest import MockTextEmbeddingFunction
 from lancedb.embeddings import (
     EmbeddingFunctionConfig,
@@ -127,6 +119,53 @@ def test_embedding_with_bad_results(tmp_path):
     # assert len(table) == 2
     # tbl = table.to_arrow()
     # assert tbl["vector"].null_count == 1
+
+
+def test_embedding_function_with_pandas(tmp_path):
+    @register("mock-embedding")
+    class _MockEmbeddingFunction(TextEmbeddingFunction):
+        def ndims(self):
+            return 128
+
+        def generate_embeddings(
+            self, texts: Union[List[str], np.ndarray]
+        ) -> List[np.array]:
+            return [np.random.randn(self.ndims()).tolist() for _ in range(len(texts))]
+
+    registery = get_registry()
+    func = registery.get("mock-embedding").create()
+
+    class TestSchema(LanceModel):
+        text: str = func.SourceField()
+        val: int
+        vector: Vector(func.ndims()) = func.VectorField()
+
+    df = pd.DataFrame(
+        {
+            "text": ["hello world", "goodbye world"],
+            "val": [1, 2],
+            "not-used": ["s1", "s3"],
+        }
+    )
+    db = lancedb.connect(tmp_path)
+    tbl = db.create_table("test", schema=TestSchema, mode="overwrite", data=df)
+    schema = tbl.schema
+    assert schema.field("text").type == pa.string()
+    assert schema.field("val").type == pa.int64()
+    assert schema.field("vector").type == pa.list_(pa.float32(), 128)
+
+    df = pd.DataFrame(
+        {
+            "text": ["extra", "more"],
+            "val": [4, 5],
+            "misc-col": ["s1", "s3"],
+        }
+    )
+    tbl.add(df)
+
+    assert tbl.count_rows() == 4
+    embeddings = tbl.to_arrow()["vector"]
+    assert embeddings.null_count == 0
 
 
 @pytest.mark.slow
