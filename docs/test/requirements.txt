@@ -1,7 +1,7 @@
 -e ../../python
 numpy
 pandas
-pylance
+pylance==0.19.2b3
 duckdb
 tantivy==0.20.1
 --extra-index-url https://download.pytorch.org/whl/cpu
