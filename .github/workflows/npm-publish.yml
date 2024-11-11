@@ -21,7 +21,7 @@ jobs:
             apk add bash npm cargo protobuf-dev
             cd node
             npm ci
-            npm pack-build
+            npm run build-release
       - name: Setup tmate session
         uses: mxschmitt/action-tmate@v3
         with:
