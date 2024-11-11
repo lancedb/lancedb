@@ -78,16 +78,15 @@ def _schema_without_embedding_funcs(schema: Optional[pa.Schema]) -> Optional[pa.
     """Return a schema without any embedding function columns"""
     if schema is None:
         return None
-    embedding_metadata = (
-        json.loads(schema.metadata.get(b"embedding_functions", b"[]").decode("utf-8"))
-        if schema.metadata
-        else {}
+    embedding_functions = EmbeddingFunctionRegistry.get_instance().parse_functions(
+        schema.metadata
     )
-    if not embedding_metadata:
+    if not embedding_functions:
         return schema
 
-    vector_columns = set([meta.get("vector_column") for meta in embedding_metadata])
-    return pa.schema([field for field in schema if field.name not in vector_columns])
+    return pa.schema(
+        [field for field in schema if field.name not in embedding_functions]
+    )
 
 
 def _coerce_to_table(data, schema: Optional[pa.Schema] = None) -> pa.Table:
@@ -189,7 +188,7 @@ def sanitize_create_table(
         schema = schema.to_arrow_schema()
 
     if data is not None:
-        if metadata is None:
+        if metadata is None and schema is not None:
             metadata = schema.metadata
         data, schema = _sanitize_data(
             data,
