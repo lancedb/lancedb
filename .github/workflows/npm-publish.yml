@@ -16,10 +16,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Install Alpine dependencies
+      - name: Install Dependencies and Build
         run: |
-            apk add bash npm cargo protoc
-      - name: Setup tmate session
-        uses: mxschmitt/action-tmate@v3
+            apk add bash npm cargo protobuf-dev
+            bash ci/manylinux_node/build_vectordb.sh
+      - name: Upload Linux Artifacts
+        uses: actions/upload-artifact@v4
         with:
-          limit-access-to-actor: true
+          name: node-native-linux-${{ matrix.config.arch }}
+          path: |
+            node/dist/lancedb-vectordb-linux*.tgz
