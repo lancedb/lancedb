@@ -19,6 +19,9 @@ jobs:
       - name: Install Alpine dependencies
         run: |
             apk add bash npm cargo protobuf-dev
+            cd node
+            npm ci
+            npm pack-build
       - name: Setup tmate session
         uses: mxschmitt/action-tmate@v3
         with:
