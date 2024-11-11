@@ -13,7 +13,7 @@
 
 import os
 from functools import cached_property
-from typing import Union, Optional
+from typing import Optional
 
 import pyarrow as pa
 

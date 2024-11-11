@@ -73,6 +73,21 @@ pl = safe_import_polars()
 QueryType = Literal["vector", "fts", "hybrid", "auto"]
 
 
+def _pd_schema_without_embedding_funcs(
+    schema: Optional[pa.Schema], columns: List[str]
+) -> Optional[pa.Schema]:
+    """Return a schema without any embedding function columns"""
+    if schema is None:
+        return None
+    embedding_functions = EmbeddingFunctionRegistry.get_instance().parse_functions(
+        schema.metadata
+    )
+    if not embedding_functions:
+        return schema
+    columns = set(columns)
+    return pa.schema([field for field in schema if field.name in columns])
+
+
 def _coerce_to_table(data, schema: Optional[pa.Schema] = None) -> pa.Table:
     if _check_for_hugging_face(data):
         # Huggingface datasets
@@ -103,10 +118,10 @@ def _coerce_to_table(data, schema: Optional[pa.Schema] = None) -> pa.Table:
         elif isinstance(data[0], pa.RecordBatch):
             return pa.Table.from_batches(data, schema=schema)
         else:
-            return pa.Table.from_pylist(data)
+            return pa.Table.from_pylist(data, schema=schema)
     elif _check_for_pandas(data) and isinstance(data, pd.DataFrame):
-        # Do not add schema here, since schema may contains the vector column
-        table = pa.Table.from_pandas(data, preserve_index=False)
+        raw_schema = _pd_schema_without_embedding_funcs(schema, data.columns.to_list())
+        table = pa.Table.from_pandas(data, preserve_index=False, schema=raw_schema)
         # Do not serialize Pandas metadata
         meta = table.schema.metadata if table.schema.metadata is not None else {}
         meta = {k: v for k, v in meta.items() if k != b"pandas"}
@@ -172,6 +187,8 @@ def sanitize_create_table(
         schema = schema.to_arrow_schema()
 
     if data is not None:
+        if metadata is None and schema is not None:
+            metadata = schema.metadata
         data, schema = _sanitize_data(
             data,
             schema,
