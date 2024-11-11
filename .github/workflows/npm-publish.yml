@@ -16,6 +16,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      - name: Install Alpine dependencies
+        run: |
+            apk add bash npm cargo protoc
       - name: Setup tmate session
         uses: mxschmitt/action-tmate@v3
         with:
