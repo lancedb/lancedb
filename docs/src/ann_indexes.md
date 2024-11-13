@@ -45,9 +45,9 @@ Lance supports `IVF_PQ` index type by default.
         Creating indexes is done via the [lancedb.Table.createIndex](../js/classes/Table.md/#createIndex) method.
 
         ```typescript
-        --8<--- "nodejs/examples/ann_indexes.ts:import"
+        --8<--- "nodejs/examples/ann_indexes.test.ts:import"
 
-        --8<-- "nodejs/examples/ann_indexes.ts:ingest"
+        --8<-- "nodejs/examples/ann_indexes.test.ts:ingest"
         ```
 
     === "vectordb (deprecated)"
@@ -171,7 +171,7 @@ There are a couple of parameters that can be used to fine-tune the search:
     === "@lancedb/lancedb"
 
         ```typescript
-        --8<-- "nodejs/examples/ann_indexes.ts:search1"
+        --8<-- "nodejs/examples/ann_indexes.test.ts:search1"
         ```
 
     === "vectordb (deprecated)"
@@ -205,7 +205,7 @@ You can further filter the elements returned by a search using a where clause.
     === "@lancedb/lancedb"
 
         ```typescript
-        --8<-- "nodejs/examples/ann_indexes.ts:search2"
+        --8<-- "nodejs/examples/ann_indexes.test.ts:search2"
         ```
 
     === "vectordb (deprecated)"
@@ -237,7 +237,7 @@ You can select the columns returned by the query using a select clause.
     === "@lancedb/lancedb"
 
         ```typescript
-        --8<-- "nodejs/examples/ann_indexes.ts:search3"
+        --8<-- "nodejs/examples/ann_indexes.test.ts:search3"
         ```
 
     === "vectordb (deprecated)"

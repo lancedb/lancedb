@@ -53,6 +53,9 @@ jobs:
         cargo clippy --all --all-features -- -D warnings
         npm ci
         npm run lint-ci
+    - name: Lint examples
+      working-directory: nodejs/examples
+      run: npm ci && npm run lint-ci
   linux:
     name: Linux (NodeJS ${{ matrix.node-version }})
     timeout-minutes: 30
@@ -91,6 +94,19 @@ jobs:
       env:
         S3_TEST: "1"
       run: npm run test
+    - name: Setup examples
+      working-directory: nodejs/examples
+      run: npm ci
+    - name: Test examples
+      working-directory: ./
+      env:
+        OPENAI_API_KEY: test
+        OPENAI_BASE_URL: http://0.0.0.0:8000
+      run: |
+        python ci/mock_openai.py &
+        ss -ltnp | grep :8000
+        cd nodejs/examples
+        npm test
   macos:
     timeout-minutes: 30
     runs-on: "macos-14"

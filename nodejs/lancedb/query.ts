@@ -571,4 +571,9 @@ export class Query extends QueryBase<NativeQuery> {
       return new VectorQuery(vectorQuery);
     }
   }
+
+  nearestToText(query: string, columns?: string[]): Query {
+    this.doCall((inner) => inner.fullTextSearch(query, columns));
+    return this;
+  }
 }
