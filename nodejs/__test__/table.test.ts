@@ -187,6 +187,85 @@ describe.each([arrow13, arrow14, arrow15, arrow16, arrow17])(
       },
     );
 
+    it("should be able to omit nullable fields", async () => {
+      const db = await connect(tmpDir.name);
+      const schema = new arrow.Schema([
+        new arrow.Field(
+          "vector",
+          new arrow.FixedSizeList(
+            2,
+            new arrow.Field("item", new arrow.Float64()),
+          ),
+          true,
+        ),
+        new arrow.Field("item", new arrow.Utf8(), true),
+        new arrow.Field("price", new arrow.Float64(), false),
+      ]);
+      const table = await db.createEmptyTable("test", schema);
+
+      const data1 = { item: "foo", price: 10.0 };
+      await table.add([data1]);
+      const data2 = { vector: [3.1, 4.1], price: 2.0 };
+      await table.add([data2]);
+      const data3 = { vector: [5.9, 26.5], item: "bar", price: 3.0 };
+      await table.add([data3]);
+
+      let res = await table.query().limit(10).toArray();
+      const resVector = res.map((r) => r.get("vector").toArray());
+      expect(resVector).toEqual([null, data2.vector, data3.vector]);
+      const resItem = res.map((r) => r.get("item").toArray());
+      expect(resItem).toEqual(["foo", null, "bar"]);
+      const resPrice = res.map((r) => r.get("price").toArray());
+      expect(resPrice).toEqual([10.0, 2.0, 3.0]);
+
+      const data4 = { item: "foo" };
+      // We can't omit a column if it's not nullable
+      await expect(table.add([data4])).rejects.toThrow("Invalid user input");
+
+      // But we can alter columns to make them nullable
+      await table.alterColumns([{ path: "price", nullable: true }]);
+      await table.add([data4]);
+
+      res = (await table.query().limit(10).toArray()).map((r) => r.toJSON());
+      expect(res).toEqual([data1, data2, data3, data4]);
+    });
+
+    it("should be able to insert nullable data for non-nullable fields", async () => {
+      const db = await connect(tmpDir.name);
+      const schema = new arrow.Schema([
+        new arrow.Field(
+          "vector",
+          new arrow.FixedSizeList(
+            2,
+            new arrow.Field("item", new arrow.Float64()),
+          ),
+          false,
+        ),
+        new arrow.Field("id", new arrow.Utf8(), false),
+      ]);
+      const table = await db.createEmptyTable("test", schema);
+
+      const data1 = { vector: [3.1, 4.1], id: "foo" };
+      await table.add([data1]);
+      const res = (await table.query().toArray())[0];
+      expect([...res.vector.toArray()]).toEqual(data1.vector);
+      expect(res.id).toEqual(data1.id);
+
+      const data2 = { vector: null, id: "bar" };
+      await expect(table.add([data2])).rejects.toThrow("Invalid user input");
+
+      // But we can alter columns to make them nullable
+      await table.alterColumns([{ path: "vector", nullable: true }]);
+      await table.add([data2]);
+
+      const res2 = await table.query().toArray();
+      expect(res2.length).toBe(2);
+      expect(res2[0].vector.toArray()).toEqual(data1.vector);
+      expect(res2[0].id).toEqual(data1.id);
+      expect(res2[1].vector).toBeNull();
+      expect(res2[1].id).toEqual(data2.id);
+    });
+
     it("should return the table as an instance of an arrow table", async () => {
       const arrowTbl = await table.toArrow();
       expect(arrowTbl).toBeInstanceOf(ArrowTable);

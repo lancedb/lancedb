@@ -2243,7 +2243,7 @@ def _sanitize_vector_column(
                 data, fill_value, on_bad_vectors, vec_arr, vector_column_name
             )
     else:
-        if pc.any(pc.is_null(vec_arr.values, nan_is_null=True)).as_py():
+        if pc.any(pc.is_nan(vec_arr.values)).as_py():
             data = _sanitize_nans(
                 data, fill_value, on_bad_vectors, vec_arr, vector_column_name
             )
