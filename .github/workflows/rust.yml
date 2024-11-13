@@ -50,6 +50,7 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Run clippy
         run: cargo clippy --workspace --tests --all-features -- -D warnings
+
   linux:
     timeout-minutes: 30
     # To build all features, we need more disk space than is available
@@ -91,6 +92,7 @@ jobs:
         run: cargo test --all-features
       - name: Run examples
         run: cargo run --example simple
+
   macos:
     timeout-minutes: 30
     strategy:
@@ -118,6 +120,7 @@ jobs:
       - name: Run tests
         # Run with everything except the integration tests.
         run: cargo test --features remote,fp16kernels
+
   windows:
     runs-on: windows-2022
     steps:
@@ -139,24 +142,11 @@ jobs:
           $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
           cargo build
           cargo test
+
   windows-arm64:
     runs-on: windows-4x-arm
     steps:
-      - name: Cache installations
-        id: cache-installs
-        uses: actions/cache@v4
-        with:
-          path: |
-            C:\Program Files\Git
-            C:\BuildTools
-            C:\Program Files (x86)\Windows Kits
-            C:\Program Files\7-Zip
-            C:\protoc
-          key: ${{ runner.os }}-arm64-installs-v1
-          restore-keys: |
-            ${{ runner.os }}-arm64-installs-
       - name: Install Git
-        if: steps.cache-installs.outputs.cache-hit != 'true'
         run: |
           Invoke-WebRequest -Uri "https://github.com/git-for-windows/git/releases/download/v2.44.0.windows.1/Git-2.44.0-64-bit.exe" -OutFile "git-installer.exe"
           Start-Process -FilePath "git-installer.exe" -ArgumentList "/VERYSILENT", "/NORESTART" -Wait
@@ -173,7 +163,6 @@ jobs:
         with:
           python-version: "3.13"
       - name: Install Visual Studio Build Tools
-        if: steps.cache-installs.outputs.cache-hit != 'true'
         run: |
           Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vs_buildtools.exe" -OutFile "vs_buildtools.exe"
           Start-Process -FilePath "vs_buildtools.exe" -ArgumentList "--quiet", "--wait", "--norestart", "--nocache", `
@@ -217,12 +206,10 @@ jobs:
         run: |
           Add-Content $env:GITHUB_PATH "$env:USERPROFILE\.cargo\bin"
         shell: powershell
-
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust
       - name: Install 7-Zip ARM
-        if: steps.cache-installs.outputs.cache-hit != 'true'
         run: |
           New-Item -Path 'C:\7zip' -ItemType Directory
           Invoke-WebRequest https://7-zip.org/a/7z2408-arm64.exe -OutFile C:\7zip\7z-installer.exe
@@ -232,12 +219,11 @@ jobs:
         run: Add-Content $env:GITHUB_PATH "C:\Program Files\7-Zip"
         shell: powershell
       - name: Install Protoc v21.12
-        if: steps.cache-installs.outputs.cache-hit != 'true'
         working-directory: C:\
         run: |
           if (Test-Path 'C:\protoc') {
-              Write-Host "Protoc directory exists, skipping installation"
-              return
+            Write-Host "Protoc directory exists, skipping installation"
+            return
           }
           New-Item -Path 'C:\protoc' -ItemType Directory
           Set-Location C:\protoc
