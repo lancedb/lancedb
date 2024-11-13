@@ -327,10 +327,6 @@ class RemoteTable(Table):
             - and also the "_distance" column which is the distance between the query
             vector and the returned vector.
         """
-        # empty query builder is not supported in saas, raise error
-        if query is None and query_type != "hybrid":
-            raise ValueError("Empty query is not supported")
-
         return LanceQueryBuilder.create(
             self,
             query,
