@@ -323,6 +323,13 @@ jobs:
       - name: Add Protoc to PATH
         run: Add-Content $env:GITHUB_PATH "C:\protoc\bin"
         shell: powershell
+      - name: Install node and npm
+        shell: powershell
+        run: |
+          Invoke-WebRequest -Uri "https://nodejs.org/dist/v22.11.0/node-v22.11.0-win-arm64.zip" -OutFile "node.zip"
+          7z x node.zip
+          Move-Item -Path "node-v22.11.0-win-arm64" -Destination "C:\node"
+          Add-Content $env:GITHUB_PATH "C:\node"
       - name: Build Windows native node modules
         run: .\ci\build_windows_artifacts.ps1 aarch64-pc-windows-msvc
       - name: Upload Windows ARM64 Artifacts
