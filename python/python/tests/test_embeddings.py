@@ -90,7 +90,7 @@ def test_embedding_with_bad_results(tmp_path):
             self, texts: Union[List[str], np.ndarray]
         ) -> list[Union[np.array, None]]:
             return [
-                None if i % 2 == 0 else np.random.randn(self.ndims())
+                [np.NAN] * 128 if i % 2 == 0 else np.random.randn(self.ndims())
                 for i in range(len(texts))
             ]
 

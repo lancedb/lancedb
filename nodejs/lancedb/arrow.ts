@@ -910,7 +910,7 @@ function validateSchemaEmbeddings(
   }
 
   if (missingEmbeddingFields.length > 0 && embeddings === undefined) {
-    console.warn(
+    throw new Error(
       `Table has embeddings: "${missingEmbeddingFields
         .map((f) => f.name)
         .join(",")}", but no embedding function was provided`,
