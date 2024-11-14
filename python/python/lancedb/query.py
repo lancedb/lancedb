@@ -949,6 +949,7 @@ class LanceEmptyQueryBuilder(LanceQueryBuilder):
             k=self._limit or 10,
             with_row_id=self._with_row_id,
             vector=[],
+            # not actually respected in remote query
             offset=self._offset or 0,
         )
         return self._table._execute_query(query).read_all()
