@@ -89,6 +89,7 @@ def test_embedding_with_bad_results(tmp_path):
         def generate_embeddings(
             self, texts: Union[List[str], np.ndarray]
         ) -> list[Union[np.array, None]]:
+            # Return NaN to produce bad vectors
             return [
                 [np.NAN] * 128 if i % 2 == 0 else np.random.randn(self.ndims())
                 for i in range(len(texts))
@@ -103,6 +104,10 @@ def test_embedding_with_bad_results(tmp_path):
         vector: Vector(model.ndims()) = model.VectorField()
 
     table = db.create_table("test", schema=Schema, mode="overwrite")
+    with pytest.raises(ValueError):
+        # Default on_bad_vectors is "error"
+        table.add([{"text": "hello world"}])
+
     table.add(
         [{"text": "hello world"}, {"text": "bar"}],
         on_bad_vectors="drop",
@@ -112,13 +117,15 @@ def test_embedding_with_bad_results(tmp_path):
     assert len(table) == 1
     assert df.iloc[0]["text"] == "bar"
 
-    # table = db.create_table("test2", schema=Schema, mode="overwrite")
-    # table.add(
-    #     [{"text": "hello world"}, {"text": "bar"}],
-    # )
-    # assert len(table) == 2
-    # tbl = table.to_arrow()
-    # assert tbl["vector"].null_count == 1
+    table = db.create_table("test2", schema=Schema, mode="overwrite")
+    table.alter_columns(dict(path="vector", nullable=True))
+    table.add(
+        [{"text": "hello world"}, {"text": "bar"}],
+        on_bad_vectors="null",
+    )
+    assert len(table) == 2
+    tbl = table.to_arrow()
+    assert tbl["vector"].null_count == 1
 
 
 def test_with_existing_vectors(tmp_path):
