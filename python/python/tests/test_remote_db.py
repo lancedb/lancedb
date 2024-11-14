@@ -197,7 +197,7 @@ def test_query_sync_minimal():
         assert data == expected
 
 
-def test_query_sync_minimal():
+def test_query_sync_empty_query():
     def handler(body):
         assert body == {
             "k": 10,
