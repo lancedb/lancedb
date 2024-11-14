@@ -943,12 +943,16 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
 
 class LanceEmptyQueryBuilder(LanceQueryBuilder):
     def to_arrow(self) -> pa.Table:
-        ds = self._table.to_lance()
-        return ds.to_table(
+        query = Query(
             columns=self._columns,
             filter=self._where,
-            limit=self._limit,
+            k=self._limit or 10,
+            with_row_id=self._with_row_id,
+            vector=[],
+            # not actually respected in remote query
+            offset=self._offset or 0,
         )
+        return self._table._execute_query(query).read_all()
 
     def rerank(self, reranker: Reranker) -> LanceEmptyQueryBuilder:
         """Rerank the results using the specified reranker.

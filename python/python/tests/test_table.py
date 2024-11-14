@@ -892,10 +892,15 @@ def test_empty_query(db):
     table = LanceTable.create(db, "my_table2", data=[{"id": i} for i in range(100)])
     df = table.search().select(["id"]).to_pandas()
     assert len(df) == 10
+    # None is the same as default
     df = table.search().select(["id"]).limit(None).to_pandas()
-    assert len(df) == 100
+    assert len(df) == 10
+    # invalid limist is the same as None, wihch is the same as default
     df = table.search().select(["id"]).limit(-1).to_pandas()
-    assert len(df) == 100
+    assert len(df) == 10
+    # valid limit should work
+    df = table.search().select(["id"]).limit(42).to_pandas()
+    assert len(df) == 42
 
 
 def test_search_with_schema_inf_single_vector(db):
