@@ -7,6 +7,8 @@ ensuring a seamless transition for existing OSS users.
 === "Python"
 
     ```python
+    --8<-- "python/python/tests/docs/test_cloud.py:import-ingest-data"
+    
     --8<-- "python/python/tests/docs/test_cloud.py:ingest_data"
     ```
 === "Typescript"

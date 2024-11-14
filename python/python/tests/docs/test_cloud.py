@@ -1,9 +1,12 @@
 # --8<-- [start:imports]
+# --8<-- [start:import-lancedb]
+# --8<-- [start:import-ingest-data]
 import lancedb
 import pyarrow as pa
+# --8<-- [end:import-ingest-data]
 import numpy as np
 
-
+# --8<-- [end:import-lancedb]
 # --8<-- [end:imports]
 # --8<-- [start:gen_data]
 def gen_data(total_rows: int, ndims: int = 1536):
@@ -36,6 +39,7 @@ def test_cloud_quickstart():
     # create a vector index
     table.create_index("cosine", vector_column_name="vector")
     result = table.search([0.01, 0.02]).select(["vector", "item"]).limit(1).to_pandas()
+    print(result)
     # --8<-- [end:create_index_search]
     # --8<-- [start:drop_table]
     db.drop_table(table_name)
@@ -44,9 +48,6 @@ def test_cloud_quickstart():
 
 def test_ingest_data():
     # --8<-- [start:ingest_data]
-    import lancedb
-    import pyarrow as pa
-
     # connect to LanceDB
     db = lancedb.connect(
         uri="db://your-project-slug", api_key="your-api-key", region="us-east-1"
@@ -69,7 +70,6 @@ def test_ingest_data():
     )
     table = db.create_table(table_name, schema=schema)
     table.add(data)
-
     # --8<-- [end:ingest_data]
     # --8<-- [start:ingest_data_in_batch]
     def make_batches():
@@ -195,6 +195,7 @@ def test_search():
         .limit(2)
         .to_pandas()
     )
+    print(result)
     # --8<-- [end:vector_search]
     # --8<-- [start:full_text_search]
     import lancedb
@@ -253,7 +254,7 @@ def test_search():
 
     # you can use table.list_indices() to make sure indices have been created
     reranker = RRFReranker()
-    results = (
+    result = (
         table.search(
             "flower moon",
             query_type="hybrid",
@@ -264,6 +265,7 @@ def test_search():
         .limit(10)
         .to_pandas()
     )
+    print(result)
     # --8<-- [end:hybrid_search]
 
 
@@ -282,6 +284,7 @@ def test_filtering():
         .where("(item IN ('foo', 'bar')) AND (price > 10.0)")
         .to_arrow()
     )
+    print(result)
     # --8<-- [end:filtering]
     # --8<-- [start:sql_filtering]
     table.search([100, 102]).where(
