@@ -2175,6 +2175,7 @@ def _sanitize_schema(
                     vector_column_name=field.name,
                     on_bad_vectors=on_bad_vectors,
                     fill_value=fill_value,
+                    table_schema=schema,
                 )
         return pa.Table.from_arrays(
             [data[name] for name in schema.names], schema=schema
@@ -2195,6 +2196,7 @@ def _sanitize_schema(
 def _sanitize_vector_column(
     data: pa.Table,
     vector_column_name: str,
+    table_schema: Optional[pa.Schema] = None,
     on_bad_vectors: str = "error",
     fill_value: float = 0.0,
 ) -> pa.Table:
@@ -2215,6 +2217,7 @@ def _sanitize_vector_column(
     """
     # ChunkedArray is annoying to work with, so we combine chunks here
     vec_arr = data[vector_column_name].combine_chunks()
+    field = table_schema.field(vector_column_name)
     typ = data[vector_column_name].type
     if pa.types.is_list(typ) or pa.types.is_large_list(typ):
         # if it's a variable size list array,
@@ -2241,7 +2244,9 @@ def _sanitize_vector_column(
                 data, fill_value, on_bad_vectors, vec_arr, vector_column_name
             )
     else:
-        if pc.any(pc.is_nan(vec_arr.values)).as_py():
+        if (not field.nullable and pc.any(pc.is_null(vec_arr.values)).as_py()) or (
+            pc.any(pc.is_nan(vec_arr.values)).as_py()
+        ):
             data = _sanitize_nans(
                 data, fill_value, on_bad_vectors, vec_arr, vector_column_name
             )
