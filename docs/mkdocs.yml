@@ -222,10 +222,12 @@ nav:
           - 🦀 Rust: https://docs.rs/lancedb/latest/lancedb/
       - ☁️ LanceDB Cloud:
           - Overview: cloud/index.md
-          - API reference:
-              - 🐍 Python: python/saas-python.md
-              - 👾 JavaScript: javascript/modules.md
-              - REST API: cloud/rest.md
+          - Quickstart: cloud/quickstart.md
+          - Best Practices: cloud/best_practices.md
+          # - API reference:
+          #     - 🐍 Python: python/saas-python.md
+          #     - 👾 JavaScript: javascript/modules.md
+          #     - REST API: cloud/rest.md
 
   - Quick start: basic.md
   - Concepts:
@@ -348,10 +350,17 @@ nav:
       - Rust: https://docs.rs/lancedb/latest/lancedb/index.html
   - LanceDB Cloud:
       - Overview: cloud/index.md
-      - API reference:
-          - 🐍 Python: python/saas-python.md
-          - 👾 JavaScript: javascript/modules.md
-          - REST API: cloud/rest.md
+      - Quickstart: cloud/quickstart.md
+      - Work with data: 
+        - Ingest data: cloud/ingest_data.md
+        - Update data: cloud/update_data.md
+        - Build an index: cloud/build_index.md
+        - Vector search: cloud/vector_search.md
+        - Full-text search: cloud/full_text_search.md
+        - Hybrid search: cloud/hybrid_search.md
+        - Metadata Filtering: cloud/metadata_filtering.md
+      - Best Practices: cloud/best_practices.md
+      # - REST API: cloud/rest.md
 
 extra_css:
   - styles/global.css
