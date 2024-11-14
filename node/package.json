@@ -32,7 +32,7 @@
   "author": "Lance Devs",
   "license": "Apache-2.0",
   "devDependencies": {
-    "@neon-rs/cli": "^0.0.160",
+    "@neon-rs/cli": "^0.1.81",
     "@types/chai": "^4.3.4",
     "@types/chai-as-promised": "^7.1.5",
     "@types/mocha": "^10.0.1",
