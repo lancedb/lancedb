@@ -203,7 +203,6 @@ def test_query_sync_empty_query():
             "k": 10,
             "filter": "true",
             "vector": [],
-            "offset": 0,
             "columns": ["id"],
         }
 
