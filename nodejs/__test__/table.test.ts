@@ -998,4 +998,18 @@ describe("column name options", () => {
     const results = await table.query().where("`camelCase` = 1").toArray();
     expect(results[0].camelCase).toBe(1);
   });
+
+  test("can make multiple vector queries in one go", async () => {
+    const results = await table
+      .query()
+      .nearestTo([0.1, 0.2])
+      .addQueryVector([0.1, 0.2])
+      .limit(1)
+      .toArray();
+    console.log(results);
+    expect(results.length).toBe(2);
+    results.sort((a, b) => a.query_index - b.query_index);
+    expect(results[0].query_index).toBe(0);
+    expect(results[1].query_index).toBe(1);
+  });
 });

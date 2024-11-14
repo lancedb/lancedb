@@ -229,6 +229,17 @@ def test_query_sync_maximal():
         )
 
 
+def test_query_sync_multiple_vectors():
+    def handler(_body):
+        return pa.table({"id": [1]})
+
+    with query_test_table(handler) as table:
+        results = table.search([[1, 2, 3], [4, 5, 6]]).limit(1).to_list()
+        assert len(results) == 2
+        results.sort(key=lambda x: x["query_index"])
+        assert results == [{"id": 1, "query_index": 0}, {"id": 1, "query_index": 1}]
+
+
 def test_query_sync_fts():
     def handler(body):
         assert body == {

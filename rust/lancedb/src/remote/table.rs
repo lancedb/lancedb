@@ -6,7 +6,7 @@ use crate::index::IndexStatistics;
 use crate::query::Select;
 use crate::table::AddDataMode;
 use crate::utils::{supported_btree_data_type, supported_vector_data_type};
-use crate::Error;
+use crate::{Error, Table};
 use arrow_array::RecordBatchReader;
 use arrow_ipc::reader::FileReader;
 use arrow_schema::{DataType, SchemaRef};
@@ -185,6 +185,71 @@ impl<S: HttpSend> RemoteTable<S> {
 
         Ok(())
     }
+
+    fn apply_vector_query_params(
+        mut body: serde_json::Value,
+        query: &VectorQuery,
+    ) -> Result<Vec<serde_json::Value>> {
+        Self::apply_query_params(&mut body, &query.base)?;
+
+        // Apply general parameters, before we dispatch based on number of query vectors.
+        body["prefilter"] = query.base.prefilter.into();
+        body["distance_type"] = serde_json::json!(query.distance_type.unwrap_or_default());
+        body["nprobes"] = query.nprobes.into();
+        body["refine_factor"] = query.refine_factor.into();
+        if let Some(vector_column) = query.column.as_ref() {
+            body["vector_column"] = serde_json::Value::String(vector_column.clone());
+        }
+        if !query.use_index {
+            body["bypass_vector_index"] = serde_json::Value::Bool(true);
+        }
+
+        fn vector_to_json(vector: &arrow_array::ArrayRef) -> Result<serde_json::Value> {
+            match vector.data_type() {
+                DataType::Float32 => {
+                    let array = vector
+                        .as_any()
+                        .downcast_ref::<arrow_array::Float32Array>()
+                        .unwrap();
+                    Ok(serde_json::Value::Array(
+                        array
+                            .values()
+                            .iter()
+                            .map(|v| {
+                                serde_json::Value::Number(
+                                    serde_json::Number::from_f64(*v as f64).unwrap(),
+                                )
+                            })
+                            .collect(),
+                    ))
+                }
+                _ => Err(Error::InvalidInput {
+                    message: "VectorQuery vector must be of type Float32".into(),
+                }),
+            }
+        }
+
+        match query.query_vector.len() {
+            0 => {
+                // Server takes empty vector, not null or undefined.
+                body["vector"] = serde_json::Value::Array(Vec::new());
+                Ok(vec![body])
+            }
+            1 => {
+                body["vector"] = vector_to_json(&query.query_vector[0])?;
+                Ok(vec![body])
+            }
+            _ => {
+                let mut bodies = Vec::with_capacity(query.query_vector.len());
+                for vector in &query.query_vector {
+                    let mut body = body.clone();
+                    body["vector"] = vector_to_json(vector)?;
+                    bodies.push(body);
+                }
+                Ok(bodies)
+            }
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -306,51 +371,29 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let request = self.client.post(&format!("/v1/table/{}/query/", self.name));
 
-        let mut body = serde_json::Value::Object(Default::default());
-        Self::apply_query_params(&mut body, &query.base)?;
+        let body = serde_json::Value::Object(Default::default());
+        let bodies = Self::apply_vector_query_params(body, query)?;
 
-        body["prefilter"] = query.base.prefilter.into();
-        body["distance_type"] = serde_json::json!(query.distance_type.unwrap_or_default());
-        body["nprobes"] = query.nprobes.into();
-        body["refine_factor"] = query.refine_factor.into();
-
-        let vector: Vec<f32> = if let Some(vector) = query.query_vector.as_ref() {
-            match vector.data_type() {
-                DataType::Float32 => vector
-                    .as_any()
-                    .downcast_ref::<arrow_array::Float32Array>()
-                    .unwrap()
-                    .values()
-                    .iter()
-                    .cloned()
-                    .collect(),
-                _ => {
-                    return Err(Error::InvalidInput {
-                        message: "VectorQuery vector must be of type Float32".into(),
-                    })
-                }
-            }
+        let mut futures = Vec::with_capacity(bodies.len());
+        for body in bodies {
+            let request = request.try_clone().unwrap().json(&body);
+            let future = async move {
+                let (request_id, response) = self.client.send(request, true).await?;
+                self.read_arrow_stream(&request_id, response).await
+            };
+            futures.push(future);
+        }
+        let streams = futures::future::try_join_all(futures).await?;
+        if streams.len() == 1 {
+            let stream = streams.into_iter().next().unwrap();
+            Ok(Arc::new(OneShotExec::new(stream)))
         } else {
-            // Server takes empty vector, not null or undefined.
-            Vec::new()
-        };
-        body["vector"] = serde_json::json!(vector);
-
-        if let Some(vector_column) = query.column.as_ref() {
-            body["vector_column"] = serde_json::Value::String(vector_column.clone());
+            let stream_execs = streams
+                .into_iter()
+                .map(|stream| Arc::new(OneShotExec::new(stream)) as Arc<dyn ExecutionPlan>)
+                .collect();
+            Table::multi_vector_plan(stream_execs)
         }
-
-        if !query.use_index {
-            body["bypass_vector_index"] = serde_json::Value::Bool(true);
-        }
-
-        let request = request.json(&body);
-
-        let (request_id, response) = self.client.send(request, true).await?;
-
-        let stream = self.read_arrow_stream(&request_id, response).await?;
-
-        Ok(Arc::new(OneShotExec::new(stream)))
     }
 
     async fn plain_query(
@@ -655,6 +698,7 @@ mod tests {
 
     use super::*;
 
+    use arrow::{array::AsArray, compute::concat_batches, datatypes::Int32Type};
     use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator};
     use arrow_schema::{DataType, Field, Schema};
     use futures::{future::BoxFuture, StreamExt, TryFutureExt};
@@ -1205,6 +1249,52 @@ mod tests {
             .execute()
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_query_multiple_vectors() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url().path(), "/v1/table/my_table/query/");
+            assert_eq!(
+                request.headers().get("Content-Type").unwrap(),
+                JSON_CONTENT_TYPE
+            );
+            let data = RecordBatch::try_new(
+                Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
+                vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+            )
+            .unwrap();
+            let response_body = write_ipc_file(&data);
+            http::Response::builder()
+                .status(200)
+                .header(CONTENT_TYPE, ARROW_FILE_CONTENT_TYPE)
+                .body(response_body)
+                .unwrap()
+        });
+
+        let query = table
+            .query()
+            .nearest_to(vec![0.1, 0.2, 0.3])
+            .unwrap()
+            .add_query_vector(vec![0.4, 0.5, 0.6])
+            .unwrap();
+        let plan = query.explain_plan(true).await.unwrap();
+        assert!(plan.contains("UnionExec"), "Plan: {}", plan);
+
+        let results = query
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let results = concat_batches(&results[0].schema(), &results).unwrap();
+
+        let query_index = results["query_index"].as_primitive::<Int32Type>();
+        // We don't guarantee order.
+        assert!(query_index.values().contains(&0));
+        assert!(query_index.values().contains(&1));
     }
 
     #[tokio::test]

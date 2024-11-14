@@ -24,6 +24,9 @@ use arrow_array::{RecordBatchIterator, RecordBatchReader};
 use arrow_schema::{Field, Schema, SchemaRef};
 use async_trait::async_trait;
 use datafusion_physical_plan::display::DisplayableExecutionPlan;
+use datafusion_physical_plan::projection::ProjectionExec;
+use datafusion_physical_plan::repartition::RepartitionExec;
+use datafusion_physical_plan::union::UnionExec;
 use datafusion_physical_plan::ExecutionPlan;
 use futures::{StreamExt, TryStreamExt};
 use lance::dataset::builder::DatasetBuilder;
@@ -972,6 +975,57 @@ impl Table {
     ) -> Result<Option<IndexStatistics>> {
         self.inner.index_stats(index_name.as_ref()).await
     }
+
+    // Take many execution plans and map them into a single plan that adds
+    // a query_index column and unions them.
+    pub(crate) fn multi_vector_plan(
+        plans: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        if plans.is_empty() {
+            return Err(Error::InvalidInput {
+                message: "No plans provided".to_string(),
+            });
+        }
+        // Projection to keeping all existing columns
+        let first_plan = plans[0].clone();
+        let project_all_columns = first_plan
+            .schema()
+            .fields()
+            .iter()
+            .enumerate()
+            .map(|(i, field)| {
+                let expr =
+                    datafusion_physical_plan::expressions::Column::new(field.name().as_str(), i);
+                let expr = Arc::new(expr) as Arc<dyn datafusion_physical_plan::PhysicalExpr>;
+                (expr, field.name().clone())
+            })
+            .collect::<Vec<_>>();
+
+        let projected_plans = plans
+            .into_iter()
+            .enumerate()
+            .map(|(plan_i, plan)| {
+                let query_index = datafusion_common::ScalarValue::Int32(Some(plan_i as i32));
+                let query_index_expr =
+                    datafusion_physical_plan::expressions::Literal::new(query_index);
+                let query_index_expr =
+                    Arc::new(query_index_expr) as Arc<dyn datafusion_physical_plan::PhysicalExpr>;
+                let mut projections = vec![(query_index_expr, "query_index".to_string())];
+                projections.extend_from_slice(&project_all_columns);
+                let projection = ProjectionExec::try_new(projections, plan).unwrap();
+                Arc::new(projection) as Arc<dyn datafusion_physical_plan::ExecutionPlan>
+            })
+            .collect::<Vec<_>>();
+
+        let unioned = Arc::new(UnionExec::new(projected_plans));
+        // We require 1 partition in the final output
+        let repartitioned = RepartitionExec::try_new(
+            unioned,
+            datafusion_physical_plan::Partitioning::RoundRobinBatch(1),
+        )
+        .unwrap();
+        Ok(Arc::new(repartitioned))
+    }
 }
 
 impl From<NativeTable> for Table {
@@ -1784,9 +1838,25 @@ impl TableInternal for NativeTable {
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let ds_ref = self.dataset.get().await?;
 
+        if query.query_vector.len() > 1 {
+            // If there are multiple query vectors, create a plan for each of them and union them.
+            let query_vecs = query.query_vector.clone();
+            let plan_futures = query_vecs
+                .into_iter()
+                .map(|query_vector| {
+                    let mut sub_query = query.clone();
+                    sub_query.query_vector = vec![query_vector];
+                    let options_ref = options.clone();
+                    async move { self.create_plan(&sub_query, options_ref).await }
+                })
+                .collect::<Vec<_>>();
+            let plans = futures::future::try_join_all(plan_futures).await?;
+            return Table::multi_vector_plan(plans);
+        }
+
         let mut scanner: Scanner = ds_ref.scan();
 
-        if let Some(query_vector) = query.query_vector.as_ref() {
+        if let Some(query_vector) = query.query_vector.first() {
             // If there is a vector query, default to limit=10 if unspecified
             let column = if let Some(col) = query.column.as_ref() {
                 col.clone()
@@ -1828,18 +1898,11 @@ impl TableInternal for NativeTable {
                 query_vector,
                 query.base.limit.unwrap_or(DEFAULT_TOP_K),
             )?;
-            scanner.limit(
-                query.base.limit.map(|limit| limit as i64),
-                query.base.offset.map(|offset| offset as i64),
-            )?;
-        } else {
-            // If there is no vector query, it's ok to not have a limit
-            scanner.limit(
-                query.base.limit.map(|limit| limit as i64),
-                query.base.offset.map(|offset| offset as i64),
-            )?;
         }
-
+        scanner.limit(
+            query.base.limit.map(|limit| limit as i64),
+            query.base.offset.map(|offset| offset as i64),
+        )?;
         scanner.nprobs(query.nprobes);
         scanner.use_index(query.use_index);
         scanner.prefilter(query.base.prefilter);
