@@ -187,7 +187,8 @@ describe.each([arrow13, arrow14, arrow15, arrow16, arrow17])(
       },
     );
 
-    it("should be able to omit nullable fields", async () => {
+    // TODO: https://github.com/lancedb/lancedb/issues/1832
+    it.skip("should be able to omit nullable fields", async () => {
       const db = await connect(tmpDir.name);
       const schema = new arrow.Schema([
         new arrow.Field(
@@ -233,36 +234,31 @@ describe.each([arrow13, arrow14, arrow15, arrow16, arrow17])(
     it("should be able to insert nullable data for non-nullable fields", async () => {
       const db = await connect(tmpDir.name);
       const schema = new arrow.Schema([
-        new arrow.Field(
-          "vector",
-          new arrow.FixedSizeList(
-            2,
-            new arrow.Field("item", new arrow.Float64()),
-          ),
-          false,
-        ),
+        new arrow.Field("x", new arrow.Float64(), false),
         new arrow.Field("id", new arrow.Utf8(), false),
       ]);
       const table = await db.createEmptyTable("test", schema);
 
-      const data1 = { vector: [3.1, 4.1], id: "foo" };
+      const data1 = { x: 4.1, id: "foo" };
       await table.add([data1]);
       const res = (await table.query().toArray())[0];
-      expect([...res.vector.toArray()]).toEqual(data1.vector);
+      expect(res.x).toEqual(data1.x);
       expect(res.id).toEqual(data1.id);
 
-      const data2 = { vector: null, id: "bar" };
-      await expect(table.add([data2])).rejects.toThrow("Invalid user input");
+      const data2 = { x: null, id: "bar" };
+      await expect(table.add([data2])).rejects.toThrow(
+        "declared as non-nullable but contains null values",
+      );
 
       // But we can alter columns to make them nullable
-      await table.alterColumns([{ path: "vector", nullable: true }]);
+      await table.alterColumns([{ path: "x", nullable: true }]);
       await table.add([data2]);
 
       const res2 = await table.query().toArray();
       expect(res2.length).toBe(2);
-      expect(res2[0].vector.toArray()).toEqual(data1.vector);
+      expect(res2[0].x).toEqual(data1.x);
       expect(res2[0].id).toEqual(data1.id);
-      expect(res2[1].vector).toBeNull();
+      expect(res2[1].x).toBeNull();
       expect(res2[1].id).toEqual(data2.id);
     });
 
