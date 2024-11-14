@@ -197,6 +197,24 @@ def test_query_sync_minimal():
         assert data == expected
 
 
+def test_query_sync_minimal():
+    def handler(body):
+        assert body == {
+            "k": 10,
+            "filter": "true",
+            "vector": [],
+            "offset": 0,
+            "columns": ["id"],
+        }
+
+        return pa.table({"id": [1, 2, 3]})
+
+    with query_test_table(handler) as table:
+        data = table.search(None).where("true").select(["id"]).limit(10).to_list()
+        expected = [{"id": 1}, {"id": 2}, {"id": 3}]
+        assert data == expected
+
+
 def test_query_sync_maximal():
     def handler(body):
         assert body == {

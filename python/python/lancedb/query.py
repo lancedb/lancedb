@@ -946,10 +946,10 @@ class LanceEmptyQueryBuilder(LanceQueryBuilder):
         query = Query(
             columns=self._columns,
             filter=self._where,
-            k=self._limit,
+            k=self._limit or 10,
             with_row_id=self._with_row_id,
             vector=[],
-            offset=self._offset,
+            offset=self._offset or 0,
         )
         return self._table._execute_query(query).read_all()
 
