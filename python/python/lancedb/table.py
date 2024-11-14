@@ -2217,7 +2217,10 @@ def _sanitize_vector_column(
     """
     # ChunkedArray is annoying to work with, so we combine chunks here
     vec_arr = data[vector_column_name].combine_chunks()
-    field = table_schema.field(vector_column_name)
+    if table_schema is not None:
+        field = table_schema.field(vector_column_name)
+    else:
+        field = None
     typ = data[vector_column_name].type
     if pa.types.is_list(typ) or pa.types.is_large_list(typ):
         # if it's a variable size list array,
@@ -2244,9 +2247,11 @@ def _sanitize_vector_column(
                 data, fill_value, on_bad_vectors, vec_arr, vector_column_name
             )
     else:
-        if (not field.nullable and pc.any(pc.is_null(vec_arr.values)).as_py()) or (
-            pc.any(pc.is_nan(vec_arr.values)).as_py()
-        ):
+        if (
+            field is not None
+            and not field.nullable
+            and pc.any(pc.is_null(vec_arr.values)).as_py()
+        ) or (pc.any(pc.is_nan(vec_arr.values)).as_py()):
             data = _sanitize_nans(
                 data, fill_value, on_bad_vectors, vec_arr, vector_column_name
             )
@@ -2312,7 +2317,8 @@ def _sanitize_nans(
         raise ValueError(
             f"Vector column {vector_column_name} has NaNs. "
             "Set on_bad_vectors='drop' to remove them, or "
-            "set on_bad_vectors='fill' and fill_value=<value> to replace them."
+            "set on_bad_vectors='fill' and fill_value=<value> to replace them. "
+            "Or set on_bad_vectors='null' to replace them with null."
         )
     elif on_bad_vectors == "fill":
         if fill_value is None:

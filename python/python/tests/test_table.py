@@ -332,7 +332,7 @@ def test_add_nullability(tmp_path):
         schema=nullable_schema,
     )
     # We can't add nullable schema if it contains nulls
-    with pytest.raises(Exception, match="Invalid user input"):
+    with pytest.raises(Exception, match="Vector column vector has NaNs"):
         table.add(data)
 
     # But we can make it nullable
