@@ -330,6 +330,10 @@ jobs:
           7z x node.zip
           Move-Item -Path "node-v22.11.0-win-arm64" -Destination "C:\node"
           Add-Content $env:GITHUB_PATH "C:\node"
+      - name: Install npm dependencies
+        run: |
+          cd node
+          npm ci
       - name: Build Windows native node modules
         run: .\ci\build_windows_artifacts.ps1 aarch64-pc-windows-msvc
       - name: Upload Windows ARM64 Artifacts
