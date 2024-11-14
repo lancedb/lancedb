@@ -226,108 +226,109 @@ jobs:
           path: |
             node/dist/lancedb-vectordb-win32*.tgz
 
-  node-windows-arm64:
-    name: vectordb win32-arm64-msvc
-    runs-on: windows-4x-arm
-    if: startsWith(github.ref, 'refs/tags/v')
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install Git
-        run: |
-          Invoke-WebRequest -Uri "https://github.com/git-for-windows/git/releases/download/v2.44.0.windows.1/Git-2.44.0-64-bit.exe" -OutFile "git-installer.exe"
-          Start-Process -FilePath "git-installer.exe" -ArgumentList "/VERYSILENT", "/NORESTART" -Wait
-        shell: powershell
-      - name: Add Git to PATH
-        run: |
-          Add-Content $env:GITHUB_PATH "C:\Program Files\Git\bin"
-          $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
-        shell: powershell
-      - name: Configure Git symlinks
-        run: git config --global core.symlinks true
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-      - name: Install Visual Studio Build Tools
-        run: |
-          Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vs_buildtools.exe" -OutFile "vs_buildtools.exe"
-          Start-Process -FilePath "vs_buildtools.exe" -ArgumentList "--quiet", "--wait", "--norestart", "--nocache", `
-            "--installPath", "C:\BuildTools", `
-            "--add", "Microsoft.VisualStudio.Component.VC.Tools.ARM64", `
-            "--add", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64", `
-            "--add", "Microsoft.VisualStudio.Component.Windows11SDK.22621", `
-            "--add", "Microsoft.VisualStudio.Component.VC.ATL", `
-            "--add", "Microsoft.VisualStudio.Component.VC.ATLMFC", `
-            "--add", "Microsoft.VisualStudio.Component.VC.Llvm.Clang" -Wait
-        shell: powershell
-      - name: Add Visual Studio Build Tools to PATH
-        run: |
-          $vsPath = "C:\BuildTools\VC\Tools\MSVC"
-          $latestVersion = (Get-ChildItem $vsPath | Sort-Object {[version]$_.Name} -Descending)[0].Name
-          Add-Content $env:GITHUB_PATH "C:\BuildTools\VC\Tools\MSVC\$latestVersion\bin\Hostx64\arm64"
-          Add-Content $env:GITHUB_PATH "C:\BuildTools\VC\Tools\MSVC\$latestVersion\bin\Hostx64\x64"
-          Add-Content $env:GITHUB_PATH "C:\Program Files (x86)\Windows Kits\10\bin\10.0.22621.0\arm64"
-          Add-Content $env:GITHUB_PATH "C:\Program Files (x86)\Windows Kits\10\bin\10.0.22621.0\x64"
-          Add-Content $env:GITHUB_PATH "C:\BuildTools\VC\Tools\Llvm\x64\bin"
+  # TODO: re-enable once working https://github.com/lancedb/lancedb/pull/1831
+  # node-windows-arm64:
+  #   name: vectordb win32-arm64-msvc
+  #   runs-on: windows-4x-arm
+  #   if: startsWith(github.ref, 'refs/tags/v')
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - name: Install Git
+  #       run: |
+  #         Invoke-WebRequest -Uri "https://github.com/git-for-windows/git/releases/download/v2.44.0.windows.1/Git-2.44.0-64-bit.exe" -OutFile "git-installer.exe"
+  #         Start-Process -FilePath "git-installer.exe" -ArgumentList "/VERYSILENT", "/NORESTART" -Wait
+  #       shell: powershell
+  #     - name: Add Git to PATH
+  #       run: |
+  #         Add-Content $env:GITHUB_PATH "C:\Program Files\Git\bin"
+  #         $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+  #       shell: powershell
+  #     - name: Configure Git symlinks
+  #       run: git config --global core.symlinks true
+  #     - uses: actions/checkout@v4
+  #     - uses: actions/setup-python@v5
+  #       with:
+  #         python-version: "3.13"
+  #     - name: Install Visual Studio Build Tools
+  #       run: |
+  #         Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vs_buildtools.exe" -OutFile "vs_buildtools.exe"
+  #         Start-Process -FilePath "vs_buildtools.exe" -ArgumentList "--quiet", "--wait", "--norestart", "--nocache", `
+  #           "--installPath", "C:\BuildTools", `
+  #           "--add", "Microsoft.VisualStudio.Component.VC.Tools.ARM64", `
+  #           "--add", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64", `
+  #           "--add", "Microsoft.VisualStudio.Component.Windows11SDK.22621", `
+  #           "--add", "Microsoft.VisualStudio.Component.VC.ATL", `
+  #           "--add", "Microsoft.VisualStudio.Component.VC.ATLMFC", `
+  #           "--add", "Microsoft.VisualStudio.Component.VC.Llvm.Clang" -Wait
+  #       shell: powershell
+  #     - name: Add Visual Studio Build Tools to PATH
+  #       run: |
+  #         $vsPath = "C:\BuildTools\VC\Tools\MSVC"
+  #         $latestVersion = (Get-ChildItem $vsPath | Sort-Object {[version]$_.Name} -Descending)[0].Name
+  #         Add-Content $env:GITHUB_PATH "C:\BuildTools\VC\Tools\MSVC\$latestVersion\bin\Hostx64\arm64"
+  #         Add-Content $env:GITHUB_PATH "C:\BuildTools\VC\Tools\MSVC\$latestVersion\bin\Hostx64\x64"
+  #         Add-Content $env:GITHUB_PATH "C:\Program Files (x86)\Windows Kits\10\bin\10.0.22621.0\arm64"
+  #         Add-Content $env:GITHUB_PATH "C:\Program Files (x86)\Windows Kits\10\bin\10.0.22621.0\x64"
+  #         Add-Content $env:GITHUB_PATH "C:\BuildTools\VC\Tools\Llvm\x64\bin"
 
-          # Add MSVC runtime libraries to LIB
-          $env:LIB = "C:\BuildTools\VC\Tools\MSVC\$latestVersion\lib\arm64;" + 
-                     "C:\Program Files (x86)\Windows Kits\10\Lib\10.0.22621.0\um\arm64;" +
-                     "C:\Program Files (x86)\Windows Kits\10\Lib\10.0.22621.0\ucrt\arm64"
-          Add-Content $env:GITHUB_ENV "LIB=$env:LIB"
+  #         # Add MSVC runtime libraries to LIB
+  #         $env:LIB = "C:\BuildTools\VC\Tools\MSVC\$latestVersion\lib\arm64;" +
+  #                    "C:\Program Files (x86)\Windows Kits\10\Lib\10.0.22621.0\um\arm64;" +
+  #                    "C:\Program Files (x86)\Windows Kits\10\Lib\10.0.22621.0\ucrt\arm64"
+  #         Add-Content $env:GITHUB_ENV "LIB=$env:LIB"
 
-          # Add INCLUDE paths
-          $env:INCLUDE = "C:\BuildTools\VC\Tools\MSVC\$latestVersion\include;" +
-                        "C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\ucrt;" +
-                        "C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\um;" +
-                        "C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\shared"
-          Add-Content $env:GITHUB_ENV "INCLUDE=$env:INCLUDE"
-        shell: powershell
-      - name: Install Rust
-        run: |
-          Invoke-WebRequest https://win.rustup.rs/x86_64 -OutFile rustup-init.exe
-          .\rustup-init.exe -y --default-host aarch64-pc-windows-msvc
-        shell: powershell
-      - name: Add Rust to PATH
-        run: |
-          Add-Content $env:GITHUB_PATH "$env:USERPROFILE\.cargo\bin"
-        shell: powershell
+  #         # Add INCLUDE paths
+  #         $env:INCLUDE = "C:\BuildTools\VC\Tools\MSVC\$latestVersion\include;" +
+  #                       "C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\ucrt;" +
+  #                       "C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\um;" +
+  #                       "C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\shared"
+  #         Add-Content $env:GITHUB_ENV "INCLUDE=$env:INCLUDE"
+  #       shell: powershell
+  #     - name: Install Rust
+  #       run: |
+  #         Invoke-WebRequest https://win.rustup.rs/x86_64 -OutFile rustup-init.exe
+  #         .\rustup-init.exe -y --default-host aarch64-pc-windows-msvc
+  #       shell: powershell
+  #     - name: Add Rust to PATH
+  #       run: |
+  #         Add-Content $env:GITHUB_PATH "$env:USERPROFILE\.cargo\bin"
+  #       shell: powershell
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: rust
-      - name: Install 7-Zip ARM
-        run: |
-          New-Item -Path 'C:\7zip' -ItemType Directory
-          Invoke-WebRequest https://7-zip.org/a/7z2408-arm64.exe -OutFile C:\7zip\7z-installer.exe
-          Start-Process -FilePath C:\7zip\7z-installer.exe -ArgumentList '/S' -Wait
-        shell: powershell
-      - name: Add 7-Zip to PATH
-        run: Add-Content $env:GITHUB_PATH "C:\Program Files\7-Zip"
-        shell: powershell
-      - name: Install Protoc v21.12
-        working-directory: C:\
-        run: |
-          if (Test-Path 'C:\protoc') {
-              Write-Host "Protoc directory exists, skipping installation"
-              return
-          }
-          New-Item -Path 'C:\protoc' -ItemType Directory
-          Set-Location C:\protoc
-          Invoke-WebRequest https://github.com/protocolbuffers/protobuf/releases/download/v21.12/protoc-21.12-win64.zip -OutFile C:\protoc\protoc.zip
-          & 'C:\Program Files\7-Zip\7z.exe' x protoc.zip
-        shell: powershell
-      - name: Add Protoc to PATH
-        run: Add-Content $env:GITHUB_PATH "C:\protoc\bin"
-        shell: powershell
-      - name: Build Windows native node modules
-        run: .\ci\build_windows_artifacts.ps1 aarch64-pc-windows-msvc
-      - name: Upload Windows ARM64 Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: node-native-windows-arm64
-          path: |
-            node/dist/*.node
+  #     - uses: Swatinem/rust-cache@v2
+  #       with:
+  #         workspaces: rust
+  #     - name: Install 7-Zip ARM
+  #       run: |
+  #         New-Item -Path 'C:\7zip' -ItemType Directory
+  #         Invoke-WebRequest https://7-zip.org/a/7z2408-arm64.exe -OutFile C:\7zip\7z-installer.exe
+  #         Start-Process -FilePath C:\7zip\7z-installer.exe -ArgumentList '/S' -Wait
+  #       shell: powershell
+  #     - name: Add 7-Zip to PATH
+  #       run: Add-Content $env:GITHUB_PATH "C:\Program Files\7-Zip"
+  #       shell: powershell
+  #     - name: Install Protoc v21.12
+  #       working-directory: C:\
+  #       run: |
+  #         if (Test-Path 'C:\protoc') {
+  #             Write-Host "Protoc directory exists, skipping installation"
+  #             return
+  #         }
+  #         New-Item -Path 'C:\protoc' -ItemType Directory
+  #         Set-Location C:\protoc
+  #         Invoke-WebRequest https://github.com/protocolbuffers/protobuf/releases/download/v21.12/protoc-21.12-win64.zip -OutFile C:\protoc\protoc.zip
+  #         & 'C:\Program Files\7-Zip\7z.exe' x protoc.zip
+  #       shell: powershell
+  #     - name: Add Protoc to PATH
+  #       run: Add-Content $env:GITHUB_PATH "C:\protoc\bin"
+  #       shell: powershell
+  #     - name: Build Windows native node modules
+  #       run: .\ci\build_windows_artifacts.ps1 aarch64-pc-windows-msvc
+  #     - name: Upload Windows ARM64 Artifacts
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: node-native-windows-arm64
+  #         path: |
+  #           node/dist/*.node
 
   nodejs-windows:
     name: lancedb ${{ matrix.target }}
@@ -363,98 +364,99 @@ jobs:
           path: |
             nodejs/dist/*.node
 
-  nodejs-windows-arm64:
-    name: lancedb win32-arm64-msvc
-    runs-on: windows-4x-arm
-    if: startsWith(github.ref, 'refs/tags/v')
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install Git
-        run: |
-          Invoke-WebRequest -Uri "https://github.com/git-for-windows/git/releases/download/v2.44.0.windows.1/Git-2.44.0-64-bit.exe" -OutFile "git-installer.exe"
-          Start-Process -FilePath "git-installer.exe" -ArgumentList "/VERYSILENT", "/NORESTART" -Wait
-        shell: powershell
-      - name: Add Git to PATH
-        run: |
-          Add-Content $env:GITHUB_PATH "C:\Program Files\Git\bin"
-          $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
-        shell: powershell
-      - name: Configure Git symlinks
-        run: git config --global core.symlinks true
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-      - name: Install Visual Studio Build Tools
-        run: |
-          Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vs_buildtools.exe" -OutFile "vs_buildtools.exe"
-          Start-Process -FilePath "vs_buildtools.exe" -ArgumentList "--quiet", "--wait", "--norestart", "--nocache", `
-            "--installPath", "C:\BuildTools", `
-            "--add", "Microsoft.VisualStudio.Component.VC.Tools.ARM64", `
-            "--add", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64", `
-            "--add", "Microsoft.VisualStudio.Component.Windows11SDK.22621", `
-            "--add", "Microsoft.VisualStudio.Component.VC.ATL", `
-            "--add", "Microsoft.VisualStudio.Component.VC.ATLMFC", `
-            "--add", "Microsoft.VisualStudio.Component.VC.Llvm.Clang" -Wait
-        shell: powershell
-      - name: Add Visual Studio Build Tools to PATH
-        run: |
-          $vsPath = "C:\BuildTools\VC\Tools\MSVC"
-          $latestVersion = (Get-ChildItem $vsPath | Sort-Object {[version]$_.Name} -Descending)[0].Name
-          Add-Content $env:GITHUB_PATH "C:\BuildTools\VC\Tools\MSVC\$latestVersion\bin\Hostx64\arm64"
-          Add-Content $env:GITHUB_PATH "C:\BuildTools\VC\Tools\MSVC\$latestVersion\bin\Hostx64\x64"
-          Add-Content $env:GITHUB_PATH "C:\Program Files (x86)\Windows Kits\10\bin\10.0.22621.0\arm64"
-          Add-Content $env:GITHUB_PATH "C:\Program Files (x86)\Windows Kits\10\bin\10.0.22621.0\x64"
-          Add-Content $env:GITHUB_PATH "C:\BuildTools\VC\Tools\Llvm\x64\bin"
+  # TODO: re-enable once working https://github.com/lancedb/lancedb/pull/1831
+  # nodejs-windows-arm64:
+  #   name: lancedb win32-arm64-msvc
+  #   runs-on: windows-4x-arm
+  #   if: startsWith(github.ref, 'refs/tags/v')
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - name: Install Git
+  #       run: |
+  #         Invoke-WebRequest -Uri "https://github.com/git-for-windows/git/releases/download/v2.44.0.windows.1/Git-2.44.0-64-bit.exe" -OutFile "git-installer.exe"
+  #         Start-Process -FilePath "git-installer.exe" -ArgumentList "/VERYSILENT", "/NORESTART" -Wait
+  #       shell: powershell
+  #     - name: Add Git to PATH
+  #       run: |
+  #         Add-Content $env:GITHUB_PATH "C:\Program Files\Git\bin"
+  #         $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+  #       shell: powershell
+  #     - name: Configure Git symlinks
+  #       run: git config --global core.symlinks true
+  #     - uses: actions/checkout@v4
+  #     - uses: actions/setup-python@v5
+  #       with:
+  #         python-version: "3.13"
+  #     - name: Install Visual Studio Build Tools
+  #       run: |
+  #         Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vs_buildtools.exe" -OutFile "vs_buildtools.exe"
+  #         Start-Process -FilePath "vs_buildtools.exe" -ArgumentList "--quiet", "--wait", "--norestart", "--nocache", `
+  #           "--installPath", "C:\BuildTools", `
+  #           "--add", "Microsoft.VisualStudio.Component.VC.Tools.ARM64", `
+  #           "--add", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64", `
+  #           "--add", "Microsoft.VisualStudio.Component.Windows11SDK.22621", `
+  #           "--add", "Microsoft.VisualStudio.Component.VC.ATL", `
+  #           "--add", "Microsoft.VisualStudio.Component.VC.ATLMFC", `
+  #           "--add", "Microsoft.VisualStudio.Component.VC.Llvm.Clang" -Wait
+  #       shell: powershell
+  #     - name: Add Visual Studio Build Tools to PATH
+  #       run: |
+  #         $vsPath = "C:\BuildTools\VC\Tools\MSVC"
+  #         $latestVersion = (Get-ChildItem $vsPath | Sort-Object {[version]$_.Name} -Descending)[0].Name
+  #         Add-Content $env:GITHUB_PATH "C:\BuildTools\VC\Tools\MSVC\$latestVersion\bin\Hostx64\arm64"
+  #         Add-Content $env:GITHUB_PATH "C:\BuildTools\VC\Tools\MSVC\$latestVersion\bin\Hostx64\x64"
+  #         Add-Content $env:GITHUB_PATH "C:\Program Files (x86)\Windows Kits\10\bin\10.0.22621.0\arm64"
+  #         Add-Content $env:GITHUB_PATH "C:\Program Files (x86)\Windows Kits\10\bin\10.0.22621.0\x64"
+  #         Add-Content $env:GITHUB_PATH "C:\BuildTools\VC\Tools\Llvm\x64\bin"
 
-          $env:LIB = ""
-          Add-Content $env:GITHUB_ENV "LIB=C:\Program Files (x86)\Windows Kits\10\Lib\10.0.22621.0\um\arm64;C:\Program Files (x86)\Windows Kits\10\Lib\10.0.22621.0\ucrt\arm64"
-        shell: powershell
-      - name: Install Rust
-        run: |
-          Invoke-WebRequest https://win.rustup.rs/x86_64 -OutFile rustup-init.exe
-          .\rustup-init.exe -y --default-host aarch64-pc-windows-msvc
-        shell: powershell
-      - name: Add Rust to PATH
-        run: |
-          Add-Content $env:GITHUB_PATH "$env:USERPROFILE\.cargo\bin"
-        shell: powershell
+  #         $env:LIB = ""
+  #         Add-Content $env:GITHUB_ENV "LIB=C:\Program Files (x86)\Windows Kits\10\Lib\10.0.22621.0\um\arm64;C:\Program Files (x86)\Windows Kits\10\Lib\10.0.22621.0\ucrt\arm64"
+  #       shell: powershell
+  #     - name: Install Rust
+  #       run: |
+  #         Invoke-WebRequest https://win.rustup.rs/x86_64 -OutFile rustup-init.exe
+  #         .\rustup-init.exe -y --default-host aarch64-pc-windows-msvc
+  #       shell: powershell
+  #     - name: Add Rust to PATH
+  #       run: |
+  #         Add-Content $env:GITHUB_PATH "$env:USERPROFILE\.cargo\bin"
+  #       shell: powershell
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: rust
-      - name: Install 7-Zip ARM
-        run: |
-          New-Item -Path 'C:\7zip' -ItemType Directory
-          Invoke-WebRequest https://7-zip.org/a/7z2408-arm64.exe -OutFile C:\7zip\7z-installer.exe
-          Start-Process -FilePath C:\7zip\7z-installer.exe -ArgumentList '/S' -Wait
-        shell: powershell
-      - name: Add 7-Zip to PATH
-        run: Add-Content $env:GITHUB_PATH "C:\Program Files\7-Zip"
-        shell: powershell
-      - name: Install Protoc v21.12
-        working-directory: C:\
-        run: |
-          if (Test-Path 'C:\protoc') {
-              Write-Host "Protoc directory exists, skipping installation"
-              return
-          }
-          New-Item -Path 'C:\protoc' -ItemType Directory
-          Set-Location C:\protoc
-          Invoke-WebRequest https://github.com/protocolbuffers/protobuf/releases/download/v21.12/protoc-21.12-win64.zip -OutFile C:\protoc\protoc.zip
-          & 'C:\Program Files\7-Zip\7z.exe' x protoc.zip
-        shell: powershell
-      - name: Add Protoc to PATH
-        run: Add-Content $env:GITHUB_PATH "C:\protoc\bin"
-        shell: powershell
-      - name: Build Windows native node modules
-        run: .\ci\build_windows_artifacts_nodejs.ps1 aarch64-pc-windows-msvc
-      - name: Upload Windows ARM64 Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: nodejs-native-windows-arm64
-          path: |
-            nodejs/dist/*.node
+  #     - uses: Swatinem/rust-cache@v2
+  #       with:
+  #         workspaces: rust
+  #     - name: Install 7-Zip ARM
+  #       run: |
+  #         New-Item -Path 'C:\7zip' -ItemType Directory
+  #         Invoke-WebRequest https://7-zip.org/a/7z2408-arm64.exe -OutFile C:\7zip\7z-installer.exe
+  #         Start-Process -FilePath C:\7zip\7z-installer.exe -ArgumentList '/S' -Wait
+  #       shell: powershell
+  #     - name: Add 7-Zip to PATH
+  #       run: Add-Content $env:GITHUB_PATH "C:\Program Files\7-Zip"
+  #       shell: powershell
+  #     - name: Install Protoc v21.12
+  #       working-directory: C:\
+  #       run: |
+  #         if (Test-Path 'C:\protoc') {
+  #             Write-Host "Protoc directory exists, skipping installation"
+  #             return
+  #         }
+  #         New-Item -Path 'C:\protoc' -ItemType Directory
+  #         Set-Location C:\protoc
+  #         Invoke-WebRequest https://github.com/protocolbuffers/protobuf/releases/download/v21.12/protoc-21.12-win64.zip -OutFile C:\protoc\protoc.zip
+  #         & 'C:\Program Files\7-Zip\7z.exe' x protoc.zip
+  #       shell: powershell
+  #     - name: Add Protoc to PATH
+  #       run: Add-Content $env:GITHUB_PATH "C:\protoc\bin"
+  #       shell: powershell
+  #     - name: Build Windows native node modules
+  #       run: .\ci\build_windows_artifacts_nodejs.ps1 aarch64-pc-windows-msvc
+  #     - name: Upload Windows ARM64 Artifacts
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: nodejs-native-windows-arm64
+  #         path: |
+  #           nodejs/dist/*.node
 
   release:
     name: vectordb NPM Publish
@@ -476,7 +478,7 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.LANCEDB_NPM_REGISTRY_TOKEN }}
         run: |
-          # Tag beta as "preview" instead of default "latest". See lancedb 
+          # Tag beta as "preview" instead of default "latest". See lancedb
           # npm publish step for more info.
           if [[ $GITHUB_REF =~ refs/tags/v(.*)-beta.* ]]; then
             PUBLISH_ARGS="--tag preview"
