@@ -85,13 +85,13 @@ Initialize a LanceDB connection and create a table
 
 
         ```ts
-        --8<-- "nodejs/examples/basic.ts:create_table"
+        --8<-- "nodejs/examples/basic.test.ts:create_table"
         ```
 
         This will infer the schema from the provided data. If you want to explicitly provide a schema, you can use `apache-arrow` to declare a schema
 
         ```ts
-        --8<-- "nodejs/examples/basic.ts:create_table_with_schema"
+        --8<-- "nodejs/examples/basic.test.ts:create_table_with_schema"
         ```
 
         !!! info "Note"
@@ -100,14 +100,14 @@ Initialize a LanceDB connection and create a table
             passed in will NOT be appended to the table in that case.
 
         ```ts
-        --8<-- "nodejs/examples/basic.ts:create_table_exists_ok"
+        --8<-- "nodejs/examples/basic.test.ts:create_table_exists_ok"
         ```
 
         Sometimes you want to make sure that you start fresh. If you want to
         overwrite the table, you can pass in mode: "overwrite" to the createTable function.
 
         ```ts
-        --8<-- "nodejs/examples/basic.ts:create_table_overwrite"
+        --8<-- "nodejs/examples/basic.test.ts:create_table_overwrite"
         ```
 
     === "vectordb (deprecated)"
@@ -227,7 +227,7 @@ LanceDB supports float16 data type!
     === "@lancedb/lancedb"
 
         ```typescript
-        --8<-- "nodejs/examples/basic.ts:create_f16_table"
+        --8<-- "nodejs/examples/basic.test.ts:create_f16_table"
         ```
 
     === "vectordb (deprecated)"
@@ -455,7 +455,7 @@ You can create an empty table for scenarios where you want to add data to the ta
     === "@lancedb/lancedb"
 
         ```typescript
-        --8<-- "nodejs/examples/basic.ts:create_empty_table"
+        --8<-- "nodejs/examples/basic.test.ts:create_empty_table"
         ```
 
     === "vectordb (deprecated)"

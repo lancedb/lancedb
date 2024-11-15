@@ -136,6 +136,16 @@ impl VectorQuery {
     }
 
     #[napi]
+    pub fn add_query_vector(&mut self, vector: Float32Array) -> Result<()> {
+        self.inner = self
+            .inner
+            .clone()
+            .add_query_vector(vector.as_ref())
+            .default_error()?;
+        Ok(())
+    }
+
+    #[napi]
     pub fn distance_type(&mut self, distance_type: String) -> napi::Result<()> {
         let distance_type = parse_distance_type(distance_type)?;
         self.inner = self.inner.clone().distance_type(distance_type);

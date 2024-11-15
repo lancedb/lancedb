@@ -157,7 +157,7 @@ recommend switching to stable releases.
         import * as lancedb from "@lancedb/lancedb";
         import * as arrow from "apache-arrow";
 
-        --8<-- "nodejs/examples/basic.ts:connect"
+        --8<-- "nodejs/examples/basic.test.ts:connect"
         ```
 
     === "vectordb (deprecated)"
@@ -212,7 +212,7 @@ table.
     === "@lancedb/lancedb"
 
         ```typescript
-        --8<-- "nodejs/examples/basic.ts:create_table"
+        --8<-- "nodejs/examples/basic.test.ts:create_table"
         ```
 
     === "vectordb (deprecated)"
@@ -268,7 +268,7 @@ similar to a `CREATE TABLE` statement in SQL.
     === "@lancedb/lancedb"
 
         ```typescript
-        --8<-- "nodejs/examples/basic.ts:create_empty_table"
+        --8<-- "nodejs/examples/basic.test.ts:create_empty_table"
         ```
 
     === "vectordb (deprecated)"
@@ -298,7 +298,7 @@ Once created, you can open a table as follows:
     === "@lancedb/lancedb"
 
         ```typescript
-        --8<-- "nodejs/examples/basic.ts:open_table"
+        --8<-- "nodejs/examples/basic.test.ts:open_table"
         ```
 
     === "vectordb (deprecated)"
@@ -327,7 +327,7 @@ If you forget the name of your table, you can always get a listing of all table 
     === "@lancedb/lancedb"
 
         ```typescript
-        --8<-- "nodejs/examples/basic.ts:table_names"
+        --8<-- "nodejs/examples/basic.test.ts:table_names"
         ```
 
     === "vectordb (deprecated)"
@@ -357,7 +357,7 @@ After a table has been created, you can always add more data to it as follows:
     === "@lancedb/lancedb"
 
         ```typescript
-        --8<-- "nodejs/examples/basic.ts:add_data"
+        --8<-- "nodejs/examples/basic.test.ts:add_data"
         ```
 
     === "vectordb (deprecated)"
@@ -389,7 +389,7 @@ Once you've embedded the query, you can find its nearest neighbors as follows:
     === "@lancedb/lancedb"
 
         ```typescript
-        --8<-- "nodejs/examples/basic.ts:vector_search"
+        --8<-- "nodejs/examples/basic.test.ts:vector_search"
         ```
 
     === "vectordb (deprecated)"
@@ -429,7 +429,7 @@ LanceDB allows you to create an ANN index on a table as follows:
     === "@lancedb/lancedb"
 
         ```typescript
-        --8<-- "nodejs/examples/basic.ts:create_index"
+        --8<-- "nodejs/examples/basic.test.ts:create_index"
         ```
 
     === "vectordb (deprecated)"
@@ -469,7 +469,7 @@ This can delete any number of rows that match the filter.
     === "@lancedb/lancedb"
 
         ```typescript
-        --8<-- "nodejs/examples/basic.ts:delete_rows"
+        --8<-- "nodejs/examples/basic.test.ts:delete_rows"
         ```
 
     === "vectordb (deprecated)"
@@ -527,7 +527,7 @@ Use the `drop_table()` method on the database to remove a table.
     === "@lancedb/lancedb"
 
         ```typescript
-        --8<-- "nodejs/examples/basic.ts:drop_table"
+        --8<-- "nodejs/examples/basic.test.ts:drop_table"
         ```
 
     === "vectordb (deprecated)"
@@ -561,8 +561,8 @@ You can use the embedding API when working with embedding models. It automatical
     === "@lancedb/lancedb"
 
         ```typescript
-        --8<-- "nodejs/examples/embedding.ts:imports"
-        --8<-- "nodejs/examples/embedding.ts:openai_embeddings"
+        --8<-- "nodejs/examples/embedding.test.ts:imports"
+        --8<-- "nodejs/examples/embedding.test.ts:openai_embeddings"
         ```
 
 === "Rust"

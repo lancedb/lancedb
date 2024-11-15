@@ -51,8 +51,8 @@ LanceDB registers the OpenAI embeddings function in the registry as `openai`. Yo
 === "TypeScript"
 
     ```typescript
-    --8<--- "nodejs/examples/embedding.ts:imports"
-    --8<--- "nodejs/examples/embedding.ts:openai_embeddings"
+    --8<--- "nodejs/examples/embedding.test.ts:imports"
+    --8<--- "nodejs/examples/embedding.test.ts:openai_embeddings"
     ```
 
 === "Rust"
@@ -121,12 +121,10 @@ class Words(LanceModel):
     vector: Vector(func.ndims()) = func.VectorField()
 
 table = db.create_table("words", schema=Words)
-table.add(
-    [
-        {"text": "hello world"},
-        {"text": "goodbye world"}
-    ]
-    )
+table.add([
+    {"text": "hello world"},
+    {"text": "goodbye world"}
+])
 
 query = "greetings"
 actual = table.search(query).limit(1).to_pydantic(Words)[0]

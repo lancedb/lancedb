@@ -197,6 +197,23 @@ def test_query_sync_minimal():
         assert data == expected
 
 
+def test_query_sync_empty_query():
+    def handler(body):
+        assert body == {
+            "k": 10,
+            "filter": "true",
+            "vector": [],
+            "columns": ["id"],
+        }
+
+        return pa.table({"id": [1, 2, 3]})
+
+    with query_test_table(handler) as table:
+        data = table.search(None).where("true").select(["id"]).limit(10).to_list()
+        expected = [{"id": 1}, {"id": 2}, {"id": 3}]
+        assert data == expected
+
+
 def test_query_sync_maximal():
     def handler(body):
         assert body == {
@@ -227,6 +244,17 @@ def test_query_sync_maximal():
             .select(["id", "name"])
             .to_list()
         )
+
+
+def test_query_sync_multiple_vectors():
+    def handler(_body):
+        return pa.table({"id": [1]})
+
+    with query_test_table(handler) as table:
+        results = table.search([[1, 2, 3], [4, 5, 6]]).limit(1).to_list()
+        assert len(results) == 2
+        results.sort(key=lambda x: x["query_index"])
+        assert results == [{"id": 1, "query_index": 0}, {"id": 1, "query_index": 1}]
 
 
 def test_query_sync_fts():

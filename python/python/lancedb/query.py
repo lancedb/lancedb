@@ -943,12 +943,16 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
 
 class LanceEmptyQueryBuilder(LanceQueryBuilder):
     def to_arrow(self) -> pa.Table:
-        ds = self._table.to_lance()
-        return ds.to_table(
+        query = Query(
             columns=self._columns,
             filter=self._where,
-            limit=self._limit,
+            k=self._limit or 10,
+            with_row_id=self._with_row_id,
+            vector=[],
+            # not actually respected in remote query
+            offset=self._offset or 0,
         )
+        return self._table._execute_query(query).read_all()
 
     def rerank(self, reranker: Reranker) -> LanceEmptyQueryBuilder:
         """Rerank the results using the specified reranker.
@@ -1491,7 +1495,7 @@ class AsyncQuery(AsyncQueryBase):
         return pa.array(vec)
 
     def nearest_to(
-        self, query_vector: Optional[Union[VEC, Tuple]] = None
+        self, query_vector: Optional[Union[VEC, Tuple, List[VEC]]] = None
     ) -> AsyncVectorQuery:
         """
         Find the nearest vectors to the given query vector.
@@ -1529,10 +1533,30 @@ class AsyncQuery(AsyncQueryBase):
 
         Vector searches always have a [limit][].  If `limit` has not been called then
         a default `limit` of 10 will be used.
+
+        Typically, a single vector is passed in as the query. However, you can also
+        pass in multiple vectors.  This can be useful if you want to find the nearest
+        vectors to multiple query vectors. This is not expected to be faster than
+        making multiple queries concurrently; it is just a convenience method.
+        If multiple vectors are passed in then an additional column `query_index`
+        will be added to the results.  This column will contain the index of the
+        query vector that the result is nearest to.
         """
-        return AsyncVectorQuery(
-            self._inner.nearest_to(AsyncQuery._query_vec_to_array(query_vector))
-        )
+        if (
+            isinstance(query_vector, list)
+            and len(query_vector) > 0
+            and not isinstance(query_vector[0], (float, int))
+        ):
+            # multiple have been passed
+            query_vectors = [AsyncQuery._query_vec_to_array(v) for v in query_vector]
+            new_self = self._inner.nearest_to(query_vectors[0])
+            for v in query_vectors[1:]:
+                new_self.add_query_vector(v)
+            return AsyncVectorQuery(new_self)
+        else:
+            return AsyncVectorQuery(
+                self._inner.nearest_to(AsyncQuery._query_vec_to_array(query_vector))
+            )
 
     def nearest_to_text(
         self, query: str, columns: Union[str, List[str]] = []

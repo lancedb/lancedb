@@ -58,9 +58,9 @@ db.create_table("my_vectors", data=data)
     === "@lancedb/lancedb"
 
         ```ts
-        --8<-- "nodejs/examples/search.ts:import"
+        --8<-- "nodejs/examples/search.test.ts:import"
 
-        --8<-- "nodejs/examples/search.ts:search1"
+        --8<-- "nodejs/examples/search.test.ts:search1"
         ```
 
 
@@ -89,7 +89,7 @@ By default, `l2` will be used as metric type. You can specify the metric type as
     === "@lancedb/lancedb"
 
         ```ts
-        --8<-- "nodejs/examples/search.ts:search2"
+        --8<-- "nodejs/examples/search.test.ts:search2"
         ```
 
     === "vectordb (deprecated)"

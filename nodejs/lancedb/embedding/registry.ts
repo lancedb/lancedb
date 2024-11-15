@@ -17,8 +17,6 @@ import {
   type EmbeddingFunctionConstructor,
 } from "./embedding_function";
 import "reflect-metadata";
-import { OpenAIEmbeddingFunction } from "./openai";
-import { TransformersEmbeddingFunction } from "./transformers";
 
 type CreateReturnType<T> = T extends { init: () => Promise<void> }
   ? Promise<T>
@@ -73,10 +71,6 @@ export class EmbeddingFunctionRegistry {
     };
   }
 
-  get(name: "openai"): EmbeddingFunctionCreate<OpenAIEmbeddingFunction>;
-  get(
-    name: "huggingface",
-  ): EmbeddingFunctionCreate<TransformersEmbeddingFunction>;
   get<T extends EmbeddingFunction<unknown>>(
     name: string,
   ): EmbeddingFunctionCreate<T> | undefined;
