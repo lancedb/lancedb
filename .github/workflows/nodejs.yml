@@ -104,7 +104,6 @@ jobs:
         OPENAI_BASE_URL: http://0.0.0.0:8000
       run: |
         python ci/mock_openai.py &
-        ss -ltnp | grep :8000
         cd nodejs/examples
         npm test
   macos:

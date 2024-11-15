@@ -81,14 +81,15 @@ def test_embedding_function(tmp_path):
 
 
 def test_embedding_with_bad_results(tmp_path):
-    @register("mock-embedding")
-    class MockEmbeddingFunction(TextEmbeddingFunction):
+    @register("null-embedding")
+    class NullEmbeddingFunction(TextEmbeddingFunction):
         def ndims(self):
             return 128
 
         def generate_embeddings(
             self, texts: Union[List[str], np.ndarray]
         ) -> list[Union[np.array, None]]:
+            # Return None, which is bad if field is non-nullable
             return [
                 None if i % 2 == 0 else np.random.randn(self.ndims())
                 for i in range(len(texts))
@@ -96,13 +97,17 @@ def test_embedding_with_bad_results(tmp_path):
 
     db = lancedb.connect(tmp_path)
     registry = EmbeddingFunctionRegistry.get_instance()
-    model = registry.get("mock-embedding").create()
+    model = registry.get("null-embedding").create()
 
     class Schema(LanceModel):
         text: str = model.SourceField()
         vector: Vector(model.ndims()) = model.VectorField()
 
     table = db.create_table("test", schema=Schema, mode="overwrite")
+    with pytest.raises(ValueError):
+        # Default on_bad_vectors is "error"
+        table.add([{"text": "hello world"}])
+
     table.add(
         [{"text": "hello world"}, {"text": "bar"}],
         on_bad_vectors="drop",
@@ -112,13 +117,33 @@ def test_embedding_with_bad_results(tmp_path):
     assert len(table) == 1
     assert df.iloc[0]["text"] == "bar"
 
-    # table = db.create_table("test2", schema=Schema, mode="overwrite")
-    # table.add(
-    #     [{"text": "hello world"}, {"text": "bar"}],
-    # )
-    # assert len(table) == 2
-    # tbl = table.to_arrow()
-    # assert tbl["vector"].null_count == 1
+    @register("nan-embedding")
+    class NanEmbeddingFunction(TextEmbeddingFunction):
+        def ndims(self):
+            return 128
+
+        def generate_embeddings(
+            self, texts: Union[List[str], np.ndarray]
+        ) -> list[Union[np.array, None]]:
+            # Return NaN to produce bad vectors
+            return [
+                [np.NAN] * 128 if i % 2 == 0 else np.random.randn(self.ndims())
+                for i in range(len(texts))
+            ]
+
+    db = lancedb.connect(tmp_path)
+    registry = EmbeddingFunctionRegistry.get_instance()
+    model = registry.get("nan-embedding").create()
+
+    table = db.create_table("test2", schema=Schema, mode="overwrite")
+    table.alter_columns(dict(path="vector", nullable=True))
+    table.add(
+        [{"text": "hello world"}, {"text": "bar"}],
+        on_bad_vectors="null",
+    )
+    assert len(table) == 2
+    tbl = table.to_arrow()
+    assert tbl["vector"].null_count == 1
 
 
 def test_with_existing_vectors(tmp_path):

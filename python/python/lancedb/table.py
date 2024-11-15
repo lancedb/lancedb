@@ -1567,7 +1567,7 @@ class LanceTable(Table):
             "append" and "overwrite".
         on_bad_vectors: str, default "error"
             What to do if any of the vectors are not the same size or contains NaNs.
-            One of "error", "drop", "fill".
+            One of "error", "drop", "fill", "null".
         fill_value: float, default 0.
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
 
@@ -1851,7 +1851,7 @@ class LanceTable(Table):
             data but will validate against any schema that's specified.
         on_bad_vectors: str, default "error"
             What to do if any of the vectors are not the same size or contains NaNs.
-            One of "error", "drop", "fill".
+            One of "error", "drop", "fill", "null".
         fill_value: float, default 0.
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
         embedding_functions: list of EmbeddingFunctionModel, default None
@@ -2151,13 +2151,11 @@ def _sanitize_schema(
         vector column to fixed_size_list(float32) if necessary.
     on_bad_vectors: str, default "error"
         What to do if any of the vectors are not the same size or contains NaNs.
-        One of "error", "drop", "fill".
+        One of "error", "drop", "fill", "null".
     fill_value: float, default 0.
         The value to use when filling vectors. Only used if on_bad_vectors="fill".
     """
     if schema is not None:
-        if data.schema == schema:
-            return data
         # cast the columns to the expected types
         data = data.combine_chunks()
         for field in schema:
@@ -2177,6 +2175,7 @@ def _sanitize_schema(
                     vector_column_name=field.name,
                     on_bad_vectors=on_bad_vectors,
                     fill_value=fill_value,
+                    table_schema=schema,
                 )
         return pa.Table.from_arrays(
             [data[name] for name in schema.names], schema=schema
@@ -2197,6 +2196,7 @@ def _sanitize_schema(
 def _sanitize_vector_column(
     data: pa.Table,
     vector_column_name: str,
+    table_schema: Optional[pa.Schema] = None,
     on_bad_vectors: str = "error",
     fill_value: float = 0.0,
 ) -> pa.Table:
@@ -2211,12 +2211,16 @@ def _sanitize_vector_column(
         The name of the vector column.
     on_bad_vectors: str, default "error"
         What to do if any of the vectors are not the same size or contains NaNs.
-        One of "error", "drop", "fill".
+        One of "error", "drop", "fill", "null".
     fill_value: float, default 0.0
         The value to use when filling vectors. Only used if on_bad_vectors="fill".
     """
     # ChunkedArray is annoying to work with, so we combine chunks here
     vec_arr = data[vector_column_name].combine_chunks()
+    if table_schema is not None:
+        field = table_schema.field(vector_column_name)
+    else:
+        field = None
     typ = data[vector_column_name].type
     if pa.types.is_list(typ) or pa.types.is_large_list(typ):
         # if it's a variable size list array,
@@ -2243,7 +2247,11 @@ def _sanitize_vector_column(
                 data, fill_value, on_bad_vectors, vec_arr, vector_column_name
             )
     else:
-        if pc.any(pc.is_null(vec_arr.values, nan_is_null=True)).as_py():
+        if (
+            field is not None
+            and not field.nullable
+            and pc.any(pc.is_null(vec_arr.values)).as_py()
+        ) or (pc.any(pc.is_nan(vec_arr.values)).as_py()):
             data = _sanitize_nans(
                 data, fill_value, on_bad_vectors, vec_arr, vector_column_name
             )
@@ -2287,6 +2295,12 @@ def _sanitize_jagged(data, fill_value, on_bad_vectors, vec_arr, vector_column_na
         )
     elif on_bad_vectors == "drop":
         data = data.filter(correct_ndims)
+    elif on_bad_vectors == "null":
+        data = data.set_column(
+            data.column_names.index(vector_column_name),
+            vector_column_name,
+            pc.if_else(correct_ndims, vec_arr, pa.scalar(None)),
+        )
     return data
 
 
@@ -2303,7 +2317,8 @@ def _sanitize_nans(
         raise ValueError(
             f"Vector column {vector_column_name} has NaNs. "
             "Set on_bad_vectors='drop' to remove them, or "
-            "set on_bad_vectors='fill' and fill_value=<value> to replace them."
+            "set on_bad_vectors='fill' and fill_value=<value> to replace them. "
+            "Or set on_bad_vectors='null' to replace them with null."
         )
     elif on_bad_vectors == "fill":
         if fill_value is None:
@@ -2323,6 +2338,17 @@ def _sanitize_nans(
         np_arr = np_arr.reshape(-1, vec_arr.type.list_size)
         not_nulls = np.any(np_arr, axis=1)
         data = data.filter(~not_nulls)
+    elif on_bad_vectors == "null":
+        # null = pa.nulls(len(vec_arr)).cast(vec_arr.type)
+        # values = pc.if_else(pc.is_nan(vec_arr.values), fill_value, vec_arr.values)
+        np_arr = np.isnan(vec_arr.values.to_numpy(zero_copy_only=False))
+        np_arr = np_arr.reshape(-1, vec_arr.type.list_size)
+        no_nans = np.any(np_arr, axis=1)
+        data = data.set_column(
+            data.column_names.index(vector_column_name),
+            vector_column_name,
+            pc.if_else(no_nans, vec_arr, pa.scalar(None)),
+        )
     return data
 
 
@@ -2588,7 +2614,7 @@ class AsyncTable:
             "append" and "overwrite".
         on_bad_vectors: str, default "error"
             What to do if any of the vectors are not the same size or contains NaNs.
-            One of "error", "drop", "fill".
+            One of "error", "drop", "fill", "null".
         fill_value: float, default 0.
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
 
