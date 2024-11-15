@@ -790,6 +790,27 @@ Use the `drop_table()` method on the database to remove a table.
       This permanently removes the table and is not recoverable, unlike deleting rows.
       If the table does not exist an exception is raised.
 
+## Handling bad vectors
+
+In LanceDB Python, you can use the `on_bad_vectors` parameter to choose how
+invalid vector values are handled. Invalid vectors are vectors that are not valid
+because:
+
+1. They are the wrong dimension
+2. They contain NaN values
+3. They are null but are on a non-nullable field
+
+By default, LanceDB will raise an error if it encounters a bad vector. You can
+also choose one of the following options:
+
+* `drop`: Ignore rows with bad vectors
+* `fill`: Replace bad values (NaNs) or missing values (too few dimensions) with
+    the fill value specified in the `fill_value` parameter. An input like
+    `[1.0, NaN, 3.0]` will be replaced with `[1.0, 0.0, 3.0]` if `fill_value=0.0`.
+* `null`: Replace bad vectors with null (only works if the column is nullable).
+    A bad vector `[1.0, NaN, 3.0]` will be replaced with `null` if the column is
+    nullable. If the vector column is non-nullable, then bad vectors will cause an
+    error
 
 ## Consistency
 
