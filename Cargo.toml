@@ -21,15 +21,15 @@ categories = ["database-implementations"]
 rust-version = "1.80.0" # TODO: lower this once we upgrade Lance again.
 
 [workspace.dependencies]
-lance = { "version" = "=0.19.2", "features" = [
+lance = { "version" = "=0.19.3", "features" = [
     "dynamodb",
 ]}
-lance-index = "=0.19.2"
-lance-linalg = "=0.19.2"
-lance-table = "=0.19.2"
-lance-testing = "=0.19.2"
-lance-datafusion = "=0.19.2"
-lance-encoding = "=0.19.2"
+lance-index = "=0.19.3"
+lance-linalg = "=0.19.3"
+lance-table = "=0.19.3"
+lance-testing = "=0.19.3"
+lance-datafusion = "=0.19.3"
+lance-encoding = "=0.19.3"
 # Note that this one does not include pyarrow
 arrow = { version = "52.2", optional = false }
 arrow-array = "52.2"
