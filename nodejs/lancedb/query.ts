@@ -386,6 +386,20 @@ export class VectorQuery extends QueryBase<NativeVectorQuery> {
   }
 
   /**
+   * Set the number of candidates to consider during the search
+   *
+   * This argument is only used when the vector column has an HNSW index.
+   * If there is no index then this value is ignored.
+   *
+   * Increasing this value will increase the recall of your query but will
+   * also increase the latency of your query. The default value is 1.5*limit.
+   */
+  ef(ef: number): VectorQuery {
+    super.doCall((inner) => inner.ef(ef));
+    return this;
+  }
+
+  /**
    * Set the vector column to query
    *
    * This controls which column is compared to the query vector supplied in

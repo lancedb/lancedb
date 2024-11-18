@@ -168,6 +168,11 @@ impl VectorQuery {
     }
 
     #[napi]
+    pub fn ef(&mut self, ef: u32) {
+        self.inner = self.inner.clone().ef(ef as usize);
+    }
+
+    #[napi]
     pub fn bypass_vector_index(&mut self) {
         self.inner = self.inner.clone().bypass_vector_index()
     }
