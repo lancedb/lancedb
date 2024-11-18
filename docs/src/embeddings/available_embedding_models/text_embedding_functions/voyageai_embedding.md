@@ -20,7 +20,7 @@ Supported parameters (to be passed in `create` method) are:
 
 | Parameter | Type | Default Value | Description |
 |---|---|--------|---------|
-| `name` | `str` | `"voyage-3"` | The model ID of the model to use. Supported base models for Text Embeddings: voyage-3, voyage-3-lite, voyage-finance-2, voyage-multilingual-2, voyage-law-2, voyage-code-2 |
+| `name` | `str` | `None` | The model ID of the model to use. Supported base models for Text Embeddings: voyage-3, voyage-3-lite, voyage-finance-2, voyage-multilingual-2, voyage-law-2, voyage-code-2 |
 | `input_type` | `str` | `None` | Type of the input text. Default to None. Other options: query, document. |
 | `truncation` | `bool` | `True` | Whether to truncate the input texts to fit within the context length. |
 
