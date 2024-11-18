@@ -787,6 +787,8 @@ impl VectorQuery {
     ///
     /// Increasing this value will increase the recall of your query but will
     /// also increase the latency of your query.  The default value is 1.5*limit.
+    ///
+    /// This value must be not less than `limit`.
     pub fn ef(mut self, ef: usize) -> Self {
         self.ef = Some(ef);
         self

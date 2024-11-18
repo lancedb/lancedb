@@ -650,6 +650,8 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         This only applies to the HNSW-related index.
         The default value is 1.5 * k.
 
+        This value must be not less than `limit`
+
         Parameters
         ----------
         ef: int
@@ -1702,6 +1704,8 @@ class AsyncVectorQuery(AsyncQueryBase):
         increase the latency of your query.  The default value is 1.5 * k.  This
         default is good for many cases but the best value to use will depend on your
         data and the recall that you need to achieve.
+
+        This value must be not less than `limit`
         """
         self._inner.ef(ef)
         return self
