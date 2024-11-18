@@ -1122,6 +1122,7 @@ mod tests {
                 "prefilter": true,
                 "distance_type": "l2",
                 "nprobes": 20,
+                "ef": Option::<usize>::None,
                 "refine_factor": null,
             });
             // Pass vector separately to make sure it matches f32 precision.
@@ -1167,6 +1168,7 @@ mod tests {
                 "bypass_vector_index": true,
                 "columns": ["a", "b"],
                 "nprobes": 12,
+                "ef": Option::<usize>::None,
                 "refine_factor": 2,
             });
             // Pass vector separately to make sure it matches f32 precision.
