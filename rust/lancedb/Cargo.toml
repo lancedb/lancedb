@@ -48,9 +48,16 @@ async-openai = { version = "0.20.0", optional = true }
 serde_with = { version = "3.8.1" }
 aws-sdk-bedrockruntime = { version = "1.27.0", optional = true }
 # For remote feature
-reqwest = { version = "0.12.0", features = ["gzip", "json", "stream"], optional = true }
-rand = { version = "0.8.3", features = ["small_rng"], optional = true}
-http = { version = "1",  optional = true } # Matching what is in reqwest
+reqwest = { version = "0.12.0", default-features = false, features = [
+    "charset",
+    "gzip",
+    "http2",
+    "json",
+    "macos-system-configuration",
+    "stream",
+], optional = true }
+rand = { version = "0.8.3", features = ["small_rng"], optional = true }
+http = { version = "1", optional = true } # Matching what is in reqwest
 uuid = { version = "1.7.0", features = ["v4"], optional = true }
 polars-arrow = { version = ">=0.37,<0.40.0", optional = true }
 polars = { version = ">=0.37,<0.40.0", optional = true }
@@ -75,7 +82,7 @@ http-body = "1" # Matching reqwest
 
 
 [features]
-default = []
+default = ["default-tls"]
 remote = ["dep:reqwest", "dep:http", "dep:rand", "dep:uuid"]
 fp16kernels = ["lance-linalg/fp16kernels"]
 s3-test = []
@@ -89,6 +96,11 @@ sentence-transformers = [
     "dep:candle-nn",
     "dep:tokenizers"
 ]
+
+# TLS
+default-tls = ["reqwest?/default-tls"]
+native-tls = ["reqwest?/native-tls"]
+rustls-tls = ["reqwest?/rustls-tls"]
 
 [[example]]
 name = "openai"
