@@ -1495,7 +1495,8 @@ class AsyncQuery(AsyncQueryBase):
         return pa.array(vec)
 
     def nearest_to(
-        self, query_vector: Optional[Union[VEC, Tuple, List[VEC]]] = None
+        self,
+        query_vector: Union[VEC, Tuple, List[VEC]],
     ) -> AsyncVectorQuery:
         """
         Find the nearest vectors to the given query vector.
@@ -1542,6 +1543,9 @@ class AsyncQuery(AsyncQueryBase):
         will be added to the results.  This column will contain the index of the
         query vector that the result is nearest to.
         """
+        if query_vector is None:
+            raise ValueError("query_vector can not be None")
+
         if (
             isinstance(query_vector, list)
             and len(query_vector) > 0
@@ -1618,7 +1622,7 @@ class AsyncVectorQuery(AsyncQueryBase):
         """
         Set the number of partitions to search (probe)
 
-        This argument is only used when the vector column has an IVF PQ index.
+        This argument is only used when the vector column has an IVF-based index.
         If there is no index then this value is ignored.
 
         The IVF stage of IVF PQ divides the input into partitions (clusters) of

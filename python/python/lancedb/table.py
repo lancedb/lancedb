@@ -2697,7 +2697,7 @@ class AsyncTable:
 
     def vector_search(
         self,
-        query_vector: Optional[Union[VEC, Tuple]] = None,
+        query_vector: Union[VEC, Tuple],
     ) -> AsyncVectorQuery:
         """
         Search the table with a given query vector.
