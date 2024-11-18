@@ -274,7 +274,7 @@ table = db.create_table(table_name, schema=Content)
 
 Sometimes your data model may contain nested objects.
 For example, you may want to store the document string
-and the document soure name as a nested Document object:
+and the document source name as a nested Document object:
 
 ```python
 class Document(BaseModel):
@@ -466,7 +466,7 @@ You can create an empty table for scenarios where you want to add data to the ta
 
 ## Adding to a table
 
-After a table has been created, you can always add more data to it usind the `add` method
+After a table has been created, you can always add more data to it using the `add` method
 
 === "Python"
     You can add any of the valid data structures accepted by LanceDB table, i.e, `dict`, `list[dict]`, `pd.DataFrame`, or `Iterator[pa.RecordBatch]`. Below are some examples.
@@ -535,7 +535,7 @@ After a table has been created, you can always add more data to it usind the `ad
     ```
 
     ??? "Ingesting Pydantic models with LanceDB embedding API"
-        When using LanceDB's embedding API, you can add Pydantic models directly to the table. LanceDB will automatically convert the `vector` field to a vector before adding it to the table. You need to specify the default value of `vector` feild as None to allow LanceDB to automatically vectorize the data.
+        When using LanceDB's embedding API, you can add Pydantic models directly to the table. LanceDB will automatically convert the `vector` field to a vector before adding it to the table. You need to specify the default value of `vector` field as None to allow LanceDB to automatically vectorize the data.
 
         ```python
         import lancedb
@@ -880,4 +880,4 @@ There are three possible settings for `read_consistency_interval`:
 
 Learn the best practices on creating an ANN index and getting the most out of it.
 
-[^1]: The `vectordb` package is a legacy package that is  deprecated in favor of `@lancedb/lancedb`.  The `vectordb` package will continue to receive bug fixes and security updates until September 2024.  We recommend all new projects use `@lancedb/lancedb`.  See the [migration guide](migration.md) for more information.
+[^1]: The `vectordb` package is a legacy package that is  deprecated in favor of `@lancedb/lancedb`.  The `vectordb` package will continue to receive bug fixes and security updates until September 2024.  We recommend all new projects use `@lancedb/lancedb`.  See the [migration guide](../migration.md) for more information.
