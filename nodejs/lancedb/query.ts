@@ -57,7 +57,8 @@ export class RecordBatchIterator implements AsyncIterator<RecordBatch> {
 
 class RecordBatchIterable<
   NativeQueryType extends NativeQuery | NativeVectorQuery,
-> implements AsyncIterable<RecordBatch> {
+> implements AsyncIterable<RecordBatch>
+{
   private inner: NativeQueryType;
   private options?: QueryExecutionOptions;
 
@@ -102,7 +103,8 @@ export interface FullTextSearchOptions {
 
 /** Common methods supported by all query types */
 export class QueryBase<NativeQueryType extends NativeQuery | NativeVectorQuery>
-  implements AsyncIterable<RecordBatch> {
+  implements AsyncIterable<RecordBatch>
+{
   protected constructor(
     protected inner: NativeQueryType | Promise<NativeQueryType>,
   ) {
@@ -343,7 +345,7 @@ export class QueryBase<NativeQueryType extends NativeQuery | NativeVectorQuery>
  *
  * Supported by all query types
  */
-export interface ExecutableQuery { }
+export interface ExecutableQuery {}
 
 /**
  * A builder used to construct a vector search
