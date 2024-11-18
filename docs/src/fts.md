@@ -160,3 +160,32 @@ To search for a phrase, the index must be created with `with_position=True`:
 table.create_fts_index("text", use_tantivy=False, with_position=True)
 ```
 This will allow you to search for phrases, but it will also significantly increase the index size and indexing time.
+
+
+## Incremental indexing
+
+LanceDB supports incremental indexing, which means you can add new records to the table without reindexing the entire table.
+
+This can make the query more efficient, especially when the table is large and the new records are relatively small.
+
+=== "Python"
+
+    ```python
+    table.add([{"vector": [3.1, 4.1], "text": "Frodo was a happy puppy"}])
+    table.optimize()
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    await tbl.add([{ vector: [3.1, 4.1], text: "Frodo was a happy puppy" }]);
+    await tbl.optimize();
+    ```
+
+=== "Rust"
+
+    ```rust
+    let more_data: Box<dyn RecordBatchReader + Send> = create_some_records()?;
+    tbl.add(more_data).execute().await?;
+    tbl.optimize(OptimizeAction::All).execute().await?;
+    ```
