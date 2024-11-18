@@ -1904,6 +1904,9 @@ impl TableInternal for NativeTable {
             query.base.offset.map(|offset| offset as i64),
         )?;
         scanner.nprobs(query.nprobes);
+        if let Some(ef) = query.ef {
+            scanner.ef(ef);
+        }
         scanner.use_index(query.use_index);
         scanner.prefilter(query.base.prefilter);
         match query.base.select {

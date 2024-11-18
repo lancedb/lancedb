@@ -131,6 +131,8 @@ class Query(pydantic.BaseModel):
 
     fast_search: bool = False
 
+    ef: Optional[int] = None
+
 
 class LanceQueryBuilder(ABC):
     """An abstract query builder. Subclasses are defined for vector search,
@@ -257,6 +259,7 @@ class LanceQueryBuilder(ABC):
         self._with_row_id = False
         self._vector = None
         self._text = None
+        self._ef = None
 
     @deprecation.deprecated(
         deprecated_in="0.3.1",
@@ -638,6 +641,28 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         self._nprobes = nprobes
         return self
 
+    def ef(self, ef: int) -> LanceVectorQueryBuilder:
+        """Set the number of candidates to consider during search.
+
+        Higher values will yield better recall (more likely to find vectors if
+        they exist) at the expense of latency.
+
+        This only applies to the HNSW-related index.
+        The default value is 1.5 * k.
+
+        Parameters
+        ----------
+        ef: int
+            The number of candidates to consider during search.
+
+        Returns
+        -------
+        LanceVectorQueryBuilder
+            The LanceQueryBuilder object.
+        """
+        self._ef = ef
+        return self
+
     def refine_factor(self, refine_factor: int) -> LanceVectorQueryBuilder:
         """Set the refine factor to use, increasing the number of vectors sampled.
 
@@ -700,6 +725,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             with_row_id=self._with_row_id,
             offset=self._offset,
             fast_search=self._fast_search,
+            ef=self._ef,
         )
         result_set = self._table._execute_query(query, batch_size)
         if self._reranker is not None:
@@ -1071,6 +1097,8 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             self._vector_query.nprobes(self._nprobes)
         if self._refine_factor:
             self._vector_query.refine_factor(self._refine_factor)
+        if self._ef:
+            self._vector_query.ef(self._ef)
 
         with ThreadPoolExecutor() as executor:
             fts_future = executor.submit(self._fts_query.with_row_id(True).to_arrow)
@@ -1195,6 +1223,29 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             The LanceHybridQueryBuilder object.
         """
         self._nprobes = nprobes
+        return self
+
+    def ef(self, ef: int) -> LanceHybridQueryBuilder:
+        """
+        Set the number of candidates to consider during search.
+
+        Higher values will yield better recall (more likely to find vectors if
+        they exist) at the expense of latency.
+
+        This only applies to the HNSW-related index.
+        The default value is 1.5 * k.
+
+        Parameters
+        ----------
+        ef: int
+            The number of candidates to consider during search.
+
+        Returns
+        -------
+        LanceHybridQueryBuilder
+            The LanceHybridQueryBuilder object.
+        """
+        self._ef = ef
         return self
 
     def metric(self, metric: Literal["L2", "cosine", "dot"]) -> LanceHybridQueryBuilder:
@@ -1638,6 +1689,21 @@ class AsyncVectorQuery(AsyncQueryBase):
         you the desired recall.
         """
         self._inner.nprobes(nprobes)
+        return self
+
+    def ef(self, ef: int) -> AsyncVectorQuery:
+        """
+        Set the number of candidates to consider during search
+
+        This argument is only used when the vector column has an HNSW index.
+        If there is no index then this value is ignored.
+
+        Increasing this value will increase the recall of your query but will also
+        increase the latency of your query.  The default value is 1.5 * k.  This
+        default is good for many cases but the best value to use will depend on your
+        data and the recall that you need to achieve.
+        """
+        self._inner.ef(ef)
         return self
 
     def refine_factor(self, refine_factor: int) -> AsyncVectorQuery:

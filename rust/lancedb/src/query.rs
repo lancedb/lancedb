@@ -704,6 +704,9 @@ pub struct VectorQuery {
     // IVF PQ - ANN search.
     pub(crate) query_vector: Vec<Arc<dyn Array>>,
     pub(crate) nprobes: usize,
+    // The number of candidates to return during the refine step for HNSW,
+    // defaults to 1.5 * limit.
+    pub(crate) ef: Option<usize>,
     pub(crate) refine_factor: Option<u32>,
     pub(crate) distance_type: Option<DistanceType>,
     /// Default is true. Set to false to enforce a brute force search.
@@ -717,6 +720,7 @@ impl VectorQuery {
             column: None,
             query_vector: Vec::new(),
             nprobes: 20,
+            ef: None,
             refine_factor: None,
             distance_type: None,
             use_index: true,
@@ -773,6 +777,18 @@ impl VectorQuery {
     /// you the desired recall.
     pub fn nprobes(mut self, nprobes: usize) -> Self {
         self.nprobes = nprobes;
+        self
+    }
+
+    /// Set the number of candidates to return during the refine step for HNSW
+    ///
+    /// This argument is only used when the vector column has an HNSW index.
+    /// If there is no index then this value is ignored.
+    ///
+    /// Increasing this value will increase the recall of your query but will
+    /// also increase the latency of your query.  The default value is 1.5*limit.
+    pub fn ef(mut self, ef: usize) -> Self {
+        self.ef = Some(ef);
         self
     }
 
