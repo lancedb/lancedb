@@ -37,7 +37,7 @@ pub use lance::dataset::ColumnAlteration;
 pub use lance::dataset::NewColumnTransform;
 pub use lance::dataset::ReadParams;
 use lance::dataset::{
-    Dataset, UpdateBuilder as LanceUpdateBuilder, WhenMatched, WriteMode, WriteParams,
+    Dataset, UpdateBuilder as LanceUpdateBuilder, Version, WhenMatched, WriteMode, WriteParams
 };
 use lance::dataset::{MergeInsertBuilder as LanceMergeInsertBuilder, WhenNotMatchedBySource};
 use lance::io::WrappingObjectStore;
@@ -426,6 +426,7 @@ pub(crate) trait TableInternal: std::fmt::Display + std::fmt::Debug + Send + Syn
     async fn checkout(&self, version: u64) -> Result<()>;
     async fn checkout_latest(&self) -> Result<()>;
     async fn restore(&self) -> Result<()>;
+    async fn list_versions(&self) -> Result<Vec<Version>>;
     async fn table_definition(&self) -> Result<TableDefinition>;
     fn dataset_uri(&self) -> &str;
 }
@@ -953,6 +954,11 @@ impl Table {
     /// out state and the read_consistency_interval, if any, will apply.
     pub async fn restore(&self) -> Result<()> {
         self.inner.restore().await
+    }
+
+    // TODO comments
+    pub async fn list_versions(&self) -> Result<Vec<Version>> {
+        self.inner.list_versions().await
     }
 
     /// List all indices that have been created with [`Self::create_index`]
@@ -1705,6 +1711,10 @@ impl TableInternal for NativeTable {
             .as_latest(self.read_consistency_interval)
             .await?;
         self.dataset.reload().await
+    }
+
+    async fn list_versions(&self) -> Result<Vec<Version>> {
+        Ok(self.dataset.get().await?.versions().await?)
     }
 
     async fn restore(&self) -> Result<()> {
