@@ -320,6 +320,7 @@ def test_query_sync_hybrid():
                 "refine_factor": None,
                 "vector": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
                 "nprobes": 20,
+                "ef": None,
                 "with_row_id": True,
             }
             return pa.table({"_rowid": [1, 2, 3], "_distance": [0.1, 0.2, 0.3]})
