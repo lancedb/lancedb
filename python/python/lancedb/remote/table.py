@@ -86,6 +86,12 @@ class RemoteTable(Table):
         """to_pandas() is not yet supported on LanceDB cloud."""
         return NotImplementedError("to_pandas() is not yet supported on LanceDB cloud.")
 
+    def checkout(self, version):
+        return self._loop.run_until_complete(self._table.checkout(version))
+
+    def checkout_latest(self):
+        return self._loop.run_until_complete(self._table.checkout_latest())
+
     def list_indices(self):
         """List all the indices on the table"""
         return self._loop.run_until_complete(self._table.list_indices())

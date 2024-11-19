@@ -1012,6 +1012,18 @@ class Table(ABC):
             The names of the columns to drop.
         """
 
+    @abstractmethod
+    def checkout(self):
+        """
+        TODO comments
+        """
+
+    @abstractmethod
+    def checkout_latest(self):
+        """
+        TODO comments
+        """
+
     @cached_property
     def _dataset_uri(self) -> str:
         return _table_uri(self._conn.uri, self.name)
