@@ -185,6 +185,7 @@ def test_query_sync_minimal():
             "k": 10,
             "prefilter": False,
             "refine_factor": None,
+            "ef": None,
             "vector": [1.0, 2.0, 3.0],
             "nprobes": 20,
         }
@@ -223,6 +224,7 @@ def test_query_sync_maximal():
             "refine_factor": 10,
             "vector": [1.0, 2.0, 3.0],
             "nprobes": 5,
+            "ef": None,
             "filter": "id > 0",
             "columns": ["id", "name"],
             "vector_column": "vector2",
@@ -318,6 +320,7 @@ def test_query_sync_hybrid():
                 "refine_factor": None,
                 "vector": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
                 "nprobes": 20,
+                "ef": None,
                 "with_row_id": True,
             }
             return pa.table({"_rowid": [1, 2, 3], "_distance": [0.1, 0.2, 0.3]})

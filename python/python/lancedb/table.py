@@ -1959,6 +1959,7 @@ class LanceTable(Table):
                 "metric": query.metric,
                 "nprobes": query.nprobes,
                 "refine_factor": query.refine_factor,
+                "ef": query.ef,
             }
         return ds.scanner(
             columns=query.columns,
@@ -2736,6 +2737,8 @@ class AsyncTable:
                 async_query = async_query.refine_factor(query.refine_factor)
             if query.vector_column:
                 async_query = async_query.column(query.vector_column)
+            if query.ef:
+                async_query = async_query.ef(query.ef)
 
         if not query.prefilter:
             async_query = async_query.postfilter()

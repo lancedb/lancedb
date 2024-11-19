@@ -477,6 +477,54 @@ describe("When creating an index", () => {
     expect(rst.numRows).toBe(1);
   });
 
+  it("should create and search IVF_HNSW indices", async () => {
+    await tbl.createIndex("vec", {
+      config: Index.hnswSq(),
+    });
+
+    // check index directory
+    const indexDir = path.join(tmpDir.name, "test.lance", "_indices");
+    expect(fs.readdirSync(indexDir)).toHaveLength(1);
+    const indices = await tbl.listIndices();
+    expect(indices.length).toBe(1);
+    expect(indices[0]).toEqual({
+      name: "vec_idx",
+      indexType: "IvfHnswSq",
+      columns: ["vec"],
+    });
+
+    // Search without specifying the column
+    let rst = await tbl
+      .query()
+      .limit(2)
+      .nearestTo(queryVec)
+      .distanceType("dot")
+      .toArrow();
+    expect(rst.numRows).toBe(2);
+
+    // Search using `vectorSearch`
+    rst = await tbl.vectorSearch(queryVec).limit(2).toArrow();
+    expect(rst.numRows).toBe(2);
+
+    // Search with specifying the column
+    const rst2 = await tbl
+      .query()
+      .limit(2)
+      .nearestTo(queryVec)
+      .column("vec")
+      .toArrow();
+    expect(rst2.numRows).toBe(2);
+    expect(rst.toString()).toEqual(rst2.toString());
+
+    // test offset
+    rst = await tbl.query().limit(2).offset(1).nearestTo(queryVec).toArrow();
+    expect(rst.numRows).toBe(1);
+
+    // test ef
+    rst = await tbl.query().limit(2).nearestTo(queryVec).ef(100).toArrow();
+    expect(rst.numRows).toBe(2);
+  });
+
   it("should be able to query unindexed data", async () => {
     await tbl.createIndex("vec");
     await tbl.add([

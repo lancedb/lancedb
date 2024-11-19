@@ -195,6 +195,10 @@ impl VectorQuery {
         self.inner = self.inner.clone().nprobes(nprobe as usize);
     }
 
+    pub fn ef(&mut self, ef: u32) {
+        self.inner = self.inner.clone().ef(ef as usize);
+    }
+
     pub fn bypass_vector_index(&mut self) {
         self.inner = self.inner.clone().bypass_vector_index()
     }
