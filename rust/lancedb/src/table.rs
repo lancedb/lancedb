@@ -37,7 +37,7 @@ pub use lance::dataset::ColumnAlteration;
 pub use lance::dataset::NewColumnTransform;
 pub use lance::dataset::ReadParams;
 use lance::dataset::{
-    Dataset, UpdateBuilder as LanceUpdateBuilder, Version, WhenMatched, WriteMode, WriteParams
+    Dataset, UpdateBuilder as LanceUpdateBuilder, Version, WhenMatched, WriteMode, WriteParams,
 };
 use lance::dataset::{MergeInsertBuilder as LanceMergeInsertBuilder, WhenNotMatchedBySource};
 use lance::io::WrappingObjectStore;
@@ -956,7 +956,7 @@ impl Table {
         self.inner.restore().await
     }
 
-    // TODO comments
+    /// List all the versions of the table
     pub async fn list_versions(&self) -> Result<Vec<Version>> {
         self.inner.list_versions().await
     }

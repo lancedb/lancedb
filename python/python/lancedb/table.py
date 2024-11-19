@@ -1043,9 +1043,7 @@ class Table(ABC):
     
     @abstractmethod
     def list_versions(self): 
-        """
-        List all the table versions.
-        """
+        """List all versions of the table"""
 
     @cached_property
     def _dataset_uri(self) -> str:
@@ -2939,7 +2937,7 @@ class AsyncTable:
 
     async def list_versions(self):
         """
-        TODO comments
+        List all versions of the table
         """
         versions = await self._inner.list_versions()
         for v in versions:

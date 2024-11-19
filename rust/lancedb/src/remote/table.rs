@@ -373,19 +373,20 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
 
         #[derive(Deserialize)]
         struct ListVersionsResponse {
-            versions: Vec<Version>
+            versions: Vec<Version>,
         }
 
         let body = response.text().await.err_to_http(request_id.clone())?;
-        let body: ListVersionsResponse = serde_json::from_str(&body).map_err(|err| Error::Http {
-            source: format!(
-                "Failed to parse list_versions response: {}, body: {}",
-                err, body
-            )
-            .into(),
-            request_id,
-            status_code: None
-        })?;
+        let body: ListVersionsResponse =
+            serde_json::from_str(&body).map_err(|err| Error::Http {
+                source: format!(
+                    "Failed to parse list_versions response: {}, body: {}",
+                    err, body
+                )
+                .into(),
+                request_id,
+                status_code: None,
+            })?;
 
         Ok(body.versions)
     }
