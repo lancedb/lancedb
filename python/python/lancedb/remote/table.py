@@ -78,6 +78,13 @@ class RemoteTable(Table):
             self.schema.metadata
         )
 
+    def list_versions(self):
+        """
+        TODO comments
+        """
+        return self._loop.run_until_complete(self._table.list_versions())
+
+
     def to_arrow(self) -> pa.Table:
         """to_arrow() is not yet supported on LanceDB cloud."""
         raise NotImplementedError("to_arrow() is not yet supported on LanceDB cloud.")

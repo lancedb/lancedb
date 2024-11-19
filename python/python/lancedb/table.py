@@ -1040,6 +1040,12 @@ class Table(ABC):
         is None
         It can also be used to undo a `[Self::checkout]` operation
         """
+    
+    @abstractmethod
+    def list_versions(self): 
+        """
+        List all the table versions.
+        """
 
     @cached_property
     def _dataset_uri(self) -> str:
@@ -1218,6 +1224,7 @@ class LanceTable(Table):
 
     def list_versions(self):
         """List all versions of the table"""
+        print("doing it!!")
         return self._dataset.versions()
 
     @property
@@ -2930,6 +2937,12 @@ class AsyncTable:
         version.
         """
         return await self._inner.version()
+
+    async def list_versions(self):
+        """
+        TODO comments
+        """
+        return await self._inner.list_versions()
 
     async def checkout(self, version):
         """

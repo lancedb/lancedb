@@ -6,10 +6,8 @@ use lancedb::table::{
     AddDataMode, Duration, OptimizeAction, OptimizeOptions, Table as LanceDbTable,
 };
 use pyo3::{
-    exceptions::{PyRuntimeError, PyValueError},
-    pyclass, pymethods,
-    types::{PyDict, PyDictMethods, PyString},
-    Bound, FromPyObject, PyAny, PyRef, PyResult, Python, ToPyObject,
+    Py,
+    exceptions::{PyRuntimeError, PyValueError}, pyclass, pymethods, types::{PyDict, PyDictMethods, PyString}, Bound, FromPyObject, IntoPy, PyAny, PyRef, PyResult, Python, ToPyObject
 };
 use pyo3_asyncio_0_21::tokio::future_into_py;
 
@@ -58,6 +56,11 @@ pub struct Table {
     // We keep a copy of the name to use if the inner table is dropped
     name: String,
     inner: Option<LanceDbTable>,
+}
+
+#[pyclass]
+pub struct Version {
+    version: u64
 }
 
 #[pymethods]
@@ -246,6 +249,18 @@ impl Table {
         )
     }
 
+    pub fn list_versions(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(
+            self_.py(),
+            async move { inner.list_versions().await.map(|versions| {
+                versions.iter().map(|v| {
+                    Version { version: v.version }
+                }).collect::<Vec<_>>()
+            }).infer_error() }
+        )
+    }
+
     pub fn checkout(self_: PyRef<'_, Self>, version: u64) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
@@ -391,3 +406,4 @@ pub struct MergeInsertParams {
     when_not_matched_by_source_delete: bool,
     when_not_matched_by_source_condition: Option<String>,
 }
+
