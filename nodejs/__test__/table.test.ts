@@ -477,7 +477,7 @@ describe("When creating an index", () => {
     expect(rst.numRows).toBe(1);
   });
 
-  it("create IVF_HNSW and specify ef when search", async () => {
+  it("should create and search IVF_HNSW indices", async () => {
     await tbl.createIndex("vec", {
       config: Index.hnswSq(),
     });

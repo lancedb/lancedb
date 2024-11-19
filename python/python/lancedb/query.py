@@ -648,9 +648,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         they exist) at the expense of latency.
 
         This only applies to the HNSW-related index.
-        The default value is 1.5 * k.
-
-        This value must be not less than `limit`
+        The default value is 1.5 * limit.
 
         Parameters
         ----------
@@ -1235,7 +1233,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         they exist) at the expense of latency.
 
         This only applies to the HNSW-related index.
-        The default value is 1.5 * k.
+        The default value is 1.5 * limit.
 
         Parameters
         ----------
@@ -1701,11 +1699,9 @@ class AsyncVectorQuery(AsyncQueryBase):
         If there is no index then this value is ignored.
 
         Increasing this value will increase the recall of your query but will also
-        increase the latency of your query.  The default value is 1.5 * k.  This
+        increase the latency of your query.  The default value is 1.5 * limit.  This
         default is good for many cases but the best value to use will depend on your
         data and the recall that you need to achieve.
-
-        This value must be not less than `limit`
         """
         self._inner.ef(ef)
         return self

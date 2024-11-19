@@ -185,6 +185,7 @@ def test_query_sync_minimal():
             "k": 10,
             "prefilter": False,
             "refine_factor": None,
+            "ef": None,
             "vector": [1.0, 2.0, 3.0],
             "nprobes": 20,
         }
