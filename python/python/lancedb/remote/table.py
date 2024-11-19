@@ -79,9 +79,7 @@ class RemoteTable(Table):
         )
 
     def list_versions(self):
-        """
-        TODO comments
-        """
+        """List all versions of the table"""
         return self._loop.run_until_complete(self._table.list_versions())
 
 
