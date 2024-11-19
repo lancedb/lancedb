@@ -102,6 +102,49 @@ async def test_async_remote_db():
         table_names = await db.table_names()
         assert table_names == []
 
+@pytest.mark.asyncio
+async def test_async_checkout():
+    def handler(request):
+        if request.path == "/v1/table/test/describe/":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            response = json.dumps({
+                        "version": 42,
+                        "schema": { "fields": [] }
+                    })
+            request.wfile.write(response.encode())
+            return
+    
+        content_len = int(request.headers.get("Content-Length"))
+        body = request.rfile.read(content_len)
+        body = json.loads(body)
+
+        print("body is", body)
+
+        count = 0
+        if body["version"] == 1:
+            count = 100
+        elif body["version"] == 2:
+            count = 200
+        elif body["version"] == None:
+            count = 300
+
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(json.dumps(count).encode())
+    async with mock_lancedb_connection_async(handler) as db:
+        table = await db.open_table("test")
+        assert await table.count_rows() == 300
+        await table.checkout(1)
+        assert await table.count_rows() == 100
+        await table.checkout(2)
+        assert await table.count_rows() == 200
+        await table.checkout_latest()
+        assert await table.count_rows() == 300
+    
+
 
 @pytest.mark.asyncio
 async def test_http_error():
