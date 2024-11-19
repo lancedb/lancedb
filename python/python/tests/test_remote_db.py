@@ -224,6 +224,7 @@ def test_query_sync_maximal():
             "refine_factor": 10,
             "vector": [1.0, 2.0, 3.0],
             "nprobes": 5,
+            "ef": None,
             "filter": "id > 0",
             "columns": ["id", "name"],
             "vector_column": "vector2",
