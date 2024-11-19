@@ -365,11 +365,31 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
     }
 
     async fn list_versions(&self) -> Result<Vec<Version>> {
-        // TODO actually we should support this ...
-        Err(Error::NotSupported {
-            message: "list_versions is not supported on LanceDB cloud.".into(),
-        })
+        let request = self
+            .client
+            .post(&format!("/v1/table/{}/version/list/", self.name));
+        let (request_id, response) = self.client.send(request, true).await?;
+        let response = self.check_table_response(&request_id, response).await?;
+
+        #[derive(Deserialize)]
+        struct ListVersionsResponse {
+            versions: Vec<Version>
+        }
+
+        let body = response.text().await.err_to_http(request_id.clone())?;
+        let body: ListVersionsResponse = serde_json::from_str(&body).map_err(|err| Error::Http {
+            source: format!(
+                "Failed to parse list_versions response: {}, body: {}",
+                err, body
+            )
+            .into(),
+            request_id,
+            status_code: None
+        })?;
+
+        Ok(body.versions)
     }
+
     async fn schema(&self) -> Result<SchemaRef> {
         let schema = self.describe().await?.schema;
         Ok(Arc::new(schema.try_into()?))

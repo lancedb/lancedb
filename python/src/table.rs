@@ -1,3 +1,5 @@
+use std::collections::{BTreeMap, HashMap};
+
 use arrow::{
     ffi_stream::ArrowArrayStreamReader,
     pyarrow::{FromPyArrow, ToPyArrow},
@@ -6,8 +8,7 @@ use lancedb::table::{
     AddDataMode, Duration, OptimizeAction, OptimizeOptions, Table as LanceDbTable,
 };
 use pyo3::{
-    Py,
-    exceptions::{PyRuntimeError, PyValueError}, pyclass, pymethods, types::{PyDict, PyDictMethods, PyString}, Bound, FromPyObject, IntoPy, PyAny, PyRef, PyResult, Python, ToPyObject
+    exceptions::{PyRuntimeError, PyValueError}, pyclass, pymethods, types::{IntoPyDict, PyDict, PyDictMethods, PyString}, Bound, FromPyObject, IntoPy, PyAny, PyRef, PyResult, Python, ToPyObject
 };
 use pyo3_asyncio_0_21::tokio::future_into_py;
 
@@ -60,7 +61,8 @@ pub struct Table {
 
 #[pyclass]
 pub struct Version {
-    version: u64
+    version: u64,
+    metadata: BTreeMap<String, String>
 }
 
 #[pymethods]
@@ -253,11 +255,26 @@ impl Table {
         let inner = self_.inner_ref()?.clone();
         future_into_py(
             self_.py(),
-            async move { inner.list_versions().await.map(|versions| {
-                versions.iter().map(|v| {
-                    Version { version: v.version }
-                }).collect::<Vec<_>>()
-            }).infer_error() }
+            async move { 
+                let versions = inner.list_versions().await.infer_error()?;
+                let versions_as_dict = Python::with_gil(|py| {
+                    versions.iter().map(|v| {
+                        let dict = PyDict::new_bound(py);
+                        dict.set_item("version", v.version).unwrap();
+                        dict.set_item(
+                            "timestamp",
+                            v.timestamp.timestamp_nanos_opt().unwrap_or_default(),
+                        )
+                        .unwrap();
+                        
+                        let tup: Vec<(&String, &String)> = v.metadata.iter().collect();
+                        dict.set_item("metadata", tup.into_py_dict(py)).unwrap();
+                        dict.to_object(py)
+                    }).collect::<Vec<_>>()
+                });
+
+                Ok(versions_as_dict)
+            }
         )
     }
 

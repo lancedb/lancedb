@@ -8,7 +8,7 @@ import inspect
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from functools import cached_property
 from typing import (
     TYPE_CHECKING,
@@ -1224,7 +1224,6 @@ class LanceTable(Table):
 
     def list_versions(self):
         """List all versions of the table"""
-        print("doing it!!")
         return self._dataset.versions()
 
     @property
@@ -2942,7 +2941,14 @@ class AsyncTable:
         """
         TODO comments
         """
-        return await self._inner.list_versions()
+        versions = await self._inner.list_versions()
+        for v in versions:
+            ts_nanos = v["timestamp"]
+            v["timestamp"] = datetime.fromtimestamp(ts_nanos // 1e9) + timedelta(
+                microseconds=(ts_nanos % 1e9) // 1e3
+            )
+
+        return versions
 
     async def checkout(self, version):
         """
