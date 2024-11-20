@@ -101,7 +101,7 @@ jobs:
           path: |
             nodejs/dist/*.node
 
-  node-linux:
+  node-linux-gnu:
     name: vectordb (${{ matrix.config.arch}}-unknown-linux-gnu)
     runs-on: ${{ matrix.config.runner }}
     # Only runs on tags that matches the make-release action
@@ -137,11 +137,63 @@ jobs:
       - name: Upload Linux Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: node-native-linux-${{ matrix.config.arch }}
+          name: node-native-linux-${{ matrix.config.arch }}-gnu
           path: |
             node/dist/lancedb-vectordb-linux*.tgz
 
-  nodejs-linux:
+  node-linux-musl:
+    name: vectordb (${{ matrix.config.arch}}-unknown-linux-musl)
+    runs-on: ubuntu-latest
+    container: alpine:edge
+    # Only runs on tags that matches the make-release action
+    if: startsWith(github.ref, 'refs/tags/v')
+    strategy:
+      fail-fast: false
+      matrix:
+        config:
+          - arch: x86_64
+          - arch: aarch64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install common dependencies
+        run: |
+          apk add protobuf-dev curl clang mold grep npm bash
+          curl --proto '=https' --tlsv1.3 -sSf https://raw.githubusercontent.com/rust-lang/rustup/refs/heads/master/rustup-init.sh | sh -s -- -y --default-toolchain 1.80.0
+          echo "source $HOME/.cargo/env" >> saved_env
+          echo "export CC=clang" >> saved_env
+          echo "export RUSTFLAGS='-Ctarget-cpu=haswell -Ctarget-feature=-crt-static,+avx2,+fma,+f16c -Clinker=clang -Clink-arg=-fuse-ld=mold'" >> saved_env
+      - name: Configure aarch64 build
+        if: ${{ matrix.config.arch == 'aarch64' }}
+        run: |
+          source "$HOME/.cargo/env"
+          rustup target add aarch64-unknown-linux-musl --toolchain 1.80.0
+          crt=$(realpath $(dirname $(rustup which rustc))/../lib/rustlib/aarch64-unknown-linux-musl/lib/self-contained)
+          sysroot_lib=/usr/aarch64-unknown-linux-musl/usr/lib
+          apk_url=https://dl-cdn.alpinelinux.org/alpine/latest-stable/main/aarch64/
+          curl -sSf $apk_url > apk_list
+          for pkg in gcc libgcc musl; do curl -sSf $apk_url$(cat apk_list | grep -oP '(?<=")'$pkg'-\d.*?(?=")') | tar zxf -; done
+          mkdir -p $sysroot_lib
+          echo 'GROUP ( libgcc_s.so.1 -lgcc )' > $sysroot_lib/libgcc_s.so
+          cp usr/lib/libgcc_s.so.1 $sysroot_lib
+          cp usr/lib/gcc/aarch64-alpine-linux-musl/*/libgcc.a $sysroot_lib
+          cp lib/ld-musl-aarch64.so.1 $sysroot_lib/libc.so
+          echo '!<arch>' > $sysroot_lib/libdl.a
+          (cd $crt && cp crti.o crtbeginS.o crtendS.o crtn.o -t $sysroot_lib)
+          echo "export CARGO_BUILD_TARGET=aarch64-unknown-linux-musl" >> saved_env
+          echo "export RUSTFLAGS='-Ctarget-cpu=apple-m1 -Ctarget-feature=-crt-static,+neon,+fp16,+fhm,+dotprod -Clinker=clang -Clink-arg=-fuse-ld=mold -Clink-arg=--target=aarch64-unknown-linux-musl -Clink-arg=--sysroot=/usr/aarch64-unknown-linux-musl -Clink-arg=-lc'" >> saved_env
+      - name: Build Linux Artifacts
+        run: |
+          source ./saved_env
+          bash ci/manylinux_node/build_vectordb.sh ${{ matrix.config.arch }}
+      - name: Upload Linux Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-native-linux-${{ matrix.config.arch }}-musl
+          path: |
+            node/dist/lancedb-vectordb-linux*.tgz
+
+  nodejs-linux-gnu:
     name: lancedb (${{ matrix.config.arch}}-unknown-linux-gnu
     runs-on: ${{ matrix.config.runner }}
     # Only runs on tags that matches the make-release action
@@ -178,7 +230,7 @@ jobs:
       - name: Upload Linux Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: nodejs-native-linux-${{ matrix.config.arch }}
+          name: nodejs-native-linux-${{ matrix.config.arch }}-gnu
           path: |
             nodejs/dist/*.node
       # The generic files are the same in all distros so we just pick
@@ -191,6 +243,62 @@ jobs:
           path: |
             nodejs/dist/*
             !nodejs/dist/*.node
+
+  nodejs-linux-musl:
+    name: lancedb (${{ matrix.config.arch}}-unknown-linux-musl
+    runs-on: ubuntu-latest
+    container: alpine:edge
+    # Only runs on tags that matches the make-release action
+    if: startsWith(github.ref, 'refs/tags/v')
+    strategy:
+      fail-fast: false
+      matrix:
+        config:
+          - arch: x86_64
+          - arch: aarch64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install common dependencies
+        run: |
+          apk add protobuf-dev curl clang mold grep npm bash openssl-dev openssl-libs-static
+          curl --proto '=https' --tlsv1.3 -sSf https://raw.githubusercontent.com/rust-lang/rustup/refs/heads/master/rustup-init.sh | sh -s -- -y --default-toolchain 1.80.0
+          echo "source $HOME/.cargo/env" >> saved_env
+          echo "export CC=clang" >> saved_env
+          echo "export RUSTFLAGS='-Ctarget-cpu=haswell -Ctarget-feature=-crt-static,+avx2,+fma,+f16c -Clinker=clang -Clink-arg=-fuse-ld=mold'" >> saved_env
+          echo "export X86_64_UNKNOWN_LINUX_MUSL_OPENSSL_INCLUDE_DIR=/usr/include" >> saved_env
+          echo "export X86_64_UNKNOWN_LINUX_MUSL_OPENSSL_LIB_DIR=/usr/lib" >> saved_env
+      - name: Configure aarch64 build
+        if: ${{ matrix.config.arch == 'aarch64' }}
+        run: |
+          source "$HOME/.cargo/env"
+          rustup target add aarch64-unknown-linux-musl --toolchain 1.80.0
+          crt=$(realpath $(dirname $(rustup which rustc))/../lib/rustlib/aarch64-unknown-linux-musl/lib/self-contained)
+          sysroot_lib=/usr/aarch64-unknown-linux-musl/usr/lib
+          apk_url=https://dl-cdn.alpinelinux.org/alpine/latest-stable/main/aarch64/
+          curl -sSf $apk_url > apk_list
+          for pkg in gcc libgcc musl openssl-dev openssl-libs-static; do curl -sSf $apk_url$(cat apk_list | grep -oP '(?<=")'$pkg'-\d.*?(?=")') | tar zxf -; done
+          mkdir -p $sysroot_lib
+          echo 'GROUP ( libgcc_s.so.1 -lgcc )' > $sysroot_lib/libgcc_s.so
+          cp usr/lib/libgcc_s.so.1 $sysroot_lib
+          cp usr/lib/gcc/aarch64-alpine-linux-musl/*/libgcc.a $sysroot_lib
+          cp lib/ld-musl-aarch64.so.1 $sysroot_lib/libc.so
+          echo '!<arch>' > $sysroot_lib/libdl.a
+          (cd $crt && cp crti.o crtbeginS.o crtendS.o crtn.o -t $sysroot_lib)
+          echo "export CARGO_BUILD_TARGET=aarch64-unknown-linux-musl" >> saved_env
+          echo "export RUSTFLAGS='-Ctarget-cpu=apple-m1 -Ctarget-feature=-crt-static,+neon,+fp16,+fhm,+dotprod -Clinker=clang -Clink-arg=-fuse-ld=mold -Clink-arg=--target=aarch64-unknown-linux-musl -Clink-arg=--sysroot=/usr/aarch64-unknown-linux-musl -Clink-arg=-lc'" >> saved_env
+          echo "export AARCH64_UNKNOWN_LINUX_MUSL_OPENSSL_INCLUDE_DIR=$(realpath usr/include)" >> saved_env
+          echo "export AARCH64_UNKNOWN_LINUX_MUSL_OPENSSL_LIB_DIR=$(realpath usr/lib)" >> saved_env
+      - name: Build Linux Artifacts
+        run: |
+          source ./saved_env
+          bash ci/manylinux_node/build_lancedb.sh ${{ matrix.config.arch }}
+      - name: Upload Linux Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nodejs-native-linux-${{ matrix.config.arch }}-musl
+          path: |
+            nodejs/dist/*.node
 
   node-windows:
     name: vectordb ${{ matrix.target }}
@@ -460,7 +568,7 @@ jobs:
 
   release:
     name: vectordb NPM Publish
-    needs: [node, node-macos, node-linux, node-windows]
+    needs: [node, node-macos, node-linux-gnu, node-linux-musl, node-windows]
     runs-on: ubuntu-latest
     # Only runs on tags that matches the make-release action
     if: startsWith(github.ref, 'refs/tags/v')
@@ -500,7 +608,7 @@ jobs:
 
   release-nodejs:
     name: lancedb NPM Publish
-    needs: [nodejs-macos, nodejs-linux, nodejs-windows]
+    needs: [nodejs-macos, nodejs-linux-gnu, nodejs-linux-musl, nodejs-windows]
     runs-on: ubuntu-latest
     # Only runs on tags that matches the make-release action
     if: startsWith(github.ref, 'refs/tags/v')
