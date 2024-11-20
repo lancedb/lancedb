@@ -978,7 +978,7 @@ class Table(ABC):
         """
 
     @abstractmethod
-    def alter_columns(self, alterations: Iterable[Dict[str, str]]):
+    def alter_columns(self, *alterations: Iterable[Dict[str, str]]):
         """
         Alter column names and nullability.
 
@@ -989,9 +989,12 @@ class Table(ABC):
             - "path": str
                 The column path to alter. For a top-level column, this is the name.
                 For a nested column, this is the dot-separated path, e.g. "a.b.c".
-            - "name": str, optional
+            - "rename": str, optional
                 The new name of the column. If not specified, the column name is
                 not changed.
+            - "data_type": pyarrow.DataType, optional
+               The new data type of the column. Existing values will be casted
+               to this type. If not specified, the column data type is not changed.
             - "nullable": bool, optional
                 Whether the column should be nullable. If not specified, the column
                 nullability is not changed. Only non-nullable columns can be changed
@@ -2922,6 +2925,59 @@ class AsyncTable:
             updates_sql = {k: value_to_sql(v) for k, v in updates.items()}
 
         return await self._inner.update(updates_sql, where)
+
+    async def add_columns(self, transforms: Dict[str, str]):
+        """
+        Add new columns with defined values.
+
+        This is not yet available in LanceDB Cloud.
+
+        Parameters
+        ----------
+        transforms: Dict[str, str]
+            A map of column name to a SQL expression to use to calculate the
+            value of the new column. These expressions will be evaluated for
+            each row in the table, and can reference existing columns.
+        """
+        await self._inner.add_columns(list(transforms.items()))
+
+    async def alter_columns(self, *alterations: Iterable[Dict[str, str]]):
+        """
+        Alter column names and nullability.
+
+        This is not yet available in LanceDB Cloud.
+
+        alterations : Iterable[Dict[str, Any]]
+            A sequence of dictionaries, each with the following keys:
+            - "path": str
+                The column path to alter. For a top-level column, this is the name.
+                For a nested column, this is the dot-separated path, e.g. "a.b.c".
+            - "rename": str, optional
+                The new name of the column. If not specified, the column name is
+                not changed.
+            - "data_type": pyarrow.DataType, optional
+               The new data type of the column. Existing values will be casted
+               to this type. If not specified, the column data type is not changed.
+            - "nullable": bool, optional
+                Whether the column should be nullable. If not specified, the column
+                nullability is not changed. Only non-nullable columns can be changed
+                to nullable. Currently, you cannot change a nullable column to
+                non-nullable.
+        """
+        await self._inner.alter_columns(alterations)
+
+    async def drop_columns(self, columns: Iterable[str]):
+        """
+        Drop columns from the table.
+
+        This is not yet available in LanceDB Cloud.
+
+        Parameters
+        ----------
+        columns : Iterable[str]
+            The names of the columns to drop.
+        """
+        await self._inner.drop_columns(columns)
 
     async def version(self) -> int:
         """

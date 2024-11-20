@@ -1293,6 +1293,16 @@ def test_add_columns(tmp_path):
     assert table.to_arrow()["new_col"].to_pylist() == [2, 3]
 
 
+@pytest.mark.asyncio
+async def test_add_columns_async(db_async: AsyncConnection):
+    data = pa.table({"id": [0, 1]})
+    table = await db_async.create_table("my_table", data=data)
+    await table.add_columns({"new_col": "id + 2"})
+    data = await table.to_arrow()
+    assert data.column_names == ["id", "new_col"]
+    assert data["new_col"].to_pylist() == [2, 3]
+
+
 def test_alter_columns(tmp_path):
     db = lancedb.connect(tmp_path)
     data = pa.table({"id": [0, 1]})
@@ -1301,12 +1311,32 @@ def test_alter_columns(tmp_path):
     assert table.to_arrow().column_names == ["new_id"]
 
 
+@pytest.mark.asyncio
+async def test_alter_columns_async(db_async: AsyncConnection):
+    data = pa.table({"id": [0, 1]})
+    table = await db_async.create_table("my_table", data=data)
+    await table.alter_columns({"path": "id", "rename": "new_id"})
+    assert (await table.to_arrow()).column_names == ["new_id"]
+    await table.alter_columns(dict(path="new_id", data_type=pa.int16(), nullable=True))
+    data = await table.to_arrow()
+    assert data.column(0).type == pa.int16()
+    assert data.schema.field(0).nullable
+
+
 def test_drop_columns(tmp_path):
     db = lancedb.connect(tmp_path)
     data = pa.table({"id": [0, 1], "category": ["a", "b"]})
     table = LanceTable.create(db, "my_table", data=data)
     table.drop_columns(["category"])
     assert table.to_arrow().column_names == ["id"]
+
+
+@pytest.mark.asyncio
+async def test_drop_columns_async(db_async: AsyncConnection):
+    data = pa.table({"id": [0, 1], "category": ["a", "b"]})
+    table = await db_async.create_table("my_table", data=data)
+    await table.drop_columns(["category"])
+    assert (await table.to_arrow()).column_names == ["id"]
 
 
 @pytest.mark.asyncio
