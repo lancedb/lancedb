@@ -286,7 +286,7 @@ jobs:
           echo '!<arch>' > $sysroot_lib/libdl.a
           (cd $crt && cp crti.o crtbeginS.o crtendS.o crtn.o -t $sysroot_lib)
           echo "export CARGO_BUILD_TARGET=aarch64-unknown-linux-musl" >> saved_env
-          echo "export RUSTFLAGS='-Ctarget-cpu=apple-m1 -Ctarget-feature=-crt-static,+neon,+fp16,+fhm,+dotprod -Clinker=clang -Clink-arg=-fuse-ld=mold -Clink-arg=--target=aarch64-unknown-linux-musl -Clink-arg=--sysroot=/usr/aarch64-unknown-linux-musl -Clink-arg=-lc'" >> saved_env
+          echo "export RUSTFLAGS='-Ctarget-feature=-crt-static,+neon,+fp16,+fhm,+dotprod -Clinker=clang -Clink-arg=-fuse-ld=mold -Clink-arg=--target=aarch64-unknown-linux-musl -Clink-arg=--sysroot=/usr/aarch64-unknown-linux-musl -Clink-arg=-lc'" >> saved_env
           echo "export AARCH64_UNKNOWN_LINUX_MUSL_OPENSSL_INCLUDE_DIR=$(realpath usr/include)" >> saved_env
           echo "export AARCH64_UNKNOWN_LINUX_MUSL_OPENSSL_LIB_DIR=$(realpath usr/lib)" >> saved_env
       - name: Build Linux Artifacts
