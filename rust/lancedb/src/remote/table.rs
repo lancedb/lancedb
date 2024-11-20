@@ -54,9 +54,14 @@ impl<S: HttpSend> RemoteTable<S> {
     }
 
     async fn describe(&self) -> Result<TableDescription> {
-        let request = self
+        let mut request = self
             .client
             .post(&format!("/v1/table/{}/describe/", self.name));
+        
+        let version = self.current_version().await;
+        let body = serde_json::json!({ "version": version });
+        request = request.json(&body);
+
         let (request_id, response) = self.client.send(request, true).await?;
 
         let response = self.check_table_response(&request_id, response).await?;
@@ -354,7 +359,6 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
             request = request.json(&serde_json::json!({ "predicate": filter, "version": version }));
         } else {
             let body = serde_json::json!({ "version": version });
-            println!("body is: {}", body); // TODO delete this
             request = request.json(&body);
         }
 
