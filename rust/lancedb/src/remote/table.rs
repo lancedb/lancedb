@@ -408,7 +408,8 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let request = self.client.post(&format!("/v1/table/{}/query/", self.name));
 
-        let body = serde_json::Value::Object(Default::default());
+        let version = self.current_version().await;
+        let body = serde_json::json!({ "version": version });
         let bodies = Self::apply_vector_query_params(body, query)?;
 
         let mut futures = Vec::with_capacity(bodies.len());
@@ -443,7 +444,8 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
             .post(&format!("/v1/table/{}/query/", self.name))
             .header(CONTENT_TYPE, JSON_CONTENT_TYPE);
 
-        let mut body = serde_json::Value::Object(Default::default());
+        let version = self.current_version().await;
+        let mut body = serde_json::json!({ "version": version });
         Self::apply_query_params(&mut body, query)?;
         // Empty vector can be passed if no vector search is performed.
         body["vector"] = serde_json::Value::Array(Vec::new());
@@ -617,9 +619,13 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
 
     async fn list_indices(&self) -> Result<Vec<IndexConfig>> {
         // Make request to list the indices
-        let request = self
+        let mut request = self
             .client
             .post(&format!("/v1/table/{}/index/list/", self.name));
+        let version = self.current_version().await;
+        let body = serde_json::json!({ "version": version });
+        request = request.json(&body);
+
         let (request_id, response) = self.client.send(request, true).await?;
         let response = self.check_table_response(&request_id, response).await?;
 
@@ -669,10 +675,14 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
     }
 
     async fn index_stats(&self, index_name: &str) -> Result<Option<IndexStatistics>> {
-        let request = self.client.post(&format!(
+        let mut request = self.client.post(&format!(
             "/v1/table/{}/index/{}/stats/",
             self.name, index_name
         ));
+        let version = self.current_version().await;
+        let body = serde_json::json!({ "version": version });
+        request = request.json(&body);
+
         let (request_id, response) = self.client.send(request, true).await?;
 
         if response.status() == StatusCode::NOT_FOUND {
