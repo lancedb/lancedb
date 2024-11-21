@@ -229,6 +229,7 @@ def test_query_sync_minimal():
             "ef": None,
             "vector": [1.0, 2.0, 3.0],
             "nprobes": 20,
+            "version": None,
         }
 
         return pa.table({"id": [1, 2, 3]})
@@ -246,6 +247,7 @@ def test_query_sync_empty_query():
             "filter": "true",
             "vector": [],
             "columns": ["id"],
+            "version": None,
         }
 
         return pa.table({"id": [1, 2, 3]})
@@ -271,6 +273,7 @@ def test_query_sync_maximal():
             "vector_column": "vector2",
             "fast_search": True,
             "with_row_id": True,
+            "version": None,
         }
 
         return pa.table({"id": [1, 2, 3], "name": ["a", "b", "c"]})
@@ -309,6 +312,7 @@ def test_query_sync_fts():
             },
             "k": 10,
             "vector": [],
+            "version": None,
         }
 
         return pa.table({"id": [1, 2, 3]})
@@ -325,6 +329,7 @@ def test_query_sync_fts():
             "k": 42,
             "vector": [],
             "with_row_id": True,
+            "version": None,
         }
 
         return pa.table({"id": [1, 2, 3]})
@@ -350,6 +355,7 @@ def test_query_sync_hybrid():
                 "k": 42,
                 "vector": [],
                 "with_row_id": True,
+                "version": None,
             }
             return pa.table({"_rowid": [1, 2, 3], "_score": [0.1, 0.2, 0.3]})
         else:
@@ -363,6 +369,7 @@ def test_query_sync_hybrid():
                 "nprobes": 20,
                 "ef": None,
                 "with_row_id": True,
+                "version": None,
             }
             return pa.table({"_rowid": [1, 2, 3], "_distance": [0.1, 0.2, 0.3]})
 
