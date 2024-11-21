@@ -370,11 +370,13 @@ class LanceQueryBuilder(ABC):
         ----------
         limit: int
             The maximum number of results to return.
-            By default the query is limited to the first 10.
-            Call this method and pass 0, a negative value,
-            or None to remove the limit.
-            *WARNING* if you have a large dataset, removing
-            the limit can potentially result in reading a
+            The default query limit is 10 results.
+            For ANN/KNN queries, you must specify a limit.
+            Entering 0, a negative number, or None will reset
+            the limit to the default value of 10.
+            *WARNING* if you have a large dataset, setting
+            the limit to a large number, e.g. the table size,
+            can potentially result in reading a
             large amount of data into memory and cause
             out of memory issues.
 
