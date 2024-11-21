@@ -153,9 +153,7 @@ table.create_fts_index(["title", "content"], use_tantivy=True, writer_heap_size=
 
 ## Current limitations
 
-1. Currently we do not yet support incremental writes.
-   If you add data after FTS index creation, it won't be reflected
-   in search results until you do a full reindex.
+1. New data added after creating the FTS index will appear in search results, but with increased latency due to a flat search on the unindexed portion. Re-indexing with `create_fts_index` will reduce latency. LanceDB Cloud automates this merging process, minimizing the impact on search speed. 
 
 2. We currently only support local filesystem paths for the FTS index.
    This is a tantivy limitation. We've implemented an object store plugin
