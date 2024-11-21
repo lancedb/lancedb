@@ -127,7 +127,7 @@ With pre-filtering:
 
     ```typescript
     await tbl
-    .search("apple")
+    .search("puppy")
     .select(["id", "doc"])
     .limit(10)
     .where("meta='foo'")
