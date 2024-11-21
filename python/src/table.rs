@@ -8,7 +8,7 @@ use lancedb::table::{
 use pyo3::{
     exceptions::{PyRuntimeError, PyValueError},
     pyclass, pymethods,
-    types::{PyDict, PyDictMethods, PyString},
+    types::{IntoPyDict, PyDict, PyDictMethods, PyString},
     Bound, FromPyObject, PyAny, PyRef, PyResult, Python, ToPyObject,
 };
 use pyo3_asyncio_0_21::tokio::future_into_py;
@@ -244,6 +244,33 @@ impl Table {
             self_.py(),
             async move { inner.version().await.infer_error() },
         )
+    }
+
+    pub fn list_versions(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let versions = inner.list_versions().await.infer_error()?;
+            let versions_as_dict = Python::with_gil(|py| {
+                versions
+                    .iter()
+                    .map(|v| {
+                        let dict = PyDict::new_bound(py);
+                        dict.set_item("version", v.version).unwrap();
+                        dict.set_item(
+                            "timestamp",
+                            v.timestamp.timestamp_nanos_opt().unwrap_or_default(),
+                        )
+                        .unwrap();
+
+                        let tup: Vec<(&String, &String)> = v.metadata.iter().collect();
+                        dict.set_item("metadata", tup.into_py_dict(py)).unwrap();
+                        dict.to_object(py)
+                    })
+                    .collect::<Vec<_>>()
+            });
+
+            Ok(versions_as_dict)
+        })
     }
 
     pub fn checkout(self_: PyRef<'_, Self>, version: u64) -> PyResult<Bound<'_, PyAny>> {

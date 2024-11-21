@@ -8,7 +8,7 @@ import inspect
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from functools import cached_property
 from typing import (
     TYPE_CHECKING,
@@ -1040,6 +1040,10 @@ class Table(ABC):
         is None
         It can also be used to undo a `[Self::checkout]` operation
         """
+
+    @abstractmethod
+    def list_versions(self):
+        """List all versions of the table"""
 
     @cached_property
     def _dataset_uri(self) -> str:
@@ -2930,6 +2934,19 @@ class AsyncTable:
         version.
         """
         return await self._inner.version()
+
+    async def list_versions(self):
+        """
+        List all versions of the table
+        """
+        versions = await self._inner.list_versions()
+        for v in versions:
+            ts_nanos = v["timestamp"]
+            v["timestamp"] = datetime.fromtimestamp(ts_nanos // 1e9) + timedelta(
+                microseconds=(ts_nanos % 1e9) // 1e3
+            )
+
+        return versions
 
     async def checkout(self, version):
         """

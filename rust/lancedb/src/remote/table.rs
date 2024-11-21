@@ -19,7 +19,7 @@ use http::header::CONTENT_TYPE;
 use http::StatusCode;
 use lance::arrow::json::JsonSchema;
 use lance::dataset::scanner::DatasetRecordBatchStream;
-use lance::dataset::{ColumnAlteration, NewColumnTransform};
+use lance::dataset::{ColumnAlteration, NewColumnTransform, Version};
 use lance_datafusion::exec::OneShotExec;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
@@ -363,6 +363,34 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
             message: "restore is not supported on LanceDB cloud.".into(),
         })
     }
+
+    async fn list_versions(&self) -> Result<Vec<Version>> {
+        let request = self
+            .client
+            .post(&format!("/v1/table/{}/version/list/", self.name));
+        let (request_id, response) = self.client.send(request, true).await?;
+        let response = self.check_table_response(&request_id, response).await?;
+
+        #[derive(Deserialize)]
+        struct ListVersionsResponse {
+            versions: Vec<Version>,
+        }
+
+        let body = response.text().await.err_to_http(request_id.clone())?;
+        let body: ListVersionsResponse =
+            serde_json::from_str(&body).map_err(|err| Error::Http {
+                source: format!(
+                    "Failed to parse list_versions response: {}, body: {}",
+                    err, body
+                )
+                .into(),
+                request_id,
+                status_code: None,
+            })?;
+
+        Ok(body.versions)
+    }
+
     async fn schema(&self) -> Result<SchemaRef> {
         let schema = self.describe().await?.schema;
         Ok(Arc::new(schema.try_into()?))
@@ -775,6 +803,7 @@ mod tests {
     use arrow::{array::AsArray, compute::concat_batches, datatypes::Int32Type};
     use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator};
     use arrow_schema::{DataType, Field, Schema};
+    use chrono::{DateTime, Utc};
     use futures::{future::BoxFuture, StreamExt, TryFutureExt};
     use lance_index::scalar::FullTextSearchQuery;
     use reqwest::Body;
@@ -1487,6 +1516,51 @@ mod tests {
             },
         ];
         assert_eq!(indices, expected);
+    }
+
+    #[tokio::test]
+    async fn test_list_versions() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url().path(), "/v1/table/my_table/version/list/");
+
+            let version1 = lance::dataset::Version {
+                version: 1,
+                timestamp: "2024-01-01T00:00:00Z".parse().unwrap(),
+                metadata: Default::default(),
+            };
+            let version2 = lance::dataset::Version {
+                version: 2,
+                timestamp: "2024-02-01T00:00:00Z".parse().unwrap(),
+                metadata: Default::default(),
+            };
+            let response_body = serde_json::json!({
+                "versions": [
+                    version1,
+                    version2,
+                ]
+            });
+            let response_body = serde_json::to_string(&response_body).unwrap();
+
+            http::Response::builder()
+                .status(200)
+                .body(response_body)
+                .unwrap()
+        });
+
+        let versions = table.list_versions().await.unwrap();
+        assert_eq!(versions.len(), 2);
+        assert_eq!(versions[0].version, 1);
+        assert_eq!(
+            versions[0].timestamp,
+            "2024-01-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap()
+        );
+        assert_eq!(versions[1].version, 2);
+        assert_eq!(
+            versions[1].timestamp,
+            "2024-02-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap()
+        );
+        // assert_eq!(versions, expected);
     }
 
     #[tokio::test]

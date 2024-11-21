@@ -87,6 +87,12 @@ export interface OptimizeOptions {
   deleteUnverified: boolean;
 }
 
+export interface Version {
+  version: number;
+  timestamp: Date;
+  metadata: Record<string, string>;
+}
+
 /**
  * A Table is a collection of Records in a LanceDB Database.
  *
@@ -359,6 +365,11 @@ export abstract class Table {
    * version of the table.
    */
   abstract checkoutLatest(): Promise<void>;
+
+  /**
+   * List all the versions of the table
+   */
+  abstract listVersions(): Promise<Version[]>;
 
   /**
    * Restore the table to the currently checked out version
@@ -657,6 +668,14 @@ export class LocalTable extends Table {
 
   async checkoutLatest(): Promise<void> {
     await this.inner.checkoutLatest();
+  }
+
+  async listVersions(): Promise<Version[]> {
+    return (await this.inner.listVersions()).map((version) => ({
+      version: version.version,
+      timestamp: new Date(version.timestamp / 1000),
+      metadata: version.metadata,
+    }));
   }
 
   async restore(): Promise<void> {
