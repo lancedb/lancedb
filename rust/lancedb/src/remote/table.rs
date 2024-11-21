@@ -50,7 +50,11 @@ pub struct RemoteTable<S: HttpSend = Sender> {
 
 impl<S: HttpSend> RemoteTable<S> {
     pub fn new(client: RestfulLanceDbClient<S>, name: String) -> Self {
-        Self { client, name, version: RwLock::new(None) }
+        Self {
+            client,
+            name,
+            version: RwLock::new(None),
+        }
     }
 
     async fn describe(&self) -> Result<TableDescription> {
@@ -62,7 +66,7 @@ impl<S: HttpSend> RemoteTable<S> {
         let mut request = self
             .client
             .post(&format!("/v1/table/{}/describe/", self.name));
-        
+
         let body = serde_json::json!({ "version": version });
         request = request.json(&body);
 
@@ -268,7 +272,7 @@ impl<S: HttpSend> RemoteTable<S> {
         let read_guard = self.version.read().await;
         match *read_guard {
             None => Ok(()),
-            Some(version) => Err(Error::NotSupported { 
+            Some(version) => Err(Error::NotSupported {
                 message: format!(
                     "Cannot mutate table reference fixed at version {}. Call checkout_latest() to get a mutable table reference.",
                     version
@@ -279,9 +283,7 @@ impl<S: HttpSend> RemoteTable<S> {
 
     async fn current_version(&self) -> Option<u64> {
         let read_guard = self.version.read().await;
-        let version = *read_guard;
-
-        version
+        *read_guard
     }
 }
 
@@ -310,7 +312,11 @@ mod test_utils {
             T: Into<reqwest::Body>,
         {
             let client = client_with_handler(handler);
-            Self { client, name, version: RwLock::new(None) }
+            Self {
+                client,
+                name,
+                version: RwLock::new(None),
+            }
         }
     }
 }
@@ -331,14 +337,16 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
     }
     async fn checkout(&self, version: u64) -> Result<()> {
         // check that the version exists
-        self.describe_version(Some(version)).await.map_err(|e| match e {
-            // try to map the error to a more user-friendly error telling them
-            // specifically that the version does not exist
-            Error::TableNotFound { name } => Error::TableNotFound { 
-                name: format!("{} (version: {})", name, version),
-            },
-            e => e,
-        })?;
+        self.describe_version(Some(version))
+            .await
+            .map_err(|e| match e {
+                // try to map the error to a more user-friendly error telling them
+                // specifically that the version does not exist
+                Error::TableNotFound { name } => Error::TableNotFound {
+                    name: format!("{} (version: {})", name, version),
+                },
+                e => e,
+            })?;
 
         let mut write_guard = self.version.write().await;
         *write_guard = Some(version);
@@ -871,7 +879,10 @@ mod tests {
                 request.headers().get("Content-Type").unwrap(),
                 JSON_CONTENT_TYPE
             );
-            assert_eq!(request.body().unwrap().as_bytes().unwrap(), br#"{"version":null}"#);
+            assert_eq!(
+                request.body().unwrap().as_bytes().unwrap(),
+                br#"{"version":null}"#
+            );
 
             http::Response::builder().status(200).body("42").unwrap()
         });
@@ -1528,21 +1539,27 @@ mod tests {
         let table = Table::new_with_handler("my_table", |request| {
             let body = request.body().unwrap().as_bytes().unwrap();
             let body: serde_json::Value = serde_json::from_slice(body).unwrap();
-            let version = body.as_object().unwrap().get("version").unwrap().as_u64().unwrap();
+            let version = body
+                .as_object()
+                .unwrap()
+                .get("version")
+                .unwrap()
+                .as_u64()
+                .unwrap();
             assert_eq!(version, 42);
-            
+
             let response_body = match request.url().path() {
                 "/v1/table/my_table/describe/" => {
                     serde_json::json!({
                         "version": 42,
                         "schema": { "fields": [] }
                     })
-                },
+                }
                 "/v1/table/my_table/index/list/" => {
                     serde_json::json!({
                         "indexes": []
                     })
-                },
+                }
                 "/v1/table/my_table/index/my_idx/stats/" => {
                     serde_json::json!({
                         "num_indexed_rows": 100000,
@@ -1550,7 +1567,7 @@ mod tests {
                         "index_type": "IVF_PQ",
                         "distance_type": "l2"
                     })
-                },
+                }
                 "/v1/table/my_table/count_rows/" => {
                     serde_json::json!(1000)
                 }
@@ -1567,14 +1584,19 @@ mod tests {
                         .header(CONTENT_TYPE, ARROW_FILE_CONTENT_TYPE)
                         .body(response_body)
                         .unwrap();
-                },
-                
+                }
+
                 path => panic!("Unexpected path: {}", path),
             };
 
             http::Response::builder()
                 .status(200)
-                .body(serde_json::to_string(&response_body).unwrap().as_bytes().to_vec())
+                .body(
+                    serde_json::to_string(&response_body)
+                        .unwrap()
+                        .as_bytes()
+                        .to_vec(),
+                )
                 .unwrap()
         });
 
@@ -1602,21 +1624,27 @@ mod tests {
         let table = Table::new_with_handler("my_table", |request| {
             let body = request.body().unwrap().as_bytes().unwrap();
             let body: serde_json::Value = serde_json::from_slice(body).unwrap();
-            let version = body.as_object().unwrap().get("version").unwrap().as_u64().unwrap();
+            let version = body
+                .as_object()
+                .unwrap()
+                .get("version")
+                .unwrap()
+                .as_u64()
+                .unwrap();
             if version != 42 {
                 return http::Response::builder()
                     .status(404)
                     .body(format!("Table my_table (version: {}) not found", version))
                     .unwrap();
             }
-            
+
             let response_body = match request.url().path() {
                 "/v1/table/my_table/describe/" => {
                     serde_json::json!({
                         "version": 42,
                         "schema": { "fields": [] }
                     })
-                },
+                }
                 _ => panic!("Unexpected path"),
             };
 
@@ -1628,7 +1656,9 @@ mod tests {
 
         let res = table.checkout(43).await;
         println!("{:?}", res);
-        assert!(matches!(res, Err(Error::TableNotFound { name }) if name == "my_table (version: 43)"));
+        assert!(
+            matches!(res, Err(Error::TableNotFound { name }) if name == "my_table (version: 43)")
+        );
     }
 
     #[tokio::test]
@@ -1640,14 +1670,14 @@ mod tests {
                         "version": 42,
                         "schema": { "fields": [] }
                     })
-                },
+                }
                 _ => panic!("Should not have made a request: {:?}", request),
             };
 
             http::Response::builder()
-            .status(200)
-            .body(serde_json::to_string(&response_body).unwrap())
-            .unwrap()
+                .status(200)
+                .body(serde_json::to_string(&response_body).unwrap())
+                .unwrap()
         });
 
         table.checkout(42).await.unwrap();
@@ -1671,10 +1701,7 @@ mod tests {
             [Ok(batch.clone())],
             batch.schema(),
         ));
-        let res = table
-            .merge_insert(&["some_col"])
-            .execute(data)
-            .await;
+        let res = table.merge_insert(&["some_col"]).execute(data).await;
         assert!(matches!(res, Err(Error::NotSupported { .. })));
 
         let res = table.delete("id in (1, 2, 3)").await;
@@ -1691,7 +1718,10 @@ mod tests {
             .await;
         assert!(matches!(res, Err(Error::NotSupported { .. })));
 
-        let res = table.create_index(&["a"], Index::IvfPq(Default::default())).execute().await;
+        let res = table
+            .create_index(&["a"], Index::IvfPq(Default::default()))
+            .execute()
+            .await;
         assert!(matches!(res, Err(Error::NotSupported { .. })));
     }
 }
