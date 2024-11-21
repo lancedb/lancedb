@@ -284,7 +284,7 @@ less space distortion, and thus yields better accuracy. However, a higher `num_s
 !!! note
     if `num_sub_vectors` is set to be greater than the vector dimension, you will see errors like `attempt to divide by zero`
 
-### How to choose `m` and `ef_construction` for `IVF_HNSW_SQ` index?
+### How to choose `m` and `ef_construction` for `IVF_HNSW_*` index?
 
 `m` determines the number of connections a new node establishes with its closest neighbors upon entering the graph. Typically, `m` falls within the range of 5 to 48. Lower `m` values are suitable for low-dimensional data or scenarios where recall is less critical. Conversely, higher `m` values are beneficial for high-dimensional data or when high recall is required. In essence, a larger `m` results in a denser graph with increased connectivity, but at the expense of higher memory consumption.
 
