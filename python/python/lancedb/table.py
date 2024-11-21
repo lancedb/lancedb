@@ -1014,14 +1014,20 @@ class Table(ABC):
 
     @abstractmethod
     def checkout(self):
-        """
-        TODO comments
+        """Checkout a version of the table. This is an in-place operation.
+
+        This allows viewing previous versions of the table.
+
+        Calling this method will set the table into time-travel mode. If you
+        wish to return to standard mode, call `checkout_latest`.
         """
 
     @abstractmethod
     def checkout_latest(self):
-        """
-        TODO comments
+        """Checkout the latest version of the table. This is an in-place operation.
+
+        The table will be set back into standard mode, and will track the latest
+        version of the table.
         """
 
     @cached_property
