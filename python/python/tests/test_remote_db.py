@@ -104,6 +104,47 @@ async def test_async_remote_db():
 
 
 @pytest.mark.asyncio
+async def test_async_checkout():
+    def handler(request):
+        if request.path == "/v1/table/test/describe/":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            response = json.dumps({"version": 42, "schema": {"fields": []}})
+            request.wfile.write(response.encode())
+            return
+
+        content_len = int(request.headers.get("Content-Length"))
+        body = request.rfile.read(content_len)
+        body = json.loads(body)
+
+        print("body is", body)
+
+        count = 0
+        if body["version"] == 1:
+            count = 100
+        elif body["version"] == 2:
+            count = 200
+        elif body["version"] is None:
+            count = 300
+
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(json.dumps(count).encode())
+
+    async with mock_lancedb_connection_async(handler) as db:
+        table = await db.open_table("test")
+        assert await table.count_rows() == 300
+        await table.checkout(1)
+        assert await table.count_rows() == 100
+        await table.checkout(2)
+        assert await table.count_rows() == 200
+        await table.checkout_latest()
+        assert await table.count_rows() == 300
+
+
+@pytest.mark.asyncio
 async def test_http_error():
     request_id_holder = {"request_id": None}
 
@@ -188,6 +229,7 @@ def test_query_sync_minimal():
             "ef": None,
             "vector": [1.0, 2.0, 3.0],
             "nprobes": 20,
+            "version": None,
         }
 
         return pa.table({"id": [1, 2, 3]})
@@ -205,6 +247,7 @@ def test_query_sync_empty_query():
             "filter": "true",
             "vector": [],
             "columns": ["id"],
+            "version": None,
         }
 
         return pa.table({"id": [1, 2, 3]})
@@ -230,6 +273,7 @@ def test_query_sync_maximal():
             "vector_column": "vector2",
             "fast_search": True,
             "with_row_id": True,
+            "version": None,
         }
 
         return pa.table({"id": [1, 2, 3], "name": ["a", "b", "c"]})
@@ -268,6 +312,7 @@ def test_query_sync_fts():
             },
             "k": 10,
             "vector": [],
+            "version": None,
         }
 
         return pa.table({"id": [1, 2, 3]})
@@ -284,6 +329,7 @@ def test_query_sync_fts():
             "k": 42,
             "vector": [],
             "with_row_id": True,
+            "version": None,
         }
 
         return pa.table({"id": [1, 2, 3]})
@@ -309,6 +355,7 @@ def test_query_sync_hybrid():
                 "k": 42,
                 "vector": [],
                 "with_row_id": True,
+                "version": None,
             }
             return pa.table({"_rowid": [1, 2, 3], "_score": [0.1, 0.2, 0.3]})
         else:
@@ -322,6 +369,7 @@ def test_query_sync_hybrid():
                 "nprobes": 20,
                 "ef": None,
                 "with_row_id": True,
+                "version": None,
             }
             return pa.table({"_rowid": [1, 2, 3], "_distance": [0.1, 0.2, 0.3]})
 
