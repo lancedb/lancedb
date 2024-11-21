@@ -125,7 +125,7 @@ async def test_async_checkout():
             count = 100
         elif body["version"] == 2:
             count = 200
-        elif body["version"] == None:
+        elif body["version"] is None:
             count = 300
 
         request.send_response(200)
