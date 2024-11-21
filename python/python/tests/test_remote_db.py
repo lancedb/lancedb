@@ -102,6 +102,7 @@ async def test_async_remote_db():
         table_names = await db.table_names()
         assert table_names == []
 
+
 @pytest.mark.asyncio
 async def test_async_checkout():
     def handler(request):
@@ -109,13 +110,10 @@ async def test_async_checkout():
             request.send_response(200)
             request.send_header("Content-Type", "application/json")
             request.end_headers()
-            response = json.dumps({
-                        "version": 42,
-                        "schema": { "fields": [] }
-                    })
+            response = json.dumps({"version": 42, "schema": {"fields": []}})
             request.wfile.write(response.encode())
             return
-    
+
         content_len = int(request.headers.get("Content-Length"))
         body = request.rfile.read(content_len)
         body = json.loads(body)
@@ -134,6 +132,7 @@ async def test_async_checkout():
         request.send_header("Content-Type", "application/json")
         request.end_headers()
         request.wfile.write(json.dumps(count).encode())
+
     async with mock_lancedb_connection_async(handler) as db:
         table = await db.open_table("test")
         assert await table.count_rows() == 300
@@ -143,7 +142,6 @@ async def test_async_checkout():
         assert await table.count_rows() == 200
         await table.checkout_latest()
         assert await table.count_rows() == 300
-    
 
 
 @pytest.mark.asyncio
