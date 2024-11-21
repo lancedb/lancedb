@@ -114,12 +114,45 @@ table.create_fts_index("text",
 
 LanceDB full text search supports to filter the search results by a condition, both pre-filtering and post-filtering are supported.
 
-This can be invoked via the familiar `where` syntax:
-
+This can be invoked via the familiar `where` syntax.
+ 
+With pre-filtering:
 === "Python"
 
     ```python
-    table.search("puppy").limit(10).where("meta='foo'").to_list()
+    table.search("puppy").limit(10).where("meta='foo'", prefilte=True).to_list()
+    ```
+
+=== "TypeScript"
+
+    ```typescript
+    await tbl
+    .search("puppy")
+    .select(["id", "doc"])
+    .limit(10)
+    .where("meta='foo'")
+    .prefilter(true)
+    .toArray();
+    ```
+
+=== "Rust"
+
+    ```rust
+    table
+        .query()
+        .full_text_search(FullTextSearchQuery::new("puppy".to_owned()))
+        .select(lancedb::query::Select::Columns(vec!["doc".to_owned()]))
+        .limit(10)
+        .only_if("meta='foo'")
+        .execute()
+        .await?;
+    ```
+
+With post-filtering:
+=== "Python"
+
+    ```python
+    table.search("puppy").limit(10).where("meta='foo'", prefilte=False).to_list()
     ```
 
 === "TypeScript"
@@ -130,6 +163,7 @@ This can be invoked via the familiar `where` syntax:
     .select(["id", "doc"])
     .limit(10)
     .where("meta='foo'")
+    .prefilter(false)
     .toArray();
     ```
 
@@ -140,6 +174,7 @@ This can be invoked via the familiar `where` syntax:
         .query()
         .full_text_search(FullTextSearchQuery::new(words[0].to_owned()))
         .select(lancedb::query::Select::Columns(vec!["doc".to_owned()]))
+        .postfilter()
         .limit(10)
         .only_if("meta='foo'")
         .execute()
@@ -189,3 +224,6 @@ This can make the query more efficient, especially when the table is large and t
     tbl.add(more_data).execute().await?;
     tbl.optimize(OptimizeAction::All).execute().await?;
     ```
+!!! note
+
+    New data added after creating the FTS index will appear in search results while incremental index is still progress, but with increased latency due to a flat search on the unindexed portion. LanceDB Cloud automates this merging process, minimizing the impact on search speed. 
