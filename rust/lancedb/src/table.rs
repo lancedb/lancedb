@@ -1325,7 +1325,7 @@ impl NativeTable {
         let (indices, mf) = futures::try_join!(dataset.load_indices(), dataset.latest_manifest())?;
         Ok(indices
             .iter()
-            .map(|i| VectorIndex::new_from_format(&mf, i))
+            .map(|i| VectorIndex::new_from_format(&(mf.0), i))
             .collect())
     }
 
