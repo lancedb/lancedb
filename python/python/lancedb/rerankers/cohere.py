@@ -41,7 +41,7 @@ class CohereReranker(Reranker):
 
     def __init__(
         self,
-        model_name: str = "rerank-english-v2.0",
+        model_name: str = "rerank-english-v3.0",
         column: str = "text",
         top_n: Union[int, None] = None,
         return_score="relevance",
