@@ -57,6 +57,13 @@ Then the greedy search routine operates as follows:
 
 ## Usage
 
+There are three key parameters to set when constructing an HNSW index:
+
+* `metric`: Use an `L2` euclidean distance metric. We also support `dot` and `cosine` distance.
+* `m`: The number of neighbors to select for each vector in the HNSW graph.
+* `ef_construction`: The number of candidates to evaluate during the construction of the HNSW graph.
+
+
 We can combine the above concepts to understand how to build and query an HNSW index in LanceDB.
 
 ### Construct index
