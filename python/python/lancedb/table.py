@@ -1014,20 +1014,31 @@ class Table(ABC):
 
     @abstractmethod
     def checkout(self):
-        """Checkout a version of the table. This is an in-place operation.
+        """
+        Checks out a specific version of the Table
 
-        This allows viewing previous versions of the table.
+        Any read operation on the table will now access the data at the checked out
+        version. As a consequence, calling this method will disable any read consistency
+        interval that was previously set.
 
-        Calling this method will set the table into time-travel mode. If you
-        wish to return to standard mode, call `checkout_latest`.
+        This is a read-only operation that turns the table into a sort of "view"
+        or "detached head".  Other table instances will not be affected.  To make the
+        change permanent you can use the `[Self::restore]` method.
+
+        Any operation that modifies the table will fail while the table is in a checked
+        out state.
+
+        To return the table to a normal state use `[Self::checkout_latest]`
         """
 
     @abstractmethod
     def checkout_latest(self):
-        """Checkout the latest version of the table. This is an in-place operation.
+        """
+        Ensures the table is pointing at the latest version
 
-        The table will be set back into standard mode, and will track the latest
-        version of the table.
+        This can be used to manually update a table when the read_consistency_interval
+        is None
+        It can also be used to undo a `[Self::checkout]` operation
         """
 
     @cached_property
