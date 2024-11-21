@@ -277,7 +277,15 @@ Product quantization can lead to approximately `16 * sizeof(float32) / 1 = 64` t
 Higher number of partitions could lead to more efficient I/O during queries and better accuracy, but it takes much more time to train.
 On `SIFT-1M` dataset, our benchmark shows that keeping each partition 1K-4K rows lead to a good latency / recall.
 
-`num_sub_vectors` specifies how many Product Quantization (PQ) short codes to generate on each vector. Because
+`num_sub_vectors` specifies how many Product Quantization (PQ) short codes to generate on each vector. The number should be a factor of the vector dimension. Because
 PQ is a lossy compression of the original vector, a higher `num_sub_vectors` usually results in
-less space distortion, and thus yields better accuracy. However, a higher `num_sub_vectors` also causes heavier I/O and
-more PQ computation, and thus, higher latency. `dimension / num_sub_vectors` should be a multiple of 8 for optimum SIMD efficiency.
+less space distortion, and thus yields better accuracy. However, a higher `num_sub_vectors` also causes heavier I/O and more PQ computation, and thus, higher latency. `dimension / num_sub_vectors` should be a multiple of 8 for optimum SIMD efficiency.
+
+!!! note
+    if `num_sub_vectors` is set to be greater than the vector dimension, you will see errors like `attempt to divide by zero`
+
+### How to choose `m` and `ef_construction` for `IVF_HNSW_*` index?
+
+`m` determines the number of connections a new node establishes with its closest neighbors upon entering the graph. Typically, `m` falls within the range of 5 to 48. Lower `m` values are suitable for low-dimensional data or scenarios where recall is less critical. Conversely, higher `m` values are beneficial for high-dimensional data or when high recall is required. In essence, a larger `m` results in a denser graph with increased connectivity, but at the expense of higher memory consumption.
+
+`ef_construction` balances build speed and accuracy. Higher values increase accuracy but slow down the build process. A typical range is 150 to 300. For good search results, a minimum value of 100 is recommended. In most cases, setting this value above 500 offers no additional benefit. Ensure that `ef_construction` is always set to a value equal to or greater than `ef` in the search phase
