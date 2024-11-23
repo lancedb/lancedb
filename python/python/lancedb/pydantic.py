@@ -246,6 +246,8 @@ def is_nullable(field: FieldInfo) -> bool:
         for typ in args:
             if typ is type(None):
                 return True
+    elif issubclass(field.annotation, FixedSizeListMixin):
+        return True
     return False
 
 
