@@ -1,15 +1,5 @@
-#  Copyright 2023 LanceDB Developers
-#
-#  Licensed under the Apache License, Version 2.0 (the "License");
-#  you may not use this file except in compliance with the License.
-#  You may obtain a copy of the License at
-#      http://www.apache.org/licenses/LICENSE-2.0
-#
-#  Unless required by applicable law or agreed to in writing, software
-#  distributed under the License is distributed on an "AS IS" BASIS,
-#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-#  See the License for the specific language governing permissions and
-#  limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 """Pydantic (v1 / v2) adapter for LanceDB"""
 
@@ -30,6 +20,7 @@ from typing import (
     Type,
     Union,
     _GenericAlias,
+    GenericAlias,
 )
 
 import numpy as np
@@ -75,7 +66,7 @@ def vector(dim: int, value_type: pa.DataType = pa.float32()):
 
 
 def Vector(
-    dim: int, value_type: pa.DataType = pa.float32()
+    dim: int, value_type: pa.DataType = pa.float32(), nullable: bool = True
 ) -> Type[FixedSizeListMixin]:
     """Pydantic Vector Type.
 
@@ -88,6 +79,8 @@ def Vector(
         The dimension of the vector.
     value_type : pyarrow.DataType, optional
         The value type of the vector, by default pa.float32()
+    nullable : bool, optional
+        Whether the vector is nullable, by default it is True.
 
     Examples
     --------
@@ -103,7 +96,7 @@ def Vector(
     >>> assert schema == pa.schema([
     ...     pa.field("id", pa.int64(), False),
     ...     pa.field("url", pa.utf8(), False),
-    ...     pa.field("embeddings", pa.list_(pa.float32(), 768), False)
+    ...     pa.field("embeddings", pa.list_(pa.float32(), 768))
     ... ])
     """
 
@@ -111,6 +104,10 @@ def Vector(
     class FixedSizeList(list, FixedSizeListMixin):
         def __repr__(self):
             return f"FixedSizeList(dim={dim})"
+
+        @staticmethod
+        def nullable() -> bool:
+            return nullable
 
         @staticmethod
         def dim() -> int:
@@ -205,9 +202,7 @@ else:
 def _pydantic_to_arrow_type(field: FieldInfo) -> pa.DataType:
     """Convert a Pydantic FieldInfo to Arrow DataType"""
 
-    if isinstance(field.annotation, _GenericAlias) or (
-        sys.version_info > (3, 9) and isinstance(field.annotation, types.GenericAlias)
-    ):
+    if isinstance(field.annotation, (_GenericAlias, GenericAlias)):
         origin = field.annotation.__origin__
         args = field.annotation.__args__
         if origin is list:
@@ -235,7 +230,7 @@ def _pydantic_to_arrow_type(field: FieldInfo) -> pa.DataType:
 
 def is_nullable(field: FieldInfo) -> bool:
     """Check if a Pydantic FieldInfo is nullable."""
-    if isinstance(field.annotation, _GenericAlias):
+    if isinstance(field.annotation, (_GenericAlias, GenericAlias)):
         origin = field.annotation.__origin__
         args = field.annotation.__args__
         if origin == Union:
@@ -246,6 +241,10 @@ def is_nullable(field: FieldInfo) -> bool:
         for typ in args:
             if typ is type(None):
                 return True
+    elif inspect.isclass(field.annotation) and issubclass(
+        field.annotation, FixedSizeListMixin
+    ):
+        return field.annotation.nullable()
     return False
 
 

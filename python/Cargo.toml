@@ -17,11 +17,17 @@ crate-type = ["cdylib"]
 arrow = { version = "52.1", features = ["pyarrow"] }
 lancedb = { path = "../rust/lancedb", default-features = false }
 env_logger.workspace = true
-pyo3 = { version = "0.21", features = ["extension-module", "abi3-py38", "gil-refs"] }
+pyo3 = { version = "0.21", features = [
+    "extension-module",
+    "abi3-py39",
+    "gil-refs"
+] }
 # Using this fork for now: https://github.com/awestlake87/pyo3-asyncio/issues/119
 # pyo3-asyncio = { version = "0.20", features = ["attributes", "tokio-runtime"] }
-pyo3-asyncio-0-21 = { version = "0.21.0", features = ["attributes", "tokio-runtime"] }
-
+pyo3-asyncio-0-21 = { version = "0.21.0", features = [
+    "attributes",
+    "tokio-runtime"
+] }
 pin-project = "1.1.5"
 futures.workspace = true
 tokio = { version = "1.36.0", features = ["sync"] }
@@ -29,14 +35,13 @@ tokio = { version = "1.36.0", features = ["sync"] }
 [build-dependencies]
 pyo3-build-config = { version = "0.20.3", features = [
     "extension-module",
-    "abi3-py38",
+    "abi3-py39",
 ] }
 
 [features]
 default = ["default-tls", "remote"]
 fp16kernels = ["lancedb/fp16kernels"]
 remote = ["lancedb/remote"]
-
 # TLS
 default-tls = ["lancedb/default-tls"]
 native-tls = ["lancedb/native-tls"]

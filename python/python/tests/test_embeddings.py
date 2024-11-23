@@ -90,10 +90,13 @@ def test_embedding_with_bad_results(tmp_path):
             self, texts: Union[List[str], np.ndarray]
         ) -> list[Union[np.array, None]]:
             # Return None, which is bad if field is non-nullable
-            return [
-                None if i % 2 == 0 else np.random.randn(self.ndims())
+            a = [
+                np.full(self.ndims(), np.nan)
+                if i % 2 == 0
+                else np.random.randn(self.ndims())
                 for i in range(len(texts))
             ]
+            return a
 
     db = lancedb.connect(tmp_path)
     registry = EmbeddingFunctionRegistry.get_instance()
