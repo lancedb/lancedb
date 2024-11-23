@@ -80,7 +80,7 @@ def Vector(
     value_type : pyarrow.DataType, optional
         The value type of the vector, by default pa.float32()
     nullable : bool, optional
-        Whether the vector is nullable, by default True.
+        Whether the vector is nullable, by default it is True.
 
     Examples
     --------
