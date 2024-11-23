@@ -94,7 +94,7 @@ def Vector(
     >>> assert schema == pa.schema([
     ...     pa.field("id", pa.int64(), False),
     ...     pa.field("url", pa.utf8(), False),
-    ...     pa.field("embeddings", pa.list_(pa.float32(), 768), False)
+    ...     pa.field("embeddings", pa.list_(pa.float32(), 768))
     ... ])
     """
 
