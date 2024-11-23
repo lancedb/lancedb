@@ -244,7 +244,6 @@ def is_nullable(field: FieldInfo) -> bool:
     elif inspect.isclass(field.annotation) and issubclass(
         field.annotation, FixedSizeListMixin
     ):
-        # If is defined as Vector(dim), it is a nullable field.
         return field.annotation.nullable()
     return False
 
