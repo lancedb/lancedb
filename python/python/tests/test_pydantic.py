@@ -161,6 +161,26 @@ def test_pydantic_to_arrow_py38():
     assert schema == expect_schema
 
 
+def test_nullable_vector():
+    class NullableModel(pydantic.BaseModel):
+        vec: Vector(16, nullable=False)
+
+    schema = pydantic_to_schema(NullableModel)
+    assert schema == pa.schema([pa.field("vec", pa.list_(pa.float32(), 16), False)])
+
+    class DefaultModel(pydantic.BaseModel):
+        vec: Vector(16)
+
+    schema = pydantic_to_schema(DefaultModel)
+    assert schema == pa.schema([pa.field("vec", pa.list_(pa.float32(), 16), True)])
+
+    class NotNullableModel(pydantic.BaseModel):
+        vec: Vector(16)
+
+    schema = pydantic_to_schema(NotNullableModel)
+    assert schema == pa.schema([pa.field("vec", pa.list_(pa.float32(), 16), True)])
+
+
 def test_fixed_size_list_field():
     class TestModel(pydantic.BaseModel):
         vec: Vector(16)

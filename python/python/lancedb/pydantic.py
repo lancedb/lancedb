@@ -66,7 +66,7 @@ def vector(dim: int, value_type: pa.DataType = pa.float32()):
 
 
 def Vector(
-    dim: int, value_type: pa.DataType = pa.float32()
+    dim: int, value_type: pa.DataType = pa.float32(), nullable: bool = True
 ) -> Type[FixedSizeListMixin]:
     """Pydantic Vector Type.
 
@@ -79,6 +79,8 @@ def Vector(
         The dimension of the vector.
     value_type : pyarrow.DataType, optional
         The value type of the vector, by default pa.float32()
+    nullable : bool, optional
+        Whether the vector is nullable, by default True.
 
     Examples
     --------
@@ -102,6 +104,10 @@ def Vector(
     class FixedSizeList(list, FixedSizeListMixin):
         def __repr__(self):
             return f"FixedSizeList(dim={dim})"
+
+        @staticmethod
+        def nullable() -> bool:
+            return nullable
 
         @staticmethod
         def dim() -> int:
@@ -239,7 +245,7 @@ def is_nullable(field: FieldInfo) -> bool:
         field.annotation, FixedSizeListMixin
     ):
         # If is defined as Vector(dim), it is a nullable field.
-        return True
+        return field.annotation.nullable()
     return False
 
 
