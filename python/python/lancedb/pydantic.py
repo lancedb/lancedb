@@ -20,6 +20,7 @@ from typing import (
     Type,
     Union,
     _GenericAlias,
+    GenericAlias,
 )
 
 import numpy as np
@@ -195,9 +196,7 @@ else:
 def _pydantic_to_arrow_type(field: FieldInfo) -> pa.DataType:
     """Convert a Pydantic FieldInfo to Arrow DataType"""
 
-    if isinstance(field.annotation, _GenericAlias) or (
-        sys.version_info > (3, 9) and isinstance(field.annotation, types.GenericAlias)
-    ):
+    if isinstance(field.annotation, (_GenericAlias, GenericAlias)):
         origin = field.annotation.__origin__
         args = field.annotation.__args__
         if origin is list:
@@ -225,7 +224,7 @@ def _pydantic_to_arrow_type(field: FieldInfo) -> pa.DataType:
 
 def is_nullable(field: FieldInfo) -> bool:
     """Check if a Pydantic FieldInfo is nullable."""
-    if isinstance(field.annotation, _GenericAlias):
+    if isinstance(field.annotation, (_GenericAlias, GenericAlias)):
         origin = field.annotation.__origin__
         args = field.annotation.__args__
         if origin == Union:
