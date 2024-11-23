@@ -7,6 +7,10 @@ performed on the top-k results returned by the vector search. However, pre-filte
 option that performs the filter prior to vector search. This can be useful to narrow down on
 the search space on a very large dataset to reduce query latency.
 
+Note that both pre-filtering and post-filtering can yield false positives. For pre-filtering, if the filter is too selective, it might eliminate relevant items that the vector search would have otherwise identified as a good match. In this case, increasing `nprobes` parameter will help reduce such false positives. It is recommended to set `use_index=false` if you know that the filter is highly selective.
+
+Similarly, a highly selective post-filter can lead to false positives. Increasing both `nprobes` and `refine_factor` can mitigate this issue. When deciding between pre-filtering and post-filtering, pre-filtering is generally the safer choice if you're uncertain.
+
 <!-- Setup Code
 ```python
 import lancedb
@@ -57,6 +61,9 @@ const tbl = await db.createTable('myVectors', data)
         ```ts
         --8<-- "docs/src/sql_legacy.ts:search"
         ```
+!!! note
+
+    Creating a [scalar index](guides/scalar_index.md) accelerates filtering
 
 ## SQL filters
 
