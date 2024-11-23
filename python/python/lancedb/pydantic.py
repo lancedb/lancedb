@@ -1,15 +1,5 @@
-#  Copyright 2023 LanceDB Developers
-#
-#  Licensed under the Apache License, Version 2.0 (the "License");
-#  you may not use this file except in compliance with the License.
-#  You may obtain a copy of the License at
-#      http://www.apache.org/licenses/LICENSE-2.0
-#
-#  Unless required by applicable law or agreed to in writing, software
-#  distributed under the License is distributed on an "AS IS" BASIS,
-#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-#  See the License for the specific language governing permissions and
-#  limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 """Pydantic (v1 / v2) adapter for LanceDB"""
 
@@ -246,7 +236,10 @@ def is_nullable(field: FieldInfo) -> bool:
         for typ in args:
             if typ is type(None):
                 return True
-    elif issubclass(field.annotation, FixedSizeListMixin):
+    elif inspect.isclass(field.annotation) and issubclass(
+        field.annotation, FixedSizeListMixin
+    ):
+        # If is defined as Vector(dim), it is a nullable field.
         return True
     return False
 
