@@ -453,7 +453,6 @@ def test_openai_with_empty_strs(tmp_path):
 
     tbl.add(df, on_bad_vectors="skip")
     tb = tbl.to_arrow()
-    print(tb)
     assert tb.schema.field_by_name("vector").type == pa.list_(
         pa.float32(), model.ndims()
     )
