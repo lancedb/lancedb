@@ -11,7 +11,6 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
-import asyncio
 from datetime import timedelta
 import logging
 from concurrent.futures import ThreadPoolExecutor
@@ -21,6 +20,7 @@ import warnings
 
 from lancedb import connect_async
 from lancedb.remote import ClientConfig
+from lancedb.remote.background_loop import BackgroundEventLoop
 import pyarrow as pa
 from overrides import override
 
@@ -30,6 +30,8 @@ from ..embeddings import EmbeddingFunctionConfig
 from ..pydantic import LanceModel
 from ..table import Table
 from ..util import validate_table_name
+
+LOOP = BackgroundEventLoop()
 
 
 class RemoteDBConnection(DBConnection):
@@ -86,18 +88,9 @@ class RemoteDBConnection(DBConnection):
             raise ValueError(f"Invalid scheme: {parsed.scheme}, only accepts db://")
         self.db_name = parsed.netloc
 
-        import nest_asyncio
-
-        nest_asyncio.apply()
-        try:
-            self._loop = asyncio.get_running_loop()
-        except RuntimeError:
-            self._loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(self._loop)
-
         self.client_config = client_config
 
-        self._conn = self._loop.run_until_complete(
+        self._conn = LOOP.run(
             connect_async(
                 db_url,
                 api_key=api_key,
@@ -127,9 +120,7 @@ class RemoteDBConnection(DBConnection):
         -------
         An iterator of table names.
         """
-        return self._loop.run_until_complete(
-            self._conn.table_names(start_after=page_token, limit=limit)
-        )
+        return LOOP.run(self._conn.table_names(start_after=page_token, limit=limit))
 
     @override
     def open_table(self, name: str, *, index_cache_size: Optional[int] = None) -> Table:
@@ -152,8 +143,8 @@ class RemoteDBConnection(DBConnection):
                 " (there is no local cache to configure)"
             )
 
-        table = self._loop.run_until_complete(self._conn.open_table(name))
-        return RemoteTable(table, self.db_name, self._loop)
+        table = LOOP.run(self._conn.open_table(name))
+        return RemoteTable(table, self.db_name)
 
     @override
     def create_table(
@@ -268,7 +259,7 @@ class RemoteDBConnection(DBConnection):
 
         from .table import RemoteTable
 
-        table = self._loop.run_until_complete(
+        table = LOOP.run(
             self._conn.create_table(
                 name,
                 data,
@@ -278,7 +269,7 @@ class RemoteDBConnection(DBConnection):
                 fill_value=fill_value,
             )
         )
-        return RemoteTable(table, self.db_name, self._loop)
+        return RemoteTable(table, self.db_name)
 
     @override
     def drop_table(self, name: str):
@@ -289,7 +280,7 @@ class RemoteDBConnection(DBConnection):
         name: str
             The name of the table.
         """
-        self._loop.run_until_complete(self._conn.drop_table(name))
+        LOOP.run(self._conn.drop_table(name))
 
     @override
     def rename_table(self, cur_name: str, new_name: str):
@@ -302,7 +293,7 @@ class RemoteDBConnection(DBConnection):
         new_name: str
             The new name of the table.
         """
-        self._loop.run_until_complete(self._conn.rename_table(cur_name, new_name))
+        LOOP.run(self._conn.rename_table(cur_name, new_name))
 
     async def close(self):
         """Close the connection to the database."""

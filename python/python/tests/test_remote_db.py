@@ -188,8 +188,7 @@ async def test_retry_error():
         assert cause.status_code == 429
 
 
-@pytest.mark.asyncio
-async def test_table_add_in_threadpool():
+def test_table_add_in_threadpool():
     def handler(request):
         if request.path == "/v1/table/test/insert/":
             request.send_response(200)
@@ -199,6 +198,21 @@ async def test_table_add_in_threadpool():
             request.send_header("Content-Type", "application/json")
             request.end_headers()
             request.wfile.write(b"{}")
+        elif request.path == "/v1/table/test/describe/":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            payload = json.dumps(
+                dict(
+                    version=1,
+                    schema=dict(
+                        fields=[
+                            dict(name="id", type={"type": "int64"}, nullable=False),
+                        ]
+                    ),
+                )
+            )
+            request.wfile.write(payload.encode())
         else:
             request.send_response(404)
             request.end_headers()
@@ -208,7 +222,7 @@ async def test_table_add_in_threadpool():
         with ThreadPoolExecutor(3) as executor:
             futures = []
             for _ in range(10):
-                future = executor.submit(table.add, {"id": 1})
+                future = executor.submit(table.add, [{"id": 1}])
                 futures.append(future)
 
             for future in futures:
