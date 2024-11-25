@@ -144,4 +144,4 @@ Updating the table data (adding, deleting, or modifying records) requires that y
 
 !!! note
 
-    New data added after creating the scalar index will appear in search results while the index update is still progress, but with increased latency due to a flat search on the unindexed portion. LanceDB Cloud automates this merging process, minimizing the impact on search speed.
+    New data added after creating the scalar index will still appear in search results if optimize is not used, but with increased latency due to a flat search on the unindexed portion. LanceDB Cloud automates the optimize process, minimizing the impact on search speed.
