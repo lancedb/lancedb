@@ -1,6 +1,6 @@
 # Building a Scalar Index
 
-Scalar indices organize data by scalar attributes (e.g. numbers, categorical values), enabling fast filtering and sorting of vector data. In vector databases, scalar indices accelerate the retrieval of scalar data associated with vectors, thus enhancing the query performance when searching for vectors that meet certain scalar criteria. 
+Scalar indices organize data by scalar attributes (e.g. numbers, categorical values), enabling fast filtering of vector data. In vector databases, scalar indices accelerate the retrieval of scalar data associated with vectors, thus enhancing the query performance when searching for vectors that meet certain scalar criteria. 
 
 Similar to many SQL databases, LanceDB supports several types of scalar indices to accelerate search
 over scalar columns.
