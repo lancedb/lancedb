@@ -11,6 +11,8 @@ from datetime import date, datetime
 from functools import singledispatch
 from typing import Tuple, Union, Optional, Any
 from urllib.parse import urlparse
+from threading import Lock
+from contextlib import contextmanager
 
 import numpy as np
 import pyarrow as pa
@@ -314,3 +316,27 @@ def deprecated(func):
 def validate_table_name(name: str):
     """Verify the table name is valid."""
     native_validate_table_name(name)
+
+
+class ConnectionPool:
+    def __init__(self, connection_factory, *, max_size: Optional[int] = None):
+        self.max_size = max_size
+        self._connection_factory = connection_factory
+        self._pool = []
+        self._lock = Lock()
+
+    @contextmanager
+    def connection(self):
+        with self._lock:
+            if self._pool:
+                conn = self._pool.pop()
+            else:
+                conn = self._connection_factory()
+
+        # release the lock before yielding
+        try:
+            yield conn
+        finally:
+            with self._lock:
+                if self.max_size is None or len(self._pool) < self.max_size:
+                    self._pool.append(conn)
