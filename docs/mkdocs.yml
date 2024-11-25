@@ -138,6 +138,7 @@ nav:
               - Jina Reranker: reranking/jina.md
               - OpenAI Reranker: reranking/openai.md
               - AnswerDotAi Rerankers: reranking/answerdotai.md
+              - Voyage AI Rerankers: reranking/voyageai.md
               - Building Custom Rerankers: reranking/custom_reranker.md
               - Example: notebooks/lancedb_reranking.ipynb
           - Filtering: sql.md
@@ -165,6 +166,7 @@ nav:
                   - Jina Embeddings: embeddings/available_embedding_models/text_embedding_functions/jina_embedding.md
                   - AWS Bedrock Text Embedding Functions: embeddings/available_embedding_models/text_embedding_functions/aws_bedrock_embedding.md
                   - IBM watsonx.ai Embeddings: embeddings/available_embedding_models/text_embedding_functions/ibm_watsonx_ai_embedding.md
+                  - Voyage AI Embeddings: embeddings/available_embedding_models/text_embedding_functions/voyageai_embedding.md
               - Multimodal Embedding Functions:
                   - OpenClip embeddings: embeddings/available_embedding_models/multimodal_embedding_functions/openclip_embedding.md
                   - Imagebind embeddings: embeddings/available_embedding_models/multimodal_embedding_functions/imagebind_embedding.md

@@ -142,6 +142,13 @@ impl VectorQuery {
         self.inner = self.inner.clone().only_if(predicate);
     }
 
+    pub fn add_query_vector(&mut self, vector: Bound<'_, PyAny>) -> PyResult<()> {
+        let data: ArrayData = ArrayData::from_pyarrow_bound(&vector)?;
+        let array = make_array(data);
+        self.inner = self.inner.clone().add_query_vector(array).infer_error()?;
+        Ok(())
+    }
+
     pub fn select(&mut self, columns: Vec<(String, String)>) {
         self.inner = self.inner.clone().select(Select::dynamic(&columns));
     }
@@ -186,6 +193,10 @@ impl VectorQuery {
 
     pub fn nprobes(&mut self, nprobe: u32) {
         self.inner = self.inner.clone().nprobes(nprobe as usize);
+    }
+
+    pub fn ef(&mut self, ef: u32) {
+        self.inner = self.inner.clone().ef(ef as usize);
     }
 
     pub fn bypass_vector_index(&mut self) {

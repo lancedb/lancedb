@@ -6,6 +6,9 @@ This re-ranker uses the [Cohere](https://cohere.ai/) API to rerank the search re
 !!! note
     Supported Query Types: Hybrid, Vector, FTS
 
+```shell
+pip install cohere
+```
 
 ```python
 import numpy

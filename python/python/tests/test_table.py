@@ -240,6 +240,121 @@ def test_add(db):
     _add(table, schema)
 
 
+def test_add_subschema(tmp_path):
+    db = lancedb.connect(tmp_path)
+    schema = pa.schema(
+        [
+            pa.field("vector", pa.list_(pa.float32(), 2), nullable=True),
+            pa.field("item", pa.string(), nullable=True),
+            pa.field("price", pa.float64(), nullable=False),
+        ]
+    )
+    table = db.create_table("test", schema=schema)
+
+    data = {"price": 10.0, "item": "foo"}
+    table.add([data])
+    data = {"price": 2.0, "vector": [3.1, 4.1]}
+    table.add([data])
+    data = {"price": 3.0, "vector": [5.9, 26.5], "item": "bar"}
+    table.add([data])
+
+    expected = pa.table(
+        {
+            "vector": [None, [3.1, 4.1], [5.9, 26.5]],
+            "item": ["foo", None, "bar"],
+            "price": [10.0, 2.0, 3.0],
+        },
+        schema=schema,
+    )
+    assert table.to_arrow() == expected
+
+    data = {"item": "foo"}
+    # We can't omit a column if it's not nullable
+    with pytest.raises(OSError, match="Invalid user input"):
+        table.add([data])
+
+    # We can add it if we make the column nullable
+    table.alter_columns(dict(path="price", nullable=True))
+    table.add([data])
+
+    expected_schema = pa.schema(
+        [
+            pa.field("vector", pa.list_(pa.float32(), 2), nullable=True),
+            pa.field("item", pa.string(), nullable=True),
+            pa.field("price", pa.float64(), nullable=True),
+        ]
+    )
+    expected = pa.table(
+        {
+            "vector": [None, [3.1, 4.1], [5.9, 26.5], None],
+            "item": ["foo", None, "bar", "foo"],
+            "price": [10.0, 2.0, 3.0, None],
+        },
+        schema=expected_schema,
+    )
+    assert table.to_arrow() == expected
+
+
+def test_add_nullability(tmp_path):
+    db = lancedb.connect(tmp_path)
+    schema = pa.schema(
+        [
+            pa.field("vector", pa.list_(pa.float32(), 2), nullable=False),
+            pa.field("id", pa.string(), nullable=False),
+        ]
+    )
+    table = db.create_table("test", schema=schema)
+
+    nullable_schema = pa.schema(
+        [
+            pa.field("vector", pa.list_(pa.float32(), 2), nullable=True),
+            pa.field("id", pa.string(), nullable=True),
+        ]
+    )
+    data = pa.table(
+        {
+            "vector": [[3.1, 4.1], [5.9, 26.5]],
+            "id": ["foo", "bar"],
+        },
+        schema=nullable_schema,
+    )
+    # We can add nullable schema if it doesn't actually contain nulls
+    table.add(data)
+
+    expected = data.cast(schema)
+    assert table.to_arrow() == expected
+
+    data = pa.table(
+        {
+            "vector": [None],
+            "id": ["baz"],
+        },
+        schema=nullable_schema,
+    )
+    # We can't add nullable schema if it contains nulls
+    with pytest.raises(Exception, match="Vector column vector has NaNs"):
+        table.add(data)
+
+    # But we can make it nullable
+    table.alter_columns(dict(path="vector", nullable=True))
+    table.add(data)
+
+    expected_schema = pa.schema(
+        [
+            pa.field("vector", pa.list_(pa.float32(), 2), nullable=True),
+            pa.field("id", pa.string(), nullable=False),
+        ]
+    )
+    expected = pa.table(
+        {
+            "vector": [[3.1, 4.1], [5.9, 26.5], None],
+            "id": ["foo", "bar", "baz"],
+        },
+        schema=expected_schema,
+    )
+    assert table.to_arrow() == expected
+
+
 def test_add_pydantic_model(db):
     # https://github.com/lancedb/lancedb/issues/562
 
@@ -892,10 +1007,15 @@ def test_empty_query(db):
     table = LanceTable.create(db, "my_table2", data=[{"id": i} for i in range(100)])
     df = table.search().select(["id"]).to_pandas()
     assert len(df) == 10
+    # None is the same as default
     df = table.search().select(["id"]).limit(None).to_pandas()
-    assert len(df) == 100
+    assert len(df) == 10
+    # invalid limist is the same as None, wihch is the same as default
     df = table.search().select(["id"]).limit(-1).to_pandas()
-    assert len(df) == 100
+    assert len(df) == 10
+    # valid limit should work
+    df = table.search().select(["id"]).limit(42).to_pandas()
+    assert len(df) == 42
 
 
 def test_search_with_schema_inf_single_vector(db):
@@ -1221,6 +1341,54 @@ async def test_time_travel(db_async: AsyncConnection):
     # Can't use restore if not checked out
     with pytest.raises(ValueError, match="checkout before running restore"):
         await table.restore()
+
+
+def test_sync_optimize(db):
+    table = LanceTable.create(
+        db,
+        "test",
+        data=[
+            {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+            {"vector": [5.9, 26.5], "item": "bar", "price": 20.0},
+        ],
+    )
+
+    table.create_scalar_index("price", index_type="BTREE")
+    stats = table.to_lance().stats.index_stats("price_idx")
+    assert stats["num_indexed_rows"] == 2
+
+    table.add([{"vector": [2.0, 2.0], "item": "baz", "price": 30.0}])
+    assert table.count_rows() == 3
+    table.optimize()
+    stats = table.to_lance().stats.index_stats("price_idx")
+    assert stats["num_indexed_rows"] == 3
+
+
+@pytest.mark.asyncio
+async def test_sync_optimize_in_async(db):
+    table = LanceTable.create(
+        db,
+        "test",
+        data=[
+            {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+            {"vector": [5.9, 26.5], "item": "bar", "price": 20.0},
+        ],
+    )
+
+    table.create_scalar_index("price", index_type="BTREE")
+    stats = table.to_lance().stats.index_stats("price_idx")
+    assert stats["num_indexed_rows"] == 2
+
+    table.add([{"vector": [2.0, 2.0], "item": "baz", "price": 30.0}])
+    assert table.count_rows() == 3
+    try:
+        table.optimize()
+    except Exception as e:
+        assert (
+            "Synchronous method called in asynchronous context. "
+            "If you are writing an asynchronous application "
+            "then please use the asynchronous APIs" in str(e)
+        )
 
 
 @pytest.mark.asyncio

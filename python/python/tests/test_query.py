@@ -1,21 +1,9 @@
-#  Copyright 2023 LanceDB Developers
-#
-#  Licensed under the Apache License, Version 2.0 (the "License");
-#  you may not use this file except in compliance with the License.
-#  You may obtain a copy of the License at
-#      http://www.apache.org/licenses/LICENSE-2.0
-#
-#  Unless required by applicable law or agreed to in writing, software
-#  distributed under the License is distributed on an "AS IS" BASIS,
-#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-#  See the License for the specific language governing permissions and
-#  limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import unittest.mock as mock
 from datetime import timedelta
-from typing import Optional
 
-import lance
 import lancedb
 from lancedb.index import IvfPq
 import numpy as np
@@ -23,41 +11,15 @@ import pandas.testing as tm
 import pyarrow as pa
 import pytest
 import pytest_asyncio
-from lancedb.db import LanceDBConnection
 from lancedb.pydantic import LanceModel, Vector
 from lancedb.query import AsyncQueryBase, LanceVectorQueryBuilder, Query
 from lancedb.table import AsyncTable, LanceTable
 
 
-class MockTable:
-    def __init__(self, tmp_path):
-        self.uri = tmp_path
-        self._conn = LanceDBConnection(self.uri)
-
-    def to_lance(self):
-        return lance.dataset(self.uri)
-
-    def _execute_query(self, query, batch_size: Optional[int] = None):
-        ds = self.to_lance()
-        return ds.scanner(
-            columns=query.columns,
-            filter=query.filter,
-            prefilter=query.prefilter,
-            nearest={
-                "column": query.vector_column,
-                "q": query.vector,
-                "k": query.k,
-                "metric": query.metric,
-                "nprobes": query.nprobes,
-                "refine_factor": query.refine_factor,
-            },
-            batch_size=batch_size,
-            offset=query.offset,
-        ).to_reader()
-
-
-@pytest.fixture
-def table(tmp_path) -> MockTable:
+@pytest.fixture(scope="module")
+def table(tmpdir_factory) -> lancedb.table.Table:
+    tmp_path = str(tmpdir_factory.mktemp("data"))
+    db = lancedb.connect(tmp_path)
     df = pa.table(
         {
             "vector": pa.array(
@@ -68,8 +30,7 @@ def table(tmp_path) -> MockTable:
             "float_field": pa.array([1.0, 2.0]),
         }
     )
-    lance.write_dataset(df, tmp_path)
-    return MockTable(tmp_path)
+    return db.create_table("test", df)
 
 
 @pytest_asyncio.fixture
@@ -124,6 +85,12 @@ def test_query_builder(table):
     )
     assert rs[0]["id"] == 1
     assert all(np.array(rs[0]["vector"]) == [1, 2])
+
+
+def test_with_row_id(table: lancedb.table.Table):
+    rs = table.search().with_row_id(True).to_arrow()
+    assert "_rowid" in rs.column_names
+    assert rs["_rowid"].to_pylist() == [0, 1]
 
 
 def test_vector_query_with_no_limit(table):
@@ -363,6 +330,12 @@ async def test_query_to_pandas_async(table_async: AsyncTable):
 
     df = await table_async.query().where("id < 0").to_pandas()
     assert df.shape == (0, 4)
+
+
+@pytest.mark.asyncio
+async def test_none_query(table_async: AsyncTable):
+    with pytest.raises(ValueError):
+        await table_async.query().nearest_to(None).to_arrow()
 
 
 @pytest.mark.asyncio

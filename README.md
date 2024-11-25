@@ -10,6 +10,7 @@
 [![Blog](https://img.shields.io/badge/Blog-12100E?style=for-the-badge&logoColor=white)](https://blog.lancedb.com/)
 [![Discord](https://img.shields.io/badge/Discord-%235865F2.svg?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/zMM32dvNtd)
 [![Twitter](https://img.shields.io/badge/Twitter-%231DA1F2.svg?style=for-the-badge&logo=Twitter&logoColor=white)](https://twitter.com/lancedb)
+[![Gurubase](https://img.shields.io/badge/Gurubase-Ask%20LanceDB%20Guru-006BFF?style=for-the-badge)](https://gurubase.io/g/lancedb)
 
 </p>
 

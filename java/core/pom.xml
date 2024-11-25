@@ -8,7 +8,7 @@
     <parent>
         <groupId>com.lancedb</groupId>
         <artifactId>lancedb-parent</artifactId>
-        <version>0.12.0-final.0</version>
+        <version>0.14.0-beta.0</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 

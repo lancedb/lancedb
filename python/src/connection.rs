@@ -170,6 +170,17 @@ impl Connection {
         })
     }
 
+    pub fn rename_table(
+        self_: PyRef<'_, Self>,
+        old_name: String,
+        new_name: String,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            inner.rename_table(old_name, new_name).await.infer_error()
+        })
+    }
+
     pub fn drop_table(self_: PyRef<'_, Self>, name: String) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
         future_into_py(self_.py(), async move {

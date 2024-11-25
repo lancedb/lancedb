@@ -101,7 +101,7 @@ jobs:
           path: |
             nodejs/dist/*.node
 
-  node-linux:
+  node-linux-gnu:
     name: vectordb (${{ matrix.config.arch}}-unknown-linux-gnu)
     runs-on: ${{ matrix.config.runner }}
     # Only runs on tags that matches the make-release action
@@ -137,11 +137,63 @@ jobs:
       - name: Upload Linux Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: node-native-linux-${{ matrix.config.arch }}
+          name: node-native-linux-${{ matrix.config.arch }}-gnu
           path: |
             node/dist/lancedb-vectordb-linux*.tgz
 
-  nodejs-linux:
+  node-linux-musl:
+    name: vectordb (${{ matrix.config.arch}}-unknown-linux-musl)
+    runs-on: ubuntu-latest
+    container: alpine:edge
+    # Only runs on tags that matches the make-release action
+    if: startsWith(github.ref, 'refs/tags/v')
+    strategy:
+      fail-fast: false
+      matrix:
+        config:
+          - arch: x86_64
+          - arch: aarch64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install common dependencies
+        run: |
+          apk add protobuf-dev curl clang mold grep npm bash
+          curl --proto '=https' --tlsv1.3 -sSf https://raw.githubusercontent.com/rust-lang/rustup/refs/heads/master/rustup-init.sh | sh -s -- -y --default-toolchain 1.80.0
+          echo "source $HOME/.cargo/env" >> saved_env
+          echo "export CC=clang" >> saved_env
+          echo "export RUSTFLAGS='-Ctarget-cpu=haswell -Ctarget-feature=-crt-static,+avx2,+fma,+f16c -Clinker=clang -Clink-arg=-fuse-ld=mold'" >> saved_env
+      - name: Configure aarch64 build
+        if: ${{ matrix.config.arch == 'aarch64' }}
+        run: |
+          source "$HOME/.cargo/env"
+          rustup target add aarch64-unknown-linux-musl --toolchain 1.80.0
+          crt=$(realpath $(dirname $(rustup which rustc))/../lib/rustlib/aarch64-unknown-linux-musl/lib/self-contained)
+          sysroot_lib=/usr/aarch64-unknown-linux-musl/usr/lib
+          apk_url=https://dl-cdn.alpinelinux.org/alpine/latest-stable/main/aarch64/
+          curl -sSf $apk_url > apk_list
+          for pkg in gcc libgcc musl; do curl -sSf $apk_url$(cat apk_list | grep -oP '(?<=")'$pkg'-\d.*?(?=")') | tar zxf -; done
+          mkdir -p $sysroot_lib
+          echo 'GROUP ( libgcc_s.so.1 -lgcc )' > $sysroot_lib/libgcc_s.so
+          cp usr/lib/libgcc_s.so.1 $sysroot_lib
+          cp usr/lib/gcc/aarch64-alpine-linux-musl/*/libgcc.a $sysroot_lib
+          cp lib/ld-musl-aarch64.so.1 $sysroot_lib/libc.so
+          echo '!<arch>' > $sysroot_lib/libdl.a
+          (cd $crt && cp crti.o crtbeginS.o crtendS.o crtn.o -t $sysroot_lib)
+          echo "export CARGO_BUILD_TARGET=aarch64-unknown-linux-musl" >> saved_env
+          echo "export RUSTFLAGS='-Ctarget-cpu=apple-m1 -Ctarget-feature=-crt-static,+neon,+fp16,+fhm,+dotprod -Clinker=clang -Clink-arg=-fuse-ld=mold -Clink-arg=--target=aarch64-unknown-linux-musl -Clink-arg=--sysroot=/usr/aarch64-unknown-linux-musl -Clink-arg=-lc'" >> saved_env
+      - name: Build Linux Artifacts
+        run: |
+          source ./saved_env
+          bash ci/manylinux_node/build_vectordb.sh ${{ matrix.config.arch }}
+      - name: Upload Linux Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-native-linux-${{ matrix.config.arch }}-musl
+          path: |
+            node/dist/lancedb-vectordb-linux*.tgz
+
+  nodejs-linux-gnu:
     name: lancedb (${{ matrix.config.arch}}-unknown-linux-gnu
     runs-on: ${{ matrix.config.runner }}
     # Only runs on tags that matches the make-release action
@@ -178,7 +230,7 @@ jobs:
       - name: Upload Linux Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: nodejs-native-linux-${{ matrix.config.arch }}
+          name: nodejs-native-linux-${{ matrix.config.arch }}-gnu
           path: |
             nodejs/dist/*.node
       # The generic files are the same in all distros so we just pick
@@ -191,6 +243,62 @@ jobs:
           path: |
             nodejs/dist/*
             !nodejs/dist/*.node
+
+  nodejs-linux-musl:
+    name: lancedb (${{ matrix.config.arch}}-unknown-linux-musl
+    runs-on: ubuntu-latest
+    container: alpine:edge
+    # Only runs on tags that matches the make-release action
+    if: startsWith(github.ref, 'refs/tags/v')
+    strategy:
+      fail-fast: false
+      matrix:
+        config:
+          - arch: x86_64
+          - arch: aarch64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install common dependencies
+        run: |
+          apk add protobuf-dev curl clang mold grep npm bash openssl-dev openssl-libs-static
+          curl --proto '=https' --tlsv1.3 -sSf https://raw.githubusercontent.com/rust-lang/rustup/refs/heads/master/rustup-init.sh | sh -s -- -y --default-toolchain 1.80.0
+          echo "source $HOME/.cargo/env" >> saved_env
+          echo "export CC=clang" >> saved_env
+          echo "export RUSTFLAGS='-Ctarget-cpu=haswell -Ctarget-feature=-crt-static,+avx2,+fma,+f16c -Clinker=clang -Clink-arg=-fuse-ld=mold'" >> saved_env
+          echo "export X86_64_UNKNOWN_LINUX_MUSL_OPENSSL_INCLUDE_DIR=/usr/include" >> saved_env
+          echo "export X86_64_UNKNOWN_LINUX_MUSL_OPENSSL_LIB_DIR=/usr/lib" >> saved_env
+      - name: Configure aarch64 build
+        if: ${{ matrix.config.arch == 'aarch64' }}
+        run: |
+          source "$HOME/.cargo/env"
+          rustup target add aarch64-unknown-linux-musl --toolchain 1.80.0
+          crt=$(realpath $(dirname $(rustup which rustc))/../lib/rustlib/aarch64-unknown-linux-musl/lib/self-contained)
+          sysroot_lib=/usr/aarch64-unknown-linux-musl/usr/lib
+          apk_url=https://dl-cdn.alpinelinux.org/alpine/latest-stable/main/aarch64/
+          curl -sSf $apk_url > apk_list
+          for pkg in gcc libgcc musl openssl-dev openssl-libs-static; do curl -sSf $apk_url$(cat apk_list | grep -oP '(?<=")'$pkg'-\d.*?(?=")') | tar zxf -; done
+          mkdir -p $sysroot_lib
+          echo 'GROUP ( libgcc_s.so.1 -lgcc )' > $sysroot_lib/libgcc_s.so
+          cp usr/lib/libgcc_s.so.1 $sysroot_lib
+          cp usr/lib/gcc/aarch64-alpine-linux-musl/*/libgcc.a $sysroot_lib
+          cp lib/ld-musl-aarch64.so.1 $sysroot_lib/libc.so
+          echo '!<arch>' > $sysroot_lib/libdl.a
+          (cd $crt && cp crti.o crtbeginS.o crtendS.o crtn.o -t $sysroot_lib)
+          echo "export CARGO_BUILD_TARGET=aarch64-unknown-linux-musl" >> saved_env
+          echo "export RUSTFLAGS='-Ctarget-feature=-crt-static,+neon,+fp16,+fhm,+dotprod -Clinker=clang -Clink-arg=-fuse-ld=mold -Clink-arg=--target=aarch64-unknown-linux-musl -Clink-arg=--sysroot=/usr/aarch64-unknown-linux-musl -Clink-arg=-lc'" >> saved_env
+          echo "export AARCH64_UNKNOWN_LINUX_MUSL_OPENSSL_INCLUDE_DIR=$(realpath usr/include)" >> saved_env
+          echo "export AARCH64_UNKNOWN_LINUX_MUSL_OPENSSL_LIB_DIR=$(realpath usr/lib)" >> saved_env
+      - name: Build Linux Artifacts
+        run: |
+          source ./saved_env
+          bash ci/manylinux_node/build_lancedb.sh ${{ matrix.config.arch }}
+      - name: Upload Linux Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nodejs-native-linux-${{ matrix.config.arch }}-musl
+          path: |
+            nodejs/dist/*.node
 
   node-windows:
     name: vectordb ${{ matrix.target }}
@@ -226,6 +334,110 @@ jobs:
           path: |
             node/dist/lancedb-vectordb-win32*.tgz
 
+  # TODO: re-enable once working https://github.com/lancedb/lancedb/pull/1831
+  # node-windows-arm64:
+  #   name: vectordb win32-arm64-msvc
+  #   runs-on: windows-4x-arm
+  #   if: startsWith(github.ref, 'refs/tags/v')
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - name: Install Git
+  #       run: |
+  #         Invoke-WebRequest -Uri "https://github.com/git-for-windows/git/releases/download/v2.44.0.windows.1/Git-2.44.0-64-bit.exe" -OutFile "git-installer.exe"
+  #         Start-Process -FilePath "git-installer.exe" -ArgumentList "/VERYSILENT", "/NORESTART" -Wait
+  #       shell: powershell
+  #     - name: Add Git to PATH
+  #       run: |
+  #         Add-Content $env:GITHUB_PATH "C:\Program Files\Git\bin"
+  #         $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+  #       shell: powershell
+  #     - name: Configure Git symlinks
+  #       run: git config --global core.symlinks true
+  #     - uses: actions/checkout@v4
+  #     - uses: actions/setup-python@v5
+  #       with:
+  #         python-version: "3.13"
+  #     - name: Install Visual Studio Build Tools
+  #       run: |
+  #         Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vs_buildtools.exe" -OutFile "vs_buildtools.exe"
+  #         Start-Process -FilePath "vs_buildtools.exe" -ArgumentList "--quiet", "--wait", "--norestart", "--nocache", `
+  #           "--installPath", "C:\BuildTools", `
+  #           "--add", "Microsoft.VisualStudio.Component.VC.Tools.ARM64", `
+  #           "--add", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64", `
+  #           "--add", "Microsoft.VisualStudio.Component.Windows11SDK.22621", `
+  #           "--add", "Microsoft.VisualStudio.Component.VC.ATL", `
+  #           "--add", "Microsoft.VisualStudio.Component.VC.ATLMFC", `
+  #           "--add", "Microsoft.VisualStudio.Component.VC.Llvm.Clang" -Wait
+  #       shell: powershell
+  #     - name: Add Visual Studio Build Tools to PATH
+  #       run: |
+  #         $vsPath = "C:\BuildTools\VC\Tools\MSVC"
+  #         $latestVersion = (Get-ChildItem $vsPath | Sort-Object {[version]$_.Name} -Descending)[0].Name
+  #         Add-Content $env:GITHUB_PATH "C:\BuildTools\VC\Tools\MSVC\$latestVersion\bin\Hostx64\arm64"
+  #         Add-Content $env:GITHUB_PATH "C:\BuildTools\VC\Tools\MSVC\$latestVersion\bin\Hostx64\x64"
+  #         Add-Content $env:GITHUB_PATH "C:\Program Files (x86)\Windows Kits\10\bin\10.0.22621.0\arm64"
+  #         Add-Content $env:GITHUB_PATH "C:\Program Files (x86)\Windows Kits\10\bin\10.0.22621.0\x64"
+  #         Add-Content $env:GITHUB_PATH "C:\BuildTools\VC\Tools\Llvm\x64\bin"
+
+  #         # Add MSVC runtime libraries to LIB
+  #         $env:LIB = "C:\BuildTools\VC\Tools\MSVC\$latestVersion\lib\arm64;" +
+  #                    "C:\Program Files (x86)\Windows Kits\10\Lib\10.0.22621.0\um\arm64;" +
+  #                    "C:\Program Files (x86)\Windows Kits\10\Lib\10.0.22621.0\ucrt\arm64"
+  #         Add-Content $env:GITHUB_ENV "LIB=$env:LIB"
+
+  #         # Add INCLUDE paths
+  #         $env:INCLUDE = "C:\BuildTools\VC\Tools\MSVC\$latestVersion\include;" +
+  #                       "C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\ucrt;" +
+  #                       "C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\um;" +
+  #                       "C:\Program Files (x86)\Windows Kits\10\Include\10.0.22621.0\shared"
+  #         Add-Content $env:GITHUB_ENV "INCLUDE=$env:INCLUDE"
+  #       shell: powershell
+  #     - name: Install Rust
+  #       run: |
+  #         Invoke-WebRequest https://win.rustup.rs/x86_64 -OutFile rustup-init.exe
+  #         .\rustup-init.exe -y --default-host aarch64-pc-windows-msvc
+  #       shell: powershell
+  #     - name: Add Rust to PATH
+  #       run: |
+  #         Add-Content $env:GITHUB_PATH "$env:USERPROFILE\.cargo\bin"
+  #       shell: powershell
+
+  #     - uses: Swatinem/rust-cache@v2
+  #       with:
+  #         workspaces: rust
+  #     - name: Install 7-Zip ARM
+  #       run: |
+  #         New-Item -Path 'C:\7zip' -ItemType Directory
+  #         Invoke-WebRequest https://7-zip.org/a/7z2408-arm64.exe -OutFile C:\7zip\7z-installer.exe
+  #         Start-Process -FilePath C:\7zip\7z-installer.exe -ArgumentList '/S' -Wait
+  #       shell: powershell
+  #     - name: Add 7-Zip to PATH
+  #       run: Add-Content $env:GITHUB_PATH "C:\Program Files\7-Zip"
+  #       shell: powershell
+  #     - name: Install Protoc v21.12
+  #       working-directory: C:\
+  #       run: |
+  #         if (Test-Path 'C:\protoc') {
+  #             Write-Host "Protoc directory exists, skipping installation"
+  #             return
+  #         }
+  #         New-Item -Path 'C:\protoc' -ItemType Directory
+  #         Set-Location C:\protoc
+  #         Invoke-WebRequest https://github.com/protocolbuffers/protobuf/releases/download/v21.12/protoc-21.12-win64.zip -OutFile C:\protoc\protoc.zip
+  #         & 'C:\Program Files\7-Zip\7z.exe' x protoc.zip
+  #       shell: powershell
+  #     - name: Add Protoc to PATH
+  #       run: Add-Content $env:GITHUB_PATH "C:\protoc\bin"
+  #       shell: powershell
+  #     - name: Build Windows native node modules
+  #       run: .\ci\build_windows_artifacts.ps1 aarch64-pc-windows-msvc
+  #     - name: Upload Windows ARM64 Artifacts
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: node-native-windows-arm64
+  #         path: |
+  #           node/dist/*.node
+
   nodejs-windows:
     name: lancedb ${{ matrix.target }}
     runs-on: windows-2022
@@ -260,9 +472,103 @@ jobs:
           path: |
             nodejs/dist/*.node
 
+  # TODO: re-enable once working https://github.com/lancedb/lancedb/pull/1831
+  # nodejs-windows-arm64:
+  #   name: lancedb win32-arm64-msvc
+  #   runs-on: windows-4x-arm
+  #   if: startsWith(github.ref, 'refs/tags/v')
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - name: Install Git
+  #       run: |
+  #         Invoke-WebRequest -Uri "https://github.com/git-for-windows/git/releases/download/v2.44.0.windows.1/Git-2.44.0-64-bit.exe" -OutFile "git-installer.exe"
+  #         Start-Process -FilePath "git-installer.exe" -ArgumentList "/VERYSILENT", "/NORESTART" -Wait
+  #       shell: powershell
+  #     - name: Add Git to PATH
+  #       run: |
+  #         Add-Content $env:GITHUB_PATH "C:\Program Files\Git\bin"
+  #         $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+  #       shell: powershell
+  #     - name: Configure Git symlinks
+  #       run: git config --global core.symlinks true
+  #     - uses: actions/checkout@v4
+  #     - uses: actions/setup-python@v5
+  #       with:
+  #         python-version: "3.13"
+  #     - name: Install Visual Studio Build Tools
+  #       run: |
+  #         Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vs_buildtools.exe" -OutFile "vs_buildtools.exe"
+  #         Start-Process -FilePath "vs_buildtools.exe" -ArgumentList "--quiet", "--wait", "--norestart", "--nocache", `
+  #           "--installPath", "C:\BuildTools", `
+  #           "--add", "Microsoft.VisualStudio.Component.VC.Tools.ARM64", `
+  #           "--add", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64", `
+  #           "--add", "Microsoft.VisualStudio.Component.Windows11SDK.22621", `
+  #           "--add", "Microsoft.VisualStudio.Component.VC.ATL", `
+  #           "--add", "Microsoft.VisualStudio.Component.VC.ATLMFC", `
+  #           "--add", "Microsoft.VisualStudio.Component.VC.Llvm.Clang" -Wait
+  #       shell: powershell
+  #     - name: Add Visual Studio Build Tools to PATH
+  #       run: |
+  #         $vsPath = "C:\BuildTools\VC\Tools\MSVC"
+  #         $latestVersion = (Get-ChildItem $vsPath | Sort-Object {[version]$_.Name} -Descending)[0].Name
+  #         Add-Content $env:GITHUB_PATH "C:\BuildTools\VC\Tools\MSVC\$latestVersion\bin\Hostx64\arm64"
+  #         Add-Content $env:GITHUB_PATH "C:\BuildTools\VC\Tools\MSVC\$latestVersion\bin\Hostx64\x64"
+  #         Add-Content $env:GITHUB_PATH "C:\Program Files (x86)\Windows Kits\10\bin\10.0.22621.0\arm64"
+  #         Add-Content $env:GITHUB_PATH "C:\Program Files (x86)\Windows Kits\10\bin\10.0.22621.0\x64"
+  #         Add-Content $env:GITHUB_PATH "C:\BuildTools\VC\Tools\Llvm\x64\bin"
+
+  #         $env:LIB = ""
+  #         Add-Content $env:GITHUB_ENV "LIB=C:\Program Files (x86)\Windows Kits\10\Lib\10.0.22621.0\um\arm64;C:\Program Files (x86)\Windows Kits\10\Lib\10.0.22621.0\ucrt\arm64"
+  #       shell: powershell
+  #     - name: Install Rust
+  #       run: |
+  #         Invoke-WebRequest https://win.rustup.rs/x86_64 -OutFile rustup-init.exe
+  #         .\rustup-init.exe -y --default-host aarch64-pc-windows-msvc
+  #       shell: powershell
+  #     - name: Add Rust to PATH
+  #       run: |
+  #         Add-Content $env:GITHUB_PATH "$env:USERPROFILE\.cargo\bin"
+  #       shell: powershell
+
+  #     - uses: Swatinem/rust-cache@v2
+  #       with:
+  #         workspaces: rust
+  #     - name: Install 7-Zip ARM
+  #       run: |
+  #         New-Item -Path 'C:\7zip' -ItemType Directory
+  #         Invoke-WebRequest https://7-zip.org/a/7z2408-arm64.exe -OutFile C:\7zip\7z-installer.exe
+  #         Start-Process -FilePath C:\7zip\7z-installer.exe -ArgumentList '/S' -Wait
+  #       shell: powershell
+  #     - name: Add 7-Zip to PATH
+  #       run: Add-Content $env:GITHUB_PATH "C:\Program Files\7-Zip"
+  #       shell: powershell
+  #     - name: Install Protoc v21.12
+  #       working-directory: C:\
+  #       run: |
+  #         if (Test-Path 'C:\protoc') {
+  #             Write-Host "Protoc directory exists, skipping installation"
+  #             return
+  #         }
+  #         New-Item -Path 'C:\protoc' -ItemType Directory
+  #         Set-Location C:\protoc
+  #         Invoke-WebRequest https://github.com/protocolbuffers/protobuf/releases/download/v21.12/protoc-21.12-win64.zip -OutFile C:\protoc\protoc.zip
+  #         & 'C:\Program Files\7-Zip\7z.exe' x protoc.zip
+  #       shell: powershell
+  #     - name: Add Protoc to PATH
+  #       run: Add-Content $env:GITHUB_PATH "C:\protoc\bin"
+  #       shell: powershell
+  #     - name: Build Windows native node modules
+  #       run: .\ci\build_windows_artifacts_nodejs.ps1 aarch64-pc-windows-msvc
+  #     - name: Upload Windows ARM64 Artifacts
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: nodejs-native-windows-arm64
+  #         path: |
+  #           nodejs/dist/*.node
+
   release:
     name: vectordb NPM Publish
-    needs: [node, node-macos, node-linux, node-windows]
+    needs: [node, node-macos, node-linux-gnu, node-linux-musl, node-windows]
     runs-on: ubuntu-latest
     # Only runs on tags that matches the make-release action
     if: startsWith(github.ref, 'refs/tags/v')
@@ -280,7 +586,7 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.LANCEDB_NPM_REGISTRY_TOKEN }}
         run: |
-          # Tag beta as "preview" instead of default "latest". See lancedb 
+          # Tag beta as "preview" instead of default "latest". See lancedb
           # npm publish step for more info.
           if [[ $GITHUB_REF =~ refs/tags/v(.*)-beta.* ]]; then
             PUBLISH_ARGS="--tag preview"
@@ -302,7 +608,7 @@ jobs:
 
   release-nodejs:
     name: lancedb NPM Publish
-    needs: [nodejs-macos, nodejs-linux, nodejs-windows]
+    needs: [nodejs-macos, nodejs-linux-gnu, nodejs-linux-musl, nodejs-windows]
     runs-on: ubuntu-latest
     # Only runs on tags that matches the make-release action
     if: startsWith(github.ref, 'refs/tags/v')

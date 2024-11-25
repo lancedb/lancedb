@@ -475,6 +475,7 @@ impl<T: HasQuery> QueryBase for T {
 
 /// Options for controlling the execution of a query
 #[non_exhaustive]
+#[derive(Debug, Clone)]
 pub struct QueryExecutionOptions {
     /// The maximum number of rows that will be contained in a single
     /// `RecordBatch` delivered by the query.
@@ -650,7 +651,7 @@ impl Query {
     pub fn nearest_to(self, vector: impl IntoQueryVector) -> Result<VectorQuery> {
         let mut vector_query = self.into_vector();
         let query_vector = vector.to_query_vector(&DataType::Float32, "default")?;
-        vector_query.query_vector = Some(query_vector);
+        vector_query.query_vector.push(query_vector);
         Ok(vector_query)
     }
 }
@@ -701,8 +702,11 @@ pub struct VectorQuery {
     // the column based on the dataset's schema.
     pub(crate) column: Option<String>,
     // IVF PQ - ANN search.
-    pub(crate) query_vector: Option<Arc<dyn Array>>,
+    pub(crate) query_vector: Vec<Arc<dyn Array>>,
     pub(crate) nprobes: usize,
+    // The number of candidates to return during the refine step for HNSW,
+    // defaults to 1.5 * limit.
+    pub(crate) ef: Option<usize>,
     pub(crate) refine_factor: Option<u32>,
     pub(crate) distance_type: Option<DistanceType>,
     /// Default is true. Set to false to enforce a brute force search.
@@ -714,8 +718,9 @@ impl VectorQuery {
         Self {
             base,
             column: None,
-            query_vector: None,
+            query_vector: Vec::new(),
             nprobes: 20,
+            ef: None,
             refine_factor: None,
             distance_type: None,
             use_index: true,
@@ -732,6 +737,22 @@ impl VectorQuery {
     pub fn column(mut self, column: &str) -> Self {
         self.column = Some(column.to_string());
         self
+    }
+
+    /// Add another query vector to the search.
+    ///
+    /// Multiple searches will be dispatched as part of the query.
+    /// This is a convenience method for adding multiple query vectors
+    /// to the search. It is not expected to be faster than issuing
+    /// multiple queries concurrently.
+    ///
+    /// The output data will contain an additional columns `query_index` which
+    /// will contain the index of the query vector that was used to generate the
+    /// result.
+    pub fn add_query_vector(mut self, vector: impl IntoQueryVector) -> Result<Self> {
+        let query_vector = vector.to_query_vector(&DataType::Float32, "default")?;
+        self.query_vector.push(query_vector);
+        Ok(self)
     }
 
     /// Set the number of partitions to search (probe)
@@ -756,6 +777,18 @@ impl VectorQuery {
     /// you the desired recall.
     pub fn nprobes(mut self, nprobes: usize) -> Self {
         self.nprobes = nprobes;
+        self
+    }
+
+    /// Set the number of candidates to return during the refine step for HNSW
+    ///
+    /// This argument is only used when the vector column has an HNSW index.
+    /// If there is no index then this value is ignored.
+    ///
+    /// Increasing this value will increase the recall of your query but will
+    /// also increase the latency of your query.  The default value is 1.5*limit.
+    pub fn ef(mut self, ef: usize) -> Self {
+        self.ef = Some(ef);
         self
     }
 
@@ -854,6 +887,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
+    use arrow::{compute::concat_batches, datatypes::Int32Type};
     use arrow_array::{
         cast::AsArray, Float32Array, Int32Array, RecordBatch, RecordBatchIterator,
         RecordBatchReader,
@@ -883,7 +917,10 @@ mod tests {
 
         let vector = Float32Array::from_iter_values([0.1, 0.2]);
         let query = table.query().nearest_to(&[0.1, 0.2]).unwrap();
-        assert_eq!(*query.query_vector.unwrap().as_ref().as_primitive(), vector);
+        assert_eq!(
+            *query.query_vector.first().unwrap().as_ref().as_primitive(),
+            vector
+        );
 
         let new_vector = Float32Array::from_iter_values([9.8, 8.7]);
 
@@ -899,7 +936,7 @@ mod tests {
             .refine_factor(999);
 
         assert_eq!(
-            *query.query_vector.unwrap().as_ref().as_primitive(),
+            *query.query_vector.first().unwrap().as_ref().as_primitive(),
             new_vector
         );
         assert_eq!(query.base.limit.unwrap(), 100);
@@ -1196,5 +1233,35 @@ mod tests {
         for batch in results {
             assert!(batch.column_by_name("_rowid").is_some());
         }
+    }
+
+    #[tokio::test]
+    async fn test_multiple_query_vectors() {
+        let tmp_dir = tempdir().unwrap();
+        let table = make_test_table(&tmp_dir).await;
+        let query = table
+            .query()
+            .nearest_to(&[0.1, 0.2, 0.3, 0.4])
+            .unwrap()
+            .add_query_vector(&[0.5, 0.6, 0.7, 0.8])
+            .unwrap()
+            .limit(1);
+
+        let plan = query.explain_plan(true).await.unwrap();
+        assert!(plan.contains("UnionExec"));
+
+        let results = query
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let results = concat_batches(&results[0].schema(), &results).unwrap();
+        assert_eq!(results.num_rows(), 2); // One result for each query vector.
+        let query_index = results["query_index"].as_primitive::<Int32Type>();
+        // We don't guarantee order.
+        assert!(query_index.values().contains(&0));
+        assert!(query_index.values().contains(&1));
     }
 }

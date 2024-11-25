@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::HashMap;
+
 use arrow_ipc::writer::FileWriter;
 use lancedb::ipc::ipc_file_to_batches;
 use lancedb::table::{
@@ -224,6 +226,28 @@ impl Table {
     #[napi(catch_unwind)]
     pub async fn checkout_latest(&self) -> napi::Result<()> {
         self.inner_ref()?.checkout_latest().await.default_error()
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn list_versions(&self) -> napi::Result<Vec<Version>> {
+        self.inner_ref()?
+            .list_versions()
+            .await
+            .map(|versions| {
+                versions
+                    .iter()
+                    .map(|version| Version {
+                        version: version.version as i64,
+                        timestamp: version.timestamp.timestamp_micros(),
+                        metadata: version
+                            .metadata
+                            .iter()
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect(),
+                    })
+                    .collect()
+            })
+            .default_error()
     }
 
     #[napi(catch_unwind)]
@@ -465,4 +489,11 @@ impl From<lancedb::index::IndexStatistics> for IndexStatistics {
             num_indices: value.num_indices,
         }
     }
+}
+
+#[napi(object)]
+pub struct Version {
+    pub version: i64,
+    pub timestamp: i64,
+    pub metadata: HashMap<String, String>,
 }

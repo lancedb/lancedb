@@ -187,6 +187,81 @@ describe.each([arrow13, arrow14, arrow15, arrow16, arrow17])(
       },
     );
 
+    // TODO: https://github.com/lancedb/lancedb/issues/1832
+    it.skip("should be able to omit nullable fields", async () => {
+      const db = await connect(tmpDir.name);
+      const schema = new arrow.Schema([
+        new arrow.Field(
+          "vector",
+          new arrow.FixedSizeList(
+            2,
+            new arrow.Field("item", new arrow.Float64()),
+          ),
+          true,
+        ),
+        new arrow.Field("item", new arrow.Utf8(), true),
+        new arrow.Field("price", new arrow.Float64(), false),
+      ]);
+      const table = await db.createEmptyTable("test", schema);
+
+      const data1 = { item: "foo", price: 10.0 };
+      await table.add([data1]);
+      const data2 = { vector: [3.1, 4.1], price: 2.0 };
+      await table.add([data2]);
+      const data3 = { vector: [5.9, 26.5], item: "bar", price: 3.0 };
+      await table.add([data3]);
+
+      let res = await table.query().limit(10).toArray();
+      const resVector = res.map((r) => r.get("vector").toArray());
+      expect(resVector).toEqual([null, data2.vector, data3.vector]);
+      const resItem = res.map((r) => r.get("item").toArray());
+      expect(resItem).toEqual(["foo", null, "bar"]);
+      const resPrice = res.map((r) => r.get("price").toArray());
+      expect(resPrice).toEqual([10.0, 2.0, 3.0]);
+
+      const data4 = { item: "foo" };
+      // We can't omit a column if it's not nullable
+      await expect(table.add([data4])).rejects.toThrow("Invalid user input");
+
+      // But we can alter columns to make them nullable
+      await table.alterColumns([{ path: "price", nullable: true }]);
+      await table.add([data4]);
+
+      res = (await table.query().limit(10).toArray()).map((r) => r.toJSON());
+      expect(res).toEqual([data1, data2, data3, data4]);
+    });
+
+    it("should be able to insert nullable data for non-nullable fields", async () => {
+      const db = await connect(tmpDir.name);
+      const schema = new arrow.Schema([
+        new arrow.Field("x", new arrow.Float64(), false),
+        new arrow.Field("id", new arrow.Utf8(), false),
+      ]);
+      const table = await db.createEmptyTable("test", schema);
+
+      const data1 = { x: 4.1, id: "foo" };
+      await table.add([data1]);
+      const res = (await table.query().toArray())[0];
+      expect(res.x).toEqual(data1.x);
+      expect(res.id).toEqual(data1.id);
+
+      const data2 = { x: null, id: "bar" };
+      await expect(table.add([data2])).rejects.toThrow(
+        "declared as non-nullable but contains null values",
+      );
+
+      // But we can alter columns to make them nullable
+      await table.alterColumns([{ path: "x", nullable: true }]);
+      await table.add([data2]);
+
+      const res2 = await table.query().toArray();
+      expect(res2.length).toBe(2);
+      expect(res2[0].x).toEqual(data1.x);
+      expect(res2[0].id).toEqual(data1.id);
+      expect(res2[1].x).toBeNull();
+      expect(res2[1].id).toEqual(data2.id);
+    });
+
     it("should return the table as an instance of an arrow table", async () => {
       const arrowTbl = await table.toArrow();
       expect(arrowTbl).toBeInstanceOf(ArrowTable);
@@ -400,6 +475,54 @@ describe("When creating an index", () => {
     // test offset
     rst = await tbl.query().limit(2).offset(1).nearestTo(queryVec).toArrow();
     expect(rst.numRows).toBe(1);
+  });
+
+  it("should create and search IVF_HNSW indices", async () => {
+    await tbl.createIndex("vec", {
+      config: Index.hnswSq(),
+    });
+
+    // check index directory
+    const indexDir = path.join(tmpDir.name, "test.lance", "_indices");
+    expect(fs.readdirSync(indexDir)).toHaveLength(1);
+    const indices = await tbl.listIndices();
+    expect(indices.length).toBe(1);
+    expect(indices[0]).toEqual({
+      name: "vec_idx",
+      indexType: "IvfHnswSq",
+      columns: ["vec"],
+    });
+
+    // Search without specifying the column
+    let rst = await tbl
+      .query()
+      .limit(2)
+      .nearestTo(queryVec)
+      .distanceType("dot")
+      .toArrow();
+    expect(rst.numRows).toBe(2);
+
+    // Search using `vectorSearch`
+    rst = await tbl.vectorSearch(queryVec).limit(2).toArrow();
+    expect(rst.numRows).toBe(2);
+
+    // Search with specifying the column
+    const rst2 = await tbl
+      .query()
+      .limit(2)
+      .nearestTo(queryVec)
+      .column("vec")
+      .toArrow();
+    expect(rst2.numRows).toBe(2);
+    expect(rst.toString()).toEqual(rst2.toString());
+
+    // test offset
+    rst = await tbl.query().limit(2).offset(1).nearestTo(queryVec).toArrow();
+    expect(rst.numRows).toBe(1);
+
+    // test ef
+    rst = await tbl.query().limit(2).nearestTo(queryVec).ef(100).toArrow();
+    expect(rst.numRows).toBe(2);
   });
 
   it("should be able to query unindexed data", async () => {
@@ -997,5 +1120,19 @@ describe("column name options", () => {
   test("can filter on columns with different names", async () => {
     const results = await table.query().where("`camelCase` = 1").toArray();
     expect(results[0].camelCase).toBe(1);
+  });
+
+  test("can make multiple vector queries in one go", async () => {
+    const results = await table
+      .query()
+      .nearestTo([0.1, 0.2])
+      .addQueryVector([0.1, 0.2])
+      .limit(1)
+      .toArray();
+    console.log(results);
+    expect(results.length).toBe(2);
+    results.sort((a, b) => a.query_index - b.query_index);
+    expect(results[0].query_index).toBe(0);
+    expect(results[1].query_index).toBe(1);
   });
 });

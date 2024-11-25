@@ -94,8 +94,8 @@ the embeddings at all:
     === "@lancedb/lancedb"
 
         ```ts
-        --8<-- "nodejs/examples/embedding.ts:imports"
-        --8<-- "nodejs/examples/embedding.ts:embedding_function"
+        --8<-- "nodejs/examples/embedding.test.ts:imports"
+        --8<-- "nodejs/examples/embedding.test.ts:embedding_function"
         ```
 
     === "vectordb (deprecated)"
@@ -150,7 +150,7 @@ need to worry about it when you query the table:
             .toArray()
         ```
 
-    === "vectordb (deprecated)
+    === "vectordb (deprecated)"
 
         ```ts
         const results = await table
