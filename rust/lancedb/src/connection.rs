@@ -133,7 +133,7 @@ impl IntoArrow for NoData {
 
 /// A builder for configuring a [`Connection::create_table`] operation
 pub struct CreateTableBuilder<const HAS_DATA: bool, T: IntoArrow> {
-    parent: Arc<dyn ConnectionInternal>,
+    pub(crate) parent: Arc<dyn ConnectionInternal>,
     pub(crate) name: String,
     pub(crate) data: Option<T>,
     pub(crate) mode: CreateTableMode,
@@ -341,7 +341,7 @@ pub struct OpenTableBuilder {
 }
 
 impl OpenTableBuilder {
-    fn new(parent: Arc<dyn ConnectionInternal>, name: String) -> Self {
+    pub(crate) fn new(parent: Arc<dyn ConnectionInternal>, name: String) -> Self {
         Self {
             parent,
             name,
