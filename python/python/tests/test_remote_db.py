@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+from concurrent.futures import ThreadPoolExecutor
 import contextlib
 from datetime import timedelta
 import http.server
@@ -185,6 +186,47 @@ async def test_retry_error():
         assert "Try again later" in str(cause)
         assert cause.request_id == request_id_holder["request_id"]
         assert cause.status_code == 429
+
+
+def test_table_add_in_threadpool():
+    def handler(request):
+        if request.path == "/v1/table/test/insert/":
+            request.send_response(200)
+            request.end_headers()
+        elif request.path == "/v1/table/test/create/":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b"{}")
+        elif request.path == "/v1/table/test/describe/":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            payload = json.dumps(
+                dict(
+                    version=1,
+                    schema=dict(
+                        fields=[
+                            dict(name="id", type={"type": "int64"}, nullable=False),
+                        ]
+                    ),
+                )
+            )
+            request.wfile.write(payload.encode())
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    with mock_lancedb_connection(handler) as db:
+        table = db.create_table("test", [{"id": 1}])
+        with ThreadPoolExecutor(3) as executor:
+            futures = []
+            for _ in range(10):
+                future = executor.submit(table.add, [{"id": 1}])
+                futures.append(future)
+
+            for future in futures:
+                future.result()
 
 
 @contextlib.contextmanager
