@@ -790,6 +790,80 @@ Use the `drop_table()` method on the database to remove a table.
       This permanently removes the table and is not recoverable, unlike deleting rows.
       If the table does not exist an exception is raised.
 
+## Changing schemas
+
+LanceDB tables require a schema to be specified when creating a table, but the
+schema can change over time. Use `add_columns`, `alter_columns`, and `drop_columns`
+to alter the schema.
+
+### Adding new columns
+
+You can add new columns to the table with the `add_columns` method. New columns
+are filled with values based on a SQL expression. For example, you can add a new
+column `y` to the table and fill it with the value of `x + 1`. If you want to
+fill it with null, you can use `cast(NULL as <data_type>)` as the SQL expression
+to fill the column with nulls, while controlling the data type of the column.
+
+=== "Python"
+
+    ```python
+    table.add_columns({"double_price": "price * 2"})
+    ```
+    **API Reference:** [lancedb.table.Table.add_columns][]
+
+=== "Typescript"
+
+    ```typescript
+    --8<-- "nodejs/examples/basic.test.ts:add_columns"
+    ```
+    **API Reference:** [lancedb.Table.addColumns](../js/classes/Table.md/#addcolumns)
+
+
+### Altering existing columns
+
+You can alter the name, nullability, or data type of a column with the `alter_columns`
+method.
+
+Changing the name or nullability of a column just updates the metadata. Because
+of this, it's a fast operation. Changing the data type of a column requires
+rewriting the column, which can be a heavy operation.
+
+=== "Python"
+
+    ```python
+    import pyarrow as pa
+    table.alter_column({"path": "double_price", "rename": "my_name",
+                        "data_type": pa.int32(), "nullable": False})
+    ```
+    **API Reference:** [lancedb.table.Table.alter_columns][]
+
+=== "Typescript"
+
+    ```typescript
+    --8<-- "nodejs/examples/basic.test.ts:alter_columns"
+    ```
+
+### Dropping columns
+
+You can drop columns from the table with the `drop_columns` method. This will
+will remove the column from the schema.
+
+<!-- TODO: Provide guidance on how to reduce disk usage once optimize helps here -->
+
+=== "Python"
+
+    ```python
+    table.drop_columns(["my_name"])
+    ```
+    **API Reference:** [lancedb.table.Table.drop_columns][]
+
+=== "Typescript"
+
+    ```typescript
+    --8<-- "nodejs/examples/basic.test.ts:drop_columns"
+    ```
+
+
 ## Handling bad vectors
 
 In LanceDB Python, you can use the `on_bad_vectors` parameter to choose how
