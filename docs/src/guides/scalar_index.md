@@ -6,10 +6,8 @@ Similar to many SQL databases, LanceDB supports several types of scalar indices 
 over scalar columns.
 
 - `BTREE`: The most common type is BTREE. The index stores a copy of the
-  column in sorted order. A header entry is created for each block of rows
-  (currently the block size is fixed at 4096). These header entries are stored
-  in a separate cacheable structure (a btree). To search for data the header is
-  used to determine which blocks need to be read from disk.
+  column in sorted order. This sorted copy allows a binary search to be used to
+  satisfy queries.
 - `BITMAP`: this index stores a bitmap for each unique value in the column. It 
   uses a series of bits to indicate whether a value is present in a row of a table
 - `LABEL_LIST`: a special index that can be used on `List<T>` columns to
