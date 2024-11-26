@@ -38,6 +38,7 @@ use crate::table::{NativeTable, TableDefinition, WriteOptions};
 use crate::utils::validate_table_name;
 use crate::Table;
 pub use lance_encoding::version::LanceFileVersion;
+use lance_table::io::commit::commit_handler_from_url;
 
 pub const LANCE_FILE_EXTENSION: &str = "lance";
 
@@ -1036,6 +1037,7 @@ impl ConnectionInternal for Database {
         };
 
         let mut write_params = options.write_options.lance_write_params.unwrap_or_default();
+
         if matches!(&options.mode, CreateTableMode::Overwrite) {
             write_params.mode = WriteMode::Overwrite;
         }
@@ -1122,7 +1124,7 @@ impl ConnectionInternal for Database {
         let dir_name = format!("{}.{}", name, LANCE_EXTENSION);
         let full_path = self.base_path.child(dir_name.clone());
         self.object_store
-            .remove_dir_all(full_path)
+            .remove_dir_all(full_path.clone())
             .await
             .map_err(|err| match err {
                 // this error is not lance::Error::DatasetNotFound,
@@ -1132,6 +1134,19 @@ impl ConnectionInternal for Database {
                 },
                 _ => Error::from(err),
             })?;
+
+        let object_store_params = ObjectStoreParams {
+            storage_options: Some(self.storage_options.clone()),
+            ..Default::default()
+        };
+        let mut uri = self.uri.clone();
+        if let Some(query_string) = &self.query_string {
+            uri.push_str(&format!("?{}", query_string));
+        }
+        let commit_handler = commit_handler_from_url(&uri, &Some(object_store_params))
+            .await
+            .unwrap();
+        commit_handler.delete(&full_path).await.unwrap();
         Ok(())
     }
 
