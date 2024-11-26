@@ -1708,7 +1708,8 @@ class LanceTable(Table):
         query_type: Literal["vector"] = "vector",
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
-    ) -> LanceVectorQueryBuilder: ...
+    ) -> LanceVectorQueryBuilder:
+        ...
 
     @overload
     def search(
@@ -1718,7 +1719,8 @@ class LanceTable(Table):
         query_type: Literal["fts"] = "fts",
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
-    ) -> LanceFtsQueryBuilder: ...
+    ) -> LanceFtsQueryBuilder:
+        ...
 
     @overload
     def search(
@@ -1728,7 +1730,8 @@ class LanceTable(Table):
         query_type: Literal["hybrid"] = "hybrid",
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
-    ) -> LanceHybridQueryBuilder: ...
+    ) -> LanceHybridQueryBuilder:
+        ...
 
     @overload
     def search(
@@ -1738,7 +1741,8 @@ class LanceTable(Table):
         query_type: QueryType = "auto",
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
-    ) -> LanceEmptyQueryBuilder: ...
+    ) -> LanceEmptyQueryBuilder:
+        ...
 
     def search(
         self,
