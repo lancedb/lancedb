@@ -1169,6 +1169,7 @@ mod tests {
     use lance_testing::datagen::{BatchGenerator, IncrementingInt32};
     use tempfile::tempdir;
 
+    use crate::query::QueryBase;
     use crate::query::{ExecutableQuery, QueryExecutionOptions};
 
     use super::*;
@@ -1296,6 +1297,7 @@ mod tests {
         // In v1 the row group size will trump max_batch_length
         let batches = tbl
             .query()
+            .limit(20000)
             .execute_with_options(QueryExecutionOptions {
                 max_batch_length: 50000,
                 ..Default::default()

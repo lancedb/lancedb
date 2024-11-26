@@ -1227,6 +1227,7 @@ mod tests {
                 "prefilter": true,
                 "distance_type": "l2",
                 "nprobes": 20,
+                "k": 10,
                 "ef": Option::<usize>::None,
                 "refine_factor": null,
                 "version": null,
