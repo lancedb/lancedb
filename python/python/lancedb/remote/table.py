@@ -490,13 +490,13 @@ class RemoteTable(Table):
         return LOOP.run(self._table.count_rows(filter))
 
     def add_columns(self, transforms: Dict[str, str]):
-        return self._loop.run_until_complete(self._table.add_columns(transforms))
+        return LOOP.run(self._table.add_columns(transforms))
 
     def alter_columns(self, *alterations: Iterable[Dict[str, str]]):
-        return self._loop.run_until_complete(self._table.alter_columns(*alterations))
+        return LOOP.run(self._table.alter_columns(*alterations))
 
     def drop_columns(self, columns: Iterable[str]):
-        return self._loop.run_until_complete(self._table.drop_columns(columns))
+        return LOOP.run(self._table.drop_columns(columns))
 
 
 def add_index(tbl: pa.Table, i: int) -> pa.Table:
