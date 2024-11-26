@@ -133,7 +133,7 @@ jobs:
           free -h
       - name: Build Linux Artifacts
         run: |
-          bash ci/build_linux_artifacts.sh ${{ matrix.config.arch }}
+          bash ci/build_linux_artifacts.sh ${{ matrix.config.arch }} ${{ matrix.config.arch }}-unknown-linux-gnu
       - name: Upload Linux Artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -188,7 +188,7 @@ jobs:
       - name: Build Linux Artifacts
         run: |
           source ./saved_env
-          bash ci/manylinux_node/build_vectordb.sh ${{ matrix.config.arch }}
+          bash ci/manylinux_node/build_vectordb.sh ${{ matrix.config.arch }} ${{ matrix.config.arch }}-unknown-linux-musl
       - name: Upload Linux Artifacts
         uses: actions/upload-artifact@v4
         with:
