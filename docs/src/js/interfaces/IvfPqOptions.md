@@ -2,7 +2,7 @@
 
 ***
 
-[@lancedb/lancedb](../globals.md) / IvfPqOptions
+[@lancedb/lancedb](../README.md) / IvfPqOptions
 
 # Interface: IvfPqOptions
 
@@ -12,7 +12,9 @@ Options to create an `IVF_PQ` index
 
 ### distanceType?
 
-> `optional` **distanceType**: `"l2"` \| `"cosine"` \| `"dot"`
+```ts
+optional distanceType: "l2" | "cosine" | "dot";
+```
 
 Distance type to use to build the index.
 
@@ -50,7 +52,9 @@ L2 norm is 1), then dot distance is equivalent to the cosine distance.
 
 ### maxIterations?
 
-> `optional` **maxIterations**: `number`
+```ts
+optional maxIterations: number;
+```
 
 Max iteration to train IVF kmeans.
 
@@ -66,7 +70,9 @@ The default value is 50.
 
 ### numPartitions?
 
-> `optional` **numPartitions**: `number`
+```ts
+optional numPartitions: number;
+```
 
 The number of IVF partitions to create.
 
@@ -82,7 +88,9 @@ part of the search (searching within a partition) will be slow.
 
 ### numSubVectors?
 
-> `optional` **numSubVectors**: `number`
+```ts
+optional numSubVectors: number;
+```
 
 Number of sub-vectors of PQ.
 
@@ -101,7 +109,9 @@ will likely result in poor performance.
 
 ### sampleRate?
 
-> `optional` **sampleRate**: `number`
+```ts
+optional sampleRate: number;
+```
 
 The number of vectors, per partition, to sample when training IVF kmeans.
 

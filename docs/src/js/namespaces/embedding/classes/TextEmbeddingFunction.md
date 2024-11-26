@@ -2,31 +2,33 @@
 
 ***
 
-[@lancedb/lancedb](../../../globals.md) / [embedding](../README.md) / OpenAIEmbeddingFunction
+[@lancedb/lancedb](../../../README.md) / [embedding](../README.md) / TextEmbeddingFunction
 
-# Class: OpenAIEmbeddingFunction
+# Class: `abstract` TextEmbeddingFunction&lt;M&gt;
 
-An embedding function that automatically creates vector representation for a given column.
+an abstract class for implementing embedding functions that take text as input
 
 ## Extends
 
-- [`EmbeddingFunction`](EmbeddingFunction.md)&lt;`string`, `Partial`&lt;[`OpenAIOptions`](../type-aliases/OpenAIOptions.md)&gt;&gt;
+- [`EmbeddingFunction`](EmbeddingFunction.md)&lt;`string`, `M`&gt;
+
+## Type Parameters
+
+• **M** *extends* `FunctionOptions` = `FunctionOptions`
 
 ## Constructors
 
-### new OpenAIEmbeddingFunction()
+### new TextEmbeddingFunction()
 
-> **new OpenAIEmbeddingFunction**(`options`): [`OpenAIEmbeddingFunction`](OpenAIEmbeddingFunction.md)
-
-#### Parameters
-
-• **options**: `Partial`&lt;[`OpenAIOptions`](../type-aliases/OpenAIOptions.md)&gt; = `...`
+```ts
+new TextEmbeddingFunction<M>(): TextEmbeddingFunction<M>
+```
 
 #### Returns
 
-[`OpenAIEmbeddingFunction`](OpenAIEmbeddingFunction.md)
+[`TextEmbeddingFunction`](TextEmbeddingFunction.md)&lt;`M`&gt;
 
-#### Overrides
+#### Inherited from
 
 [`EmbeddingFunction`](EmbeddingFunction.md).[`constructor`](EmbeddingFunction.md#constructors)
 
@@ -34,7 +36,9 @@ An embedding function that automatically creates vector representation for a giv
 
 ### computeQueryEmbeddings()
 
-> **computeQueryEmbeddings**(`data`): `Promise`&lt;`number`[]&gt;
+```ts
+computeQueryEmbeddings(data: string): Promise<number[] | Float32Array | Float64Array>
+```
 
 Compute the embeddings for a single query
 
@@ -44,7 +48,7 @@ Compute the embeddings for a single query
 
 #### Returns
 
-`Promise`&lt;`number`[]&gt;
+`Promise`&lt;`number`[] \| `Float32Array` \| `Float64Array`&gt;
 
 #### Overrides
 
@@ -54,7 +58,9 @@ Compute the embeddings for a single query
 
 ### computeSourceEmbeddings()
 
-> **computeSourceEmbeddings**(`data`): `Promise`&lt;`number`[][]&gt;
+```ts
+computeSourceEmbeddings(data: string[]): Promise<number[][] | Float32Array[] | Float64Array[]>
+```
 
 Creates a vector representation for the given values.
 
@@ -64,7 +70,7 @@ Creates a vector representation for the given values.
 
 #### Returns
 
-`Promise`&lt;`number`[][]&gt;
+`Promise`&lt;`number`[][] \| `Float32Array`[] \| `Float64Array`[]&gt;
 
 #### Overrides
 
@@ -74,7 +80,9 @@ Creates a vector representation for the given values.
 
 ### embeddingDataType()
 
-> **embeddingDataType**(): `Float`&lt;`Floats`&gt;
+```ts
+embeddingDataType(): Float<Floats>
+```
 
 The datatype of the embeddings
 
@@ -88,17 +96,53 @@ The datatype of the embeddings
 
 ***
 
+### generateEmbeddings()
+
+```ts
+abstract generateEmbeddings(texts: string[], ...args: any[]): Promise<number[][] | Float32Array[] | Float64Array[]>
+```
+
+#### Parameters
+
+• **texts**: `string`[]
+
+• ...**args**: `any`[]
+
+#### Returns
+
+`Promise`&lt;`number`[][] \| `Float32Array`[] \| `Float64Array`[]&gt;
+
+***
+
+### init()?
+
+```ts
+optional init(): Promise<void>
+```
+
+#### Returns
+
+`Promise`&lt;`void`&gt;
+
+#### Inherited from
+
+[`EmbeddingFunction`](EmbeddingFunction.md).[`init`](EmbeddingFunction.md#init)
+
+***
+
 ### ndims()
 
-> **ndims**(): `number`
+```ts
+ndims(): undefined | number
+```
 
 The number of dimensions of the embeddings
 
 #### Returns
 
-`number`
+`undefined` \| `number`
 
-#### Overrides
+#### Inherited from
 
 [`EmbeddingFunction`](EmbeddingFunction.md).[`ndims`](EmbeddingFunction.md#ndims)
 
@@ -106,15 +150,11 @@ The number of dimensions of the embeddings
 
 ### sourceField()
 
-> **sourceField**(`optionsOrDatatype`): [`DataType`&lt;`Type`, `any`&gt;, `Map`&lt;`string`, [`EmbeddingFunction`](EmbeddingFunction.md)&lt;`any`, `FunctionOptions`&gt;&gt;]
+```ts
+sourceField(): [DataType<Type, any>, Map<string, EmbeddingFunction<any, FunctionOptions>>]
+```
 
 sourceField is used in combination with `LanceSchema` to provide a declarative data model
-
-#### Parameters
-
-• **optionsOrDatatype**: `DataType`&lt;`Type`, `any`&gt; \| `Partial`&lt;`FieldOptions`&lt;`DataType`&lt;`Type`, `any`&gt;&gt;&gt;
-
-The options for the field or the datatype
 
 #### Returns
 
@@ -124,7 +164,7 @@ The options for the field or the datatype
 
 lancedb.LanceSchema
 
-#### Inherited from
+#### Overrides
 
 [`EmbeddingFunction`](EmbeddingFunction.md).[`sourceField`](EmbeddingFunction.md#sourcefield)
 
@@ -132,7 +172,9 @@ lancedb.LanceSchema
 
 ### toJSON()
 
-> **toJSON**(): `object`
+```ts
+abstract toJSON(): Partial<M>
+```
 
 Convert the embedding function to a JSON object
 It is used to serialize the embedding function to the schema
@@ -144,11 +186,7 @@ If it does not, the embedding function will not be able to be recreated, or coul
 
 #### Returns
 
-`object`
-
-##### model
-
-> **model**: `string` & `object` \| `"text-embedding-ada-002"` \| `"text-embedding-3-small"` \| `"text-embedding-3-large"`
+`Partial`&lt;`M`&gt;
 
 #### Example
 
@@ -167,7 +205,7 @@ class MyEmbeddingFunction extends EmbeddingFunction {
 }
 ```
 
-#### Overrides
+#### Inherited from
 
 [`EmbeddingFunction`](EmbeddingFunction.md).[`toJSON`](EmbeddingFunction.md#tojson)
 
@@ -175,7 +213,9 @@ class MyEmbeddingFunction extends EmbeddingFunction {
 
 ### vectorField()
 
-> **vectorField**(`optionsOrDatatype`?): [`DataType`&lt;`Type`, `any`&gt;, `Map`&lt;`string`, [`EmbeddingFunction`](EmbeddingFunction.md)&lt;`any`, `FunctionOptions`&gt;&gt;]
+```ts
+vectorField(optionsOrDatatype?: DataType<Type, any> | Partial<FieldOptions<DataType<Type, any>>>): [DataType<Type, any>, Map<string, EmbeddingFunction<any, FunctionOptions>>]
+```
 
 vectorField is used in combination with `LanceSchema` to provide a declarative data model
 

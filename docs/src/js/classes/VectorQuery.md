@@ -2,7 +2,7 @@
 
 ***
 
-[@lancedb/lancedb](../globals.md) / VectorQuery
+[@lancedb/lancedb](../README.md) / VectorQuery
 
 # Class: VectorQuery
 
@@ -18,7 +18,9 @@ This builder can be reused to execute the query many times.
 
 ### new VectorQuery()
 
-> **new VectorQuery**(`inner`): [`VectorQuery`](VectorQuery.md)
+```ts
+new VectorQuery(inner: VectorQuery | Promise<VectorQuery>): VectorQuery
+```
 
 #### Parameters
 
@@ -36,7 +38,9 @@ This builder can be reused to execute the query many times.
 
 ### inner
 
-> `protected` **inner**: `VectorQuery` \| `Promise`&lt;`VectorQuery`&gt;
+```ts
+protected inner: VectorQuery | Promise<VectorQuery>;
+```
 
 #### Inherited from
 
@@ -46,7 +50,9 @@ This builder can be reused to execute the query many times.
 
 ### \[asyncIterator\]()
 
-> **\[asyncIterator\]**(): `AsyncIterator`&lt;`RecordBatch`&lt;`any`&gt;, `any`, `undefined`&gt;
+```ts
+asyncIterator: AsyncIterator<RecordBatch<any>, any, undefined>
+```
 
 #### Returns
 
@@ -58,9 +64,27 @@ This builder can be reused to execute the query many times.
 
 ***
 
+### addQueryVector()
+
+```ts
+addQueryVector(vector: IntoVector): VectorQuery
+```
+
+#### Parameters
+
+• **vector**: `IntoVector`
+
+#### Returns
+
+[`VectorQuery`](VectorQuery.md)
+
+***
+
 ### bypassVectorIndex()
 
-> **bypassVectorIndex**(): [`VectorQuery`](VectorQuery.md)
+```ts
+bypassVectorIndex(): VectorQuery
+```
 
 If this is called then any vector index is skipped
 
@@ -78,7 +102,9 @@ calculate your recall to select an appropriate value for nprobes.
 
 ### column()
 
-> **column**(`column`): [`VectorQuery`](VectorQuery.md)
+```ts
+column(column: string): VectorQuery
+```
 
 Set the vector column to query
 
@@ -104,7 +130,9 @@ whose data type is a fixed-size-list of floats.
 
 ### distanceType()
 
-> **distanceType**(`distanceType`): [`VectorQuery`](VectorQuery.md)
+```ts
+distanceType(distanceType: "l2" | "cosine" | "dot"): VectorQuery
+```
 
 Set the distance metric to use
 
@@ -135,7 +163,9 @@ By default "l2" is used.
 
 ### doCall()
 
-> `protected` **doCall**(`fn`): `void`
+```ts
+protected doCall(fn: (inner: VectorQuery) => void): void
+```
 
 #### Parameters
 
@@ -151,9 +181,35 @@ By default "l2" is used.
 
 ***
 
+### ef()
+
+```ts
+ef(ef: number): VectorQuery
+```
+
+Set the number of candidates to consider during the search
+
+This argument is only used when the vector column has an HNSW index.
+If there is no index then this value is ignored.
+
+Increasing this value will increase the recall of your query but will
+also increase the latency of your query. The default value is 1.5*limit.
+
+#### Parameters
+
+• **ef**: `number`
+
+#### Returns
+
+[`VectorQuery`](VectorQuery.md)
+
+***
+
 ### execute()
 
-> `protected` **execute**(`options`?): [`RecordBatchIterator`](RecordBatchIterator.md)
+```ts
+protected execute(options?: Partial<QueryExecutionOptions>): RecordBatchIterator
+```
 
 Execute the query and return the results as an
 
@@ -185,7 +241,9 @@ single query)
 
 ### explainPlan()
 
-> **explainPlan**(`verbose`): `Promise`&lt;`string`&gt;
+```ts
+explainPlan(verbose: boolean): Promise<string>
+```
 
 Generates an explanation of the query execution plan.
 
@@ -218,9 +276,32 @@ const plan = await table.query().nearestTo([0.5, 0.2]).explainPlan();
 
 ***
 
+### fastSearch()
+
+```ts
+fastSearch(): this
+```
+
+Skip searching un-indexed data. This can make search faster, but will miss
+any data that is not yet indexed.
+
+Use lancedb.Table#optimize to index all un-indexed data.
+
+#### Returns
+
+`this`
+
+#### Inherited from
+
+[`QueryBase`](QueryBase.md).[`fastSearch`](QueryBase.md#fastsearch)
+
+***
+
 ### ~~filter()~~
 
-> **filter**(`predicate`): `this`
+```ts
+filter(predicate: string): this
+```
 
 A filter statement to be applied to this query.
 
@@ -246,9 +327,33 @@ Use `where` instead
 
 ***
 
+### fullTextSearch()
+
+```ts
+fullTextSearch(query: string, options?: Partial<FullTextSearchOptions>): this
+```
+
+#### Parameters
+
+• **query**: `string`
+
+• **options?**: `Partial`&lt;`FullTextSearchOptions`&gt;
+
+#### Returns
+
+`this`
+
+#### Inherited from
+
+[`QueryBase`](QueryBase.md).[`fullTextSearch`](QueryBase.md#fulltextsearch)
+
+***
+
 ### limit()
 
-> **limit**(`limit`): `this`
+```ts
+limit(limit: number): this
+```
 
 Set the maximum number of results to return.
 
@@ -271,7 +376,9 @@ called then every valid row from the table will be returned.
 
 ### nativeExecute()
 
-> `protected` **nativeExecute**(`options`?): `Promise`&lt;`RecordBatchIterator`&gt;
+```ts
+protected nativeExecute(options?: Partial<QueryExecutionOptions>): Promise<RecordBatchIterator>
+```
 
 #### Parameters
 
@@ -289,7 +396,9 @@ called then every valid row from the table will be returned.
 
 ### nprobes()
 
-> **nprobes**(`nprobes`): [`VectorQuery`](VectorQuery.md)
+```ts
+nprobes(nprobes: number): VectorQuery
+```
 
 Set the number of partitions to search (probe)
 
@@ -322,9 +431,31 @@ you the desired recall.
 
 ***
 
+### offset()
+
+```ts
+offset(offset: number): this
+```
+
+#### Parameters
+
+• **offset**: `number`
+
+#### Returns
+
+`this`
+
+#### Inherited from
+
+[`QueryBase`](QueryBase.md).[`offset`](QueryBase.md#offset)
+
+***
+
 ### postfilter()
 
-> **postfilter**(): [`VectorQuery`](VectorQuery.md)
+```ts
+postfilter(): VectorQuery
+```
 
 If this is called then filtering will happen after the vector search instead of
 before.
@@ -356,7 +487,9 @@ factor can often help restore some of the results lost by post filtering.
 
 ### refineFactor()
 
-> **refineFactor**(`refineFactor`): [`VectorQuery`](VectorQuery.md)
+```ts
+refineFactor(refineFactor: number): VectorQuery
+```
 
 A multiplier to control how many additional rows are taken during the refine step
 
@@ -398,7 +531,9 @@ distance between the query vector and the actual uncompressed vector.
 
 ### select()
 
-> **select**(`columns`): `this`
+```ts
+select(columns: string | string[] | Record<string, string> | Map<string, string>): this
+```
 
 Return only the specified columns.
 
@@ -449,7 +584,9 @@ object insertion order is easy to get wrong and `Map` is more foolproof.
 
 ### toArray()
 
-> **toArray**(`options`?): `Promise`&lt;`any`[]&gt;
+```ts
+toArray(options?: Partial<QueryExecutionOptions>): Promise<any[]>
+```
 
 Collect the results as an array of objects.
 
@@ -469,7 +606,9 @@ Collect the results as an array of objects.
 
 ### toArrow()
 
-> **toArrow**(`options`?): `Promise`&lt;`Table`&lt;`any`&gt;&gt;
+```ts
+toArrow(options?: Partial<QueryExecutionOptions>): Promise<Table<any>>
+```
 
 Collect the results as an Arrow
 
@@ -493,7 +632,9 @@ ArrowTable.
 
 ### where()
 
-> **where**(`predicate`): `this`
+```ts
+where(predicate: string): this
+```
 
 A filter statement to be applied to this query.
 
@@ -521,3 +662,25 @@ on the filter column(s).
 #### Inherited from
 
 [`QueryBase`](QueryBase.md).[`where`](QueryBase.md#where)
+
+***
+
+### withRowId()
+
+```ts
+withRowId(): this
+```
+
+Whether to return the row id in the results.
+
+This column can be used to match results between different queries. For
+example, to match results from a full text search and a vector search in
+order to perform hybrid search.
+
+#### Returns
+
+`this`
+
+#### Inherited from
+
+[`QueryBase`](QueryBase.md).[`withRowId`](QueryBase.md#withrowid)

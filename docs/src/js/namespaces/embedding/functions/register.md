@@ -2,11 +2,13 @@
 
 ***
 
-[@lancedb/lancedb](../../../globals.md) / [embedding](../README.md) / register
+[@lancedb/lancedb](../../../README.md) / [embedding](../README.md) / register
 
 # Function: register()
 
-> **register**(`name`?): (`ctor`) => `any`
+```ts
+function register(name?: string): (ctor: EmbeddingFunctionConstructor<EmbeddingFunction<any, FunctionOptions>>) => any
+```
 
 ## Parameters
 

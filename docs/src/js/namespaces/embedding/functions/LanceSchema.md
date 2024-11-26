@@ -2,11 +2,13 @@
 
 ***
 
-[@lancedb/lancedb](../../../globals.md) / [embedding](../README.md) / LanceSchema
+[@lancedb/lancedb](../../../README.md) / [embedding](../README.md) / LanceSchema
 
 # Function: LanceSchema()
 
-> **LanceSchema**(`fields`): `Schema`
+```ts
+function LanceSchema(fields: Record<string, object | [object, Map<string, EmbeddingFunction<any, FunctionOptions>>]>): Schema
+```
 
 Create a schema with embedding functions.
 

@@ -2,7 +2,7 @@
 
 ***
 
-[@lancedb/lancedb](../globals.md) / WriteOptions
+[@lancedb/lancedb](../README.md) / WriteOptions
 
 # Interface: WriteOptions
 
@@ -12,6 +12,8 @@ Write options when creating a Table.
 
 ### mode?
 
-> `optional` **mode**: [`WriteMode`](../enumerations/WriteMode.md)
+```ts
+optional mode: WriteMode;
+```
 
 Write mode for writing to a table.

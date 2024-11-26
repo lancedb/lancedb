@@ -2,7 +2,7 @@
 
 ***
 
-[@lancedb/lancedb](../globals.md) / IndexConfig
+[@lancedb/lancedb](../README.md) / IndexConfig
 
 # Interface: IndexConfig
 
@@ -12,7 +12,9 @@ A description of an index currently configured on a column
 
 ### columns
 
-> **columns**: `string`[]
+```ts
+columns: string[];
+```
 
 The columns in the index
 
@@ -23,7 +25,9 @@ be more columns to represent composite indices.
 
 ### indexType
 
-> **indexType**: `string`
+```ts
+indexType: string;
+```
 
 The type of the index
 
@@ -31,6 +35,8 @@ The type of the index
 
 ### name
 
-> **name**: `string`
+```ts
+name: string;
+```
 
 The name of the index

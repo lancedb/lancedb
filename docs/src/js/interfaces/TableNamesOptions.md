@@ -2,7 +2,7 @@
 
 ***
 
-[@lancedb/lancedb](../globals.md) / TableNamesOptions
+[@lancedb/lancedb](../README.md) / TableNamesOptions
 
 # Interface: TableNamesOptions
 
@@ -10,7 +10,9 @@
 
 ### limit?
 
-> `optional` **limit**: `number`
+```ts
+optional limit: number;
+```
 
 An optional limit to the number of results to return.
 
@@ -18,7 +20,9 @@ An optional limit to the number of results to return.
 
 ### startAfter?
 
-> `optional` **startAfter**: `string`
+```ts
+optional startAfter: string;
+```
 
 If present, only return names that come lexicographically after the
 supplied value.

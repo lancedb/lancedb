@@ -2,15 +2,50 @@
 
 ***
 
-[@lancedb/lancedb](../globals.md) / ConnectionOptions
+[@lancedb/lancedb](../README.md) / ConnectionOptions
 
 # Interface: ConnectionOptions
 
 ## Properties
 
+### apiKey?
+
+```ts
+optional apiKey: string;
+```
+
+(For LanceDB cloud only): the API key to use with LanceDB Cloud.
+
+Can also be set via the environment variable `LANCEDB_API_KEY`.
+
+***
+
+### clientConfig?
+
+```ts
+optional clientConfig: ClientConfig;
+```
+
+(For LanceDB cloud only): configuration for the remote HTTP client.
+
+***
+
+### hostOverride?
+
+```ts
+optional hostOverride: string;
+```
+
+(For LanceDB cloud only): the host to use for LanceDB cloud. Used
+for testing purposes.
+
+***
+
 ### readConsistencyInterval?
 
-> `optional` **readConsistencyInterval**: `number`
+```ts
+optional readConsistencyInterval: number;
+```
 
 (For LanceDB OSS only): The interval, in seconds, at which to check for
 updates to the table from other processes. If None, then consistency is not
@@ -24,9 +59,22 @@ always consistent.
 
 ***
 
+### region?
+
+```ts
+optional region: string;
+```
+
+(For LanceDB cloud only): the region to use for LanceDB cloud.
+Defaults to 'us-east-1'.
+
+***
+
 ### storageOptions?
 
-> `optional` **storageOptions**: `Record`&lt;`string`, `string`&gt;
+```ts
+optional storageOptions: Record<string, string>;
+```
 
 (For LanceDB OSS only): configuration for object storage.
 

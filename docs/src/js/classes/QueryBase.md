@@ -2,7 +2,7 @@
 
 ***
 
-[@lancedb/lancedb](../globals.md) / QueryBase
+[@lancedb/lancedb](../README.md) / QueryBase
 
 # Class: QueryBase&lt;NativeQueryType&gt;
 
@@ -25,7 +25,9 @@ Common methods supported by all query types
 
 ### new QueryBase()
 
-> `protected` **new QueryBase**&lt;`NativeQueryType`&gt;(`inner`): [`QueryBase`](QueryBase.md)&lt;`NativeQueryType`&gt;
+```ts
+protected new QueryBase<NativeQueryType>(inner: NativeQueryType | Promise<NativeQueryType>): QueryBase<NativeQueryType>
+```
 
 #### Parameters
 
@@ -39,13 +41,17 @@ Common methods supported by all query types
 
 ### inner
 
-> `protected` **inner**: `NativeQueryType` \| `Promise`&lt;`NativeQueryType`&gt;
+```ts
+protected inner: NativeQueryType | Promise<NativeQueryType>;
+```
 
 ## Methods
 
 ### \[asyncIterator\]()
 
-> **\[asyncIterator\]**(): `AsyncIterator`&lt;`RecordBatch`&lt;`any`&gt;, `any`, `undefined`&gt;
+```ts
+asyncIterator: AsyncIterator<RecordBatch<any>, any, undefined>
+```
 
 #### Returns
 
@@ -59,7 +65,9 @@ Common methods supported by all query types
 
 ### doCall()
 
-> `protected` **doCall**(`fn`): `void`
+```ts
+protected doCall(fn: (inner: NativeQueryType) => void): void
+```
 
 #### Parameters
 
@@ -73,7 +81,9 @@ Common methods supported by all query types
 
 ### execute()
 
-> `protected` **execute**(`options`?): [`RecordBatchIterator`](RecordBatchIterator.md)
+```ts
+protected execute(options?: Partial<QueryExecutionOptions>): RecordBatchIterator
+```
 
 Execute the query and return the results as an
 
@@ -101,7 +111,9 @@ single query)
 
 ### explainPlan()
 
-> **explainPlan**(`verbose`): `Promise`&lt;`string`&gt;
+```ts
+explainPlan(verbose: boolean): Promise<string>
+```
 
 Generates an explanation of the query execution plan.
 
@@ -130,9 +142,28 @@ const plan = await table.query().nearestTo([0.5, 0.2]).explainPlan();
 
 ***
 
+### fastSearch()
+
+```ts
+fastSearch(): this
+```
+
+Skip searching un-indexed data. This can make search faster, but will miss
+any data that is not yet indexed.
+
+Use lancedb.Table#optimize to index all un-indexed data.
+
+#### Returns
+
+`this`
+
+***
+
 ### ~~filter()~~
 
-> **filter**(`predicate`): `this`
+```ts
+filter(predicate: string): this
+```
 
 A filter statement to be applied to this query.
 
@@ -154,9 +185,29 @@ Use `where` instead
 
 ***
 
+### fullTextSearch()
+
+```ts
+fullTextSearch(query: string, options?: Partial<FullTextSearchOptions>): this
+```
+
+#### Parameters
+
+• **query**: `string`
+
+• **options?**: `Partial`&lt;`FullTextSearchOptions`&gt;
+
+#### Returns
+
+`this`
+
+***
+
 ### limit()
 
-> **limit**(`limit`): `this`
+```ts
+limit(limit: number): this
+```
 
 Set the maximum number of results to return.
 
@@ -175,7 +226,9 @@ called then every valid row from the table will be returned.
 
 ### nativeExecute()
 
-> `protected` **nativeExecute**(`options`?): `Promise`&lt;`RecordBatchIterator`&gt;
+```ts
+protected nativeExecute(options?: Partial<QueryExecutionOptions>): Promise<RecordBatchIterator>
+```
 
 #### Parameters
 
@@ -187,9 +240,27 @@ called then every valid row from the table will be returned.
 
 ***
 
+### offset()
+
+```ts
+offset(offset: number): this
+```
+
+#### Parameters
+
+• **offset**: `number`
+
+#### Returns
+
+`this`
+
+***
+
 ### select()
 
-> **select**(`columns`): `this`
+```ts
+select(columns: string | string[] | Record<string, string> | Map<string, string>): this
+```
 
 Return only the specified columns.
 
@@ -236,7 +307,9 @@ object insertion order is easy to get wrong and `Map` is more foolproof.
 
 ### toArray()
 
-> **toArray**(`options`?): `Promise`&lt;`any`[]&gt;
+```ts
+toArray(options?: Partial<QueryExecutionOptions>): Promise<any[]>
+```
 
 Collect the results as an array of objects.
 
@@ -252,7 +325,9 @@ Collect the results as an array of objects.
 
 ### toArrow()
 
-> **toArrow**(`options`?): `Promise`&lt;`Table`&lt;`any`&gt;&gt;
+```ts
+toArrow(options?: Partial<QueryExecutionOptions>): Promise<Table<any>>
+```
 
 Collect the results as an Arrow
 
@@ -272,7 +347,9 @@ ArrowTable.
 
 ### where()
 
-> **where**(`predicate`): `this`
+```ts
+where(predicate: string): this
+```
 
 A filter statement to be applied to this query.
 
@@ -296,3 +373,21 @@ x > 5 OR y = 'test'
 Filtering performance can often be improved by creating a scalar index
 on the filter column(s).
 ```
+
+***
+
+### withRowId()
+
+```ts
+withRowId(): this
+```
+
+Whether to return the row id in the results.
+
+This column can be used to match results between different queries. For
+example, to match results from a full text search and a vector search in
+order to perform hybrid search.
+
+#### Returns
+
+`this`

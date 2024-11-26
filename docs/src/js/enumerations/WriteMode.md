@@ -2,7 +2,7 @@
 
 ***
 
-[@lancedb/lancedb](../globals.md) / WriteMode
+[@lancedb/lancedb](../README.md) / WriteMode
 
 # Enumeration: WriteMode
 
@@ -12,16 +12,22 @@ Write mode for writing a table.
 
 ### Append
 
-> **Append**: `"Append"`
+```ts
+Append: "Append";
+```
 
 ***
 
 ### Create
 
-> **Create**: `"Create"`
+```ts
+Create: "Create";
+```
 
 ***
 
 ### Overwrite
 
-> **Overwrite**: `"Overwrite"`
+```ts
+Overwrite: "Overwrite";
+```

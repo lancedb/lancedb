@@ -2,7 +2,7 @@
 
 ***
 
-[@lancedb/lancedb](../globals.md) / ExecutableQuery
+[@lancedb/lancedb](../README.md) / ExecutableQuery
 
 # Interface: ExecutableQuery
 

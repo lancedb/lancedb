@@ -2,7 +2,7 @@
 
 ***
 
-[@lancedb/lancedb](../globals.md) / Connection
+[@lancedb/lancedb](../README.md) / Connection
 
 # Class: `abstract` Connection
 
@@ -27,7 +27,9 @@ the underlying connection has been closed.
 
 ### new Connection()
 
-> **new Connection**(): [`Connection`](Connection.md)
+```ts
+new Connection(): Connection
+```
 
 #### Returns
 
@@ -37,7 +39,9 @@ the underlying connection has been closed.
 
 ### close()
 
-> `abstract` **close**(): `void`
+```ts
+abstract close(): void
+```
 
 Close the connection, releasing any underlying resources.
 
@@ -53,21 +57,20 @@ Any attempt to use the connection after it is closed will result in an error.
 
 ### createEmptyTable()
 
-> `abstract` **createEmptyTable**(`name`, `schema`, `options`?): `Promise`&lt;[`Table`](Table.md)&gt;
+```ts
+abstract createEmptyTable(
+   name: string, 
+   schema: SchemaLike, 
+   options?: Partial<CreateTableOptions>): Promise<Table>
+```
 
 Creates a new empty Table
 
 #### Parameters
 
-• **name**: `string`
-
-The name of the table.
-
-• **schema**: `SchemaLike`
-
-The schema of the table
-
-• **options?**: `Partial`&lt;[`CreateTableOptions`](../interfaces/CreateTableOptions.md)&gt;
+- **name**: `string` The name of the table.
+- **schema**: `SchemaLike` The schema of the table
+- **options?**: `Partial`&lt;[`CreateTableOptions`](../interfaces/CreateTableOptions.md)&gt;
 
 #### Returns
 
@@ -79,7 +82,9 @@ The schema of the table
 
 #### createTable(options)
 
-> `abstract` **createTable**(`options`): `Promise`&lt;[`Table`](Table.md)&gt;
+```ts
+abstract createTable(options: object & Partial<CreateTableOptions>): Promise<Table>
+```
 
 Creates a new Table and initialize it with new data.
 
@@ -95,7 +100,12 @@ The options object.
 
 #### createTable(name, data, options)
 
-> `abstract` **createTable**(`name`, `data`, `options`?): `Promise`&lt;[`Table`](Table.md)&gt;
+```ts
+abstract createTable(
+   name: string, 
+   data: TableLike | Record<string, unknown>[], 
+   options?: Partial<CreateTableOptions>): Promise<Table>
+```
 
 Creates a new Table and initialize it with new data.
 
@@ -120,7 +130,9 @@ to be inserted into the table
 
 ### display()
 
-> `abstract` **display**(): `string`
+```ts
+abstract display(): string
+```
 
 Return a brief description of the connection
 
@@ -132,7 +144,9 @@ Return a brief description of the connection
 
 ### dropTable()
 
-> `abstract` **dropTable**(`name`): `Promise`&lt;`void`&gt;
+```ts
+abstract dropTable(name: string): Promise<void>
+```
 
 Drop an existing table.
 
@@ -150,7 +164,9 @@ The name of the table to drop.
 
 ### isOpen()
 
-> `abstract` **isOpen**(): `boolean`
+```ts
+abstract isOpen(): boolean
+```
 
 Return true if the connection has not been closed
 
@@ -162,7 +178,9 @@ Return true if the connection has not been closed
 
 ### openTable()
 
-> `abstract` **openTable**(`name`, `options`?): `Promise`&lt;[`Table`](Table.md)&gt;
+```ts
+abstract openTable(name: string, options?: Partial<OpenTableOptions>): Promise<Table>
+```
 
 Open a table in the database.
 
@@ -182,7 +200,9 @@ The name of the table
 
 ### tableNames()
 
-> `abstract` **tableNames**(`options`?): `Promise`&lt;`string`[]&gt;
+```ts
+abstract tableNames(options?: Partial<TableNamesOptions>): Promise<string[]>
+```
 
 List all the table names in this database.
 

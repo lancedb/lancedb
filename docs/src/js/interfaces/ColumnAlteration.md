@@ -2,7 +2,7 @@
 
 ***
 
-[@lancedb/lancedb](../globals.md) / ColumnAlteration
+[@lancedb/lancedb](../README.md) / ColumnAlteration
 
 # Interface: ColumnAlteration
 
@@ -15,7 +15,9 @@ must be provided.
 
 ### nullable?
 
-> `optional` **nullable**: `boolean`
+```ts
+optional nullable: boolean;
+```
 
 Set the new nullability. Note that a nullable column cannot be made non-nullable.
 
@@ -23,7 +25,9 @@ Set the new nullability. Note that a nullable column cannot be made non-nullable
 
 ### path
 
-> **path**: `string`
+```ts
+path: string;
+```
 
 The path to the column to alter. This is a dot-separated path to the column.
 If it is a top-level column then it is just the name of the column. If it is
@@ -34,7 +38,9 @@ a nested column then it is the path to the column, e.g. "a.b.c" for a column
 
 ### rename?
 
-> `optional` **rename**: `string`
+```ts
+optional rename: string;
+```
 
 The new name of the column. If not provided then the name will not be changed.
 This must be distinct from the names of all other columns in the table.

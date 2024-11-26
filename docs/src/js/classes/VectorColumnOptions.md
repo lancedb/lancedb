@@ -2,7 +2,7 @@
 
 ***
 
-[@lancedb/lancedb](../globals.md) / VectorColumnOptions
+[@lancedb/lancedb](../README.md) / VectorColumnOptions
 
 # Class: VectorColumnOptions
 
@@ -10,7 +10,9 @@
 
 ### new VectorColumnOptions()
 
-> **new VectorColumnOptions**(`values`?): [`VectorColumnOptions`](VectorColumnOptions.md)
+```ts
+new VectorColumnOptions(values?: Partial<VectorColumnOptions>): VectorColumnOptions
+```
 
 #### Parameters
 
@@ -24,6 +26,8 @@
 
 ### type
 
-> **type**: `Float`&lt;`Floats`&gt;
+```ts
+type: Float<Floats>;
+```
 
 Vector column type.

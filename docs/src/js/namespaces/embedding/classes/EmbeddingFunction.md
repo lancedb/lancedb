@@ -2,7 +2,7 @@
 
 ***
 
-[@lancedb/lancedb](../../../globals.md) / [embedding](../README.md) / EmbeddingFunction
+[@lancedb/lancedb](../../../README.md) / [embedding](../README.md) / EmbeddingFunction
 
 # Class: `abstract` EmbeddingFunction&lt;T, M&gt;
 
@@ -10,7 +10,7 @@ An embedding function that automatically creates vector representation for a giv
 
 ## Extended by
 
-- [`OpenAIEmbeddingFunction`](OpenAIEmbeddingFunction.md)
+- [`TextEmbeddingFunction`](TextEmbeddingFunction.md)
 
 ## Type Parameters
 
@@ -22,7 +22,9 @@ An embedding function that automatically creates vector representation for a giv
 
 ### new EmbeddingFunction()
 
-> **new EmbeddingFunction**&lt;`T`, `M`&gt;(): [`EmbeddingFunction`](EmbeddingFunction.md)&lt;`T`, `M`&gt;
+```ts
+new EmbeddingFunction<T, M>(): EmbeddingFunction<T, M>
+```
 
 #### Returns
 
@@ -32,7 +34,9 @@ An embedding function that automatically creates vector representation for a giv
 
 ### computeQueryEmbeddings()
 
-> **computeQueryEmbeddings**(`data`): `Promise`&lt;`number`[] \| `Float32Array` \| `Float64Array`&gt;
+```ts
+computeQueryEmbeddings(data: T): Promise<number[] | Float32Array | Float64Array>
+```
 
 Compute the embeddings for a single query
 
@@ -48,7 +52,9 @@ Compute the embeddings for a single query
 
 ### computeSourceEmbeddings()
 
-> `abstract` **computeSourceEmbeddings**(`data`): `Promise`&lt;`number`[][] \| `Float32Array`[] \| `Float64Array`[]&gt;
+```ts
+abstract computeSourceEmbeddings(data: T[]): Promise<number[][] | Float32Array[] | Float64Array[]>
+```
 
 Creates a vector representation for the given values.
 
@@ -64,7 +70,9 @@ Creates a vector representation for the given values.
 
 ### embeddingDataType()
 
-> `abstract` **embeddingDataType**(): `Float`&lt;`Floats`&gt;
+```ts
+abstract embeddingDataType(): Float<Floats>
+```
 
 The datatype of the embeddings
 
@@ -74,9 +82,23 @@ The datatype of the embeddings
 
 ***
 
+### init()?
+
+```ts
+optional init(): Promise<void>
+```
+
+#### Returns
+
+`Promise`&lt;`void`&gt;
+
+***
+
 ### ndims()
 
-> **ndims**(): `undefined` \| `number`
+```ts
+ndims(): undefined | number
+```
 
 The number of dimensions of the embeddings
 
@@ -88,7 +110,9 @@ The number of dimensions of the embeddings
 
 ### sourceField()
 
-> **sourceField**(`optionsOrDatatype`): [`DataType`&lt;`Type`, `any`&gt;, `Map`&lt;`string`, [`EmbeddingFunction`](EmbeddingFunction.md)&lt;`any`, `FunctionOptions`&gt;&gt;]
+```ts
+sourceField(optionsOrDatatype: DataType<Type, any> | Partial<FieldOptions<DataType<Type, any>>>): [DataType<Type, any>, Map<string, EmbeddingFunction<any, FunctionOptions>>]
+```
 
 sourceField is used in combination with `LanceSchema` to provide a declarative data model
 
@@ -110,7 +134,9 @@ lancedb.LanceSchema
 
 ### toJSON()
 
-> `abstract` **toJSON**(): `Partial`&lt;`M`&gt;
+```ts
+abstract toJSON(): Partial<M>
+```
 
 Convert the embedding function to a JSON object
 It is used to serialize the embedding function to the schema
@@ -145,7 +171,9 @@ class MyEmbeddingFunction extends EmbeddingFunction {
 
 ### vectorField()
 
-> **vectorField**(`optionsOrDatatype`?): [`DataType`&lt;`Type`, `any`&gt;, `Map`&lt;`string`, [`EmbeddingFunction`](EmbeddingFunction.md)&lt;`any`, `FunctionOptions`&gt;&gt;]
+```ts
+vectorField(optionsOrDatatype?: DataType<Type, any> | Partial<FieldOptions<DataType<Type, any>>>): [DataType<Type, any>, Map<string, EmbeddingFunction<any, FunctionOptions>>]
+```
 
 vectorField is used in combination with `LanceSchema` to provide a declarative data model
 

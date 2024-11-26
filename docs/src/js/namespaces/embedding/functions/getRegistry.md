@@ -2,11 +2,13 @@
 
 ***
 
-[@lancedb/lancedb](../../../globals.md) / [embedding](../README.md) / getRegistry
+[@lancedb/lancedb](../../../README.md) / [embedding](../README.md) / getRegistry
 
 # Function: getRegistry()
 
-> **getRegistry**(): [`EmbeddingFunctionRegistry`](../classes/EmbeddingFunctionRegistry.md)
+```ts
+function getRegistry(): EmbeddingFunctionRegistry
+```
 
 Utility function to get the global instance of the registry
 

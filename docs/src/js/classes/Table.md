@@ -2,7 +2,7 @@
 
 ***
 
-[@lancedb/lancedb](../globals.md) / Table
+[@lancedb/lancedb](../README.md) / Table
 
 # Class: `abstract` Table
 
@@ -21,7 +21,9 @@ collected.
 
 ### new Table()
 
-> **new Table**(): [`Table`](Table.md)
+```ts
+new Table(): Table
+```
 
 #### Returns
 
@@ -31,7 +33,9 @@ collected.
 
 ### name
 
-> `get` `abstract` **name**(): `string`
+```ts
+get abstract name(): string
+```
 
 Returns the name of the table
 
@@ -43,7 +47,9 @@ Returns the name of the table
 
 ### add()
 
-> `abstract` **add**(`data`, `options`?): `Promise`&lt;`void`&gt;
+```ts
+abstract add(data: Data, options?: Partial<AddDataOptions>): Promise<void>
+```
 
 Insert records into this Table.
 
@@ -63,7 +69,9 @@ Records to be inserted into the Table
 
 ### addColumns()
 
-> `abstract` **addColumns**(`newColumnTransforms`): `Promise`&lt;`void`&gt;
+```ts
+abstract addColumns(newColumnTransforms: AddColumnsSql[]): Promise<void>
+```
 
 Add new columns with defined values.
 
@@ -84,7 +92,9 @@ reference existing columns in the table.
 
 ### alterColumns()
 
-> `abstract` **alterColumns**(`columnAlterations`): `Promise`&lt;`void`&gt;
+```ts
+abstract alterColumns(columnAlterations: ColumnAlteration[]): Promise<void>
+```
 
 Alter the name or nullability of columns.
 
@@ -103,7 +113,9 @@ apply to columns.
 
 ### checkout()
 
-> `abstract` **checkout**(`version`): `Promise`&lt;`void`&gt;
+```ts
+abstract checkout(version: number): Promise<void>
+```
 
 Checks out a specific version of the table _This is an in-place operation._
 
@@ -144,7 +156,9 @@ console.log(await table.version()); // 2
 
 ### checkoutLatest()
 
-> `abstract` **checkoutLatest**(): `Promise`&lt;`void`&gt;
+```ts
+abstract checkoutLatest(): Promise<void>
+```
 
 Checkout the latest version of the table. _This is an in-place operation._
 
@@ -159,7 +173,9 @@ version of the table.
 
 ### close()
 
-> `abstract` **close**(): `void`
+```ts
+abstract close(): void
+```
 
 Close the table, releasing any underlying resources.
 
@@ -175,7 +191,9 @@ Any attempt to use the table after it is closed will result in an error.
 
 ### countRows()
 
-> `abstract` **countRows**(`filter`?): `Promise`&lt;`number`&gt;
+```ts
+abstract countRows(filter?: string): Promise<number>
+```
 
 Count the total number of rows in the dataset.
 
@@ -191,7 +209,9 @@ Count the total number of rows in the dataset.
 
 ### createIndex()
 
-> `abstract` **createIndex**(`column`, `options`?): `Promise`&lt;`void`&gt;
+```ts
+abstract createIndex(column: string, options?: Partial<IndexOptions>): Promise<void>
+```
 
 Create an index to speed up queries.
 
@@ -245,7 +265,9 @@ await table.createIndex("my_float_col");
 
 ### delete()
 
-> `abstract` **delete**(`predicate`): `Promise`&lt;`void`&gt;
+```ts
+abstract delete(predicate: string): Promise<void>
+```
 
 Delete the rows that satisfy the predicate.
 
@@ -261,7 +283,9 @@ Delete the rows that satisfy the predicate.
 
 ### display()
 
-> `abstract` **display**(): `string`
+```ts
+abstract display(): string
+```
 
 Return a brief description of the table
 
@@ -273,7 +297,9 @@ Return a brief description of the table
 
 ### dropColumns()
 
-> `abstract` **dropColumns**(`columnNames`): `Promise`&lt;`void`&gt;
+```ts
+abstract dropColumns(columnNames: string[]): Promise<void>
+```
 
 Drop one or more columns from the dataset
 
@@ -298,7 +324,9 @@ be nested column references (e.g. "a.b.c") or top-level column names
 
 ### indexStats()
 
-> `abstract` **indexStats**(`name`): `Promise`&lt;`undefined` \| [`IndexStatistics`](../interfaces/IndexStatistics.md)&gt;
+```ts
+abstract indexStats(name: string): Promise<undefined | IndexStatistics>
+```
 
 List all the stats of a specified index
 
@@ -318,7 +346,9 @@ The stats of the index. If the index does not exist, it will return undefined
 
 ### isOpen()
 
-> `abstract` **isOpen**(): `boolean`
+```ts
+abstract isOpen(): boolean
+```
 
 Return true if the table has not been closed
 
@@ -330,7 +360,9 @@ Return true if the table has not been closed
 
 ### listIndices()
 
-> `abstract` **listIndices**(): `Promise`&lt;[`IndexConfig`](../interfaces/IndexConfig.md)[]&gt;
+```ts
+abstract listIndices(): Promise<IndexConfig[]>
+```
 
 List all indices that have been created with [Table.createIndex](Table.md#createindex)
 
@@ -340,9 +372,25 @@ List all indices that have been created with [Table.createIndex](Table.md#create
 
 ***
 
+### listVersions()
+
+```ts
+abstract listVersions(): Promise<Version[]>
+```
+
+List all the versions of the table
+
+#### Returns
+
+`Promise`&lt;`Version`[]&gt;
+
+***
+
 ### mergeInsert()
 
-> `abstract` **mergeInsert**(`on`): `MergeInsertBuilder`
+```ts
+abstract mergeInsert(on: string | string[]): MergeInsertBuilder
+```
 
 #### Parameters
 
@@ -356,7 +404,9 @@ List all indices that have been created with [Table.createIndex](Table.md#create
 
 ### optimize()
 
-> `abstract` **optimize**(`options`?): `Promise`&lt;`OptimizeStats`&gt;
+```ts
+abstract optimize(options?: Partial<OptimizeOptions>): Promise<OptimizeStats>
+```
 
 Optimize the on-disk data and indices for better performance.
 
@@ -388,7 +438,7 @@ Modeled after ``VACUUM`` in PostgreSQL.
 
 #### Parameters
 
-• **options?**: `Partial`&lt;`OptimizeOptions`&gt;
+• **options?**: `Partial`&lt;[`OptimizeOptions`](../interfaces/OptimizeOptions.md)&gt;
 
 #### Returns
 
@@ -398,7 +448,9 @@ Modeled after ``VACUUM`` in PostgreSQL.
 
 ### query()
 
-> `abstract` **query**(): [`Query`](Query.md)
+```ts
+abstract query(): Query
+```
 
 Create a [Query](Query.md) Builder.
 
@@ -466,7 +518,9 @@ for await (const batch of table.query()) {
 
 ### restore()
 
-> `abstract` **restore**(): `Promise`&lt;`void`&gt;
+```ts
+abstract restore(): Promise<void>
+```
 
 Restore the table to the currently checked out version
 
@@ -487,7 +541,9 @@ out state and the read_consistency_interval, if any, will apply.
 
 ### schema()
 
-> `abstract` **schema**(): `Promise`&lt;`Schema`&lt;`any`&gt;&gt;
+```ts
+abstract schema(): Promise<Schema<any>>
+```
 
 Get the schema of the table.
 
@@ -499,61 +555,45 @@ Get the schema of the table.
 
 ### search()
 
-#### search(query)
-
-> `abstract` **search**(`query`, `queryType`, `ftsColumns`): [`VectorQuery`](VectorQuery.md)
-
-Create a search query to find the nearest neighbors
-of the given query vector, or the documents
-with the highest relevance to the query string.
-
-##### Parameters
-
-• **query**: `string`
-
-the query. This will be converted to a vector using the table's provided embedding function,
-or the query string for full-text search if `queryType` is "fts".
-
-• **queryType**: `string` =  `"auto"` \| `"fts"`
-
-the type of query to run. If "auto", the query type will be determined based on the query.
-
-• **ftsColumns**: `string[] | str` =  undefined
-
-the columns to search in. If not provided, all indexed columns will be searched.
-
-For now, this can support to search only one column.
-
-##### Returns
-
-[`VectorQuery`](VectorQuery.md)
-
-##### Note
-
-If no embedding functions are defined in the table, this will error when collecting the results.
-
-#### search(query)
-
-> `abstract` **search**(`query`): [`VectorQuery`](VectorQuery.md)
+```ts
+abstract search(
+   query: string | IntoVector, 
+   queryType?: string, 
+   ftsColumns?: string | string[]): VectorQuery | Query
+```
 
 Create a search query to find the nearest neighbors
-of the given query vector
+of the given query
 
-##### Parameters
+#### Parameters
 
-• **query**: `IntoVector`
+• **query**: `string` \| `IntoVector`
 
-the query vector
+the query, a vector or string
 
-##### Returns
+• **queryType?**: `string`
 
-[`VectorQuery`](VectorQuery.md)
+the type of the query, "vector", "fts", or "auto"
+
+• **ftsColumns?**: `string` \| `string`[]
+
+the columns to search in for full text search
+   for now, only one column can be searched at a time.
+
+when "auto" is used, if the query is a string and an embedding function is defined, it will be treated as a vector query
+if the query is a string and no embedding function is defined, it will be treated as a full text search query
+
+#### Returns
+
+[`VectorQuery`](VectorQuery.md) \| [`Query`](Query.md)
 
 ***
 
 ### toArrow()
 
-> `abstract` **toArrow**(): `Promise`&lt;`Table`&lt;`any`&gt;&gt;
+```ts
+abstract toArrow(): Promise<Table<any>>
+```
 
 Return the table as an arrow table
 
@@ -567,7 +607,9 @@ Return the table as an arrow table
 
 #### update(opts)
 
-> `abstract` **update**(`opts`): `Promise`&lt;`void`&gt;
+```ts
+abstract update(opts: object & Partial<UpdateOptions>): Promise<void>
+```
 
 Update existing records in the Table
 
@@ -587,7 +629,9 @@ table.update({where:"x = 2", values:{"vector": [10, 10]}})
 
 #### update(opts)
 
-> `abstract` **update**(`opts`): `Promise`&lt;`void`&gt;
+```ts
+abstract update(opts: object & Partial<UpdateOptions>): Promise<void>
+```
 
 Update existing records in the Table
 
@@ -607,7 +651,9 @@ table.update({where:"x = 2", valuesSql:{"x": "x + 1"}})
 
 #### update(updates, options)
 
-> `abstract` **update**(`updates`, `options`?): `Promise`&lt;`void`&gt;
+```ts
+abstract update(updates: Record<string, string> | Map<string, string>, options?: Partial<UpdateOptions>): Promise<void>
+```
 
 Update existing records in the Table
 
@@ -649,7 +695,9 @@ the update behavior
 
 ### vectorSearch()
 
-> `abstract` **vectorSearch**(`vector`): [`VectorQuery`](VectorQuery.md)
+```ts
+abstract vectorSearch(vector: IntoVector): VectorQuery
+```
 
 Search the table with a given query vector.
 
@@ -673,7 +721,9 @@ by `query`.
 
 ### version()
 
-> `abstract` **version**(): `Promise`&lt;`number`&gt;
+```ts
+abstract version(): Promise<number>
+```
 
 Retrieve the version of the table
 
@@ -685,7 +735,12 @@ Retrieve the version of the table
 
 ### parseTableData()
 
-> `static` **parseTableData**(`data`, `options`?, `streaming`?): `Promise`&lt;`object`&gt;
+```ts
+static parseTableData(
+   data: TableLike | Record<string, unknown>[], 
+   options?: Partial<CreateTableOptions>, 
+   streaming?: boolean): Promise<object>
+```
 
 #### Parameters
 
@@ -701,8 +756,12 @@ Retrieve the version of the table
 
 ##### buf
 
-> **buf**: `Buffer`
+```ts
+buf: Buffer;
+```
 
 ##### mode
 
-> **mode**: `string`
+```ts
+mode: string;
+```

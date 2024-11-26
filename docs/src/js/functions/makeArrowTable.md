@@ -2,11 +2,16 @@
 
 ***
 
-[@lancedb/lancedb](../globals.md) / makeArrowTable
+[@lancedb/lancedb](../README.md) / makeArrowTable
 
 # Function: makeArrowTable()
 
-> **makeArrowTable**(`data`, `options`?, `metadata`?): `ArrowTable`
+```ts
+function makeArrowTable(
+   data: Record<string, unknown>[], 
+   options?: Partial<MakeArrowTableOptions>, 
+   metadata?: Map<string, string>): ArrowTable
+```
 
 An enhanced version of the makeTable function from Apache Arrow
 that supports nested fields and embeddings columns.

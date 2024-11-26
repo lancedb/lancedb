@@ -2,15 +2,36 @@
 
 ***
 
-[@lancedb/lancedb](../globals.md) / Index
+[@lancedb/lancedb](../README.md) / Index
 
 # Class: Index
 
 ## Methods
 
+### bitmap()
+
+```ts
+static bitmap(): Index
+```
+
+Create a bitmap index.
+
+A `Bitmap` index stores a bitmap for each distinct value in the column for every row.
+
+This index works best for low-cardinality columns, where the number of unique values
+is small (i.e., less than a few hundreds).
+
+#### Returns
+
+[`Index`](Index.md)
+
+***
+
 ### btree()
 
-> `static` **btree**(): [`Index`](Index.md)
+```ts
+static btree(): Index
+```
 
 Create a btree index
 
@@ -36,9 +57,82 @@ block size may be added in the future.
 
 ***
 
+### fts()
+
+```ts
+static fts(options?: Partial<FtsOptions>): Index
+```
+
+Create a full text search index
+
+A full text search index is an index on a string column, so that you can conduct full
+text searches on the column.
+
+The results of a full text search are ordered by relevance measured by BM25.
+
+You can combine filters with full text search.
+
+For now, the full text search index only supports English, and doesn't support phrase search.
+
+#### Parameters
+
+• **options?**: `Partial`&lt;`FtsOptions`&gt;
+
+#### Returns
+
+[`Index`](Index.md)
+
+***
+
+### hnswPq()
+
+```ts
+static hnswPq(options?: Partial<HnswPqOptions>): Index
+```
+
+Create a hnswPq index
+
+HNSW-PQ stands for Hierarchical Navigable Small World - Product Quantization.
+It is a variant of the HNSW algorithm that uses product quantization to compress
+the vectors.
+
+#### Parameters
+
+• **options?**: `Partial`&lt;`HnswPqOptions`&gt;
+
+#### Returns
+
+[`Index`](Index.md)
+
+***
+
+### hnswSq()
+
+```ts
+static hnswSq(options?: Partial<HnswSqOptions>): Index
+```
+
+Create a hnswSq index
+
+HNSW-SQ stands for Hierarchical Navigable Small World - Scalar Quantization.
+It is a variant of the HNSW algorithm that uses scalar quantization to compress
+the vectors.
+
+#### Parameters
+
+• **options?**: `Partial`&lt;`HnswSqOptions`&gt;
+
+#### Returns
+
+[`Index`](Index.md)
+
+***
+
 ### ivfPq()
 
-> `static` **ivfPq**(`options`?): [`Index`](Index.md)
+```ts
+static ivfPq(options?: Partial<IvfPqOptions>): Index
+```
 
 Create an IvfPq index
 
@@ -69,23 +163,19 @@ currently is also a memory intensive operation.
 
 [`Index`](Index.md)
 
-### fts()
+***
 
-> `static` **fts**(`options`?): [`Index`](Index.md)
+### labelList()
 
-Create a full text search index
+```ts
+static labelList(): Index
+```
 
-This index is used to search for text data.  The index is created by tokenizing the text
-into words and then storing occurrences of these words in a data structure called inverted index
-that allows for fast search.
+Create a label list index.
 
-During a search the query is tokenized and the inverted index is used to find the rows that
-contain the query words.  The rows are then scored based on BM25 and the top scoring rows are
-sorted and returned.
-
-#### Parameters
-
-• **options?**: `Partial`&lt;[`FtsOptions`](../interfaces/FtsOptions.md)&gt;
+LabelList index is a scalar index that can be used on `List<T>` columns to
+support queries with `array_contains_all` and `array_contains_any`
+using an underlying bitmap index.
 
 #### Returns
 

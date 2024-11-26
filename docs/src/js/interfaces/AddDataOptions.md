@@ -2,7 +2,7 @@
 
 ***
 
-[@lancedb/lancedb](../globals.md) / AddDataOptions
+[@lancedb/lancedb](../README.md) / AddDataOptions
 
 # Interface: AddDataOptions
 
@@ -12,7 +12,9 @@ Options for adding data to a table.
 
 ### mode
 
-> **mode**: `"append"` \| `"overwrite"`
+```ts
+mode: "append" | "overwrite";
+```
 
 If "append" (the default) then the new data will be added to the table
 

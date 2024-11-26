@@ -8,5 +8,8 @@
     "lancedb/native.d.ts:Table"
   ],
   "useHTMLEncodedBrackets": true,
-  "disableSources": true
+  "useCodeBlocks": true,
+  "expandParameters": true,
+  "disableSources": true,
+  "mergeReadme": true
 }

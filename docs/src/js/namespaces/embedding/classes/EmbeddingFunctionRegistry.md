@@ -2,7 +2,7 @@
 
 ***
 
-[@lancedb/lancedb](../../../globals.md) / [embedding](../README.md) / EmbeddingFunctionRegistry
+[@lancedb/lancedb](../../../README.md) / [embedding](../README.md) / EmbeddingFunctionRegistry
 
 # Class: EmbeddingFunctionRegistry
 
@@ -15,7 +15,9 @@ or TextEmbeddingFunction and registering it with the registry
 
 ### new EmbeddingFunctionRegistry()
 
-> **new EmbeddingFunctionRegistry**(): [`EmbeddingFunctionRegistry`](EmbeddingFunctionRegistry.md)
+```ts
+new EmbeddingFunctionRegistry(): EmbeddingFunctionRegistry
+```
 
 #### Returns
 
@@ -25,7 +27,9 @@ or TextEmbeddingFunction and registering it with the registry
 
 ### functionToMetadata()
 
-> **functionToMetadata**(`conf`): `Record`&lt;`string`, `any`&gt;
+```ts
+functionToMetadata(conf: EmbeddingFunctionConfig): Record<string, any>
+```
 
 #### Parameters
 
@@ -39,7 +43,9 @@ or TextEmbeddingFunction and registering it with the registry
 
 ### get()
 
-> **get**&lt;`T`, `Name`&gt;(`name`): `Name` *extends* `"openai"` ? `EmbeddingFunctionCreate`&lt;[`OpenAIEmbeddingFunction`](OpenAIEmbeddingFunction.md)&gt; : `undefined` \| `EmbeddingFunctionCreate`&lt;`T`&gt;
+```ts
+get<T>(name: string): undefined | EmbeddingFunctionCreate<T>
+```
 
 Fetch an embedding function by name
 
@@ -47,23 +53,23 @@ Fetch an embedding function by name
 
 • **T** *extends* [`EmbeddingFunction`](EmbeddingFunction.md)&lt;`unknown`, `FunctionOptions`&gt;
 
-• **Name** *extends* `string` = `""`
-
 #### Parameters
 
-• **name**: `Name` *extends* `"openai"` ? `"openai"` : `string`
+• **name**: `string`
 
 The name of the function
 
 #### Returns
 
-`Name` *extends* `"openai"` ? `EmbeddingFunctionCreate`&lt;[`OpenAIEmbeddingFunction`](OpenAIEmbeddingFunction.md)&gt; : `undefined` \| `EmbeddingFunctionCreate`&lt;`T`&gt;
+`undefined` \| `EmbeddingFunctionCreate`&lt;`T`&gt;
 
 ***
 
 ### getTableMetadata()
 
-> **getTableMetadata**(`functions`): `Map`&lt;`string`, `string`&gt;
+```ts
+getTableMetadata(functions: EmbeddingFunctionConfig[]): Map<string, string>
+```
 
 #### Parameters
 
@@ -75,9 +81,25 @@ The name of the function
 
 ***
 
+### length()
+
+```ts
+length(): number
+```
+
+Get the number of registered functions
+
+#### Returns
+
+`number`
+
+***
+
 ### register()
 
-> **register**&lt;`T`&gt;(`this`, `alias`?): (`ctor`) => `any`
+```ts
+register<T>(this: EmbeddingFunctionRegistry, alias?: string): (ctor: T) => any
+```
 
 Register an embedding function
 
@@ -111,7 +133,9 @@ Error if the function is already registered
 
 ### reset()
 
-> **reset**(`this`): `void`
+```ts
+reset(this: EmbeddingFunctionRegistry): void
+```
 
 reset the registry to the initial state
 

@@ -2,21 +2,52 @@
 
 ***
 
-[@lancedb/lancedb](../globals.md) / CreateTableOptions
+[@lancedb/lancedb](../README.md) / CreateTableOptions
 
 # Interface: CreateTableOptions
 
 ## Properties
 
+### dataStorageVersion?
+
+```ts
+optional dataStorageVersion: string;
+```
+
+The version of the data storage format to use.
+
+The default is `stable`.
+Set to "legacy" to use the old format.
+
+***
+
 ### embeddingFunction?
 
-> `optional` **embeddingFunction**: [`EmbeddingFunctionConfig`](../namespaces/embedding/interfaces/EmbeddingFunctionConfig.md)
+```ts
+optional embeddingFunction: EmbeddingFunctionConfig;
+```
+
+***
+
+### enableV2ManifestPaths?
+
+```ts
+optional enableV2ManifestPaths: boolean;
+```
+
+Use the new V2 manifest paths. These paths provide more efficient
+opening of datasets with many versions on object stores.  WARNING:
+turning this on will make the dataset unreadable for older versions
+of LanceDB (prior to 0.10.0). To migrate an existing dataset, instead
+use the LocalTable#migrateManifestPathsV2 method.
 
 ***
 
 ### existOk
 
-> **existOk**: `boolean`
+```ts
+existOk: boolean;
+```
 
 If this is true and the table already exists and the mode is "create"
 then no error will be raised.
@@ -25,7 +56,9 @@ then no error will be raised.
 
 ### mode
 
-> **mode**: `"overwrite"` \| `"create"`
+```ts
+mode: "overwrite" | "create";
+```
 
 The mode to use when creating the table.
 
@@ -39,13 +72,17 @@ If this is set to "overwrite" then any existing table will be replaced.
 
 ### schema?
 
-> `optional` **schema**: `SchemaLike`
+```ts
+optional schema: SchemaLike;
+```
 
 ***
 
 ### storageOptions?
 
-> `optional` **storageOptions**: `Record`&lt;`string`, `string`&gt;
+```ts
+optional storageOptions: Record<string, string>;
+```
 
 Configuration for object storage.
 
@@ -58,8 +95,12 @@ The available options are described at https://lancedb.github.io/lancedb/guides/
 
 ### useLegacyFormat?
 
-> `optional` **useLegacyFormat**: `boolean`
+```ts
+optional useLegacyFormat: boolean;
+```
 
 If true then data files will be written with the legacy format
 
-The default is true while the new format is in beta
+The default is false.
+
+Deprecated. Use data storage version instead.

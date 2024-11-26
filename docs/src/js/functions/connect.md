@@ -2,13 +2,15 @@
 
 ***
 
-[@lancedb/lancedb](../globals.md) / connect
+[@lancedb/lancedb](../README.md) / connect
 
 # Function: connect()
 
 ## connect(uri, opts)
 
-> **connect**(`uri`, `opts`?): `Promise`&lt;[`Connection`](../classes/Connection.md)&gt;
+```ts
+function connect(uri: string, opts?: Partial<ConnectionOptions>): Promise<Connection>
+```
 
 Connect to a LanceDB instance at the given URI.
 
@@ -25,7 +27,7 @@ Accepted formats:
 The uri of the database. If the database uri starts
 with `db://` then it connects to a remote database.
 
-• **opts?**: `Partial`&lt;[`ConnectionOptions`](../interfaces/ConnectionOptions.md) \| `RemoteConnectionOptions`&gt;
+• **opts?**: `Partial`&lt;[`ConnectionOptions`](../interfaces/ConnectionOptions.md)&gt;
 
 ### Returns
 
@@ -50,7 +52,9 @@ const conn = await connect(
 
 ## connect(opts)
 
-> **connect**(`opts`): `Promise`&lt;[`Connection`](../classes/Connection.md)&gt;
+```ts
+function connect(opts: Partial<ConnectionOptions> & object): Promise<Connection>
+```
 
 Connect to a LanceDB instance at the given URI.
 
@@ -62,7 +66,7 @@ Accepted formats:
 
 ### Parameters
 
-• **opts**: `Partial`&lt;[`ConnectionOptions`](../interfaces/ConnectionOptions.md) \| `RemoteConnectionOptions`&gt; & `object`
+• **opts**: `Partial`&lt;[`ConnectionOptions`](../interfaces/ConnectionOptions.md)&gt; & `object`
 
 ### Returns
 
