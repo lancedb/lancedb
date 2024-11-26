@@ -55,6 +55,9 @@ plugins:
             show_signature_annotations: true
             show_root_heading: true
             members_order: source
+            docstring_section_style: list
+            signature_crossrefs: true
+            separate_signature: true
           import:
             # for cross references
             - https://arrow.apache.org/docs/objects.inv
