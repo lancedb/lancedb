@@ -160,10 +160,10 @@ impl<S: HttpSend> ConnectionInternal for RemoteDatabase<S> {
                     }
 
                     // This should not happen, as we explicitly set the mode to overwrite and the server
-                    // shouldn't have an error if the table already exists.
+                    // shouldn't return an error if the table already exists.
                     //
-                    // However if user tries this against an older version of the server that doesn't
-                    // support overwrite mode (mode query param ignored), we'll get this error ^^
+                    // However if the server is an older version that doesn't support the mode parameter, 
+                    // then we'll get the 400 response.
                     CreateTableMode::Overwrite => Err(crate::Error::Http {
                         source: format!(
                             "unexpected response from server for create mode overwrite: {}",
