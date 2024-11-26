@@ -96,6 +96,16 @@ impl<S: HttpSend> std::fmt::Display for RemoteDatabase<S> {
     }
 }
 
+impl From<&CreateTableMode> for &'static str {
+    fn from(val: &CreateTableMode) -> Self {
+        match val {
+            CreateTableMode::Create => "create",
+            CreateTableMode::Overwrite => "overwrite",
+            CreateTableMode::ExistOk(_) => "exist_ok",
+        }
+    }
+}
+
 #[async_trait]
 impl<S: HttpSend> ConnectionInternal for RemoteDatabase<S> {
     async fn table_names(&self, options: TableNamesBuilder) -> Result<Vec<String>> {
@@ -131,16 +141,10 @@ impl<S: HttpSend> ConnectionInternal for RemoteDatabase<S> {
             .await
             .unwrap()?;
 
-        let mode = match options.mode {
-            CreateTableMode::Create => "create",
-            CreateTableMode::Overwrite => "overwrite",
-            CreateTableMode::ExistOk(_) => "exist_ok",
-        };
-
         let req = self
             .client
             .post(&format!("/v1/table/{}/create/", options.name))
-            .query(&[("mode", mode)])
+            .query(&[("mode", Into::<&str>::into(&options.mode))])
             .body(data_buffer)
             .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE);
 
