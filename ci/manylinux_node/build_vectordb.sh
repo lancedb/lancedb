@@ -18,4 +18,4 @@ FILE=$HOME/.bashrc && test -f $FILE && source $FILE
 cd node
 npm ci
 npm run build-release
-npm run pack-build -t $TARGET_TRIPLE
+npm run pack-build -- -t $TARGET_TRIPLE

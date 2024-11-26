@@ -340,6 +340,50 @@ jobs:
           path: |
             node/dist/lancedb-vectordb-win32*.tgz
 
+  node-windows-arm64:
+    name: vectordb ${{ matrix.config.arch }}-pc-windows-msvc
+    runs-on: ubuntu-latest
+    container: alpine:edge
+    strategy:
+      fail-fast: false
+      matrix:
+        config:
+          # - arch: x86_64
+          - arch: aarch64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          apk add protobuf-dev curl clang lld llvm19 grep npm bash msitools sed
+          curl --proto '=https' --tlsv1.3 -sSf https://raw.githubusercontent.com/rust-lang/rustup/refs/heads/master/rustup-init.sh | sh -s -- -y --default-toolchain 1.80.0
+          echo "source $HOME/.cargo/env" >> saved_env
+          echo "export CC=clang" >> saved_env
+          echo "export AR=llvm-ar" >> saved_env
+          source "$HOME/.cargo/env"
+          rustup target add ${{ matrix.config.arch }}-pc-windows-msvc --toolchain 1.80.0
+          (mkdir -p sysroot && cd sysroot && sh ../ci/sysroot-${{ matrix.config.arch }}-pc-windows-msvc.sh)
+          echo "export C_INCLUDE_PATH=/usr/${{ matrix.config.arch }}-pc-windows-msvc/usr/include" >> saved_env
+          echo "export CARGO_BUILD_TARGET=${{ matrix.config.arch }}-pc-windows-msvc" >> saved_env
+      - name: Configure x86_64 build
+        if: ${{ matrix.config.arch == 'x86_64' }}
+        run: |
+          echo "export RUSTFLAGS='-Ctarget-cpu=haswell -Ctarget-feature=+crt-static,+avx2,+fma,+f16c -Clinker=lld -Clink-arg=/LIBPATH:/usr/x86_64-pc-windows-msvc/usr/lib'" >> saved_env
+      - name: Configure aarch64 build
+        if: ${{ matrix.config.arch == 'aarch64' }}
+        run: |
+          echo "export RUSTFLAGS='-Ctarget-feature=+crt-static,+neon,+fp16,+fhm,+dotprod -Clinker=lld -Clink-arg=/LIBPATH:/usr/aarch64-pc-windows-msvc/usr/lib -Clink-arg=arm64rt.lib'" >> saved_env
+      - name: Build Windows Artifacts
+        run: |
+          source ./saved_env
+          bash ci/manylinux_node/build_vectordb.sh ${{ matrix.config.arch }} ${{ matrix.config.arch }}-pc-windows-msvc
+      - name: Upload Windows Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-native-windows-${{ matrix.config.arch }}
+          path: |
+            node/dist/lancedb-vectordb-win32*.tgz
+
   # TODO: re-enable once working https://github.com/lancedb/lancedb/pull/1831
   # node-windows-arm64:
   #   name: vectordb win32-arm64-msvc
@@ -478,6 +522,52 @@ jobs:
           path: |
             nodejs/dist/*.node
 
+  nodejs-windows-arm64:
+    name: lancedb ${{ matrix.config.arch }}-pc-windows-msvc
+    runs-on: ubuntu-latest
+    container: alpine:edge
+    strategy:
+      fail-fast: false
+      matrix:
+        config:
+          # - arch: x86_64
+          - arch: aarch64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          apk add protobuf-dev curl clang lld llvm19 grep npm bash msitools sed
+          curl --proto '=https' --tlsv1.3 -sSf https://raw.githubusercontent.com/rust-lang/rustup/refs/heads/master/rustup-init.sh | sh -s -- -y --default-toolchain 1.80.0
+          echo "source $HOME/.cargo/env" >> saved_env
+          echo "export CC=clang" >> saved_env
+          echo "export AR=llvm-ar" >> saved_env
+          source "$HOME/.cargo/env"
+          rustup target add ${{ matrix.config.arch }}-pc-windows-msvc --toolchain 1.80.0
+          (mkdir -p sysroot && cd sysroot && sh ../ci/sysroot-${{ matrix.config.arch }}-pc-windows-msvc.sh)
+          echo "export C_INCLUDE_PATH=/usr/${{ matrix.config.arch }}-pc-windows-msvc/usr/include" >> saved_env
+          echo "export CARGO_BUILD_TARGET=${{ matrix.config.arch }}-pc-windows-msvc" >> saved_env
+          printf '#!/bin/sh\ncargo "$@"' > $HOME/.cargo/bin/cargo-xwin
+          chmod u+x $HOME/.cargo/bin/cargo-xwin
+      - name: Configure x86_64 build
+        if: ${{ matrix.config.arch == 'x86_64' }}
+        run: |
+          echo "export RUSTFLAGS='-Ctarget-cpu=haswell -Ctarget-feature=+crt-static,+avx2,+fma,+f16c -Clinker=lld -Clink-arg=/LIBPATH:/usr/x86_64-pc-windows-msvc/usr/lib'" >> saved_env
+      - name: Configure aarch64 build
+        if: ${{ matrix.config.arch == 'aarch64' }}
+        run: |
+          echo "export RUSTFLAGS='-Ctarget-feature=+crt-static,+neon,+fp16,+fhm,+dotprod -Clinker=lld -Clink-arg=/LIBPATH:/usr/aarch64-pc-windows-msvc/usr/lib -Clink-arg=arm64rt.lib'" >> saved_env
+      - name: Build Windows Artifacts
+        run: |
+          source ./saved_env
+          bash ci/manylinux_node/build_lancedb.sh ${{ matrix.config.arch }}
+      - name: Upload Windows Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nodejs-native-windows-${{ matrix.config.arch }}
+          path: |
+            nodejs/dist/*.node
+
   # TODO: re-enable once working https://github.com/lancedb/lancedb/pull/1831
   # nodejs-windows-arm64:
   #   name: lancedb win32-arm64-msvc
@@ -574,7 +664,7 @@ jobs:
 
   release:
     name: vectordb NPM Publish
-    needs: [node, node-macos, node-linux-gnu, node-linux-musl, node-windows]
+    needs: [node, node-macos, node-linux-gnu, node-linux-musl, node-windows, node-windows-arm64]
     runs-on: ubuntu-latest
     # Only runs on tags that matches the make-release action
     if: startsWith(github.ref, 'refs/tags/v')
@@ -614,7 +704,7 @@ jobs:
 
   release-nodejs:
     name: lancedb NPM Publish
-    needs: [nodejs-macos, nodejs-linux-gnu, nodejs-linux-musl, nodejs-windows]
+    needs: [nodejs-macos, nodejs-linux-gnu, nodejs-linux-musl, nodejs-windows, nodejs-windows-arm64]
     runs-on: ubuntu-latest
     # Only runs on tags that matches the make-release action
     if: startsWith(github.ref, 'refs/tags/v')
