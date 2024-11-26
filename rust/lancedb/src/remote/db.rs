@@ -479,7 +479,7 @@ mod tests {
             .await
             .unwrap();
 
-        let called = called.get().clone().unwrap_or(&false).clone();
+        let called = *called.get().unwrap_or(&false);
         assert!(called);
     }
 
