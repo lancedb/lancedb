@@ -2,7 +2,7 @@
 
 ***
 
-[@lancedb/lancedb](../../../README.md) / [embedding](../README.md) / TextEmbeddingFunction
+[@lancedb/lancedb](../../../globals.md) / [embedding](../README.md) / TextEmbeddingFunction
 
 # Class: `abstract` TextEmbeddingFunction&lt;M&gt;
 

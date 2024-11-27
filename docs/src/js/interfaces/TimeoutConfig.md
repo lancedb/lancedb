@@ -2,7 +2,7 @@
 
 ***
 
-[@lancedb/lancedb](../README.md) / TimeoutConfig
+[@lancedb/lancedb](../globals.md) / TimeoutConfig
 
 # Interface: TimeoutConfig
 

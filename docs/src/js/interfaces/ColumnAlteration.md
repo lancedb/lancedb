@@ -2,7 +2,7 @@
 
 ***
 
-[@lancedb/lancedb](../README.md) / ColumnAlteration
+[@lancedb/lancedb](../globals.md) / ColumnAlteration
 
 # Interface: ColumnAlteration
 

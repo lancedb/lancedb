@@ -2,7 +2,7 @@
 
 ***
 
-[@lancedb/lancedb](../README.md) / RecordBatchIterator
+[@lancedb/lancedb](../globals.md) / RecordBatchIterator
 
 # Class: RecordBatchIterator
 

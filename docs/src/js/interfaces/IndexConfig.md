@@ -2,7 +2,7 @@
 
 ***
 
-[@lancedb/lancedb](../README.md) / IndexConfig
+[@lancedb/lancedb](../globals.md) / IndexConfig
 
 # Interface: IndexConfig
 

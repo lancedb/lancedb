@@ -2,7 +2,7 @@
 
 ***
 
-[@lancedb/lancedb](../../../README.md) / [embedding](../README.md) / EmbeddingFunctionConfig
+[@lancedb/lancedb](../../../globals.md) / [embedding](../README.md) / EmbeddingFunctionConfig
 
 # Interface: EmbeddingFunctionConfig
 

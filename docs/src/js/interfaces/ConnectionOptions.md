@@ -2,7 +2,7 @@
 
 ***
 
-[@lancedb/lancedb](../README.md) / ConnectionOptions
+[@lancedb/lancedb](../globals.md) / ConnectionOptions
 
 # Interface: ConnectionOptions
 

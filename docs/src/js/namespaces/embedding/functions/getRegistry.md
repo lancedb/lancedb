@@ -2,7 +2,7 @@
 
 ***
 
-[@lancedb/lancedb](../../../README.md) / [embedding](../README.md) / getRegistry
+[@lancedb/lancedb](../../../globals.md) / [embedding](../README.md) / getRegistry
 
 # Function: getRegistry()
 

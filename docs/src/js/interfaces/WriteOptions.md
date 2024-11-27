@@ -2,7 +2,7 @@
 
 ***
 
-[@lancedb/lancedb](../README.md) / WriteOptions
+[@lancedb/lancedb](../globals.md) / WriteOptions
 
 # Interface: WriteOptions
 

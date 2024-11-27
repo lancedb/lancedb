@@ -2,7 +2,7 @@
 
 ***
 
-[@lancedb/lancedb](../README.md) / AddColumnsSql
+[@lancedb/lancedb](../globals.md) / AddColumnsSql
 
 # Interface: AddColumnsSql
 

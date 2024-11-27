@@ -2,7 +2,7 @@
 
 ***
 
-[@lancedb/lancedb](../README.md) / AddDataOptions
+[@lancedb/lancedb](../globals.md) / AddDataOptions
 
 # Interface: AddDataOptions
 

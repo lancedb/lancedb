@@ -2,7 +2,7 @@
 
 ***
 
-[@lancedb/lancedb](../README.md) / Query
+[@lancedb/lancedb](../globals.md) / Query
 
 # Class: Query
 
@@ -127,8 +127,7 @@ Generates an explanation of the query execution plan.
 #### Parameters
 
 • **verbose**: `boolean` = `false`
-
-If true, provides a more detailed explanation. Defaults to false.
+  If true, provides a more detailed explanation. Defaults to false.
 
 #### Returns
 

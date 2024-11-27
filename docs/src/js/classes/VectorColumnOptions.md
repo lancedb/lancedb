@@ -2,7 +2,7 @@
 
 ***
 
-[@lancedb/lancedb](../README.md) / VectorColumnOptions
+[@lancedb/lancedb](../globals.md) / VectorColumnOptions
 
 # Class: VectorColumnOptions
 

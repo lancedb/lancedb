@@ -2,7 +2,7 @@
 
 ***
 
-[@lancedb/lancedb](../README.md) / IvfPqOptions
+[@lancedb/lancedb](../globals.md) / IvfPqOptions
 
 # Interface: IvfPqOptions
 

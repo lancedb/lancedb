@@ -2,7 +2,7 @@
 
 ***
 
-[@lancedb/lancedb](../README.md) / VectorQuery
+[@lancedb/lancedb](../globals.md) / VectorQuery
 
 # Class: VectorQuery
 
@@ -250,8 +250,7 @@ Generates an explanation of the query execution plan.
 #### Parameters
 
 • **verbose**: `boolean` = `false`
-
-If true, provides a more detailed explanation. Defaults to false.
+  If true, provides a more detailed explanation. Defaults to false.
 
 #### Returns
 

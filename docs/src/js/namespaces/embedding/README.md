@@ -2,7 +2,7 @@
 
 ***
 
-[@lancedb/lancedb](../../README.md) / embedding
+[@lancedb/lancedb](../../globals.md) / embedding
 
 # embedding
 

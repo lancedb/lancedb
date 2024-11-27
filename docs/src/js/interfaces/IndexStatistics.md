@@ -2,7 +2,7 @@
 
 ***
 
-[@lancedb/lancedb](../README.md) / IndexStatistics
+[@lancedb/lancedb](../globals.md) / IndexStatistics
 
 # Interface: IndexStatistics
 

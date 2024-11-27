@@ -2,7 +2,7 @@
 
 ***
 
-[@lancedb/lancedb](../README.md) / OptimizeOptions
+[@lancedb/lancedb](../globals.md) / OptimizeOptions
 
 # Interface: OptimizeOptions
 

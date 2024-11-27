@@ -2,7 +2,7 @@
 
 ***
 
-[@lancedb/lancedb](../../../README.md) / [embedding](../README.md) / EmbeddingFunctionRegistry
+[@lancedb/lancedb](../../../globals.md) / [embedding](../README.md) / EmbeddingFunctionRegistry
 
 # Class: EmbeddingFunctionRegistry
 
@@ -56,8 +56,7 @@ Fetch an embedding function by name
 #### Parameters
 
 • **name**: `string`
-
-The name of the function
+  The name of the function
 
 #### Returns
 

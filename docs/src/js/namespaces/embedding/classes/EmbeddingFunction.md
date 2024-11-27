@@ -2,7 +2,7 @@
 
 ***
 
-[@lancedb/lancedb](../../../README.md) / [embedding](../README.md) / EmbeddingFunction
+[@lancedb/lancedb](../../../globals.md) / [embedding](../README.md) / EmbeddingFunction
 
 # Class: `abstract` EmbeddingFunction&lt;T, M&gt;
 
@@ -119,8 +119,7 @@ sourceField is used in combination with `LanceSchema` to provide a declarative d
 #### Parameters
 
 • **optionsOrDatatype**: `DataType`&lt;`Type`, `any`&gt; \| `Partial`&lt;`FieldOptions`&lt;`DataType`&lt;`Type`, `any`&gt;&gt;&gt;
-
-The options for the field or the datatype
+  The options for the field or the datatype
 
 #### Returns
 

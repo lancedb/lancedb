@@ -2,7 +2,7 @@
 
 ***
 
-[@lancedb/lancedb](../README.md) / MakeArrowTableOptions
+[@lancedb/lancedb](../globals.md) / MakeArrowTableOptions
 
 # Class: MakeArrowTableOptions
 

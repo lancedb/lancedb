@@ -2,7 +2,7 @@
 
 ***
 
-[@lancedb/lancedb](../README.md) / UpdateOptions
+[@lancedb/lancedb](../globals.md) / UpdateOptions
 
 # Interface: UpdateOptions
 

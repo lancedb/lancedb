@@ -2,7 +2,7 @@
 
 ***
 
-[@lancedb/lancedb](../../../README.md) / [embedding](../README.md) / LanceSchema
+[@lancedb/lancedb](../../../globals.md) / [embedding](../README.md) / LanceSchema
 
 # Function: LanceSchema()
 

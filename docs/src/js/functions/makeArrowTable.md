@@ -2,14 +2,14 @@
 
 ***
 
-[@lancedb/lancedb](../README.md) / makeArrowTable
+[@lancedb/lancedb](../globals.md) / makeArrowTable
 
 # Function: makeArrowTable()
 
 ```ts
 function makeArrowTable(
-   data: Record<string, unknown>[], 
-   options?: Partial<MakeArrowTableOptions>, 
+   data: Record<string, unknown>[],
+   options?: Partial<MakeArrowTableOptions>,
    metadata?: Map<string, string>): ArrowTable
 ```
 

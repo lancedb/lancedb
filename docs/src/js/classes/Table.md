@@ -2,7 +2,7 @@
 
 ***
 
-[@lancedb/lancedb](../README.md) / Table
+[@lancedb/lancedb](../globals.md) / Table
 
 # Class: `abstract` Table
 
@@ -56,8 +56,7 @@ Insert records into this Table.
 #### Parameters
 
 • **data**: [`Data`](../type-aliases/Data.md)
-
-Records to be inserted into the Table
+  Records to be inserted into the Table
 
 • **options?**: `Partial`&lt;[`AddDataOptions`](../interfaces/AddDataOptions.md)&gt;
 
@@ -78,11 +77,10 @@ Add new columns with defined values.
 #### Parameters
 
 • **newColumnTransforms**: [`AddColumnsSql`](../interfaces/AddColumnsSql.md)[]
-
-pairs of column names and
-the SQL expression to use to calculate the value of the new column. These
-expressions will be evaluated for each row in the table, and can
-reference existing columns in the table.
+  pairs of column names and
+  the SQL expression to use to calculate the value of the new column. These
+  expressions will be evaluated for each row in the table, and can
+  reference existing columns in the table.
 
 #### Returns
 
@@ -101,9 +99,8 @@ Alter the name or nullability of columns.
 #### Parameters
 
 • **columnAlterations**: [`ColumnAlteration`](../interfaces/ColumnAlteration.md)[]
-
-One or more alterations to
-apply to columns.
+  One or more alterations to
+  apply to columns.
 
 #### Returns
 
@@ -129,8 +126,7 @@ wish to return to standard mode, call `checkoutLatest`.
 #### Parameters
 
 • **version**: `number`
-
-The version to checkout
+  The version to checkout
 
 #### Returns
 
@@ -311,10 +307,9 @@ then call ``cleanup_files`` to remove the old files.
 #### Parameters
 
 • **columnNames**: `string`[]
-
-The names of the columns to drop. These can
-be nested column references (e.g. "a.b.c") or top-level column names
-(e.g. "a").
+  The names of the columns to drop. These can
+  be nested column references (e.g. "a.b.c") or top-level column names
+  (e.g. "a").
 
 #### Returns
 
@@ -333,8 +328,7 @@ List all the stats of a specified index
 #### Parameters
 
 • **name**: `string`
-
-The name of the index.
+  The name of the index.
 
 #### Returns
 
@@ -557,8 +551,8 @@ Get the schema of the table.
 
 ```ts
 abstract search(
-   query: string | IntoVector, 
-   queryType?: string, 
+   query: string | IntoVector,
+   queryType?: string,
    ftsColumns?: string | string[]): VectorQuery | Query
 ```
 
@@ -568,20 +562,16 @@ of the given query
 #### Parameters
 
 • **query**: `string` \| `IntoVector`
-
-the query, a vector or string
+  the query, a vector or string
 
 • **queryType?**: `string`
-
-the type of the query, "vector", "fts", or "auto"
+  the type of the query, "vector", "fts", or "auto"
 
 • **ftsColumns?**: `string` \| `string`[]
-
-the columns to search in for full text search
-   for now, only one column can be searched at a time.
-
-when "auto" is used, if the query is a string and an embedding function is defined, it will be treated as a vector query
-if the query is a string and no embedding function is defined, it will be treated as a full text search query
+  the columns to search in for full text search
+  for now, only one column can be searched at a time.
+  when "auto" is used, if the query is a string and an embedding function is defined, it will be treated as a vector query
+  if the query is a string and no embedding function is defined, it will be treated as a full text search query
 
 #### Returns
 
@@ -673,19 +663,16 @@ repeatedly calilng this method.
 ##### Parameters
 
 • **updates**: `Record`&lt;`string`, `string`&gt; \| `Map`&lt;`string`, `string`&gt;
-
-the
-columns to update
-
-Keys in the map should specify the name of the column to update.
-Values in the map provide the new value of the column.  These can
-be SQL literal strings (e.g. "7" or "'foo'") or they can be expressions
-based on the row being updated (e.g. "my_col + 1")
+  the
+  columns to update
+  Keys in the map should specify the name of the column to update.
+  Values in the map provide the new value of the column.  These can
+  be SQL literal strings (e.g. "7" or "'foo'") or they can be expressions
+  based on the row being updated (e.g. "my_col + 1")
 
 • **options?**: `Partial`&lt;[`UpdateOptions`](../interfaces/UpdateOptions.md)&gt;
-
-additional options to control
-the update behavior
+  additional options to control
+  the update behavior
 
 ##### Returns
 
@@ -737,8 +724,8 @@ Retrieve the version of the table
 
 ```ts
 static parseTableData(
-   data: TableLike | Record<string, unknown>[], 
-   options?: Partial<CreateTableOptions>, 
+   data: TableLike | Record<string, unknown>[],
+   options?: Partial<CreateTableOptions>,
    streaming?: boolean): Promise<object>
 ```
 

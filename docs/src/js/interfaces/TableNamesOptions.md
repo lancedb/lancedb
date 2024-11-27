@@ -2,7 +2,7 @@
 
 ***
 
-[@lancedb/lancedb](../README.md) / TableNamesOptions
+[@lancedb/lancedb](../globals.md) / TableNamesOptions
 
 # Interface: TableNamesOptions
 

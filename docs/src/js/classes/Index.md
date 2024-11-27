@@ -2,7 +2,7 @@
 
 ***
 
-[@lancedb/lancedb](../README.md) / Index
+[@lancedb/lancedb](../globals.md) / Index
 
 # Class: Index
 

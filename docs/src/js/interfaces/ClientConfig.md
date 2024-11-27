@@ -2,7 +2,7 @@
 
 ***
 
-[@lancedb/lancedb](../README.md) / ClientConfig
+[@lancedb/lancedb](../globals.md) / ClientConfig
 
 # Interface: ClientConfig
 

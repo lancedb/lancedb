@@ -2,7 +2,7 @@
 
 ***
 
-[@lancedb/lancedb](../README.md) / QueryBase
+[@lancedb/lancedb](../globals.md) / QueryBase
 
 # Class: QueryBase&lt;NativeQueryType&gt;
 
@@ -120,8 +120,7 @@ Generates an explanation of the query execution plan.
 #### Parameters
 
 • **verbose**: `boolean` = `false`
-
-If true, provides a more detailed explanation. Defaults to false.
+  If true, provides a more detailed explanation. Defaults to false.
 
 #### Returns
 

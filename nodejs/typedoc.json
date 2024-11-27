@@ -10,6 +10,5 @@
   "useHTMLEncodedBrackets": true,
   "useCodeBlocks": true,
   "expandParameters": true,
-  "disableSources": true,
-  "mergeReadme": true
+  "disableSources": true
 }

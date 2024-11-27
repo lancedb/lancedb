@@ -2,7 +2,7 @@
 
 ***
 
-[@lancedb/lancedb](../README.md) / WriteMode
+[@lancedb/lancedb](../globals.md) / WriteMode
 
 # Enumeration: WriteMode
 

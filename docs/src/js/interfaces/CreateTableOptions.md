@@ -2,7 +2,7 @@
 
 ***
 
-[@lancedb/lancedb](../README.md) / CreateTableOptions
+[@lancedb/lancedb](../globals.md) / CreateTableOptions
 
 # Interface: CreateTableOptions
 

@@ -2,7 +2,7 @@
 
 ***
 
-[@lancedb/lancedb](../README.md) / Connection
+[@lancedb/lancedb](../globals.md) / Connection
 
 # Class: `abstract` Connection
 
@@ -59,8 +59,8 @@ Any attempt to use the connection after it is closed will result in an error.
 
 ```ts
 abstract createEmptyTable(
-   name: string, 
-   schema: SchemaLike, 
+   name: string,
+   schema: SchemaLike,
    options?: Partial<CreateTableOptions>): Promise<Table>
 ```
 
@@ -68,9 +68,13 @@ Creates a new empty Table
 
 #### Parameters
 
-- **name**: `string` The name of the table.
-- **schema**: `SchemaLike` The schema of the table
-- **options?**: `Partial`&lt;[`CreateTableOptions`](../interfaces/CreateTableOptions.md)&gt;
+• **name**: `string`
+  The name of the table.
+
+• **schema**: `SchemaLike`
+  The schema of the table
+
+• **options?**: `Partial`&lt;[`CreateTableOptions`](../interfaces/CreateTableOptions.md)&gt;
 
 #### Returns
 
@@ -91,8 +95,7 @@ Creates a new Table and initialize it with new data.
 ##### Parameters
 
 • **options**: `object` & `Partial`&lt;[`CreateTableOptions`](../interfaces/CreateTableOptions.md)&gt;
-
-The options object.
+  The options object.
 
 ##### Returns
 
@@ -102,8 +105,8 @@ The options object.
 
 ```ts
 abstract createTable(
-   name: string, 
-   data: TableLike | Record<string, unknown>[], 
+   name: string,
+   data: TableLike | Record<string, unknown>[],
    options?: Partial<CreateTableOptions>): Promise<Table>
 ```
 
@@ -112,13 +115,11 @@ Creates a new Table and initialize it with new data.
 ##### Parameters
 
 • **name**: `string`
-
-The name of the table.
+  The name of the table.
 
 • **data**: `TableLike` \| `Record`&lt;`string`, `unknown`&gt;[]
-
-Non-empty Array of Records
-to be inserted into the table
+  Non-empty Array of Records
+  to be inserted into the table
 
 • **options?**: `Partial`&lt;[`CreateTableOptions`](../interfaces/CreateTableOptions.md)&gt;
 
@@ -153,8 +154,7 @@ Drop an existing table.
 #### Parameters
 
 • **name**: `string`
-
-The name of the table to drop.
+  The name of the table to drop.
 
 #### Returns
 
@@ -187,8 +187,7 @@ Open a table in the database.
 #### Parameters
 
 • **name**: `string`
-
-The name of the table
+  The name of the table
 
 • **options?**: `Partial`&lt;`OpenTableOptions`&gt;
 
@@ -211,9 +210,8 @@ Tables will be returned in lexicographical order.
 #### Parameters
 
 • **options?**: `Partial`&lt;[`TableNamesOptions`](../interfaces/TableNamesOptions.md)&gt;
-
-options to control the
-paging / start point
+  options to control the
+  paging / start point
 
 #### Returns
 

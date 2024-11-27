@@ -2,7 +2,7 @@
 
 ***
 
-[@lancedb/lancedb](../README.md) / RetryConfig
+[@lancedb/lancedb](../globals.md) / RetryConfig
 
 # Interface: RetryConfig
 

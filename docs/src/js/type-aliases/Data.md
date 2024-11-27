@@ -2,7 +2,7 @@
 
 ***
 
-[@lancedb/lancedb](../README.md) / Data
+[@lancedb/lancedb](../globals.md) / Data
 
 # Type Alias: Data
 

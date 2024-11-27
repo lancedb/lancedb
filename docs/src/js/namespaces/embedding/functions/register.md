@@ -2,7 +2,7 @@
 
 ***
 
-[@lancedb/lancedb](../../../README.md) / [embedding](../README.md) / register
+[@lancedb/lancedb](../../../globals.md) / [embedding](../README.md) / register
 
 # Function: register()
 
