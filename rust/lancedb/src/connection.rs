@@ -720,7 +720,7 @@ impl ConnectBuilder {
             message: "An api_key is required when connecting to LanceDb Cloud".to_string(),
         })?;
 
-        let mut storage_options = StorageOptions(self.storage_options.clone());
+        let storage_options = StorageOptions(self.storage_options.clone());
         let internal = Arc::new(crate::remote::db::RemoteDatabase::try_new(
             &self.uri,
             &api_key,

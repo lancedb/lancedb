@@ -46,7 +46,6 @@ struct ListTablesResponse {
 pub struct RemoteDatabase<S: HttpSend = Sender> {
     client: RestfulLanceDbClient<S>,
     table_cache: Cache<String, ()>,
-    options: RemoteOptions,
 }
 
 impl RemoteDatabase {
@@ -75,7 +74,6 @@ impl RemoteDatabase {
         Ok(Self {
             client,
             table_cache,
-            options,
         })
     }
 }
@@ -96,7 +94,6 @@ mod test_utils {
             Self {
                 client,
                 table_cache: Cache::new(0),
-                options: RemoteOptions::default(),
             }
         }
     }
@@ -286,7 +283,6 @@ mod tests {
     use arrow_schema::{DataType, Field, Schema};
 
     use crate::connection::ConnectBuilder;
-    use crate::remote::client::test_utils::client_with_handler;
     use crate::{
         connection::CreateTableMode,
         remote::{ARROW_STREAM_CONTENT_TYPE, JSON_CONTENT_TYPE},
