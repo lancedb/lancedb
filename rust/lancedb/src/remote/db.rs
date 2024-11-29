@@ -255,7 +255,7 @@ impl<S: HttpSend> ConnectionInternal for RemoteDatabase<S> {
     }
 }
 
-/// A subset of StorageOptions that are compatible with Remote LanceDB client
+/// RemoteOptions contains a subset of StorageOptions that are compatible with Remote LanceDB connections
 #[derive(Clone, Debug, Default)]
 pub struct RemoteOptions(pub HashMap<String, String>);
 
