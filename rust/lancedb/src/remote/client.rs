@@ -265,7 +265,6 @@ impl RestfulLanceDbClient<Sender> {
                 message: "Failed to build HTTP client".into(),
                 source: Some(Box::new(err)),
             })?;
-        println!("{:#?}", client);
 
         let host = match host_override {
             Some(host_override) => host_override,
