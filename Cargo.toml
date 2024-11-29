@@ -24,7 +24,6 @@ rust-version = "1.80.0"                                                     # TO
 lance = { "version" = "=0.20.0", "features" = [
     "dynamodb",
 ], git = "https://github.com/lancedb/lance.git", tag = "v0.20.0-beta.3" }
-lance-io = { version = "=0.20.0", git = "https://github.com/lancedb/lance.git", tag = "v0.20.0-beta.3" }
 lance-index = { version = "=0.20.0", git = "https://github.com/lancedb/lance.git", tag = "v0.20.0-beta.3" }
 lance-linalg = { version = "=0.20.0", git = "https://github.com/lancedb/lance.git", tag = "v0.20.0-beta.3" }
 lance-table = { version = "=0.20.0", git = "https://github.com/lancedb/lance.git", tag = "v0.20.0-beta.3" }
