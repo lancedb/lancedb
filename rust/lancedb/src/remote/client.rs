@@ -21,6 +21,7 @@ use reqwest::{
 };
 
 use crate::error::{Error, Result};
+use crate::remote::db::RemoteOptions;
 
 const REQUEST_ID_HEADER: &str = "x-request-id";
 
@@ -215,6 +216,7 @@ impl RestfulLanceDbClient<Sender> {
         region: &str,
         host_override: Option<String>,
         client_config: ClientConfig,
+        options: &RemoteOptions,
     ) -> Result<Self> {
         let parsed_url = url::Url::parse(db_url).map_err(|err| Error::InvalidInput {
             message: format!("db_url is not a valid URL. '{db_url}'. Error: {err}"),
@@ -255,6 +257,7 @@ impl RestfulLanceDbClient<Sender> {
                 region,
                 db_name,
                 host_override.is_some(),
+                options,
             )?)
             .user_agent(client_config.user_agent)
             .build()
@@ -262,6 +265,8 @@ impl RestfulLanceDbClient<Sender> {
                 message: "Failed to build HTTP client".into(),
                 source: Some(Box::new(err)),
             })?;
+        println!("{:#?}", client);
+
         let host = match host_override {
             Some(host_override) => host_override,
             None => format!("https://{}.{}.api.lancedb.com", db_name, region),
@@ -287,6 +292,7 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
         region: &str,
         db_name: &str,
         has_host_override: bool,
+        options: &RemoteOptions,
     ) -> Result<HeaderMap> {
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -312,6 +318,25 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
                 })?,
             );
         }
+
+        if let Some(v) = options.0.get("account_name") {
+            headers.insert(
+                "x-azure-storage-account-name",
+                HeaderValue::from_str(v).map_err(|_| Error::InvalidInput {
+                    message: format!("non-ascii storage account name '{}' provided", db_name),
+                })?,
+            );
+        }
+        if let Some(v) = options.0.get("azure_storage_account_name") {
+            headers.insert(
+                "x-azure-storage-account-name",
+                HeaderValue::from_str(v).map_err(|_| Error::InvalidInput {
+                    message: format!("non-ascii storage account name '{}' provided", db_name),
+                })?,
+            );
+        }
+
+        // todo: db prefix
 
         Ok(headers)
     }
