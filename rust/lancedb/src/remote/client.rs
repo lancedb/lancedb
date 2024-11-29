@@ -335,8 +335,6 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
             );
         }
 
-        // todo: db prefix
-
         Ok(headers)
     }
 
