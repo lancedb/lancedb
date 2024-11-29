@@ -38,6 +38,8 @@ use crate::table::{NativeTable, TableDefinition, WriteOptions};
 use crate::utils::validate_table_name;
 use crate::Table;
 pub use lance_encoding::version::LanceFileVersion;
+#[cfg(feature = "remote")]
+use lance_io::object_store::StorageOptions;
 use lance_table::io::commit::commit_handler_from_url;
 
 pub const LANCE_FILE_EXTENSION: &str = "lance";
@@ -718,12 +720,14 @@ impl ConnectBuilder {
             message: "An api_key is required when connecting to LanceDb Cloud".to_string(),
         })?;
 
+        let storage_options = StorageOptions(self.storage_options.clone());
         let internal = Arc::new(crate::remote::db::RemoteDatabase::try_new(
             &self.uri,
             &api_key,
             &region,
             self.host_override,
             self.client_config,
+            storage_options.into(),
         )?);
         Ok(Connection {
             internal,
@@ -856,7 +860,7 @@ impl Database {
                 let table_base_uri = if let Some(store) = engine {
                     static WARN_ONCE: std::sync::Once = std::sync::Once::new();
                     WARN_ONCE.call_once(|| {
-                        log::warn!("Specifing engine is not a publicly supported feature in lancedb yet. THE API WILL CHANGE");
+                        log::warn!("Specifying engine is not a publicly supported feature in lancedb yet. THE API WILL CHANGE");
                     });
                     let old_scheme = url.scheme().to_string();
                     let new_scheme = format!("{}+{}", old_scheme, store);

@@ -12,11 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use arrow_array::RecordBatchReader;
 use async_trait::async_trait;
 use http::StatusCode;
+use lance_io::object_store::StorageOptions;
 use moka::future::Cache;
 use reqwest::header::CONTENT_TYPE;
 use serde::Deserialize;
@@ -53,9 +55,16 @@ impl RemoteDatabase {
         region: &str,
         host_override: Option<String>,
         client_config: ClientConfig,
+        options: RemoteOptions,
     ) -> Result<Self> {
-        let client =
-            RestfulLanceDbClient::try_new(uri, api_key, region, host_override, client_config)?;
+        let client = RestfulLanceDbClient::try_new(
+            uri,
+            api_key,
+            region,
+            host_override,
+            client_config,
+            &options,
+        )?;
 
         let table_cache = Cache::builder()
             .time_to_live(std::time::Duration::from_secs(300))
@@ -243,6 +252,29 @@ impl<S: HttpSend> ConnectionInternal for RemoteDatabase<S> {
     }
 }
 
+/// RemoteOptions contains a subset of StorageOptions that are compatible with Remote LanceDB connections
+#[derive(Clone, Debug, Default)]
+pub struct RemoteOptions(pub HashMap<String, String>);
+
+impl RemoteOptions {
+    pub fn new(options: HashMap<String, String>) -> Self {
+        Self(options)
+    }
+}
+
+impl From<StorageOptions> for RemoteOptions {
+    fn from(options: StorageOptions) -> Self {
+        let supported_opts = vec!["account_name", "azure_storage_account_name"];
+        let mut filtered = HashMap::new();
+        for opt in supported_opts {
+            if let Some(v) = options.0.get(opt) {
+                filtered.insert(opt.to_string(), v.to_string());
+            }
+        }
+        RemoteOptions::new(filtered)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, OnceLock};
@@ -250,6 +282,7 @@ mod tests {
     use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator};
     use arrow_schema::{DataType, Field, Schema};
 
+    use crate::connection::ConnectBuilder;
     use crate::{
         connection::CreateTableMode,
         remote::{ARROW_STREAM_CONTENT_TYPE, JSON_CONTENT_TYPE},
@@ -540,5 +573,17 @@ mod tests {
             http::Response::builder().status(200).body("").unwrap()
         });
         conn.rename_table("table1", "table2").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_connect_remote_options() {
+        let db_uri = "db://my-container/my-prefix";
+        let _ = ConnectBuilder::new(db_uri)
+            .region("us-east-1")
+            .api_key("my-api-key")
+            .storage_options(vec![("azure_storage_account_name", "my-storage-account")])
+            .execute()
+            .await
+            .unwrap();
     }
 }
