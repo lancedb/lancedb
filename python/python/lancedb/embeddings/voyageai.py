@@ -15,14 +15,16 @@ import os
 from typing import ClassVar, TYPE_CHECKING, List, Union
 
 import numpy as np
+import pyarrow as pa
 
 from ..util import attempt_import_or_raise
 from .base import EmbeddingFunction
 from .registry import register
-from .utils import api_key_not_found_help, IMAGES, TEXT
+from .utils import api_key_not_found_help, IMAGES
 
 if TYPE_CHECKING:
     import PIL
+
 
 @register("voyageai")
 class VoyageAIEmbeddingFunction(EmbeddingFunction):
@@ -156,7 +158,9 @@ class VoyageAIEmbeddingFunction(EmbeddingFunction):
         self, images: IMAGES, *args, **kwargs
     ) -> List[np.array]:
         images = self.sanitize_input(images)
-        return [self.generate_image_embedding(img, input_type="document") for img in images]
+        return [
+            self.generate_image_embedding(img, input_type="document") for img in images
+        ]
 
     @staticmethod
     def _get_client():
