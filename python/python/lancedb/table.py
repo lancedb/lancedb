@@ -967,8 +967,6 @@ class Table(ABC):
         """
         Add new columns with defined values.
 
-        This is not yet available in LanceDB Cloud.
-
         Parameters
         ----------
         transforms: Dict[str, str]
@@ -981,8 +979,6 @@ class Table(ABC):
     def alter_columns(self, *alterations: Iterable[Dict[str, str]]):
         """
         Alter column names and nullability.
-
-        This is not yet available in LanceDB Cloud.
 
         alterations : Iterable[Dict[str, Any]]
             A sequence of dictionaries, each with the following keys:
@@ -1006,8 +1002,6 @@ class Table(ABC):
     def drop_columns(self, columns: Iterable[str]):
         """
         Drop columns from the table.
-
-        This is not yet available in LanceDB Cloud.
 
         Parameters
         ----------
