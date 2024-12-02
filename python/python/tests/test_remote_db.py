@@ -193,7 +193,7 @@ def test_table_add_in_threadpool():
         if request.path == "/v1/table/test/insert/":
             request.send_response(200)
             request.end_headers()
-        elif request.path == "/v1/table/test/create/":
+        elif request.path == "/v1/table/test/create/?mode=create":
             request.send_response(200)
             request.send_header("Content-Type", "application/json")
             request.end_headers()
