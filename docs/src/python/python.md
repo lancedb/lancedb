@@ -1,6 +1,16 @@
 # Python API Reference
 
-This section contains the API reference for the OSS Python API.
+This section contains the API reference for the Python API. There is a
+synchronous and an asynchronous API client.
+
+The general flow of using the API is:
+
+1. Use [lancedb.connect][] or [lancedb.connect_async][] to connect to a database.
+2. Use the returned [lancedb.DBConnection][] or [lancedb.AsyncConnection][] to
+   create or open tables.
+3. Use the returned [lancedb.table.Table][] or [lancedb.AsyncTable][] to query
+   or modify tables.
+
 
 ## Installation
 
