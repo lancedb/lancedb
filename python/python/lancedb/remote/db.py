@@ -20,7 +20,7 @@ import warnings
 
 from lancedb import connect_async
 from lancedb.remote import ClientConfig
-from lancedb.remote.background_loop import BackgroundEventLoop
+from lancedb.background_loop import BackgroundEventLoop
 import pyarrow as pa
 from overrides import override
 

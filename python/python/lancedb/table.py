@@ -1080,13 +1080,16 @@ class _LanceLatestDatasetRef(_LanceDatasetRef):
     index_cache_size: Optional[int] = None
     read_consistency_interval: Optional[timedelta] = None
     last_consistency_check: Optional[float] = None
+    storage_options: Optional[Dict[str, str]] = None
     _dataset: Optional[LanceDataset] = None
 
     @property
     def dataset(self) -> LanceDataset:
         if not self._dataset:
             self._dataset = lance.dataset(
-                self.uri, index_cache_size=self.index_cache_size
+                self.uri,
+                index_cache_size=self.index_cache_size,
+                storage_options=self.storage_options,
             )
             self.last_consistency_check = time.monotonic()
         elif self.read_consistency_interval is not None:
@@ -1117,13 +1120,17 @@ class _LanceTimeTravelRef(_LanceDatasetRef):
     uri: str
     version: int
     index_cache_size: Optional[int] = None
+    storage_options: Optional[Dict[str, str]] = None
     _dataset: Optional[LanceDataset] = None
 
     @property
     def dataset(self) -> LanceDataset:
         if not self._dataset:
             self._dataset = lance.dataset(
-                self.uri, version=self.version, index_cache_size=self.index_cache_size
+                self.uri,
+                version=self.version,
+                index_cache_size=self.index_cache_size,
+                storage_options=self.storage_options,
             )
         return self._dataset
 
@@ -1172,24 +1179,22 @@ class LanceTable(Table):
                 uri=self._dataset_uri,
                 version=version,
                 index_cache_size=index_cache_size,
+                storage_options=connection.storage_options,
             )
         else:
             self._ref = _LanceLatestDatasetRef(
                 uri=self._dataset_uri,
                 read_consistency_interval=connection.read_consistency_interval,
                 index_cache_size=index_cache_size,
+                storage_options=connection.storage_options,
             )
 
     @classmethod
     def open(cls, db, name, **kwargs):
         tbl = cls(db, name, **kwargs)
-        fs, path = fs_from_uri(tbl._dataset_path)
-        file_info = fs.get_file_info(path)
-        if file_info.type != pa.fs.FileType.Directory:
-            raise FileNotFoundError(
-                f"Table {name} does not exist."
-                f"Please first call db.create_table({name}, data)"
-            )
+
+        # check the dataset exists
+        tbl.version
 
         return tbl
 
@@ -1620,7 +1625,11 @@ class LanceTable(Table):
         # Access the dataset_mut property to ensure that the dataset is mutable.
         self._ref.dataset_mut
         self._ref.dataset = lance.write_dataset(
-            data, self._dataset_uri, schema=self.schema, mode=mode
+            data,
+            self._dataset_uri,
+            schema=self.schema,
+            mode=mode,
+            storage_options=self._ref.storage_options,
         )
 
     def merge(
@@ -1905,7 +1914,13 @@ class LanceTable(Table):
 
         empty = pa.Table.from_batches([], schema=schema)
         try:
-            lance.write_dataset(empty, tbl._dataset_uri, schema=schema, mode=mode)
+            lance.write_dataset(
+                empty,
+                tbl._dataset_uri,
+                schema=schema,
+                mode=mode,
+                storage_options=db.storage_options,
+            )
         except OSError as err:
             if "Dataset already exists" in str(err) and exist_ok:
                 if tbl.schema != schema:
