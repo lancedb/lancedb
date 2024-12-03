@@ -1,6 +1,6 @@
 [package]
 name = "lancedb"
-version = "0.14.0-beta.0"
+version = "0.14.0-beta.1"
 edition.workspace = true
 description = "LanceDB: A serverless, low-latency vector database for AI applications"
 license.workspace = true
@@ -27,6 +27,7 @@ half = { workspace = true }
 lazy_static.workspace = true
 lance = { workspace = true }
 lance-datafusion.workspace = true
+lance-io = { workspace = true }
 lance-index = { workspace = true }
 lance-table = { workspace = true }
 lance-linalg = { workspace = true }

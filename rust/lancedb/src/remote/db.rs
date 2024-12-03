@@ -12,18 +12,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use arrow_array::RecordBatchReader;
 use async_trait::async_trait;
 use http::StatusCode;
+use lance_io::object_store::StorageOptions;
 use moka::future::Cache;
 use reqwest::header::CONTENT_TYPE;
 use serde::Deserialize;
 use tokio::task::spawn_blocking;
 
 use crate::connection::{
-    ConnectionInternal, CreateTableBuilder, NoData, OpenTableBuilder, TableNamesBuilder,
+    ConnectionInternal, CreateTableBuilder, CreateTableMode, NoData, OpenTableBuilder,
+    TableNamesBuilder,
 };
 use crate::embeddings::EmbeddingRegistry;
 use crate::error::Result;
@@ -52,9 +55,16 @@ impl RemoteDatabase {
         region: &str,
         host_override: Option<String>,
         client_config: ClientConfig,
+        options: RemoteOptions,
     ) -> Result<Self> {
-        let client =
-            RestfulLanceDbClient::try_new(uri, api_key, region, host_override, client_config)?;
+        let client = RestfulLanceDbClient::try_new(
+            uri,
+            api_key,
+            region,
+            host_override,
+            client_config,
+            &options,
+        )?;
 
         let table_cache = Cache::builder()
             .time_to_live(std::time::Duration::from_secs(300))
@@ -92,6 +102,16 @@ mod test_utils {
 impl<S: HttpSend> std::fmt::Display for RemoteDatabase<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "RemoteDatabase(host={})", self.client.host())
+    }
+}
+
+impl From<&CreateTableMode> for &'static str {
+    fn from(val: &CreateTableMode) -> Self {
+        match val {
+            CreateTableMode::Create => "create",
+            CreateTableMode::Overwrite => "overwrite",
+            CreateTableMode::ExistOk(_) => "exist_ok",
+        }
     }
 }
 
@@ -133,14 +153,40 @@ impl<S: HttpSend> ConnectionInternal for RemoteDatabase<S> {
         let req = self
             .client
             .post(&format!("/v1/table/{}/create/", options.name))
+            .query(&[("mode", Into::<&str>::into(&options.mode))])
             .body(data_buffer)
             .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE);
+
         let (request_id, rsp) = self.client.send(req, false).await?;
 
         if rsp.status() == StatusCode::BAD_REQUEST {
             let body = rsp.text().await.err_to_http(request_id.clone())?;
             if body.contains("already exists") {
-                return Err(crate::Error::TableAlreadyExists { name: options.name });
+                return match options.mode {
+                    CreateTableMode::Create => {
+                        Err(crate::Error::TableAlreadyExists { name: options.name })
+                    }
+                    CreateTableMode::ExistOk(callback) => {
+                        let builder = OpenTableBuilder::new(options.parent, options.name);
+                        let builder = (callback)(builder);
+                        builder.execute().await
+                    }
+
+                    // This should not happen, as we explicitly set the mode to overwrite and the server
+                    // shouldn't return an error if the table already exists.
+                    //
+                    // However if the server is an older version that doesn't support the mode parameter,
+                    // then we'll get the 400 response.
+                    CreateTableMode::Overwrite => Err(crate::Error::Http {
+                        source: format!(
+                            "unexpected response from server for create mode overwrite: {}",
+                            body
+                        )
+                        .into(),
+                        request_id,
+                        status_code: Some(StatusCode::BAD_REQUEST),
+                    }),
+                };
             } else {
                 return Err(crate::Error::InvalidInput { message: body });
             }
@@ -206,6 +252,29 @@ impl<S: HttpSend> ConnectionInternal for RemoteDatabase<S> {
     }
 }
 
+/// RemoteOptions contains a subset of StorageOptions that are compatible with Remote LanceDB connections
+#[derive(Clone, Debug, Default)]
+pub struct RemoteOptions(pub HashMap<String, String>);
+
+impl RemoteOptions {
+    pub fn new(options: HashMap<String, String>) -> Self {
+        Self(options)
+    }
+}
+
+impl From<StorageOptions> for RemoteOptions {
+    fn from(options: StorageOptions) -> Self {
+        let supported_opts = vec!["account_name", "azure_storage_account_name"];
+        let mut filtered = HashMap::new();
+        for opt in supported_opts {
+            if let Some(v) = options.0.get(opt) {
+                filtered.insert(opt.to_string(), v.to_string());
+            }
+        }
+        RemoteOptions::new(filtered)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, OnceLock};
@@ -213,7 +282,9 @@ mod tests {
     use arrow_array::{Int32Array, RecordBatch, RecordBatchIterator};
     use arrow_schema::{DataType, Field, Schema};
 
+    use crate::connection::ConnectBuilder;
     use crate::{
+        connection::CreateTableMode,
         remote::{ARROW_STREAM_CONTENT_TYPE, JSON_CONTENT_TYPE},
         Connection, Error,
     };
@@ -383,6 +454,73 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_create_table_modes() {
+        let test_cases = [
+            (None, "mode=create"),
+            (Some(CreateTableMode::Create), "mode=create"),
+            (Some(CreateTableMode::Overwrite), "mode=overwrite"),
+            (
+                Some(CreateTableMode::ExistOk(Box::new(|b| b))),
+                "mode=exist_ok",
+            ),
+        ];
+
+        for (mode, expected_query_string) in test_cases {
+            let conn = Connection::new_with_handler(move |request| {
+                assert_eq!(request.method(), &reqwest::Method::POST);
+                assert_eq!(request.url().path(), "/v1/table/table1/create/");
+                assert_eq!(request.url().query(), Some(expected_query_string));
+
+                http::Response::builder().status(200).body("").unwrap()
+            });
+
+            let data = RecordBatch::try_new(
+                Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
+                vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+            )
+            .unwrap();
+            let reader = RecordBatchIterator::new([Ok(data.clone())], data.schema());
+            let mut builder = conn.create_table("table1", reader);
+            if let Some(mode) = mode {
+                builder = builder.mode(mode);
+            }
+            builder.execute().await.unwrap();
+        }
+
+        // check that the open table callback is called with exist_ok
+        let conn = Connection::new_with_handler(|request| match request.url().path() {
+            "/v1/table/table1/create/" => http::Response::builder()
+                .status(400)
+                .body("Table table1 already exists")
+                .unwrap(),
+            "/v1/table/table1/describe/" => http::Response::builder().status(200).body("").unwrap(),
+            _ => {
+                panic!("unexpected path: {:?}", request.url().path());
+            }
+        });
+        let data = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+
+        let called: Arc<OnceLock<bool>> = Arc::new(OnceLock::new());
+        let reader = RecordBatchIterator::new([Ok(data.clone())], data.schema());
+        let called_in_cb = called.clone();
+        conn.create_table("table1", reader)
+            .mode(CreateTableMode::ExistOk(Box::new(move |b| {
+                called_in_cb.clone().set(true).unwrap();
+                b
+            })))
+            .execute()
+            .await
+            .unwrap();
+
+        let called = *called.get().unwrap_or(&false);
+        assert!(called);
+    }
+
+    #[tokio::test]
     async fn test_create_table_empty() {
         let conn = Connection::new_with_handler(|request| {
             assert_eq!(request.method(), &reqwest::Method::POST);
@@ -435,5 +573,17 @@ mod tests {
             http::Response::builder().status(200).body("").unwrap()
         });
         conn.rename_table("table1", "table2").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_connect_remote_options() {
+        let db_uri = "db://my-container/my-prefix";
+        let _ = ConnectBuilder::new(db_uri)
+            .region("us-east-1")
+            .api_key("my-api-key")
+            .storage_options(vec![("azure_storage_account_name", "my-storage-account")])
+            .execute()
+            .await
+            .unwrap();
     }
 }
