@@ -110,7 +110,7 @@ class Query(pydantic.BaseModel):
     full_text_query: Optional[Union[str, dict]] = None
 
     # top k results to return
-    k: int
+    k: Optional[int]
 
     # # metrics
     metric: str = "L2"
@@ -325,6 +325,14 @@ class LanceQueryBuilder(ABC):
         """
         raise NotImplementedError
 
+    @abstractmethod
+    def to_batches(self, /, batch_size: Optional[int] = None) -> pa.Table:
+        """
+        Execute the query and return the results as a pyarrow
+        [RecordBatchReader](https://arrow.apache.org/docs/python/generated/pyarrow.RecordBatchReader.html)
+        """
+        raise NotImplementedError
+
     def to_list(self) -> List[dict]:
         """
         Execute the query and return the results as a list of dictionaries.
@@ -388,6 +396,8 @@ class LanceQueryBuilder(ABC):
         if limit is None or limit <= 0:
             if isinstance(self, LanceVectorQueryBuilder):
                 raise ValueError("Limit is required for ANN/KNN queries")
+            elif limit == 0:
+                self._limit = 0
             else:
                 self._limit = None
         else:
@@ -869,6 +879,9 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
             check_reranker_result(results)
         return results
 
+    def to_batches(self, /, batch_size: Optional[int] = None):
+        raise NotImplementedError("to_batches on an FTS query")
+
     def tantivy_to_arrow(self) -> pa.Table:
         try:
             import tantivy
@@ -971,16 +984,25 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
 
 class LanceEmptyQueryBuilder(LanceQueryBuilder):
     def to_arrow(self) -> pa.Table:
+        return self.to_batches().read_all()
+
+    def to_batches(self, /, batch_size: Optional[int] = None) -> pa.RecordBatchReader:
+        if self._limit is None:
+            k = 10
+        elif self._limit == 0:
+            k = None
+        else:
+            k = self._limit
         query = Query(
             columns=self._columns,
             filter=self._where,
-            k=self._limit or 10,
+            k=k,
             with_row_id=self._with_row_id,
             vector=[],
             # not actually respected in remote query
             offset=self._offset or 0,
         )
-        return self._table._execute_query(query).read_all()
+        return self._table._execute_query(query)
 
     def rerank(self, reranker: Reranker) -> LanceEmptyQueryBuilder:
         """Rerank the results using the specified reranker.
