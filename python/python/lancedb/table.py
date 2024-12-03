@@ -35,7 +35,7 @@ from lance.dependencies import _check_for_hugging_face
 
 from .common import DATA, VEC, VECTOR_COLUMN_NAME, sanitize_uri
 from .embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
-from .merge import LanceMergeInsertBuilder
+from .merge import LanceMergeInsertBuilder, AsyncLanceMergeInsertBuilder
 from .pydantic import LanceModel, model_to_dict
 from .query import (
     AsyncQuery,
@@ -2669,9 +2669,9 @@ class AsyncTable:
             data = pa.RecordBatchReader.from_batches(data.schema, data.to_batches())
         await self._inner.add(data, mode)
 
-    def merge_insert(self, on: Union[str, Iterable[str]]) -> LanceMergeInsertBuilder:
+    def merge_insert(self, on: Union[str, Iterable[str]]) -> AsyncLanceMergeInsertBuilder:
         """
-        Returns a [`LanceMergeInsertBuilder`][lancedb.merge.LanceMergeInsertBuilder]
+        Returns a [`AsyncLanceMergeInsertBuilder`][lancedb.merge.AsyncLanceMergeInsertBuilder]
         that can be used to create a "merge insert" operation
 
         This operation can add rows, update rows, and remove rows all in a single
@@ -2727,7 +2727,7 @@ class AsyncTable:
         """
         on = [on] if isinstance(on, str) else list(on.iter())
 
-        return LanceMergeInsertBuilder(self, on)
+        return AsyncLanceMergeInsertBuilder(self, on)
 
     def vector_search(
         self,
