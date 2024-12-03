@@ -9,7 +9,7 @@ def test_dataset_adapter(tmp_path):
     conn = lancedb.connect(tmp_path)
     tbl = conn.create_table("test", data)
 
-    adapter = PyarrowDatasetAdapter(tbl)  # noqa: F841
+    adapter = PyarrowDatasetAdapter(tbl)
 
     assert adapter.count_rows() == 4
     assert adapter.count_rows("x > 2") == 2
@@ -19,3 +19,13 @@ def test_dataset_adapter(tmp_path):
     assert adapter.to_batches().read_all() == data
     assert adapter.scanner().to_table() == data
     assert adapter.scanner().to_batches().read_all() == data
+
+    # Make sure we bypass the limit
+    data = pa.table({"x": range(100)})
+    tbl = conn.create_table("test2", data)
+
+    adapter = PyarrowDatasetAdapter(tbl)
+
+    assert adapter.count_rows() == 100
+    assert adapter.to_table().num_rows == 100
+    assert adapter.head(10).num_rows == 10

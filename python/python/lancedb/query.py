@@ -110,7 +110,7 @@ class Query(pydantic.BaseModel):
     full_text_query: Optional[Union[str, dict]] = None
 
     # top k results to return
-    k: Optional[int]
+    k: int
 
     # # metrics
     metric: str = "L2"
@@ -396,8 +396,6 @@ class LanceQueryBuilder(ABC):
         if limit is None or limit <= 0:
             if isinstance(self, LanceVectorQueryBuilder):
                 raise ValueError("Limit is required for ANN/KNN queries")
-            elif limit == 0:
-                self._limit = 0
             else:
                 self._limit = None
         else:
@@ -987,16 +985,10 @@ class LanceEmptyQueryBuilder(LanceQueryBuilder):
         return self.to_batches().read_all()
 
     def to_batches(self, /, batch_size: Optional[int] = None) -> pa.RecordBatchReader:
-        if self._limit is None:
-            k = 10
-        elif self._limit == 0:
-            k = None
-        else:
-            k = self._limit
         query = Query(
             columns=self._columns,
             filter=self._where,
-            k=k,
+            k=self._limit or 10,
             with_row_id=self._with_row_id,
             vector=[],
             # not actually respected in remote query

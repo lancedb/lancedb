@@ -82,7 +82,8 @@ class PyarrowScannerAdapter(pa.dataset.Scanner):
         query = self.table.search()
         # Disable the builtin limit
         if limit is None:
-            query.limit(0)
+            num_rows = self.count_rows()
+            query.limit(num_rows)
         elif limit <= 0:
             raise ValueError("limit must be positive")
         else:
