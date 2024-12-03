@@ -325,6 +325,14 @@ class LanceQueryBuilder(ABC):
         """
         raise NotImplementedError
 
+    @abstractmethod
+    def to_batches(self, /, batch_size: Optional[int] = None) -> pa.Table:
+        """
+        Execute the query and return the results as a pyarrow
+        [RecordBatchReader](https://arrow.apache.org/docs/python/generated/pyarrow.RecordBatchReader.html)
+        """
+        raise NotImplementedError
+
     def to_list(self) -> List[dict]:
         """
         Execute the query and return the results as a list of dictionaries.
@@ -869,6 +877,9 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
             check_reranker_result(results)
         return results
 
+    def to_batches(self, /, batch_size: Optional[int] = None):
+        raise NotImplementedError("to_batches on an FTS query")
+
     def tantivy_to_arrow(self) -> pa.Table:
         try:
             import tantivy
@@ -971,6 +982,9 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
 
 class LanceEmptyQueryBuilder(LanceQueryBuilder):
     def to_arrow(self) -> pa.Table:
+        return self.to_batches().read_all()
+
+    def to_batches(self, /, batch_size: Optional[int] = None) -> pa.RecordBatchReader:
         query = Query(
             columns=self._columns,
             filter=self._where,
@@ -980,7 +994,7 @@ class LanceEmptyQueryBuilder(LanceQueryBuilder):
             # not actually respected in remote query
             offset=self._offset or 0,
         )
-        return self._table._execute_query(query).read_all()
+        return self._table._execute_query(query)
 
     def rerank(self, reranker: Reranker) -> LanceEmptyQueryBuilder:
         """Rerank the results using the specified reranker.
@@ -1134,6 +1148,9 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         if not self._with_row_id:
             results = results.drop(["_rowid"])
         return results
+
+    def to_batches(self):
+        raise NotImplementedError("to_batches not yet supported on a hybrid query")
 
     def _rank(self, results: pa.Table, column: str, ascending: bool = True):
         if len(results) == 0:
