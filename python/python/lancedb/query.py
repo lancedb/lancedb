@@ -1157,6 +1157,9 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             results = results.drop(["_rowid"])
         return results
 
+    def to_batches(self):
+        raise NotImplementedError("to_batches not yet supported on a hybrid query")
+
     def _rank(self, results: pa.Table, column: str, ascending: bool = True):
         if len(results) == 0:
             return results
