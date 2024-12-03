@@ -64,7 +64,7 @@ class PyarrowScannerAdapter(pa.dataset.Scanner):
 
     @property
     def projected_schema(self):
-        return self.table.schema
+        return self.head(1).schema
 
     def scan_batches(self):
         return self.to_reader()
