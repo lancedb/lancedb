@@ -438,7 +438,14 @@ pub struct ColumnAlteration {
     /// This must be distinct from the names of all other columns in the table.
     pub rename: Option<String>,
     /// A new data type for the column. If not provided then the data type will not be changed.
-    /// This must be a valid data type for the column.
+    /// Changing data types is limited to casting to the same general type. For example, these
+    /// changes are valid:
+    /// * `int32` -> `int64` (integers)
+    /// * `double` -> `float` (floats)
+    /// * `string` -> `large_string` (strings)
+    /// But these changes are not:
+    /// * `int32` -> `double` (mix integers and floats)
+    /// * `string` -> `int32` (mix strings and integers)
     pub data_type: Option<String>,
     /// Set the new nullability. Note that a nullable column cannot be made non-nullable.
     pub nullable: Option<bool>,

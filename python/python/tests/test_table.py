@@ -1292,6 +1292,9 @@ def test_add_columns(tmp_path):
     assert table.to_arrow().column_names == ["id", "new_col"]
     assert table.to_arrow()["new_col"].to_pylist() == [2, 3]
 
+    table.add_columns({"null_int": "cast(null as bigint)"})
+    assert table.schema.field("null_int").type == pa.int64()
+
 
 @pytest.mark.asyncio
 async def test_add_columns_async(db_async: AsyncConnection):

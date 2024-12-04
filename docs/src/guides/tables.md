@@ -822,7 +822,15 @@ column `y` to the table and fill it with the value of `x + 1`.
 
 If you want to fill it with null, you can use `cast(NULL as <data_type>)` as
 the SQL expression to fill the column with nulls, while controlling the data
-type of the column.
+type of the column. Available data types are base on the
+[DataFusion data types](https://datafusion.apache.org/user-guide/sql/data_types.html).
+You can use any of the SQL types, such as `BIGINT`:
+
+```sql
+cast(NULL as BIGINT)
+```
+
+Using Arrow data types and the `arrow_typeof` function is not yet supported.
 
 <!-- TODO: we could provide a better formula for filling with nulls:
    https://github.com/lancedb/lance/issues/3175
@@ -841,7 +849,7 @@ rewriting the column, which can be a heavy operation.
 
     ```python
     import pyarrow as pa
-    table.alter_column({"path": "double_price", "rename": "my_name",
+    table.alter_column({"path": "double_price", "rename": "int_price",
                         "data_type": pa.int32(), "nullable": False})
     ```
     **API Reference:** [lancedb.table.Table.alter_columns][]
@@ -865,7 +873,7 @@ will remove the column from the schema.
 === "Python"
 
     ```python
-    table.drop_columns(["my_name"])
+    table.drop_columns(["int_price"])
     ```
     **API Reference:** [lancedb.table.Table.drop_columns][]
 

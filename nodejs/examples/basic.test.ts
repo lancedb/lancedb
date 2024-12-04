@@ -125,14 +125,14 @@ test("basic table examples", async () => {
       await tbl.alterColumns([
         {
           path: "double_price",
-          rename: "my_name",
-          dataType: "float",
-          nullable: true,
+          rename: "int_price",
+          dataType: "int32",
+          nullable: false,
         },
       ]);
       // --8<-- [end:alter_columns]
       // --8<-- [start:drop_columns]
-      await tbl.dropColumns(["my_name"]);
+      await tbl.dropColumns(["int_price"]);
       // --8<-- [end:drop_columns]
     }
 
