@@ -48,6 +48,9 @@ class OpenAIEmbeddings(TextEmbeddingFunction):
     organization: Optional[str] = None
     api_key: Optional[str] = None
 
+    # Set true to use Azure OpenAI API
+    use_azure: bool = False
+
     def ndims(self):
         return self._ndims
 
@@ -123,4 +126,8 @@ class OpenAIEmbeddings(TextEmbeddingFunction):
             kwargs["organization"] = self.organization
         if self.api_key:
             kwargs["api_key"] = self.api_key
-        return openai.OpenAI(**kwargs)
+
+        if self.use_azure:
+            return openai.AzureOpenAI(**kwargs)
+        else:
+            return openai.OpenAI(**kwargs)
