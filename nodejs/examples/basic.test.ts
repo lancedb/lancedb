@@ -127,7 +127,7 @@ test("basic table examples", async () => {
           path: "double_price",
           rename: "int_price",
           dataType: "int32",
-          nullable: false,
+          nullable: true,
         },
       ]);
       // --8<-- [end:alter_columns]
