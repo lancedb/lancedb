@@ -490,19 +490,13 @@ class RemoteTable(Table):
         return LOOP.run(self._table.count_rows(filter))
 
     def add_columns(self, transforms: Dict[str, str]):
-        raise NotImplementedError(
-            "add_columns() is not yet supported on the LanceDB cloud"
-        )
+        return LOOP.run(self._table.add_columns(transforms))
 
-    def alter_columns(self, alterations: Iterable[Dict[str, str]]):
-        raise NotImplementedError(
-            "alter_columns() is not yet supported on the LanceDB cloud"
-        )
+    def alter_columns(self, *alterations: Iterable[Dict[str, str]]):
+        return LOOP.run(self._table.alter_columns(*alterations))
 
     def drop_columns(self, columns: Iterable[str]):
-        raise NotImplementedError(
-            "drop_columns() is not yet supported on the LanceDB cloud"
-        )
+        return LOOP.run(self._table.drop_columns(columns))
 
 
 def add_index(tbl: pa.Table, i: int) -> pa.Table:

@@ -790,6 +790,101 @@ Use the `drop_table()` method on the database to remove a table.
       This permanently removes the table and is not recoverable, unlike deleting rows.
       If the table does not exist an exception is raised.
 
+## Changing schemas
+
+While tables must have a schema specified when they are created, you can
+change the schema over time. There's three methods to alter the schema of
+a table:
+
+* `add_columns`: Add new columns to the table
+* `alter_columns`: Alter the name, nullability, or data type of a column
+* `drop_columns`: Drop columns from the table
+
+### Adding new columns
+
+You can add new columns to the table with the `add_columns` method. New columns
+are filled with values based on a SQL expression. For example, you can add a new
+column `y` to the table and fill it with the value of `x + 1`.
+
+=== "Python"
+
+    ```python
+    table.add_columns({"double_price": "price * 2"})
+    ```
+    **API Reference:** [lancedb.table.Table.add_columns][]
+
+=== "Typescript"
+
+    ```typescript
+    --8<-- "nodejs/examples/basic.test.ts:add_columns"
+    ```
+    **API Reference:** [lancedb.Table.addColumns](../js/classes/Table.md/#addcolumns)
+
+If you want to fill it with null, you can use `cast(NULL as <data_type>)` as
+the SQL expression to fill the column with nulls, while controlling the data
+type of the column. Available data types are base on the
+[DataFusion data types](https://datafusion.apache.org/user-guide/sql/data_types.html).
+You can use any of the SQL types, such as `BIGINT`:
+
+```sql
+cast(NULL as BIGINT)
+```
+
+Using Arrow data types and the `arrow_typeof` function is not yet supported.
+
+<!-- TODO: we could provide a better formula for filling with nulls:
+   https://github.com/lancedb/lance/issues/3175
+-->
+
+### Altering existing columns
+
+You can alter the name, nullability, or data type of a column with the `alter_columns`
+method.
+
+Changing the name or nullability of a column just updates the metadata. Because
+of this, it's a fast operation. Changing the data type of a column requires
+rewriting the column, which can be a heavy operation.
+
+=== "Python"
+
+    ```python
+    import pyarrow as pa
+    table.alter_column({"path": "double_price", "rename": "dbl_price",
+                        "data_type": pa.float32(), "nullable": False})
+    ```
+    **API Reference:** [lancedb.table.Table.alter_columns][]
+
+=== "Typescript"
+
+    ```typescript
+    --8<-- "nodejs/examples/basic.test.ts:alter_columns"
+    ```
+    **API Reference:** [lancedb.Table.alterColumns](../js/classes/Table.md/#altercolumns)
+
+### Dropping columns
+
+You can drop columns from the table with the `drop_columns` method. This will
+will remove the column from the schema.
+
+<!-- TODO: Provide guidance on how to reduce disk usage once optimize helps here
+    waiting on: https://github.com/lancedb/lance/issues/3177
+-->
+
+=== "Python"
+
+    ```python
+    table.drop_columns(["dbl_price"])
+    ```
+    **API Reference:** [lancedb.table.Table.drop_columns][]
+
+=== "Typescript"
+
+    ```typescript
+    --8<-- "nodejs/examples/basic.test.ts:drop_columns"
+    ```
+    **API Reference:** [lancedb.Table.dropColumns](../js/classes/Table.md/#altercolumns)
+
+
 ## Handling bad vectors
 
 In LanceDB Python, you can use the `on_bad_vectors` parameter to choose how

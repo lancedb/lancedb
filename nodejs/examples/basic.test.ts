@@ -116,6 +116,26 @@ test("basic table examples", async () => {
       await tbl.add(data);
       // --8<-- [end:add_data]
     }
+
+    {
+      // --8<-- [start:add_columns]
+      await tbl.addColumns([{ name: "double_price", valueSql: "price * 2" }]);
+      // --8<-- [end:add_columns]
+      // --8<-- [start:alter_columns]
+      await tbl.alterColumns([
+        {
+          path: "double_price",
+          rename: "dbl_price",
+          dataType: "float",
+          nullable: true,
+        },
+      ]);
+      // --8<-- [end:alter_columns]
+      // --8<-- [start:drop_columns]
+      await tbl.dropColumns(["dbl_price"]);
+      // --8<-- [end:drop_columns]
+    }
+
     {
       // --8<-- [start:vector_search]
       const res = await tbl.search([100, 100]).limit(2).toArray();
