@@ -228,6 +228,14 @@ impl RestfulLanceDbClient<Sender> {
             });
         }
         let db_name = parsed_url.host_str().unwrap();
+        let db_prefix = {
+            let prefix = parsed_url.path().trim_start_matches('/');
+            if prefix.is_empty() {
+                None
+            } else {
+                Some(prefix)
+            }
+        };
 
         // Get the timeouts
         let connect_timeout = Self::get_timeout(
@@ -258,6 +266,7 @@ impl RestfulLanceDbClient<Sender> {
                 db_name,
                 host_override.is_some(),
                 options,
+                db_prefix,
             )?)
             .user_agent(client_config.user_agent)
             .build()
@@ -292,6 +301,7 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
         db_name: &str,
         has_host_override: bool,
         options: &RemoteOptions,
+        db_prefix: Option<&str>,
     ) -> Result<HeaderMap> {
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -314,6 +324,17 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
                 "x-lancedb-database",
                 HeaderValue::from_str(db_name).map_err(|_| Error::InvalidInput {
                     message: format!("non-ascii database name '{}' provided", db_name),
+                })?,
+            );
+        }
+        if db_prefix.is_some() {
+            headers.insert(
+                "x-lancedb-database-prefix",
+                HeaderValue::from_str(db_prefix.unwrap()).map_err(|_| Error::InvalidInput {
+                    message: format!(
+                        "non-ascii database prefix '{}' provided",
+                        db_prefix.unwrap()
+                    ),
                 })?,
             );
         }
