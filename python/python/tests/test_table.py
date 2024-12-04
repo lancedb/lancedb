@@ -30,6 +30,7 @@ class MockDB:
     def __init__(self, uri: Path):
         self.uri = str(uri)
         self.read_consistency_interval = None
+        self.storage_options = None
 
     @functools.cached_property
     def is_managed_remote(self) -> bool:

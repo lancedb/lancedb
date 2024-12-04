@@ -343,13 +343,18 @@ class LanceDBConnection(DBConnection):
         self.read_consistency_interval = read_consistency_interval
         self.storage_options = storage_options
 
+        if read_consistency_interval is not None:
+            read_consistency_interval_secs = read_consistency_interval.total_seconds()
+        else:
+            read_consistency_interval_secs = None
+
         async def do_connect():
             return await lancedb_connect(
                 sanitize_uri(uri),
                 None,
                 None,
                 None,
-                read_consistency_interval,
+                read_consistency_interval_secs,
                 None,
                 storage_options,
             )
