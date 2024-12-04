@@ -119,20 +119,20 @@ test("basic table examples", async () => {
 
     {
       // --8<-- [start:add_columns]
-      await tbl.addColumns([{ name: "double_price", valueSql: "price + 1" }]);
+      await tbl.addColumns([{ name: "double_price", valueSql: "price * 2" }]);
       // --8<-- [end:add_columns]
       // --8<-- [start:alter_columns]
       await tbl.alterColumns([
         {
           path: "double_price",
-          rename: "int_price",
-          dataType: "int32",
+          rename: "dbl_price",
+          dataType: "float",
           nullable: true,
         },
       ]);
       // --8<-- [end:alter_columns]
       // --8<-- [start:drop_columns]
-      await tbl.dropColumns(["int_price"]);
+      await tbl.dropColumns(["dbl_price"]);
       // --8<-- [end:drop_columns]
     }
 

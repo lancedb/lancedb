@@ -849,8 +849,8 @@ rewriting the column, which can be a heavy operation.
 
     ```python
     import pyarrow as pa
-    table.alter_column({"path": "double_price", "rename": "int_price",
-                        "data_type": pa.int32(), "nullable": False})
+    table.alter_column({"path": "double_price", "rename": "dbl_price",
+                        "data_type": pa.float32(), "nullable": False})
     ```
     **API Reference:** [lancedb.table.Table.alter_columns][]
 
@@ -873,7 +873,7 @@ will remove the column from the schema.
 === "Python"
 
     ```python
-    table.drop_columns(["int_price"])
+    table.drop_columns(["dbl_price"])
     ```
     **API Reference:** [lancedb.table.Table.drop_columns][]
 
