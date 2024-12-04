@@ -449,11 +449,17 @@ class LanceDBConnection(DBConnection):
         ignore_missing: bool, default False
             If True, ignore if the table does not exist.
         """
-        LOOP.run(self._conn.drop_table(name))
+        try:
+            LOOP.run(self._conn.drop_table(name))
+        except ValueError as e:
+            if not ignore_missing:
+                raise e
+            if f"Table '{name}' was not found" not in str(e):
+                raise e
 
     @override
     def drop_database(self):
-        LOOP.run(self._conn.drop_database)
+        LOOP.run(self._conn.drop_database())
 
 
 class AsyncConnection(object):

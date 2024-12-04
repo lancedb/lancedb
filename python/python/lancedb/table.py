@@ -1194,7 +1194,12 @@ class LanceTable(Table):
         tbl = cls(db, name, **kwargs)
 
         # check the dataset exists
-        tbl.version
+        try:
+            tbl.version
+        except ValueError as e:
+            if "Not found:" in str(e):
+                raise FileNotFoundError(f"Table {name} does not exist")
+            raise e
 
         return tbl
 
