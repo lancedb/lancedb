@@ -30,7 +30,7 @@
 //!
 //! LanceDB runs in process, to use it in your Rust project, put the following in your `Cargo.toml`:
 //!
-//! ```ignore
+//! ```shell
 //! cargo install lancedb
 //! ```
 //!
