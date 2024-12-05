@@ -27,10 +27,13 @@ LanceDB OSS supports object stores such as AWS S3 (and compatible stores), Azure
 
     Azure Blob Storage:
 
+    <!-- skip-test -->
     ```python
     import lancedb
     db = lancedb.connect("az://bucket/path")
     ```
+    Note that for Azure, storage credentials must be configured. See [below](#azure-blob-storage) for more details.
+
 
 === "TypeScript"
 
@@ -86,11 +89,6 @@ In most cases, when running in the respective cloud and permissions are set up c
 ```bash
 export TIMEOUT=60s
 ```
-
-!!! note "`storage_options` availability"
-
-    The `storage_options` parameter is only available in Python *async* API and JavaScript API.
-    It is not yet supported in the Python synchronous API.
 
 If you only want this to apply to one particular connection, you can pass the `storage_options` argument when opening the connection:
 

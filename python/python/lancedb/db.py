@@ -13,40 +13,37 @@
 
 from __future__ import annotations
 
-import asyncio
-import os
 from abc import abstractmethod
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, Iterable, List, Literal, Optional, Union
 
-import pyarrow as pa
 from overrides import EnforceOverrides, override
-from pyarrow import fs
 
-from lancedb.common import data_to_reader, validate_schema
+from lancedb.common import data_to_reader, sanitize_uri, validate_schema
+from lancedb.background_loop import BackgroundEventLoop
 
 from ._lancedb import connect as lancedb_connect
 from .table import (
     AsyncTable,
     LanceTable,
     Table,
-    _table_path,
     sanitize_create_table,
 )
 from .util import (
-    fs_from_uri,
-    get_uri_location,
     get_uri_scheme,
     validate_table_name,
 )
 
 if TYPE_CHECKING:
+    import pyarrow as pa
     from .pydantic import LanceModel
     from datetime import timedelta
 
     from ._lancedb import Connection as LanceDbConnection
     from .common import DATA, URI
     from .embeddings import EmbeddingFunctionConfig
+
+LOOP = BackgroundEventLoop()
 
 
 class DBConnection(EnforceOverrides):
@@ -180,6 +177,7 @@ class DBConnection(EnforceOverrides):
         control over how data is saved, either provide the PyArrow schema to
         convert to or else provide a [PyArrow Table](pyarrow.Table) directly.
 
+        >>> import pyarrow as pa
         >>> custom_schema = pa.schema([
         ...   pa.field("vector", pa.list_(pa.float32(), 2)),
         ...   pa.field("lat", pa.float32()),
@@ -327,7 +325,11 @@ class LanceDBConnection(DBConnection):
     """
 
     def __init__(
-        self, uri: URI, *, read_consistency_interval: Optional[timedelta] = None
+        self,
+        uri: URI,
+        *,
+        read_consistency_interval: Optional[timedelta] = None,
+        storage_options: Optional[Dict[str, str]] = None,
     ):
         if not isinstance(uri, Path):
             scheme = get_uri_scheme(uri)
@@ -338,9 +340,27 @@ class LanceDBConnection(DBConnection):
             uri = uri.expanduser().absolute()
             Path(uri).mkdir(parents=True, exist_ok=True)
         self._uri = str(uri)
-
         self._entered = False
         self.read_consistency_interval = read_consistency_interval
+        self.storage_options = storage_options
+
+        if read_consistency_interval is not None:
+            read_consistency_interval_secs = read_consistency_interval.total_seconds()
+        else:
+            read_consistency_interval_secs = None
+
+        async def do_connect():
+            return await lancedb_connect(
+                sanitize_uri(uri),
+                None,
+                None,
+                None,
+                read_consistency_interval_secs,
+                None,
+                storage_options,
+            )
+
+        self._conn = AsyncConnection(LOOP.run(do_connect()))
 
     def __repr__(self) -> str:
         val = f"{self.__class__.__name__}({self._uri}"
@@ -364,32 +384,7 @@ class LanceDBConnection(DBConnection):
         Iterator of str.
             A list of table names.
         """
-        try:
-            asyncio.get_running_loop()
-            # User application is async.  Soon we will just tell them to use the
-            # async version.  Until then fallback to the old sync implementation.
-            try:
-                filesystem = fs_from_uri(self.uri)[0]
-            except pa.ArrowInvalid:
-                raise NotImplementedError("Unsupported scheme: " + self.uri)
-
-            try:
-                loc = get_uri_location(self.uri)
-                paths = filesystem.get_file_info(fs.FileSelector(loc))
-            except FileNotFoundError:
-                # It is ok if the file does not exist since it will be created
-                paths = []
-            tables = [
-                os.path.splitext(file_info.base_name)[0]
-                for file_info in paths
-                if file_info.extension == "lance"
-            ]
-            tables.sort()
-            return tables
-        except RuntimeError:
-            # User application is sync.  It is safe to use the async implementation
-            # under the hood.
-            return asyncio.run(self._async_get_table_names(page_token, limit))
+        return LOOP.run(self._conn.table_names(start_after=page_token, limit=limit))
 
     def __len__(self) -> int:
         return len(self.table_names())
@@ -461,19 +456,16 @@ class LanceDBConnection(DBConnection):
             If True, ignore if the table does not exist.
         """
         try:
-            table_uri = _table_path(self.uri, name)
-            filesystem, path = fs_from_uri(table_uri)
-            filesystem.delete_dir(path)
-        except FileNotFoundError:
+            LOOP.run(self._conn.drop_table(name))
+        except ValueError as e:
             if not ignore_missing:
-                raise
+                raise e
+            if f"Table '{name}' was not found" not in str(e):
+                raise e
 
     @override
     def drop_database(self):
-        dummy_table_uri = _table_path(self.uri, "dummy")
-        uri = dummy_table_uri.removesuffix("dummy.lance")
-        filesystem, path = fs_from_uri(uri)
-        filesystem.delete_dir(path)
+        LOOP.run(self._conn.drop_database())
 
 
 class AsyncConnection(object):
@@ -689,6 +681,7 @@ class AsyncConnection(object):
         control over how data is saved, either provide the PyArrow schema to
         convert to or else provide a [PyArrow Table](pyarrow.Table) directly.
 
+        >>> import pyarrow as pa
         >>> custom_schema = pa.schema([
         ...   pa.field("vector", pa.list_(pa.float32(), 2)),
         ...   pa.field("lat", pa.float32()),
