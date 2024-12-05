@@ -18,6 +18,7 @@ use arrow::pyarrow::FromPyArrow;
 use lancedb::index::scalar::FullTextSearchQuery;
 use lancedb::query::QueryExecutionOptions;
 use lancedb::query::{
+    HasQuery,
     ExecutableQuery, Query as LanceDbQuery, QueryBase, Select, VectorQuery as LanceDbVectorQuery,
 };
 use pyo3::exceptions::PyRuntimeError;
@@ -137,6 +138,7 @@ impl Query {
 #[pyclass]
 pub struct FTSQuery {
     inner: LanceDbQuery,
+    // TODO this could probably be set right inside inner rather than being separate ...
     fts_query: FullTextSearchQuery,
 }
 
@@ -174,13 +176,7 @@ impl FTSQuery {
         self_: PyRef<'_, Self>,
         max_batch_length: Option<u32>,
     ) -> PyResult<Bound<'_, PyAny>> {
-        
-
         let inner = self_.inner.clone().full_text_search(self_.fts_query.clone());
-        
-        // TODO remove this
-        println!("Executing FTS Query");
-        println!("{:?}", inner);
 
         future_into_py(self_.py(), async move {
             let mut opts = QueryExecutionOptions::default();
@@ -191,6 +187,19 @@ impl FTSQuery {
             Ok(RecordBatchStream::new(inner_stream))
         })
 
+    }
+
+    pub fn nearest_to(&mut self, vector: Bound<'_, PyAny>) -> PyResult<HybridQuery> {
+        let vector_query = Query::new(self.inner.clone()).nearest_to(vector)?;
+        Ok(HybridQuery{
+            // TODO check if FTSQuery should just implement clone
+            inner_fts: FTSQuery { inner: self.inner.clone(), fts_query: self.fts_query.clone() },
+            inner_vec: vector_query,
+        })
+    }
+
+    pub fn get_query(&self) -> String {
+        self.fts_query.query.clone()
     }
 }
 
@@ -289,5 +298,107 @@ impl VectorQuery {
                 .await
                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))
         })
+    }
+
+    pub fn nearest_to_text(&mut self, query: Bound<'_, PyDict>) -> PyResult<HybridQuery> {
+        let fts_query = Query::new(self.inner.mut_query().clone()).nearest_to_text(query)?;
+        Ok(HybridQuery{
+            // TODO check if VectorQuery should implement clone
+            inner_vec: VectorQuery { inner: self.inner.clone() },
+            inner_fts: fts_query,
+        })
+    }
+}
+
+#[pyclass]
+pub struct HybridQuery {
+    inner_vec: VectorQuery,
+    inner_fts: FTSQuery,
+}
+
+#[pymethods]
+impl HybridQuery {
+    pub fn r#where(&mut self, predicate: String) {
+        self.inner_vec.r#where(predicate.clone());
+        self.inner_fts.r#where(predicate);
+    }
+
+    pub fn select(&mut self, columns: Vec<(String, String)>) {
+        self.inner_vec.select(columns.clone());
+        self.inner_fts.select(columns);
+    }
+
+    pub fn limit(&mut self, limit: u32) {
+        self.inner_vec.limit(limit);
+        self.inner_fts.limit(limit);
+    }
+
+    pub fn offset(&mut self, offset: u32) {
+        self.inner_vec.offset(offset);
+        self.inner_fts.offset(offset);
+    }
+
+    pub fn fast_search(&mut self) {
+        self.inner_vec.fast_search();
+        self.inner_fts.fast_search();
+    }
+
+    pub fn with_row_id(&mut self) {
+        self.inner_fts.with_row_id();
+        self.inner_vec.with_row_id();
+    }
+
+    pub fn postfilter(&mut self) {
+        self.inner_vec.postfilter();
+        self.inner_fts.postfilter();
+    }
+   
+    pub fn add_query_vector(&mut self, vector: Bound<'_, PyAny>) -> PyResult<()> {
+        self.inner_vec.add_query_vector(vector)
+    }
+
+    pub fn column(&mut self, column: String) {
+        self.inner_vec.column(column);
+    }
+
+    pub fn distance_type(&mut self, distance_type: String) -> PyResult<()> {
+        self.inner_vec.distance_type(distance_type)
+    }
+
+    pub fn refine_factor(&mut self, refine_factor: u32) {
+        self.inner_vec.refine_factor(refine_factor);
+    }
+
+    pub fn nprobes(&mut self, nprobe: u32) {
+        self.inner_vec.nprobes(nprobe);
+    }
+
+    pub fn ef(&mut self, ef: u32) {
+        self.inner_vec.ef(ef);
+    }
+
+    pub fn bypass_vector_index(&mut self) {
+        self.inner_vec.bypass_vector_index();
+    }
+
+    pub fn to_vector_query(&mut self) -> PyResult<VectorQuery> {
+        Ok(VectorQuery {
+            inner: self.inner_vec.inner.clone()
+        })
+    }
+
+    pub fn to_fts_query(&mut self) -> PyResult<FTSQuery> {
+        Ok(FTSQuery {
+            inner: self.inner_fts.inner.clone(),
+            fts_query: self.inner_fts.fts_query.clone()
+        })
+    }
+
+    pub fn get_limit(&mut self) -> Option<u32> {
+        self.inner_fts.inner.limit.map(|i| i as u32)
+    }
+
+    pub fn get_with_row_id(&mut self) -> bool {
+        self.inner_fts.inner.with_row_id
     }
 }

@@ -84,6 +84,7 @@ class Query:
 
 class FTSQuery:
     def where(self, filter: str): ...
+    # TODO finish filling this in etc.
     async def execute(self, max_batch_legnth: Optional[int]) -> RecordBatchStream: ...
 
 class VectorQuery:
