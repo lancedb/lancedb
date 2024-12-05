@@ -14,7 +14,6 @@
 
 //! LanceDB Table APIs
 
-use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -1047,12 +1046,6 @@ pub struct NativeTable {
     name: String,
     uri: String,
     pub(crate) dataset: dataset::DatasetConsistencyWrapper,
-
-    // the object store wrapper to use on write path
-    store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
-
-    storage_options: HashMap<String, String>,
-
     // This comes from the connection options. We store here so we can pass down
     // to the dataset when we recreate it (for example, in checkout_latest).
     read_consistency_interval: Option<std::time::Duration>,
@@ -1118,13 +1111,6 @@ impl NativeTable {
             None => params,
         };
 
-        let storage_options = params
-            .store_options
-            .clone()
-            .unwrap_or_default()
-            .storage_options
-            .unwrap_or_default();
-
         let dataset = DatasetBuilder::from_uri(uri)
             .with_read_params(params)
             .load()
@@ -1142,8 +1128,6 @@ impl NativeTable {
             name: name.to_string(),
             uri: uri.to_string(),
             dataset,
-            store_wrapper: write_store_wrapper,
-            storage_options,
             read_consistency_interval,
         })
     }
@@ -1192,12 +1176,6 @@ impl NativeTable {
             Some(wrapper) => params.patch_with_store_wrapper(wrapper)?,
             None => params,
         };
-        let storage_options = params
-            .store_params
-            .clone()
-            .unwrap_or_default()
-            .storage_options
-            .unwrap_or_default();
 
         let dataset = Dataset::write(batches, uri, Some(params))
             .await
@@ -1211,8 +1189,6 @@ impl NativeTable {
             name: name.to_string(),
             uri: uri.to_string(),
             dataset: DatasetConsistencyWrapper::new_latest(dataset, read_consistency_interval),
-            store_wrapper: write_store_wrapper,
-            storage_options,
             read_consistency_interval,
         })
     }
