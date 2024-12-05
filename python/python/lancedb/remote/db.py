@@ -20,18 +20,15 @@ import warnings
 
 from lancedb import connect_async
 from lancedb.remote import ClientConfig
-from lancedb.background_loop import BackgroundEventLoop
 import pyarrow as pa
 from overrides import override
 
 from ..common import DATA
-from ..db import DBConnection
+from ..db import DBConnection, LOOP
 from ..embeddings import EmbeddingFunctionConfig
 from ..pydantic import LanceModel
 from ..table import Table
 from ..util import validate_table_name
-
-LOOP = BackgroundEventLoop()
 
 
 class RemoteDBConnection(DBConnection):

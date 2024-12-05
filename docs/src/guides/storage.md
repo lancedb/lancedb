@@ -87,11 +87,6 @@ In most cases, when running in the respective cloud and permissions are set up c
 export TIMEOUT=60s
 ```
 
-!!! note "`storage_options` availability"
-
-    The `storage_options` parameter is only available in Python *async* API and JavaScript API.
-    It is not yet supported in the Python synchronous API.
-
 If you only want this to apply to one particular connection, you can pass the `storage_options` argument when opening the connection:
 
 === "Python"
