@@ -1,12 +1,9 @@
 name: NPM Publish
 
 on:
-  pull_request:
-    paths:
-      - .github/workflows/npm-publish.yml
-  # push:
-  #   tags:
-  #     - "v*"
+  push:
+    tags:
+      - "v*"
 
 jobs:
   node:
@@ -149,7 +146,7 @@ jobs:
     runs-on: ubuntu-latest
     container: alpine:edge
     # Only runs on tags that matches the make-release action
-    # if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v')
     strategy:
       fail-fast: false
       matrix:
@@ -252,7 +249,7 @@ jobs:
     runs-on: ubuntu-latest
     container: alpine:edge
     # Only runs on tags that matches the make-release action
-    # if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v')
     strategy:
       fail-fast: false
       matrix:
@@ -307,7 +304,7 @@ jobs:
     name: vectordb ${{ matrix.target }}
     runs-on: windows-2022
     # Only runs on tags that matches the make-release action
-    # if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v')
     strategy:
       fail-fast: false
       matrix:
@@ -339,7 +336,7 @@ jobs:
 
   node-windows-arm64:
     name: vectordb ${{ matrix.config.arch }}-pc-windows-msvc
-    # if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     container: alpine:edge
     strategy:
