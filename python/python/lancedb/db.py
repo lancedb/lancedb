@@ -35,6 +35,7 @@ from .util import (
 )
 
 if TYPE_CHECKING:
+    import pyarrow as pa
     from .pydantic import LanceModel
     from datetime import timedelta
 
