@@ -35,7 +35,6 @@ from .util import (
 )
 
 if TYPE_CHECKING:
-    import pyarrow as pa
     from .pydantic import LanceModel
     from datetime import timedelta
 
@@ -177,6 +176,7 @@ class DBConnection(EnforceOverrides):
         control over how data is saved, either provide the PyArrow schema to
         convert to or else provide a [PyArrow Table](pyarrow.Table) directly.
 
+        >>> import pyarrow as pa
         >>> custom_schema = pa.schema([
         ...   pa.field("vector", pa.list_(pa.float32(), 2)),
         ...   pa.field("lat", pa.float32()),
@@ -680,6 +680,7 @@ class AsyncConnection(object):
         control over how data is saved, either provide the PyArrow schema to
         convert to or else provide a [PyArrow Table](pyarrow.Table) directly.
 
+        >>> import pyarrow as pa
         >>> custom_schema = pa.schema([
         ...   pa.field("vector", pa.list_(pa.float32(), 2)),
         ...   pa.field("lat", pa.float32()),
