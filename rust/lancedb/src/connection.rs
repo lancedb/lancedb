@@ -625,7 +625,7 @@ impl ConnectBuilder {
 
     /// Set the LanceDB Cloud client configuration.
     ///
-    /// ```
+    /// ```no_run
     /// # use lancedb::connect;
     /// # use lancedb::remote::*;
     /// connect("db://my_database")

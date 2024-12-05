@@ -348,7 +348,7 @@ pub trait QueryBase {
     ///
     /// The filter should be supplied as an SQL query string.  For example:
     ///
-    /// ```ignore
+    /// ```sql
     /// x > 10
     /// y > 0 AND y < 100
     /// x > 5 OR y = 'test'
@@ -364,8 +364,18 @@ pub trait QueryBase {
     ///
     /// This method is only valid on tables that have a full text search index.
     ///
-    /// ```ignore
-    /// query.full_text_search(FullTextSearchQuery::new("hello world"))
+    /// ```
+    /// use lance_index::scalar::FullTextSearchQuery;
+    /// use lancedb::query::{QueryBase, ExecutableQuery};
+    ///
+    /// # use lancedb::Table;
+    /// # async fn query(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
+    /// let results = table.query()
+    ///     .full_text_search(FullTextSearchQuery::new("hello world".into()))
+    ///     .execute()
+    ///     .await?;
+    /// # Ok(())
+    /// # }
     /// ```
     fn full_text_search(self, query: FullTextSearchQuery) -> Self;
 
