@@ -100,6 +100,9 @@ class VectorQuery:
     def nprobes(self, nprobes: int): ...
     def bypass_vector_index(self): ...
 
+class HybridQuery:
+    def where(self, filter: str): ...
+
 class CompactionStats:
     fragments_removed: int
     fragments_added: int

@@ -563,7 +563,7 @@ pub struct Query {
     parent: Arc<dyn TableInternal>,
 
     /// limit the number of rows to return.
-    pub(crate) limit: Option<usize>,
+    pub limit: Option<usize>,
 
     /// Offset of the query.
     pub(crate) offset: Option<usize>,
@@ -586,7 +586,7 @@ pub struct Query {
     /// If set to true, the query will return the `_rowid` meta column.
     ///
     /// By default, this is false.
-    pub(crate) with_row_id: bool,
+    pub with_row_id: bool,
 
     /// If set to false, the filter will be applied after the vector search.
     pub(crate) prefilter: bool,
