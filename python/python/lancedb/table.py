@@ -1624,15 +1624,7 @@ class LanceTable(Table):
             on_bad_vectors=on_bad_vectors,
             fill_value=fill_value,
         )
-        # Access the dataset_mut property to ensure that the dataset is mutable.
-        self._ref.dataset_mut
-        self._ref.dataset = lance.write_dataset(
-            data,
-            self._dataset_uri,
-            schema=self.schema,
-            mode=mode,
-            storage_options=self._ref.storage_options,
-        )
+        self._ref.dataset_mut.insert(data, mode=mode, schema=self.schema)
 
     def merge(
         self,
