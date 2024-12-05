@@ -44,6 +44,7 @@ if TYPE_CHECKING:
     import polars as pl
 
     from ._lancedb import Query as LanceQuery
+    from ._lancedb import FTSQuery as LanceFTSQuery
     from ._lancedb import VectorQuery as LanceVectorQuery
     from .common import VEC
     from .pydantic import LanceModel
@@ -1635,7 +1636,7 @@ class AsyncQuery(AsyncQueryBase):
 
     def nearest_to_text(
         self, query: str, columns: Union[str, List[str]] = []
-    ) -> AsyncQuery:
+    ) -> AsyncFTSQuery:
         """
         Find the documents that are most relevant to the given text query.
 
@@ -1658,9 +1659,13 @@ class AsyncQuery(AsyncQueryBase):
         """
         if isinstance(columns, str):
             columns = [columns]
-        self._inner.nearest_to_text({"query": query, "columns": columns})
-        return self
+        return AsyncFTSQuery(self._inner.nearest_to_text({"query": query, "columns": columns}))
 
+
+class AsyncFTSQuery(AsyncQueryBase):
+    def __init__(self, inner: LanceFTSQuery):
+        super().__init__(inner)
+        self._inner = inner
 
 class AsyncVectorQuery(AsyncQueryBase):
     def __init__(self, inner: LanceVectorQuery):

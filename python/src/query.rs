@@ -87,7 +87,7 @@ impl Query {
         Ok(VectorQuery { inner })
     }
 
-    pub fn nearest_to_text(&mut self, query: Bound<'_, PyDict>) -> PyResult<()> {
+    pub fn nearest_to_text(&mut self, query: Bound<'_, PyDict>) -> PyResult<FTSQuery> {
         let query_text = query
             .get_item("query")?
             .ok_or(PyErr::new::<PyRuntimeError, _>(
@@ -100,9 +100,12 @@ impl Query {
             .transpose()?;
 
         let fts_query = FullTextSearchQuery::new(query_text).columns(columns);
-        self.inner = self.inner.clone().full_text_search(fts_query);
+        // self.inner = self.inner.clone().full_text_search(fts_query);
 
-        Ok(())
+        Ok(FTSQuery{
+            fts_query: fts_query,
+            inner: self.inner.clone(),
+        })
     }
 
     pub fn execute(
@@ -128,6 +131,66 @@ impl Query {
                 .await
                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))
         })
+    }
+}
+
+#[pyclass]
+pub struct FTSQuery {
+    inner: LanceDbQuery,
+    fts_query: FullTextSearchQuery,
+}
+
+#[pymethods]
+impl FTSQuery {
+    pub fn r#where(&mut self, predicate: String) {
+        self.inner = self.inner.clone().only_if(predicate);
+    }
+
+    pub fn select(&mut self, columns: Vec<(String, String)>) {
+        self.inner = self.inner.clone().select(Select::dynamic(&columns));
+    }
+
+    pub fn limit(&mut self, limit: u32) {
+        self.inner = self.inner.clone().limit(limit as usize);
+    }
+
+    pub fn offset(&mut self, offset: u32) {
+        self.inner = self.inner.clone().offset(offset as usize);
+    }
+
+    pub fn fast_search(&mut self) {
+        self.inner = self.inner.clone().fast_search();
+    }
+
+    pub fn with_row_id(&mut self) {
+        self.inner = self.inner.clone().with_row_id();
+    }
+
+    pub fn postfilter(&mut self) {
+        self.inner = self.inner.clone().postfilter();
+    }
+
+    pub fn execute(
+        self_: PyRef<'_, Self>,
+        max_batch_length: Option<u32>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        
+
+        let inner = self_.inner.clone().full_text_search(self_.fts_query.clone());
+        
+        // TODO remove this
+        println!("Executing FTS Query");
+        println!("{:?}", inner);
+
+        future_into_py(self_.py(), async move {
+            let mut opts = QueryExecutionOptions::default();
+            if let Some(max_batch_length) = max_batch_length {
+                opts.max_batch_length = max_batch_length;
+            }
+            let inner_stream = inner.execute_with_options(opts).await.infer_error()?;
+            Ok(RecordBatchStream::new(inner_stream))
+        })
+
     }
 }
 
