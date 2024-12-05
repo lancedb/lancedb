@@ -15,7 +15,7 @@
 use std::sync::Arc;
 
 use arrow_schema::{DataType, Schema};
-use lance::arrow::json::JsonSchema;
+use lance::arrow::json::JsonDataType;
 use lance::dataset::{ReadParams, WriteParams};
 use lance::io::{ObjectStoreParams, WrappingObjectStore};
 use lazy_static::lazy_static;
@@ -178,21 +178,8 @@ pub fn supported_vector_data_type(dtype: &DataType) -> bool {
 
 /// Note: this is temporary until we get a proper datatype conversion in Lance.
 pub fn string_to_datatype(s: &str) -> Option<DataType> {
-    // TODO: we can later simplify this substantially, after getting:
-    // https://github.com/lancedb/lance/pull/3161
-    let dummy_schema = format!(
-        "{{\"fields\": [\
-            {{ \"name\": \"n\", \
-              \"nullable\": true, \
-              \"type\": {{\
-                \"type\": \"{}\"\
-              }} }}] }}",
-        s
-    );
-    let json_schema: JsonSchema = serde_json::from_str(&dummy_schema).ok()?;
-    let schema = Schema::try_from(json_schema).ok()?;
-    let data_type = schema.field(0).data_type().clone();
-    Some(data_type)
+    let json_type: JsonDataType = serde_json::from_str(s).ok()?;
+    (&json_type).try_into().ok()
 }
 
 #[cfg(test)]
