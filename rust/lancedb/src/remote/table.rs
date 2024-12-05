@@ -9,7 +9,7 @@ use crate::utils::{supported_btree_data_type, supported_vector_data_type};
 use crate::{Error, Table};
 use arrow_array::RecordBatchReader;
 use arrow_ipc::reader::FileReader;
-use arrow_schema::{DataType, Field as ArrowField, Schema as ArrowSchema, SchemaRef};
+use arrow_schema::{DataType, SchemaRef};
 use async_trait::async_trait;
 use datafusion_common::DataFusionError;
 use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
@@ -17,7 +17,7 @@ use datafusion_physical_plan::{ExecutionPlan, SendableRecordBatchStream};
 use futures::TryStreamExt;
 use http::header::CONTENT_TYPE;
 use http::StatusCode;
-use lance::arrow::json::JsonSchema;
+use lance::arrow::json::{JsonDataType, JsonSchema};
 use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::{ColumnAlteration, NewColumnTransform, Version};
 use lance_datafusion::exec::OneShotExec;
@@ -687,14 +687,9 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
                     value["rename"] = serde_json::Value::String(rename.clone());
                 }
                 if let Some(data_type) = &alteration.data_type {
-                    // TODO: we can later simplify this substantially, after getting:
-                    // https://github.com/lancedb/lance/pull/3161
-                    let dummy_schema =
-                        ArrowSchema::new(vec![ArrowField::new("dummy", data_type.clone(), false)]);
-                    let json_schema = JsonSchema::try_from(&dummy_schema).unwrap();
-                    let json_string = serde_json::to_string(&json_schema).unwrap();
-                    let json_value: serde_json::Value = serde_json::from_str(&json_string).unwrap();
-                    value["data_type"] = json_value["fields"][0]["type"].clone();
+                    let json_data_type = JsonDataType::try_from(data_type).unwrap();
+                    let json_data_type = serde_json::to_value(&json_data_type).unwrap();
+                    value["data_type"] = json_data_type;
                 }
                 if let Some(nullable) = &alteration.nullable {
                     value["nullable"] = serde_json::Value::Bool(*nullable);
