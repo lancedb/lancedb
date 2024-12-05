@@ -37,7 +37,8 @@ pub use lance::dataset::ColumnAlteration;
 pub use lance::dataset::NewColumnTransform;
 pub use lance::dataset::ReadParams;
 use lance::dataset::{
-    Dataset, UpdateBuilder as LanceUpdateBuilder, Version, WhenMatched, WriteMode, WriteParams,
+    Dataset, InsertBuilder, UpdateBuilder as LanceUpdateBuilder, Version, WhenMatched, WriteMode,
+    WriteParams,
 };
 use lance::dataset::{MergeInsertBuilder as LanceMergeInsertBuilder, WhenNotMatchedBySource};
 use lance::io::WrappingObjectStore;
@@ -1758,10 +1759,13 @@ impl TableInternal for NativeTable {
         add: AddDataBuilder<NoData>,
         data: Box<dyn RecordBatchReader + Send>,
     ) -> Result<()> {
-        let data =
-            MaybeEmbedded::try_new(data, self.table_definition().await?, add.embedding_registry)?;
+        let data = Box::new(MaybeEmbedded::try_new(
+            data,
+            self.table_definition().await?,
+            add.embedding_registry,
+        )?) as Box<dyn RecordBatchReader + Send>;
 
-        let mut lance_params = add.write_options.lance_write_params.unwrap_or(WriteParams {
+        let lance_params = add.write_options.lance_write_params.unwrap_or(WriteParams {
             mode: match add.mode {
                 AddDataMode::Append => WriteMode::Append,
                 AddDataMode::Overwrite => WriteMode::Overwrite,
@@ -1769,26 +1773,11 @@ impl TableInternal for NativeTable {
             ..Default::default()
         });
 
-        // Bring storage options from table
-        let storage_options = lance_params
-            .store_params
-            .get_or_insert(Default::default())
-            .storage_options
-            .get_or_insert(Default::default());
-        for (key, value) in self.storage_options.iter() {
-            if !storage_options.contains_key(key) {
-                storage_options.insert(key.clone(), value.clone());
-            }
-        }
-
-        // patch the params if we have a write store wrapper
-        let lance_params = match self.store_wrapper.clone() {
-            Some(wrapper) => lance_params.patch_with_store_wrapper(wrapper)?,
-            None => lance_params,
-        };
-
-        self.dataset.ensure_mutable().await?;
-        let dataset = Dataset::write(data, &self.uri, Some(lance_params)).await?;
+        let dataset = self.dataset.get_mut().await?;
+        let dataset = InsertBuilder::new(Arc::new(dataset.clone()))
+            .with_params(&lance_params)
+            .execute_stream(data)
+            .await?;
 
         self.dataset.set_latest(dataset).await;
         Ok(())
