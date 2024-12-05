@@ -1749,11 +1749,14 @@ impl TableInternal for NativeTable {
             ..Default::default()
         });
 
-        let dataset = self.dataset.get_mut().await?;
-        let dataset = InsertBuilder::new(Arc::new(dataset.clone()))
-            .with_params(&lance_params)
-            .execute_stream(data)
-            .await?;
+        let dataset = {
+            // Limited scope for the mutable borrow of self.dataset avoids deadlock.
+            let ds = self.dataset.get_mut().await?;
+            InsertBuilder::new(Arc::new(ds.clone()))
+                .with_params(&lance_params)
+                .execute_stream(data)
+                .await?
+        };
 
         self.dataset.set_latest(dataset).await;
         Ok(())
