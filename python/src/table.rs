@@ -12,10 +12,10 @@ use lancedb::table::{
 use pyo3::{
     exceptions::{PyRuntimeError, PyValueError},
     pyclass, pymethods,
-    types::{IntoPyDict, PyAnyMethods, PyDict, PyDictMethods, PyString},
+    types::{IntoPyDict, PyAnyMethods, PyDict, PyDictMethods},
     Bound, FromPyObject, PyAny, PyRef, PyResult, Python, ToPyObject,
 };
-use pyo3_asyncio_0_21::tokio::future_into_py;
+use pyo3_async_runtimes::tokio::future_into_py;
 
 use crate::{
     error::PythonErrorExt,
@@ -141,9 +141,10 @@ impl Table {
         })
     }
 
+    #[pyo3(signature = (updates, r#where=None))]
     pub fn update<'a>(
         self_: PyRef<'a, Self>,
-        updates: &PyDict,
+        updates: &Bound<'_, PyDict>,
         r#where: Option<String>,
     ) -> PyResult<Bound<'a, PyAny>> {
         let mut op = self_.inner_ref()?.update();
@@ -151,10 +152,8 @@ impl Table {
             op = op.only_if(only_if);
         }
         for (column_name, value) in updates.into_iter() {
-            let column_name: &PyString = column_name.downcast()?;
-            let column_name = column_name.to_str()?.to_string();
-            let value: &PyString = value.downcast()?;
-            let value = value.to_str()?.to_string();
+            let column_name: String = column_name.extract()?;
+            let value: String = value.extract()?;
             op = op.column(column_name, value);
         }
         future_into_py(self_.py(), async move {
@@ -163,6 +162,7 @@ impl Table {
         })
     }
 
+    #[pyo3(signature = (filter=None))]
     pub fn count_rows(
         self_: PyRef<'_, Self>,
         filter: Option<String>,
@@ -173,6 +173,7 @@ impl Table {
         })
     }
 
+    #[pyo3(signature = (column, index=None, replace=None))]
     pub fn create_index<'a>(
         self_: PyRef<'a, Self>,
         column: String,
@@ -267,7 +268,8 @@ impl Table {
                         .unwrap();
 
                         let tup: Vec<(&String, &String)> = v.metadata.iter().collect();
-                        dict.set_item("metadata", tup.into_py_dict(py)).unwrap();
+                        dict.set_item("metadata", tup.into_py_dict_bound(py))
+                            .unwrap();
                         dict.to_object(py)
                     })
                     .collect::<Vec<_>>()
@@ -303,6 +305,7 @@ impl Table {
         Query::new(self.inner_ref().unwrap().query())
     }
 
+    #[pyo3(signature = (cleanup_since_ms=None, delete_unverified=None))]
     pub fn optimize(
         self_: PyRef<'_, Self>,
         cleanup_since_ms: Option<u64>,

@@ -47,6 +47,7 @@ impl Index {
 
 #[pymethods]
 impl Index {
+    #[pyo3(signature = (distance_type=None, num_partitions=None, num_sub_vectors=None, max_iterations=None, sample_rate=None))]
     #[staticmethod]
     pub fn ivf_pq(
         distance_type: Option<String>,
@@ -106,6 +107,7 @@ impl Index {
         })
     }
 
+    #[pyo3(signature = (with_position=None, base_tokenizer=None, language=None, max_token_length=None, lower_case=None, stem=None, remove_stop_words=None, ascii_folding=None))]
     #[allow(clippy::too_many_arguments)]
     #[staticmethod]
     pub fn fts(
@@ -146,6 +148,7 @@ impl Index {
         }
     }
 
+    #[pyo3(signature = (distance_type=None, num_partitions=None, num_sub_vectors=None, max_iterations=None, sample_rate=None, m=None, ef_construction=None))]
     #[staticmethod]
     pub fn hnsw_pq(
         distance_type: Option<String>,
@@ -184,6 +187,7 @@ impl Index {
         })
     }
 
+    #[pyo3(signature = (distance_type=None, num_partitions=None, max_iterations=None, sample_rate=None, m=None, ef_construction=None))]
     #[staticmethod]
     pub fn hnsw_sq(
         distance_type: Option<String>,

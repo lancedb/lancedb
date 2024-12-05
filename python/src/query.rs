@@ -29,7 +29,7 @@ use pyo3::PyAny;
 use pyo3::PyRef;
 use pyo3::PyResult;
 use pyo3::{pyclass, PyErr};
-use pyo3_asyncio_0_21::tokio::future_into_py;
+use pyo3_async_runtimes::tokio::future_into_py;
 
 use crate::arrow::RecordBatchStream;
 use crate::error::PythonErrorExt;
@@ -105,6 +105,7 @@ impl Query {
         Ok(())
     }
 
+    #[pyo3(signature = (max_batch_length=None))]
     pub fn execute(
         self_: PyRef<'_, Self>,
         max_batch_length: Option<u32>,
@@ -203,6 +204,7 @@ impl VectorQuery {
         self.inner = self.inner.clone().bypass_vector_index()
     }
 
+    #[pyo3(signature = (max_batch_length=None))]
     pub fn execute(
         self_: PyRef<'_, Self>,
         max_batch_length: Option<u32>,
