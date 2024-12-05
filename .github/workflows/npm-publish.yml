@@ -1,12 +1,12 @@
 name: NPM Publish
 
 on:
-  push:
-    tags:
-      - "v*"
   pull_request:
     paths:
       - .github/workflows/npm-publish.yml
+  # push:
+  #   tags:
+  #     - "v*"
 
 jobs:
   node:
@@ -465,7 +465,6 @@ jobs:
             nodejs/dist/*.node
 
   release:
-    skip: true
     name: vectordb NPM Publish
     needs: [node, node-macos, node-linux-gnu, node-linux-musl, node-windows, node-windows-arm64]
     runs-on: ubuntu-latest
@@ -506,7 +505,6 @@ jobs:
           SLACK_WEBHOOK_URL: ${{ secrets.ACTION_MONITORING_SLACK }}
 
   release-nodejs:
-    skip: true
     name: lancedb NPM Publish
     needs: [nodejs-macos, nodejs-linux-gnu, nodejs-linux-musl, nodejs-windows, nodejs-windows-arm64]
     runs-on: ubuntu-latest
@@ -566,7 +564,7 @@ jobs:
           SLACK_WEBHOOK_URL: ${{ secrets.ACTION_MONITORING_SLACK }}
 
   update-package-lock:
-    skip: true
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: [release]
     runs-on: ubuntu-latest
     permissions:
@@ -584,7 +582,7 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
   update-package-lock-nodejs:
-    skip: true
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: [release-nodejs]
     runs-on: ubuntu-latest
     permissions:
@@ -602,7 +600,7 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
   gh-release:
-    skip: true
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write
