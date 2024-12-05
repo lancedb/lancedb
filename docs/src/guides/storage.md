@@ -27,10 +27,13 @@ LanceDB OSS supports object stores such as AWS S3 (and compatible stores), Azure
 
     Azure Blob Storage:
 
+    <!-- skip-test -->
     ```python
     import lancedb
     db = lancedb.connect("az://bucket/path")
     ```
+    Note that for Azure, storage credentials must be configured. See [below](#azure-blob-storage) for more details.
+
 
 === "TypeScript"
 
