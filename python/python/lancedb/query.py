@@ -1127,33 +1127,94 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             fts_results = fts_future.result()
             vector_results = vector_future.result()
 
-        # convert to ranks first if needed
-        if self._norm == "rank":
-            vector_results = _rank(vector_results, "_distance")
-            fts_results = _rank(fts_results, "_score")
+        return LanceHybridQueryBuilder._combine_hybrid_results(
+            fts_results=fts_results,
+            vector_results=vector_results,
+            norm=self._norm,
+            fts_query=self._fts_query._query,
+            reranker=self._reranker,
+            limit=self._limit,
+            with_row_ids=self._with_row_id,
+        )
+
+    def _combine_hybrid_results(
+        fts_results: pa.Table,
+        vector_results: pa.Table,
+        norm: str,
+        fts_query: str,
+        reranker,
+        limit: int,
+        with_row_ids: bool
+    ) -> pa.Table:
+        
+        if norm == "rank":
+            vector_results = LanceHybridQueryBuilder._rank(vector_results, "_distance")
+            fts_results = LanceHybridQueryBuilder._rank(fts_results, "_score")
 
         # normalize the scores to be between 0 and 1, 0 being most relevant
-        vector_results = _normalize_scores(vector_results, "_distance")
+        vector_results = LanceHybridQueryBuilder._normalize_scores(vector_results, "_distance")
 
         # In fts higher scores represent relevance. Not inverting them here as
         # rerankers might need to preserve this score to support `return_score="all"`
-        fts_results = _normalize_scores(fts_results, "_score")
+        fts_results = LanceHybridQueryBuilder._normalize_scores(fts_results, "_score")
 
-        results = self._reranker.rerank_hybrid(
-            self._fts_query._query, vector_results, fts_results
+        results = reranker.rerank_hybrid(
+           fts_query, vector_results, fts_results
         )
 
         check_reranker_result(results)
 
-        # apply limit after reranking
-        results = results.slice(length=self._limit)
+        results = results.slice(length=limit)
 
-        if not self._with_row_id:
+        if not with_row_ids:
             results = results.drop(["_rowid"])
-        return results
+
+
 
     def to_batches(self):
         raise NotImplementedError("to_batches not yet supported on a hybrid query")
+
+    def _rank(results: pa.Table, column: str, ascending: bool = True):
+        if len(results) == 0:
+            return results
+        # Get the _score column from results
+        scores = results.column(column).to_numpy()
+        sort_indices = np.argsort(scores)
+        if not ascending:
+            sort_indices = sort_indices[::-1]
+        ranks = np.empty_like(sort_indices)
+        ranks[sort_indices] = np.arange(len(scores)) + 1
+        # replace the _score column with the ranks
+        _score_idx = results.column_names.index(column)
+        results = results.set_column(
+            _score_idx, column, pa.array(ranks, type=pa.float32())
+        )
+        return results
+
+    def _normalize_scores(results: pa.Table, column: str, invert=False):
+        if len(results) == 0:
+            return results
+        # Get the _score column from results
+        scores = results.column(column).to_numpy()
+        # normalize the scores by subtracting the min and dividing by the max
+        max, min = np.max(scores), np.min(scores)
+        if np.isclose(max, min):
+            rng = max
+        else:
+            rng = max - min
+        # If rng is 0 then min and max are both 0 and so we can leave the scores as is
+        if rng != 0:
+            scores = (scores - min) / rng
+        if invert:
+            scores = 1 - scores
+        # replace the _score column with the ranks
+        _score_idx = results.column_names.index(column)
+        results = results.set_column(
+            _score_idx, column, pa.array(scores, type=pa.float32())
+        )
+        return results
+    
+
 
     def rerank(
         self,
@@ -1273,45 +1334,6 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         return self
 
 
-def _rank(results: pa.Table, column: str, ascending: bool = True):
-    if len(results) == 0:
-        return results
-    # Get the _score column from results
-    scores = results.column(column).to_numpy()
-    sort_indices = np.argsort(scores)
-    if not ascending:
-        sort_indices = sort_indices[::-1]
-    ranks = np.empty_like(sort_indices)
-    ranks[sort_indices] = np.arange(len(scores)) + 1
-    # replace the _score column with the ranks
-    _score_idx = results.column_names.index(column)
-    results = results.set_column(
-        _score_idx, column, pa.array(ranks, type=pa.float32())
-    )
-    return results
-
-def _normalize_scores(results: pa.Table, column: str, invert=False):
-    if len(results) == 0:
-        return results
-    # Get the _score column from results
-    scores = results.column(column).to_numpy()
-    # normalize the scores by subtracting the min and dividing by the max
-    max, min = np.max(scores), np.min(scores)
-    if np.isclose(max, min):
-        rng = max
-    else:
-        rng = max - min
-    # If rng is 0 then min and max are both 0 and so we can leave the scores as is
-    if rng != 0:
-        scores = (scores - min) / rng
-    if invert:
-        scores = 1 - scores
-    # replace the _score column with the ranks
-    _score_idx = results.column_names.index(column)
-    results = results.set_column(
-        _score_idx, column, pa.array(scores, type=pa.float32())
-    )
-    return results
 
 class AsyncQueryBase(object):
     def __init__(self, inner: Union[LanceQuery | LanceVectorQuery]):
@@ -1887,32 +1909,13 @@ class AsyncHybridQuery(AsyncQueryBase):
             loop.create_task(vec_query.to_arrow())
         )
 
-        # TODO this is repeated from the sync API:
-        if self._norm == "rank":
-            vector_results = _rank(vector_results, "_distance")
-            fts_results = _rank(fts_results, "_score")
-
-        # normalize the scores to be between 0 and 1, 0 being most relevant
-        vector_results = _normalize_scores(vector_results, "_distance")
-
-        # In fts higher scores represent relevance. Not inverting them here as
-        # rerankers might need to preserve this score to support `return_score="all"`
-        fts_results = _normalize_scores(fts_results, "_score")
-
-        results = self._reranker.rerank_hybrid(
-            fts_query.get_query(), vector_results, fts_results
+        return LanceHybridQueryBuilder._combine_hybrid_results(
+            fts_results=fts_results,
+            vector_results=vector_results,
+            norm=self._norm,
+            fts_query=fts_query.get_query(),
+            reranker=self._reranker,
+            limit=self._inner.get_limit(),
+            with_row_ids=with_row_ids
         )
-
-        check_reranker_result(results)
-
-        # TODO should there be a default here?
-        results = results.slice(length=self._inner.get_limit())
-
-        if not with_row_ids:
-            results = results.drop(["_rowid"])
-
-        return results
         
-
-
-    
