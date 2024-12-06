@@ -2023,24 +2023,26 @@ class AsyncHybridQuery(AsyncQueryBase):
         --------
         >>> import asyncio
         >>> from lancedb import connect_async
+        >>> from lancedb.index import FTS
         >>> async def doctest_example():
         ...     conn = await connect_async("./.lancedb")
-        ...     table = await conn.create_table("my_table", [{"vector": [99, 99], ["text": "hello world"]}])
-        ...     await table.create_fts_index("text")
+        ...     table = await conn.create_table("my_table", [{"vector": [99, 99], "text": "hello world"}])
+        ...     await table.create_index("text", config=FTS(with_position=False))
         ...     query = [100, 100]
         ...     plan = await table.query().nearest_to([1, 2]).nearest_to_text("hello").explain_plan(True)
         ...     print(plan)
         >>> asyncio.run(doctest_example()) # doctest: +ELLIPSIS, +NORMALIZE_WHITESPACE
-
         Vector Search Plan:
-        ProjectionExec: expr=[vector@0 as vector, _distance@2 as _distance]
-          GlobalLimitExec: skip=0, fetch=10
-            FilterExec: _distance@2 IS NOT NULL
-              SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST], preserve_partitioning=[false]
-                KNNVectorDistance: metric=l2
-                  LanceScan: uri=..., projection=[vector], row_id=true, row_addr=false, ordered=false
+        ProjectionExec: expr=[vector@0 as vector, text@3 as text, _distance@2 as _distance]
+            Take: columns="vector, _rowid, _distance, (text)"
+                CoalesceBatchesExec: target_batch_size=1024
+                GlobalLimitExec: skip=0, fetch=10
+                    FilterExec: _distance@2 IS NOT NULL
+                    SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST], preserve_partitioning=[false]
+                        KNNVectorDistance: metric=l2
+                        LanceScan: uri=..., projection=[vector], row_id=true, row_addr=false, ordered=false
         FTS Search Plan:
-        LanceScan: uri=..., projection=[text, vector], row_id=false, row_addr=false, ordered=true
+        LanceScan: uri=..., projection=[vector, text], row_id=false, row_addr=false, ordered=true
 
         Parameters
         ----------
