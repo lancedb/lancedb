@@ -57,8 +57,8 @@ describe.each([arrow13, arrow14, arrow15, arrow16, arrow17])(
       | import("apache-arrow-15").Schema
       | import("apache-arrow-16").Schema
       | import("apache-arrow-17").Schema = new arrow.Schema([
-        new arrow.Field("id", new arrow.Float64(), true),
-      ]);
+      new arrow.Field("id", new arrow.Float64(), true),
+    ]);
 
     beforeEach(async () => {
       tmpDir = tmp.dirSync({ unsafeCleanup: true });
