@@ -131,6 +131,8 @@ class Query(pydantic.BaseModel):
 
     fast_search: bool = False
 
+    ef: Optional[int] = None
+
 
 class LanceQueryBuilder(ABC):
     """An abstract query builder. Subclasses are defined for vector search,
@@ -257,6 +259,7 @@ class LanceQueryBuilder(ABC):
         self._with_row_id = False
         self._vector = None
         self._text = None
+        self._ef = None
 
     @deprecation.deprecated(
         deprecated_in="0.3.1",
@@ -322,6 +325,14 @@ class LanceQueryBuilder(ABC):
         """
         raise NotImplementedError
 
+    @abstractmethod
+    def to_batches(self, /, batch_size: Optional[int] = None) -> pa.Table:
+        """
+        Execute the query and return the results as a pyarrow
+        [RecordBatchReader](https://arrow.apache.org/docs/python/generated/pyarrow.RecordBatchReader.html)
+        """
+        raise NotImplementedError
+
     def to_list(self) -> List[dict]:
         """
         Execute the query and return the results as a list of dictionaries.
@@ -367,11 +378,13 @@ class LanceQueryBuilder(ABC):
         ----------
         limit: int
             The maximum number of results to return.
-            By default the query is limited to the first 10.
-            Call this method and pass 0, a negative value,
-            or None to remove the limit.
-            *WARNING* if you have a large dataset, removing
-            the limit can potentially result in reading a
+            The default query limit is 10 results.
+            For ANN/KNN queries, you must specify a limit.
+            Entering 0, a negative number, or None will reset
+            the limit to the default value of 10.
+            *WARNING* if you have a large dataset, setting
+            the limit to a large number, e.g. the table size,
+            can potentially result in reading a
             large amount of data into memory and cause
             out of memory issues.
 
@@ -638,6 +651,28 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         self._nprobes = nprobes
         return self
 
+    def ef(self, ef: int) -> LanceVectorQueryBuilder:
+        """Set the number of candidates to consider during search.
+
+        Higher values will yield better recall (more likely to find vectors if
+        they exist) at the expense of latency.
+
+        This only applies to the HNSW-related index.
+        The default value is 1.5 * limit.
+
+        Parameters
+        ----------
+        ef: int
+            The number of candidates to consider during search.
+
+        Returns
+        -------
+        LanceVectorQueryBuilder
+            The LanceQueryBuilder object.
+        """
+        self._ef = ef
+        return self
+
     def refine_factor(self, refine_factor: int) -> LanceVectorQueryBuilder:
         """Set the refine factor to use, increasing the number of vectors sampled.
 
@@ -700,6 +735,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             with_row_id=self._with_row_id,
             offset=self._offset,
             fast_search=self._fast_search,
+            ef=self._ef,
         )
         result_set = self._table._execute_query(query, batch_size)
         if self._reranker is not None:
@@ -841,6 +877,9 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
             check_reranker_result(results)
         return results
 
+    def to_batches(self, /, batch_size: Optional[int] = None):
+        raise NotImplementedError("to_batches on an FTS query")
+
     def tantivy_to_arrow(self) -> pa.Table:
         try:
             import tantivy
@@ -943,12 +982,19 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
 
 class LanceEmptyQueryBuilder(LanceQueryBuilder):
     def to_arrow(self) -> pa.Table:
-        ds = self._table.to_lance()
-        return ds.to_table(
+        return self.to_batches().read_all()
+
+    def to_batches(self, /, batch_size: Optional[int] = None) -> pa.RecordBatchReader:
+        query = Query(
             columns=self._columns,
             filter=self._where,
-            limit=self._limit,
+            k=self._limit or 10,
+            with_row_id=self._with_row_id,
+            vector=[],
+            # not actually respected in remote query
+            offset=self._offset or 0,
         )
+        return self._table._execute_query(query)
 
     def rerank(self, reranker: Reranker) -> LanceEmptyQueryBuilder:
         """Rerank the results using the specified reranker.
@@ -1067,6 +1113,8 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             self._vector_query.nprobes(self._nprobes)
         if self._refine_factor:
             self._vector_query.refine_factor(self._refine_factor)
+        if self._ef:
+            self._vector_query.ef(self._ef)
 
         with ThreadPoolExecutor() as executor:
             fts_future = executor.submit(self._fts_query.with_row_id(True).to_arrow)
@@ -1100,6 +1148,9 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         if not self._with_row_id:
             results = results.drop(["_rowid"])
         return results
+
+    def to_batches(self):
+        raise NotImplementedError("to_batches not yet supported on a hybrid query")
 
     def _rank(self, results: pa.Table, column: str, ascending: bool = True):
         if len(results) == 0:
@@ -1191,6 +1242,29 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             The LanceHybridQueryBuilder object.
         """
         self._nprobes = nprobes
+        return self
+
+    def ef(self, ef: int) -> LanceHybridQueryBuilder:
+        """
+        Set the number of candidates to consider during search.
+
+        Higher values will yield better recall (more likely to find vectors if
+        they exist) at the expense of latency.
+
+        This only applies to the HNSW-related index.
+        The default value is 1.5 * limit.
+
+        Parameters
+        ----------
+        ef: int
+            The number of candidates to consider during search.
+
+        Returns
+        -------
+        LanceHybridQueryBuilder
+            The LanceHybridQueryBuilder object.
+        """
+        self._ef = ef
         return self
 
     def metric(self, metric: Literal["L2", "cosine", "dot"]) -> LanceHybridQueryBuilder:
@@ -1445,10 +1519,11 @@ class AsyncQueryBase(object):
         ...     print(plan)
         >>> asyncio.run(doctest_example()) # doctest: +ELLIPSIS, +NORMALIZE_WHITESPACE
         ProjectionExec: expr=[vector@0 as vector, _distance@2 as _distance]
-          FilterExec: _distance@2 IS NOT NULL
-            SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST], preserve_partitioning=[false]
-              KNNVectorDistance: metric=l2
-                LanceScan: uri=..., projection=[vector], row_id=true, row_addr=false, ordered=false
+          GlobalLimitExec: skip=0, fetch=10
+            FilterExec: _distance@2 IS NOT NULL
+              SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST], preserve_partitioning=[false]
+                KNNVectorDistance: metric=l2
+                  LanceScan: uri=..., projection=[vector], row_id=true, row_addr=false, ordered=false
 
         Parameters
         ----------
@@ -1491,7 +1566,8 @@ class AsyncQuery(AsyncQueryBase):
         return pa.array(vec)
 
     def nearest_to(
-        self, query_vector: Optional[Union[VEC, Tuple]] = None
+        self,
+        query_vector: Union[VEC, Tuple, List[VEC]],
     ) -> AsyncVectorQuery:
         """
         Find the nearest vectors to the given query vector.
@@ -1529,10 +1605,33 @@ class AsyncQuery(AsyncQueryBase):
 
         Vector searches always have a [limit][].  If `limit` has not been called then
         a default `limit` of 10 will be used.
+
+        Typically, a single vector is passed in as the query. However, you can also
+        pass in multiple vectors.  This can be useful if you want to find the nearest
+        vectors to multiple query vectors. This is not expected to be faster than
+        making multiple queries concurrently; it is just a convenience method.
+        If multiple vectors are passed in then an additional column `query_index`
+        will be added to the results.  This column will contain the index of the
+        query vector that the result is nearest to.
         """
-        return AsyncVectorQuery(
-            self._inner.nearest_to(AsyncQuery._query_vec_to_array(query_vector))
-        )
+        if query_vector is None:
+            raise ValueError("query_vector can not be None")
+
+        if (
+            isinstance(query_vector, list)
+            and len(query_vector) > 0
+            and not isinstance(query_vector[0], (float, int))
+        ):
+            # multiple have been passed
+            query_vectors = [AsyncQuery._query_vec_to_array(v) for v in query_vector]
+            new_self = self._inner.nearest_to(query_vectors[0])
+            for v in query_vectors[1:]:
+                new_self.add_query_vector(v)
+            return AsyncVectorQuery(new_self)
+        else:
+            return AsyncVectorQuery(
+                self._inner.nearest_to(AsyncQuery._query_vec_to_array(query_vector))
+            )
 
     def nearest_to_text(
         self, query: str, columns: Union[str, List[str]] = []
@@ -1594,7 +1693,7 @@ class AsyncVectorQuery(AsyncQueryBase):
         """
         Set the number of partitions to search (probe)
 
-        This argument is only used when the vector column has an IVF PQ index.
+        This argument is only used when the vector column has an IVF-based index.
         If there is no index then this value is ignored.
 
         The IVF stage of IVF PQ divides the input into partitions (clusters) of
@@ -1614,6 +1713,21 @@ class AsyncVectorQuery(AsyncQueryBase):
         you the desired recall.
         """
         self._inner.nprobes(nprobes)
+        return self
+
+    def ef(self, ef: int) -> AsyncVectorQuery:
+        """
+        Set the number of candidates to consider during search
+
+        This argument is only used when the vector column has an HNSW index.
+        If there is no index then this value is ignored.
+
+        Increasing this value will increase the recall of your query but will also
+        increase the latency of your query.  The default value is 1.5 * limit.  This
+        default is good for many cases but the best value to use will depend on your
+        data and the recall that you need to achieve.
+        """
+        self._inner.ef(ef)
         return self
 
     def refine_factor(self, refine_factor: int) -> AsyncVectorQuery:

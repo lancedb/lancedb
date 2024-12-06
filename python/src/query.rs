@@ -29,7 +29,7 @@ use pyo3::PyAny;
 use pyo3::PyRef;
 use pyo3::PyResult;
 use pyo3::{pyclass, PyErr};
-use pyo3_asyncio_0_21::tokio::future_into_py;
+use pyo3_async_runtimes::tokio::future_into_py;
 
 use crate::arrow::RecordBatchStream;
 use crate::error::PythonErrorExt;
@@ -105,6 +105,7 @@ impl Query {
         Ok(())
     }
 
+    #[pyo3(signature = (max_batch_length=None))]
     pub fn execute(
         self_: PyRef<'_, Self>,
         max_batch_length: Option<u32>,
@@ -140,6 +141,13 @@ pub struct VectorQuery {
 impl VectorQuery {
     pub fn r#where(&mut self, predicate: String) {
         self.inner = self.inner.clone().only_if(predicate);
+    }
+
+    pub fn add_query_vector(&mut self, vector: Bound<'_, PyAny>) -> PyResult<()> {
+        let data: ArrayData = ArrayData::from_pyarrow_bound(&vector)?;
+        let array = make_array(data);
+        self.inner = self.inner.clone().add_query_vector(array).infer_error()?;
+        Ok(())
     }
 
     pub fn select(&mut self, columns: Vec<(String, String)>) {
@@ -188,10 +196,15 @@ impl VectorQuery {
         self.inner = self.inner.clone().nprobes(nprobe as usize);
     }
 
+    pub fn ef(&mut self, ef: u32) {
+        self.inner = self.inner.clone().ef(ef as usize);
+    }
+
     pub fn bypass_vector_index(&mut self) {
         self.inner = self.inner.clone().bypass_vector_index()
     }
 
+    #[pyo3(signature = (max_batch_length=None))]
     pub fn execute(
         self_: PyRef<'_, Self>,
         max_batch_length: Option<u32>,

@@ -21,6 +21,7 @@ use reqwest::{
 };
 
 use crate::error::{Error, Result};
+use crate::remote::db::RemoteOptions;
 
 const REQUEST_ID_HEADER: &str = "x-request-id";
 
@@ -215,6 +216,7 @@ impl RestfulLanceDbClient<Sender> {
         region: &str,
         host_override: Option<String>,
         client_config: ClientConfig,
+        options: &RemoteOptions,
     ) -> Result<Self> {
         let parsed_url = url::Url::parse(db_url).map_err(|err| Error::InvalidInput {
             message: format!("db_url is not a valid URL. '{db_url}'. Error: {err}"),
@@ -226,6 +228,14 @@ impl RestfulLanceDbClient<Sender> {
             });
         }
         let db_name = parsed_url.host_str().unwrap();
+        let db_prefix = {
+            let prefix = parsed_url.path().trim_start_matches('/');
+            if prefix.is_empty() {
+                None
+            } else {
+                Some(prefix)
+            }
+        };
 
         // Get the timeouts
         let connect_timeout = Self::get_timeout(
@@ -255,6 +265,8 @@ impl RestfulLanceDbClient<Sender> {
                 region,
                 db_name,
                 host_override.is_some(),
+                options,
+                db_prefix,
             )?)
             .user_agent(client_config.user_agent)
             .build()
@@ -262,6 +274,7 @@ impl RestfulLanceDbClient<Sender> {
                 message: "Failed to build HTTP client".into(),
                 source: Some(Box::new(err)),
             })?;
+
         let host = match host_override {
             Some(host_override) => host_override,
             None => format!("https://{}.{}.api.lancedb.com", db_name, region),
@@ -287,6 +300,8 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
         region: &str,
         db_name: &str,
         has_host_override: bool,
+        options: &RemoteOptions,
+        db_prefix: Option<&str>,
     ) -> Result<HeaderMap> {
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -309,6 +324,34 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
                 "x-lancedb-database",
                 HeaderValue::from_str(db_name).map_err(|_| Error::InvalidInput {
                     message: format!("non-ascii database name '{}' provided", db_name),
+                })?,
+            );
+        }
+        if db_prefix.is_some() {
+            headers.insert(
+                "x-lancedb-database-prefix",
+                HeaderValue::from_str(db_prefix.unwrap()).map_err(|_| Error::InvalidInput {
+                    message: format!(
+                        "non-ascii database prefix '{}' provided",
+                        db_prefix.unwrap()
+                    ),
+                })?,
+            );
+        }
+
+        if let Some(v) = options.0.get("account_name") {
+            headers.insert(
+                "x-azure-storage-account-name",
+                HeaderValue::from_str(v).map_err(|_| Error::InvalidInput {
+                    message: format!("non-ascii storage account name '{}' provided", db_name),
+                })?,
+            );
+        }
+        if let Some(v) = options.0.get("azure_storage_account_name") {
+            headers.insert(
+                "x-azure-storage-account-name",
+                HeaderValue::from_str(v).map_err(|_| Error::InvalidInput {
+                    message: format!("non-ascii storage account name '{}' provided", db_name),
                 })?,
             );
         }

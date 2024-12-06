@@ -3,11 +3,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from functools import cached_property
 from typing import (
     TYPE_CHECKING,
@@ -32,7 +33,7 @@ import pyarrow.fs as pa_fs
 from lance import LanceDataset
 from lance.dependencies import _check_for_hugging_face
 
-from .common import DATA, VEC, VECTOR_COLUMN_NAME
+from .common import DATA, VEC, VECTOR_COLUMN_NAME, sanitize_uri
 from .embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
 from .merge import LanceMergeInsertBuilder
 from .pydantic import LanceModel, model_to_dict
@@ -57,6 +58,8 @@ from .util import (
 )
 from .index import lang_mapping
 
+from ._lancedb import connect as lancedb_connect
+
 if TYPE_CHECKING:
     import PIL
     from lance.dataset import CleanupStats, ReaderLike
@@ -68,6 +71,21 @@ pd = safe_import_pandas()
 pl = safe_import_polars()
 
 QueryType = Literal["vector", "fts", "hybrid", "auto"]
+
+
+def _pd_schema_without_embedding_funcs(
+    schema: Optional[pa.Schema], columns: List[str]
+) -> Optional[pa.Schema]:
+    """Return a schema without any embedding function columns"""
+    if schema is None:
+        return None
+    embedding_functions = EmbeddingFunctionRegistry.get_instance().parse_functions(
+        schema.metadata
+    )
+    if not embedding_functions:
+        return schema
+    columns = set(columns)
+    return pa.schema([field for field in schema if field.name in columns])
 
 
 def _coerce_to_table(data, schema: Optional[pa.Schema] = None) -> pa.Table:
@@ -100,10 +118,10 @@ def _coerce_to_table(data, schema: Optional[pa.Schema] = None) -> pa.Table:
         elif isinstance(data[0], pa.RecordBatch):
             return pa.Table.from_batches(data, schema=schema)
         else:
-            return pa.Table.from_pylist(data)
+            return pa.Table.from_pylist(data, schema=schema)
     elif _check_for_pandas(data) and isinstance(data, pd.DataFrame):
-        # Do not add schema here, since schema may contains the vector column
-        table = pa.Table.from_pandas(data, preserve_index=False)
+        raw_schema = _pd_schema_without_embedding_funcs(schema, data.columns.to_list())
+        table = pa.Table.from_pandas(data, preserve_index=False, schema=raw_schema)
         # Do not serialize Pandas metadata
         meta = table.schema.metadata if table.schema.metadata is not None else {}
         meta = {k: v for k, v in meta.items() if k != b"pandas"}
@@ -169,6 +187,8 @@ def sanitize_create_table(
         schema = schema.to_arrow_schema()
 
     if data is not None:
+        if metadata is None and schema is not None:
+            metadata = schema.metadata
         data, schema = _sanitize_data(
             data,
             schema,
@@ -894,11 +914,58 @@ class Table(ABC):
         """
 
     @abstractmethod
+    def optimize(
+        self,
+        *,
+        cleanup_older_than: Optional[timedelta] = None,
+        delete_unverified: bool = False,
+    ):
+        """
+        Optimize the on-disk data and indices for better performance.
+
+        Modeled after ``VACUUM`` in PostgreSQL.
+
+        Optimization covers three operations:
+
+         * Compaction: Merges small files into larger ones
+         * Prune: Removes old versions of the dataset
+         * Index: Optimizes the indices, adding new data to existing indices
+
+        Parameters
+        ----------
+        cleanup_older_than: timedelta, optional default 7 days
+            All files belonging to versions older than this will be removed.  Set
+            to 0 days to remove all versions except the latest.  The latest version
+            is never removed.
+        delete_unverified: bool, default False
+            Files leftover from a failed transaction may appear to be part of an
+            in-progress operation (e.g. appending new data) and these files will not
+            be deleted unless they are at least 7 days old. If delete_unverified is True
+            then these files will be deleted regardless of their age.
+
+        Experimental API
+        ----------------
+
+        The optimization process is undergoing active development and may change.
+        Our goal with these changes is to improve the performance of optimization and
+        reduce the complexity.
+
+        That being said, it is essential today to run optimize if you want the best
+        performance.  It should be stable and safe to use in production, but it our
+        hope that the API may be simplified (or not even need to be called) in the
+        future.
+
+        The frequency an application shoudl call optimize is based on the frequency of
+        data modifications.  If data is frequently added, deleted, or updated then
+        optimize should be run frequently.  A good rule of thumb is to run optimize if
+        you have added or modified 100,000 or more records or run more than 20 data
+        modification operations.
+        """
+
+    @abstractmethod
     def add_columns(self, transforms: Dict[str, str]):
         """
         Add new columns with defined values.
-
-        This is not yet available in LanceDB Cloud.
 
         Parameters
         ----------
@@ -909,20 +976,21 @@ class Table(ABC):
         """
 
     @abstractmethod
-    def alter_columns(self, alterations: Iterable[Dict[str, str]]):
+    def alter_columns(self, *alterations: Iterable[Dict[str, str]]):
         """
         Alter column names and nullability.
-
-        This is not yet available in LanceDB Cloud.
 
         alterations : Iterable[Dict[str, Any]]
             A sequence of dictionaries, each with the following keys:
             - "path": str
                 The column path to alter. For a top-level column, this is the name.
                 For a nested column, this is the dot-separated path, e.g. "a.b.c".
-            - "name": str, optional
+            - "rename": str, optional
                 The new name of the column. If not specified, the column name is
                 not changed.
+            - "data_type": pyarrow.DataType, optional
+               The new data type of the column. Existing values will be casted
+               to this type. If not specified, the column data type is not changed.
             - "nullable": bool, optional
                 Whether the column should be nullable. If not specified, the column
                 nullability is not changed. Only non-nullable columns can be changed
@@ -935,13 +1003,44 @@ class Table(ABC):
         """
         Drop columns from the table.
 
-        This is not yet available in LanceDB Cloud.
-
         Parameters
         ----------
         columns : Iterable[str]
             The names of the columns to drop.
         """
+
+    @abstractmethod
+    def checkout(self):
+        """
+        Checks out a specific version of the Table
+
+        Any read operation on the table will now access the data at the checked out
+        version. As a consequence, calling this method will disable any read consistency
+        interval that was previously set.
+
+        This is a read-only operation that turns the table into a sort of "view"
+        or "detached head".  Other table instances will not be affected.  To make the
+        change permanent you can use the `[Self::restore]` method.
+
+        Any operation that modifies the table will fail while the table is in a checked
+        out state.
+
+        To return the table to a normal state use `[Self::checkout_latest]`
+        """
+
+    @abstractmethod
+    def checkout_latest(self):
+        """
+        Ensures the table is pointing at the latest version
+
+        This can be used to manually update a table when the read_consistency_interval
+        is None
+        It can also be used to undo a `[Self::checkout]` operation
+        """
+
+    @abstractmethod
+    def list_versions(self):
+        """List all versions of the table"""
 
     @cached_property
     def _dataset_uri(self) -> str:
@@ -978,13 +1077,16 @@ class _LanceLatestDatasetRef(_LanceDatasetRef):
     index_cache_size: Optional[int] = None
     read_consistency_interval: Optional[timedelta] = None
     last_consistency_check: Optional[float] = None
+    storage_options: Optional[Dict[str, str]] = None
     _dataset: Optional[LanceDataset] = None
 
     @property
     def dataset(self) -> LanceDataset:
         if not self._dataset:
             self._dataset = lance.dataset(
-                self.uri, index_cache_size=self.index_cache_size
+                self.uri,
+                index_cache_size=self.index_cache_size,
+                storage_options=self.storage_options,
             )
             self.last_consistency_check = time.monotonic()
         elif self.read_consistency_interval is not None:
@@ -1015,13 +1117,17 @@ class _LanceTimeTravelRef(_LanceDatasetRef):
     uri: str
     version: int
     index_cache_size: Optional[int] = None
+    storage_options: Optional[Dict[str, str]] = None
     _dataset: Optional[LanceDataset] = None
 
     @property
     def dataset(self) -> LanceDataset:
         if not self._dataset:
             self._dataset = lance.dataset(
-                self.uri, version=self.version, index_cache_size=self.index_cache_size
+                self.uri,
+                version=self.version,
+                index_cache_size=self.index_cache_size,
+                storage_options=self.storage_options,
             )
         return self._dataset
 
@@ -1070,24 +1176,27 @@ class LanceTable(Table):
                 uri=self._dataset_uri,
                 version=version,
                 index_cache_size=index_cache_size,
+                storage_options=connection.storage_options,
             )
         else:
             self._ref = _LanceLatestDatasetRef(
                 uri=self._dataset_uri,
                 read_consistency_interval=connection.read_consistency_interval,
                 index_cache_size=index_cache_size,
+                storage_options=connection.storage_options,
             )
 
     @classmethod
     def open(cls, db, name, **kwargs):
         tbl = cls(db, name, **kwargs)
-        fs, path = fs_from_uri(tbl._dataset_path)
-        file_info = fs.get_file_info(path)
-        if file_info.type != pa.fs.FileType.Directory:
-            raise FileNotFoundError(
-                f"Table {name} does not exist."
-                f"Please first call db.create_table({name}, data)"
-            )
+
+        # check the dataset exists
+        try:
+            tbl.version
+        except ValueError as e:
+            if "Not found:" in str(e):
+                raise FileNotFoundError(f"Table {name} does not exist")
+            raise e
 
         return tbl
 
@@ -1498,7 +1607,7 @@ class LanceTable(Table):
             "append" and "overwrite".
         on_bad_vectors: str, default "error"
             What to do if any of the vectors are not the same size or contains NaNs.
-            One of "error", "drop", "fill".
+            One of "error", "drop", "fill", "null".
         fill_value: float, default 0.
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
 
@@ -1515,11 +1624,7 @@ class LanceTable(Table):
             on_bad_vectors=on_bad_vectors,
             fill_value=fill_value,
         )
-        # Access the dataset_mut property to ensure that the dataset is mutable.
-        self._ref.dataset_mut
-        self._ref.dataset = lance.write_dataset(
-            data, self._dataset_uri, schema=self.schema, mode=mode
-        )
+        self._ref.dataset_mut.insert(data, mode=mode, schema=self.schema)
 
     def merge(
         self,
@@ -1782,7 +1887,7 @@ class LanceTable(Table):
             data but will validate against any schema that's specified.
         on_bad_vectors: str, default "error"
             What to do if any of the vectors are not the same size or contains NaNs.
-            One of "error", "drop", "fill".
+            One of "error", "drop", "fill", "null".
         fill_value: float, default 0.
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
         embedding_functions: list of EmbeddingFunctionModel, default None
@@ -1803,7 +1908,13 @@ class LanceTable(Table):
 
         empty = pa.Table.from_batches([], schema=schema)
         try:
-            lance.write_dataset(empty, tbl._dataset_uri, schema=schema, mode=mode)
+            lance.write_dataset(
+                empty,
+                tbl._dataset_uri,
+                schema=schema,
+                mode=mode,
+                storage_options=db.storage_options,
+            )
         except OSError as err:
             if "Dataset already exists" in str(err) and exist_ok:
                 if tbl.schema != schema:
@@ -1890,6 +2001,7 @@ class LanceTable(Table):
                 "metric": query.metric,
                 "nprobes": query.nprobes,
                 "refine_factor": query.refine_factor,
+                "ef": query.ef,
             }
         return ds.scanner(
             columns=query.columns,
@@ -1971,6 +2083,83 @@ class LanceTable(Table):
         """
         return self.to_lance().optimize.compact_files(*args, **kwargs)
 
+    def optimize(
+        self,
+        *,
+        cleanup_older_than: Optional[timedelta] = None,
+        delete_unverified: bool = False,
+    ):
+        """
+        Optimize the on-disk data and indices for better performance.
+
+        Modeled after ``VACUUM`` in PostgreSQL.
+
+        Optimization covers three operations:
+
+         * Compaction: Merges small files into larger ones
+         * Prune: Removes old versions of the dataset
+         * Index: Optimizes the indices, adding new data to existing indices
+
+        Parameters
+        ----------
+        cleanup_older_than: timedelta, optional default 7 days
+            All files belonging to versions older than this will be removed.  Set
+            to 0 days to remove all versions except the latest.  The latest version
+            is never removed.
+        delete_unverified: bool, default False
+            Files leftover from a failed transaction may appear to be part of an
+            in-progress operation (e.g. appending new data) and these files will not
+            be deleted unless they are at least 7 days old. If delete_unverified is True
+            then these files will be deleted regardless of their age.
+
+        Experimental API
+        ----------------
+
+        The optimization process is undergoing active development and may change.
+        Our goal with these changes is to improve the performance of optimization and
+        reduce the complexity.
+
+        That being said, it is essential today to run optimize if you want the best
+        performance.  It should be stable and safe to use in production, but it our
+        hope that the API may be simplified (or not even need to be called) in the
+        future.
+
+        The frequency an application shoudl call optimize is based on the frequency of
+        data modifications.  If data is frequently added, deleted, or updated then
+        optimize should be run frequently.  A good rule of thumb is to run optimize if
+        you have added or modified 100,000 or more records or run more than 20 data
+        modification operations.
+        """
+        try:
+            asyncio.get_running_loop()
+            raise AssertionError(
+                "Synchronous method called in asynchronous context. "
+                "If you are writing an asynchronous application "
+                "then please use the asynchronous APIs"
+            )
+
+        except RuntimeError:
+            asyncio.run(
+                self._async_optimize(
+                    cleanup_older_than=cleanup_older_than,
+                    delete_unverified=delete_unverified,
+                )
+            )
+            self.checkout_latest()
+
+    async def _async_optimize(
+        self,
+        cleanup_older_than: Optional[timedelta] = None,
+        delete_unverified: bool = False,
+    ):
+        conn = await lancedb_connect(
+            sanitize_uri(self._conn.uri),
+        )
+        table = AsyncTable(await conn.open_table(self.name))
+        return await table.optimize(
+            cleanup_older_than=cleanup_older_than, delete_unverified=delete_unverified
+        )
+
     def add_columns(self, transforms: Dict[str, str]):
         self._dataset_mut.add_columns(transforms)
 
@@ -2005,13 +2194,11 @@ def _sanitize_schema(
         vector column to fixed_size_list(float32) if necessary.
     on_bad_vectors: str, default "error"
         What to do if any of the vectors are not the same size or contains NaNs.
-        One of "error", "drop", "fill".
+        One of "error", "drop", "fill", "null".
     fill_value: float, default 0.
         The value to use when filling vectors. Only used if on_bad_vectors="fill".
     """
     if schema is not None:
-        if data.schema == schema:
-            return data
         # cast the columns to the expected types
         data = data.combine_chunks()
         for field in schema:
@@ -2031,6 +2218,7 @@ def _sanitize_schema(
                     vector_column_name=field.name,
                     on_bad_vectors=on_bad_vectors,
                     fill_value=fill_value,
+                    table_schema=schema,
                 )
         return pa.Table.from_arrays(
             [data[name] for name in schema.names], schema=schema
@@ -2051,6 +2239,7 @@ def _sanitize_schema(
 def _sanitize_vector_column(
     data: pa.Table,
     vector_column_name: str,
+    table_schema: Optional[pa.Schema] = None,
     on_bad_vectors: str = "error",
     fill_value: float = 0.0,
 ) -> pa.Table:
@@ -2065,12 +2254,16 @@ def _sanitize_vector_column(
         The name of the vector column.
     on_bad_vectors: str, default "error"
         What to do if any of the vectors are not the same size or contains NaNs.
-        One of "error", "drop", "fill".
+        One of "error", "drop", "fill", "null".
     fill_value: float, default 0.0
         The value to use when filling vectors. Only used if on_bad_vectors="fill".
     """
     # ChunkedArray is annoying to work with, so we combine chunks here
     vec_arr = data[vector_column_name].combine_chunks()
+    if table_schema is not None:
+        field = table_schema.field(vector_column_name)
+    else:
+        field = None
     typ = data[vector_column_name].type
     if pa.types.is_list(typ) or pa.types.is_large_list(typ):
         # if it's a variable size list array,
@@ -2097,7 +2290,11 @@ def _sanitize_vector_column(
                 data, fill_value, on_bad_vectors, vec_arr, vector_column_name
             )
     else:
-        if pc.any(pc.is_null(vec_arr.values, nan_is_null=True)).as_py():
+        if (
+            field is not None
+            and not field.nullable
+            and pc.any(pc.is_null(vec_arr.values)).as_py()
+        ) or (pc.any(pc.is_nan(vec_arr.values)).as_py()):
             data = _sanitize_nans(
                 data, fill_value, on_bad_vectors, vec_arr, vector_column_name
             )
@@ -2141,6 +2338,12 @@ def _sanitize_jagged(data, fill_value, on_bad_vectors, vec_arr, vector_column_na
         )
     elif on_bad_vectors == "drop":
         data = data.filter(correct_ndims)
+    elif on_bad_vectors == "null":
+        data = data.set_column(
+            data.column_names.index(vector_column_name),
+            vector_column_name,
+            pc.if_else(correct_ndims, vec_arr, pa.scalar(None)),
+        )
     return data
 
 
@@ -2157,7 +2360,8 @@ def _sanitize_nans(
         raise ValueError(
             f"Vector column {vector_column_name} has NaNs. "
             "Set on_bad_vectors='drop' to remove them, or "
-            "set on_bad_vectors='fill' and fill_value=<value> to replace them."
+            "set on_bad_vectors='fill' and fill_value=<value> to replace them. "
+            "Or set on_bad_vectors='null' to replace them with null."
         )
     elif on_bad_vectors == "fill":
         if fill_value is None:
@@ -2177,6 +2381,17 @@ def _sanitize_nans(
         np_arr = np_arr.reshape(-1, vec_arr.type.list_size)
         not_nulls = np.any(np_arr, axis=1)
         data = data.filter(~not_nulls)
+    elif on_bad_vectors == "null":
+        # null = pa.nulls(len(vec_arr)).cast(vec_arr.type)
+        # values = pc.if_else(pc.is_nan(vec_arr.values), fill_value, vec_arr.values)
+        np_arr = np.isnan(vec_arr.values.to_numpy(zero_copy_only=False))
+        np_arr = np_arr.reshape(-1, vec_arr.type.list_size)
+        no_nans = np.any(np_arr, axis=1)
+        data = data.set_column(
+            data.column_names.index(vector_column_name),
+            vector_column_name,
+            pc.if_else(no_nans, vec_arr, pa.scalar(None)),
+        )
     return data
 
 
@@ -2442,7 +2657,7 @@ class AsyncTable:
             "append" and "overwrite".
         on_bad_vectors: str, default "error"
             What to do if any of the vectors are not the same size or contains NaNs.
-            One of "error", "drop", "fill".
+            One of "error", "drop", "fill", "null".
         fill_value: float, default 0.
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
 
@@ -2525,7 +2740,7 @@ class AsyncTable:
 
     def vector_search(
         self,
-        query_vector: Optional[Union[VEC, Tuple]] = None,
+        query_vector: Union[VEC, Tuple],
     ) -> AsyncVectorQuery:
         """
         Search the table with a given query vector.
@@ -2564,6 +2779,8 @@ class AsyncTable:
                 async_query = async_query.refine_factor(query.refine_factor)
             if query.vector_column:
                 async_query = async_query.column(query.vector_column)
+            if query.ef:
+                async_query = async_query.ef(query.ef)
 
         if not query.prefilter:
             async_query = async_query.postfilter()
@@ -2715,6 +2932,53 @@ class AsyncTable:
 
         return await self._inner.update(updates_sql, where)
 
+    async def add_columns(self, transforms: Dict[str, str]):
+        """
+        Add new columns with defined values.
+
+        Parameters
+        ----------
+        transforms: Dict[str, str]
+            A map of column name to a SQL expression to use to calculate the
+            value of the new column. These expressions will be evaluated for
+            each row in the table, and can reference existing columns.
+        """
+        await self._inner.add_columns(list(transforms.items()))
+
+    async def alter_columns(self, *alterations: Iterable[Dict[str, str]]):
+        """
+        Alter column names and nullability.
+
+        alterations : Iterable[Dict[str, Any]]
+            A sequence of dictionaries, each with the following keys:
+            - "path": str
+                The column path to alter. For a top-level column, this is the name.
+                For a nested column, this is the dot-separated path, e.g. "a.b.c".
+            - "rename": str, optional
+                The new name of the column. If not specified, the column name is
+                not changed.
+            - "data_type": pyarrow.DataType, optional
+               The new data type of the column. Existing values will be casted
+               to this type. If not specified, the column data type is not changed.
+            - "nullable": bool, optional
+                Whether the column should be nullable. If not specified, the column
+                nullability is not changed. Only non-nullable columns can be changed
+                to nullable. Currently, you cannot change a nullable column to
+                non-nullable.
+        """
+        await self._inner.alter_columns(alterations)
+
+    async def drop_columns(self, columns: Iterable[str]):
+        """
+        Drop columns from the table.
+
+        Parameters
+        ----------
+        columns : Iterable[str]
+            The names of the columns to drop.
+        """
+        await self._inner.drop_columns(columns)
+
     async def version(self) -> int:
         """
         Retrieve the version of the table
@@ -2726,6 +2990,19 @@ class AsyncTable:
         version.
         """
         return await self._inner.version()
+
+    async def list_versions(self):
+        """
+        List all versions of the table
+        """
+        versions = await self._inner.list_versions()
+        for v in versions:
+            ts_nanos = v["timestamp"]
+            v["timestamp"] = datetime.fromtimestamp(ts_nanos // 1e9) + timedelta(
+                microseconds=(ts_nanos % 1e9) // 1e3
+            )
+
+        return versions
 
     async def checkout(self, version):
         """

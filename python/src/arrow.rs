@@ -10,7 +10,7 @@ use arrow::{
 use futures::stream::StreamExt;
 use lancedb::arrow::SendableRecordBatchStream;
 use pyo3::{pyclass, pymethods, Bound, PyAny, PyObject, PyRef, PyResult, Python};
-use pyo3_asyncio_0_21::tokio::future_into_py;
+use pyo3_async_runtimes::tokio::future_into_py;
 
 use crate::error::PythonErrorExt;
 

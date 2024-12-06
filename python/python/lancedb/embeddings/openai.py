@@ -48,6 +48,9 @@ class OpenAIEmbeddings(TextEmbeddingFunction):
     organization: Optional[str] = None
     api_key: Optional[str] = None
 
+    # Set true to use Azure OpenAI API
+    use_azure: bool = False
+
     def ndims(self):
         return self._ndims
 
@@ -83,25 +86,33 @@ class OpenAIEmbeddings(TextEmbeddingFunction):
         """
         openai = attempt_import_or_raise("openai")
 
+        valid_texts = []
+        valid_indices = []
+        for idx, text in enumerate(texts):
+            if text:
+                valid_texts.append(text)
+                valid_indices.append(idx)
+
         # TODO retry, rate limit, token limit
         try:
-            if self.name == "text-embedding-ada-002":
-                rs = self._openai_client.embeddings.create(input=texts, model=self.name)
-            else:
-                kwargs = {
-                    "input": texts,
-                    "model": self.name,
-                }
-                if self.dim:
-                    kwargs["dimensions"] = self.dim
-                rs = self._openai_client.embeddings.create(**kwargs)
+            kwargs = {
+                "input": valid_texts,
+                "model": self.name,
+            }
+            if self.name != "text-embedding-ada-002":
+                kwargs["dimensions"] = self.dim
+
+            rs = self._openai_client.embeddings.create(**kwargs)
+            valid_embeddings = {
+                idx: v.embedding for v, idx in zip(rs.data, valid_indices)
+            }
         except openai.BadRequestError:
             logging.exception("Bad request: %s", texts)
             return [None] * len(texts)
         except Exception:
             logging.exception("OpenAI embeddings error")
             raise
-        return [v.embedding for v in rs.data]
+        return [valid_embeddings.get(idx, None) for idx in range(len(texts))]
 
     @cached_property
     def _openai_client(self):
@@ -115,4 +126,8 @@ class OpenAIEmbeddings(TextEmbeddingFunction):
             kwargs["organization"] = self.organization
         if self.api_key:
             kwargs["api_key"] = self.api_key
-        return openai.OpenAI(**kwargs)
+
+        if self.use_azure:
+            return openai.AzureOpenAI(**kwargs)
+        else:
+            return openai.OpenAI(**kwargs)

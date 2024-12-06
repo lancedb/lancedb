@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::collections::HashMap;
+
 use arrow_ipc::writer::FileWriter;
 use lancedb::ipc::ipc_file_to_batches;
 use lancedb::table::{
@@ -176,16 +178,20 @@ impl Table {
     #[napi(catch_unwind)]
     pub async fn alter_columns(&self, alterations: Vec<ColumnAlteration>) -> napi::Result<()> {
         for alteration in &alterations {
-            if alteration.rename.is_none() && alteration.nullable.is_none() {
+            if alteration.rename.is_none()
+                && alteration.nullable.is_none()
+                && alteration.data_type.is_none()
+            {
                 return Err(napi::Error::from_reason(
-                    "Alteration must have a 'rename' or 'nullable' field.",
+                    "Alteration must have a 'rename', 'dataType', or 'nullable' field.",
                 ));
             }
         }
         let alterations = alterations
             .into_iter()
-            .map(LanceColumnAlteration::from)
-            .collect::<Vec<_>>();
+            .map(LanceColumnAlteration::try_from)
+            .collect::<std::result::Result<Vec<_>, String>>()
+            .map_err(napi::Error::from_reason)?;
 
         self.inner_ref()?
             .alter_columns(&alterations)
@@ -224,6 +230,28 @@ impl Table {
     #[napi(catch_unwind)]
     pub async fn checkout_latest(&self) -> napi::Result<()> {
         self.inner_ref()?.checkout_latest().await.default_error()
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn list_versions(&self) -> napi::Result<Vec<Version>> {
+        self.inner_ref()?
+            .list_versions()
+            .await
+            .map(|versions| {
+                versions
+                    .iter()
+                    .map(|version| Version {
+                        version: version.version as i64,
+                        timestamp: version.timestamp.timestamp_micros(),
+                        metadata: version
+                            .metadata
+                            .iter()
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect(),
+                    })
+                    .collect()
+            })
+            .default_error()
     }
 
     #[napi(catch_unwind)]
@@ -409,24 +437,43 @@ pub struct ColumnAlteration {
     /// The new name of the column. If not provided then the name will not be changed.
     /// This must be distinct from the names of all other columns in the table.
     pub rename: Option<String>,
+    /// A new data type for the column. If not provided then the data type will not be changed.
+    /// Changing data types is limited to casting to the same general type. For example, these
+    /// changes are valid:
+    /// * `int32` -> `int64` (integers)
+    /// * `double` -> `float` (floats)
+    /// * `string` -> `large_string` (strings)
+    /// But these changes are not:
+    /// * `int32` -> `double` (mix integers and floats)
+    /// * `string` -> `int32` (mix strings and integers)
+    pub data_type: Option<String>,
     /// Set the new nullability. Note that a nullable column cannot be made non-nullable.
     pub nullable: Option<bool>,
 }
 
-impl From<ColumnAlteration> for LanceColumnAlteration {
-    fn from(js: ColumnAlteration) -> Self {
+impl TryFrom<ColumnAlteration> for LanceColumnAlteration {
+    type Error = String;
+    fn try_from(js: ColumnAlteration) -> std::result::Result<Self, Self::Error> {
         let ColumnAlteration {
             path,
             rename,
             nullable,
+            data_type,
         } = js;
-        Self {
+        let data_type = if let Some(data_type) = data_type {
+            Some(
+                lancedb::utils::string_to_datatype(&data_type)
+                    .ok_or_else(|| format!("Invalid data type: {}", data_type))?,
+            )
+        } else {
+            None
+        };
+        Ok(Self {
             path,
             rename,
             nullable,
-            // TODO: wire up this field
-            data_type: None,
-        }
+            data_type,
+        })
     }
 }
 
@@ -465,4 +512,11 @@ impl From<lancedb::index::IndexStatistics> for IndexStatistics {
             num_indices: value.num_indices,
         }
     }
+}
+
+#[napi(object)]
+pub struct Version {
+    pub version: i64,
+    pub timestamp: i64,
+    pub metadata: HashMap<String, String>,
 }

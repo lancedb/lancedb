@@ -14,7 +14,6 @@
 
 //! LanceDB Table APIs
 
-use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -24,6 +23,9 @@ use arrow_array::{RecordBatchIterator, RecordBatchReader};
 use arrow_schema::{Field, Schema, SchemaRef};
 use async_trait::async_trait;
 use datafusion_physical_plan::display::DisplayableExecutionPlan;
+use datafusion_physical_plan::projection::ProjectionExec;
+use datafusion_physical_plan::repartition::RepartitionExec;
+use datafusion_physical_plan::union::UnionExec;
 use datafusion_physical_plan::ExecutionPlan;
 use futures::{StreamExt, TryStreamExt};
 use lance::dataset::builder::DatasetBuilder;
@@ -34,7 +36,8 @@ pub use lance::dataset::ColumnAlteration;
 pub use lance::dataset::NewColumnTransform;
 pub use lance::dataset::ReadParams;
 use lance::dataset::{
-    Dataset, UpdateBuilder as LanceUpdateBuilder, WhenMatched, WriteMode, WriteParams,
+    Dataset, InsertBuilder, UpdateBuilder as LanceUpdateBuilder, Version, WhenMatched, WriteMode,
+    WriteParams,
 };
 use lance::dataset::{MergeInsertBuilder as LanceMergeInsertBuilder, WhenNotMatchedBySource};
 use lance::io::WrappingObjectStore;
@@ -423,6 +426,7 @@ pub(crate) trait TableInternal: std::fmt::Display + std::fmt::Debug + Send + Syn
     async fn checkout(&self, version: u64) -> Result<()>;
     async fn checkout_latest(&self) -> Result<()>;
     async fn restore(&self) -> Result<()>;
+    async fn list_versions(&self) -> Result<Vec<Version>>;
     async fn table_definition(&self) -> Result<TableDefinition>;
     fn dataset_uri(&self) -> &str;
 }
@@ -952,6 +956,11 @@ impl Table {
         self.inner.restore().await
     }
 
+    /// List all the versions of the table
+    pub async fn list_versions(&self) -> Result<Vec<Version>> {
+        self.inner.list_versions().await
+    }
+
     /// List all indices that have been created with [`Self::create_index`]
     pub async fn list_indices(&self) -> Result<Vec<IndexConfig>> {
         self.inner.list_indices().await
@@ -972,6 +981,57 @@ impl Table {
     ) -> Result<Option<IndexStatistics>> {
         self.inner.index_stats(index_name.as_ref()).await
     }
+
+    // Take many execution plans and map them into a single plan that adds
+    // a query_index column and unions them.
+    pub(crate) fn multi_vector_plan(
+        plans: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        if plans.is_empty() {
+            return Err(Error::InvalidInput {
+                message: "No plans provided".to_string(),
+            });
+        }
+        // Projection to keeping all existing columns
+        let first_plan = plans[0].clone();
+        let project_all_columns = first_plan
+            .schema()
+            .fields()
+            .iter()
+            .enumerate()
+            .map(|(i, field)| {
+                let expr =
+                    datafusion_physical_plan::expressions::Column::new(field.name().as_str(), i);
+                let expr = Arc::new(expr) as Arc<dyn datafusion_physical_plan::PhysicalExpr>;
+                (expr, field.name().clone())
+            })
+            .collect::<Vec<_>>();
+
+        let projected_plans = plans
+            .into_iter()
+            .enumerate()
+            .map(|(plan_i, plan)| {
+                let query_index = datafusion_common::ScalarValue::Int32(Some(plan_i as i32));
+                let query_index_expr =
+                    datafusion_physical_plan::expressions::Literal::new(query_index);
+                let query_index_expr =
+                    Arc::new(query_index_expr) as Arc<dyn datafusion_physical_plan::PhysicalExpr>;
+                let mut projections = vec![(query_index_expr, "query_index".to_string())];
+                projections.extend_from_slice(&project_all_columns);
+                let projection = ProjectionExec::try_new(projections, plan).unwrap();
+                Arc::new(projection) as Arc<dyn datafusion_physical_plan::ExecutionPlan>
+            })
+            .collect::<Vec<_>>();
+
+        let unioned = Arc::new(UnionExec::new(projected_plans));
+        // We require 1 partition in the final output
+        let repartitioned = RepartitionExec::try_new(
+            unioned,
+            datafusion_physical_plan::Partitioning::RoundRobinBatch(1),
+        )
+        .unwrap();
+        Ok(Arc::new(repartitioned))
+    }
 }
 
 impl From<NativeTable> for Table {
@@ -986,12 +1046,6 @@ pub struct NativeTable {
     name: String,
     uri: String,
     pub(crate) dataset: dataset::DatasetConsistencyWrapper,
-
-    // the object store wrapper to use on write path
-    store_wrapper: Option<Arc<dyn WrappingObjectStore>>,
-
-    storage_options: HashMap<String, String>,
-
     // This comes from the connection options. We store here so we can pass down
     // to the dataset when we recreate it (for example, in checkout_latest).
     read_consistency_interval: Option<std::time::Duration>,
@@ -1057,13 +1111,6 @@ impl NativeTable {
             None => params,
         };
 
-        let storage_options = params
-            .store_options
-            .clone()
-            .unwrap_or_default()
-            .storage_options
-            .unwrap_or_default();
-
         let dataset = DatasetBuilder::from_uri(uri)
             .with_read_params(params)
             .load()
@@ -1081,8 +1128,6 @@ impl NativeTable {
             name: name.to_string(),
             uri: uri.to_string(),
             dataset,
-            store_wrapper: write_store_wrapper,
-            storage_options,
             read_consistency_interval,
         })
     }
@@ -1131,12 +1176,6 @@ impl NativeTable {
             Some(wrapper) => params.patch_with_store_wrapper(wrapper)?,
             None => params,
         };
-        let storage_options = params
-            .store_params
-            .clone()
-            .unwrap_or_default()
-            .storage_options
-            .unwrap_or_default();
 
         let dataset = Dataset::write(batches, uri, Some(params))
             .await
@@ -1150,8 +1189,6 @@ impl NativeTable {
             name: name.to_string(),
             uri: uri.to_string(),
             dataset: DatasetConsistencyWrapper::new_latest(dataset, read_consistency_interval),
-            store_wrapper: write_store_wrapper,
-            storage_options,
             read_consistency_interval,
         })
     }
@@ -1265,7 +1302,7 @@ impl NativeTable {
         let (indices, mf) = futures::try_join!(dataset.load_indices(), dataset.latest_manifest())?;
         Ok(indices
             .iter()
-            .map(|i| VectorIndex::new_from_format(&mf, i))
+            .map(|i| VectorIndex::new_from_format(&(mf.0), i))
             .collect())
     }
 
@@ -1653,6 +1690,10 @@ impl TableInternal for NativeTable {
         self.dataset.reload().await
     }
 
+    async fn list_versions(&self) -> Result<Vec<Version>> {
+        Ok(self.dataset.get().await?.versions().await?)
+    }
+
     async fn restore(&self) -> Result<()> {
         let version =
             self.dataset
@@ -1694,10 +1735,13 @@ impl TableInternal for NativeTable {
         add: AddDataBuilder<NoData>,
         data: Box<dyn RecordBatchReader + Send>,
     ) -> Result<()> {
-        let data =
-            MaybeEmbedded::try_new(data, self.table_definition().await?, add.embedding_registry)?;
+        let data = Box::new(MaybeEmbedded::try_new(
+            data,
+            self.table_definition().await?,
+            add.embedding_registry,
+        )?) as Box<dyn RecordBatchReader + Send>;
 
-        let mut lance_params = add.write_options.lance_write_params.unwrap_or(WriteParams {
+        let lance_params = add.write_options.lance_write_params.unwrap_or(WriteParams {
             mode: match add.mode {
                 AddDataMode::Append => WriteMode::Append,
                 AddDataMode::Overwrite => WriteMode::Overwrite,
@@ -1705,26 +1749,14 @@ impl TableInternal for NativeTable {
             ..Default::default()
         });
 
-        // Bring storage options from table
-        let storage_options = lance_params
-            .store_params
-            .get_or_insert(Default::default())
-            .storage_options
-            .get_or_insert(Default::default());
-        for (key, value) in self.storage_options.iter() {
-            if !storage_options.contains_key(key) {
-                storage_options.insert(key.clone(), value.clone());
-            }
-        }
-
-        // patch the params if we have a write store wrapper
-        let lance_params = match self.store_wrapper.clone() {
-            Some(wrapper) => lance_params.patch_with_store_wrapper(wrapper)?,
-            None => lance_params,
+        let dataset = {
+            // Limited scope for the mutable borrow of self.dataset avoids deadlock.
+            let ds = self.dataset.get_mut().await?;
+            InsertBuilder::new(Arc::new(ds.clone()))
+                .with_params(&lance_params)
+                .execute_stream(data)
+                .await?
         };
-
-        self.dataset.ensure_mutable().await?;
-        let dataset = Dataset::write(data, &self.uri, Some(lance_params)).await?;
 
         self.dataset.set_latest(dataset).await;
         Ok(())
@@ -1784,9 +1816,25 @@ impl TableInternal for NativeTable {
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let ds_ref = self.dataset.get().await?;
 
+        if query.query_vector.len() > 1 {
+            // If there are multiple query vectors, create a plan for each of them and union them.
+            let query_vecs = query.query_vector.clone();
+            let plan_futures = query_vecs
+                .into_iter()
+                .map(|query_vector| {
+                    let mut sub_query = query.clone();
+                    sub_query.query_vector = vec![query_vector];
+                    let options_ref = options.clone();
+                    async move { self.create_plan(&sub_query, options_ref).await }
+                })
+                .collect::<Vec<_>>();
+            let plans = futures::future::try_join_all(plan_futures).await?;
+            return Table::multi_vector_plan(plans);
+        }
+
         let mut scanner: Scanner = ds_ref.scan();
 
-        if let Some(query_vector) = query.query_vector.as_ref() {
+        if let Some(query_vector) = query.query_vector.first() {
             // If there is a vector query, default to limit=10 if unspecified
             let column = if let Some(col) = query.column.as_ref() {
                 col.clone()
@@ -1828,19 +1876,15 @@ impl TableInternal for NativeTable {
                 query_vector,
                 query.base.limit.unwrap_or(DEFAULT_TOP_K),
             )?;
-            scanner.limit(
-                query.base.limit.map(|limit| limit as i64),
-                query.base.offset.map(|offset| offset as i64),
-            )?;
-        } else {
-            // If there is no vector query, it's ok to not have a limit
-            scanner.limit(
-                query.base.limit.map(|limit| limit as i64),
-                query.base.offset.map(|offset| offset as i64),
-            )?;
         }
-
+        scanner.limit(
+            query.base.limit.map(|limit| limit as i64),
+            query.base.offset.map(|offset| offset as i64),
+        )?;
         scanner.nprobs(query.nprobes);
+        if let Some(ef) = query.ef {
+            scanner.ef(ef);
+        }
         scanner.use_index(query.use_index);
         scanner.prefilter(query.base.prefilter);
         match query.base.select {

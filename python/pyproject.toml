@@ -3,8 +3,7 @@ name = "lancedb"
 # version in Cargo.toml
 dependencies = [
     "deprecation",
-    "nest-asyncio~=1.0",
-    "pylance==0.19.2-beta.3",
+    "pylance==0.20.0",
     "tqdm>=4.27.0",
     "pydantic>=1.10",
     "packaging",
@@ -31,7 +30,6 @@ classifiers = [
     "Programming Language :: Python",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
-    "Programming Language :: Python :: 3.8",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",

@@ -38,6 +38,9 @@ use crate::table::{NativeTable, TableDefinition, WriteOptions};
 use crate::utils::validate_table_name;
 use crate::Table;
 pub use lance_encoding::version::LanceFileVersion;
+#[cfg(feature = "remote")]
+use lance_io::object_store::StorageOptions;
+use lance_table::io::commit::commit_handler_from_url;
 
 pub const LANCE_FILE_EXTENSION: &str = "lance";
 
@@ -133,7 +136,7 @@ impl IntoArrow for NoData {
 
 /// A builder for configuring a [`Connection::create_table`] operation
 pub struct CreateTableBuilder<const HAS_DATA: bool, T: IntoArrow> {
-    parent: Arc<dyn ConnectionInternal>,
+    pub(crate) parent: Arc<dyn ConnectionInternal>,
     pub(crate) name: String,
     pub(crate) data: Option<T>,
     pub(crate) mode: CreateTableMode,
@@ -341,7 +344,7 @@ pub struct OpenTableBuilder {
 }
 
 impl OpenTableBuilder {
-    fn new(parent: Arc<dyn ConnectionInternal>, name: String) -> Self {
+    pub(crate) fn new(parent: Arc<dyn ConnectionInternal>, name: String) -> Self {
         Self {
             parent,
             name,
@@ -622,7 +625,7 @@ impl ConnectBuilder {
 
     /// Set the LanceDB Cloud client configuration.
     ///
-    /// ```
+    /// ```no_run
     /// # use lancedb::connect;
     /// # use lancedb::remote::*;
     /// connect("db://my_database")
@@ -717,12 +720,14 @@ impl ConnectBuilder {
             message: "An api_key is required when connecting to LanceDb Cloud".to_string(),
         })?;
 
+        let storage_options = StorageOptions(self.storage_options.clone());
         let internal = Arc::new(crate::remote::db::RemoteDatabase::try_new(
             &self.uri,
             &api_key,
             &region,
             self.host_override,
             self.client_config,
+            storage_options.into(),
         )?);
         Ok(Connection {
             internal,
@@ -855,7 +860,7 @@ impl Database {
                 let table_base_uri = if let Some(store) = engine {
                     static WARN_ONCE: std::sync::Once = std::sync::Once::new();
                     WARN_ONCE.call_once(|| {
-                        log::warn!("Specifing engine is not a publicly supported feature in lancedb yet. THE API WILL CHANGE");
+                        log::warn!("Specifying engine is not a publicly supported feature in lancedb yet. THE API WILL CHANGE");
                     });
                     let old_scheme = url.scheme().to_string();
                     let new_scheme = format!("{}+{}", old_scheme, store);
@@ -1036,6 +1041,7 @@ impl ConnectionInternal for Database {
         };
 
         let mut write_params = options.write_options.lance_write_params.unwrap_or_default();
+
         if matches!(&options.mode, CreateTableMode::Overwrite) {
             write_params.mode = WriteMode::Overwrite;
         }
@@ -1122,7 +1128,7 @@ impl ConnectionInternal for Database {
         let dir_name = format!("{}.{}", name, LANCE_EXTENSION);
         let full_path = self.base_path.child(dir_name.clone());
         self.object_store
-            .remove_dir_all(full_path)
+            .remove_dir_all(full_path.clone())
             .await
             .map_err(|err| match err {
                 // this error is not lance::Error::DatasetNotFound,
@@ -1132,6 +1138,19 @@ impl ConnectionInternal for Database {
                 },
                 _ => Error::from(err),
             })?;
+
+        let object_store_params = ObjectStoreParams {
+            storage_options: Some(self.storage_options.clone()),
+            ..Default::default()
+        };
+        let mut uri = self.uri.clone();
+        if let Some(query_string) = &self.query_string {
+            uri.push_str(&format!("?{}", query_string));
+        }
+        let commit_handler = commit_handler_from_url(&uri, &Some(object_store_params))
+            .await
+            .unwrap();
+        commit_handler.delete(&full_path).await.unwrap();
         Ok(())
     }
 
@@ -1169,6 +1188,7 @@ mod tests {
     use lance_testing::datagen::{BatchGenerator, IncrementingInt32};
     use tempfile::tempdir;
 
+    use crate::query::QueryBase;
     use crate::query::{ExecutableQuery, QueryExecutionOptions};
 
     use super::*;
@@ -1296,6 +1316,7 @@ mod tests {
         // In v1 the row group size will trump max_batch_length
         let batches = tbl
             .query()
+            .limit(20000)
             .execute_with_options(QueryExecutionOptions {
                 max_batch_length: 50000,
                 ..Default::default()

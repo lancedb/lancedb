@@ -599,7 +599,9 @@ async def test_create_in_v2_mode(tmp_path):
     )
 
     async def is_in_v2_mode(tbl):
-        batches = await tbl.query().to_batches(max_batch_length=1024 * 10)
+        batches = (
+            await tbl.query().limit(10 * 1024).to_batches(max_batch_length=1024 * 10)
+        )
         num_batches = 0
         async for batch in batches:
             num_batches += 1

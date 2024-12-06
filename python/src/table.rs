@@ -1,17 +1,21 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
 use arrow::{
+    datatypes::DataType,
     ffi_stream::ArrowArrayStreamReader,
     pyarrow::{FromPyArrow, ToPyArrow},
 };
 use lancedb::table::{
-    AddDataMode, Duration, OptimizeAction, OptimizeOptions, Table as LanceDbTable,
+    AddDataMode, ColumnAlteration, Duration, NewColumnTransform, OptimizeAction, OptimizeOptions,
+    Table as LanceDbTable,
 };
 use pyo3::{
     exceptions::{PyRuntimeError, PyValueError},
     pyclass, pymethods,
-    types::{PyDict, PyDictMethods, PyString},
+    types::{IntoPyDict, PyAnyMethods, PyDict, PyDictMethods},
     Bound, FromPyObject, PyAny, PyRef, PyResult, Python, ToPyObject,
 };
-use pyo3_asyncio_0_21::tokio::future_into_py;
+use pyo3_async_runtimes::tokio::future_into_py;
 
 use crate::{
     error::PythonErrorExt,
@@ -137,9 +141,10 @@ impl Table {
         })
     }
 
+    #[pyo3(signature = (updates, r#where=None))]
     pub fn update<'a>(
         self_: PyRef<'a, Self>,
-        updates: &PyDict,
+        updates: &Bound<'_, PyDict>,
         r#where: Option<String>,
     ) -> PyResult<Bound<'a, PyAny>> {
         let mut op = self_.inner_ref()?.update();
@@ -147,10 +152,8 @@ impl Table {
             op = op.only_if(only_if);
         }
         for (column_name, value) in updates.into_iter() {
-            let column_name: &PyString = column_name.downcast()?;
-            let column_name = column_name.to_str()?.to_string();
-            let value: &PyString = value.downcast()?;
-            let value = value.to_str()?.to_string();
+            let column_name: String = column_name.extract()?;
+            let value: String = value.extract()?;
             op = op.column(column_name, value);
         }
         future_into_py(self_.py(), async move {
@@ -159,6 +162,7 @@ impl Table {
         })
     }
 
+    #[pyo3(signature = (filter=None))]
     pub fn count_rows(
         self_: PyRef<'_, Self>,
         filter: Option<String>,
@@ -169,6 +173,7 @@ impl Table {
         })
     }
 
+    #[pyo3(signature = (column, index=None, replace=None))]
     pub fn create_index<'a>(
         self_: PyRef<'a, Self>,
         column: String,
@@ -246,6 +251,34 @@ impl Table {
         )
     }
 
+    pub fn list_versions(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let versions = inner.list_versions().await.infer_error()?;
+            let versions_as_dict = Python::with_gil(|py| {
+                versions
+                    .iter()
+                    .map(|v| {
+                        let dict = PyDict::new_bound(py);
+                        dict.set_item("version", v.version).unwrap();
+                        dict.set_item(
+                            "timestamp",
+                            v.timestamp.timestamp_nanos_opt().unwrap_or_default(),
+                        )
+                        .unwrap();
+
+                        let tup: Vec<(&String, &String)> = v.metadata.iter().collect();
+                        dict.set_item("metadata", tup.into_py_dict_bound(py))
+                            .unwrap();
+                        dict.to_object(py)
+                    })
+                    .collect::<Vec<_>>()
+            });
+
+            Ok(versions_as_dict)
+        })
+    }
+
     pub fn checkout(self_: PyRef<'_, Self>, version: u64) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
@@ -272,6 +305,7 @@ impl Table {
         Query::new(self.inner_ref().unwrap().query())
     }
 
+    #[pyo3(signature = (cleanup_since_ms=None, delete_unverified=None))]
     pub fn optimize(
         self_: PyRef<'_, Self>,
         cleanup_since_ms: Option<u64>,
@@ -377,6 +411,72 @@ impl Table {
                 .migrate_manifest_paths_v2()
                 .await
                 .infer_error()
+        })
+    }
+
+    pub fn add_columns(
+        self_: PyRef<'_, Self>,
+        definitions: Vec<(String, String)>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let definitions = NewColumnTransform::SqlExpressions(definitions);
+
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            inner.add_columns(definitions, None).await.infer_error()?;
+            Ok(())
+        })
+    }
+
+    pub fn alter_columns<'a>(
+        self_: PyRef<'a, Self>,
+        alterations: Vec<Bound<PyDict>>,
+    ) -> PyResult<Bound<'a, PyAny>> {
+        let alterations = alterations
+            .iter()
+            .map(|alteration| {
+                let path = alteration
+                    .get_item("path")?
+                    .ok_or_else(|| PyValueError::new_err("Missing path"))?
+                    .extract()?;
+                let rename = {
+                    // We prefer rename, but support name for backwards compatibility
+                    let rename = if let Ok(Some(rename)) = alteration.get_item("rename") {
+                        Some(rename)
+                    } else {
+                        alteration.get_item("name")?
+                    };
+                    rename.map(|name| name.extract()).transpose()?
+                };
+                let nullable = alteration
+                    .get_item("nullable")?
+                    .map(|val| val.extract())
+                    .transpose()?;
+                let data_type = alteration
+                    .get_item("data_type")?
+                    .map(|val| DataType::from_pyarrow_bound(&val))
+                    .transpose()?;
+                Ok(ColumnAlteration {
+                    path,
+                    rename,
+                    nullable,
+                    data_type,
+                })
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            inner.alter_columns(&alterations).await.infer_error()?;
+            Ok(())
+        })
+    }
+
+    pub fn drop_columns(self_: PyRef<Self>, columns: Vec<String>) -> PyResult<Bound<PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let column_refs = columns.iter().map(String::as_str).collect::<Vec<&str>>();
+            inner.drop_columns(&column_refs).await.infer_error()?;
+            Ok(())
         })
     }
 }

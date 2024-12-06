@@ -110,7 +110,10 @@ describe("given a connection", () => {
     let table = await db.createTable("test", data, { useLegacyFormat: true });
 
     const isV2 = async (table: Table) => {
-      const data = await table.query().toArrow({ maxBatchLength: 100000 });
+      const data = await table
+        .query()
+        .limit(10000)
+        .toArrow({ maxBatchLength: 100000 });
       console.log(data.batches.length);
       return data.batches.length < 5;
     };

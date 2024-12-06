@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+from concurrent.futures import ThreadPoolExecutor
 import contextlib
 from datetime import timedelta
 import http.server
@@ -104,6 +105,47 @@ async def test_async_remote_db():
 
 
 @pytest.mark.asyncio
+async def test_async_checkout():
+    def handler(request):
+        if request.path == "/v1/table/test/describe/":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            response = json.dumps({"version": 42, "schema": {"fields": []}})
+            request.wfile.write(response.encode())
+            return
+
+        content_len = int(request.headers.get("Content-Length"))
+        body = request.rfile.read(content_len)
+        body = json.loads(body)
+
+        print("body is", body)
+
+        count = 0
+        if body["version"] == 1:
+            count = 100
+        elif body["version"] == 2:
+            count = 200
+        elif body["version"] is None:
+            count = 300
+
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(json.dumps(count).encode())
+
+    async with mock_lancedb_connection_async(handler) as db:
+        table = await db.open_table("test")
+        assert await table.count_rows() == 300
+        await table.checkout(1)
+        assert await table.count_rows() == 100
+        await table.checkout(2)
+        assert await table.count_rows() == 200
+        await table.checkout_latest()
+        assert await table.count_rows() == 300
+
+
+@pytest.mark.asyncio
 async def test_http_error():
     request_id_holder = {"request_id": None}
 
@@ -146,6 +188,47 @@ async def test_retry_error():
         assert cause.status_code == 429
 
 
+def test_table_add_in_threadpool():
+    def handler(request):
+        if request.path == "/v1/table/test/insert/":
+            request.send_response(200)
+            request.end_headers()
+        elif request.path == "/v1/table/test/create/?mode=create":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b"{}")
+        elif request.path == "/v1/table/test/describe/":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            payload = json.dumps(
+                dict(
+                    version=1,
+                    schema=dict(
+                        fields=[
+                            dict(name="id", type={"type": "int64"}, nullable=False),
+                        ]
+                    ),
+                )
+            )
+            request.wfile.write(payload.encode())
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    with mock_lancedb_connection(handler) as db:
+        table = db.create_table("test", [{"id": 1}])
+        with ThreadPoolExecutor(3) as executor:
+            futures = []
+            for _ in range(10):
+                future = executor.submit(table.add, [{"id": 1}])
+                futures.append(future)
+
+            for future in futures:
+                future.result()
+
+
 @contextlib.contextmanager
 def query_test_table(query_handler):
     def handler(request):
@@ -185,14 +268,34 @@ def test_query_sync_minimal():
             "k": 10,
             "prefilter": False,
             "refine_factor": None,
+            "ef": None,
             "vector": [1.0, 2.0, 3.0],
             "nprobes": 20,
+            "version": None,
         }
 
         return pa.table({"id": [1, 2, 3]})
 
     with query_test_table(handler) as table:
         data = table.search([1, 2, 3]).to_list()
+        expected = [{"id": 1}, {"id": 2}, {"id": 3}]
+        assert data == expected
+
+
+def test_query_sync_empty_query():
+    def handler(body):
+        assert body == {
+            "k": 10,
+            "filter": "true",
+            "vector": [],
+            "columns": ["id"],
+            "version": None,
+        }
+
+        return pa.table({"id": [1, 2, 3]})
+
+    with query_test_table(handler) as table:
+        data = table.search(None).where("true").select(["id"]).limit(10).to_list()
         expected = [{"id": 1}, {"id": 2}, {"id": 3}]
         assert data == expected
 
@@ -206,11 +309,13 @@ def test_query_sync_maximal():
             "refine_factor": 10,
             "vector": [1.0, 2.0, 3.0],
             "nprobes": 5,
+            "ef": None,
             "filter": "id > 0",
             "columns": ["id", "name"],
             "vector_column": "vector2",
             "fast_search": True,
             "with_row_id": True,
+            "version": None,
         }
 
         return pa.table({"id": [1, 2, 3], "name": ["a", "b", "c"]})
@@ -229,6 +334,17 @@ def test_query_sync_maximal():
         )
 
 
+def test_query_sync_multiple_vectors():
+    def handler(_body):
+        return pa.table({"id": [1]})
+
+    with query_test_table(handler) as table:
+        results = table.search([[1, 2, 3], [4, 5, 6]]).limit(1).to_list()
+        assert len(results) == 2
+        results.sort(key=lambda x: x["query_index"])
+        assert results == [{"id": 1, "query_index": 0}, {"id": 1, "query_index": 1}]
+
+
 def test_query_sync_fts():
     def handler(body):
         assert body == {
@@ -238,6 +354,7 @@ def test_query_sync_fts():
             },
             "k": 10,
             "vector": [],
+            "version": None,
         }
 
         return pa.table({"id": [1, 2, 3]})
@@ -254,6 +371,7 @@ def test_query_sync_fts():
             "k": 42,
             "vector": [],
             "with_row_id": True,
+            "version": None,
         }
 
         return pa.table({"id": [1, 2, 3]})
@@ -279,6 +397,7 @@ def test_query_sync_hybrid():
                 "k": 42,
                 "vector": [],
                 "with_row_id": True,
+                "version": None,
             }
             return pa.table({"_rowid": [1, 2, 3], "_score": [0.1, 0.2, 0.3]})
         else:
@@ -290,7 +409,9 @@ def test_query_sync_hybrid():
                 "refine_factor": None,
                 "vector": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
                 "nprobes": 20,
+                "ef": None,
                 "with_row_id": True,
+                "version": None,
             }
             return pa.table({"_rowid": [1, 2, 3], "_distance": [0.1, 0.2, 0.3]})
 

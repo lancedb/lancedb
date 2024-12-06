@@ -36,6 +36,7 @@ def connect(
     read_consistency_interval: Optional[timedelta] = None,
     request_thread_pool: Optional[Union[int, ThreadPoolExecutor]] = None,
     client_config: Union[ClientConfig, Dict[str, Any], None] = None,
+    storage_options: Optional[Dict[str, str]] = None,
     **kwargs: Any,
 ) -> DBConnection:
     """Connect to a LanceDB database.
@@ -67,6 +68,9 @@ def connect(
         Configuration options for the LanceDB Cloud HTTP client. If a dict, then
         the keys are the attributes of the ClientConfig class. If None, then the
         default configuration is used.
+    storage_options: dict, optional
+        Additional options for the storage backend. See available options at
+        https://lancedb.github.io/lancedb/guides/storage/
 
     Examples
     --------
@@ -111,7 +115,11 @@ def connect(
 
     if kwargs:
         raise ValueError(f"Unknown keyword arguments: {kwargs}")
-    return LanceDBConnection(uri, read_consistency_interval=read_consistency_interval)
+    return LanceDBConnection(
+        uri,
+        read_consistency_interval=read_consistency_interval,
+        storage_options=storage_options,
+    )
 
 
 async def connect_async(

@@ -85,13 +85,13 @@ Initialize a LanceDB connection and create a table
 
 
         ```ts
-        --8<-- "nodejs/examples/basic.ts:create_table"
+        --8<-- "nodejs/examples/basic.test.ts:create_table"
         ```
 
         This will infer the schema from the provided data. If you want to explicitly provide a schema, you can use `apache-arrow` to declare a schema
 
         ```ts
-        --8<-- "nodejs/examples/basic.ts:create_table_with_schema"
+        --8<-- "nodejs/examples/basic.test.ts:create_table_with_schema"
         ```
 
         !!! info "Note"
@@ -100,14 +100,14 @@ Initialize a LanceDB connection and create a table
             passed in will NOT be appended to the table in that case.
 
         ```ts
-        --8<-- "nodejs/examples/basic.ts:create_table_exists_ok"
+        --8<-- "nodejs/examples/basic.test.ts:create_table_exists_ok"
         ```
 
         Sometimes you want to make sure that you start fresh. If you want to
         overwrite the table, you can pass in mode: "overwrite" to the createTable function.
 
         ```ts
-        --8<-- "nodejs/examples/basic.ts:create_table_overwrite"
+        --8<-- "nodejs/examples/basic.test.ts:create_table_overwrite"
         ```
 
     === "vectordb (deprecated)"
@@ -227,7 +227,7 @@ LanceDB supports float16 data type!
     === "@lancedb/lancedb"
 
         ```typescript
-        --8<-- "nodejs/examples/basic.ts:create_f16_table"
+        --8<-- "nodejs/examples/basic.test.ts:create_f16_table"
         ```
 
     === "vectordb (deprecated)"
@@ -274,7 +274,7 @@ table = db.create_table(table_name, schema=Content)
 
 Sometimes your data model may contain nested objects.
 For example, you may want to store the document string
-and the document soure name as a nested Document object:
+and the document source name as a nested Document object:
 
 ```python
 class Document(BaseModel):
@@ -455,7 +455,7 @@ You can create an empty table for scenarios where you want to add data to the ta
     === "@lancedb/lancedb"
 
         ```typescript
-        --8<-- "nodejs/examples/basic.ts:create_empty_table"
+        --8<-- "nodejs/examples/basic.test.ts:create_empty_table"
         ```
 
     === "vectordb (deprecated)"
@@ -466,7 +466,7 @@ You can create an empty table for scenarios where you want to add data to the ta
 
 ## Adding to a table
 
-After a table has been created, you can always add more data to it usind the `add` method
+After a table has been created, you can always add more data to it using the `add` method
 
 === "Python"
     You can add any of the valid data structures accepted by LanceDB table, i.e, `dict`, `list[dict]`, `pd.DataFrame`, or `Iterator[pa.RecordBatch]`. Below are some examples.
@@ -535,7 +535,7 @@ After a table has been created, you can always add more data to it usind the `ad
     ```
 
     ??? "Ingesting Pydantic models with LanceDB embedding API"
-        When using LanceDB's embedding API, you can add Pydantic models directly to the table. LanceDB will automatically convert the `vector` field to a vector before adding it to the table. You need to specify the default value of `vector` feild as None to allow LanceDB to automatically vectorize the data.
+        When using LanceDB's embedding API, you can add Pydantic models directly to the table. LanceDB will automatically convert the `vector` field to a vector before adding it to the table. You need to specify the default value of `vector` field as None to allow LanceDB to automatically vectorize the data.
 
         ```python
         import lancedb
@@ -790,6 +790,122 @@ Use the `drop_table()` method on the database to remove a table.
       This permanently removes the table and is not recoverable, unlike deleting rows.
       If the table does not exist an exception is raised.
 
+## Changing schemas
+
+While tables must have a schema specified when they are created, you can
+change the schema over time. There's three methods to alter the schema of
+a table:
+
+* `add_columns`: Add new columns to the table
+* `alter_columns`: Alter the name, nullability, or data type of a column
+* `drop_columns`: Drop columns from the table
+
+### Adding new columns
+
+You can add new columns to the table with the `add_columns` method. New columns
+are filled with values based on a SQL expression. For example, you can add a new
+column `y` to the table and fill it with the value of `x + 1`.
+
+=== "Python"
+
+    ```python
+    table.add_columns({"double_price": "price * 2"})
+    ```
+    **API Reference:** [lancedb.table.Table.add_columns][]
+
+=== "Typescript"
+
+    ```typescript
+    --8<-- "nodejs/examples/basic.test.ts:add_columns"
+    ```
+    **API Reference:** [lancedb.Table.addColumns](../js/classes/Table.md/#addcolumns)
+
+If you want to fill it with null, you can use `cast(NULL as <data_type>)` as
+the SQL expression to fill the column with nulls, while controlling the data
+type of the column. Available data types are base on the
+[DataFusion data types](https://datafusion.apache.org/user-guide/sql/data_types.html).
+You can use any of the SQL types, such as `BIGINT`:
+
+```sql
+cast(NULL as BIGINT)
+```
+
+Using Arrow data types and the `arrow_typeof` function is not yet supported.
+
+<!-- TODO: we could provide a better formula for filling with nulls:
+   https://github.com/lancedb/lance/issues/3175
+-->
+
+### Altering existing columns
+
+You can alter the name, nullability, or data type of a column with the `alter_columns`
+method.
+
+Changing the name or nullability of a column just updates the metadata. Because
+of this, it's a fast operation. Changing the data type of a column requires
+rewriting the column, which can be a heavy operation.
+
+=== "Python"
+
+    ```python
+    import pyarrow as pa
+    table.alter_column({"path": "double_price", "rename": "dbl_price",
+                        "data_type": pa.float32(), "nullable": False})
+    ```
+    **API Reference:** [lancedb.table.Table.alter_columns][]
+
+=== "Typescript"
+
+    ```typescript
+    --8<-- "nodejs/examples/basic.test.ts:alter_columns"
+    ```
+    **API Reference:** [lancedb.Table.alterColumns](../js/classes/Table.md/#altercolumns)
+
+### Dropping columns
+
+You can drop columns from the table with the `drop_columns` method. This will
+will remove the column from the schema.
+
+<!-- TODO: Provide guidance on how to reduce disk usage once optimize helps here
+    waiting on: https://github.com/lancedb/lance/issues/3177
+-->
+
+=== "Python"
+
+    ```python
+    table.drop_columns(["dbl_price"])
+    ```
+    **API Reference:** [lancedb.table.Table.drop_columns][]
+
+=== "Typescript"
+
+    ```typescript
+    --8<-- "nodejs/examples/basic.test.ts:drop_columns"
+    ```
+    **API Reference:** [lancedb.Table.dropColumns](../js/classes/Table.md/#altercolumns)
+
+
+## Handling bad vectors
+
+In LanceDB Python, you can use the `on_bad_vectors` parameter to choose how
+invalid vector values are handled. Invalid vectors are vectors that are not valid
+because:
+
+1. They are the wrong dimension
+2. They contain NaN values
+3. They are null but are on a non-nullable field
+
+By default, LanceDB will raise an error if it encounters a bad vector. You can
+also choose one of the following options:
+
+* `drop`: Ignore rows with bad vectors
+* `fill`: Replace bad values (NaNs) or missing values (too few dimensions) with
+    the fill value specified in the `fill_value` parameter. An input like
+    `[1.0, NaN, 3.0]` will be replaced with `[1.0, 0.0, 3.0]` if `fill_value=0.0`.
+* `null`: Replace bad vectors with null (only works if the column is nullable).
+    A bad vector `[1.0, NaN, 3.0]` will be replaced with `null` if the column is
+    nullable. If the vector column is non-nullable, then bad vectors will cause an
+    error
 
 ## Consistency
 
@@ -859,4 +975,4 @@ There are three possible settings for `read_consistency_interval`:
 
 Learn the best practices on creating an ANN index and getting the most out of it.
 
-[^1]: The `vectordb` package is a legacy package that is  deprecated in favor of `@lancedb/lancedb`.  The `vectordb` package will continue to receive bug fixes and security updates until September 2024.  We recommend all new projects use `@lancedb/lancedb`.  See the [migration guide](migration.md) for more information.
+[^1]: The `vectordb` package is a legacy package that is  deprecated in favor of `@lancedb/lancedb`.  The `vectordb` package will continue to receive bug fixes and security updates until September 2024.  We recommend all new projects use `@lancedb/lancedb`.  See the [migration guide](../migration.md) for more information.

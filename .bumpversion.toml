@@ -1,5 +1,5 @@
 [tool.bumpversion]
-current_version = "0.13.0-beta.1"
+current_version = "0.14.0-beta.2"
 parse = """(?x)
     (?P<major>0|[1-9]\\d*)\\.
     (?P<minor>0|[1-9]\\d*)\\.
@@ -86,6 +86,16 @@ search = "\"@lancedb/vectordb-linux-arm64-gnu\": \"{current_version}\""
 glob = "node/package.json"
 replace = "\"@lancedb/vectordb-linux-x64-gnu\": \"{new_version}\""
 search = "\"@lancedb/vectordb-linux-x64-gnu\": \"{current_version}\""
+
+[[tool.bumpversion.files]]
+glob = "node/package.json"
+replace = "\"@lancedb/vectordb-linux-arm64-musl\": \"{new_version}\""
+search = "\"@lancedb/vectordb-linux-arm64-musl\": \"{current_version}\""
+
+[[tool.bumpversion.files]]
+glob = "node/package.json"
+replace = "\"@lancedb/vectordb-linux-x64-musl\": \"{new_version}\""
+search = "\"@lancedb/vectordb-linux-x64-musl\": \"{current_version}\""
 
 [[tool.bumpversion.files]]
 glob = "node/package.json"

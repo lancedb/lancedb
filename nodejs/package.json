@@ -10,11 +10,13 @@
     "vector database",
     "ann"
   ],
-  "version": "0.13.0-beta.1",
+  "version": "0.14.0-beta.2",
   "main": "dist/index.js",
   "exports": {
     ".": "./dist/index.js",
-    "./embedding": "./dist/embedding/index.js"
+    "./embedding": "./dist/embedding/index.js",
+    "./embedding/openai": "./dist/embedding/openai.js",
+    "./embedding/transformers": "./dist/embedding/transformers.js"
   },
   "types": "dist/index.d.ts",
   "napi": {
@@ -22,10 +24,12 @@
     "triples": {
       "defaults": false,
       "additional": [
-        "aarch64-apple-darwin",
-        "aarch64-unknown-linux-gnu",
         "x86_64-apple-darwin",
+        "aarch64-apple-darwin",
         "x86_64-unknown-linux-gnu",
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-musl",
+        "aarch64-unknown-linux-musl",
         "x86_64-pc-windows-msvc"
       ]
     }
@@ -85,7 +89,7 @@
     "reflect-metadata": "^0.2.2"
   },
   "optionalDependencies": {
-    "@xenova/transformers": ">=2.17 < 3",
+    "@huggingface/transformers": "^3.0.2",
     "openai": "^4.29.2"
   },
   "peerDependencies": {

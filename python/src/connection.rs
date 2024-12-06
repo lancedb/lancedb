@@ -9,7 +9,7 @@ use pyo3::{
     exceptions::{PyRuntimeError, PyValueError},
     pyclass, pyfunction, pymethods, Bound, FromPyObject, PyAny, PyRef, PyResult, Python,
 };
-use pyo3_asyncio_0_21::tokio::future_into_py;
+use pyo3_async_runtimes::tokio::future_into_py;
 
 use crate::{error::PythonErrorExt, table::Table};
 
@@ -58,6 +58,7 @@ impl Connection {
         self.inner.take();
     }
 
+    #[pyo3(signature = (start_after=None, limit=None))]
     pub fn table_names(
         self_: PyRef<'_, Self>,
         start_after: Option<String>,
@@ -74,6 +75,7 @@ impl Connection {
         future_into_py(self_.py(), async move { op.execute().await.infer_error() })
     }
 
+    #[pyo3(signature = (name, mode, data, storage_options=None, data_storage_version=None, enable_v2_manifest_paths=None))]
     pub fn create_table<'a>(
         self_: PyRef<'a, Self>,
         name: String,
@@ -111,6 +113,7 @@ impl Connection {
         })
     }
 
+    #[pyo3(signature = (name, mode, schema, storage_options=None, data_storage_version=None, enable_v2_manifest_paths=None))]
     pub fn create_empty_table<'a>(
         self_: PyRef<'a, Self>,
         name: String,
@@ -198,6 +201,7 @@ impl Connection {
 }
 
 #[pyfunction]
+#[pyo3(signature = (uri, api_key=None, region=None, host_override=None, read_consistency_interval=None, client_config=None, storage_options=None))]
 #[allow(clippy::too_many_arguments)]
 pub fn connect(
     py: Python,

@@ -386,6 +386,20 @@ export class VectorQuery extends QueryBase<NativeVectorQuery> {
   }
 
   /**
+   * Set the number of candidates to consider during the search
+   *
+   * This argument is only used when the vector column has an HNSW index.
+   * If there is no index then this value is ignored.
+   *
+   * Increasing this value will increase the recall of your query but will
+   * also increase the latency of your query. The default value is 1.5*limit.
+   */
+  ef(ef: number): VectorQuery {
+    super.doCall((inner) => inner.ef(ef));
+    return this;
+  }
+
+  /**
    * Set the vector column to query
    *
    * This controls which column is compared to the query vector supplied in
@@ -492,6 +506,42 @@ export class VectorQuery extends QueryBase<NativeVectorQuery> {
     super.doCall((inner) => inner.bypassVectorIndex());
     return this;
   }
+
+  /*
+   * Add a query vector to the search
+   *
+   * This method can be called multiple times to add multiple query vectors
+   * to the search. If multiple query vectors are added, then they will be searched
+   * in parallel, and the results will be concatenated. A column called `query_index`
+   * will be added to indicate the index of the query vector that produced the result.
+   *
+   * Performance wise, this is equivalent to running multiple queries concurrently.
+   */
+  addQueryVector(vector: IntoVector): VectorQuery {
+    if (vector instanceof Promise) {
+      const res = (async () => {
+        try {
+          const v = await vector;
+          const arr = Float32Array.from(v);
+          //
+          // biome-ignore lint/suspicious/noExplicitAny: we need to get the `inner`, but js has no package scoping
+          const value: any = this.addQueryVector(arr);
+          const inner = value.inner as
+            | NativeVectorQuery
+            | Promise<NativeVectorQuery>;
+          return inner;
+        } catch (e) {
+          return Promise.reject(e);
+        }
+      })();
+      return new VectorQuery(res);
+    } else {
+      super.doCall((inner) => {
+        inner.addQueryVector(Float32Array.from(vector));
+      });
+      return this;
+    }
+  }
 }
 
 /** A builder for LanceDB queries. */
@@ -570,5 +620,10 @@ export class Query extends QueryBase<NativeQuery> {
       const vectorQuery = this.inner.nearestTo(Float32Array.from(vector));
       return new VectorQuery(vectorQuery);
     }
+  }
+
+  nearestToText(query: string, columns?: string[]): Query {
+    this.doCall((inner) => inner.fullTextSearch(query, columns));
+    return this;
   }
 }
