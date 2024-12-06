@@ -18,7 +18,7 @@ We support `IVF_PQ` and `IVF_HNSW_SQ` as the `index_type` which is passed to `cr
 ### Do I need to do anything when there is new data added to a table with an existing index?
 No! LanceDB Cloud triggers an asynchronous background job to index the new vectors. This process will either merge the new vectors into the existing index or initiate a complete re-indexing if needed. 
 
-There is a flag `fast_search` in `table.search()` that allows you to control whether the unindexed rows should be searched or not. By default, a flat search will be performed for the unindexed rows so a slight slowdown in query will be expected.
+There is a flag `fast_search` in `table.search()` that allows you to control whether the unindexed rows should be searched or not. By default, a brute-force search will be performed for the unindexed rows so a slight slowdown in query will be expected.
 
 ### Do I need to reindex the whole dataset if only a small portion of the data is deleted or updated?
 No! Similar to adding data to the table, LanceDB Cloud triggers an asynchronous background job to update the existing indices. Therefore, no action is needed from users and there is absolutely no 
