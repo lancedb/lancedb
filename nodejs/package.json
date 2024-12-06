@@ -10,6 +10,7 @@
     "vector database",
     "ann"
   ],
+  "private": false,
   "version": "0.14.0",
   "main": "dist/index.js",
   "exports": {
@@ -30,7 +31,8 @@
         "aarch64-unknown-linux-gnu",
         "x86_64-unknown-linux-musl",
         "aarch64-unknown-linux-musl",
-        "x86_64-pc-windows-msvc"
+        "x86_64-pc-windows-msvc",
+        "aarch64-pc-windows-msvc"
       ]
     }
   },
