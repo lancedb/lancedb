@@ -2050,7 +2050,7 @@ class AsyncHybridQuery(AsyncQueryBase):
         Returns
         -------
         plan
-        """ # noqa: E501
+        """  # noqa: E501
 
         results = ["Vector Search Plan:"]
         results.append(await self._inner.to_vector_query().explain_plan(verbose))
