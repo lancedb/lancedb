@@ -305,6 +305,7 @@ def test_query_sync_maximal():
         assert body == {
             "distance_type": "cosine",
             "k": 42,
+            "offset": 10,
             "prefilter": True,
             "refine_factor": 10,
             "vector": [1.0, 2.0, 3.0],
@@ -325,6 +326,7 @@ def test_query_sync_maximal():
             table.search([1, 2, 3], vector_column_name="vector2", fast_search=True)
             .metric("cosine")
             .limit(42)
+            .offset(10)
             .refine_factor(10)
             .nprobes(5)
             .where("id > 0", prefilter=True)
