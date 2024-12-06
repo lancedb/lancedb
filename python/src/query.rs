@@ -171,6 +171,7 @@ impl FTSQuery {
         self.inner = self.inner.clone().postfilter();
     }
 
+    #[pyo3(signature = (max_batch_length=None))]
     pub fn execute(
         self_: PyRef<'_, Self>,
         max_batch_length: Option<u32>,

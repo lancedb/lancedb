@@ -1127,7 +1127,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             fts_results = fts_future.result()
             vector_results = vector_future.result()
 
-        return LanceHybridQueryBuilder._combine_hybrid_results(
+        return self._combine_hybrid_results(
             fts_results=fts_results,
             vector_results=vector_results,
             norm=self._norm,
@@ -1137,6 +1137,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             with_row_ids=self._with_row_id,
         )
 
+    @staticmethod
     def _combine_hybrid_results(
         fts_results: pa.Table,
         vector_results: pa.Table,
@@ -1173,6 +1174,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
     def to_batches(self):
         raise NotImplementedError("to_batches not yet supported on a hybrid query")
 
+    @staticmethod
     def _rank(results: pa.Table, column: str, ascending: bool = True):
         if len(results) == 0:
             return results
@@ -1190,6 +1192,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         )
         return results
 
+    @staticmethod
     def _normalize_scores(results: pa.Table, column: str, invert=False):
         if len(results) == 0:
             return results
@@ -1685,6 +1688,8 @@ class AsyncQuery(AsyncQueryBase):
 
 
 class AsyncFTSQuery(AsyncQueryBase):
+    """A query for full text search for LanceDB."""
+
     def __init__(self, inner: LanceFTSQuery):
         super().__init__(inner)
         self._inner = inner
@@ -1696,6 +1701,52 @@ class AsyncFTSQuery(AsyncQueryBase):
         self,
         query_vector: Union[VEC, Tuple, List[VEC]],
     ) -> AsyncHybridQuery:
+        """
+        In addition doing text search on the LanceDB Table, also
+        find the nearest vectors to the given query vector.
+
+        This converts the query from a FTS Query to a Hybrid query.
+
+        This method will attempt to convert the input to the query vector
+        expected by the embedding model.  If the input cannot be converted
+        then an error will be thrown.
+
+        By default, there is no embedding model, and the input should be
+        something that can be converted to a pyarrow array of floats.  This
+        includes lists, numpy arrays, and tuples.
+
+        If there is only one vector column (a column whose data type is a
+        fixed size list of floats) then the column does not need to be specified.
+        If there is more than one vector column you must use
+        [AsyncVectorQuery.column][lancedb.query.AsyncVectorQuery.column] to specify
+        which column you would like to compare with.
+
+        If no index has been created on the vector column then a vector query
+        will perform a distance comparison between the query vector and every
+        vector in the database and then sort the results.  This is sometimes
+        called a "flat search"
+
+        For small databases, with tens of thousands of vectors or less, this can
+        be reasonably fast.  In larger databases you should create a vector index
+        on the column.  If there is a vector index then an "approximate" nearest
+        neighbor search (frequently called an ANN search) will be performed.  This
+        search is much faster, but the results will be approximate.
+
+        The query can be further parameterized using the returned builder.  There
+        are various ANN search parameters that will let you fine tune your recall
+        accuracy vs search latency.
+
+        Vector searches always have a [limit][].  If `limit` has not been called then
+        a default `limit` of 10 will be used.
+
+        Typically, a single vector is passed in as the query. However, you can also
+        pass in multiple vectors.  This can be useful if you want to find the nearest
+        vectors to multiple query vectors. This is not expected to be faster than
+        making multiple queries concurrently; it is just a convenience method.
+        If multiple vectors are passed in then an additional column `query_index`
+        will be added to the results.  This column will contain the index of the
+        query vector that the result is nearest to.
+        """
         if query_vector is None:
             raise ValueError("query_vector can not be None")
 
@@ -1851,7 +1902,33 @@ class AsyncVectorQuery(AsyncQueryBase):
         self._inner.bypass_vector_index()
         return self
 
-    def nearest_to_text(self, query: str, columns: Union[str, List[str]] = []):
+    def nearest_to_text(
+        self, query: str, columns: Union[str, List[str]] = []
+    ) -> AsyncHybridQuery:
+        """
+        Find the documents that are most relevant to the given text query,
+        in addition to vector search.
+
+        This converts the vector query into a hybrid query.
+
+        This search will perform a full text search on the table and return
+        the most relevant documents, combined with the vector query results.
+        The text relevance is determined by BM25.
+
+        The columns to search must be with native FTS index
+        (Tantivy-based can't work with this method).
+
+        By default, all indexed columns are searched,
+        now only one column can be searched at a time.
+
+        Parameters
+        ----------
+        query: str
+            The text query to search for.
+        columns: str or list of str, default None
+            The columns to search in. If None, all indexed columns are searched.
+            For now only one column can be searched at a time.
+        """
         if isinstance(columns, str):
             columns = [columns]
         return AsyncHybridQuery(
@@ -1860,13 +1937,43 @@ class AsyncVectorQuery(AsyncQueryBase):
 
 
 class AsyncHybridQuery(AsyncQueryBase):
+    """
+    A query builder that performs hybrid vector and full text search.
+    Results are combined and reranked based on the specified reranker.
+    By default, the results are reranked using the RRFReranker, which
+    uses reciprocal rank fusion score for reranking.
+
+    To make the vector and fts results comparable, the scores are normalized.
+    Instead of normalizing scores, the `normalize` parameter can be set to "rank"
+    in the `rerank` method to convert the scores to ranks and then normalize them.
+    """
+
     def __init__(self, inner: LanceHybridQuery):
         super().__init__(inner)
         self._inner = inner
         self._norm = "score"
         self._reranker = RRFReranker()
 
-    def rerank(self, reranker: Reranker = RRFReranker(), normalize: str = "score"):
+    def rerank(
+        self, reranker: Reranker = RRFReranker(), normalize: str = "score"
+    ) -> AsyncHybridQuery:
+        """
+        Rerank the hybrid search results using the specified reranker. The reranker
+        must be an instance of Reranker class.
+
+        Parameters
+        ----------
+        reranker: Reranker, default RRFReranker()
+            The reranker to use. Must be an instance of Reranker class.
+        normalize: str, default "score"
+            The method to normalize the scores. Can be "rank" or "score". If "rank",
+            the scores are converted to ranks and then normalized. If "score", the
+            scores are normalized directly.
+        Returns
+        -------
+        AsyncHybridQuery
+            The AsyncHybridQuery object.
+        """
         if normalize not in ["rank", "score"]:
             raise ValueError("normalize must be 'rank' or 'score'.")
         if reranker and not isinstance(reranker, Reranker):
