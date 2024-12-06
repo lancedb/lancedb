@@ -132,6 +132,10 @@ macro_rules! impl_pq_params_setter {
             self.num_sub_vectors = Some(num_sub_vectors);
             self
         }
+        pub fn num_bits(mut self, num_bits: u32) -> Self {
+            self.num_bits = Some(num_bits);
+            self
+        }
     };
 }
 
@@ -189,6 +193,7 @@ pub struct IvfPqIndexBuilder {
 
     // PQ
     pub(crate) num_sub_vectors: Option<u32>,
+    pub(crate) num_bits: Option<u32>,
 }
 
 impl Default for IvfPqIndexBuilder {
@@ -197,6 +202,7 @@ impl Default for IvfPqIndexBuilder {
             distance_type: DistanceType::L2,
             num_partitions: None,
             num_sub_vectors: None,
+            num_bits: None,
             sample_rate: 256,
             max_iterations: 50,
         }
@@ -256,6 +262,7 @@ pub struct IvfHnswPqIndexBuilder {
 
     // PQ
     pub(crate) num_sub_vectors: Option<u32>,
+    pub(crate) num_bits: Option<u32>,
 }
 
 impl Default for IvfHnswPqIndexBuilder {
@@ -264,6 +271,7 @@ impl Default for IvfHnswPqIndexBuilder {
             distance_type: DistanceType::L2,
             num_partitions: None,
             num_sub_vectors: None,
+            num_bits: None,
             sample_rate: 256,
             max_iterations: 50,
             m: 20,

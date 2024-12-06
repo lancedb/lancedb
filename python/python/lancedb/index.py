@@ -178,6 +178,12 @@ class HnswPq:
         If the dimension is not visible by 8 then we use 1 subvector.  This is not
         ideal and will likely result in poor performance.
 
+     num_bits: int, default 8
+        Number of bits to encode each sub-vector.
+
+        This value controls how much the sub-vectors are compressed.  The more bits
+        the more accurate the index but the slower search. Only 4 and 8 are supported.
+
     max_iterations, default 50
 
         Max iterations to train kmeans.
@@ -232,6 +238,7 @@ class HnswPq:
         distance_type: Optional[str] = None,
         num_partitions: Optional[int] = None,
         num_sub_vectors: Optional[int] = None,
+        num_bits: Optional[int] = None,
         max_iterations: Optional[int] = None,
         sample_rate: Optional[int] = None,
         m: Optional[int] = None,
@@ -241,6 +248,7 @@ class HnswPq:
             distance_type=distance_type,
             num_partitions=num_partitions,
             num_sub_vectors=num_sub_vectors,
+            num_bits=num_bits,
             max_iterations=max_iterations,
             sample_rate=sample_rate,
             m=m,
@@ -387,6 +395,7 @@ class IvfPq:
         distance_type: Optional[str] = None,
         num_partitions: Optional[int] = None,
         num_sub_vectors: Optional[int] = None,
+        num_bits: Optional[int] = None,
         max_iterations: Optional[int] = None,
         sample_rate: Optional[int] = None,
     ):
@@ -449,6 +458,12 @@ class IvfPq:
 
             If the dimension is not visible by 8 then we use 1 subvector.  This is not
             ideal and will likely result in poor performance.
+        num_bits: int, default 8
+            Number of bits to encode each sub-vector.
+
+            This value controls how much the sub-vectors are compressed.  The more bits
+            the more accurate the index but the slower search.  The default is 8
+            bits.  Only 4 and 8 are supported.
         max_iterations: int, default 50
             Max iteration to train kmeans.
 
@@ -482,6 +497,7 @@ class IvfPq:
             distance_type=distance_type,
             num_partitions=num_partitions,
             num_sub_vectors=num_sub_vectors,
+            num_bits=num_bits,
             max_iterations=max_iterations,
             sample_rate=sample_rate,
         )

@@ -83,6 +83,7 @@ The following IVF_PQ paramters can be specified:
 - **num_sub_vectors**: The number of sub-vectors (M) that will be created during Product Quantization (PQ).
   For D dimensional vector, it will be divided into `M` subvectors with dimension `D/M`, each of which is replaced by
   a single PQ code. The default is the dimension of the vector divided by 16.
+- **num_bits**: The number of bits used to encode each sub-vector. Only 4 and 8 are supported. The higher the number of bits, the higher the accuracy of the index, also the slower search. The default is 8.
 
 !!! note
 
@@ -142,11 +143,11 @@ There are a couple of parameters that can be used to fine-tune the search:
 - **nprobes** (default: 20): The number of probes used. A higher number makes search more accurate but also slower.<br/>
   Most of the time, setting nprobes to cover 5-15% of the dataset should achieve high recall with low latency.<br/>
     - _For example_, For a dataset of 1 million vectors divided into 256 partitions, `nprobes` should be set to ~20-40. This value can be adjusted to achieve the optimal balance between search latency and search quality. <br/>
-  
+
 - **refine_factor** (default: None): Refine the results by reading extra elements and re-ranking them in memory.<br/>
   A higher number makes search more accurate but also slower. If you find the recall is less than ideal, try refine_factor=10 to start.<br/>
     - _For example_, For a dataset of 1 million vectors divided into 256 partitions, setting the `refine_factor` to 200 will initially retrieve the top 4,000 candidates (top k * refine_factor) from all searched partitions. These candidates are then reranked to determine the final top 20 results.<br/>
-!!! note 
+!!! note
     Both `nprobes` and `refine_factor` are only applicable if an ANN index is present. If specified on a table without an ANN index, those parameters are ignored.
 
 
