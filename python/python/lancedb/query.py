@@ -1998,10 +1998,9 @@ class AsyncHybridQuery(AsyncQueryBase):
         fts_query.with_row_id()
         vec_query.with_row_id()
 
-        loop = asyncio.get_event_loop()
         fts_results, vector_results = await asyncio.gather(
-            loop.create_task(fts_query.to_arrow()),
-            loop.create_task(vec_query.to_arrow()),
+            fts_query.to_arrow(),
+            vec_query.to_arrow(),
         )
 
         return LanceHybridQueryBuilder._combine_hybrid_results(
