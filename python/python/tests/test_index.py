@@ -109,6 +109,29 @@ async def test_create_vector_index(some_table: AsyncTable):
 
 
 @pytest.mark.asyncio
+async def test_create_4bit_ivfpq_index(some_table: AsyncTable):
+    # Can create
+    await some_table.create_index("vector", config=IvfPq(num_bits=4))
+    # Can recreate if replace=True
+    await some_table.create_index("vector", config=IvfPq(num_bits=4), replace=True)
+    # Can't recreate if replace=False
+    with pytest.raises(RuntimeError, match="already exists"):
+        await some_table.create_index("vector", replace=False)
+    indices = await some_table.list_indices()
+    assert len(indices) == 1
+    assert indices[0].index_type == "IvfPq"
+    assert indices[0].columns == ["vector"]
+    assert indices[0].name == "vector_idx"
+
+    stats = await some_table.index_stats("vector_idx")
+    assert stats.index_type == "IVF_PQ"
+    assert stats.distance_type == "l2"
+    assert stats.num_indexed_rows == await some_table.count_rows()
+    assert stats.num_unindexed_rows == 0
+    assert stats.num_indices == 1
+
+
+@pytest.mark.asyncio
 async def test_create_hnswpq_index(some_table: AsyncTable):
     await some_table.create_index("vector", config=HnswPq(num_partitions=10))
     indices = await some_table.list_indices()

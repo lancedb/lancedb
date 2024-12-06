@@ -57,8 +57,8 @@ describe.each([arrow13, arrow14, arrow15, arrow16, arrow17])(
       | import("apache-arrow-15").Schema
       | import("apache-arrow-16").Schema
       | import("apache-arrow-17").Schema = new arrow.Schema([
-      new arrow.Field("id", new arrow.Float64(), true),
-    ]);
+        new arrow.Field("id", new arrow.Float64(), true),
+      ]);
 
     beforeEach(async () => {
       tmpDir = tmp.dirSync({ unsafeCleanup: true });
@@ -567,6 +567,15 @@ describe("When creating an index", () => {
     });
 
     // TODO: Verify parameters when we can load index config as part of list indices
+  });
+
+  it("should be able to create 4bit IVF_PQ", async () => {
+    await tbl.createIndex("vec", {
+      config: Index.ivfPq({
+        numPartitions: 10,
+        numBits: 4,
+      }),
+    });
   });
 
   it("should allow me to replace (or not) an existing index", async () => {

@@ -413,6 +413,8 @@ class Table(ABC):
         replace: bool = True,
         accelerator: Optional[str] = None,
         index_cache_size: Optional[int] = None,
+        *,
+        num_bits: Optional[int] = None,
     ):
         """Create an index on the table.
 
@@ -439,6 +441,9 @@ class Table(ABC):
             Only support "cuda" for now.
         index_cache_size : int, optional
             The size of the index cache in number of entries. Default value is 256.
+        num_bits: int, optional
+            The number of bits to encode sub-vectors. Only used with the IVF_PQ index.
+            Only 4 and 8 are supported.
         """
         raise NotImplementedError
 
@@ -1430,6 +1435,8 @@ class LanceTable(Table):
         accelerator: Optional[str] = None,
         index_cache_size: Optional[int] = None,
         index_type="IVF_PQ",
+        *,
+        num_bits: Optional[int] = None,
     ):
         """Create an index on the table."""
         self._dataset_mut.create_index(
@@ -1441,6 +1448,7 @@ class LanceTable(Table):
             replace=replace,
             accelerator=accelerator,
             index_cache_size=index_cache_size,
+            num_bits=num_bits,
         )
 
     def create_scalar_index(

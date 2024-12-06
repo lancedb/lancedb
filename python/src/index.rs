@@ -47,12 +47,13 @@ impl Index {
 
 #[pymethods]
 impl Index {
-    #[pyo3(signature = (distance_type=None, num_partitions=None, num_sub_vectors=None, max_iterations=None, sample_rate=None))]
+    #[pyo3(signature = (distance_type=None, num_partitions=None, num_sub_vectors=None,num_bits=None, max_iterations=None, sample_rate=None))]
     #[staticmethod]
     pub fn ivf_pq(
         distance_type: Option<String>,
         num_partitions: Option<u32>,
         num_sub_vectors: Option<u32>,
+        num_bits: Option<u32>,
         max_iterations: Option<u32>,
         sample_rate: Option<u32>,
     ) -> PyResult<Self> {
@@ -74,6 +75,9 @@ impl Index {
         }
         if let Some(num_sub_vectors) = num_sub_vectors {
             ivf_pq_builder = ivf_pq_builder.num_sub_vectors(num_sub_vectors);
+        }
+        if let Some(num_bits) = num_bits {
+            ivf_pq_builder = ivf_pq_builder.num_bits(num_bits);
         }
         if let Some(max_iterations) = max_iterations {
             ivf_pq_builder = ivf_pq_builder.max_iterations(max_iterations);
@@ -148,12 +152,13 @@ impl Index {
         }
     }
 
-    #[pyo3(signature = (distance_type=None, num_partitions=None, num_sub_vectors=None, max_iterations=None, sample_rate=None, m=None, ef_construction=None))]
+    #[pyo3(signature = (distance_type=None, num_partitions=None, num_sub_vectors=None,num_bits=None, max_iterations=None, sample_rate=None, m=None, ef_construction=None))]
     #[staticmethod]
     pub fn hnsw_pq(
         distance_type: Option<String>,
         num_partitions: Option<u32>,
         num_sub_vectors: Option<u32>,
+        num_bits: Option<u32>,
         max_iterations: Option<u32>,
         sample_rate: Option<u32>,
         m: Option<u32>,
@@ -169,6 +174,9 @@ impl Index {
         }
         if let Some(num_sub_vectors) = num_sub_vectors {
             hnsw_pq_builder = hnsw_pq_builder.num_sub_vectors(num_sub_vectors);
+        }
+        if let Some(num_bits) = num_bits {
+            hnsw_pq_builder = hnsw_pq_builder.num_bits(num_bits);
         }
         if let Some(max_iterations) = max_iterations {
             hnsw_pq_builder = hnsw_pq_builder.max_iterations(max_iterations);
