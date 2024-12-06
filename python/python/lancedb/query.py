@@ -1144,23 +1144,22 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         fts_query: str,
         reranker,
         limit: int,
-        with_row_ids: bool
+        with_row_ids: bool,
     ) -> pa.Table:
-        
         if norm == "rank":
             vector_results = LanceHybridQueryBuilder._rank(vector_results, "_distance")
             fts_results = LanceHybridQueryBuilder._rank(fts_results, "_score")
 
         # normalize the scores to be between 0 and 1, 0 being most relevant
-        vector_results = LanceHybridQueryBuilder._normalize_scores(vector_results, "_distance")
+        vector_results = LanceHybridQueryBuilder._normalize_scores(
+            vector_results, "_distance"
+        )
 
         # In fts higher scores represent relevance. Not inverting them here as
         # rerankers might need to preserve this score to support `return_score="all"`
         fts_results = LanceHybridQueryBuilder._normalize_scores(fts_results, "_score")
 
-        results = reranker.rerank_hybrid(
-           fts_query, vector_results, fts_results
-        )
+        results = reranker.rerank_hybrid(fts_query, vector_results, fts_results)
 
         check_reranker_result(results)
 
@@ -1169,7 +1168,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         if not with_row_ids:
             results = results.drop(["_rowid"])
 
-
+        return results
 
     def to_batches(self):
         raise NotImplementedError("to_batches not yet supported on a hybrid query")
@@ -1213,8 +1212,6 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             _score_idx, column, pa.array(scores, type=pa.float32())
         )
         return results
-    
-
 
     def rerank(
         self,
@@ -1332,7 +1329,6 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
     def text(self, text: str) -> LanceHybridQueryBuilder:
         self._text = text
         return self
-
 
 
 class AsyncQueryBase(object):
@@ -1683,7 +1679,9 @@ class AsyncQuery(AsyncQueryBase):
         """
         if isinstance(columns, str):
             columns = [columns]
-        return AsyncFTSQuery(self._inner.nearest_to_text({"query": query, "columns": columns}))
+        return AsyncFTSQuery(
+            self._inner.nearest_to_text({"query": query, "columns": columns})
+        )
 
 
 class AsyncFTSQuery(AsyncQueryBase):
@@ -1698,11 +1696,6 @@ class AsyncFTSQuery(AsyncQueryBase):
         self,
         query_vector: Union[VEC, Tuple, List[VEC]],
     ) -> AsyncHybridQuery:
-        """
-        TODO comments
-        """
-
-        # TODO this is all duplicated from AsyncQuery?
         if query_vector is None:
             raise ValueError("query_vector can not be None")
 
@@ -1721,6 +1714,7 @@ class AsyncFTSQuery(AsyncQueryBase):
             return AsyncHybridQuery(
                 self._inner.nearest_to(AsyncQuery._query_vec_to_array(query_vector))
             )
+
 
 class AsyncVectorQuery(AsyncQueryBase):
     def __init__(self, inner: LanceVectorQuery):
@@ -1858,11 +1852,12 @@ class AsyncVectorQuery(AsyncQueryBase):
         return self
 
     def nearest_to_text(self, query: str, columns: Union[str, List[str]] = []):
-        # TODO comments
         if isinstance(columns, str):
             columns = [columns]
-        return AsyncHybridQuery(self._inner.nearest_to_text({"query": query, "columns": columns}))
-    
+        return AsyncHybridQuery(
+            self._inner.nearest_to_text({"query": query, "columns": columns})
+        )
+
 
 class AsyncHybridQuery(AsyncQueryBase):
     def __init__(self, inner: LanceHybridQuery):
@@ -1871,15 +1866,7 @@ class AsyncHybridQuery(AsyncQueryBase):
         self._norm = "score"
         self._reranker = RRFReranker()
 
-    def rerank(
-        self,
-        reranker: Reranker = RRFReranker(),
-        normalize: str = "score"
-    ):
-        """
-        TODO comments
-        """
-    
+    def rerank(self, reranker: Reranker = RRFReranker(), normalize: str = "score"):
         if normalize not in ["rank", "score"]:
             raise ValueError("normalize must be 'rank' or 'score'.")
         if reranker and not isinstance(reranker, Reranker):
@@ -1887,12 +1874,12 @@ class AsyncHybridQuery(AsyncQueryBase):
 
         self._norm = normalize
         self._reranker = reranker
-    
+
         return self
 
     async def to_batches(self):
         raise NotImplementedError("to_batches not yet supported on a hybrid query")
-    
+
     async def to_arrow(self) -> pa.Table:
         fts_query = AsyncFTSQuery(self._inner.to_fts_query())
         vec_query = AsyncVectorQuery(self._inner.to_vector_query())
@@ -1902,11 +1889,11 @@ class AsyncHybridQuery(AsyncQueryBase):
         with_row_ids = self._inner.get_with_row_id()
         fts_query.with_row_id()
         vec_query.with_row_id()
-        
+
         loop = asyncio.get_event_loop()
         fts_results, vector_results = await asyncio.gather(
             loop.create_task(fts_query.to_arrow()),
-            loop.create_task(vec_query.to_arrow())
+            loop.create_task(vec_query.to_arrow()),
         )
 
         return LanceHybridQueryBuilder._combine_hybrid_results(
@@ -1916,6 +1903,5 @@ class AsyncHybridQuery(AsyncQueryBase):
             fts_query=fts_query.get_query(),
             reranker=self._reranker,
             limit=self._inner.get_limit(),
-            with_row_ids=with_row_ids
+            with_row_ids=with_row_ids,
         )
-        

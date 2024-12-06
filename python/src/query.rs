@@ -136,9 +136,9 @@ impl Query {
 }
 
 #[pyclass]
+#[derive(Clone)]
 pub struct FTSQuery {
     inner: LanceDbQuery,
-    // TODO this could probably be set right inside inner rather than being separate ...
     fts_query: FullTextSearchQuery,
 }
 
@@ -192,8 +192,7 @@ impl FTSQuery {
     pub fn nearest_to(&mut self, vector: Bound<'_, PyAny>) -> PyResult<HybridQuery> {
         let vector_query = Query::new(self.inner.clone()).nearest_to(vector)?;
         Ok(HybridQuery{
-            // TODO check if FTSQuery should just implement clone
-            inner_fts: FTSQuery { inner: self.inner.clone(), fts_query: self.fts_query.clone() },
+            inner_fts: self.clone(),
             inner_vec: vector_query,
         })
     }
@@ -204,6 +203,7 @@ impl FTSQuery {
 }
 
 #[pyclass]
+#[derive(Clone)]
 pub struct VectorQuery {
     inner: LanceDbVectorQuery,
 }
@@ -303,8 +303,7 @@ impl VectorQuery {
     pub fn nearest_to_text(&mut self, query: Bound<'_, PyDict>) -> PyResult<HybridQuery> {
         let fts_query = Query::new(self.inner.mut_query().clone()).nearest_to_text(query)?;
         Ok(HybridQuery{
-            // TODO check if VectorQuery should implement clone
-            inner_vec: VectorQuery { inner: self.inner.clone() },
+            inner_vec: self.clone(),
             inner_fts: fts_query,
         })
     }
