@@ -154,6 +154,7 @@ impl Index {
 
     #[pyo3(signature = (distance_type=None, num_partitions=None, num_sub_vectors=None,num_bits=None, max_iterations=None, sample_rate=None, m=None, ef_construction=None))]
     #[staticmethod]
+    #[allow(clippy::too_many_arguments)]
     pub fn hnsw_pq(
         distance_type: Option<String>,
         num_partitions: Option<u32>,
