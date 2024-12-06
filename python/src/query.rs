@@ -18,8 +18,8 @@ use arrow::pyarrow::FromPyArrow;
 use lancedb::index::scalar::FullTextSearchQuery;
 use lancedb::query::QueryExecutionOptions;
 use lancedb::query::{
-    HasQuery,
-    ExecutableQuery, Query as LanceDbQuery, QueryBase, Select, VectorQuery as LanceDbVectorQuery,
+    ExecutableQuery, HasQuery, Query as LanceDbQuery, QueryBase, Select,
+    VectorQuery as LanceDbVectorQuery,
 };
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::{PyAnyMethods, PyDictMethods};
@@ -101,10 +101,9 @@ impl Query {
             .transpose()?;
 
         let fts_query = FullTextSearchQuery::new(query_text).columns(columns);
-        // self.inner = self.inner.clone().full_text_search(fts_query);
 
-        Ok(FTSQuery{
-            fts_query: fts_query,
+        Ok(FTSQuery {
+            fts_query,
             inner: self.inner.clone(),
         })
     }
@@ -176,7 +175,10 @@ impl FTSQuery {
         self_: PyRef<'_, Self>,
         max_batch_length: Option<u32>,
     ) -> PyResult<Bound<'_, PyAny>> {
-        let inner = self_.inner.clone().full_text_search(self_.fts_query.clone());
+        let inner = self_
+            .inner
+            .clone()
+            .full_text_search(self_.fts_query.clone());
 
         future_into_py(self_.py(), async move {
             let mut opts = QueryExecutionOptions::default();
@@ -186,12 +188,11 @@ impl FTSQuery {
             let inner_stream = inner.execute_with_options(opts).await.infer_error()?;
             Ok(RecordBatchStream::new(inner_stream))
         })
-
     }
 
     pub fn nearest_to(&mut self, vector: Bound<'_, PyAny>) -> PyResult<HybridQuery> {
         let vector_query = Query::new(self.inner.clone()).nearest_to(vector)?;
-        Ok(HybridQuery{
+        Ok(HybridQuery {
             inner_fts: self.clone(),
             inner_vec: vector_query,
         })
@@ -302,7 +303,7 @@ impl VectorQuery {
 
     pub fn nearest_to_text(&mut self, query: Bound<'_, PyDict>) -> PyResult<HybridQuery> {
         let fts_query = Query::new(self.inner.mut_query().clone()).nearest_to_text(query)?;
-        Ok(HybridQuery{
+        Ok(HybridQuery {
             inner_vec: self.clone(),
             inner_fts: fts_query,
         })
@@ -351,7 +352,7 @@ impl HybridQuery {
         self.inner_vec.postfilter();
         self.inner_fts.postfilter();
     }
-   
+
     pub fn add_query_vector(&mut self, vector: Bound<'_, PyAny>) -> PyResult<()> {
         self.inner_vec.add_query_vector(vector)
     }
@@ -382,14 +383,14 @@ impl HybridQuery {
 
     pub fn to_vector_query(&mut self) -> PyResult<VectorQuery> {
         Ok(VectorQuery {
-            inner: self.inner_vec.inner.clone()
+            inner: self.inner_vec.inner.clone(),
         })
     }
 
     pub fn to_fts_query(&mut self) -> PyResult<FTSQuery> {
         Ok(FTSQuery {
             inner: self.inner_fts.inner.clone(),
-            fts_query: self.inner_fts.fts_query.clone()
+            fts_query: self.inner_fts.fts_query.clone(),
         })
     }
 
