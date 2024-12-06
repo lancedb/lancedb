@@ -178,7 +178,10 @@ pub fn supported_vector_data_type(dtype: &DataType) -> bool {
 
 /// Note: this is temporary until we get a proper datatype conversion in Lance.
 pub fn string_to_datatype(s: &str) -> Option<DataType> {
-    let json_type: JsonDataType = serde_json::from_str(s).ok()?;
+    let data_type = serde_json::Value::String(s.to_string());
+    let json_type =
+        serde_json::Value::Object([("type".to_string(), data_type)].iter().cloned().collect());
+    let json_type: JsonDataType = serde_json::from_value(json_type).ok()?;
     (&json_type).try_into().ok()
 }
 
@@ -245,5 +248,12 @@ mod tests {
         assert!(validate_table_name("my/table").is_err());
         assert!(validate_table_name("my@table").is_err());
         assert!(validate_table_name("name with space").is_err());
+    }
+
+    #[test]
+    fn test_string_to_datatype() {
+        let string = "int32";
+        let expected = DataType::Int32;
+        assert_eq!(string_to_datatype(string), Some(expected));
     }
 }
