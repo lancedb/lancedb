@@ -530,6 +530,7 @@ def test_create_index_method():
             replace=True,
             accelerator=None,
             index_cache_size=256,
+            num_bits=8,
         )
 
 
