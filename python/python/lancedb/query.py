@@ -1155,8 +1155,6 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
     def to_batches(self):
         raise NotImplementedError("to_batches not yet supported on a hybrid query")
 
-
-
     def rerank(
         self,
         reranker: Reranker = RRFReranker(),
@@ -1837,8 +1835,12 @@ class AsyncVectorQuery(AsyncQueryBase):
         self._inner.bypass_vector_index()
         return self
 
-
-    # TODO need to add nearest_to_text to this 
+    def nearest_to_text(self, query: str, columns: Union[str, List[str]] = []):
+        # TODO comments
+        if isinstance(columns, str):
+            columns = [columns]
+        return AsyncHybridQuery(self._inner.nearest_to_text({"query": query, "columns": columns}))
+    
 
 class AsyncHybridQuery(AsyncQueryBase):
     def __init__(self, inner: LanceHybridQuery):
