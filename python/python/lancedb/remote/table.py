@@ -78,7 +78,7 @@ class RemoteTable(Table):
 
     def list_versions(self):
         """List all versions of the table"""
-        return self._loop.run_until_complete(self._table.list_versions())
+        return LOOP.run(self._table.list_versions())
 
     def to_arrow(self) -> pa.Table:
         """to_arrow() is not yet supported on LanceDB cloud."""
@@ -89,10 +89,10 @@ class RemoteTable(Table):
         return NotImplementedError("to_pandas() is not yet supported on LanceDB cloud.")
 
     def checkout(self, version):
-        return self._loop.run_until_complete(self._table.checkout(version))
+        return LOOP.run(self._table.checkout(version))
 
     def checkout_latest(self):
-        return self._loop.run_until_complete(self._table.checkout_latest())
+        return LOOP.run(self._table.checkout_latest())
 
     def list_indices(self):
         """List all the indices on the table"""
@@ -157,9 +157,7 @@ class RemoteTable(Table):
             remove_stop_words=remove_stop_words,
             ascii_folding=ascii_folding,
         )
-        self._loop.run_until_complete(
-            self._table.create_index(column, config=config, replace=replace)
-        )
+        LOOP.run(self._table.create_index(column, config=config, replace=replace))
 
     def create_index(
         self,
