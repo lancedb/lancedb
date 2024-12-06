@@ -16,11 +16,10 @@ import * as fs from "fs";
 import * as path from "path";
 import * as tmp from "tmp";
 
-import * as arrow13 from "apache-arrow-13";
-import * as arrow14 from "apache-arrow-14";
 import * as arrow15 from "apache-arrow-15";
 import * as arrow16 from "apache-arrow-16";
 import * as arrow17 from "apache-arrow-17";
+import * as arrow18 from "apache-arrow-18";
 
 import { Table, connect } from "../lancedb";
 import {
@@ -44,7 +43,7 @@ import {
 } from "../lancedb/embedding";
 import { Index } from "../lancedb/indices";
 
-describe.each([arrow13, arrow14, arrow15, arrow16, arrow17])(
+describe.each([arrow15, arrow16, arrow17, arrow18])(
   "Given a table",
   // biome-ignore lint/suspicious/noExplicitAny: <explanation>
   (arrow: any) => {
@@ -52,11 +51,10 @@ describe.each([arrow13, arrow14, arrow15, arrow16, arrow17])(
     let table: Table;
 
     const schema:
-      | import("apache-arrow-13").Schema
-      | import("apache-arrow-14").Schema
       | import("apache-arrow-15").Schema
       | import("apache-arrow-16").Schema
-      | import("apache-arrow-17").Schema = new arrow.Schema([
+      | import("apache-arrow-17").Schema
+      | import("apache-arrow-18").Schema = new arrow.Schema([
       new arrow.Field("id", new arrow.Float64(), true),
     ]);
 
@@ -939,7 +937,7 @@ describe("when optimizing a dataset", () => {
   });
 });
 
-describe.each([arrow13, arrow14, arrow15, arrow16, arrow17])(
+describe.each([arrow15, arrow16, arrow17, arrow18])(
   "when optimizing a dataset",
   // biome-ignore lint/suspicious/noExplicitAny: <explanation>
   (arrow: any) => {
