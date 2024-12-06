@@ -1705,7 +1705,8 @@ class AsyncFTSQuery(AsyncQueryBase):
         In addition doing text search on the LanceDB Table, also
         find the nearest vectors to the given query vector.
 
-        This converts the query from a FTS Query to a Hybrid query.
+        This converts the query from a FTS Query to a Hybrid query. Results
+        from the vector search will be combined with results from the FTS query.
 
         This method will attempt to convert the input to the query vector
         expected by the embedding model.  If the input cannot be converted
@@ -1736,7 +1737,7 @@ class AsyncFTSQuery(AsyncQueryBase):
         are various ANN search parameters that will let you fine tune your recall
         accuracy vs search latency.
 
-        Vector searches always have a [limit][].  If `limit` has not been called then
+        Hybrid searches always have a [limit][].  If `limit` has not been called then
         a default `limit` of 10 will be used.
 
         Typically, a single vector is passed in as the query. However, you can also
@@ -2012,3 +2013,48 @@ class AsyncHybridQuery(AsyncQueryBase):
             limit=self._inner.get_limit(),
             with_row_ids=with_row_ids,
         )
+
+    async def explain_plan(self, verbose: Optional[bool] = False):
+        """Return the execution plan for this query.
+
+        The output includes both the vector and FTS search plans.
+
+        Examples
+        --------
+        >>> import asyncio
+        >>> from lancedb import connect_async
+        >>> async def doctest_example():
+        ...     conn = await connect_async("./.lancedb")
+        ...     table = await conn.create_table("my_table", [{"vector": [99, 99], ["text": "hello world"]}])
+        ...     await table.create_fts_index("text")
+        ...     query = [100, 100]
+        ...     plan = await table.query().nearest_to([1, 2]).nearest_to_text("hello").explain_plan(True)
+        ...     print(plan)
+        >>> asyncio.run(doctest_example()) # doctest: +ELLIPSIS, +NORMALIZE_WHITESPACE
+
+        Vector Search Plan:
+        ProjectionExec: expr=[vector@0 as vector, _distance@2 as _distance]
+          GlobalLimitExec: skip=0, fetch=10
+            FilterExec: _distance@2 IS NOT NULL
+              SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST], preserve_partitioning=[false]
+                KNNVectorDistance: metric=l2
+                  LanceScan: uri=..., projection=[vector], row_id=true, row_addr=false, ordered=false
+        FTS Search Plan:
+        LanceScan: uri=..., projection=[text, vector], row_id=false, row_addr=false, ordered=true
+
+        Parameters
+        ----------
+        verbose : bool, default False
+            Use a verbose output format.
+
+        Returns
+        -------
+        plan
+        """ # noqa: E501
+
+        results = ["Vector Search Plan:"]
+        results.append(await self._inner.to_vector_query().explain_plan(verbose))
+        results.append("FTS Search Plan:")
+        results.append(await self._inner.to_fts_query().explain_plan(verbose))
+
+        return "\n".join(results)

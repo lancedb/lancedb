@@ -199,6 +199,16 @@ impl FTSQuery {
         })
     }
 
+    pub fn explain_plan(self_: PyRef<'_, Self>, verbose: bool) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            inner
+                .explain_plan(verbose)
+                .await
+                .map_err(|e| PyRuntimeError::new_err(e.to_string()))
+        })
+    }
+
     pub fn get_query(&self) -> String {
         self.fts_query.query.clone()
     }
