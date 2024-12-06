@@ -271,7 +271,7 @@ impl From<StorageOptions> for RemoteOptions {
                 filtered.insert(opt.to_string(), v.to_string());
             }
         }
-        RemoteOptions::new(filtered)
+        Self::new(filtered)
     }
 }
 
