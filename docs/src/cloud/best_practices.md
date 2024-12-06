@@ -3,7 +3,7 @@ This section provides a set of recommended best practices to help you get the mo
 ### Should the db connection be created once and keep it open?
 Yes! It is recommended to establish a single db connection and maintain it throughout your interaction with the tables within. 
 
-LanceDB uses `requests.Session()` for connection pooling, which automatically manages connection reuse and cleanup. This approach avoids the overhead of repeatedly establishing HTTP connections, significantly improving efficiency.
+LanceDB uses HTTP connections to communicate with the servers. By re-using the Connection object, you avoid the overhead of repeatedly establishing HTTP connections, significantly improving efficiency.
 
 ### Should a single `open_table` call be made and maintained for subsequent table operations?
 `table = db.open_table()` should be called once and used for all subsequent table operations. If there are changes to the opened table, `table` always reflect the **latest version** of the data. 
