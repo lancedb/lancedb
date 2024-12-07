@@ -231,7 +231,7 @@ nav:
               - 🐍 Python: python/saas-python.md
               - 👾 JavaScript: javascript/modules.md
               - REST API: cloud/rest.md
-          - Best Practices: cloud/best_practices.md
+          - FAQs: cloud/cloud_faq.md
 
   - Quick start: basic.md
   - Concepts:
@@ -358,7 +358,7 @@ nav:
           - 🐍 Python: python/saas-python.md
           - 👾 JavaScript: javascript/modules.md
           - REST API: cloud/rest.md
-      - Best Practices: cloud/best_practices.md
+      - FAQs: cloud/cloud_faq.md
 
 extra_css:
   - styles/global.css
