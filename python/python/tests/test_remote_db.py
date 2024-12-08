@@ -229,6 +229,44 @@ def test_table_add_in_threadpool():
                 future.result()
 
 
+def test_table_create_indices():
+    def handler(request):
+        if request.path == "/v1/table/test/create_index/":
+            request.send_response(200)
+            request.end_headers()
+        elif request.path == "/v1/table/test/create/?mode=create":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b"{}")
+        elif request.path == "/v1/table/test/describe/":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            payload = json.dumps(
+                dict(
+                    version=1,
+                    schema=dict(
+                        fields=[
+                            dict(name="id", type={"type": "int64"}, nullable=False),
+                        ]
+                    ),
+                )
+            )
+            request.wfile.write(payload.encode())
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    with mock_lancedb_connection(handler) as db:
+        # Parameters are well-tested through local and async tests.
+        # This is a smoke-test.
+        table = db.create_table("test", [{"id": 1}])
+        table.create_scalar_index("id")
+        table.create_fts_index("text")
+        table.create_scalar_index("vector")
+
+
 @contextlib.contextmanager
 def query_test_table(query_handler):
     def handler(request):
