@@ -12,15 +12,11 @@
 
 - [EmbeddingFunction](classes/EmbeddingFunction.md)
 - [EmbeddingFunctionRegistry](classes/EmbeddingFunctionRegistry.md)
-- [OpenAIEmbeddingFunction](classes/OpenAIEmbeddingFunction.md)
+- [TextEmbeddingFunction](classes/TextEmbeddingFunction.md)
 
 ### Interfaces
 
 - [EmbeddingFunctionConfig](interfaces/EmbeddingFunctionConfig.md)
-
-### Type Aliases
-
-- [OpenAIOptions](type-aliases/OpenAIOptions.md)
 
 ### Functions
 

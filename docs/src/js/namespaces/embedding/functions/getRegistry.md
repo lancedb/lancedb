@@ -6,7 +6,9 @@
 
 # Function: getRegistry()
 
-> **getRegistry**(): [`EmbeddingFunctionRegistry`](../classes/EmbeddingFunctionRegistry.md)
+```ts
+function getRegistry(): EmbeddingFunctionRegistry
+```
 
 Utility function to get the global instance of the registry
 

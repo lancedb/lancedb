@@ -6,7 +6,9 @@
 
 # Function: register()
 
-> **register**(`name`?): (`ctor`) => `any`
+```ts
+function register(name?: string): (ctor: EmbeddingFunctionConstructor<EmbeddingFunction<any, FunctionOptions>>) => any
+```
 
 ## Parameters
 

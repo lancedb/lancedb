@@ -12,7 +12,9 @@ A definition of a new column to add to a table.
 
 ### name
 
-> **name**: `string`
+```ts
+name: string;
+```
 
 The name of the new column.
 
@@ -20,7 +22,9 @@ The name of the new column.
 
 ### valueSql
 
-> **valueSql**: `string`
+```ts
+valueSql: string;
+```
 
 The values to populate the new column with, as a SQL expression.
 The expression can reference other columns in the table.

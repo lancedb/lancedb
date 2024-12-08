@@ -10,7 +10,9 @@
 
 ### config?
 
-> `optional` **config**: [`Index`](../classes/Index.md)
+```ts
+optional config: Index;
+```
 
 Advanced index configuration
 
@@ -26,7 +28,9 @@ will be used to determine the most useful kind of index to create.
 
 ### replace?
 
-> `optional` **replace**: `boolean`
+```ts
+optional replace: boolean;
+```
 
 Whether to replace the existing index
 

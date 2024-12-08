@@ -14,7 +14,9 @@
 
 ### new RecordBatchIterator()
 
-> **new RecordBatchIterator**(`promise`?): [`RecordBatchIterator`](RecordBatchIterator.md)
+```ts
+new RecordBatchIterator(promise?: Promise<RecordBatchIterator>): RecordBatchIterator
+```
 
 #### Parameters
 
@@ -28,7 +30,9 @@
 
 ### next()
 
-> **next**(): `Promise`&lt;`IteratorResult`&lt;`RecordBatch`&lt;`any`&gt;, `any`&gt;&gt;
+```ts
+next(): Promise<IteratorResult<RecordBatch<any>, any>>
+```
 
 #### Returns
 

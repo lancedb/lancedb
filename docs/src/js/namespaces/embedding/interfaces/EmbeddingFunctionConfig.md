@@ -10,16 +10,22 @@
 
 ### function
 
-> **function**: [`EmbeddingFunction`](../classes/EmbeddingFunction.md)&lt;`any`, `FunctionOptions`&gt;
+```ts
+function: EmbeddingFunction<any, FunctionOptions>;
+```
 
 ***
 
 ### sourceColumn
 
-> **sourceColumn**: `string`
+```ts
+sourceColumn: string;
+```
 
 ***
 
 ### vectorColumn?
 
-> `optional` **vectorColumn**: `string`
+```ts
+optional vectorColumn: string;
+```
