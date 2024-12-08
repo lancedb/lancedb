@@ -66,6 +66,7 @@ impl RemoteDatabase {
             &options,
         )?;
 
+
         let table_cache = Cache::builder()
             .time_to_live(std::time::Duration::from_secs(300))
             .max_capacity(10_000)
