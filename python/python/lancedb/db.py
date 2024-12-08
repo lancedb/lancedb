@@ -226,7 +226,13 @@ class DBConnection(EnforceOverrides):
     def __getitem__(self, name: str) -> LanceTable:
         return self.open_table(name)
 
-    def open_table(self, name: str, *, index_cache_size: Optional[int] = None) -> Table:
+    def open_table(
+        self,
+        name: str,
+        *,
+        storage_options: Optional[Dict[str, str]] = None,
+        index_cache_size: Optional[int] = None,
+    ) -> Table:
         """Open a Lance Table in the database.
 
         Parameters
@@ -243,6 +249,11 @@ class DBConnection(EnforceOverrides):
             This cache applies to the entire opened table, across all indices.
             Setting this value higher will increase performance on larger datasets
             at the expense of more RAM
+        storage_options: dict, optional
+            Additional options for the storage backend. Options already set on the
+            connection will be inherited by the table, but can be overridden here.
+            See available options at
+            https://lancedb.github.io/lancedb/guides/storage/
 
         Returns
         -------
@@ -429,7 +440,11 @@ class LanceDBConnection(DBConnection):
 
     @override
     def open_table(
-        self, name: str, *, index_cache_size: Optional[int] = None
+        self,
+        name: str,
+        *,
+        storage_options: Optional[Dict[str, str]] = None,
+        index_cache_size: Optional[int] = None,
     ) -> LanceTable:
         """Open a table in the database.
 
@@ -442,7 +457,12 @@ class LanceDBConnection(DBConnection):
         -------
         A LanceTable object representing the table.
         """
-        return LanceTable.open(self, name, index_cache_size=index_cache_size)
+        return LanceTable.open(
+            self,
+            name,
+            storage_options=storage_options,
+            index_cache_size=index_cache_size,
+        )
 
     @override
     def drop_table(self, name: str, ignore_missing: bool = False):
