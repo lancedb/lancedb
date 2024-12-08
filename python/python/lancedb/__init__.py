@@ -110,6 +110,7 @@ def connect(
             # TODO: remove this (deprecation warning downstream)
             request_thread_pool=request_thread_pool,
             client_config=client_config,
+            storage_options=storage_options,
             **kwargs,
         )
 
