@@ -47,15 +47,6 @@ class RemoteDBConnection(DBConnection):
         storage_options: Optional[Dict[str, str]] = None,
     ):
         """Connect to a remote LanceDB database."""
-        if storage_options:
-            valid_keys = {"account_name", "azure_storage_account_name"}
-            invalid_keys = [key for key in storage_options if key not in valid_keys]
-            if invalid_keys:
-                raise ValueError(
-                    f"Invalid keys in storage options: {', '.join(invalid_keys)}. "
-                    "Only 'account_name' and 'azure_storage_account_name' are allowed."
-                )
-
         if isinstance(client_config, dict):
             client_config = ClientConfig(**client_config)
         elif client_config is None:
