@@ -14,6 +14,8 @@
 
 import {
   Table as ArrowTable,
+  fromBufferToRecordBatch,
+  fromRecordBatchToBuffer,
   type IntoVector,
   RecordBatch,
   tableFromIPC,
@@ -25,6 +27,7 @@ import {
   Table as NativeTable,
   VectorQuery as NativeVectorQuery,
 } from "./native";
+import { Reranker } from "./rerankers";
 export class RecordBatchIterator implements AsyncIterator<RecordBatch> {
   private promisedInner?: Promise<NativeBatchIterator>;
   private inner?: NativeBatchIterator;
@@ -541,6 +544,25 @@ export class VectorQuery extends QueryBase<NativeVectorQuery> {
       });
       return this;
     }
+  }
+
+  rerank(reranker: Reranker): VectorQuery {
+    super.doCall((inner) => inner.rerank({
+      rerankHybrid: async (_, args) => {
+        const vecResults = await fromBufferToRecordBatch(args.vecResults)
+        const ftsResults = await fromBufferToRecordBatch(args.ftsResults)
+        const result = await reranker.rerankHybrid(
+          args.query,
+          vecResults as RecordBatch,
+          ftsResults as RecordBatch,
+        )
+
+        const buffer = fromRecordBatchToBuffer(result)
+        return buffer
+      }
+    }))
+
+    return this;
   }
 }
 

@@ -24,6 +24,7 @@ mod iterator;
 pub mod merge;
 mod query;
 pub mod remote;
+mod rerankers;
 mod table;
 mod util;
 

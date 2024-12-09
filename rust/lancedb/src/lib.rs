@@ -214,6 +214,7 @@ mod polars_arrow_convertors;
 pub mod query;
 #[cfg(feature = "remote")]
 pub mod remote;
+pub mod rerankers;
 pub mod table;
 pub mod utils;
 
