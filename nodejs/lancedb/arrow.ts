@@ -28,6 +28,7 @@ import {
   Null,
   RecordBatch,
   RecordBatchFileWriter,
+  RecordBatchFileReader,
   RecordBatchStreamWriter,
   Schema,
   Struct,
@@ -37,6 +38,7 @@ import {
   makeData,
   type makeTable,
   vectorFromArray,
+  RecordBatchReader,
 } from "apache-arrow";
 import { Buffers } from "apache-arrow/data";
 import { type EmbeddingFunction } from "./embedding/embedding_function";
@@ -808,6 +810,25 @@ export async function fromDataToBuffer(
     const table = await convertToTable(data, embeddings, { schema });
     return fromTableToBuffer(table);
   }
+}
+
+/**
+ * Read a single record batch from a buffer.
+ * 
+ * Returns null if the buffer does not contain a record batch
+*/
+export async function fromBufferToRecordBatch(data: Buffer): Promise<RecordBatch | null> {
+  const iter = await RecordBatchFileReader.readAll(Buffer.from(data)).next().value
+  const recordBatch = iter?.next().value
+  return recordBatch || null
+}
+
+/**
+ * Create a buffer containing a single record batch
+ */
+export async function fromRecordBatchToBuffer(batch: RecordBatch): Promise<Buffer> {
+  const writer = new RecordBatchFileWriter().writeAll([batch])
+  return Buffer.from(await writer.toUint8Array())
 }
 
 /**
