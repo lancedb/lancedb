@@ -9,7 +9,7 @@ LanceDB uses HTTP connections to communicate with the servers. By re-using the C
 `table = db.open_table()` should be called once and used for all subsequent table operations. If there are changes to the opened table, `table` always reflect the **latest version** of the data. 
 
 ### What should I do if I need to search for rows by `id`?
-LanceDB Cloud currently does not support an internal `row_id` column. You are recommended to add a 
+LanceDB Cloud currently does not support an ID or primary key column. You are recommended to add a 
 user-defined ID column. To significantly improve the query performance with SQL causes, a scalar BITMAP/BTREE index should be created on this column. 
 
 ### What are the vector indexing types supported by LanceDB Cloud?
