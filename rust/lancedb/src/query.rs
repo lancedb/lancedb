@@ -15,11 +15,14 @@
 use std::future::Future;
 use std::sync::Arc;
 
-use arrow_array::{make_array, Array, Float16Array, Float32Array, Float64Array};
+use arrow::compute::concat_batches;
+use arrow_array::{make_array, Array, Float16Array, Float32Array, Float64Array, RecordBatchIterator};
 use arrow_schema::DataType;
 use datafusion_physical_plan::ExecutionPlan;
+use futures::{stream, try_join, StreamExt, TryStreamExt};
 use half::f16;
 use lance::dataset::scanner::DatasetRecordBatchStream;
+use lance_io::stream::RecordBatchStreamAdapter;
 use lance_datafusion::exec::execute_plan;
 use lance_index::scalar::FullTextSearchQuery;
 
@@ -852,6 +855,42 @@ impl VectorQuery {
         self.use_index = false;
         self
     }
+
+    pub async fn execute_hybrid(&self) -> Result<SendableRecordBatchStream> {
+        
+        let fts_query = self.base.clone();
+        let mut vector_query = self.clone();
+        vector_query.base.full_text_search = None;
+        let (mut fts_results, vector_results) = try_join!(
+            fts_query.execute(),
+            vector_query.execute(),
+        ).unwrap();
+
+        
+        let first_batch = fts_results.next().await;
+        
+        // TODO handle the case when the first batch is none or error
+        let first_batch = first_batch.unwrap()?;
+
+        let schema = first_batch.schema();
+
+        // TODO re-add the first batch
+        // TODO have the corcect number of CPUs for the buffer
+
+        let all_results = fts_results.chain(vector_results).try_collect::<Vec<_>>().await?;
+
+        // let all_iter = fts_results.chain(vector_results);
+        let first_batch = vec![first_batch];
+        let all_results = first_batch.iter().chain(all_results.iter());
+        let all_results = concat_batches(&schema.clone(), all_results.into_iter());
+
+        // TODO rerank etc.
+
+        let x2 = RecordBatchStreamAdapter::new(schema, stream::iter(all_results.map(Ok)));
+        let y = SendableRecordBatchStream::from(x2);
+        return Ok(y)
+        
+    }
 }
 
 impl ExecutableQuery for VectorQuery {
@@ -863,6 +902,10 @@ impl ExecutableQuery for VectorQuery {
         &self,
         options: QueryExecutionOptions,
     ) -> Result<SendableRecordBatchStream> {
+        if self.base.full_text_search.is_some() {
+            return self.execute_hybrid().await
+        }
+
         Ok(SendableRecordBatchStream::from(
             DatasetRecordBatchStream::new(execute_plan(
                 self.create_plan(options).await?,
@@ -1263,5 +1306,14 @@ mod tests {
         // We don't guarantee order.
         assert!(query_index.values().contains(&0));
         assert!(query_index.values().contains(&1));
+    }
+
+    #[tokio::test]
+    async fn test_hybrid_search() {
+        let tmp_dir = tempdir().unwrap();
+        let table = make_test_table(&tmp_dir).await;
+        // let query = table
+        //     .query()
+        //     .
     }
 }
