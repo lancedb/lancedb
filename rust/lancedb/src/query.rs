@@ -19,7 +19,7 @@ use arrow::compute::concat_batches;
 use arrow_array::{make_array, Array, Float16Array, Float32Array, Float64Array, RecordBatchIterator};
 use arrow_schema::DataType;
 use datafusion_physical_plan::ExecutionPlan;
-use futures::{stream, try_join, StreamExt, TryStreamExt};
+use futures::{stream, try_join, FutureExt, StreamExt, TryStreamExt};
 use half::f16;
 use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance_io::stream::RecordBatchStreamAdapter;
@@ -903,7 +903,10 @@ impl ExecutableQuery for VectorQuery {
         options: QueryExecutionOptions,
     ) -> Result<SendableRecordBatchStream> {
         if self.base.full_text_search.is_some() {
-            return self.execute_hybrid().await
+            let hybrid_result =  async move {
+                self.execute_hybrid().await
+            }.boxed().await?;
+            return Ok(hybrid_result);
         }
 
         Ok(SendableRecordBatchStream::from(
@@ -932,8 +935,9 @@ mod tests {
     use super::*;
     use arrow::{compute::concat_batches, datatypes::Int32Type};
     use arrow_array::{
-        cast::AsArray, Float32Array, Int32Array, RecordBatch, RecordBatchIterator,
-        RecordBatchReader,
+        cast::AsArray, 
+        types::Float32Type,
+        FixedSizeListArray, Float32Array, Int32Array, RecordBatch, RecordBatchIterator, RecordBatchReader, StringArray
     };
     use arrow_schema::{DataType, Field as ArrowField, Schema as ArrowSchema};
     use futures::{StreamExt, TryStreamExt};
@@ -1311,9 +1315,52 @@ mod tests {
     #[tokio::test]
     async fn test_hybrid_search() {
         let tmp_dir = tempdir().unwrap();
-        let table = make_test_table(&tmp_dir).await;
+        let dataset_path = tmp_dir.path();
+        let conn = connect(dataset_path.to_str().unwrap()).execute().await.unwrap();
+
+        let dims = 2;
+        let schema = Arc::new(ArrowSchema::new(vec![
+            ArrowField::new("text", DataType::Utf8, false),
+            ArrowField::new("vector", DataType::FixedSizeList(
+                Arc::new(ArrowField::new("item", DataType::Float32, true)),
+                dims
+            ), false)
+        ]));
+        
+        let text = StringArray::from(vec!["dog", "cat", "a", "b"]);
+        let vectors = vec![
+            Some(vec![Some(0.1), Some(0.1)]),
+            Some(vec![Some(-2.0), Some(-2.0)]),
+            Some(vec![Some(50.0), Some(50.0)]),
+            Some(vec![Some(-30.0), Some(-30.0)])
+        ];
+        let vector = FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
+            vectors,
+            dims
+        );
+
+        let record_batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(text), Arc::new(vector)]).unwrap();
+        let record_batch_iter = RecordBatchIterator::new(vec![record_batch].into_iter().map(Ok), schema.clone());
+        let table = conn.create_table("my_table", record_batch_iter).execute().await.unwrap();
+        table.create_index(&["text"], crate::index::Index::FTS(Default::default())).replace(true).execute().await.unwrap();
+
+        let fts_query = FullTextSearchQuery::new("a".to_string());
+        let results = table.query()
+            .full_text_search(fts_query)
+            .nearest_to(&[-2.0, -2.0])
+            .unwrap()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+
+        println!("{:?}", results);
+
+
         // let query = table
         //     .query()
-        //     .
+        //     .nearest_to(vector)
     }
 }
