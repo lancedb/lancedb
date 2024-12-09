@@ -28,6 +28,7 @@ use lance_index::scalar::FullTextSearchQuery;
 
 use crate::arrow::SendableRecordBatchStream;
 use crate::error::{Error, Result};
+use crate::rerankers::Reranker;
 use crate::table::TableInternal;
 use crate::DistanceType;
 
@@ -886,8 +887,8 @@ impl VectorQuery {
 
         // TODO rerank etc.
 
-        let x2 = RecordBatchStreamAdapter::new(schema, stream::iter(all_results.map(Ok)));
-        let y = SendableRecordBatchStream::from(x2);
+        // let x2 = ;
+        let y = SendableRecordBatchStream::from(RecordBatchStreamAdapter::new(schema, stream::iter(all_results.map(Ok))));
         return Ok(y)
         
     }

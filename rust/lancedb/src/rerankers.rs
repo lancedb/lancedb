@@ -13,30 +13,35 @@
 // limitations under the License.
 
 use arrow_array::RecordBatch;
+use async_trait::async_trait;
 
 use crate::error::Result;
 
+pub mod rrf;
+
 /// TODO api Comments
+#[async_trait]
 pub trait Reranker {
 
     /// TODO api comments
-    fn rerank_vector(
+    async fn rerank_vector(
         &self,
         query: &str,
         vector_results: RecordBatch
     ) -> Result<RecordBatch>;
 
     /// TODO api comments
-    fn rerank_fts(
+    async fn rerank_fts(
         &self,
         query: &str,
         fts_results: RecordBatch,
     ) -> Result<RecordBatch>;
 
     /// TODO api comments
-    fn rerank_hybrid(
+    async fn rerank_hybrid(
         &self,
-        query: str,
-        vector_results: RecordBatch
+        query: &str,
+        vector_results: RecordBatch,
+        fts_results: RecordBatch,
     ) -> Result<RecordBatch>;
 }
