@@ -1,4 +1,4 @@
-This section provides a set of recommended best practices to help you get the most out of LanceDB Cloud. By following these guidelines, you can optimize your usage of LanceDB Cloud, improve performance, and ensure a smooth experience.
+This section provides answers to the most common questions asked about LanceDB Cloud. By following these guidelines, you can ensure a smooth, performant experience with LanceDB Cloud.
 
 ### Should I reuse the database connection?
 Yes! It is recommended to establish a single db connection and maintain it throughout your interaction with the tables within. 
