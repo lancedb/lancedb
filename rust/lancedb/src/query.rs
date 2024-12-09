@@ -15,20 +15,25 @@
 use std::future::Future;
 use std::sync::Arc;
 
-use arrow::compute::concat_batches;
-use arrow_array::{make_array, Array, Float16Array, Float32Array, Float64Array, RecordBatchIterator};
-use arrow_schema::DataType;
+use arrow::compute::{kernels::numeric::{sub, div}, concat_batches, sort_to_indices, max, min, take};
+use arrow_array::{
+    cast::downcast_array, make_array, Array, Float16Array, Float32Array, Float64Array, RecordBatch,
+};
+use arrow_schema::{DataType, SortOptions};
 use datafusion_physical_plan::ExecutionPlan;
 use futures::{stream, try_join, FutureExt, StreamExt, TryStreamExt};
 use half::f16;
 use lance::dataset::scanner::DatasetRecordBatchStream;
-use lance_io::stream::RecordBatchStreamAdapter;
 use lance_datafusion::exec::execute_plan;
+use lance_index::scalar::inverted::SCORE_COL;
 use lance_index::scalar::FullTextSearchQuery;
+use lance_index::vector::DIST_COL;
+use lance_io::stream::RecordBatchStreamAdapter;
 
 use crate::arrow::SendableRecordBatchStream;
 use crate::error::{Error, Result};
-use crate::rerankers::Reranker;
+use crate::rerankers::rrf::RRFReranker;
+use crate::rerankers::{NormalizeMethod, Reranker};
 use crate::table::TableInternal;
 use crate::DistanceType;
 
@@ -715,6 +720,11 @@ pub struct VectorQuery {
     pub(crate) distance_type: Option<DistanceType>,
     /// Default is true. Set to false to enforce a brute force search.
     pub(crate) use_index: bool,
+
+    // TODO add these to builder
+    // TODO possibly add these to base query
+    pub(crate) reranker: Option<Arc<dyn Reranker>>,
+    pub(crate) norm: Option<NormalizeMethod>,
 }
 
 impl VectorQuery {
@@ -728,6 +738,8 @@ impl VectorQuery {
             refine_factor: None,
             distance_type: None,
             use_index: true,
+            reranker: None,
+            norm: None
         }
     }
 
@@ -857,40 +869,184 @@ impl VectorQuery {
         self
     }
 
+    pub fn rank(&self, results: RecordBatch, column: &str, ascending: Option<bool>) -> Result<RecordBatch> {
+        // TODO write tests for this
+        if results.num_rows() == 0 {
+            return Ok(results);
+        }
+
+        let scores = results.column_by_name(column).ok_or(Error::InvalidInput {
+            message: format!(
+                "expected column {} not found in rank. found columns {:?}",
+                column,
+                results
+                    .schema()
+                    .fields()
+                    .iter()
+                    .map(|f| f.name())
+                    .collect::<Vec<_>>(),
+            ),
+        })?;
+
+        // TODO does this panic?
+        // TODO check what type this should actually be
+        let scores: Float32Array = downcast_array(scores);
+        let score_indices = sort_to_indices(
+            &scores,
+            Some(SortOptions {
+                descending: !ascending.unwrap_or(true),
+                ..Default::default()
+            }),
+            None,
+        )?;
+        let schema = results.schema();
+        let ranks = Float32Array::from_iter_values((1..results.num_rows() + 1).map(|i| i as f32));
+        let mut columns = results
+            .columns()
+            .iter()
+            .map(|c| take(&*c, &score_indices, None).unwrap())
+            .collect::<Vec<_>>();
+        let (column_idx, _) = schema.column_with_name(column).unwrap();
+        columns[column_idx] = Arc::new(ranks);
+
+        let results = RecordBatch::try_new(results.schema(), columns).unwrap();
+
+        Ok(results)
+    }
+
+    pub fn normalize_scores(&self, results: RecordBatch, column: &str, invert: Option<bool>) -> Result<RecordBatch> {
+        if results.num_rows() == 0 {
+            return Ok(results)
+        }
+
+        // TODO should probably make this a helper method
+        let scores = results.column_by_name(column).ok_or(Error::InvalidInput {
+            message: format!(
+                "expected column {} not found in rank. found columns {:?}",
+                column,
+                results
+                    .schema()
+                    .fields()
+                    .iter()
+                    .map(|f| f.name())
+                    .collect::<Vec<_>>(),
+            ),
+        })?;
+        // TODO does this panic/should it?
+        let mut scores: Float32Array = downcast_array(scores);
+
+        // TODO should this just be unwrap?
+        let max = max(&scores).unwrap_or(0.0);
+        let min = min(&scores).unwrap_or(0.0);
+
+        // TODO add tests for this logic
+        // this is equivalent to np.isclose which is used in python
+        let rng = if max - min > 1e-5 {
+            max
+        } else {
+            max - min
+        };
+
+        // if rng is 0, then min and max are both 0 so we just leave the scores as is
+        if rng != 0.0 {
+            let tmp = div(&sub(&scores, &Float32Array::new_scalar(min))?, &Float32Array::new_scalar(rng))?;
+            scores = downcast_array(&tmp);
+        }
+
+        if invert.unwrap_or(false) {
+            let tmp = sub(&Float32Array::new_scalar(1.0), &scores)?;
+            scores = downcast_array(&tmp);
+        }
+
+        let schema = results.schema();
+        let (column_idx, _) = schema.column_with_name(column).unwrap();
+        let mut columns = results.columns().to_vec();
+        columns[column_idx] = Arc::new(scores);
+
+        let results = RecordBatch::try_new(results.schema(), columns).unwrap();
+
+        Ok(results)
+    }
+
     pub async fn execute_hybrid(&self) -> Result<SendableRecordBatchStream> {
-        
-        let fts_query = self.base.clone();
-        let mut vector_query = self.clone();
+        // clone query and specify we want to include row IDs, which can be needed for reranking
+        let fts_query = self.base.clone().with_row_id();
+        let mut vector_query = self.clone().with_row_id();
+
         vector_query.base.full_text_search = None;
-        let (mut fts_results, vector_results) = try_join!(
-            fts_query.execute(),
-            vector_query.execute(),
-        ).unwrap();
+        let (mut fts_results, vec_results) =
+            try_join!(fts_query.execute(), vector_query.execute(),).unwrap();
 
-        
-        let first_batch = fts_results.next().await;
-        
-        // TODO handle the case when the first batch is none or error
-        let first_batch = first_batch.unwrap()?;
+        let fts_results = fts_results.try_collect::<Vec<_>>().await?;
+        // TODO handle case if this is empty
+        let schema = fts_results[0].schema();
+        let mut fts_results = concat_batches(&schema, fts_results.iter())?;
 
-        let schema = first_batch.schema();
+        let vec_results = vec_results.try_collect::<Vec<_>>().await?;
+        // TODO handle case where this is empty
+        let schema = vec_results[0].schema();
+        let mut vec_results = concat_batches(&schema, vec_results.iter())?;
 
-        // TODO re-add the first batch
-        // TODO have the corcect number of CPUs for the buffer
+        println!("{:?}", vec_results);
 
-        let all_results = fts_results.chain(vector_results).try_collect::<Vec<_>>().await?;
+        if matches!(self.norm, Some(NormalizeMethod::Rank)) {
+            vec_results = self.rank(vec_results, DIST_COL, None)?;
+            fts_results = self.rank(fts_results, SCORE_COL, None)?;
+        }
 
-        // let all_iter = fts_results.chain(vector_results);
-        let first_batch = vec![first_batch];
-        let all_results = first_batch.iter().chain(all_results.iter());
-        let all_results = concat_batches(&schema.clone(), all_results.into_iter());
+        // normalize the scores to be between 0 and 1, 0 being most relevant
+        vec_results = self.normalize_scores(vec_results, DIST_COL, None)?;
 
-        // TODO rerank etc.
+        // In fts higher scores represent relevance. Not inverting them here as
+        // rerankers might need to preserve this score to support `return_score="all"`
+        fts_results = self.normalize_scores(fts_results, SCORE_COL, None)?;
 
-        // let x2 = ;
-        let y = SendableRecordBatchStream::from(RecordBatchStreamAdapter::new(schema, stream::iter(all_results.map(Ok))));
-        return Ok(y)
-        
+        let reranker = self
+            .reranker
+            .clone()
+            .unwrap_or(Arc::new(RRFReranker::default()));
+        let results_ranked = reranker
+            .rerank_hybrid("TODO", vec_results, fts_results)
+            .await
+            .unwrap();
+
+        // TODO check reranker results
+
+        // TODO add limit
+
+        // TODO row ids
+
+        // let record_batch_iter = RecordBatchIterator::new(vec![results_ranked].into_iter().map(Ok), schema);
+        let record_batch_stream_adapter = RecordBatchStreamAdapter::new(
+            results_ranked.schema(),
+            stream::iter(vec![results_ranked].into_iter().map(Ok)),
+        );
+        let sendable_batch_iter = SendableRecordBatchStream::from(record_batch_stream_adapter);
+
+        Ok(sendable_batch_iter)
+
+        // let first_batch = fts_results.next().await;
+
+        // // TODO handle the case when the first batch is none or error
+        // let first_batch = first_batch.unwrap()?;
+
+        // let schema = first_batch.schema();
+
+        // // TODO re-add the first batch
+        // // TODO have the corcect number of CPUs for the buffer
+
+        // let all_results = fts_results.chain(vector_results).try_collect::<Vec<_>>().await?;
+
+        // // let all_iter = fts_results.chain(vector_results);
+        // let first_batch = vec![first_batch];
+        // let all_results = first_batch.iter().chain(all_results.iter());
+        // let all_results = concat_batches(&schema.clone(), all_results.into_iter());
+
+        // // TODO rerank etc.
+
+        // // let x2 = ;
+        // let y = SendableRecordBatchStream::from(RecordBatchStreamAdapter::new(schema, stream::iter(all_results.map(Ok))));
+        // return Ok(y)
     }
 }
 
@@ -904,9 +1060,7 @@ impl ExecutableQuery for VectorQuery {
         options: QueryExecutionOptions,
     ) -> Result<SendableRecordBatchStream> {
         if self.base.full_text_search.is_some() {
-            let hybrid_result =  async move {
-                self.execute_hybrid().await
-            }.boxed().await?;
+            let hybrid_result = async move { self.execute_hybrid().await }.boxed().await?;
             return Ok(hybrid_result);
         }
 
@@ -936,9 +1090,8 @@ mod tests {
     use super::*;
     use arrow::{compute::concat_batches, datatypes::Int32Type};
     use arrow_array::{
-        cast::AsArray, 
-        types::Float32Type,
-        FixedSizeListArray, Float32Array, Int32Array, RecordBatch, RecordBatchIterator, RecordBatchReader, StringArray
+        cast::AsArray, types::Float32Type, FixedSizeListArray, Float32Array, Int32Array,
+        RecordBatch, RecordBatchIterator, RecordBatchReader, StringArray,
     };
     use arrow_schema::{DataType, Field as ArrowField, Schema as ArrowSchema};
     use futures::{StreamExt, TryStreamExt};
@@ -1317,40 +1470,60 @@ mod tests {
     async fn test_hybrid_search() {
         let tmp_dir = tempdir().unwrap();
         let dataset_path = tmp_dir.path();
-        let conn = connect(dataset_path.to_str().unwrap()).execute().await.unwrap();
+        let conn = connect(dataset_path.to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
 
         let dims = 2;
         let schema = Arc::new(ArrowSchema::new(vec![
             ArrowField::new("text", DataType::Utf8, false),
-            ArrowField::new("vector", DataType::FixedSizeList(
-                Arc::new(ArrowField::new("item", DataType::Float32, true)),
-                dims
-            ), false)
+            ArrowField::new(
+                "vector",
+                DataType::FixedSizeList(
+                    Arc::new(ArrowField::new("item", DataType::Float32, true)),
+                    dims,
+                ),
+                false,
+            ),
         ]));
-        
+
         let text = StringArray::from(vec!["dog", "cat", "a", "b"]);
         let vectors = vec![
             Some(vec![Some(0.1), Some(0.1)]),
             Some(vec![Some(-2.0), Some(-2.0)]),
             Some(vec![Some(50.0), Some(50.0)]),
-            Some(vec![Some(-30.0), Some(-30.0)])
+            Some(vec![Some(-30.0), Some(-30.0)]),
         ];
-        let vector = FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
-            vectors,
-            dims
-        );
+        let vector = FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(vectors, dims);
 
-        let record_batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(text), Arc::new(vector)]).unwrap();
-        let record_batch_iter = RecordBatchIterator::new(vec![record_batch].into_iter().map(Ok), schema.clone());
-        let table = conn.create_table("my_table", record_batch_iter).execute().await.unwrap();
-        table.create_index(&["text"], crate::index::Index::FTS(Default::default())).replace(true).execute().await.unwrap();
+        let record_batch =
+            RecordBatch::try_new(schema.clone(), vec![Arc::new(text), Arc::new(vector)]).unwrap();
+        let record_batch_iter =
+            RecordBatchIterator::new(vec![record_batch].into_iter().map(Ok), schema.clone());
+        let table = conn
+            .create_table("my_table", record_batch_iter)
+            .execute()
+            .await
+            .unwrap();
+        table
+            .create_index(&["text"], crate::index::Index::FTS(Default::default()))
+            .replace(true)
+            .execute()
+            .await
+            .unwrap();
 
         let fts_query = FullTextSearchQuery::new("a".to_string());
-        let results = table.query()
+        let mut query = table
+            .query()
             .full_text_search(fts_query)
             .nearest_to(&[-2.0, -2.0])
-            .unwrap()
-            .execute()
+            .unwrap();
+
+        // TODO set these through ubilder
+        query.norm = Some(NormalizeMethod::Rank);
+            
+        let results = query.execute()
             .await
             .unwrap()
             .try_collect::<Vec<_>>()
@@ -1358,7 +1531,6 @@ mod tests {
             .unwrap();
 
         println!("{:?}", results);
-
 
         // let query = table
         //     .query()

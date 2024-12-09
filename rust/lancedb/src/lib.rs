@@ -205,7 +205,6 @@ pub mod arrow;
 pub mod connection;
 pub mod data;
 pub mod embeddings;
-pub mod rerankers;
 pub mod error;
 pub mod index;
 pub mod io;
@@ -215,6 +214,7 @@ mod polars_arrow_convertors;
 pub mod query;
 #[cfg(feature = "remote")]
 pub mod remote;
+pub mod rerankers;
 pub mod table;
 pub mod utils;
 
