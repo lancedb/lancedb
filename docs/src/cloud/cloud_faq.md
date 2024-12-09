@@ -5,7 +5,7 @@ Yes! It is recommended to establish a single db connection and maintain it throu
 
 LanceDB uses HTTP connections to communicate with the servers. By re-using the Connection object, you avoid the overhead of repeatedly establishing HTTP connections, significantly improving efficiency.
 
-### Should a single `open_table` call be made and maintained for subsequent table operations?
+### Should I re-use the `Table` object?
 `table = db.open_table()` should be called once and used for all subsequent table operations. If there are changes to the opened table, `table` always reflect the **latest version** of the data. 
 
 ### What should I do if I need to search for rows by `id`?
