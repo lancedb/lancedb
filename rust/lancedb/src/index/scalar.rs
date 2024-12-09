@@ -53,7 +53,10 @@ pub struct LabelListIndexBuilder {}
 /// A full text search index is an index on a string column that allows for full text search
 #[derive(Debug, Clone)]
 pub struct FtsIndexBuilder {
-    pub(crate) with_position: bool,
+    /// Whether to store the position of the tokens
+    /// This is used for phrase queries
+    pub with_position: bool,
+
     pub tokenizer_configs: TokenizerConfig,
 }
 
