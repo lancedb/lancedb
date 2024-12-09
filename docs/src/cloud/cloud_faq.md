@@ -1,7 +1,7 @@
 This section provides answers to the most common questions asked about LanceDB Cloud. By following these guidelines, you can ensure a smooth, performant experience with LanceDB Cloud.
 
 ### Should I reuse the database connection?
-Yes! It is recommended to establish a single db connection and maintain it throughout your interaction with the tables within. 
+Yes! It is recommended to establish a single database connection and maintain it throughout your interaction with the tables within. 
 
 LanceDB uses HTTP connections to communicate with the servers. By re-using the Connection object, you avoid the overhead of repeatedly establishing HTTP connections, significantly improving efficiency.
 
