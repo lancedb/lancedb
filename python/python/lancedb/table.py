@@ -3,9 +3,7 @@
 
 from __future__ import annotations
 
-import asyncio
 import inspect
-import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -25,6 +23,7 @@ from typing import (
 from urllib.parse import urlparse
 
 import lance
+from lancedb.db import LOOP
 from .dependencies import _check_for_pandas
 import numpy as np
 import pyarrow as pa
@@ -33,8 +32,9 @@ import pyarrow.fs as pa_fs
 from lance import LanceDataset
 from lance.dependencies import _check_for_hugging_face
 
-from .common import DATA, VEC, VECTOR_COLUMN_NAME, sanitize_uri
+from .common import DATA, VEC, VECTOR_COLUMN_NAME
 from .embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
+from .index import BTree, IvfPq, Bitmap, LabelList, HnswPq, HnswSq
 from .merge import LanceMergeInsertBuilder
 from .pydantic import LanceModel, model_to_dict
 from .query import (
@@ -58,14 +58,13 @@ from .util import (
 )
 from .index import lang_mapping
 
-from ._lancedb import connect as lancedb_connect
 
 if TYPE_CHECKING:
     import PIL
     from lance.dataset import CleanupStats, ReaderLike
     from ._lancedb import Table as LanceDBTable, OptimizeStats
     from .db import LanceDBConnection
-    from .index import BTree, IndexConfig, IvfPq, Bitmap, LabelList, FTS, HnswPq, HnswSq
+    from .index import IndexConfig, FTS
 
 pd = safe_import_pandas()
 pl = safe_import_polars()
@@ -1057,94 +1056,6 @@ class Table(ABC):
         return (path, fs, index_exists)
 
 
-class _LanceDatasetRef(ABC):
-    @property
-    @abstractmethod
-    def dataset(self) -> LanceDataset:
-        pass
-
-    @property
-    @abstractmethod
-    def dataset_mut(self) -> LanceDataset:
-        pass
-
-
-@dataclass
-class _LanceLatestDatasetRef(_LanceDatasetRef):
-    """Reference to the latest version of a LanceDataset."""
-
-    uri: str
-    index_cache_size: Optional[int] = None
-    read_consistency_interval: Optional[timedelta] = None
-    last_consistency_check: Optional[float] = None
-    storage_options: Optional[Dict[str, str]] = None
-    _dataset: Optional[LanceDataset] = None
-
-    @property
-    def dataset(self) -> LanceDataset:
-        if not self._dataset:
-            self._dataset = lance.dataset(
-                self.uri,
-                index_cache_size=self.index_cache_size,
-                storage_options=self.storage_options,
-            )
-            self.last_consistency_check = time.monotonic()
-        elif self.read_consistency_interval is not None:
-            now = time.monotonic()
-            diff = timedelta(seconds=now - self.last_consistency_check)
-            if (
-                self.last_consistency_check is None
-                or diff > self.read_consistency_interval
-            ):
-                self._dataset = self._dataset.checkout_version(
-                    self._dataset.latest_version
-                )
-                self.last_consistency_check = time.monotonic()
-        return self._dataset
-
-    @dataset.setter
-    def dataset(self, value: LanceDataset):
-        self._dataset = value
-        self.last_consistency_check = time.monotonic()
-
-    @property
-    def dataset_mut(self) -> LanceDataset:
-        return self.dataset
-
-
-@dataclass
-class _LanceTimeTravelRef(_LanceDatasetRef):
-    uri: str
-    version: int
-    index_cache_size: Optional[int] = None
-    storage_options: Optional[Dict[str, str]] = None
-    _dataset: Optional[LanceDataset] = None
-
-    @property
-    def dataset(self) -> LanceDataset:
-        if not self._dataset:
-            self._dataset = lance.dataset(
-                self.uri,
-                version=self.version,
-                index_cache_size=self.index_cache_size,
-                storage_options=self.storage_options,
-            )
-        return self._dataset
-
-    @dataset.setter
-    def dataset(self, value: LanceDataset):
-        self._dataset = value
-        self.version = value.version
-
-    @property
-    def dataset_mut(self) -> LanceDataset:
-        raise ValueError(
-            "Cannot mutate table reference fixed at version "
-            f"{self.version}. Call checkout_latest() to get a mutable "
-            "table reference."
-        )
-
-
 class LanceTable(Table):
     """
     A table in a LanceDB database.
@@ -1166,25 +1077,21 @@ class LanceTable(Table):
         name: str,
         version: Optional[int] = None,
         *,
+        storage_options: Optional[Dict[str, str]] = None,
         index_cache_size: Optional[int] = None,
     ):
         self._conn = connection
-        self.name = name
+        self._table = LOOP.run(
+            connection._conn.open_table(
+                name,
+                storage_options=storage_options,
+                index_cache_size=index_cache_size,
+            )
+        )
 
-        if version is not None:
-            self._ref = _LanceTimeTravelRef(
-                uri=self._dataset_uri,
-                version=version,
-                index_cache_size=index_cache_size,
-                storage_options=connection.storage_options,
-            )
-        else:
-            self._ref = _LanceLatestDatasetRef(
-                uri=self._dataset_uri,
-                read_consistency_interval=connection.read_consistency_interval,
-                index_cache_size=index_cache_size,
-                storage_options=connection.storage_options,
-            )
+    @property
+    def name(self) -> str:
+        return self._table.name
 
     @classmethod
     def open(cls, db, name, **kwargs):
@@ -1205,17 +1112,14 @@ class LanceTable(Table):
         # Cacheable since it's deterministic
         return _table_path(self._conn.uri, self.name)
 
-    @property
-    def _dataset(self) -> LanceDataset:
-        return self._ref.dataset
-
-    @property
-    def _dataset_mut(self) -> LanceDataset:
-        return self._ref.dataset_mut
-
-    def to_lance(self) -> LanceDataset:
+    def to_lance(self, **kwargs) -> LanceDataset:
         """Return the LanceDataset backing this table."""
-        return self._dataset
+        return lance.dataset(
+            self._dataset_path,
+            version=self.version,
+            storage_options=self._conn.storage_options,
+            **kwargs,
+        )
 
     @property
     def schema(self) -> pa.Schema:
@@ -1225,16 +1129,16 @@ class LanceTable(Table):
         -------
         pa.Schema
             A PyArrow schema object."""
-        return self._dataset.schema
+        return LOOP.run(self._table.schema())
 
     def list_versions(self):
         """List all versions of the table"""
-        return self._dataset.versions()
+        return LOOP.run(self._table.list_versions())
 
     @property
     def version(self) -> int:
         """Get the current version of the table"""
-        return self._dataset.version
+        return LOOP.run(self._table.version())
 
     def checkout(self, version: int):
         """Checkout a version of the table. This is an in-place operation.
@@ -1270,26 +1174,7 @@ class LanceTable(Table):
                vector    type
         0  [1.1, 0.9]  vector
         """
-        max_ver = self._dataset.latest_version
-        if version < 1 or version > max_ver:
-            raise ValueError(f"Invalid version {version}")
-
-        try:
-            ds = self._dataset.checkout_version(version)
-        except IOError as e:
-            if "not found" in str(e):
-                raise ValueError(
-                    f"Version {version} no longer exists. Was it cleaned up?"
-                )
-            else:
-                raise e
-
-        self._ref = _LanceTimeTravelRef(
-            uri=self._dataset_uri,
-            version=version,
-        )
-        # We've already loaded the version so we can populate it directly.
-        self._ref.dataset = ds
+        LOOP.run(self._table.checkout(version))
 
     def checkout_latest(self):
         """Checkout the latest version of the table. This is an in-place operation.
@@ -1297,13 +1182,7 @@ class LanceTable(Table):
         The table will be set back into standard mode, and will track the latest
         version of the table.
         """
-        self.checkout(self._dataset.latest_version)
-        ds = self._ref.dataset
-        self._ref = _LanceLatestDatasetRef(
-            uri=self._dataset_uri,
-            read_consistency_interval=self._conn.read_consistency_interval,
-        )
-        self._ref.dataset = ds
+        LOOP.run(self._table.checkout_latest())
 
     def restore(self, version: int = None):
         """Restore a version of the table. This is an in-place operation.
@@ -1339,45 +1218,25 @@ class LanceTable(Table):
         >>> len(table.list_versions())
         4
         """
-        max_ver = self._dataset.latest_version
-        if version is None:
-            version = self.version
-        elif version < 1 or version > max_ver:
-            raise ValueError(f"Invalid version {version}")
-        else:
-            self.checkout(version)
-
-        ds = self._dataset
-
-        # no-op if restoring the latest version
-        if version != max_ver:
-            ds.restore()
-
-        self._ref = _LanceLatestDatasetRef(
-            uri=self._dataset_uri,
-            read_consistency_interval=self._conn.read_consistency_interval,
-        )
-        self._ref.dataset = ds
+        if version is not None:
+            LOOP.run(self._table.checkout(version))
+        LOOP.run(self._table.restore())
 
     def count_rows(self, filter: Optional[str] = None) -> int:
-        return self._dataset.count_rows(filter)
+        return LOOP.run(self._table.count_rows(filter))
 
     def __len__(self):
         return self.count_rows()
 
     def __repr__(self) -> str:
-        val = f'{self.__class__.__name__}(connection={self._conn!r}, name="{self.name}"'
-        if isinstance(self._ref, _LanceTimeTravelRef):
-            val += f", version={self._ref.version}"
-        val += ")"
-        return val
+        return f"{self.__class__.__name__}(table={self._table!r})"
 
     def __str__(self) -> str:
         return self.__repr__()
 
     def head(self, n=5) -> pa.Table:
         """Return the first n rows of the table."""
-        return self._dataset.head(n)
+        return LOOP.run(self._table.head(n))
 
     def to_pandas(self) -> "pd.DataFrame":
         """Return the table as a pandas DataFrame.
@@ -1394,7 +1253,7 @@ class LanceTable(Table):
         Returns
         -------
         pa.Table"""
-        return self._dataset.to_table()
+        return LOOP.run(self._table.to_arrow())
 
     def to_polars(self, batch_size=None) -> "pl.LazyFrame":
         """Return the table as a polars LazyFrame.
@@ -1430,17 +1289,64 @@ class LanceTable(Table):
         accelerator: Optional[str] = None,
         index_cache_size: Optional[int] = None,
         index_type="IVF_PQ",
+        max_iterations: Optional[int] = None,
+        sample_rate: Optional[float] = None,
+        m: Optional[int] = None,
+        ef_construction: Optional[int] = None,
     ):
         """Create an index on the table."""
-        self._dataset_mut.create_index(
-            column=vector_column_name,
-            index_type=index_type,
-            metric=metric,
-            num_partitions=num_partitions,
-            num_sub_vectors=num_sub_vectors,
-            replace=replace,
-            accelerator=accelerator,
-            index_cache_size=index_cache_size,
+        if accelerator is not None:
+            # accelerator is only supported through pylance.
+            self.to_lance().create_index(
+                column=vector_column_name,
+                index_type=index_type,
+                metric=metric,
+                num_partitions=num_partitions,
+                num_sub_vectors=num_sub_vectors,
+                replace=replace,
+                accelerator=accelerator,
+                index_cache_size=index_cache_size,
+                m=m,
+                ef_construction=ef_construction,
+            )
+            self.checkout_latest()
+            return
+        elif index_type == "IVF_PQ":
+            config = IvfPq(
+                distance_type=metric,
+                num_partitions=num_partitions,
+                num_sub_vectors=num_sub_vectors,
+                max_iterations=max_iterations,
+                sample_rate=sample_rate,
+            )
+        elif index_type == "IVF_HNSW_SQ":
+            config = HnswPq(
+                distance_type=metric,
+                num_partitions=num_partitions,
+                num_sub_vectors=num_sub_vectors,
+                max_iterations=max_iterations,
+                sample_rate=sample_rate,
+                m=m,
+                ef_construction=ef_construction,
+            )
+        elif index_type == "HNSW_SQ":
+            config = HnswSq(
+                distance_type=metric,
+                num_partitions=num_partitions,
+                max_iterations=max_iterations,
+                sample_rate=sample_rate,
+                m=m,
+                ef_construction=ef_construction,
+            )
+        else:
+            raise ValueError(f"Unknown index type {index_type}")
+
+        return LOOP.run(
+            self._table.create_index(
+                vector_column_name,
+                replace=replace,
+                config=config,
+            )
         )
 
     def create_scalar_index(
@@ -1450,8 +1356,16 @@ class LanceTable(Table):
         replace: bool = True,
         index_type: Literal["BTREE", "BITMAP", "LABEL_LIST"] = "BTREE",
     ):
-        self._dataset_mut.create_scalar_index(
-            column, index_type=index_type, replace=replace
+        if index_type == "BTREE":
+            config = BTree()
+        elif index_type == "BITMAP":
+            config = Bitmap()
+        elif index_type == "LABEL_LIST":
+            config = LabelList()
+        else:
+            raise ValueError(f"Unknown index type {index_type}")
+        return LOOP.run(
+            self._table.create_index(column, replace=replace, config=config)
         )
 
     def create_fts_index(
@@ -1616,15 +1530,7 @@ class LanceTable(Table):
         int
             The number of vectors in the table.
         """
-        # TODO: manage table listing and metadata separately
-        data, _ = _sanitize_data(
-            data,
-            self.schema,
-            metadata=self.schema.metadata,
-            on_bad_vectors=on_bad_vectors,
-            fill_value=fill_value,
-        )
-        self._ref.dataset_mut.insert(data, mode=mode, schema=self.schema)
+        LOOP.run(self._table.add(data, mode, on_bad_vectors, fill_value))
 
     def merge(
         self,
@@ -1684,9 +1590,10 @@ class LanceTable(Table):
             other_table = other_table.to_lance()
         if isinstance(other_table, LanceDataset):
             other_table = other_table.to_table()
-        self._ref.dataset = self._dataset_mut.merge(
+        self.to_lance().merge(
             other_table, left_on=left_on, right_on=right_on, schema=schema
         )
+        self.checkout_latest()
 
     @cached_property
     def embedding_functions(self) -> dict:
@@ -1932,7 +1839,7 @@ class LanceTable(Table):
         return new_table
 
     def delete(self, where: str):
-        self._dataset_mut.delete(where)
+        LOOP.run(self._table.delete(where))
 
     def update(
         self,
@@ -1978,42 +1885,12 @@ class LanceTable(Table):
         2  2  [10.0, 10.0]
 
         """
-        if values is not None and values_sql is not None:
-            raise ValueError("Only one of values or values_sql can be provided")
-        if values is None and values_sql is None:
-            raise ValueError("Either values or values_sql must be provided")
-
-        if values is not None:
-            values_sql = {k: value_to_sql(v) for k, v in values.items()}
-
-        self._dataset_mut.update(values_sql, where)
+        LOOP.run(self._table.update(values, where=where, values_sql=values_sql))
 
     def _execute_query(
         self, query: Query, batch_size: Optional[int] = None
     ) -> pa.RecordBatchReader:
-        ds = self.to_lance()
-        nearest = None
-        if len(query.vector) > 0:
-            nearest = {
-                "column": query.vector_column,
-                "q": query.vector,
-                "k": query.k,
-                "metric": query.metric,
-                "nprobes": query.nprobes,
-                "refine_factor": query.refine_factor,
-                "ef": query.ef,
-            }
-        return ds.scanner(
-            columns=query.columns,
-            limit=query.k,
-            filter=query.filter,
-            prefilter=query.prefilter,
-            nearest=nearest,
-            full_text_query=query.full_text_query,
-            with_row_id=query.with_row_id,
-            batch_size=batch_size,
-            offset=query.offset,
-        ).to_reader()
+        return LOOP.run(self._table._execute_query(query, batch_size))
 
     def _do_merge(
         self,
@@ -2022,23 +1899,7 @@ class LanceTable(Table):
         on_bad_vectors: str,
         fill_value: float,
     ):
-        new_data, _ = _sanitize_data(
-            new_data,
-            self.schema,
-            metadata=self.schema.metadata,
-            on_bad_vectors=on_bad_vectors,
-            fill_value=fill_value,
-        )
-        ds = self.to_lance()
-        builder = ds.merge_insert(merge._on)
-        if merge._when_matched_update_all:
-            builder.when_matched_update_all(merge._when_matched_update_all_condition)
-        if merge._when_not_matched_insert_all:
-            builder.when_not_matched_insert_all()
-        if merge._when_not_matched_by_source_delete:
-            cond = merge._when_not_matched_by_source_condition
-            builder.when_not_matched_by_source_delete(cond)
-        builder.execute(new_data)
+        LOOP.run(self._table._do_merge(merge, new_data, on_bad_vectors, fill_value))
 
     def cleanup_old_versions(
         self,
@@ -2130,51 +1991,16 @@ class LanceTable(Table):
         you have added or modified 100,000 or more records or run more than 20 data
         modification operations.
         """
-        try:
-            asyncio.get_running_loop()
-            raise AssertionError(
-                "Synchronous method called in asynchronous context. "
-                "If you are writing an asynchronous application "
-                "then please use the asynchronous APIs"
-            )
-
-        except RuntimeError:
-            asyncio.run(
-                self._async_optimize(
-                    cleanup_older_than=cleanup_older_than,
-                    delete_unverified=delete_unverified,
-                )
-            )
-            self.checkout_latest()
-
-    async def _async_optimize(
-        self,
-        cleanup_older_than: Optional[timedelta] = None,
-        delete_unverified: bool = False,
-    ):
-        conn = await lancedb_connect(
-            sanitize_uri(self._conn.uri),
-        )
-        table = AsyncTable(await conn.open_table(self.name))
-        return await table.optimize(
-            cleanup_older_than=cleanup_older_than, delete_unverified=delete_unverified
-        )
+        LOOP.run(self._table.optimize(cleanup_older_than, delete_unverified))
 
     def add_columns(self, transforms: Dict[str, str]):
-        self._dataset_mut.add_columns(transforms)
+        LOOP.run(self._table.add_columns(transforms))
 
     def alter_columns(self, *alterations: Iterable[Dict[str, str]]):
-        modified = []
-        # I called this name in pylance, but I think I regret that now. So we
-        # allow both name and rename.
-        for alter in alterations:
-            if "rename" in alter:
-                alter["name"] = alter.pop("rename")
-            modified.append(alter)
-        self._dataset_mut.alter_columns(*modified)
+        LOOP.run(self._table.alter_columns(*alterations))
 
     def drop_columns(self, columns: Iterable[str]):
-        self._dataset_mut.drop_columns(columns)
+        LOOP.run(self._table.drop_columns(columns))
 
 
 def _sanitize_schema(
@@ -2564,6 +2390,17 @@ class AsyncTable:
             A SQL where clause to filter the rows to count.
         """
         return await self._inner.count_rows(filter)
+
+    async def head(self, n=5) -> pa.Table:
+        """
+        Return the first `n` rows of the table.
+
+        Parameters
+        ----------
+        n: int, default 5
+            The number of rows to return.
+        """
+        return await self.query().limit(n).to_arrow()
 
     def query(self) -> AsyncQuery:
         """
