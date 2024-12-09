@@ -13,7 +13,7 @@ LanceDB Cloud currently does not support an internal `row_id` column. You are re
 user-defined ID column. To significantly improve the query performance with SQL causes, a scalar BITMAP/BTREE index should be created on this column. 
 
 ### What are the vector indexing types supported by LanceDB Cloud?
-We support `IVF_PQ` and `IVF_HNSW_SQ` as the `index_type` which is passed to `create_index`. LanceDB Cloud tunes the indexing parameters automatically to achieve the best tradeoff betweeln query latency and query quality.
+We support `IVF_PQ` and `IVF_HNSW_SQ` as the `index_type` which is passed to `create_index`. LanceDB Cloud tunes the indexing parameters automatically to achieve the best tradeoff between query latency and query quality.
 
 ### Do I need to do anything when there is new data added to a table with an existing index?
 No! LanceDB Cloud triggers an asynchronous background job to index the new vectors. This process will either merge the new vectors into the existing index or initiate a complete re-indexing if needed. 
