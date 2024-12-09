@@ -16,7 +16,7 @@ new VectorColumnOptions(values?): VectorColumnOptions
 
 #### Parameters
 
-• **values?**: `Partial`&lt;[`VectorColumnOptions`](VectorColumnOptions.md)&gt;
+* **values?**: `Partial`&lt;[`VectorColumnOptions`](VectorColumnOptions.md)&gt;
 
 #### Returns
 

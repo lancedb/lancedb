@@ -18,7 +18,7 @@ new MakeArrowTableOptions(values?): MakeArrowTableOptions
 
 #### Parameters
 
-• **values?**: `Partial`&lt;[`MakeArrowTableOptions`](MakeArrowTableOptions.md)&gt;
+* **values?**: `Partial`&lt;[`MakeArrowTableOptions`](MakeArrowTableOptions.md)&gt;
 
 #### Returns
 

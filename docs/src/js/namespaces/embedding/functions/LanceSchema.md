@@ -14,7 +14,7 @@ Create a schema with embedding functions.
 
 ## Parameters
 
-• **fields**: `Record`&lt;`string`, `object` \| [`object`, `Map`&lt;`string`, [`EmbeddingFunction`](../classes/EmbeddingFunction.md)&lt;`any`, `FunctionOptions`&gt;&gt;]&gt;
+* **fields**: `Record`&lt;`string`, `object` \| [`object`, `Map`&lt;`string`, [`EmbeddingFunction`](../classes/EmbeddingFunction.md)&lt;`any`, `FunctionOptions`&gt;&gt;]&gt;
 
 ## Returns
 

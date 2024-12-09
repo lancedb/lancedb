@@ -33,7 +33,7 @@ functionToMetadata(conf): Record<string, any>
 
 #### Parameters
 
-• **conf**: [`EmbeddingFunctionConfig`](../interfaces/EmbeddingFunctionConfig.md)
+* **conf**: [`EmbeddingFunctionConfig`](../interfaces/EmbeddingFunctionConfig.md)
 
 #### Returns
 
@@ -55,8 +55,8 @@ Fetch an embedding function by name
 
 #### Parameters
 
-• **name**: `string`
-  The name of the function
+* **name**: `string`
+    The name of the function
 
 #### Returns
 
@@ -72,7 +72,7 @@ getTableMetadata(functions): Map<string, string>
 
 #### Parameters
 
-• **functions**: [`EmbeddingFunctionConfig`](../interfaces/EmbeddingFunctionConfig.md)[]
+* **functions**: [`EmbeddingFunctionConfig`](../interfaces/EmbeddingFunctionConfig.md)[]
 
 #### Returns
 
@@ -108,9 +108,9 @@ Register an embedding function
 
 #### Parameters
 
-• **this**: [`EmbeddingFunctionRegistry`](EmbeddingFunctionRegistry.md)
+* **this**: [`EmbeddingFunctionRegistry`](EmbeddingFunctionRegistry.md)
 
-• **alias?**: `string`
+* **alias?**: `string`
 
 #### Returns
 
@@ -118,7 +118,7 @@ Register an embedding function
 
 ##### Parameters
 
-• **ctor**: `T`
+* **ctor**: `T`
 
 ##### Returns
 
@@ -140,7 +140,7 @@ reset the registry to the initial state
 
 #### Parameters
 
-• **this**: [`EmbeddingFunctionRegistry`](EmbeddingFunctionRegistry.md)
+* **this**: [`EmbeddingFunctionRegistry`](EmbeddingFunctionRegistry.md)
 
 #### Returns
 

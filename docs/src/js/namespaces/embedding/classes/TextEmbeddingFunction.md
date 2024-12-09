@@ -44,7 +44,7 @@ Compute the embeddings for a single query
 
 #### Parameters
 
-• **data**: `string`
+* **data**: `string`
 
 #### Returns
 
@@ -66,7 +66,7 @@ Creates a vector representation for the given values.
 
 #### Parameters
 
-• **data**: `string`[]
+* **data**: `string`[]
 
 #### Returns
 
@@ -104,9 +104,9 @@ abstract generateEmbeddings(texts, ...args): Promise<number[][] | Float32Array[]
 
 #### Parameters
 
-• **texts**: `string`[]
+* **texts**: `string`[]
 
-• ...**args**: `any`[]
+* ...**args**: `any`[]
 
 #### Returns
 
@@ -221,7 +221,7 @@ vectorField is used in combination with `LanceSchema` to provide a declarative d
 
 #### Parameters
 
-• **optionsOrDatatype?**: `DataType`&lt;`Type`, `any`&gt; \| `Partial`&lt;`FieldOptions`&lt;`DataType`&lt;`Type`, `any`&gt;&gt;&gt;
+* **optionsOrDatatype?**: `DataType`&lt;`Type`, `any`&gt; \| `Partial`&lt;`FieldOptions`&lt;`DataType`&lt;`Type`, `any`&gt;&gt;&gt;
 
 #### Returns
 

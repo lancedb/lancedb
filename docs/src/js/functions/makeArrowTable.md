@@ -45,11 +45,11 @@ rules are as follows:
 
 ## Parameters
 
-• **data**: `Record`&lt;`string`, `unknown`&gt;[]
+* **data**: `Record`&lt;`string`, `unknown`&gt;[]
 
-• **options?**: `Partial`&lt;[`MakeArrowTableOptions`](../classes/MakeArrowTableOptions.md)&gt;
+* **options?**: `Partial`&lt;[`MakeArrowTableOptions`](../classes/MakeArrowTableOptions.md)&gt;
 
-• **metadata?**: `Map`&lt;`string`, `string`&gt;
+* **metadata?**: `Map`&lt;`string`, `string`&gt;
 
 ## Returns
 

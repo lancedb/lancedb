@@ -42,7 +42,7 @@ Compute the embeddings for a single query
 
 #### Parameters
 
-• **data**: `T`
+* **data**: `T`
 
 #### Returns
 
@@ -60,7 +60,7 @@ Creates a vector representation for the given values.
 
 #### Parameters
 
-• **data**: `T`[]
+* **data**: `T`[]
 
 #### Returns
 
@@ -118,8 +118,8 @@ sourceField is used in combination with `LanceSchema` to provide a declarative d
 
 #### Parameters
 
-• **optionsOrDatatype**: `DataType`&lt;`Type`, `any`&gt; \| `Partial`&lt;`FieldOptions`&lt;`DataType`&lt;`Type`, `any`&gt;&gt;&gt;
-  The options for the field or the datatype
+* **optionsOrDatatype**: `DataType`&lt;`Type`, `any`&gt; \| `Partial`&lt;`FieldOptions`&lt;`DataType`&lt;`Type`, `any`&gt;&gt;&gt;
+    The options for the field or the datatype
 
 #### Returns
 
@@ -178,7 +178,7 @@ vectorField is used in combination with `LanceSchema` to provide a declarative d
 
 #### Parameters
 
-• **optionsOrDatatype?**: `DataType`&lt;`Type`, `any`&gt; \| `Partial`&lt;`FieldOptions`&lt;`DataType`&lt;`Type`, `any`&gt;&gt;&gt;
+* **optionsOrDatatype?**: `DataType`&lt;`Type`, `any`&gt; \| `Partial`&lt;`FieldOptions`&lt;`DataType`&lt;`Type`, `any`&gt;&gt;&gt;
 
 #### Returns
 

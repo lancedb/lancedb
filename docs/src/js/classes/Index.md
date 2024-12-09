@@ -76,7 +76,7 @@ For now, the full text search index only supports English, and doesn't support p
 
 #### Parameters
 
-• **options?**: `Partial`&lt;`FtsOptions`&gt;
+* **options?**: `Partial`&lt;`FtsOptions`&gt;
 
 #### Returns
 
@@ -98,7 +98,7 @@ the vectors.
 
 #### Parameters
 
-• **options?**: `Partial`&lt;`HnswPqOptions`&gt;
+* **options?**: `Partial`&lt;`HnswPqOptions`&gt;
 
 #### Returns
 
@@ -120,7 +120,7 @@ the vectors.
 
 #### Parameters
 
-• **options?**: `Partial`&lt;`HnswSqOptions`&gt;
+* **options?**: `Partial`&lt;`HnswSqOptions`&gt;
 
 #### Returns
 
@@ -157,7 +157,7 @@ currently is also a memory intensive operation.
 
 #### Parameters
 
-• **options?**: `Partial`&lt;[`IvfPqOptions`](../interfaces/IvfPqOptions.md)&gt;
+* **options?**: `Partial`&lt;[`IvfPqOptions`](../interfaces/IvfPqOptions.md)&gt;
 
 #### Returns
 

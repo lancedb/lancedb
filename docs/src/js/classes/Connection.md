@@ -68,13 +68,13 @@ Creates a new empty Table
 
 #### Parameters
 
-• **name**: `string`
-  The name of the table.
+* **name**: `string`
+    The name of the table.
 
-• **schema**: `SchemaLike`
-  The schema of the table
+* **schema**: `SchemaLike`
+    The schema of the table
 
-• **options?**: `Partial`&lt;[`CreateTableOptions`](../interfaces/CreateTableOptions.md)&gt;
+* **options?**: `Partial`&lt;[`CreateTableOptions`](../interfaces/CreateTableOptions.md)&gt;
 
 #### Returns
 
@@ -94,8 +94,8 @@ Creates a new Table and initialize it with new data.
 
 ##### Parameters
 
-• **options**: `object` & `Partial`&lt;[`CreateTableOptions`](../interfaces/CreateTableOptions.md)&gt;
-  The options object.
+* **options**: `object` & `Partial`&lt;[`CreateTableOptions`](../interfaces/CreateTableOptions.md)&gt;
+    The options object.
 
 ##### Returns
 
@@ -114,14 +114,14 @@ Creates a new Table and initialize it with new data.
 
 ##### Parameters
 
-• **name**: `string`
-  The name of the table.
+* **name**: `string`
+    The name of the table.
 
-• **data**: `TableLike` \| `Record`&lt;`string`, `unknown`&gt;[]
-  Non-empty Array of Records
-  to be inserted into the table
+* **data**: `TableLike` \| `Record`&lt;`string`, `unknown`&gt;[]
+    Non-empty Array of Records
+    to be inserted into the table
 
-• **options?**: `Partial`&lt;[`CreateTableOptions`](../interfaces/CreateTableOptions.md)&gt;
+* **options?**: `Partial`&lt;[`CreateTableOptions`](../interfaces/CreateTableOptions.md)&gt;
 
 ##### Returns
 
@@ -153,8 +153,8 @@ Drop an existing table.
 
 #### Parameters
 
-• **name**: `string`
-  The name of the table to drop.
+* **name**: `string`
+    The name of the table to drop.
 
 #### Returns
 
@@ -186,10 +186,10 @@ Open a table in the database.
 
 #### Parameters
 
-• **name**: `string`
-  The name of the table
+* **name**: `string`
+    The name of the table
 
-• **options?**: `Partial`&lt;`OpenTableOptions`&gt;
+* **options?**: `Partial`&lt;`OpenTableOptions`&gt;
 
 #### Returns
 
@@ -209,9 +209,9 @@ Tables will be returned in lexicographical order.
 
 #### Parameters
 
-• **options?**: `Partial`&lt;[`TableNamesOptions`](../interfaces/TableNamesOptions.md)&gt;
-  options to control the
-  paging / start point
+* **options?**: `Partial`&lt;[`TableNamesOptions`](../interfaces/TableNamesOptions.md)&gt;
+    options to control the
+    paging / start point
 
 #### Returns
 

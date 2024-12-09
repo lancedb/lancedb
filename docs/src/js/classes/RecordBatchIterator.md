@@ -20,7 +20,7 @@ new RecordBatchIterator(promise?): RecordBatchIterator
 
 #### Parameters
 
-• **promise?**: `Promise`&lt;`RecordBatchIterator`&gt;
+* **promise?**: `Promise`&lt;`RecordBatchIterator`&gt;
 
 #### Returns
 

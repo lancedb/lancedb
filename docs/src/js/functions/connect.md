@@ -22,11 +22,11 @@ Accepted formats:
 
 ### Parameters
 
-• **uri**: `string`
-  The uri of the database. If the database uri starts
-  with `db://` then it connects to a remote database.
+* **uri**: `string`
+    The uri of the database. If the database uri starts
+    with `db://` then it connects to a remote database.
 
-• **opts?**: `Partial`&lt;[`ConnectionOptions`](../interfaces/ConnectionOptions.md)&gt;
+* **opts?**: `Partial`&lt;[`ConnectionOptions`](../interfaces/ConnectionOptions.md)&gt;
 
 ### Returns
 
@@ -65,7 +65,7 @@ Accepted formats:
 
 ### Parameters
 
-• **opts**: `Partial`&lt;[`ConnectionOptions`](../interfaces/ConnectionOptions.md)&gt; & `object`
+* **opts**: `Partial`&lt;[`ConnectionOptions`](../interfaces/ConnectionOptions.md)&gt; & `object`
 
 ### Returns
 

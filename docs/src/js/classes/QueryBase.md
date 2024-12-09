@@ -31,7 +31,7 @@ protected new QueryBase<NativeQueryType>(inner): QueryBase<NativeQueryType>
 
 #### Parameters
 
-• **inner**: `NativeQueryType` \| `Promise`&lt;`NativeQueryType`&gt;
+* **inner**: `NativeQueryType` \| `Promise`&lt;`NativeQueryType`&gt;
 
 #### Returns
 
@@ -71,7 +71,7 @@ protected doCall(fn): void
 
 #### Parameters
 
-• **fn**
+* **fn**
 
 #### Returns
 
@@ -89,7 +89,7 @@ Execute the query and return the results as an
 
 #### Parameters
 
-• **options?**: `Partial`&lt;`QueryExecutionOptions`&gt;
+* **options?**: `Partial`&lt;`QueryExecutionOptions`&gt;
 
 #### Returns
 
@@ -119,8 +119,8 @@ Generates an explanation of the query execution plan.
 
 #### Parameters
 
-• **verbose**: `boolean` = `false`
-  If true, provides a more detailed explanation. Defaults to false.
+* **verbose**: `boolean` = `false`
+    If true, provides a more detailed explanation. Defaults to false.
 
 #### Returns
 
@@ -168,7 +168,7 @@ A filter statement to be applied to this query.
 
 #### Parameters
 
-• **predicate**: `string`
+* **predicate**: `string`
 
 #### Returns
 
@@ -192,9 +192,9 @@ fullTextSearch(query, options?): this
 
 #### Parameters
 
-• **query**: `string`
+* **query**: `string`
 
-• **options?**: `Partial`&lt;`FullTextSearchOptions`&gt;
+* **options?**: `Partial`&lt;`FullTextSearchOptions`&gt;
 
 #### Returns
 
@@ -215,7 +215,7 @@ called then every valid row from the table will be returned.
 
 #### Parameters
 
-• **limit**: `number`
+* **limit**: `number`
 
 #### Returns
 
@@ -231,7 +231,7 @@ protected nativeExecute(options?): Promise<RecordBatchIterator>
 
 #### Parameters
 
-• **options?**: `Partial`&lt;`QueryExecutionOptions`&gt;
+* **options?**: `Partial`&lt;`QueryExecutionOptions`&gt;
 
 #### Returns
 
@@ -247,7 +247,7 @@ offset(offset): this
 
 #### Parameters
 
-• **offset**: `number`
+* **offset**: `number`
 
 #### Returns
 
@@ -283,7 +283,7 @@ input to this method would be:
 
 #### Parameters
 
-• **columns**: `string` \| `string`[] \| `Record`&lt;`string`, `string`&gt; \| `Map`&lt;`string`, `string`&gt;
+* **columns**: `string` \| `string`[] \| `Record`&lt;`string`, `string`&gt; \| `Map`&lt;`string`, `string`&gt;
 
 #### Returns
 
@@ -314,7 +314,7 @@ Collect the results as an array of objects.
 
 #### Parameters
 
-• **options?**: `Partial`&lt;`QueryExecutionOptions`&gt;
+* **options?**: `Partial`&lt;`QueryExecutionOptions`&gt;
 
 #### Returns
 
@@ -332,7 +332,7 @@ Collect the results as an Arrow
 
 #### Parameters
 
-• **options?**: `Partial`&lt;`QueryExecutionOptions`&gt;
+* **options?**: `Partial`&lt;`QueryExecutionOptions`&gt;
 
 #### Returns
 
@@ -356,7 +356,7 @@ The filter should be supplied as an SQL query string.  For example:
 
 #### Parameters
 
-• **predicate**: `string`
+* **predicate**: `string`
 
 #### Returns
 

@@ -24,7 +24,7 @@ new VectorQuery(inner): VectorQuery
 
 #### Parameters
 
-• **inner**: `VectorQuery` \| `Promise`&lt;`VectorQuery`&gt;
+* **inner**: `VectorQuery` \| `Promise`&lt;`VectorQuery`&gt;
 
 #### Returns
 
@@ -72,7 +72,7 @@ addQueryVector(vector): VectorQuery
 
 #### Parameters
 
-• **vector**: `IntoVector`
+* **vector**: `IntoVector`
 
 #### Returns
 
@@ -113,7 +113,7 @@ the call to
 
 #### Parameters
 
-• **column**: `string`
+* **column**: `string`
 
 #### Returns
 
@@ -142,7 +142,7 @@ use.  See
 
 #### Parameters
 
-• **distanceType**: `"l2"` \| `"cosine"` \| `"dot"`
+* **distanceType**: `"l2"` \| `"cosine"` \| `"dot"`
 
 #### Returns
 
@@ -169,7 +169,7 @@ protected doCall(fn): void
 
 #### Parameters
 
-• **fn**
+* **fn**
 
 #### Returns
 
@@ -197,7 +197,7 @@ also increase the latency of your query. The default value is 1.5*limit.
 
 #### Parameters
 
-• **ef**: `number`
+* **ef**: `number`
 
 #### Returns
 
@@ -215,7 +215,7 @@ Execute the query and return the results as an
 
 #### Parameters
 
-• **options?**: `Partial`&lt;`QueryExecutionOptions`&gt;
+* **options?**: `Partial`&lt;`QueryExecutionOptions`&gt;
 
 #### Returns
 
@@ -249,8 +249,8 @@ Generates an explanation of the query execution plan.
 
 #### Parameters
 
-• **verbose**: `boolean` = `false`
-  If true, provides a more detailed explanation. Defaults to false.
+* **verbose**: `boolean` = `false`
+    If true, provides a more detailed explanation. Defaults to false.
 
 #### Returns
 
@@ -306,7 +306,7 @@ A filter statement to be applied to this query.
 
 #### Parameters
 
-• **predicate**: `string`
+* **predicate**: `string`
 
 #### Returns
 
@@ -334,9 +334,9 @@ fullTextSearch(query, options?): this
 
 #### Parameters
 
-• **query**: `string`
+* **query**: `string`
 
-• **options?**: `Partial`&lt;`FullTextSearchOptions`&gt;
+* **options?**: `Partial`&lt;`FullTextSearchOptions`&gt;
 
 #### Returns
 
@@ -361,7 +361,7 @@ called then every valid row from the table will be returned.
 
 #### Parameters
 
-• **limit**: `number`
+* **limit**: `number`
 
 #### Returns
 
@@ -381,7 +381,7 @@ protected nativeExecute(options?): Promise<RecordBatchIterator>
 
 #### Parameters
 
-• **options?**: `Partial`&lt;`QueryExecutionOptions`&gt;
+* **options?**: `Partial`&lt;`QueryExecutionOptions`&gt;
 
 #### Returns
 
@@ -422,7 +422,7 @@ you the desired recall.
 
 #### Parameters
 
-• **nprobes**: `number`
+* **nprobes**: `number`
 
 #### Returns
 
@@ -438,7 +438,7 @@ offset(offset): this
 
 #### Parameters
 
-• **offset**: `number`
+* **offset**: `number`
 
 #### Returns
 
@@ -520,7 +520,7 @@ distance between the query vector and the actual uncompressed vector.
 
 #### Parameters
 
-• **refineFactor**: `number`
+* **refineFactor**: `number`
 
 #### Returns
 
@@ -556,7 +556,7 @@ input to this method would be:
 
 #### Parameters
 
-• **columns**: `string` \| `string`[] \| `Record`&lt;`string`, `string`&gt; \| `Map`&lt;`string`, `string`&gt;
+* **columns**: `string` \| `string`[] \| `Record`&lt;`string`, `string`&gt; \| `Map`&lt;`string`, `string`&gt;
 
 #### Returns
 
@@ -591,7 +591,7 @@ Collect the results as an array of objects.
 
 #### Parameters
 
-• **options?**: `Partial`&lt;`QueryExecutionOptions`&gt;
+* **options?**: `Partial`&lt;`QueryExecutionOptions`&gt;
 
 #### Returns
 
@@ -613,7 +613,7 @@ Collect the results as an Arrow
 
 #### Parameters
 
-• **options?**: `Partial`&lt;`QueryExecutionOptions`&gt;
+* **options?**: `Partial`&lt;`QueryExecutionOptions`&gt;
 
 #### Returns
 
@@ -641,7 +641,7 @@ The filter should be supplied as an SQL query string.  For example:
 
 #### Parameters
 
-• **predicate**: `string`
+* **predicate**: `string`
 
 #### Returns
 

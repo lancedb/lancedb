@@ -50,9 +50,9 @@ function processContents(contents) {
         if (line.startsWith("##")) {
           return line;
         } else if (line.startsWith("•")) {
-          return "\n" + line;
+          return "\n*" + line.substring(1);
         } else {
-          return "  " + line;
+          return "    " + line;
         }
       });
     return lines.join("\n") + "\n\n";

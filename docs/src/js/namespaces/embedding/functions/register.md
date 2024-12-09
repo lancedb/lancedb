@@ -12,7 +12,7 @@ function register(name?): (ctor) => any
 
 ## Parameters
 
-• **name?**: `string`
+* **name?**: `string`
 
 ## Returns
 
@@ -20,7 +20,7 @@ function register(name?): (ctor) => any
 
 ### Parameters
 
-• **ctor**: `EmbeddingFunctionConstructor`&lt;[`EmbeddingFunction`](../classes/EmbeddingFunction.md)&lt;`any`, `FunctionOptions`&gt;&gt;
+* **ctor**: `EmbeddingFunctionConstructor`&lt;[`EmbeddingFunction`](../classes/EmbeddingFunction.md)&lt;`any`, `FunctionOptions`&gt;&gt;
 
 ### Returns
 
