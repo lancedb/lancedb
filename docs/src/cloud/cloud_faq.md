@@ -27,7 +27,7 @@ downtime expected.
 ### How do I know whether an index has been created?
 While index creation in LanceDB Cloud is generally fast, querying immediately after a `create_index` call may result in errors. It's recommended to use `list_indices` to verify index creation before querying.
 
-### Why is my query so slow?
+### Why is my query latency higher than expected?
 Multiple factors can impact query latency. To reduce query latency, consider the following:
 - Send pre-warm queries: send a few queries to warm up the cache before an actual user query.
 - Check network latency: LanceDB Cloud is hosted in AWS `us-east-1` region. It is recommended to run queries from an EC2 instance that is in the same region.
