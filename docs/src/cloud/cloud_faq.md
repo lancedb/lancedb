@@ -15,7 +15,7 @@ user-defined ID column. To significantly improve the query performance with SQL 
 ### What are the vector indexing types supported by LanceDB Cloud?
 We support `IVF_PQ` and `IVF_HNSW_SQ` as the `index_type` which is passed to `create_index`. LanceDB Cloud tunes the indexing parameters automatically to achieve the best tradeoff between query latency and query quality.
 
-### Do I need to do anything when there is new data added to a table with an existing index?
+### When I add new rows to a table, do I need to manually update the index?
 No! LanceDB Cloud triggers an asynchronous background job to index the new vectors. This process will either merge the new vectors into the existing index or initiate a complete re-indexing if needed. 
 
 There is a flag `fast_search` in `table.search()` that allows you to control whether the unindexed rows should be searched or not. By default, a brute-force search will be performed for the unindexed rows so a slight slowdown in query will be expected.
