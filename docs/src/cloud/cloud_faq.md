@@ -16,9 +16,9 @@ user-defined ID column. To significantly improve the query performance with SQL 
 We support `IVF_PQ` and `IVF_HNSW_SQ` as the `index_type` which is passed to `create_index`. LanceDB Cloud tunes the indexing parameters automatically to achieve the best tradeoff between query latency and query quality.
 
 ### When I add new rows to a table, do I need to manually update the index?
-No! LanceDB Cloud triggers an asynchronous background job to index the new vectors. This process will either merge the new vectors into the existing index or initiate a complete re-indexing if needed. 
+No! LanceDB Cloud triggers an asynchronous background job to index the new vectors.
 
-There is a flag `fast_search` in `table.search()` that allows you to control whether the unindexed rows should be searched or not. By default, a brute-force search will be performed for the unindexed rows so a slight slowdown in query will be expected.
+Even though indexing is asynchronous, your vectors will still be immediately searchable. LanceDB uses brute-force search to search over unindexed rows. This makes you new data is immediately available, but does increase latency temporarily. To disable the brute-force part of search, set the `fast_search` flag in your query to `true`.
 
 ### Do I need to reindex the whole dataset if only a small portion of the data is deleted or updated?
 No! Similar to adding data to the table, LanceDB Cloud triggers an asynchronous background job to update the existing indices. Therefore, no action is needed from users and there is absolutely no 
