@@ -7,7 +7,7 @@
 # Function: register()
 
 ```ts
-function register(name?: string): (ctor: EmbeddingFunctionConstructor<EmbeddingFunction<any, FunctionOptions>>) => any
+function register(name?): (ctor) => any
 ```
 
 ## Parameters

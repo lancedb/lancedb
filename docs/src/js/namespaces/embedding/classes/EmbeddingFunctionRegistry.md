@@ -28,7 +28,7 @@ new EmbeddingFunctionRegistry(): EmbeddingFunctionRegistry
 ### functionToMetadata()
 
 ```ts
-functionToMetadata(conf: EmbeddingFunctionConfig): Record<string, any>
+functionToMetadata(conf): Record<string, any>
 ```
 
 #### Parameters
@@ -44,7 +44,7 @@ functionToMetadata(conf: EmbeddingFunctionConfig): Record<string, any>
 ### get()
 
 ```ts
-get<T>(name: string): undefined | EmbeddingFunctionCreate<T>
+get<T>(name): undefined | EmbeddingFunctionCreate<T>
 ```
 
 Fetch an embedding function by name
@@ -67,7 +67,7 @@ Fetch an embedding function by name
 ### getTableMetadata()
 
 ```ts
-getTableMetadata(functions: EmbeddingFunctionConfig[]): Map<string, string>
+getTableMetadata(functions): Map<string, string>
 ```
 
 #### Parameters
@@ -97,7 +97,7 @@ Get the number of registered functions
 ### register()
 
 ```ts
-register<T>(this: EmbeddingFunctionRegistry, alias?: string): (ctor: T) => any
+register<T>(this, alias?): (ctor) => any
 ```
 
 Register an embedding function
@@ -133,7 +133,7 @@ Error if the function is already registered
 ### reset()
 
 ```ts
-reset(this: EmbeddingFunctionRegistry): void
+reset(this): void
 ```
 
 reset the registry to the initial state

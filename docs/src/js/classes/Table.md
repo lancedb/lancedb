@@ -48,7 +48,7 @@ Returns the name of the table
 ### add()
 
 ```ts
-abstract add(data: Data, options?: Partial<AddDataOptions>): Promise<void>
+abstract add(data, options?): Promise<void>
 ```
 
 Insert records into this Table.
@@ -69,7 +69,7 @@ Insert records into this Table.
 ### addColumns()
 
 ```ts
-abstract addColumns(newColumnTransforms: AddColumnsSql[]): Promise<void>
+abstract addColumns(newColumnTransforms): Promise<void>
 ```
 
 Add new columns with defined values.
@@ -91,7 +91,7 @@ Add new columns with defined values.
 ### alterColumns()
 
 ```ts
-abstract alterColumns(columnAlterations: ColumnAlteration[]): Promise<void>
+abstract alterColumns(columnAlterations): Promise<void>
 ```
 
 Alter the name or nullability of columns.
@@ -111,7 +111,7 @@ Alter the name or nullability of columns.
 ### checkout()
 
 ```ts
-abstract checkout(version: number): Promise<void>
+abstract checkout(version): Promise<void>
 ```
 
 Checks out a specific version of the table _This is an in-place operation._
@@ -188,7 +188,7 @@ Any attempt to use the table after it is closed will result in an error.
 ### countRows()
 
 ```ts
-abstract countRows(filter?: string): Promise<number>
+abstract countRows(filter?): Promise<number>
 ```
 
 Count the total number of rows in the dataset.
@@ -206,7 +206,7 @@ Count the total number of rows in the dataset.
 ### createIndex()
 
 ```ts
-abstract createIndex(column: string, options?: Partial<IndexOptions>): Promise<void>
+abstract createIndex(column, options?): Promise<void>
 ```
 
 Create an index to speed up queries.
@@ -262,7 +262,7 @@ await table.createIndex("my_float_col");
 ### delete()
 
 ```ts
-abstract delete(predicate: string): Promise<void>
+abstract delete(predicate): Promise<void>
 ```
 
 Delete the rows that satisfy the predicate.
@@ -294,7 +294,7 @@ Return a brief description of the table
 ### dropColumns()
 
 ```ts
-abstract dropColumns(columnNames: string[]): Promise<void>
+abstract dropColumns(columnNames): Promise<void>
 ```
 
 Drop one or more columns from the dataset
@@ -320,7 +320,7 @@ then call ``cleanup_files`` to remove the old files.
 ### indexStats()
 
 ```ts
-abstract indexStats(name: string): Promise<undefined | IndexStatistics>
+abstract indexStats(name): Promise<undefined | IndexStatistics>
 ```
 
 List all the stats of a specified index
@@ -383,7 +383,7 @@ List all the versions of the table
 ### mergeInsert()
 
 ```ts
-abstract mergeInsert(on: string | string[]): MergeInsertBuilder
+abstract mergeInsert(on): MergeInsertBuilder
 ```
 
 #### Parameters
@@ -399,7 +399,7 @@ abstract mergeInsert(on: string | string[]): MergeInsertBuilder
 ### optimize()
 
 ```ts
-abstract optimize(options?: Partial<OptimizeOptions>): Promise<OptimizeStats>
+abstract optimize(options?): Promise<OptimizeStats>
 ```
 
 Optimize the on-disk data and indices for better performance.
@@ -551,9 +551,9 @@ Get the schema of the table.
 
 ```ts
 abstract search(
-   query: string | IntoVector,
-   queryType?: string,
-   ftsColumns?: string | string[]): VectorQuery | Query
+   query,
+   queryType?,
+   ftsColumns?): VectorQuery | Query
 ```
 
 Create a search query to find the nearest neighbors
@@ -598,7 +598,7 @@ Return the table as an arrow table
 #### update(opts)
 
 ```ts
-abstract update(opts: object & Partial<UpdateOptions>): Promise<void>
+abstract update(opts): Promise<void>
 ```
 
 Update existing records in the Table
@@ -620,7 +620,7 @@ table.update({where:"x = 2", values:{"vector": [10, 10]}})
 #### update(opts)
 
 ```ts
-abstract update(opts: object & Partial<UpdateOptions>): Promise<void>
+abstract update(opts): Promise<void>
 ```
 
 Update existing records in the Table
@@ -642,7 +642,7 @@ table.update({where:"x = 2", valuesSql:{"x": "x + 1"}})
 #### update(updates, options)
 
 ```ts
-abstract update(updates: Record<string, string> | Map<string, string>, options?: Partial<UpdateOptions>): Promise<void>
+abstract update(updates, options?): Promise<void>
 ```
 
 Update existing records in the Table
@@ -683,7 +683,7 @@ repeatedly calilng this method.
 ### vectorSearch()
 
 ```ts
-abstract vectorSearch(vector: IntoVector): VectorQuery
+abstract vectorSearch(vector): VectorQuery
 ```
 
 Search the table with a given query vector.
@@ -724,9 +724,9 @@ Retrieve the version of the table
 
 ```ts
 static parseTableData(
-   data: TableLike | Record<string, unknown>[],
-   options?: Partial<CreateTableOptions>,
-   streaming?: boolean): Promise<object>
+   data,
+   options?,
+   streaming?): Promise<object>
 ```
 
 #### Parameters

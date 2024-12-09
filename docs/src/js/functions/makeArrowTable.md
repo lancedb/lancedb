@@ -8,9 +8,9 @@
 
 ```ts
 function makeArrowTable(
-   data: Record<string, unknown>[],
-   options?: Partial<MakeArrowTableOptions>,
-   metadata?: Map<string, string>): ArrowTable
+   data,
+   options?,
+   metadata?): ArrowTable
 ```
 
 An enhanced version of the makeTable function from Apache Arrow

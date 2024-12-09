@@ -19,7 +19,7 @@ This builder can be reused to execute the query many times.
 ### new VectorQuery()
 
 ```ts
-new VectorQuery(inner: VectorQuery | Promise<VectorQuery>): VectorQuery
+new VectorQuery(inner): VectorQuery
 ```
 
 #### Parameters
@@ -67,7 +67,7 @@ asyncIterator: AsyncIterator<RecordBatch<any>, any, undefined>
 ### addQueryVector()
 
 ```ts
-addQueryVector(vector: IntoVector): VectorQuery
+addQueryVector(vector): VectorQuery
 ```
 
 #### Parameters
@@ -103,7 +103,7 @@ calculate your recall to select an appropriate value for nprobes.
 ### column()
 
 ```ts
-column(column: string): VectorQuery
+column(column): VectorQuery
 ```
 
 Set the vector column to query
@@ -131,7 +131,7 @@ whose data type is a fixed-size-list of floats.
 ### distanceType()
 
 ```ts
-distanceType(distanceType: "l2" | "cosine" | "dot"): VectorQuery
+distanceType(distanceType): VectorQuery
 ```
 
 Set the distance metric to use
@@ -164,7 +164,7 @@ By default "l2" is used.
 ### doCall()
 
 ```ts
-protected doCall(fn: (inner: VectorQuery) => void): void
+protected doCall(fn): void
 ```
 
 #### Parameters
@@ -184,7 +184,7 @@ protected doCall(fn: (inner: VectorQuery) => void): void
 ### ef()
 
 ```ts
-ef(ef: number): VectorQuery
+ef(ef): VectorQuery
 ```
 
 Set the number of candidates to consider during the search
@@ -208,7 +208,7 @@ also increase the latency of your query. The default value is 1.5*limit.
 ### execute()
 
 ```ts
-protected execute(options?: Partial<QueryExecutionOptions>): RecordBatchIterator
+protected execute(options?): RecordBatchIterator
 ```
 
 Execute the query and return the results as an
@@ -242,7 +242,7 @@ single query)
 ### explainPlan()
 
 ```ts
-explainPlan(verbose: boolean): Promise<string>
+explainPlan(verbose): Promise<string>
 ```
 
 Generates an explanation of the query execution plan.
@@ -299,7 +299,7 @@ Use lancedb.Table#optimize to index all un-indexed data.
 ### ~~filter()~~
 
 ```ts
-filter(predicate: string): this
+filter(predicate): this
 ```
 
 A filter statement to be applied to this query.
@@ -329,7 +329,7 @@ Use `where` instead
 ### fullTextSearch()
 
 ```ts
-fullTextSearch(query: string, options?: Partial<FullTextSearchOptions>): this
+fullTextSearch(query, options?): this
 ```
 
 #### Parameters
@@ -351,7 +351,7 @@ fullTextSearch(query: string, options?: Partial<FullTextSearchOptions>): this
 ### limit()
 
 ```ts
-limit(limit: number): this
+limit(limit): this
 ```
 
 Set the maximum number of results to return.
@@ -376,7 +376,7 @@ called then every valid row from the table will be returned.
 ### nativeExecute()
 
 ```ts
-protected nativeExecute(options?: Partial<QueryExecutionOptions>): Promise<RecordBatchIterator>
+protected nativeExecute(options?): Promise<RecordBatchIterator>
 ```
 
 #### Parameters
@@ -396,7 +396,7 @@ protected nativeExecute(options?: Partial<QueryExecutionOptions>): Promise<Recor
 ### nprobes()
 
 ```ts
-nprobes(nprobes: number): VectorQuery
+nprobes(nprobes): VectorQuery
 ```
 
 Set the number of partitions to search (probe)
@@ -433,7 +433,7 @@ you the desired recall.
 ### offset()
 
 ```ts
-offset(offset: number): this
+offset(offset): this
 ```
 
 #### Parameters
@@ -487,7 +487,7 @@ factor can often help restore some of the results lost by post filtering.
 ### refineFactor()
 
 ```ts
-refineFactor(refineFactor: number): VectorQuery
+refineFactor(refineFactor): VectorQuery
 ```
 
 A multiplier to control how many additional rows are taken during the refine step
@@ -531,7 +531,7 @@ distance between the query vector and the actual uncompressed vector.
 ### select()
 
 ```ts
-select(columns: string | string[] | Record<string, string> | Map<string, string>): this
+select(columns): this
 ```
 
 Return only the specified columns.
@@ -584,7 +584,7 @@ object insertion order is easy to get wrong and `Map` is more foolproof.
 ### toArray()
 
 ```ts
-toArray(options?: Partial<QueryExecutionOptions>): Promise<any[]>
+toArray(options?): Promise<any[]>
 ```
 
 Collect the results as an array of objects.
@@ -606,7 +606,7 @@ Collect the results as an array of objects.
 ### toArrow()
 
 ```ts
-toArrow(options?: Partial<QueryExecutionOptions>): Promise<Table<any>>
+toArrow(options?): Promise<Table<any>>
 ```
 
 Collect the results as an Arrow
@@ -632,7 +632,7 @@ ArrowTable.
 ### where()
 
 ```ts
-where(predicate: string): this
+where(predicate): this
 ```
 
 A filter statement to be applied to this query.

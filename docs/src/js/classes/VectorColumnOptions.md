@@ -11,7 +11,7 @@
 ### new VectorColumnOptions()
 
 ```ts
-new VectorColumnOptions(values?: Partial<VectorColumnOptions>): VectorColumnOptions
+new VectorColumnOptions(values?): VectorColumnOptions
 ```
 
 #### Parameters

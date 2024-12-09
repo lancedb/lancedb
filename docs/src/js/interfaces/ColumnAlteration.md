@@ -13,6 +13,24 @@ must be provided.
 
 ## Properties
 
+### dataType?
+
+```ts
+optional dataType: string;
+```
+
+A new data type for the column. If not provided then the data type will not be changed.
+Changing data types is limited to casting to the same general type. For example, these
+changes are valid:
+* `int32` -> `int64` (integers)
+* `double` -> `float` (floats)
+* `string` -> `large_string` (strings)
+But these changes are not:
+* `int32` -> `double` (mix integers and floats)
+* `string` -> `int32` (mix strings and integers)
+
+***
+
 ### nullable?
 
 ```ts

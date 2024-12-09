@@ -13,7 +13,7 @@ Options to control the makeArrowTable call.
 ### new MakeArrowTableOptions()
 
 ```ts
-new MakeArrowTableOptions(values?: Partial<MakeArrowTableOptions>): MakeArrowTableOptions
+new MakeArrowTableOptions(values?): MakeArrowTableOptions
 ```
 
 #### Parameters

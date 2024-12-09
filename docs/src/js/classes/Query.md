@@ -17,7 +17,7 @@ A builder for LanceDB queries.
 ### new Query()
 
 ```ts
-new Query(tbl: Table): Query
+new Query(tbl): Query
 ```
 
 #### Parameters
@@ -65,7 +65,7 @@ asyncIterator: AsyncIterator<RecordBatch<any>, any, undefined>
 ### doCall()
 
 ```ts
-protected doCall(fn: (inner: Query) => void): void
+protected doCall(fn): void
 ```
 
 #### Parameters
@@ -85,7 +85,7 @@ protected doCall(fn: (inner: Query) => void): void
 ### execute()
 
 ```ts
-protected execute(options?: Partial<QueryExecutionOptions>): RecordBatchIterator
+protected execute(options?): RecordBatchIterator
 ```
 
 Execute the query and return the results as an
@@ -119,7 +119,7 @@ single query)
 ### explainPlan()
 
 ```ts
-explainPlan(verbose: boolean): Promise<string>
+explainPlan(verbose): Promise<string>
 ```
 
 Generates an explanation of the query execution plan.
@@ -176,7 +176,7 @@ Use lancedb.Table#optimize to index all un-indexed data.
 ### ~~filter()~~
 
 ```ts
-filter(predicate: string): this
+filter(predicate): this
 ```
 
 A filter statement to be applied to this query.
@@ -206,7 +206,7 @@ Use `where` instead
 ### fullTextSearch()
 
 ```ts
-fullTextSearch(query: string, options?: Partial<FullTextSearchOptions>): this
+fullTextSearch(query, options?): this
 ```
 
 #### Parameters
@@ -228,7 +228,7 @@ fullTextSearch(query: string, options?: Partial<FullTextSearchOptions>): this
 ### limit()
 
 ```ts
-limit(limit: number): this
+limit(limit): this
 ```
 
 Set the maximum number of results to return.
@@ -253,7 +253,7 @@ called then every valid row from the table will be returned.
 ### nativeExecute()
 
 ```ts
-protected nativeExecute(options?: Partial<QueryExecutionOptions>): Promise<RecordBatchIterator>
+protected nativeExecute(options?): Promise<RecordBatchIterator>
 ```
 
 #### Parameters
@@ -273,7 +273,7 @@ protected nativeExecute(options?: Partial<QueryExecutionOptions>): Promise<Recor
 ### nearestTo()
 
 ```ts
-nearestTo(vector: IntoVector): VectorQuery
+nearestTo(vector): VectorQuery
 ```
 
 Find the nearest vectors to the given query vector.
@@ -329,7 +329,7 @@ a default `limit` of 10 will be used.
 ### nearestToText()
 
 ```ts
-nearestToText(query: string, columns?: string[]): Query
+nearestToText(query, columns?): Query
 ```
 
 #### Parameters
@@ -347,7 +347,7 @@ nearestToText(query: string, columns?: string[]): Query
 ### offset()
 
 ```ts
-offset(offset: number): this
+offset(offset): this
 ```
 
 #### Parameters
@@ -367,7 +367,7 @@ offset(offset: number): this
 ### select()
 
 ```ts
-select(columns: string | string[] | Record<string, string> | Map<string, string>): this
+select(columns): this
 ```
 
 Return only the specified columns.
@@ -420,7 +420,7 @@ object insertion order is easy to get wrong and `Map` is more foolproof.
 ### toArray()
 
 ```ts
-toArray(options?: Partial<QueryExecutionOptions>): Promise<any[]>
+toArray(options?): Promise<any[]>
 ```
 
 Collect the results as an array of objects.
@@ -442,7 +442,7 @@ Collect the results as an array of objects.
 ### toArrow()
 
 ```ts
-toArrow(options?: Partial<QueryExecutionOptions>): Promise<Table<any>>
+toArrow(options?): Promise<Table<any>>
 ```
 
 Collect the results as an Arrow
@@ -468,7 +468,7 @@ ArrowTable.
 ### where()
 
 ```ts
-where(predicate: string): this
+where(predicate): this
 ```
 
 A filter statement to be applied to this query.

@@ -7,7 +7,7 @@
 # Function: LanceSchema()
 
 ```ts
-function LanceSchema(fields: Record<string, object | [object, Map<string, EmbeddingFunction<any, FunctionOptions>>]>): Schema
+function LanceSchema(fields): Schema
 ```
 
 Create a schema with embedding functions.

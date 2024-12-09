@@ -15,7 +15,7 @@
 ### new RecordBatchIterator()
 
 ```ts
-new RecordBatchIterator(promise?: Promise<RecordBatchIterator>): RecordBatchIterator
+new RecordBatchIterator(promise?): RecordBatchIterator
 ```
 
 #### Parameters

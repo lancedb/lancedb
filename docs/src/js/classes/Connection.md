@@ -59,9 +59,9 @@ Any attempt to use the connection after it is closed will result in an error.
 
 ```ts
 abstract createEmptyTable(
-   name: string,
-   schema: SchemaLike,
-   options?: Partial<CreateTableOptions>): Promise<Table>
+   name,
+   schema,
+   options?): Promise<Table>
 ```
 
 Creates a new empty Table
@@ -87,7 +87,7 @@ Creates a new empty Table
 #### createTable(options)
 
 ```ts
-abstract createTable(options: object & Partial<CreateTableOptions>): Promise<Table>
+abstract createTable(options): Promise<Table>
 ```
 
 Creates a new Table and initialize it with new data.
@@ -105,9 +105,9 @@ Creates a new Table and initialize it with new data.
 
 ```ts
 abstract createTable(
-   name: string,
-   data: TableLike | Record<string, unknown>[],
-   options?: Partial<CreateTableOptions>): Promise<Table>
+   name,
+   data,
+   options?): Promise<Table>
 ```
 
 Creates a new Table and initialize it with new data.
@@ -146,7 +146,7 @@ Return a brief description of the connection
 ### dropTable()
 
 ```ts
-abstract dropTable(name: string): Promise<void>
+abstract dropTable(name): Promise<void>
 ```
 
 Drop an existing table.
@@ -179,7 +179,7 @@ Return true if the connection has not been closed
 ### openTable()
 
 ```ts
-abstract openTable(name: string, options?: Partial<OpenTableOptions>): Promise<Table>
+abstract openTable(name, options?): Promise<Table>
 ```
 
 Open a table in the database.
@@ -200,7 +200,7 @@ Open a table in the database.
 ### tableNames()
 
 ```ts
-abstract tableNames(options?: Partial<TableNamesOptions>): Promise<string[]>
+abstract tableNames(options?): Promise<string[]>
 ```
 
 List all the table names in this database.

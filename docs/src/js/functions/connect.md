@@ -9,7 +9,7 @@
 ## connect(uri, opts)
 
 ```ts
-function connect(uri: string, opts?: Partial<ConnectionOptions>): Promise<Connection>
+function connect(uri, opts?): Promise<Connection>
 ```
 
 Connect to a LanceDB instance at the given URI.
@@ -52,7 +52,7 @@ const conn = await connect(
 ## connect(opts)
 
 ```ts
-function connect(opts: Partial<ConnectionOptions> & object): Promise<Connection>
+function connect(opts): Promise<Connection>
 ```
 
 Connect to a LanceDB instance at the given URI.

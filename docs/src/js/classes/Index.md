@@ -60,7 +60,7 @@ block size may be added in the future.
 ### fts()
 
 ```ts
-static fts(options?: Partial<FtsOptions>): Index
+static fts(options?): Index
 ```
 
 Create a full text search index
@@ -87,7 +87,7 @@ For now, the full text search index only supports English, and doesn't support p
 ### hnswPq()
 
 ```ts
-static hnswPq(options?: Partial<HnswPqOptions>): Index
+static hnswPq(options?): Index
 ```
 
 Create a hnswPq index
@@ -109,7 +109,7 @@ the vectors.
 ### hnswSq()
 
 ```ts
-static hnswSq(options?: Partial<HnswSqOptions>): Index
+static hnswSq(options?): Index
 ```
 
 Create a hnswSq index
@@ -131,7 +131,7 @@ the vectors.
 ### ivfPq()
 
 ```ts
-static ivfPq(options?: Partial<IvfPqOptions>): Index
+static ivfPq(options?): Index
 ```
 
 Create an IvfPq index

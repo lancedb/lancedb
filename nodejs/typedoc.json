@@ -9,6 +9,5 @@
   ],
   "useHTMLEncodedBrackets": true,
   "useCodeBlocks": true,
-  "expandParameters": true,
   "disableSources": true
 }

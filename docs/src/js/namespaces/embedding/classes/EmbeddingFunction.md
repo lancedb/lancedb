@@ -35,7 +35,7 @@ new EmbeddingFunction<T, M>(): EmbeddingFunction<T, M>
 ### computeQueryEmbeddings()
 
 ```ts
-computeQueryEmbeddings(data: T): Promise<number[] | Float32Array | Float64Array>
+computeQueryEmbeddings(data): Promise<number[] | Float32Array | Float64Array>
 ```
 
 Compute the embeddings for a single query
@@ -53,7 +53,7 @@ Compute the embeddings for a single query
 ### computeSourceEmbeddings()
 
 ```ts
-abstract computeSourceEmbeddings(data: T[]): Promise<number[][] | Float32Array[] | Float64Array[]>
+abstract computeSourceEmbeddings(data): Promise<number[][] | Float32Array[] | Float64Array[]>
 ```
 
 Creates a vector representation for the given values.
@@ -111,7 +111,7 @@ The number of dimensions of the embeddings
 ### sourceField()
 
 ```ts
-sourceField(optionsOrDatatype: DataType<Type, any> | Partial<FieldOptions<DataType<Type, any>>>): [DataType<Type, any>, Map<string, EmbeddingFunction<any, FunctionOptions>>]
+sourceField(optionsOrDatatype): [DataType<Type, any>, Map<string, EmbeddingFunction<any, FunctionOptions>>]
 ```
 
 sourceField is used in combination with `LanceSchema` to provide a declarative data model
@@ -171,7 +171,7 @@ class MyEmbeddingFunction extends EmbeddingFunction {
 ### vectorField()
 
 ```ts
-vectorField(optionsOrDatatype?: DataType<Type, any> | Partial<FieldOptions<DataType<Type, any>>>): [DataType<Type, any>, Map<string, EmbeddingFunction<any, FunctionOptions>>]
+vectorField(optionsOrDatatype?): [DataType<Type, any>, Map<string, EmbeddingFunction<any, FunctionOptions>>]
 ```
 
 vectorField is used in combination with `LanceSchema` to provide a declarative data model
