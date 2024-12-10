@@ -1634,7 +1634,9 @@ class AsyncQuery(AsyncQueryBase):
         if (
             isinstance(query_vector, list)
             and len(query_vector) > 0
-            and not np.isrealobj(query_vector[0])
+            and not isinstance(
+                query_vector[0], (float, int, np.float16, np.float32, np.float64)
+            )
         ):
             # multiple have been passed
             query_vectors = [AsyncQuery._query_vec_to_array(v) for v in query_vector]
