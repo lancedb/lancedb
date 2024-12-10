@@ -79,8 +79,14 @@ def test_quickstart():
     tbl.add_columns({"double_price": "cast((price * 2) as float)"})
     # --8<-- [end:add_columns]
     # --8<-- [start:alter_columns]
-    tbl.alter_columns({"path": "double_price", "rename": "dbl_price",
-                        "data_type": pa.float64(), "nullable": True})
+    tbl.alter_columns(
+        {
+            "path": "double_price",
+            "rename": "dbl_price",
+            "data_type": pa.float64(),
+            "nullable": True,
+        }
+    )
     # --8<-- [end:alter_columns]
     # --8<-- [start:drop_columns]
     tbl.drop_columns(["dbl_price"])
