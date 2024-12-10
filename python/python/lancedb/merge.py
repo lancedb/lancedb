@@ -105,3 +105,13 @@ class LanceMergeInsertBuilder(object):
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
         """
         return self._table._do_merge(self, new_data, on_bad_vectors, fill_value)
+
+
+class AsyncLanceMergeInsertBuilder(LanceMergeInsertBuilder):
+    async def execute(
+        self,
+        new_data: DATA,
+        on_bad_vectors: str = "error",
+        fill_value: float = 0.0,
+    ):
+        return await self._table._do_merge(self, new_data, on_bad_vectors, fill_value)
