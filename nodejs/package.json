@@ -78,6 +78,7 @@
     "build-release": "npm run build:release && tsc -b && shx cp lancedb/native.d.ts dist/native.d.ts",
     "lint-ci": "biome ci .",
     "docs": "typedoc --plugin typedoc-plugin-markdown --out ../docs/src/js lancedb/index.ts",
+    "postdocs": "node typedoc_post_process.js",
     "lint": "biome check . && biome format .",
     "lint-fix": "biome check --write . && biome format --write .",
     "prepublishOnly": "napi prepublish -t npm",

@@ -10,11 +10,13 @@
 
 ### new VectorColumnOptions()
 
-> **new VectorColumnOptions**(`values`?): [`VectorColumnOptions`](VectorColumnOptions.md)
+```ts
+new VectorColumnOptions(values?): VectorColumnOptions
+```
 
 #### Parameters
 
-• **values?**: `Partial`&lt;[`VectorColumnOptions`](VectorColumnOptions.md)&gt;
+* **values?**: `Partial`&lt;[`VectorColumnOptions`](VectorColumnOptions.md)&gt;
 
 #### Returns
 
@@ -24,6 +26,8 @@
 
 ### type
 
-> **type**: `Float`&lt;`Floats`&gt;
+```ts
+type: Float<Floats>;
+```
 
 Vector column type.

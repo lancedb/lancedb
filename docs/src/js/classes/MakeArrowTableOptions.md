@@ -12,11 +12,13 @@ Options to control the makeArrowTable call.
 
 ### new MakeArrowTableOptions()
 
-> **new MakeArrowTableOptions**(`values`?): [`MakeArrowTableOptions`](MakeArrowTableOptions.md)
+```ts
+new MakeArrowTableOptions(values?): MakeArrowTableOptions
+```
 
 #### Parameters
 
-• **values?**: `Partial`&lt;[`MakeArrowTableOptions`](MakeArrowTableOptions.md)&gt;
+* **values?**: `Partial`&lt;[`MakeArrowTableOptions`](MakeArrowTableOptions.md)&gt;
 
 #### Returns
 
@@ -26,7 +28,9 @@ Options to control the makeArrowTable call.
 
 ### dictionaryEncodeStrings
 
-> **dictionaryEncodeStrings**: `boolean` = `false`
+```ts
+dictionaryEncodeStrings: boolean = false;
+```
 
 If true then string columns will be encoded with dictionary encoding
 
@@ -40,22 +44,30 @@ If `schema` is provided then this property is ignored.
 
 ### embeddingFunction?
 
-> `optional` **embeddingFunction**: [`EmbeddingFunctionConfig`](../namespaces/embedding/interfaces/EmbeddingFunctionConfig.md)
+```ts
+optional embeddingFunction: EmbeddingFunctionConfig;
+```
 
 ***
 
 ### embeddings?
 
-> `optional` **embeddings**: [`EmbeddingFunction`](../namespaces/embedding/classes/EmbeddingFunction.md)&lt;`unknown`, `FunctionOptions`&gt;
+```ts
+optional embeddings: EmbeddingFunction<unknown, FunctionOptions>;
+```
 
 ***
 
 ### schema?
 
-> `optional` **schema**: `SchemaLike`
+```ts
+optional schema: SchemaLike;
+```
 
 ***
 
 ### vectorColumns
 
-> **vectorColumns**: `Record`&lt;`string`, [`VectorColumnOptions`](VectorColumnOptions.md)&gt;
+```ts
+vectorColumns: Record<string, VectorColumnOptions>;
+```

@@ -10,7 +10,7 @@ An embedding function that automatically creates vector representation for a giv
 
 ## Extended by
 
-- [`OpenAIEmbeddingFunction`](OpenAIEmbeddingFunction.md)
+- [`TextEmbeddingFunction`](TextEmbeddingFunction.md)
 
 ## Type Parameters
 
@@ -22,7 +22,9 @@ An embedding function that automatically creates vector representation for a giv
 
 ### new EmbeddingFunction()
 
-> **new EmbeddingFunction**&lt;`T`, `M`&gt;(): [`EmbeddingFunction`](EmbeddingFunction.md)&lt;`T`, `M`&gt;
+```ts
+new EmbeddingFunction<T, M>(): EmbeddingFunction<T, M>
+```
 
 #### Returns
 
@@ -32,13 +34,15 @@ An embedding function that automatically creates vector representation for a giv
 
 ### computeQueryEmbeddings()
 
-> **computeQueryEmbeddings**(`data`): `Promise`&lt;`number`[] \| `Float32Array` \| `Float64Array`&gt;
+```ts
+computeQueryEmbeddings(data): Promise<number[] | Float32Array | Float64Array>
+```
 
 Compute the embeddings for a single query
 
 #### Parameters
 
-• **data**: `T`
+* **data**: `T`
 
 #### Returns
 
@@ -48,13 +52,15 @@ Compute the embeddings for a single query
 
 ### computeSourceEmbeddings()
 
-> `abstract` **computeSourceEmbeddings**(`data`): `Promise`&lt;`number`[][] \| `Float32Array`[] \| `Float64Array`[]&gt;
+```ts
+abstract computeSourceEmbeddings(data): Promise<number[][] | Float32Array[] | Float64Array[]>
+```
 
 Creates a vector representation for the given values.
 
 #### Parameters
 
-• **data**: `T`[]
+* **data**: `T`[]
 
 #### Returns
 
@@ -64,7 +70,9 @@ Creates a vector representation for the given values.
 
 ### embeddingDataType()
 
-> `abstract` **embeddingDataType**(): `Float`&lt;`Floats`&gt;
+```ts
+abstract embeddingDataType(): Float<Floats>
+```
 
 The datatype of the embeddings
 
@@ -74,9 +82,23 @@ The datatype of the embeddings
 
 ***
 
+### init()?
+
+```ts
+optional init(): Promise<void>
+```
+
+#### Returns
+
+`Promise`&lt;`void`&gt;
+
+***
+
 ### ndims()
 
-> **ndims**(): `undefined` \| `number`
+```ts
+ndims(): undefined | number
+```
 
 The number of dimensions of the embeddings
 
@@ -88,15 +110,16 @@ The number of dimensions of the embeddings
 
 ### sourceField()
 
-> **sourceField**(`optionsOrDatatype`): [`DataType`&lt;`Type`, `any`&gt;, `Map`&lt;`string`, [`EmbeddingFunction`](EmbeddingFunction.md)&lt;`any`, `FunctionOptions`&gt;&gt;]
+```ts
+sourceField(optionsOrDatatype): [DataType<Type, any>, Map<string, EmbeddingFunction<any, FunctionOptions>>]
+```
 
 sourceField is used in combination with `LanceSchema` to provide a declarative data model
 
 #### Parameters
 
-• **optionsOrDatatype**: `DataType`&lt;`Type`, `any`&gt; \| `Partial`&lt;`FieldOptions`&lt;`DataType`&lt;`Type`, `any`&gt;&gt;&gt;
-
-The options for the field or the datatype
+* **optionsOrDatatype**: `DataType`&lt;`Type`, `any`&gt; \| `Partial`&lt;`FieldOptions`&lt;`DataType`&lt;`Type`, `any`&gt;&gt;&gt;
+    The options for the field or the datatype
 
 #### Returns
 
@@ -110,7 +133,9 @@ lancedb.LanceSchema
 
 ### toJSON()
 
-> `abstract` **toJSON**(): `Partial`&lt;`M`&gt;
+```ts
+abstract toJSON(): Partial<M>
+```
 
 Convert the embedding function to a JSON object
 It is used to serialize the embedding function to the schema
@@ -145,13 +170,15 @@ class MyEmbeddingFunction extends EmbeddingFunction {
 
 ### vectorField()
 
-> **vectorField**(`optionsOrDatatype`?): [`DataType`&lt;`Type`, `any`&gt;, `Map`&lt;`string`, [`EmbeddingFunction`](EmbeddingFunction.md)&lt;`any`, `FunctionOptions`&gt;&gt;]
+```ts
+vectorField(optionsOrDatatype?): [DataType<Type, any>, Map<string, EmbeddingFunction<any, FunctionOptions>>]
+```
 
 vectorField is used in combination with `LanceSchema` to provide a declarative data model
 
 #### Parameters
 
-• **optionsOrDatatype?**: `DataType`&lt;`Type`, `any`&gt; \| `Partial`&lt;`FieldOptions`&lt;`DataType`&lt;`Type`, `any`&gt;&gt;&gt;
+* **optionsOrDatatype?**: `DataType`&lt;`Type`, `any`&gt; \| `Partial`&lt;`FieldOptions`&lt;`DataType`&lt;`Type`, `any`&gt;&gt;&gt;
 
 #### Returns
 

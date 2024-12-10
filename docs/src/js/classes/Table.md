@@ -21,7 +21,9 @@ collected.
 
 ### new Table()
 
-> **new Table**(): [`Table`](Table.md)
+```ts
+new Table(): Table
+```
 
 #### Returns
 
@@ -31,7 +33,9 @@ collected.
 
 ### name
 
-> `get` `abstract` **name**(): `string`
+```ts
+get abstract name(): string
+```
 
 Returns the name of the table
 
@@ -43,17 +47,18 @@ Returns the name of the table
 
 ### add()
 
-> `abstract` **add**(`data`, `options`?): `Promise`&lt;`void`&gt;
+```ts
+abstract add(data, options?): Promise<void>
+```
 
 Insert records into this Table.
 
 #### Parameters
 
-• **data**: [`Data`](../type-aliases/Data.md)
+* **data**: [`Data`](../type-aliases/Data.md)
+    Records to be inserted into the Table
 
-Records to be inserted into the Table
-
-• **options?**: `Partial`&lt;[`AddDataOptions`](../interfaces/AddDataOptions.md)&gt;
+* **options?**: `Partial`&lt;[`AddDataOptions`](../interfaces/AddDataOptions.md)&gt;
 
 #### Returns
 
@@ -63,18 +68,19 @@ Records to be inserted into the Table
 
 ### addColumns()
 
-> `abstract` **addColumns**(`newColumnTransforms`): `Promise`&lt;`void`&gt;
+```ts
+abstract addColumns(newColumnTransforms): Promise<void>
+```
 
 Add new columns with defined values.
 
 #### Parameters
 
-• **newColumnTransforms**: [`AddColumnsSql`](../interfaces/AddColumnsSql.md)[]
-
-pairs of column names and
-the SQL expression to use to calculate the value of the new column. These
-expressions will be evaluated for each row in the table, and can
-reference existing columns in the table.
+* **newColumnTransforms**: [`AddColumnsSql`](../interfaces/AddColumnsSql.md)[]
+    pairs of column names and
+    the SQL expression to use to calculate the value of the new column. These
+    expressions will be evaluated for each row in the table, and can
+    reference existing columns in the table.
 
 #### Returns
 
@@ -84,16 +90,17 @@ reference existing columns in the table.
 
 ### alterColumns()
 
-> `abstract` **alterColumns**(`columnAlterations`): `Promise`&lt;`void`&gt;
+```ts
+abstract alterColumns(columnAlterations): Promise<void>
+```
 
 Alter the name or nullability of columns.
 
 #### Parameters
 
-• **columnAlterations**: [`ColumnAlteration`](../interfaces/ColumnAlteration.md)[]
-
-One or more alterations to
-apply to columns.
+* **columnAlterations**: [`ColumnAlteration`](../interfaces/ColumnAlteration.md)[]
+    One or more alterations to
+    apply to columns.
 
 #### Returns
 
@@ -103,7 +110,9 @@ apply to columns.
 
 ### checkout()
 
-> `abstract` **checkout**(`version`): `Promise`&lt;`void`&gt;
+```ts
+abstract checkout(version): Promise<void>
+```
 
 Checks out a specific version of the table _This is an in-place operation._
 
@@ -116,9 +125,8 @@ wish to return to standard mode, call `checkoutLatest`.
 
 #### Parameters
 
-• **version**: `number`
-
-The version to checkout
+* **version**: `number`
+    The version to checkout
 
 #### Returns
 
@@ -144,7 +152,9 @@ console.log(await table.version()); // 2
 
 ### checkoutLatest()
 
-> `abstract` **checkoutLatest**(): `Promise`&lt;`void`&gt;
+```ts
+abstract checkoutLatest(): Promise<void>
+```
 
 Checkout the latest version of the table. _This is an in-place operation._
 
@@ -159,7 +169,9 @@ version of the table.
 
 ### close()
 
-> `abstract` **close**(): `void`
+```ts
+abstract close(): void
+```
 
 Close the table, releasing any underlying resources.
 
@@ -175,13 +187,15 @@ Any attempt to use the table after it is closed will result in an error.
 
 ### countRows()
 
-> `abstract` **countRows**(`filter`?): `Promise`&lt;`number`&gt;
+```ts
+abstract countRows(filter?): Promise<number>
+```
 
 Count the total number of rows in the dataset.
 
 #### Parameters
 
-• **filter?**: `string`
+* **filter?**: `string`
 
 #### Returns
 
@@ -191,7 +205,9 @@ Count the total number of rows in the dataset.
 
 ### createIndex()
 
-> `abstract` **createIndex**(`column`, `options`?): `Promise`&lt;`void`&gt;
+```ts
+abstract createIndex(column, options?): Promise<void>
+```
 
 Create an index to speed up queries.
 
@@ -202,9 +218,9 @@ vector and non-vector searches)
 
 #### Parameters
 
-• **column**: `string`
+* **column**: `string`
 
-• **options?**: `Partial`&lt;[`IndexOptions`](../interfaces/IndexOptions.md)&gt;
+* **options?**: `Partial`&lt;[`IndexOptions`](../interfaces/IndexOptions.md)&gt;
 
 #### Returns
 
@@ -245,13 +261,15 @@ await table.createIndex("my_float_col");
 
 ### delete()
 
-> `abstract` **delete**(`predicate`): `Promise`&lt;`void`&gt;
+```ts
+abstract delete(predicate): Promise<void>
+```
 
 Delete the rows that satisfy the predicate.
 
 #### Parameters
 
-• **predicate**: `string`
+* **predicate**: `string`
 
 #### Returns
 
@@ -261,7 +279,9 @@ Delete the rows that satisfy the predicate.
 
 ### display()
 
-> `abstract` **display**(): `string`
+```ts
+abstract display(): string
+```
 
 Return a brief description of the table
 
@@ -273,7 +293,9 @@ Return a brief description of the table
 
 ### dropColumns()
 
-> `abstract` **dropColumns**(`columnNames`): `Promise`&lt;`void`&gt;
+```ts
+abstract dropColumns(columnNames): Promise<void>
+```
 
 Drop one or more columns from the dataset
 
@@ -284,11 +306,10 @@ then call ``cleanup_files`` to remove the old files.
 
 #### Parameters
 
-• **columnNames**: `string`[]
-
-The names of the columns to drop. These can
-be nested column references (e.g. "a.b.c") or top-level column names
-(e.g. "a").
+* **columnNames**: `string`[]
+    The names of the columns to drop. These can
+    be nested column references (e.g. "a.b.c") or top-level column names
+    (e.g. "a").
 
 #### Returns
 
@@ -298,15 +319,16 @@ be nested column references (e.g. "a.b.c") or top-level column names
 
 ### indexStats()
 
-> `abstract` **indexStats**(`name`): `Promise`&lt;`undefined` \| [`IndexStatistics`](../interfaces/IndexStatistics.md)&gt;
+```ts
+abstract indexStats(name): Promise<undefined | IndexStatistics>
+```
 
 List all the stats of a specified index
 
 #### Parameters
 
-• **name**: `string`
-
-The name of the index.
+* **name**: `string`
+    The name of the index.
 
 #### Returns
 
@@ -318,7 +340,9 @@ The stats of the index. If the index does not exist, it will return undefined
 
 ### isOpen()
 
-> `abstract` **isOpen**(): `boolean`
+```ts
+abstract isOpen(): boolean
+```
 
 Return true if the table has not been closed
 
@@ -330,7 +354,9 @@ Return true if the table has not been closed
 
 ### listIndices()
 
-> `abstract` **listIndices**(): `Promise`&lt;[`IndexConfig`](../interfaces/IndexConfig.md)[]&gt;
+```ts
+abstract listIndices(): Promise<IndexConfig[]>
+```
 
 List all indices that have been created with [Table.createIndex](Table.md#createindex)
 
@@ -340,13 +366,29 @@ List all indices that have been created with [Table.createIndex](Table.md#create
 
 ***
 
+### listVersions()
+
+```ts
+abstract listVersions(): Promise<Version[]>
+```
+
+List all the versions of the table
+
+#### Returns
+
+`Promise`&lt;`Version`[]&gt;
+
+***
+
 ### mergeInsert()
 
-> `abstract` **mergeInsert**(`on`): `MergeInsertBuilder`
+```ts
+abstract mergeInsert(on): MergeInsertBuilder
+```
 
 #### Parameters
 
-• **on**: `string` \| `string`[]
+* **on**: `string` \| `string`[]
 
 #### Returns
 
@@ -356,7 +398,9 @@ List all indices that have been created with [Table.createIndex](Table.md#create
 
 ### optimize()
 
-> `abstract` **optimize**(`options`?): `Promise`&lt;`OptimizeStats`&gt;
+```ts
+abstract optimize(options?): Promise<OptimizeStats>
+```
 
 Optimize the on-disk data and indices for better performance.
 
@@ -388,7 +432,7 @@ Modeled after ``VACUUM`` in PostgreSQL.
 
 #### Parameters
 
-• **options?**: `Partial`&lt;`OptimizeOptions`&gt;
+* **options?**: `Partial`&lt;[`OptimizeOptions`](../interfaces/OptimizeOptions.md)&gt;
 
 #### Returns
 
@@ -398,7 +442,9 @@ Modeled after ``VACUUM`` in PostgreSQL.
 
 ### query()
 
-> `abstract` **query**(): [`Query`](Query.md)
+```ts
+abstract query(): Query
+```
 
 Create a [Query](Query.md) Builder.
 
@@ -466,7 +512,9 @@ for await (const batch of table.query()) {
 
 ### restore()
 
-> `abstract` **restore**(): `Promise`&lt;`void`&gt;
+```ts
+abstract restore(): Promise<void>
+```
 
 Restore the table to the currently checked out version
 
@@ -487,7 +535,9 @@ out state and the read_consistency_interval, if any, will apply.
 
 ### schema()
 
-> `abstract` **schema**(): `Promise`&lt;`Schema`&lt;`any`&gt;&gt;
+```ts
+abstract schema(): Promise<Schema<any>>
+```
 
 Get the schema of the table.
 
@@ -499,61 +549,41 @@ Get the schema of the table.
 
 ### search()
 
-#### search(query)
-
-> `abstract` **search**(`query`, `queryType`, `ftsColumns`): [`VectorQuery`](VectorQuery.md)
-
-Create a search query to find the nearest neighbors
-of the given query vector, or the documents
-with the highest relevance to the query string.
-
-##### Parameters
-
-• **query**: `string`
-
-the query. This will be converted to a vector using the table's provided embedding function,
-or the query string for full-text search if `queryType` is "fts".
-
-• **queryType**: `string` =  `"auto"` \| `"fts"`
-
-the type of query to run. If "auto", the query type will be determined based on the query.
-
-• **ftsColumns**: `string[] | str` =  undefined
-
-the columns to search in. If not provided, all indexed columns will be searched.
-
-For now, this can support to search only one column.
-
-##### Returns
-
-[`VectorQuery`](VectorQuery.md)
-
-##### Note
-
-If no embedding functions are defined in the table, this will error when collecting the results.
-
-#### search(query)
-
-> `abstract` **search**(`query`): [`VectorQuery`](VectorQuery.md)
+```ts
+abstract search(
+   query,
+   queryType?,
+   ftsColumns?): VectorQuery | Query
+```
 
 Create a search query to find the nearest neighbors
-of the given query vector
+of the given query
 
-##### Parameters
+#### Parameters
 
-• **query**: `IntoVector`
+* **query**: `string` \| `IntoVector`
+    the query, a vector or string
 
-the query vector
+* **queryType?**: `string`
+    the type of the query, "vector", "fts", or "auto"
 
-##### Returns
+* **ftsColumns?**: `string` \| `string`[]
+    the columns to search in for full text search
+    for now, only one column can be searched at a time.
+    when "auto" is used, if the query is a string and an embedding function is defined, it will be treated as a vector query
+    if the query is a string and no embedding function is defined, it will be treated as a full text search query
 
-[`VectorQuery`](VectorQuery.md)
+#### Returns
+
+[`VectorQuery`](VectorQuery.md) \| [`Query`](Query.md)
 
 ***
 
 ### toArrow()
 
-> `abstract` **toArrow**(): `Promise`&lt;`Table`&lt;`any`&gt;&gt;
+```ts
+abstract toArrow(): Promise<Table<any>>
+```
 
 Return the table as an arrow table
 
@@ -567,13 +597,15 @@ Return the table as an arrow table
 
 #### update(opts)
 
-> `abstract` **update**(`opts`): `Promise`&lt;`void`&gt;
+```ts
+abstract update(opts): Promise<void>
+```
 
 Update existing records in the Table
 
 ##### Parameters
 
-• **opts**: `object` & `Partial`&lt;[`UpdateOptions`](../interfaces/UpdateOptions.md)&gt;
+* **opts**: `object` & `Partial`&lt;[`UpdateOptions`](../interfaces/UpdateOptions.md)&gt;
 
 ##### Returns
 
@@ -587,13 +619,15 @@ table.update({where:"x = 2", values:{"vector": [10, 10]}})
 
 #### update(opts)
 
-> `abstract` **update**(`opts`): `Promise`&lt;`void`&gt;
+```ts
+abstract update(opts): Promise<void>
+```
 
 Update existing records in the Table
 
 ##### Parameters
 
-• **opts**: `object` & `Partial`&lt;[`UpdateOptions`](../interfaces/UpdateOptions.md)&gt;
+* **opts**: `object` & `Partial`&lt;[`UpdateOptions`](../interfaces/UpdateOptions.md)&gt;
 
 ##### Returns
 
@@ -607,7 +641,9 @@ table.update({where:"x = 2", valuesSql:{"x": "x + 1"}})
 
 #### update(updates, options)
 
-> `abstract` **update**(`updates`, `options`?): `Promise`&lt;`void`&gt;
+```ts
+abstract update(updates, options?): Promise<void>
+```
 
 Update existing records in the Table
 
@@ -626,20 +662,17 @@ repeatedly calilng this method.
 
 ##### Parameters
 
-• **updates**: `Record`&lt;`string`, `string`&gt; \| `Map`&lt;`string`, `string`&gt;
+* **updates**: `Record`&lt;`string`, `string`&gt; \| `Map`&lt;`string`, `string`&gt;
+    the
+    columns to update
+    Keys in the map should specify the name of the column to update.
+    Values in the map provide the new value of the column.  These can
+    be SQL literal strings (e.g. "7" or "'foo'") or they can be expressions
+    based on the row being updated (e.g. "my_col + 1")
 
-the
-columns to update
-
-Keys in the map should specify the name of the column to update.
-Values in the map provide the new value of the column.  These can
-be SQL literal strings (e.g. "7" or "'foo'") or they can be expressions
-based on the row being updated (e.g. "my_col + 1")
-
-• **options?**: `Partial`&lt;[`UpdateOptions`](../interfaces/UpdateOptions.md)&gt;
-
-additional options to control
-the update behavior
+* **options?**: `Partial`&lt;[`UpdateOptions`](../interfaces/UpdateOptions.md)&gt;
+    additional options to control
+    the update behavior
 
 ##### Returns
 
@@ -649,7 +682,9 @@ the update behavior
 
 ### vectorSearch()
 
-> `abstract` **vectorSearch**(`vector`): [`VectorQuery`](VectorQuery.md)
+```ts
+abstract vectorSearch(vector): VectorQuery
+```
 
 Search the table with a given query vector.
 
@@ -659,7 +694,7 @@ by `query`.
 
 #### Parameters
 
-• **vector**: `IntoVector`
+* **vector**: `IntoVector`
 
 #### Returns
 
@@ -673,7 +708,9 @@ by `query`.
 
 ### version()
 
-> `abstract` **version**(): `Promise`&lt;`number`&gt;
+```ts
+abstract version(): Promise<number>
+```
 
 Retrieve the version of the table
 
@@ -685,15 +722,20 @@ Retrieve the version of the table
 
 ### parseTableData()
 
-> `static` **parseTableData**(`data`, `options`?, `streaming`?): `Promise`&lt;`object`&gt;
+```ts
+static parseTableData(
+   data,
+   options?,
+   streaming?): Promise<object>
+```
 
 #### Parameters
 
-• **data**: `TableLike` \| `Record`&lt;`string`, `unknown`&gt;[]
+* **data**: `TableLike` \| `Record`&lt;`string`, `unknown`&gt;[]
 
-• **options?**: `Partial`&lt;[`CreateTableOptions`](../interfaces/CreateTableOptions.md)&gt;
+* **options?**: `Partial`&lt;[`CreateTableOptions`](../interfaces/CreateTableOptions.md)&gt;
 
-• **streaming?**: `boolean` = `false`
+* **streaming?**: `boolean` = `false`
 
 #### Returns
 
@@ -701,8 +743,12 @@ Retrieve the version of the table
 
 ##### buf
 
-> **buf**: `Buffer`
+```ts
+buf: Buffer;
+```
 
 ##### mode
 
-> **mode**: `string`
+```ts
+mode: string;
+```
