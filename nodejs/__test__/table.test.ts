@@ -567,6 +567,15 @@ describe("When creating an index", () => {
     // TODO: Verify parameters when we can load index config as part of list indices
   });
 
+  it("should be able to create 4bit IVF_PQ", async () => {
+    await tbl.createIndex("vec", {
+      config: Index.ivfPq({
+        numPartitions: 10,
+        numBits: 4,
+      }),
+    });
+  });
+
   it("should allow me to replace (or not) an existing index", async () => {
     await tbl.createIndex("id");
     // Default is replace=true
