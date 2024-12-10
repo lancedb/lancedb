@@ -86,3 +86,13 @@ pub trait Reranker: std::fmt::Debug + Sync + Send {
         Ok(combined)
     }
 }
+
+pub fn check_reranker_result(result: &RecordBatch) -> Result<()> {
+    if result.schema().column_with_name(RELEVANCE_SCORE).is_none() {
+        return Err(Error::Schema { 
+            message:  format!("rerank_hybrid must return a RecordBatch with a column named {}", RELEVANCE_SCORE)
+        })
+    }
+
+    Ok(())
+}

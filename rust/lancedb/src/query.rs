@@ -23,14 +23,14 @@ use arrow_schema::{DataType, SortOptions};
 use datafusion_physical_plan::ExecutionPlan;
 use futures::{stream, try_join, FutureExt, StreamExt, TryStreamExt};
 use half::f16;
-use lance::dataset::scanner::DatasetRecordBatchStream;
+use lance::{arrow::RecordBatchExt, dataset::{scanner::DatasetRecordBatchStream, ROW_ID}};
 use lance_datafusion::exec::execute_plan;
 use lance_index::scalar::inverted::SCORE_COL;
 use lance_index::scalar::FullTextSearchQuery;
 use lance_index::vector::DIST_COL;
 use lance_io::stream::RecordBatchStreamAdapter;
 
-use crate::arrow::SendableRecordBatchStream;
+use crate::{arrow::SendableRecordBatchStream, rerankers::check_reranker_result};
 use crate::error::{Error, Result};
 use crate::rerankers::rrf::RRFReranker;
 use crate::rerankers::{NormalizeMethod, Reranker};
@@ -1005,21 +1005,32 @@ impl VectorQuery {
             .reranker
             .clone()
             .unwrap_or(Arc::new(RRFReranker::default()));
-        let results_ranked = reranker
+        let mut results = reranker
             .rerank_hybrid("TODO", vec_results, fts_results)
             .await
             .unwrap();
 
-        // TODO check reranker results
+        check_reranker_result(&results)?;
 
-        // TODO add limit
+        // TODO this should be tested probably
+        let offset = self.base.offset.unwrap_or(0);
+        let limit = self.base.limit.unwrap_or(DEFAULT_TOP_K);
+        let limit = (results.num_rows() - offset).min(limit);
+        results = results.slice(
+            // TODO should we lower the offsets before running the query?
+            offset,
+            // TODO is this the default?
+            limit,
+        );
 
-        // TODO row ids
+        if !self.base.with_row_id {
+            results = results.drop_column(ROW_ID)?;
+        }
 
         // let record_batch_iter = RecordBatchIterator::new(vec![results_ranked].into_iter().map(Ok), schema);
         let record_batch_stream_adapter = RecordBatchStreamAdapter::new(
-            results_ranked.schema(),
-            stream::iter(vec![results_ranked].into_iter().map(Ok)),
+            results.schema(),
+            stream::iter(vec![results].into_iter().map(Ok)),
         );
         let sendable_batch_iter = SendableRecordBatchStream::from(record_batch_stream_adapter);
 
