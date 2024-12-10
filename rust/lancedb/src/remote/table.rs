@@ -145,10 +145,8 @@ impl<S: HttpSend> RemoteTable<S> {
     }
 
     fn apply_query_params(body: &mut serde_json::Value, params: &Query) -> Result<()> {
-        if params.offset.is_some() {
-            return Err(Error::NotSupported {
-                message: "Offset is not yet supported in LanceDB Cloud".into(),
-            });
+        if let Some(offset) = params.offset {
+            body["offset"] = serde_json::Value::Number(serde_json::Number::from(offset));
         }
 
         if let Some(limit) = params.limit {
@@ -1348,6 +1346,7 @@ mod tests {
                 "vector_column": "my_vector",
                 "prefilter": false,
                 "k": 42,
+                "offset": 10,
                 "distance_type": "cosine",
                 "bypass_vector_index": true,
                 "columns": ["a", "b"],
@@ -1376,6 +1375,7 @@ mod tests {
         let _ = table
             .query()
             .limit(42)
+            .offset(10)
             .select(Select::columns(&["a", "b"]))
             .nearest_to(vec![0.1, 0.2, 0.3])
             .unwrap()
