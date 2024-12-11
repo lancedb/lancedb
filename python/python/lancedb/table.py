@@ -365,12 +365,31 @@ class Table(ABC):
 
     @property
     @abstractmethod
+    def name(self) -> str:
+        """The name of this Table"""
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def version(self) -> int:
+        """The version of this Table"""
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
     def schema(self) -> pa.Schema:
         """The [Arrow Schema](https://arrow.apache.org/docs/python/api/datatypes.html#)
         of this Table
 
         """
         raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def embedding_functions(self) -> Dict[str, EmbeddingFunctionConfig]:
+        """
+        Get a mapping from vector column name to it's configured embedding function.
+        """
 
     @abstractmethod
     def count_rows(self, filter: Optional[str] = None) -> int:
@@ -461,43 +480,6 @@ class Table(ABC):
     ):
         """Create a scalar index on a column.
 
-        Scalar indices, like vector indices, can be used to speed up scans.  A scalar
-        index can speed up scans that contain filter expressions on the indexed column.
-        For example, the following scan will be faster if the column ``my_col`` has
-        a scalar index:
-
-
-            import lancedb
-
-            db = lancedb.connect("/data/lance")
-            img_table = db.open_table("images")
-            my_df = img_table.search().where("my_col = 7", prefilter=True).to_pandas()
-
-        Scalar indices can also speed up scans containing a vector search and a
-        prefilter:
-
-            import lancedb
-
-            db = lancedb.connect("/data/lance")
-            img_table = db.open_table("images")
-            img_table.search([1, 2, 3, 4], vector_column_name="vector")
-                .where("my_col != 7", prefilter=True)
-                .to_pandas()
-
-        Scalar indices can only speed up scans for basic filters using
-        equality, comparison, range (e.g. ``my_col BETWEEN 0 AND 100``), and set
-        membership (e.g. `my_col IN (0, 1, 2)`)
-
-        Scalar indices can be used if the filter contains multiple indexed columns and
-        the filter criteria are AND'd or OR'd together
-        (e.g. ``my_col < 0 AND other_col> 100``)
-
-        Scalar indices may be used if the filter contains non-indexed columns but,
-        depending on the structure of the filter, they may not be usable.  For example,
-        if the column ``not_indexed`` does not have a scalar index then the filter
-        ``my_col = 0 OR not_indexed = 1`` will not be able to use any scalar index on
-        ``my_col``.
-
         **Experimental API**
 
         Parameters
@@ -513,11 +495,40 @@ class Table(ABC):
         Examples
         --------
 
+        Scalar indices, like vector indices, can be used to speed up scans.  A scalar
+        index can speed up scans that contain filter expressions on the indexed column.
+        For example, the following scan will be faster if the column ``my_col`` has
+        a scalar index:
 
-            import lance
+        >>> import lancedb # doctest: +SKIP
+        >>> db = lancedb.connect("/data/lance") # doctest: +SKIP
+        >>> img_table = db.open_table("images") # doctest: +SKIP
+        >>> my_df = img_table.search().where("my_col = 7", # doctest: +SKIP
+        ...                                  prefilter=True).to_pandas()
 
-            dataset = lance.dataset("./images.lance")
-            dataset.create_scalar_index("category")
+        Scalar indices can also speed up scans containing a vector search and a
+        prefilter:
+
+        >>> import lancedb # doctest: +SKIP
+        >>> db = lancedb.connect("/data/lance") # doctest: +SKIP
+        >>> img_table = db.open_table("images") # doctest: +SKIP
+        >>> img_table.search([1, 2, 3, 4], vector_column_name="vector") # doctest: +SKIP
+        ...     .where("my_col != 7", prefilter=True)
+        ...     .to_pandas()
+
+        Scalar indices can only speed up scans for basic filters using
+        equality, comparison, range (e.g. ``my_col BETWEEN 0 AND 100``), and set
+        membership (e.g. `my_col IN (0, 1, 2)`)
+
+        Scalar indices can be used if the filter contains multiple indexed columns and
+        the filter criteria are AND'd or OR'd together
+        (e.g. ``my_col < 0 AND other_col> 100``)
+
+        Scalar indices may be used if the filter contains non-indexed columns but,
+        depending on the structure of the filter, they may not be usable.  For example,
+        if the column ``not_indexed`` does not have a scalar index then the filter
+        ``my_col = 0 OR not_indexed = 1`` will not be able to use any scalar index on
+        ``my_col``.
         """
         raise NotImplementedError
 
@@ -993,6 +1004,28 @@ class Table(ABC):
         """
 
     @abstractmethod
+    def list_indices(self) -> Iterable[IndexConfig]:
+        """
+        List all indices that have been created with Self::create_index
+        """
+
+    @abstractmethod
+    def index_stats(self, index_name: str) -> Optional[IndexStatistics]:
+        """
+        Retrieve statistics about an index
+
+        Parameters
+        ----------
+        index_name: str
+            The name of the index to retrieve statistics for
+
+        Returns
+        -------
+        IndexStatistics or None
+            The statistics about the index. Returns None if the index does not exist.
+        """
+
+    @abstractmethod
     def add_columns(self, transforms: Dict[str, str]):
         """
         Add new columns with defined values.
@@ -1087,6 +1120,37 @@ class Table(ABC):
         fs, path = fs_from_uri(path)
         index_exists = fs.get_file_info(path).type != pa_fs.FileType.NotFound
         return (path, fs, index_exists)
+
+    @abstractmethod
+    def uses_v2_manifest_paths(self) -> bool:
+        """
+        Check if the table is using the new v2 manifest paths.
+
+        Returns
+        -------
+        bool
+            True if the table is using the new v2 manifest paths, False otherwise.
+        """
+
+    @abstractmethod
+    def migrate_v2_manifest_paths(self):
+        """
+        Migrate the manifest paths to the new format.
+
+        This will update the manifest to use the new v2 format for paths.
+
+        This function is idempotent, and can be run multiple times without
+        changing the state of the object store.
+
+        !!! danger
+
+            This should not be run while other concurrent operations are happening.
+            And it should also run until completion before resuming other operations.
+
+        You can use
+        [Table.uses_v2_manifest_paths][lancedb.table.Table.uses_v2_manifest_paths]
+        to check if the table is already using the new path style.
+        """
 
 
 class LanceTable(Table):
@@ -1654,13 +1718,13 @@ class LanceTable(Table):
         self.checkout_latest()
 
     @cached_property
-    def embedding_functions(self) -> dict:
+    def embedding_functions(self) -> Dict[str, EmbeddingFunctionConfig]:
         """
         Get the embedding functions for the table
 
         Returns
         -------
-        funcs: dict
+        funcs: Dict[str, EmbeddingFunctionConfig]
             A mapping of the vector column to the embedding function
             or empty dict if not configured.
         """
@@ -2074,6 +2138,37 @@ class LanceTable(Table):
 
     def drop_columns(self, columns: Iterable[str]):
         LOOP.run(self._table.drop_columns(columns))
+
+    def uses_v2_manifest_paths(self) -> bool:
+        """
+        Check if the table is using the new v2 manifest paths.
+
+        Returns
+        -------
+        bool
+            True if the table is using the new v2 manifest paths, False otherwise.
+        """
+        return LOOP.run(self._table.uses_v2_manifest_paths())
+
+    def migrate_v2_manifest_paths(self):
+        """
+        Migrate the manifest paths to the new format.
+
+        This will update the manifest to use the new v2 format for paths.
+
+        This function is idempotent, and can be run multiple times without
+        changing the state of the object store.
+
+        !!! danger
+
+            This should not be run while other concurrent operations are happening.
+            And it should also run until completion before resuming other operations.
+
+        You can use
+        [LanceTable.uses_v2_manifest_paths][lancedb.table.LanceTable.uses_v2_manifest_paths]
+        to check if the table is already using the new path style.
+        """
+        LOOP.run(self._table.migrate_v2_manifest_paths())
 
 
 def _sanitize_schema(

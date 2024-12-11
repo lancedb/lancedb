@@ -126,7 +126,7 @@ class DBConnection(EnforceOverrides):
             Additional options for the storage backend. Options already set on the
             connection will be inherited by the table, but can be overridden here.
             See available options at
-            https://lancedb.github.io/lancedb/guides/storage/
+            <https://lancedb.github.io/lancedb/guides/storage/>
         data_storage_version: optional, str, default "stable"
             The version of the data storage format to use. Newer versions are more
             efficient but require newer versions of lance to read.  The default is
@@ -138,7 +138,7 @@ class DBConnection(EnforceOverrides):
             turning this on will make the dataset unreadable for older versions
             of LanceDB (prior to 0.13.0). To migrate an existing dataset, instead
             use the
-            [AsyncTable.migrate_manifest_paths_v2][lancedb.table.AsyncTable.migrate_manifest_paths_v2]
+            [Table.migrate_manifest_paths_v2][lancedb.table.Table.migrate_v2_manifest_paths]
             method.
 
         Returns
@@ -274,7 +274,7 @@ class DBConnection(EnforceOverrides):
             Additional options for the storage backend. Options already set on the
             connection will be inherited by the table, but can be overridden here.
             See available options at
-            https://lancedb.github.io/lancedb/guides/storage/
+            <https://lancedb.github.io/lancedb/guides/storage/>
 
         Returns
         -------
@@ -654,7 +654,7 @@ class AsyncConnection(object):
             Additional options for the storage backend. Options already set on the
             connection will be inherited by the table, but can be overridden here.
             See available options at
-            https://lancedb.github.io/lancedb/guides/storage/
+            <https://lancedb.github.io/lancedb/guides/storage/>
         data_storage_version: optional, str, default "stable"
             The version of the data storage format to use. Newer versions are more
             efficient but require newer versions of lance to read.  The default is
@@ -855,7 +855,7 @@ class AsyncConnection(object):
             Additional options for the storage backend. Options already set on the
             connection will be inherited by the table, but can be overridden here.
             See available options at
-            https://lancedb.github.io/lancedb/guides/storage/
+            <https://lancedb.github.io/lancedb/guides/storage/>
         index_cache_size: int, default 256
             Set the size of the index cache, specified as a number of entries
 

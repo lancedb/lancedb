@@ -70,7 +70,7 @@ def connect(
         default configuration is used.
     storage_options: dict, optional
         Additional options for the storage backend. See available options at
-        https://lancedb.github.io/lancedb/guides/storage/
+        <https://lancedb.github.io/lancedb/guides/storage/>
 
     Examples
     --------
@@ -82,11 +82,13 @@ def connect(
 
     For object storage, use a URI prefix:
 
-    >>> db = lancedb.connect("s3://my-bucket/lancedb")
+    >>> db = lancedb.connect("s3://my-bucket/lancedb",
+    ...                      storage_options={"aws_access_key_id": "***"})
 
     Connect to LanceDB cloud:
 
-    >>> db = lancedb.connect("db://my_database", api_key="ldb_...")
+    >>> db = lancedb.connect("db://my_database", api_key="ldb_...",
+    ...                      client_config={"retry_config": {"retries": 5}})
 
     Returns
     -------
@@ -164,7 +166,7 @@ async def connect_async(
         default configuration is used.
     storage_options: dict, optional
         Additional options for the storage backend. See available options at
-        https://lancedb.github.io/lancedb/guides/storage/
+        <https://lancedb.github.io/lancedb/guides/storage/>
 
     Examples
     --------

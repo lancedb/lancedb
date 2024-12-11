@@ -16,6 +16,8 @@ import logging
 from functools import cached_property
 from typing import Dict, Iterable, List, Optional, Union, Literal
 
+from lancedb._lancedb import IndexConfig
+from lancedb.embeddings.base import EmbeddingFunctionConfig
 from lancedb.index import FTS, BTree, Bitmap, HnswPq, HnswSq, IvfPq, LabelList
 from lancedb.remote.db import LOOP
 import pyarrow as pa
@@ -25,7 +27,7 @@ from lancedb.merge import LanceMergeInsertBuilder
 from lancedb.embeddings import EmbeddingFunctionRegistry
 
 from ..query import LanceVectorQueryBuilder, LanceQueryBuilder
-from ..table import AsyncTable, Query, Table
+from ..table import AsyncTable, IndexStatistics, Query, Table
 
 
 class RemoteTable(Table):
@@ -62,7 +64,7 @@ class RemoteTable(Table):
         return LOOP.run(self._table.version())
 
     @cached_property
-    def embedding_functions(self) -> dict:
+    def embedding_functions(self) -> Dict[str, EmbeddingFunctionConfig]:
         """
         Get the embedding functions for the table
 
@@ -94,11 +96,11 @@ class RemoteTable(Table):
     def checkout_latest(self):
         return LOOP.run(self._table.checkout_latest())
 
-    def list_indices(self):
+    def list_indices(self) -> Iterable[IndexConfig]:
         """List all the indices on the table"""
         return LOOP.run(self._table.list_indices())
 
-    def index_stats(self, index_uuid: str):
+    def index_stats(self, index_uuid: str) -> Optional[IndexStatistics]:
         """List all the stats of a specified index"""
         return LOOP.run(self._table.index_stats(index_uuid))
 
