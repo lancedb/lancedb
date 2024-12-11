@@ -517,6 +517,16 @@ class RemoteTable(Table):
     def drop_columns(self, columns: Iterable[str]):
         return LOOP.run(self._table.drop_columns(columns))
 
+    def uses_v2_manifest_paths(self) -> bool:
+        raise NotImplementedError(
+            "uses_v2_manifest_paths() is not supported on the LanceDB Cloud"
+        )
+
+    def migrate_v2_manifest_paths(self):
+        raise NotImplementedError(
+            "migrate_v2_manifest_paths() is not supported on the LanceDB Cloud"
+        )
+
 
 def add_index(tbl: pa.Table, i: int) -> pa.Table:
     return tbl.add_column(
