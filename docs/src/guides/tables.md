@@ -804,12 +804,13 @@ a table:
 
 You can add new columns to the table with the `add_columns` method. New columns
 are filled with values based on a SQL expression. For example, you can add a new
-column `y` to the table and fill it with the value of `x + 1`.
+column `y` to the table, fill it with the value of `x * 2` and set the expected 
+data type for it.
 
 === "Python"
 
     ```python
-    table.add_columns({"double_price": "price * 2"})
+    --8<-- "python/python/tests/docs/test_basic.py:add_columns"
     ```
     **API Reference:** [lancedb.table.Table.add_columns][]
 
@@ -849,8 +850,7 @@ rewriting the column, which can be a heavy operation.
 
     ```python
     import pyarrow as pa
-    table.alter_column({"path": "double_price", "rename": "dbl_price",
-                        "data_type": pa.float32(), "nullable": False})
+    --8<-- "python/python/tests/docs/test_basic.py:alter_columns"
     ```
     **API Reference:** [lancedb.table.Table.alter_columns][]
 
@@ -873,7 +873,7 @@ will remove the column from the schema.
 === "Python"
 
     ```python
-    table.drop_columns(["dbl_price"])
+     --8<-- "nodejs/examples/basic.test.ts:drop_columns"
     ```
     **API Reference:** [lancedb.table.Table.drop_columns][]
 
