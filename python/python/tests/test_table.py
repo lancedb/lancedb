@@ -31,6 +31,7 @@ def test_basic(mem_db: DBConnection):
     table = mem_db.create_table("test", data=data)
 
     assert table.name == "test"
+    assert "LanceTable(name='test', version=1, _conn=LanceDBConnection(" in repr(table)
     expected_schema = pa.schema(
         {
             "vector": pa.list_(pa.float32(), 2),
@@ -1218,6 +1219,9 @@ def test_consistency(tmp_path, consistency_interval):
 
     db2 = lancedb.connect(tmp_path, read_consistency_interval=consistency_interval)
     table2 = db2.open_table("my_table")
+    if consistency_interval is not None:
+        assert "read_consistency_interval=datetime.timedelta(" in repr(db2)
+        assert "read_consistency_interval=datetime.timedelta(" in repr(table2)
     assert table2.version == table.version
 
     table.add([{"id": 1}])

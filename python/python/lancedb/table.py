@@ -1194,14 +1194,14 @@ class LanceTable(Table):
         >>> table = db.create_table("my_table",
         ...    [{"vector": [1.1, 0.9], "type": "vector"}])
         >>> table.version
-        2
+        1
         >>> table.to_pandas()
                vector    type
         0  [1.1, 0.9]  vector
         >>> table.add([{"vector": [0.5, 0.2], "type": "vector"}])
         >>> table.version
-        3
-        >>> table.checkout(2)
+        2
+        >>> table.checkout(1)
         >>> table.to_pandas()
                vector    type
         0  [1.1, 0.9]  vector
@@ -1236,19 +1236,19 @@ class LanceTable(Table):
         >>> table = db.create_table("my_table", [
         ...     {"vector": [1.1, 0.9], "type": "vector"}])
         >>> table.version
-        2
+        1
         >>> table.to_pandas()
                vector    type
         0  [1.1, 0.9]  vector
         >>> table.add([{"vector": [0.5, 0.2], "type": "vector"}])
         >>> table.version
-        3
-        >>> table.restore(2)
+        2
+        >>> table.restore(1)
         >>> table.to_pandas()
                vector    type
         0  [1.1, 0.9]  vector
         >>> len(table.list_versions())
-        4
+        3
         """
         if version is not None:
             LOOP.run(self._table.checkout(version))
@@ -1261,7 +1261,13 @@ class LanceTable(Table):
         return self.count_rows()
 
     def __repr__(self) -> str:
-        return f"{self.__class__.__name__}(table={self._table!r})"
+        val = f"{self.__class__.__name__}(name={self.name!r}, version={self.version}"
+        if self._conn.read_consistency_interval is not None:
+            val += ", read_consistency_interval={!r}".format(
+                self._conn.read_consistency_interval
+            )
+        val += f", _conn={self._conn!r})"
+        return val
 
     def __str__(self) -> str:
         return self.__repr__()

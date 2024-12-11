@@ -161,7 +161,7 @@ class DBConnection(EnforceOverrides):
         >>> data = [{"vector": [1.1, 1.2], "lat": 45.5, "long": -122.7},
         ...         {"vector": [0.2, 1.8], "lat": 40.1, "long":  -74.1}]
         >>> db.create_table("my_table", data)
-        LanceTable(connection=..., name="my_table")
+        LanceTable(name='my_table', version=1, ...)
         >>> db["my_table"].head()
         pyarrow.Table
         vector: fixed_size_list<item: float>[2]
@@ -182,7 +182,7 @@ class DBConnection(EnforceOverrides):
         ...    "long": [-122.7, -74.1]
         ... })
         >>> db.create_table("table2", data)
-        LanceTable(connection=..., name="table2")
+        LanceTable(name='table2', version=1, ...)
         >>> db["table2"].head()
         pyarrow.Table
         vector: fixed_size_list<item: float>[2]
@@ -205,7 +205,7 @@ class DBConnection(EnforceOverrides):
         ...   pa.field("long", pa.float32())
         ... ])
         >>> db.create_table("table3", data, schema = custom_schema)
-        LanceTable(connection=..., name="table3")
+        LanceTable(name='table3', version=1, ...)
         >>> db["table3"].head()
         pyarrow.Table
         vector: fixed_size_list<item: float>[2]
@@ -239,7 +239,7 @@ class DBConnection(EnforceOverrides):
         ...     pa.field("price", pa.float32()),
         ... ])
         >>> db.create_table("table4", make_batches(), schema=schema)
-        LanceTable(connection=..., name="table4")
+        LanceTable(name='table4', version=1, ...)
 
         """
         raise NotImplementedError
@@ -341,15 +341,15 @@ class LanceDBConnection(DBConnection):
     >>> db = lancedb.connect("./.lancedb")
     >>> db.create_table("my_table", data=[{"vector": [1.1, 1.2], "b": 2},
     ...                                   {"vector": [0.5, 1.3], "b": 4}])
-    LanceTable(connection=..., name="my_table")
+    LanceTable(name='my_table', version=1, ...)
     >>> db.create_table("another_table", data=[{"vector": [0.4, 0.4], "b": 6}])
-    LanceTable(connection=..., name="another_table")
+    LanceTable(name='another_table', version=1, ...)
     >>> sorted(db.table_names())
     ['another_table', 'my_table']
     >>> len(db)
     2
     >>> db["my_table"]
-    LanceTable(connection=..., name="my_table")
+    LanceTable(name='my_table', version=1, ...)
     >>> "my_table" in db
     True
     >>> db.drop_table("my_table")
@@ -395,7 +395,7 @@ class LanceDBConnection(DBConnection):
         self._conn = AsyncConnection(LOOP.run(do_connect()))
 
     def __repr__(self) -> str:
-        val = f"{self.__class__.__name__}({self._uri}"
+        val = f"{self.__class__.__name__}(uri={self._uri!r}"
         if self.read_consistency_interval is not None:
             val += f", read_consistency_interval={repr(self.read_consistency_interval)}"
         val += ")"
