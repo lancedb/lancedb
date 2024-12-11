@@ -1050,6 +1050,8 @@ impl ConnectionInternal for Database {
         write_params.enable_v2_manifest_paths =
             options.enable_v2_manifest_paths.unwrap_or_default();
 
+        let data_schema = data.schema();
+
         match NativeTable::create(
             &table_uri,
             &options.name,
@@ -1069,7 +1071,18 @@ impl ConnectionInternal for Database {
                 CreateTableMode::ExistOk(callback) => {
                     let builder = OpenTableBuilder::new(options.parent, options.name);
                     let builder = (callback)(builder);
-                    builder.execute().await
+                    let table = builder.execute().await?;
+
+                    let table_schema = table.schema().await?;
+
+                    if table_schema != data_schema {
+                        return Err(Error::Schema {
+                            message: "Provided schema does not match existing table schema"
+                                .to_string(),
+                        });
+                    }
+
+                    Ok(table)
                 }
                 CreateTableMode::Overwrite => unreachable!(),
             },

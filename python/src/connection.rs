@@ -58,6 +58,11 @@ impl Connection {
         self.inner.take();
     }
 
+    #[getter]
+    pub fn uri(&self) -> PyResult<String> {
+        self.get_inner().map(|inner| inner.uri().to_string())
+    }
+
     #[pyo3(signature = (start_after=None, limit=None))]
     pub fn table_names(
         self_: PyRef<'_, Self>,
