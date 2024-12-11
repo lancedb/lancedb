@@ -1,8 +1,6 @@
-from typing import Optional
+from dataclasses import dataclass
+from typing import Literal, Optional
 
-from ._lancedb import (
-    Index as LanceDbIndex,
-)
 from ._lancedb import (
     IndexConfig,
 )
@@ -29,6 +27,7 @@ lang_mapping = {
 }
 
 
+@dataclass
 class BTree:
     """Describes a btree index configuration
 
@@ -50,10 +49,10 @@ class BTree:
     the block size may be added in the future.
     """
 
-    def __init__(self):
-        self._inner = LanceDbIndex.btree()
+    pass
 
 
+@dataclass
 class Bitmap:
     """Describe a Bitmap index configuration.
 
@@ -73,10 +72,10 @@ class Bitmap:
     requires 128 / 8 * 1Bi bytes on disk.
     """
 
-    def __init__(self):
-        self._inner = LanceDbIndex.bitmap()
+    pass
 
 
+@dataclass
 class LabelList:
     """Describe a LabelList index configuration.
 
@@ -87,41 +86,57 @@ class LabelList:
     For example, it works with `tags`, `categories`, `keywords`, etc.
     """
 
-    def __init__(self):
-        self._inner = LanceDbIndex.label_list()
+    pass
 
 
+@dataclass
 class FTS:
     """Describe a FTS index configuration.
 
     `FTS` is a full-text search index that can be used on `String` columns
 
     For example, it works with `title`, `description`, `content`, etc.
+
+    Attributes
+    ----------
+    with_position : bool, default True
+        Whether to store the position of the token in the document. Setting this
+        to False can reduce the size of the index and improve indexing speed,
+        but it will disable support for phrase queries.
+    base_tokenizer : str, default "simple"
+        The base tokenizer to use for tokenization. Options are:
+        - "simple": Splits text by whitespace and punctuation.
+        - "whitespace": Split text by whitespace, but not punctuation.
+        - "raw": No tokenization. The entire text is treated as a single token.
+    language : str, default "English"
+        The language to use for tokenization.
+    max_token_length : int, default 40
+        The maximum token length to index. Tokens longer than this length will be
+        ignored.
+    lower_case : bool, default True
+        Whether to convert the token to lower case. This makes queries case-insensitive.
+    stem : bool, default False
+        Whether to stem the token. Stemming reduces words to their root form.
+        For example, in English "running" and "runs" would both be reduced to "run".
+    remove_stop_words : bool, default False
+        Whether to remove stop words. Stop words are common words that are often
+        removed from text before indexing. For example, in English "the" and "and".
+    ascii_folding : bool, default False
+        Whether to fold ASCII characters. This converts accented characters to
+        their ASCII equivalent. For example, "café" would be converted to "cafe".
     """
 
-    def __init__(
-        self,
-        with_position: bool = True,
-        base_tokenizer: str = "simple",
-        language: str = "English",
-        max_token_length: Optional[int] = 40,
-        lower_case: bool = True,
-        stem: bool = False,
-        remove_stop_words: bool = False,
-        ascii_folding: bool = False,
-    ):
-        self._inner = LanceDbIndex.fts(
-            with_position=with_position,
-            base_tokenizer=base_tokenizer,
-            language=language,
-            max_token_length=max_token_length,
-            lower_case=lower_case,
-            stem=stem,
-            remove_stop_words=remove_stop_words,
-            ascii_folding=ascii_folding,
-        )
+    with_position: bool = True
+    base_tokenizer: Literal["simple", "raw", "whitespace"] = "simple"
+    language: str = "English"
+    max_token_length: Optional[int] = 40
+    lower_case: bool = True
+    stem: bool = False
+    remove_stop_words: bool = False
+    ascii_folding: bool = False
 
 
+@dataclass
 class HnswPq:
     """Describe a HNSW-PQ index configuration.
 
@@ -232,30 +247,17 @@ class HnswPq:
         search phase.
     """
 
-    def __init__(
-        self,
-        *,
-        distance_type: Optional[str] = None,
-        num_partitions: Optional[int] = None,
-        num_sub_vectors: Optional[int] = None,
-        num_bits: Optional[int] = None,
-        max_iterations: Optional[int] = None,
-        sample_rate: Optional[int] = None,
-        m: Optional[int] = None,
-        ef_construction: Optional[int] = None,
-    ):
-        self._inner = LanceDbIndex.hnsw_pq(
-            distance_type=distance_type,
-            num_partitions=num_partitions,
-            num_sub_vectors=num_sub_vectors,
-            num_bits=num_bits,
-            max_iterations=max_iterations,
-            sample_rate=sample_rate,
-            m=m,
-            ef_construction=ef_construction,
-        )
+    distance_type: Literal["l2", "cosine", "dot"] = "l2"
+    num_partitions: Optional[int] = None
+    num_sub_vectors: Optional[int] = None
+    num_bits: int = 8
+    max_iterations: int = 50
+    sample_rate: int = 256
+    m: int = 20
+    ef_construction: int = 300
 
 
+@dataclass
 class HnswSq:
     """Describe a HNSW-SQ index configuration.
 
@@ -345,26 +347,15 @@ class HnswSq:
 
     """
 
-    def __init__(
-        self,
-        *,
-        distance_type: Optional[str] = None,
-        num_partitions: Optional[int] = None,
-        max_iterations: Optional[int] = None,
-        sample_rate: Optional[int] = None,
-        m: Optional[int] = None,
-        ef_construction: Optional[int] = None,
-    ):
-        self._inner = LanceDbIndex.hnsw_sq(
-            distance_type=distance_type,
-            num_partitions=num_partitions,
-            max_iterations=max_iterations,
-            sample_rate=sample_rate,
-            m=m,
-            ef_construction=ef_construction,
-        )
+    distance_type: Literal["l2", "cosine", "dot"] = "l2"
+    num_partitions: Optional[int] = None
+    max_iterations: int = 50
+    sample_rate: int = 256
+    m: int = 20
+    ef_construction: int = 300
 
 
+@dataclass
 class IvfPq:
     """Describes an IVF PQ Index
 
@@ -387,120 +378,103 @@ class IvfPq:
 
     Note that training an IVF PQ index on a large dataset is a slow operation and
     currently is also a memory intensive operation.
+
+    Attributes
+    ----------
+    distance_type: str, default "L2"
+        The distance metric used to train the index
+
+        This is used when training the index to calculate the IVF partitions
+        (vectors are grouped in partitions with similar vectors according to this
+        distance type) and to calculate a subvector's code during quantization.
+
+        The distance type used to train an index MUST match the distance type used
+        to search the index.  Failure to do so will yield inaccurate results.
+
+        The following distance types are available:
+
+        "l2" - Euclidean distance. This is a very common distance metric that
+        accounts for both magnitude and direction when determining the distance
+        between vectors. L2 distance has a range of [0, ∞).
+
+        "cosine" - Cosine distance.  Cosine distance is a distance metric
+        calculated from the cosine similarity between two vectors. Cosine
+        similarity is a measure of similarity between two non-zero vectors of an
+        inner product space. It is defined to equal the cosine of the angle
+        between them.  Unlike L2, the cosine distance is not affected by the
+        magnitude of the vectors.  Cosine distance has a range of [0, 2].
+
+        Note: the cosine distance is undefined when one (or both) of the vectors
+        are all zeros (there is no direction).  These vectors are invalid and may
+        never be returned from a vector search.
+
+        "dot" - Dot product. Dot distance is the dot product of two vectors. Dot
+        distance has a range of (-∞, ∞). If the vectors are normalized (i.e. their
+        L2 norm is 1), then dot distance is equivalent to the cosine distance.
+    num_partitions: int, default sqrt(num_rows)
+        The number of IVF partitions to create.
+
+        This value should generally scale with the number of rows in the dataset.
+        By default the number of partitions is the square root of the number of
+        rows.
+
+        If this value is too large then the first part of the search (picking the
+        right partition) will be slow.  If this value is too small then the second
+        part of the search (searching within a partition) will be slow.
+    num_sub_vectors: int, default is vector dimension / 16
+        Number of sub-vectors of PQ.
+
+        This value controls how much the vector is compressed during the
+        quantization step.  The more sub vectors there are the less the vector is
+        compressed.  The default is the dimension of the vector divided by 16.  If
+        the dimension is not evenly divisible by 16 we use the dimension divded by
+        8.
+
+        The above two cases are highly preferred.  Having 8 or 16 values per
+        subvector allows us to use efficient SIMD instructions.
+
+        If the dimension is not visible by 8 then we use 1 subvector.  This is not
+        ideal and will likely result in poor performance.
+    num_bits: int, default 8
+        Number of bits to encode each sub-vector.
+
+        This value controls how much the sub-vectors are compressed.  The more bits
+        the more accurate the index but the slower search.  The default is 8
+        bits.  Only 4 and 8 are supported.
+    max_iterations: int, default 50
+        Max iteration to train kmeans.
+
+        When training an IVF PQ index we use kmeans to calculate the partitions.
+        This parameter controls how many iterations of kmeans to run.
+
+        Increasing this might improve the quality of the index but in most cases
+        these extra iterations have diminishing returns.
+
+        The default value is 50.
+    sample_rate: int, default 256
+        The rate used to calculate the number of training vectors for kmeans.
+
+        When an IVF PQ index is trained, we need to calculate partitions.  These
+        are groups of vectors that are similar to each other.  To do this we use an
+        algorithm called kmeans.
+
+        Running kmeans on a large dataset can be slow.  To speed this up we run
+        kmeans on a random sample of the data.  This parameter controls the size of
+        the sample.  The total number of vectors used to train the index is
+        `sample_rate * num_partitions`.
+
+        Increasing this value might improve the quality of the index but in most
+        cases the default should be sufficient.
+
+        The default value is 256.
     """
 
-    def __init__(
-        self,
-        *,
-        distance_type: Optional[str] = None,
-        num_partitions: Optional[int] = None,
-        num_sub_vectors: Optional[int] = None,
-        num_bits: Optional[int] = None,
-        max_iterations: Optional[int] = None,
-        sample_rate: Optional[int] = None,
-    ):
-        """
-        Create an IVF PQ index config
-
-        Parameters
-        ----------
-        distance_type: str, default "L2"
-            The distance metric used to train the index
-
-            This is used when training the index to calculate the IVF partitions
-            (vectors are grouped in partitions with similar vectors according to this
-            distance type) and to calculate a subvector's code during quantization.
-
-            The distance type used to train an index MUST match the distance type used
-            to search the index.  Failure to do so will yield inaccurate results.
-
-            The following distance types are available:
-
-            "l2" - Euclidean distance. This is a very common distance metric that
-            accounts for both magnitude and direction when determining the distance
-            between vectors. L2 distance has a range of [0, ∞).
-
-            "cosine" - Cosine distance.  Cosine distance is a distance metric
-            calculated from the cosine similarity between two vectors. Cosine
-            similarity is a measure of similarity between two non-zero vectors of an
-            inner product space. It is defined to equal the cosine of the angle
-            between them.  Unlike L2, the cosine distance is not affected by the
-            magnitude of the vectors.  Cosine distance has a range of [0, 2].
-
-            Note: the cosine distance is undefined when one (or both) of the vectors
-            are all zeros (there is no direction).  These vectors are invalid and may
-            never be returned from a vector search.
-
-            "dot" - Dot product. Dot distance is the dot product of two vectors. Dot
-            distance has a range of (-∞, ∞). If the vectors are normalized (i.e. their
-            L2 norm is 1), then dot distance is equivalent to the cosine distance.
-        num_partitions: int, default sqrt(num_rows)
-            The number of IVF partitions to create.
-
-            This value should generally scale with the number of rows in the dataset.
-            By default the number of partitions is the square root of the number of
-            rows.
-
-            If this value is too large then the first part of the search (picking the
-            right partition) will be slow.  If this value is too small then the second
-            part of the search (searching within a partition) will be slow.
-        num_sub_vectors: int, default is vector dimension / 16
-            Number of sub-vectors of PQ.
-
-            This value controls how much the vector is compressed during the
-            quantization step.  The more sub vectors there are the less the vector is
-            compressed.  The default is the dimension of the vector divided by 16.  If
-            the dimension is not evenly divisible by 16 we use the dimension divded by
-            8.
-
-            The above two cases are highly preferred.  Having 8 or 16 values per
-            subvector allows us to use efficient SIMD instructions.
-
-            If the dimension is not visible by 8 then we use 1 subvector.  This is not
-            ideal and will likely result in poor performance.
-        num_bits: int, default 8
-            Number of bits to encode each sub-vector.
-
-            This value controls how much the sub-vectors are compressed.  The more bits
-            the more accurate the index but the slower search.  The default is 8
-            bits.  Only 4 and 8 are supported.
-        max_iterations: int, default 50
-            Max iteration to train kmeans.
-
-            When training an IVF PQ index we use kmeans to calculate the partitions.
-            This parameter controls how many iterations of kmeans to run.
-
-            Increasing this might improve the quality of the index but in most cases
-            these extra iterations have diminishing returns.
-
-            The default value is 50.
-        sample_rate: int, default 256
-            The rate used to calculate the number of training vectors for kmeans.
-
-            When an IVF PQ index is trained, we need to calculate partitions.  These
-            are groups of vectors that are similar to each other.  To do this we use an
-            algorithm called kmeans.
-
-            Running kmeans on a large dataset can be slow.  To speed this up we run
-            kmeans on a random sample of the data.  This parameter controls the size of
-            the sample.  The total number of vectors used to train the index is
-            `sample_rate * num_partitions`.
-
-            Increasing this value might improve the quality of the index but in most
-            cases the default should be sufficient.
-
-            The default value is 256.
-        """
-        if distance_type is not None:
-            distance_type = distance_type.lower()
-        self._inner = LanceDbIndex.ivf_pq(
-            distance_type=distance_type,
-            num_partitions=num_partitions,
-            num_sub_vectors=num_sub_vectors,
-            num_bits=num_bits,
-            max_iterations=max_iterations,
-            sample_rate=sample_rate,
-        )
+    distance_type: Literal["l2", "cosine", "dot"] = "l2"
+    num_partitions: Optional[int] = None
+    num_sub_vectors: Optional[int] = None
+    num_bits: int = 8
+    max_iterations: int = 50
+    sample_rate: int = 256
 
 
-__all__ = ["BTree", "IvfPq", "IndexConfig"]
+__all__ = ["BTree", "IvfPq", "HnswPq", "HnswSq", "IndexConfig"]

@@ -77,5 +77,5 @@ impl FtsIndexBuilder {
     }
 }
 
-use lance_index::scalar::inverted::TokenizerConfig;
+pub use lance_index::scalar::inverted::TokenizerConfig;
 pub use lance_index::scalar::FullTextSearchQuery;

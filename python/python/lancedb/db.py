@@ -17,10 +17,11 @@ from abc import abstractmethod
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, Iterable, List, Literal, Optional, Union
 
+from lancedb.embeddings.registry import EmbeddingFunctionRegistry
 from overrides import EnforceOverrides, override
 
 from lancedb.common import data_to_reader, sanitize_uri, validate_schema
-from lancedb.background_loop import BackgroundEventLoop
+from lancedb.background_loop import LOOP
 
 from ._lancedb import connect as lancedb_connect
 from .table import (
@@ -42,8 +43,6 @@ if TYPE_CHECKING:
     from ._lancedb import Connection as LanceDbConnection
     from .common import DATA, URI
     from .embeddings import EmbeddingFunctionConfig
-
-LOOP = BackgroundEventLoop()
 
 
 class DBConnection(EnforceOverrides):
@@ -82,6 +81,10 @@ class DBConnection(EnforceOverrides):
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
         embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
+        *,
+        storage_options: Optional[Dict[str, str]] = None,
+        data_storage_version: Optional[str] = None,
+        enable_v2_manifest_paths: Optional[bool] = None,
     ) -> Table:
         """Create a [Table][lancedb.table.Table] in the database.
 
@@ -119,6 +122,24 @@ class DBConnection(EnforceOverrides):
             One of "error", "drop", "fill".
         fill_value: float
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
+        storage_options: dict, optional
+            Additional options for the storage backend. Options already set on the
+            connection will be inherited by the table, but can be overridden here.
+            See available options at
+            https://lancedb.github.io/lancedb/guides/storage/
+        data_storage_version: optional, str, default "stable"
+            The version of the data storage format to use. Newer versions are more
+            efficient but require newer versions of lance to read.  The default is
+            "stable" which will use the legacy v2 version.  See the user guide
+            for more details.
+        enable_v2_manifest_paths: bool, optional, default False
+            Use the new V2 manifest paths. These paths provide more efficient
+            opening of datasets with many versions on object stores.  WARNING:
+            turning this on will make the dataset unreadable for older versions
+            of LanceDB (prior to 0.13.0). To migrate an existing dataset, instead
+            use the
+            [AsyncTable.migrate_manifest_paths_v2][lancedb.table.AsyncTable.migrate_manifest_paths_v2]
+            method.
 
         Returns
         -------
@@ -226,7 +247,13 @@ class DBConnection(EnforceOverrides):
     def __getitem__(self, name: str) -> LanceTable:
         return self.open_table(name)
 
-    def open_table(self, name: str, *, index_cache_size: Optional[int] = None) -> Table:
+    def open_table(
+        self,
+        name: str,
+        *,
+        storage_options: Optional[Dict[str, str]] = None,
+        index_cache_size: Optional[int] = None,
+    ) -> Table:
         """Open a Lance Table in the database.
 
         Parameters
@@ -243,6 +270,11 @@ class DBConnection(EnforceOverrides):
             This cache applies to the entire opened table, across all indices.
             Setting this value higher will increase performance on larger datasets
             at the expense of more RAM
+        storage_options: dict, optional
+            Additional options for the storage backend. Options already set on the
+            connection will be inherited by the table, but can be overridden here.
+            See available options at
+            https://lancedb.github.io/lancedb/guides/storage/
 
         Returns
         -------
@@ -403,6 +435,10 @@ class LanceDBConnection(DBConnection):
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
         embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
+        *,
+        storage_options: Optional[Dict[str, str]] = None,
+        data_storage_version: Optional[str] = None,
+        enable_v2_manifest_paths: Optional[bool] = None,
     ) -> LanceTable:
         """Create a table in the database.
 
@@ -424,12 +460,19 @@ class LanceDBConnection(DBConnection):
             on_bad_vectors=on_bad_vectors,
             fill_value=fill_value,
             embedding_functions=embedding_functions,
+            storage_options=storage_options,
+            data_storage_version=data_storage_version,
+            enable_v2_manifest_paths=enable_v2_manifest_paths,
         )
         return tbl
 
     @override
     def open_table(
-        self, name: str, *, index_cache_size: Optional[int] = None
+        self,
+        name: str,
+        *,
+        storage_options: Optional[Dict[str, str]] = None,
+        index_cache_size: Optional[int] = None,
     ) -> LanceTable:
         """Open a table in the database.
 
@@ -442,7 +485,12 @@ class LanceDBConnection(DBConnection):
         -------
         A LanceTable object representing the table.
         """
-        return LanceTable.open(self, name, index_cache_size=index_cache_size)
+        return LanceTable.open(
+            self,
+            name,
+            storage_options=storage_options,
+            index_cache_size=index_cache_size,
+        )
 
     @override
     def drop_table(self, name: str, ignore_missing: bool = False):
@@ -524,6 +572,10 @@ class AsyncConnection(object):
         Any attempt to use the connection after it is closed will result in an error."""
         self._inner.close()
 
+    @property
+    def uri(self) -> str:
+        return self._inner.uri
+
     async def table_names(
         self, *, start_after: Optional[str] = None, limit: Optional[int] = None
     ) -> Iterable[str]:
@@ -557,6 +609,7 @@ class AsyncConnection(object):
         fill_value: Optional[float] = None,
         storage_options: Optional[Dict[str, str]] = None,
         *,
+        embedding_functions: List[EmbeddingFunctionConfig] = None,
         data_storage_version: Optional[str] = None,
         use_legacy_format: Optional[bool] = None,
         enable_v2_manifest_paths: Optional[bool] = None,
@@ -729,6 +782,17 @@ class AsyncConnection(object):
         >>> asyncio.run(iterable_example())
         """
         metadata = None
+
+        if embedding_functions is not None:
+            # If we passed in embedding functions explicitly
+            # then we'll override any schema metadata that
+            # may was implicitly specified by the LanceModel schema
+            registry = EmbeddingFunctionRegistry.get_instance()
+            metadata = registry.get_table_metadata(embedding_functions)
+
+        data, schema = sanitize_create_table(
+            data, schema, metadata, on_bad_vectors, fill_value
+        )
 
         # Defining defaults here and not in function prototype.  In the future
         # these defaults will move into rust so better to keep them as None.

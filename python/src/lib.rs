@@ -15,7 +15,7 @@
 use arrow::RecordBatchStream;
 use connection::{connect, Connection};
 use env_logger::Env;
-use index::{Index, IndexConfig};
+use index::IndexConfig;
 use pyo3::{
     pymodule,
     types::{PyModule, PyModuleMethods},
@@ -40,7 +40,6 @@ pub fn _lancedb(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     env_logger::init_from_env(env);
     m.add_class::<Connection>()?;
     m.add_class::<Table>()?;
-    m.add_class::<Index>()?;
     m.add_class::<IndexConfig>()?;
     m.add_class::<Query>()?;
     m.add_class::<VectorQuery>()?;

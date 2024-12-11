@@ -19,7 +19,7 @@ use pyo3_async_runtimes::tokio::future_into_py;
 
 use crate::{
     error::PythonErrorExt,
-    index::{Index, IndexConfig},
+    index::{extract_index_params, IndexConfig},
     query::Query,
 };
 
@@ -177,14 +177,10 @@ impl Table {
     pub fn create_index<'a>(
         self_: PyRef<'a, Self>,
         column: String,
-        index: Option<&Index>,
+        index: Option<Bound<'_, PyAny>>,
         replace: Option<bool>,
     ) -> PyResult<Bound<'a, PyAny>> {
-        let index = if let Some(index) = index {
-            index.consume()?
-        } else {
-            lancedb::index::Index::Auto
-        };
+        let index = extract_index_params(&index)?;
         let mut op = self_.inner_ref()?.create_index(&[column], index);
         if let Some(replace) = replace {
             op = op.replace(replace);
