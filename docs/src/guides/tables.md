@@ -873,7 +873,7 @@ will remove the column from the schema.
 === "Python"
 
     ```python
-     --8<-- "nodejs/examples/basic.test.ts:drop_columns"
+     --8<-- "python/python/tests/docs/test_basic.py:drop_columns"
     ```
     **API Reference:** [lancedb.table.Table.drop_columns][]
 
