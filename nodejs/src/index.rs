@@ -96,6 +96,7 @@ impl Index {
     }
 
     #[napi(factory)]
+    #[allow(clippy::too_many_arguments)]
     pub fn fts(
         with_position: Option<bool>,
         base_tokenizer: Option<String>,
