@@ -119,7 +119,9 @@ test("basic table examples", async () => {
 
     {
       // --8<-- [start:add_columns]
-      await tbl.addColumns([{ name: "double_price", valueSql: "price * 2" }]);
+      await tbl.addColumns([
+        { name: "double_price", valueSql: "cast((price * 2) as Float)" },
+      ]);
       // --8<-- [end:add_columns]
       // --8<-- [start:alter_columns]
       await tbl.alterColumns([
