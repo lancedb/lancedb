@@ -1058,6 +1058,26 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       expect(results[0].text).toBe(data[0].text);
     });
 
+    test("full text search without lowercase", async () => {
+      const db = await connect(tmpDir.name);
+      const data = [
+        { text: "hello world", vector: [0.1, 0.2, 0.3] },
+        { text: "Hello World", vector: [0.4, 0.5, 0.6] },
+      ];
+      const table = await db.createTable("test", data);
+      await table.createIndex("text", {
+        config: Index.fts({ withPosition: false }),
+      });
+      const results = await table.search("hello").toArray();
+      expect(results.length).toBe(2);
+
+      await table.createIndex("text", {
+        config: Index.fts({ withPosition: false, lowercase: false }),
+      });
+      const results2 = await table.search("hello").toArray();
+      expect(results2.length).toBe(1);
+    });
+
     test("full text search phrase query", async () => {
       const db = await connect(tmpDir.name);
       const data = [
