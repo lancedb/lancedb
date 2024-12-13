@@ -35,6 +35,7 @@ def connect(
     host_override: Optional[str] = None,
     read_consistency_interval: Optional[timedelta] = None,
     request_thread_pool: Optional[Union[int, ThreadPoolExecutor]] = None,
+    storage_options: Optional[Dict[str, str]] = None,
     **kwargs,
 ) -> DBConnection:
     """Connect to a LanceDB database.
@@ -70,6 +71,9 @@ def connect(
         executor will be used for making requests. This is for LanceDB Cloud
         only and is only used when making batch requests (i.e., passing in
         multiple queries to the search method at once).
+    storage_options: dict, optional
+        Additional options for the storage backend. See available options at
+        https://lancedb.github.io/lancedb/guides/storage/
 
     Examples
     --------
@@ -105,12 +109,16 @@ def connect(
             region,
             host_override,
             request_thread_pool=request_thread_pool,
+            storage_options=storage_options,
             **kwargs,
         )
 
     if kwargs:
         raise ValueError(f"Unknown keyword arguments: {kwargs}")
-    return LanceDBConnection(uri, read_consistency_interval=read_consistency_interval)
+    return LanceDBConnection(
+        uri,
+        read_consistency_interval=read_consistency_interval,
+    )
 
 
 async def connect_async(

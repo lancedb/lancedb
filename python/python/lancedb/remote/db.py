@@ -15,7 +15,7 @@ import inspect
 import logging
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from typing import Iterable, List, Optional, Union
+from typing import Dict, Iterable, List, Optional, Union
 from urllib.parse import urlparse
 
 from cachetools import TTLCache
@@ -44,20 +44,25 @@ class RemoteDBConnection(DBConnection):
         request_thread_pool: Optional[ThreadPoolExecutor] = None,
         connection_timeout: float = 120.0,
         read_timeout: float = 300.0,
+        storage_options: Optional[Dict[str, str]] = None,
     ):
         """Connect to a remote LanceDB database."""
         parsed = urlparse(db_url)
         if parsed.scheme != "db":
             raise ValueError(f"Invalid scheme: {parsed.scheme}, only accepts db://")
         self.db_name = parsed.netloc
+        prefix = parsed.path.lstrip("/")
+        self.db_prefix = None if not prefix else prefix
         self.api_key = api_key
         self._client = RestfulLanceDBClient(
             self.db_name,
+            self.db_prefix,
             region,
             api_key,
             host_override,
             connection_timeout=connection_timeout,
             read_timeout=read_timeout,
+            storage_options=storage_options,
         )
         self._request_thread_pool = request_thread_pool
         self._table_cache = TTLCache(maxsize=10000, ttl=300)
