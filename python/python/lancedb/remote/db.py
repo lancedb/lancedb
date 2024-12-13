@@ -56,10 +56,10 @@ class RemoteDBConnection(DBConnection):
         self.api_key = api_key
         self._client = RestfulLanceDBClient(
             self.db_name,
-            self.db_prefix,
             region,
             api_key,
             host_override,
+            self.db_prefix,
             connection_timeout=connection_timeout,
             read_timeout=read_timeout,
             storage_options=storage_options,

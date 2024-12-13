@@ -52,10 +52,10 @@ def _read_ipc(resp: requests.Response) -> pa.Table:
 @attrs.define(slots=False)
 class RestfulLanceDBClient:
     db_name: str
-    db_prefix: str | None
     region: str
     api_key: Credential
     host_override: Optional[str] = attrs.field(default=None)
+    db_prefix: Optional[str] = attrs.field(default=None)
 
     closed: bool = attrs.field(default=False, init=False)
 
