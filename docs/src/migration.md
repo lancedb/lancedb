@@ -3,7 +3,7 @@
 In an effort to ensure all clients have the same set of capabilities we have
 migrated the Python and Node clients onto a common Rust base library. In Python,
 both the synchronous and asynchronous clients are based on this implementation.
-In Node, the new client is available as `@lancedb/lancedb`, which will replace
+In Node, the new client is available as `@lancedb/lancedb`, which replaces
 the existing `vectordb` package.
 
 This guide describes the differences between the two Node APIs and will hopefully assist users
