@@ -26,14 +26,20 @@ use pyo3::{
 
 use crate::util::parse_distance_type;
 
+pub fn class_name<'a>(ob: &'a Bound<'_, PyAny>) -> PyResult<&'a str> {
+    let full_name: &str = ob
+        .getattr(intern!(ob.py(), "__class__"))?
+        .getattr(intern!(ob.py(), "__name__"))?
+        .extract()?;
+    match full_name.rsplit_once('.') {
+        Some((_, name)) => Ok(name),
+        None => Ok(full_name),
+    }
+}
+
 pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<LanceDbIndex> {
     if let Some(source) = source {
-        let class_name: String = source
-            .getattr(intern!(source.py(), "__class__"))?
-            .getattr(intern!(source.py(), "__name__"))?
-            .extract()?;
-
-        match class_name.rsplit_once('.').map(|v| v.1).unwrap_or(&class_name) {
+        match class_name(source)? {
             "BTree" => Ok(LanceDbIndex::BTree(BTreeIndexBuilder::default())),
             "Bitmap" => Ok(LanceDbIndex::Bitmap(Default::default())),
             "LabelList" => Ok(LanceDbIndex::LabelList(Default::default())),
@@ -42,7 +48,7 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
                 let inner_opts = TokenizerConfig::default()
                     .base_tokenizer(params.base_tokenizer)
                     .language(&params.language)
-                    .map_err(|_| PyValueError::new_err(format!("LanceDB does not support the requested language: \"{}\"", params.language)))?
+                    .map_err(|_| PyValueError::new_err(format!("LanceDB does not support the requested language: '{}'", params.language)))?
                     .lower_case(params.lower_case)
                     .max_token_length(params.max_token_length)
                     .remove_stop_words(params.remove_stop_words)
@@ -101,9 +107,9 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
                 }
                 Ok(LanceDbIndex::IvfHnswSq(hnsw_sq_builder))
             },
-            _ => Err(PyValueError::new_err(format!(
+            not_supported => Err(PyValueError::new_err(format!(
                 "Invalid index type '{}'.  Must be one of BTree, Bitmap, LabelList, FTS, IvfPq, IvfHnswPq, or IvfHnswSq",
-                class_name
+                not_supported
             ))),
         }
     } else {

@@ -30,3 +30,12 @@ async def tmp_db_async(tmp_path) -> AsyncConnection:
     return await lancedb.connect_async(
         tmp_path, read_consistency_interval=timedelta(seconds=0)
     )
+
+
+def exception_output(e_info: pytest.ExceptionInfo):
+    import traceback
+
+    # skip traceback part, since it's not worth checking in tests
+    e_info.value.__traceback__ = None
+    lines = traceback.format_exception(e_info.value)
+    return "".join(lines).strip()

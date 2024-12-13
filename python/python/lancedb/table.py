@@ -48,6 +48,7 @@ from .query import (
     Query,
 )
 from .util import (
+    add_note,
     fs_from_uri,
     get_uri_scheme,
     infer_vector_column_name,
@@ -479,8 +480,6 @@ class Table(ABC):
         index_type: Literal["BTREE", "BITMAP", "LABEL_LIST"] = "BTREE",
     ):
         """Create a scalar index on a column.
-
-        **Experimental API**
 
         Parameters
         ----------
@@ -1006,7 +1005,8 @@ class Table(ABC):
     @abstractmethod
     def list_indices(self) -> Iterable[IndexConfig]:
         """
-        List all indices that have been created with Self::create_index
+        List all indices that have been created with
+        [Table.create_index][lancedb.table.Table.create_index]
         """
 
     @abstractmethod
@@ -2640,7 +2640,14 @@ class AsyncTable:
                     "config must be an instance of IvfPq, HnswPq, HnswSq, BTree,"
                     " Bitmap, LabelList, or FTS"
                 )
-        await self._inner.create_index(column, index=config, replace=replace)
+        try:
+            await self._inner.create_index(column, index=config, replace=replace)
+        except ValueError as e:
+            if "not support the requested language" in str(e):
+                supported_langs = ", ".join(lang_mapping.values())
+                help_msg = f"Supported languages: {supported_langs}"
+                add_note(e, help_msg)
+            raise e
 
     async def add(
         self,
