@@ -27,11 +27,13 @@ use lancedb::{error::Error, ipc::ipc_file_to_batches};
 use crate::error::NapiErrorExt;
 
 /// Reranker implementation that "wraps" a NodeJS Reranker implementation.
-/// This contains closures over the callbacks that can be used to invoke the
+/// This contains references to the callbacks that can be used to invoke the
 /// reranking methods on the NodeJS implementation and handles serializing the
 /// record batches to Arrow IPC buffers.
 #[napi]
 pub struct Reranker {
+    /// callback to the Javascript which will call the rerankHybrid method of
+    /// some Reranker implementation
     rerank_hybrid: ThreadsafeFunction<RerankHybridCallbackArgs, ErrorStrategy::CalleeHandled>,
 }
 

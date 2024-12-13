@@ -563,18 +563,20 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
           { text: "cat", vector: [0.3, 0.4] },
         ];
         const table = await convertToTable(records);
-        const batch = table.batches[0]
+        const batch = table.batches[0];
 
-        const buffer = await fromRecordBatchToBuffer(batch)
-        const result = await fromBufferToRecordBatch(buffer)
+        const buffer = await fromRecordBatchToBuffer(batch);
+        const result = await fromBufferToRecordBatch(buffer);
 
-        expect(JSON.stringify(batch.toArray())).toEqual(JSON.stringify(result?.toArray()));
+        expect(JSON.stringify(batch.toArray())).toEqual(
+          JSON.stringify(result?.toArray()),
+        );
       });
 
-      it("converting from buffer returns null if buffer has no record batches", async function() {
-        const result = await fromBufferToRecordBatch(Buffer.from([0x01, 0x02])) // bad data
-        expect(result).toEqual(null)
-      })
+      it("converting from buffer returns null if buffer has no record batches", async function () {
+        const result = await fromBufferToRecordBatch(Buffer.from([0x01, 0x02])); // bad data
+        expect(result).toEqual(null);
+      });
     });
   },
 );

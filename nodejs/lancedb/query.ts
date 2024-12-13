@@ -14,10 +14,10 @@
 
 import {
   Table as ArrowTable,
-  fromBufferToRecordBatch,
-  fromRecordBatchToBuffer,
   type IntoVector,
   RecordBatch,
+  fromBufferToRecordBatch,
+  fromRecordBatchToBuffer,
   tableFromIPC,
 } from "./arrow";
 import { type IvfPqOptions } from "./indices";
@@ -547,20 +547,22 @@ export class VectorQuery extends QueryBase<NativeVectorQuery> {
   }
 
   rerank(reranker: Reranker): VectorQuery {
-    super.doCall((inner) => inner.rerank({
-      rerankHybrid: async (_, args) => {
-        const vecResults = await fromBufferToRecordBatch(args.vecResults)
-        const ftsResults = await fromBufferToRecordBatch(args.ftsResults)
-        const result = await reranker.rerankHybrid(
-          args.query,
-          vecResults as RecordBatch,
-          ftsResults as RecordBatch,
-        )
+    super.doCall((inner) =>
+      inner.rerank({
+        rerankHybrid: async (_, args) => {
+          const vecResults = await fromBufferToRecordBatch(args.vecResults);
+          const ftsResults = await fromBufferToRecordBatch(args.ftsResults);
+          const result = await reranker.rerankHybrid(
+            args.query,
+            vecResults as RecordBatch,
+            ftsResults as RecordBatch,
+          );
 
-        const buffer = fromRecordBatchToBuffer(result)
-        return buffer
-      }
-    }))
+          const buffer = fromRecordBatchToBuffer(result);
+          return buffer;
+        },
+      }),
+    );
 
     return this;
   }
