@@ -20,7 +20,7 @@ from lancedb.index import FTS
 import numpy as np
 import pandas as pd
 import pytest
-from tests.conftest import exception_output
+from .conftest import exception_output
 
 pytest.importorskip("lancedb.fts")
 tantivy = pytest.importorskip("tantivy")
