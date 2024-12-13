@@ -735,7 +735,7 @@ def test_create_scalar_index(db):
     indices = table.to_lance().list_indices()
     assert len(indices) == 1
     scalar_index = indices[0]
-    assert scalar_index["type"] == "Scalar"
+    assert scalar_index["type"] == "BTree"
 
     # Confirm that prefiltering still works with the scalar index column
     results = table.search().where("x = 'c'").to_arrow()
