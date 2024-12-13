@@ -23,3 +23,6 @@ class BackgroundEventLoop:
 
     def run(self, future):
         return asyncio.run_coroutine_threadsafe(future, self.loop).result()
+
+
+LOOP = BackgroundEventLoop()

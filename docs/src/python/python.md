@@ -47,6 +47,8 @@ is also an [asynchronous API client](#connections-asynchronous).
 
 ::: lancedb.embeddings.registry.EmbeddingFunctionRegistry
 
+::: lancedb.embeddings.base.EmbeddingFunctionConfig
+
 ::: lancedb.embeddings.base.EmbeddingFunction
 
 ::: lancedb.embeddings.base.TextEmbeddingFunction

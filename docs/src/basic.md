@@ -141,14 +141,6 @@ recommend switching to stable releases.
     --8<-- "python/python/tests/docs/test_basic.py:connect_async"
     ```
 
-    !!! note "Asynchronous Python API"
-
-        The asynchronous Python API is new and has some slight differences compared
-        to the synchronous API.  Feel free to start using the asynchronous version.
-        Once all features have migrated we will start to move the synchronous API to
-        use the same syntax as the asynchronous API.  To help with this migration we
-        have created a [migration guide](migration.md) detailing the differences.
-
 === "Typescript[^1]"
 
     === "@lancedb/lancedb"

@@ -121,7 +121,13 @@ class RemoteDBConnection(DBConnection):
         return LOOP.run(self._conn.table_names(start_after=page_token, limit=limit))
 
     @override
-    def open_table(self, name: str, *, index_cache_size: Optional[int] = None) -> Table:
+    def open_table(
+        self,
+        name: str,
+        *,
+        storage_options: Optional[Dict[str, str]] = None,
+        index_cache_size: Optional[int] = None,
+    ) -> Table:
         """Open a Lance Table in the database.
 
         Parameters

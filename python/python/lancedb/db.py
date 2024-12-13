@@ -17,10 +17,11 @@ from abc import abstractmethod
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, Iterable, List, Literal, Optional, Union
 
+from lancedb.embeddings.registry import EmbeddingFunctionRegistry
 from overrides import EnforceOverrides, override
 
 from lancedb.common import data_to_reader, sanitize_uri, validate_schema
-from lancedb.background_loop import BackgroundEventLoop
+from lancedb.background_loop import LOOP
 
 from ._lancedb import connect as lancedb_connect
 from .table import (
@@ -42,8 +43,6 @@ if TYPE_CHECKING:
     from ._lancedb import Connection as LanceDbConnection
     from .common import DATA, URI
     from .embeddings import EmbeddingFunctionConfig
-
-LOOP = BackgroundEventLoop()
 
 
 class DBConnection(EnforceOverrides):
@@ -82,6 +81,10 @@ class DBConnection(EnforceOverrides):
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
         embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
+        *,
+        storage_options: Optional[Dict[str, str]] = None,
+        data_storage_version: Optional[str] = None,
+        enable_v2_manifest_paths: Optional[bool] = None,
     ) -> Table:
         """Create a [Table][lancedb.table.Table] in the database.
 
@@ -119,6 +122,24 @@ class DBConnection(EnforceOverrides):
             One of "error", "drop", "fill".
         fill_value: float
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
+        storage_options: dict, optional
+            Additional options for the storage backend. Options already set on the
+            connection will be inherited by the table, but can be overridden here.
+            See available options at
+            <https://lancedb.github.io/lancedb/guides/storage/>
+        data_storage_version: optional, str, default "stable"
+            The version of the data storage format to use. Newer versions are more
+            efficient but require newer versions of lance to read.  The default is
+            "stable" which will use the legacy v2 version.  See the user guide
+            for more details.
+        enable_v2_manifest_paths: bool, optional, default False
+            Use the new V2 manifest paths. These paths provide more efficient
+            opening of datasets with many versions on object stores.  WARNING:
+            turning this on will make the dataset unreadable for older versions
+            of LanceDB (prior to 0.13.0). To migrate an existing dataset, instead
+            use the
+            [Table.migrate_manifest_paths_v2][lancedb.table.Table.migrate_v2_manifest_paths]
+            method.
 
         Returns
         -------
@@ -140,7 +161,7 @@ class DBConnection(EnforceOverrides):
         >>> data = [{"vector": [1.1, 1.2], "lat": 45.5, "long": -122.7},
         ...         {"vector": [0.2, 1.8], "lat": 40.1, "long":  -74.1}]
         >>> db.create_table("my_table", data)
-        LanceTable(connection=..., name="my_table")
+        LanceTable(name='my_table', version=1, ...)
         >>> db["my_table"].head()
         pyarrow.Table
         vector: fixed_size_list<item: float>[2]
@@ -161,7 +182,7 @@ class DBConnection(EnforceOverrides):
         ...    "long": [-122.7, -74.1]
         ... })
         >>> db.create_table("table2", data)
-        LanceTable(connection=..., name="table2")
+        LanceTable(name='table2', version=1, ...)
         >>> db["table2"].head()
         pyarrow.Table
         vector: fixed_size_list<item: float>[2]
@@ -184,7 +205,7 @@ class DBConnection(EnforceOverrides):
         ...   pa.field("long", pa.float32())
         ... ])
         >>> db.create_table("table3", data, schema = custom_schema)
-        LanceTable(connection=..., name="table3")
+        LanceTable(name='table3', version=1, ...)
         >>> db["table3"].head()
         pyarrow.Table
         vector: fixed_size_list<item: float>[2]
@@ -218,7 +239,7 @@ class DBConnection(EnforceOverrides):
         ...     pa.field("price", pa.float32()),
         ... ])
         >>> db.create_table("table4", make_batches(), schema=schema)
-        LanceTable(connection=..., name="table4")
+        LanceTable(name='table4', version=1, ...)
 
         """
         raise NotImplementedError
@@ -226,7 +247,13 @@ class DBConnection(EnforceOverrides):
     def __getitem__(self, name: str) -> LanceTable:
         return self.open_table(name)
 
-    def open_table(self, name: str, *, index_cache_size: Optional[int] = None) -> Table:
+    def open_table(
+        self,
+        name: str,
+        *,
+        storage_options: Optional[Dict[str, str]] = None,
+        index_cache_size: Optional[int] = None,
+    ) -> Table:
         """Open a Lance Table in the database.
 
         Parameters
@@ -243,6 +270,11 @@ class DBConnection(EnforceOverrides):
             This cache applies to the entire opened table, across all indices.
             Setting this value higher will increase performance on larger datasets
             at the expense of more RAM
+        storage_options: dict, optional
+            Additional options for the storage backend. Options already set on the
+            connection will be inherited by the table, but can be overridden here.
+            See available options at
+            <https://lancedb.github.io/lancedb/guides/storage/>
 
         Returns
         -------
@@ -309,15 +341,15 @@ class LanceDBConnection(DBConnection):
     >>> db = lancedb.connect("./.lancedb")
     >>> db.create_table("my_table", data=[{"vector": [1.1, 1.2], "b": 2},
     ...                                   {"vector": [0.5, 1.3], "b": 4}])
-    LanceTable(connection=..., name="my_table")
+    LanceTable(name='my_table', version=1, ...)
     >>> db.create_table("another_table", data=[{"vector": [0.4, 0.4], "b": 6}])
-    LanceTable(connection=..., name="another_table")
+    LanceTable(name='another_table', version=1, ...)
     >>> sorted(db.table_names())
     ['another_table', 'my_table']
     >>> len(db)
     2
     >>> db["my_table"]
-    LanceTable(connection=..., name="my_table")
+    LanceTable(name='my_table', version=1, ...)
     >>> "my_table" in db
     True
     >>> db.drop_table("my_table")
@@ -363,7 +395,7 @@ class LanceDBConnection(DBConnection):
         self._conn = AsyncConnection(LOOP.run(do_connect()))
 
     def __repr__(self) -> str:
-        val = f"{self.__class__.__name__}({self._uri}"
+        val = f"{self.__class__.__name__}(uri={self._uri!r}"
         if self.read_consistency_interval is not None:
             val += f", read_consistency_interval={repr(self.read_consistency_interval)}"
         val += ")"
@@ -403,6 +435,10 @@ class LanceDBConnection(DBConnection):
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
         embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
+        *,
+        storage_options: Optional[Dict[str, str]] = None,
+        data_storage_version: Optional[str] = None,
+        enable_v2_manifest_paths: Optional[bool] = None,
     ) -> LanceTable:
         """Create a table in the database.
 
@@ -424,12 +460,19 @@ class LanceDBConnection(DBConnection):
             on_bad_vectors=on_bad_vectors,
             fill_value=fill_value,
             embedding_functions=embedding_functions,
+            storage_options=storage_options,
+            data_storage_version=data_storage_version,
+            enable_v2_manifest_paths=enable_v2_manifest_paths,
         )
         return tbl
 
     @override
     def open_table(
-        self, name: str, *, index_cache_size: Optional[int] = None
+        self,
+        name: str,
+        *,
+        storage_options: Optional[Dict[str, str]] = None,
+        index_cache_size: Optional[int] = None,
     ) -> LanceTable:
         """Open a table in the database.
 
@@ -442,7 +485,12 @@ class LanceDBConnection(DBConnection):
         -------
         A LanceTable object representing the table.
         """
-        return LanceTable.open(self, name, index_cache_size=index_cache_size)
+        return LanceTable.open(
+            self,
+            name,
+            storage_options=storage_options,
+            index_cache_size=index_cache_size,
+        )
 
     @override
     def drop_table(self, name: str, ignore_missing: bool = False):
@@ -524,6 +572,10 @@ class AsyncConnection(object):
         Any attempt to use the connection after it is closed will result in an error."""
         self._inner.close()
 
+    @property
+    def uri(self) -> str:
+        return self._inner.uri
+
     async def table_names(
         self, *, start_after: Optional[str] = None, limit: Optional[int] = None
     ) -> Iterable[str]:
@@ -557,6 +609,7 @@ class AsyncConnection(object):
         fill_value: Optional[float] = None,
         storage_options: Optional[Dict[str, str]] = None,
         *,
+        embedding_functions: List[EmbeddingFunctionConfig] = None,
         data_storage_version: Optional[str] = None,
         use_legacy_format: Optional[bool] = None,
         enable_v2_manifest_paths: Optional[bool] = None,
@@ -601,7 +654,7 @@ class AsyncConnection(object):
             Additional options for the storage backend. Options already set on the
             connection will be inherited by the table, but can be overridden here.
             See available options at
-            https://lancedb.github.io/lancedb/guides/storage/
+            <https://lancedb.github.io/lancedb/guides/storage/>
         data_storage_version: optional, str, default "stable"
             The version of the data storage format to use. Newer versions are more
             efficient but require newer versions of lance to read.  The default is
@@ -730,6 +783,17 @@ class AsyncConnection(object):
         """
         metadata = None
 
+        if embedding_functions is not None:
+            # If we passed in embedding functions explicitly
+            # then we'll override any schema metadata that
+            # may was implicitly specified by the LanceModel schema
+            registry = EmbeddingFunctionRegistry.get_instance()
+            metadata = registry.get_table_metadata(embedding_functions)
+
+        data, schema = sanitize_create_table(
+            data, schema, metadata, on_bad_vectors, fill_value
+        )
+
         # Defining defaults here and not in function prototype.  In the future
         # these defaults will move into rust so better to keep them as None.
         if on_bad_vectors is None:
@@ -791,7 +855,7 @@ class AsyncConnection(object):
             Additional options for the storage backend. Options already set on the
             connection will be inherited by the table, but can be overridden here.
             See available options at
-            https://lancedb.github.io/lancedb/guides/storage/
+            <https://lancedb.github.io/lancedb/guides/storage/>
         index_cache_size: int, default 256
             Set the size of the index cache, specified as a number of entries
 

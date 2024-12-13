@@ -314,3 +314,15 @@ def deprecated(func):
 def validate_table_name(name: str):
     """Verify the table name is valid."""
     native_validate_table_name(name)
+
+
+def add_note(base_exception: BaseException, note: str):
+    if hasattr(base_exception, "add_note"):
+        base_exception.add_note(note)
+    elif isinstance(base_exception.args[0], str):
+        base_exception.args = (
+            base_exception.args[0] + "\n" + note,
+            *base_exception.args[1:],
+        )
+    else:
+        raise ValueError("Cannot add note to exception")
