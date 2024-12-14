@@ -204,7 +204,7 @@ pub mod test {
             .unwrap();
 
         assert_eq!(3, result.schema().fields().len());
-        assert_eq!("name", result.schema().fields().get(0).unwrap().name());
+        assert_eq!("name", result.schema().fields().first().unwrap().name());
         assert_eq!(ROW_ID, result.schema().fields().get(1).unwrap().name());
         assert_eq!(
             RELEVANCE_SCORE,
