@@ -12,7 +12,11 @@ First, we need to connect to a LanceDB database.
 
 import lancedb
 
-db = lancedb.connect("data/sample-lancedb")
+uri = "data/sample-lancedb"
+# Synchronous client
+db = lancedb.connect(uri)
+# Asynchronous client
+async_db = await lancedb.connect_async(uri)
 ```
 
 We can load a Pandas `DataFrame` to LanceDB directly.
@@ -25,7 +29,10 @@ data = pd.DataFrame({
     "item": ["foo", "bar"],
     "price": [10.0, 20.0]
 })
+# Synchronous client
 table = db.create_table("pd_table", data=data)
+# Asynchronous client
+async_table = await async_db.create_table("pd_table", data=data)
 ```
 
 Similar to the [`pyarrow.write_dataset()`](https://arrow.apache.org/docs/python/generated/pyarrow.dataset.write_dataset.html) method, LanceDB's
@@ -53,8 +60,10 @@ schema=pa.schema([
     pa.field("item", pa.utf8()),
     pa.field("price", pa.float32()),
 ])
-
+# Synchronous client
 table = db.create_table("iterable_table", data=make_batches(), schema=schema)
+# Asynchronous client
+async_table = await async_db.create_table("iterable_table", data=make_batches(), schema=schema)
 ```
 
 You will find detailed instructions of creating a LanceDB dataset in
@@ -66,12 +75,22 @@ sections.
 We can now perform similarity search via the LanceDB Python API.
 
 ```py
+# Synchronous client
 # Open the table previously created.
 table = db.open_table("pd_table")
 
 query_vector = [100, 100]
 # Pandas DataFrame
 df = table.search(query_vector).limit(1).to_pandas()
+print(df)
+
+# Asynchronous client
+# Open the table previously created.
+async_table = await async_db.open_table("pd_table")
+
+query_vector = [100, 100]
+# Pandas DataFrame
+df = await async_table.query().nearest_to(query_vector).limit(1).to_pandas()
 print(df)
 ```
 
@@ -84,7 +103,7 @@ If you have a simple filter, it's faster to provide a `where` clause to LanceDB'
 For more complex filters or aggregations, you can always resort to using the underlying `DataFrame` methods after performing a search.
 
 ```python
-
+# Synchronous client
 # Apply the filter via LanceDB
 results = table.search([100, 100]).where("price < 15").to_pandas()
 assert len(results) == 1
@@ -92,6 +111,18 @@ assert results["item"].iloc[0] == "foo"
 
 # Apply the filter via Pandas
 df = results = table.search([100, 100]).to_pandas()
+results = df[df.price < 15]
+assert len(results) == 1
+assert results["item"].iloc[0] == "foo"
+
+# Asynchronous client
+# Apply the filter via LanceDB
+results = await async_table.query().nearest_to([100, 100]).where("price < 15").to_pandas()
+assert len(results) == 1
+assert results["item"].iloc[0] == "foo"
+
+# Apply the filter via Pandas
+df = results = await async_table.query().nearest_to([100, 100]).to_pandas()
 results = df[df.price < 15]
 assert len(results) == 1
 assert results["item"].iloc[0] == "foo"

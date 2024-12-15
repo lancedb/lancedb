@@ -24,18 +24,27 @@ Lance supports `IVF_PQ` index type by default.
     ```python
     import lancedb
     import numpy as np
+    from lancedb.index import IvfPq
+
     uri = "data/sample-lancedb"
-    db = lancedb.connect(uri)
 
     # Create 10,000 sample vectors
     data = [{"vector": row, "item": f"item {i}"}
         for i, row in enumerate(np.random.random((10_000, 1536)).astype('float32'))]
-
+    
+    # Synchronous client
+    db = lancedb.connect(uri)
     # Add the vectors to a table
     tbl = db.create_table("my_vectors", data=data)
-
     # Create and train the index - you need to have enough data in the table for an effective training step
     tbl.create_index(num_partitions=256, num_sub_vectors=96)
+
+    # Asynchronous client
+    async_db = await lancedb.connect_async(uri)
+    # Add the vectors to a table
+    async_tbl = await async_db.create_table("my_vectors", data=data)
+    # Create and train the index - you need to have enough data in the table for an effective training step
+    await async_tbl.create_index("vector", config=IvfPq(num_partitions=256, num_sub_vectors=96))
     ```
 
 === "TypeScript"
@@ -127,7 +136,9 @@ You can specify the GPU device to train IVF partitions via
         accelerator="mps"
     )
     ```
-
+!!! note
+    GPU based indexing is not yet supported with our asynchronous client.
+    
 Troubleshooting:
 
 If you see `AssertionError: Torch not compiled with CUDA enabled`, you need to [install
@@ -154,7 +165,15 @@ There are a couple of parameters that can be used to fine-tune the search:
 === "Python"
 
     ```python
+    # Synchronous client
     tbl.search(np.random.random((1536))) \
+        .limit(2) \
+        .nprobes(20) \
+        .refine_factor(10) \
+        .to_pandas()
+    # Asynchronous client
+    await async_tbl.query() \
+        .(np.random.random((1536))) \
         .limit(2) \
         .nprobes(20) \
         .refine_factor(10) \
@@ -198,7 +217,15 @@ You can further filter the elements returned by a search using a where clause.
 === "Python"
 
     ```python
-    tbl.search(np.random.random((1536))).where("item != 'item 1141'").to_pandas()
+    # Synchronous client
+    tbl.search(np.random.random((1536))) \
+        .where("item != 'item 1141'") \
+        .to_pandas()
+    # Asynchronous client
+    await async_tbl.query() \
+        .nearest_to(np.random.random((1536))) \
+        .where("item != 'item 1141'") \
+        .to_pandas()
     ```
 
 === "TypeScript"
@@ -222,7 +249,15 @@ You can select the columns returned by the query using a select clause.
 === "Python"
 
     ```python
-    tbl.search(np.random.random((1536))).select(["vector"]).to_pandas()
+    # Synchronous client
+    tbl.search(np.random.random((1536))) \
+        .select(["vector"]) \
+        .to_pandas()
+    # Asynchronous client
+    await async_tbl.query() \
+        .nearest_to(np.random.random((1536))) \
+        .select(["vector"]) \
+        .to_pandas()
     ```
 
 

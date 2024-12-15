@@ -13,8 +13,10 @@ Consider that we have a LanceDB table named `my_table`, whose string column `tex
 
     ```python
     import lancedb
+    from lancedb.index import FTS
 
     uri = "data/sample-lancedb"
+    # Synchronous client
     db = lancedb.connect(uri)
 
     table = db.create_table(
@@ -29,6 +31,23 @@ Consider that we have a LanceDB table named `my_table`, whose string column `tex
     # `use_tantivy=True` by default
     table.create_fts_index("text", use_tantivy=False)
     table.search("puppy").limit(10).select(["text"]).to_list()
+    # [{'text': 'Frodo was a happy puppy', '_score': 0.6931471824645996}]
+    # ...
+
+    # Asynchronous client
+    async_db = await lancedb_async.connect(uri)
+
+    async_table = await db.create_table(
+        "my_table",
+        data=[
+            {"vector": [3.1, 4.1], "text": "Frodo was a happy puppy"},
+            {"vector": [5.9, 26.5], "text": "There are several kittens playing"},
+        ],
+    )
+
+    # async API uses our native FTS algorithm
+    await async_table.create_index("text", config=FTS())
+    await table.query().nearest_to_text("puppy").limit(10).select(["text"]).to_list()
     # [{'text': 'Frodo was a happy puppy', '_score': 0.6931471824645996}]
     # ...
     ```
@@ -94,7 +113,10 @@ Stemming is useful for improving search results by reducing words to their root 
 
 For example, to enable stemming for English:
 ```python
-table.create_fts_index("text", use_tantivy=True, tokenizer_name="en_stem")
+# Synchronous client
+table.create_fts_index("text", tokenizer_name="en_stem")
+# Asynchronous client
+await async_table.create_index("text", config=FTS(tokenizer_name="en_stem"))
 ```
 
 the following [languages](https://docs.rs/tantivy/latest/tantivy/tokenizer/enum.Language.html) are currently supported.
@@ -103,11 +125,14 @@ The tokenizer is customizable, you can specify how the tokenizer splits the text
 
 For example, for language with accents, you can specify the tokenizer to use `ascii_folding` to remove accents, e.g. 'é' to 'e':
 ```python
-table.create_fts_index("text",
-                        use_tantivy=False,
-                        language="French",
-                        stem=True,
-                        ascii_folding=True)
+# Synchronous client
+table.create_fts_index(
+        "text", use_tantivy=False, language="French", stem=True, ascii_folding=True
+    )
+# Asynchronous client
+await async_table.create_index(
+        "text", config=FTS(language="French", stem=True, ascii_folding=True)
+    )
 ```
 
 ## Filtering
@@ -120,7 +145,16 @@ With pre-filtering:
 === "Python"
 
     ```python
-    table.search("puppy").limit(10).where("meta='foo'", prefilte=True).to_list()
+    # Synchronous client
+    table.search("puppy").limit(10).where("meta='foo'", prefilter=True).to_list()
+    # Asynchronous client
+    await (
+        async_table.query()
+        .nearest_to_text("puppy")
+        .limit(10)
+        .where("meta='foo'")
+        .to_list()
+    )
     ```
 
 === "TypeScript"
@@ -152,7 +186,17 @@ With post-filtering:
 === "Python"
 
     ```python
-    table.search("puppy").limit(10).where("meta='foo'", prefilte=False).to_list()
+    # Synchronous client
+    table.search("puppy").limit(10).where("meta='foo'", prefilter=False).to_list()
+    # Asynchronous client
+    await (
+        async_table.query()
+        .nearest_to_text("puppy")
+        .limit(10)
+        .where("meta='foo'")
+        .postfilter()
+        .to_list()
+    ) 
     ```
 
 === "TypeScript"
@@ -192,7 +236,10 @@ query syntax, see Tantivy's [query parser rules](https://docs.rs/tantivy/latest/
 
 To search for a phrase, the index must be created with `with_position=True`:
 ```python
+# Synchronous client
 table.create_fts_index("text", use_tantivy=False, with_position=True)
+# Asynchronous client
+await async_table.create_index("text", config=FTS(with_position=True))
 ```
 This will allow you to search for phrases, but it will also significantly increase the index size and indexing time.
 
@@ -206,8 +253,12 @@ This can make the query more efficient, especially when the table is large and t
 === "Python"
 
     ```python
+    # Synchronous client
     table.add([{"vector": [3.1, 4.1], "text": "Frodo was a happy puppy"}])
     table.optimize()
+    # Asynchronous client
+    await async_table.add([{"vector": [3.1, 4.1], "text": "Frodo was a happy puppy"}])
+    await async_table.optimize()
     ```
 
 === "TypeScript"

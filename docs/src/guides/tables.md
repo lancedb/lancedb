@@ -14,7 +14,12 @@ Initialize a LanceDB connection and create a table
 
     ```python
     import lancedb
-    db = lancedb.connect("./.lancedb")
+
+    uri = "data/sample-lancedb"
+    # Synchronous client
+    db = lancedb.connect(uri)
+    # Asynchronous client
+    async_db = await lancedb.connect_async(uri)
     ```
 
     LanceDB allows ingesting data from various sources - `dict`, `list[dict]`, `pd.DataFrame`, `pa.Table` or a `Iterator[pa.RecordBatch]`. Let's take a look at some of the these.
@@ -48,16 +53,15 @@ Initialize a LanceDB connection and create a table
 === "Python"
 
     ```python
-    import lancedb
-
-    db = lancedb.connect("./.lancedb")
-
     data = [{"vector": [1.1, 1.2], "lat": 45.5, "long": -122.7},
             {"vector": [0.2, 1.8], "lat": 40.1, "long": -74.1}]
-
+    
+    # Synchronous client
     db.create_table("my_table", data)
-
     db["my_table"].head()
+    # Asynchronous client
+    async_tbl = await async_db.create_table("my_table", data)
+    await async_tbl.head()
     ```
 
     !!! info "Note"
@@ -68,14 +72,20 @@ Initialize a LanceDB connection and create a table
         passed in will NOT be appended to the table in that case.
 
     ```python
+     # Synchronous client
     db.create_table("name", data, exist_ok=True)
+    # Asynchronous client
+    await async_db.create_table("name", data, exist_ok=True)
     ```
 
     Sometimes you want to make sure that you start fresh. If you want to
     overwrite the table, you can pass in mode="overwrite" to the createTable function.
 
     ```python
+     # Synchronous client
     db.create_table("name", data, mode="overwrite")
+    # Asynchronous client
+    await async_db.create_table("name", data, mode="overwrite")
     ```
 
 === "Typescript[^1]"
@@ -155,9 +165,12 @@ data = pd.DataFrame({
     "long": [-122.7, -74.1]
 })
 
+# Synchronous client
 db.create_table("my_table", data)
-
 db["my_table"].head()
+# Asynchronous client
+async_tbl = await async_db.create_table("my_table", data)
+await async_tbl.head()
 ```
 
 !!! info "Note"
@@ -167,12 +180,15 @@ The **`vector`** column needs to be a [Vector](../python/pydantic.md#vector-fiel
 
 ```python
 custom_schema = pa.schema([
-pa.field("vector", pa.list_(pa.float32(), 4)),
-pa.field("lat", pa.float32()),
-pa.field("long", pa.float32())
+    pa.field("vector", pa.list_(pa.float32(), 4)),
+    pa.field("lat", pa.float32()),
+    pa.field("long", pa.float32())
 ])
 
-table = db.create_table("my_table", data, schema=custom_schema)
+# Synchronous client
+tbl = db.create_table("my_table", data, schema=custom_schema)
+# Asynchronous client
+async_tbl = await async_db.create_table("my_table", data, schema=custom_schema)
 ```
 
 ### From a Polars DataFrame
@@ -190,7 +206,10 @@ data = pl.DataFrame({
     "item": ["foo", "bar"],
     "price": [10.0, 20.0]
 })
-table = db.create_table("pl_table", data=data)
+# Synchronous client
+tbl = db.create_table("pl_table", data)
+# Asynchronous client
+async_tbl = await async_db.create_table("pl_table", data)
 ```
 
 ### From an Arrow Table
@@ -219,7 +238,10 @@ LanceDB supports float16 data type!
         ],
         ["vector", "text"],
     )
+    # Synchronous client
     tbl = db.create_table("f16_tbl", data, schema=schema)
+    # Asynchronous client
+    async_tbl = await async_db.create_table("f16_tbl", data, schema=schema)
     ```
 
 === "Typescript[^1]"
@@ -265,9 +287,11 @@ class Content(LanceModel):
         return f"https://www.imdb.com/title/tt{self.imdb_id}"
 
 import pyarrow as pa
-db = lancedb.connect("~/.lancedb")
-table_name = "movielens_small"
-table = db.create_table(table_name, schema=Content)
+
+# Synchronous client
+tbl = db.create_table("movielens_small", schema=Content)
+# Asynchronous client
+async_tbl = await async_db.create_table("movielens_small", schema=Content)
 ```
 
 #### Nested schemas
@@ -290,7 +314,10 @@ class NestedSchema(LanceModel):
     vector: Vector(1536)
     document: Document
 
+# Synchronous client
 tbl = db.create_table("nested_table", schema=NestedSchema, mode="overwrite")
+# Asynchronous client
+async_tbl = await async_db.create_table("nested_table", schema=NestedSchema, mode="overwrite")
 ```
 
 This creates a struct column called "document" that has two subfields
@@ -377,7 +404,10 @@ schema = pa.schema([
     pa.field("price", pa.float32()),
 ])
 
+# Synchronous client
 db.create_table("batched_tale", make_batches(), schema=schema)
+# Asynchronous client
+await async_db.create_table("batched_tale", make_batches(), schema=schema)
 ```
 
 You can also use iterators of other types like Pandas DataFrame or Pylists directly in the above example.
@@ -388,13 +418,19 @@ You can also use iterators of other types like Pandas DataFrame or Pylists direc
     If you forget the name of your table, you can always get a listing of all table names.
 
     ```python
+    # Synchronous client
     print(db.table_names())
+    # Asynchronous client
+    print(await async_db.table_names())
     ```
 
     Then, you can open any existing tables.
 
     ```python
+    # Synchronous client
     tbl = db.open_table("my_table")
+    # Asynchronous client
+    async_tbl = await async_db.open_table("my_table")
     ```
 
 === "Typescript[^1]"
@@ -429,7 +465,11 @@ You can create an empty table for scenarios where you want to add data to the ta
           pa.field("item", pa.string()),
           pa.field("price", pa.float32()),
       ])
+
+    # Synchronous client
     tbl = db.create_table("empty_table_add", schema=schema)
+    # Asynchronous client
+    async_tbl = await async_db.create_table("empty_table_add", schema=schema)
     ```
 
     Alternatively, you can also use Pydantic to specify the schema for the empty table. Note that we do not
@@ -444,8 +484,11 @@ You can create an empty table for scenarios where you want to add data to the ta
         vector: Vector(2)
         item: str
         price: float
-
+    
+    # Synchronous client
     tbl = db.create_table("empty_table_add", schema=Item.to_arrow_schema())
+    # Asynchronous client
+    async_tbl = await async_db.create_table("empty_table_add", schema=Item.to_arrow_schema())
     ```
 
     Once the empty table has been created, you can add data to it via the various methods listed in the [Adding to a table](#adding-to-a-table) section.
@@ -477,7 +520,10 @@ After a table has been created, you can always add more data to it using the `ad
     df = pd.DataFrame({
         "vector": [[1.3, 1.4], [9.5, 56.2]], "item": ["banana", "apple"], "price": [5.0, 7.0]
     })
+    # Synchronous client
     tbl.add(df)
+    # Asynchronous client
+    async_tbl = await async_tbl.add(df)
     ```
 
     ### Add a Polars DataFrame
@@ -486,7 +532,10 @@ After a table has been created, you can always add more data to it using the `ad
     df = pl.DataFrame({
         "vector": [[1.3, 1.4], [9.5, 56.2]], "item": ["banana", "apple"], "price": [5.0, 7.0]
     })
+    # Synchronous client
     tbl.add(df)
+    # Asynchronous client
+    async_tbl = await async_tbl.add(df)
     ```
 
     ### Add an Iterator
@@ -500,7 +549,10 @@ After a table has been created, you can always add more data to it using the `ad
                     {"vector": [3.1, 4.1], "item": "peach", "price": 6.0},
                     {"vector": [5.9, 26.5], "item": "pear", "price": 5.0}
                 ]
+    # Synchronous client
     tbl.add(make_batches())
+    # Asynchronous client
+    async_tbl = await async_tbl.add(make_batches())
     ```
 
     ### Add a PyArrow table
@@ -517,8 +569,10 @@ After a table has been created, you can always add more data to it using the `ad
             ],
             ["vector", "item", "price"],
         )
-
+    # Synchronous client
     tbl.add(pa_table)
+    # Asynchronous client
+    async_tbl = await async_tbl.add(pa_table)
     ```
 
     ### Add a Pydantic Model
@@ -530,8 +584,10 @@ After a table has been created, you can always add more data to it using the `ad
         Item(vector=[8.1, 4.7], item="pineapple", price=10.0),
         Item(vector=[6.9, 9.3], item="avocado", price=9.0)
     ]
-
+    # Synchronous client
     tbl.add(pydantic_model_items)
+    # Asynchronous client
+    async_tbl = await async_tbl.add(pydantic_model_items)
     ```
 
     ??? "Ingesting Pydantic models with LanceDB embedding API"
@@ -548,10 +604,15 @@ After a table has been created, you can always add more data to it using the `ad
         class Schema(LanceModel):
             text: str = embed_fcn.SourceField()
             vector: Vector(embed_fcn.ndims()) = embed_fcn.VectorField(default=None)
-
+        
+        # Synchronous client
         tbl = db.create_table("my_table", schema=Schema, mode="overwrite")
         models = [Schema(text="hello"), Schema(text="world")]
         tbl.add(models)
+        # Asynchronous client
+        async_tbl = await async_db.create_table("my_table", schema=Schema, mode="overwrite")
+        models = [Schema(text="hello"), Schema(text="world")]
+        await async_tbl.add(models)
         ```
 
 === "Typescript[^1]"
@@ -572,30 +633,47 @@ Use the `delete()` method on tables to delete rows from a table. To choose which
 === "Python"
 
     ```python
+    # Synchronous client
     tbl.delete('item = "fizz"')
+    # Asynchronous client
+    await async_tbl.delete('item = "fizz"')
     ```
 
     ### Deleting row with specific column value
 
     ```python
-    import lancedb
-
     data = [{"x": 1, "vector": [1, 2]},
             {"x": 2, "vector": [3, 4]},
             {"x": 3, "vector": [5, 6]}]
-    db = lancedb.connect("./.lancedb")
-    table = db.create_table("my_table", data)
-    table.to_pandas()
+    # Synchronous client
+    tbl = db.create_table("my_table", data)
+    tbl.to_pandas()
     #   x      vector
     # 0  1  [1.0, 2.0]
     # 1  2  [3.0, 4.0]
     # 2  3  [5.0, 6.0]
 
-    table.delete("x = 2")
-    table.to_pandas()
+    tbl.delete("x = 2")
+    tbl.to_pandas()
     #   x      vector
     # 0  1  [1.0, 2.0]
     # 1  3  [5.0, 6.0]
+
+    # Asynchronous client
+    async_db = await lancedb.connect_async(uri)
+    async_tbl = await async_db.db.create_table("my_table", data)
+    await async_tbl.to_pandas()
+    #   x      vector
+    # 0  1  [1.0, 2.0]
+    # 1  2  [3.0, 4.0]
+    # 2  3  [5.0, 6.0]
+
+    await async_tbl.delete("x = 2")
+    await async_tbl.to_pandas()
+    #   x      vector
+    # 0  1  [1.0, 2.0]
+    # 1  3  [5.0, 6.0]
+
     ```
 
     ### Delete from a list of values
@@ -604,8 +682,15 @@ Use the `delete()` method on tables to delete rows from a table. To choose which
     to_remove = [1, 5]
     to_remove = ", ".join(str(v) for v in to_remove)
 
-    table.delete(f"x IN ({to_remove})")
-    table.to_pandas()
+    # Synchronous client
+    tbl.delete(f"x IN ({to_remove})")
+    tbl.to_pandas()
+    #   x      vector
+    # 0  3  [5.0, 6.0]
+
+    # Asynchronous client
+    await async_tbl.delete(f"x IN ({to_remove})")
+    await async_tbl.to_pandas()
     #   x      vector
     # 0  3  [5.0, 6.0]
     ```
@@ -664,18 +749,22 @@ This can be used to update zero to all rows depending on how many rows match the
     import lancedb
     import pandas as pd
 
-    # Create a lancedb connection
-    db = lancedb.connect("./.lancedb")
-
     # Create a table from a pandas DataFrame
     data = pd.DataFrame({"x": [1, 2, 3], "vector": [[1, 2], [3, 4], [5, 6]]})
-    table = db.create_table("my_table", data)
 
+    # Synchronous client
+    tbl = db.create_table("my_table", data)
     # Update the table where x = 2
-    table.update(where="x = 2", values={"vector": [10, 10]})
-
+    tbl.update(where="x = 2", values={"vector": [10, 10]})
     # Get the updated table as a pandas DataFrame
-    df = table.to_pandas()
+    df = tbl.to_pandas()
+
+    # Asynchronous client
+    async_tbl = async_db.create_table("my_table", data)
+    # Update the table where x = 2
+    await async_tbl.update(where="x = 2", values={"vector": [10, 10]})
+    # Get the updated table as a pandas DataFrame
+    df = await async_tbl.to_pandas()
 
     # Print the DataFrame
     print(df)
@@ -736,10 +825,15 @@ This can be used to update zero to all rows depending on how many rows match the
 === "Python"
 
     ```python
+    # Synchronous client
     # Update the table where x = 2
-    table.update(valuesSql={"x": "x + 1"})
+    tbl.update(valuesSql={"x": "x + 1"})
+    print(tbl.to_pandas())
 
-    print(table.to_pandas())
+    # Asynchronous client
+    # Update the table where x = 2
+    await async_tbl.update(valuesSql={"x": "x + 1"})
+    print(await async_tbl.to_pandas())
     ```
 
     Output
@@ -810,7 +904,10 @@ data type for it.
 === "Python"
 
     ```python
+    # Synchronous client
     --8<-- "python/python/tests/docs/test_basic.py:add_columns"
+    # Asynchronous client
+    --8<-- "python/python/tests/docs/test_basic.py:add_columns_async"
     ```
     **API Reference:** [lancedb.table.Table.add_columns][]
 
@@ -850,7 +947,11 @@ rewriting the column, which can be a heavy operation.
 
     ```python
     import pyarrow as pa
+
+    # Synchronous client
     --8<-- "python/python/tests/docs/test_basic.py:alter_columns"
+    # Asynchronous client
+    --8<-- "python/python/tests/docs/test_basic.py:alter_columns_async"
     ```
     **API Reference:** [lancedb.table.Table.alter_columns][]
 
@@ -873,7 +974,10 @@ will remove the column from the schema.
 === "Python"
 
     ```python
-     --8<-- "python/python/tests/docs/test_basic.py:drop_columns"
+    # Synchronous client
+    --8<-- "python/python/tests/docs/test_basic.py:drop_columns"
+    # Asynchronous client
+    --8<-- "python/python/tests/docs/test_basic.py:drop_columns_async"
     ```
     **API Reference:** [lancedb.table.Table.drop_columns][]
 
@@ -927,28 +1031,45 @@ There are three possible settings for `read_consistency_interval`:
 
     ```python
     from datetime import timedelta
-    db = lancedb.connect("./.lancedb",. read_consistency_interval=timedelta(0))
-    table = db.open_table("my_table")
+
+    uri = "data/sample-lancedb"
+    # Synchronous client
+    db = lancedb.connect(uri, read_consistency_interval=timedelta(0))
+    tbl = db.open_table("my_table")
+    # Asynchronous client
+    async_db = await lancedb.connect_async(uri, read_consistency_interval=timedelta(0))
+    async_tbl = await async_db.open_table("my_table")
     ```
 
     For eventual consistency, use a custom `timedelta`:
 
     ```python
     from datetime import timedelta
-    db = lancedb.connect("./.lancedb", read_consistency_interval=timedelta(seconds=5))
-    table = db.open_table("my_table")
+
+    uri = "data/sample-lancedb"
+    # Synchronous client
+    db = lancedb.connect(uri, read_consistency_interval=timedelta(seconds=5))
+    tbl = db.open_table("my_table")
+    # Asynchronous client
+    async_db = await lancedb.connect_async(uri, read_consistency_interval=timedelta(seconds=5))
+    async_tbl = await async_db.open_table("my_table")
     ```
 
     By default, a `Table` will never check for updates from other writers. To manually check for updates you can use `checkout_latest`:
 
     ```python
-    db = lancedb.connect("./.lancedb")
-    table = db.open_table("my_table")
+    # Synchronous client
+    tbl = db.open_table("my_table")
 
     # (Other writes happen to my_table from another process)
 
     # Check for updates
-    table.checkout_latest()
+    tbl.checkout_latest()
+
+    # Asynchronous client
+    async_tbl = async_db.open_table("my_table")
+     # Check for updates
+    await async_tbl.checkout_latest()
     ```
 
 === "Typescript[^1]"
@@ -957,14 +1078,14 @@ There are three possible settings for `read_consistency_interval`:
 
     ```ts
     const db = await lancedb.connect({ uri: "./.lancedb", readConsistencyInterval: 0 });
-    const table = await db.openTable("my_table");
+    const tbl = await db.openTable("my_table");
     ```
 
     For eventual consistency, specify the update interval as seconds:
 
     ```ts
     const db = await lancedb.connect({ uri: "./.lancedb", readConsistencyInterval: 5 });
-    const table = await db.openTable("my_table");
+    const tbl = await db.openTable("my_table");
     ```
 
 <!-- Node doesn't yet support the version time travel: https://github.com/lancedb/lancedb/issues/1007

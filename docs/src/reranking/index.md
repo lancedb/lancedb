@@ -36,14 +36,14 @@ tbl = db.create_table("test", data)
 reranker = CohereReranker(api_key="your_api_key")
 
 # Run vector search with a reranker
-result = tbl.query("hello").rerank(reranker).to_list() 
+result = tbl.search("hello").rerank(reranker).to_list() 
 
 # Run FTS search with a reranker
-result = tbl.query("hello", query_type="fts").rerank(reranker).to_list()
+result = tbl.search("hello", query_type="fts").rerank(reranker).to_list()
 
 # Run hybrid search with a reranker
 tbl.create_fts_index("text")
-result = tbl.query("hello", query_type="hybrid").rerank(reranker).to_list()
+result = tbl.search("hello", query_type="hybrid").rerank(reranker).to_list()
 ```
 
 ### Multi-vector reranking

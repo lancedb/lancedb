@@ -34,16 +34,26 @@ over scalar columns.
 
     ```python
     import lancedb
+    from lancedb.index import BTree, Bitmap
+
     books = [
       {"book_id": 1, "publisher": "plenty of books", "tags": ["fantasy", "adventure"]},
       {"book_id": 2, "publisher": "book town", "tags": ["non-fiction"]},
       {"book_id": 3, "publisher": "oreilly", "tags": ["textbook"]}
     ]
 
-    db = lancedb.connect("./db")
+    uri = "data/sample-lancedb"
+    # Synchronous client
+    db = lancedb.connect(uri)
     table = db.create_table("books", books)
     table.create_scalar_index("book_id")  # BTree by default
     table.create_scalar_index("publisher", index_type="BITMAP")
+
+    # Asynchronous client
+    async_db = await lancedb.connect_async(uri)
+    async_table = await async_db.create_table("books", books)
+    await async_table.create_index("book_id", config=BTree())  # BTree by default
+    await async_table.create_index("publisher", config=Bitmap())
     ```
 
 === "Typescript"
@@ -65,8 +75,13 @@ The following scan will be faster if the column `book_id` has a scalar index:
     ```python
     import lancedb
 
+    # Synchronous client
     table = db.open_table("books")
     my_df = table.search().where("book_id = 2").to_pandas()
+
+    # Asynchronous client
+    async_table = await async_db.open_table("books")
+    my_df = await async_table.query().where("book_id = 2").to_pandas()
     ```
 
 === "Typescript"
@@ -96,13 +111,14 @@ Scalar indices can also speed up scans containing a vector search or full text s
       {"book_id": 2, "vector": [3, 4]},
       {"book_id": 3, "vector": [5, 6]}
     ]
-    table = db.create_table("book_with_embeddings", data)
 
-    (
-        table.search([1, 2])
-        .where("book_id != 3", prefilter=True)
-        .to_pandas()
-    )
+    # Synchronous client
+    table = db.create_table("book_with_embeddings", data)
+    (table.search([1, 2]).where("book_id != 3", prefilter=True).to_pandas())
+
+    # Asynchronous client
+    async_table = await async_db.create_table("book_with_embeddings", data)
+    (await async_table.query().where("book_id != 3").nearest_to([1, 2]).to_pandas())
     ```
 
 === "Typescript"
@@ -123,8 +139,12 @@ Updating the table data (adding, deleting, or modifying records) requires that y
 === "Python"
 
     ```python
+    # Synchronous client
     table.add([{"vector": [7, 8], "book_id": 4}])
     table.optimize()
+    # Asynchronous client
+    await table.add([{"vector": [7, 8], "book_id": 4}])
+    await async_table.optimize()
     ```
 
 === "TypeScript"

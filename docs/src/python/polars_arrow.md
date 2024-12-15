@@ -11,7 +11,11 @@ First, we connect to a LanceDB database.
 ```py
 import lancedb
 
-db = lancedb.connect("data/polars-lancedb")
+uri = "data/polars-lancedb"
+# Synchronous client
+db = lancedb.connect(uri)
+# Asynchronous client
+async_db = await lancedb.connect_async(uri)
 ```
 
 We can load a Polars `DataFrame` to LanceDB directly.
@@ -24,14 +28,24 @@ data = pl.DataFrame({
     "item": ["foo", "bar"],
     "price": [10.0, 20.0]
 })
+# Synchronous client
 table = db.create_table("pl_table", data=data)
+# Asynchronous client
+async_table = await async_db.create_table("pl_table", data=data)
 ```
 
 We can now perform similarity search via the LanceDB Python API.
 
 ```py
+# Synchronous client
 query = [3.0, 4.0]
 result = table.search(query).limit(1).to_polars()
+print(result)
+print(type(result))
+
+# Asynchronous client
+query = [3.0, 4.0]
+result = await async_table.query().nearest_to(query).limit(1).to_polars()
 print(result)
 print(type(result))
 ```
@@ -74,18 +88,31 @@ data = {
     "price": 10.0,
 }
 
+# Synchronous client
 table = db.create_table("test_table", schema=Item)
 df = pl.DataFrame(data)
 # Add Polars DataFrame to table
 table.add(df)
+
+# Asynchronous client
+async_table = await async_db.create_table("test_table", schema=Item)
+df = pl.DataFrame(data)
+# Add Polars DataFrame to table
+await async_table.add(df)
 ```
 
 The table can now be queried as usual.
 
 ```py
+# Synchronous client
 result = table.search([3.0, 4.0]).limit(1).to_polars()
 print(result)
 print(type(result))
+
+# Asynchronous client
+# result = await async_table.query().nearest_to([3.0, 4.0]).limit(1).to_polars()
+# print(result)
+# print(type(result))
 ```
 
 ```
@@ -108,8 +135,13 @@ As you iterate on your application, you'll likely need to work with the whole ta
 LanceDB tables can also be converted directly into a polars LazyFrame for further processing.
 
 ```python
+# Synchronous client
 ldf = table.to_polars()
 print(type(ldf))
+
+# Asynchronous client
+# ldf = await async_table.to_polars()
+# print(type(ldf))
 ```
 
 Unlike the search result from a query, we can see that the type of the result is a LazyFrame.

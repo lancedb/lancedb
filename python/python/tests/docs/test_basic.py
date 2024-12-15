@@ -161,6 +161,22 @@ async def test_quickstart_async():
     data = [{"vector": [x, x], "item": "filler", "price": x * x} for x in range(1000)]
     await async_tbl.add(data)
     # --8<-- [start:vector_search_async]
+    # --8<-- [start:add_columns_async]
+    await async_tbl.add_columns({"double_price": "cast((price * 2) as float)"})
+    # --8<-- [end:add_columns_async]
+    # --8<-- [start:alter_columns_async]
+    await async_tbl.alter_columns(
+        {
+            "path": "double_price",
+            "rename": "dbl_price",
+            "data_type": pa.float64(),
+            "nullable": True,
+        }
+    )
+    # --8<-- [end:alter_columns_async]
+    # --8<-- [start:drop_columns_async]
+    await async_tbl.drop_columns(["dbl_price"])
+    # --8<-- [end:drop_columns_async]
     # Asynchronous client
     await async_tbl.vector_search([100, 100]).limit(2).to_pandas()
     # --8<-- [end:vector_search_async]

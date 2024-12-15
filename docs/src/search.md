@@ -44,11 +44,23 @@ db.create_table("my_vectors", data=data)
     import lancedb
     import numpy as np
 
-    db = lancedb.connect("data/sample-lancedb")
+    uri = "data/sample-lancedb"
+    # Synchronous client
+    db = lancedb.connect(uri)
 
     tbl = db.open_table("my_vectors")
 
     df = tbl.search(np.random.random((1536))) \
+        .limit(10) \
+        .to_list()
+
+    # Asynchronous client
+    async_db = await lancedb.connect_async(uri)
+
+    async_tbl = await async_db.open_table("my_vectors")
+
+    df = await async_tbl.query() \
+        .nearest_to(np.random.random((1536))) \
         .limit(10) \
         .to_list()
     ```
@@ -78,8 +90,15 @@ By default, `l2` will be used as metric type. You can specify the metric type as
 === "Python"
 
     ```python
+    # Synchronous client
     df = tbl.search(np.random.random((1536))) \
         .metric("cosine") \
+        .limit(10) \
+        .to_list()
+    # Asynchronous client
+    df = await async_tbl.query() \
+        .nearest_to(np.random.random((1536))) \
+        .distance_type("cosine") \
         .limit(10) \
         .to_list()
     ```
@@ -145,7 +164,10 @@ Let's create a LanceDB table with a nested schema:
         ),
     ) for i in range(100)]
 
+    # Synchronous client
     tbl = db.create_table("documents", data=data)
+    # Asynchronous client
+    async_tbl = await async_db.create_table("documents", data=data)
     ```
 
     ### As a PyArrow table
@@ -156,7 +178,10 @@ Let's create a LanceDB table with a nested schema:
     column for full text search.
 
     ```python
+    # Synchronous client
     tbl.search(np.random.randn(1536)).to_arrow()
+    # Asynchronous client
+    await async_tbl.query().nearest_to(np.random.randn(1536)).to_arrow()
     ```
 
     ### As a Pandas DataFrame
@@ -164,7 +189,10 @@ Let's create a LanceDB table with a nested schema:
     You can also get the results as a pandas dataframe.
 
     ```python
+    # Synchronous client
     tbl.search(np.random.randn(1536)).to_pandas()
+    # Asynchronous client
+    await async_tbl.query().nearest_to(np.random.randn(1536)).to_pandas()
     ```
 
     While other formats like Arrow/Pydantic/Python dicts have a natural
@@ -174,6 +202,7 @@ Let's create a LanceDB table with a nested schema:
     when creating the pandas dataframe.
 
     ```python
+    # Synchronous client
     tbl.search(np.random.randn(1536)).to_pandas(flatten=True)
     ```
 
@@ -181,15 +210,21 @@ Let's create a LanceDB table with a nested schema:
     of nesting to flatten by passing in a positive integer.
 
     ```python
+    # Synchronous client
     tbl.search(np.random.randn(1536)).to_pandas(flatten=1)
     ```
+    !!! note
+        `flatten` is not yet supported with our asynchronous client.
 
     ### As a list of Python dicts
 
     You can of course return results as a list of python dicts.
 
     ```python
+    # Synchronous client
     tbl.search(np.random.randn(1536)).to_list()
+    # Asynchronous client
+    await async_tbl.query().nearest_to(np.random.randn(1536)).to_list()
     ```
 
     ### As a list of Pydantic models
@@ -198,8 +233,11 @@ Let's create a LanceDB table with a nested schema:
     retrieve results as Pydantic models
 
     ```python
+    # Synchronous client
     tbl.search(np.random.randn(1536)).to_pydantic(LanceSchema)
     ```
+    !!! note
+        `to_pydantic()` is not yet supported with our asynchronous client.
 
     Note that in this case the extra `_distance` field is discarded since
     it's not part of the LanceSchema.

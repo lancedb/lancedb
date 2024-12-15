@@ -12,8 +12,7 @@ import lancedb
 import openai
 from lancedb.embeddings import get_registry
 from lancedb.pydantic import LanceModel, Vector
-
-db = lancedb.connect("~/.lancedb")
+from lancedb.index import FTS
 
 # Ingest embedding function in LanceDB table
 # Configuring the environment variable OPENAI_API_KEY
@@ -34,27 +33,52 @@ data = [
     { "text": "during the battle rebel spies managed to steal secret plans"},
     { "text": "to the Empire's ultimate weapon the Death Star"}
 ]
-
+uri = "data/sample-lancedb"
+# Synchronous client
+db = lancedb.connect(uri)
 # ingest docs with auto-vectorization
 table.add(data)
-
 # Create a fts index before the hybrid search
 table.create_fts_index("text")
 # hybrid search with default re-ranker
 results = table.search("flower moon", query_type="hybrid").to_pandas()
+
+# Asynchronous client
+async_db = await lancedb.connect_async(uri)
+async_table = await async_db.create_table("documents", schema=Documents)
+# ingest docs with auto-vectorization
+await async_table.add(data)
+# Create a fts index before the hybrid search
+await async_table.create_index("text", config=FTS())
+text_query = "flower moon"
+vector_query = embeddings.compute_query_embeddings(text_query)[0]
+results = await async_table.
+# hybrid search with default re-ranker
 ```
 !!! Note
     You can also pass the vector and text query manually. This is useful if you're not using the embedding API or if you're using a separate embedder service.
 ### Explicitly passing the vector and text query
 ```python
+# Synchronous client
 vector_query = [0.1, 0.2, 0.3, 0.4, 0.5]
 text_query = "flower moon"
-results = table.search(query_type="hybrid")
-                .vector(vector_query)
-                .text(text_query)
-                .limit(5)
-                .to_pandas()
-
+results = (
+    table.search(query_type="hybrid")
+    .vector(vector_query)
+    .text(text_query)
+    .limit(5)
+    .to_pandas()
+)
+# Asynchronous client
+vector_query = [0.1, 0.2, 0.3, 0.4, 0.5]
+text_query = "flower moon"
+results = await (
+    async_table.query()
+    .nearest_to(vector_query)
+    .nearest_to_text(text_query)
+    .limit(5)
+    .to_pandas()
+)
 ```
 
 By default, LanceDB uses `RRFReranker()`, which uses reciprocal rank fusion score, to combine and rerank the results of semantic and full-text search. You can customize the hyperparameters as needed or write your own custom reranker. Here's how you can use any of the available rerankers:

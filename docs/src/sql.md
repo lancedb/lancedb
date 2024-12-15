@@ -39,13 +39,11 @@ const tbl = await db.createTable('myVectors', data)
 
 === "Python"
 
-    ```py
-    result = (
-        tbl.search([0.5, 0.2])
-        .where("id = 10", prefilter=True)
-        .limit(1)
-        .to_arrow()
-    )
+    ```python
+    # Synchronous client
+    result = tbl.search([0.5, 0.2]).where("id = 10", prefilter=True).limit(1).to_arrow()
+    # Asynchronous client
+    result = await async_tbl.where("id = 10").nearest_to([0.5, 0.2]).limit(1).to_arrow()
     ```
 
 === "TypeScript"
@@ -88,9 +86,16 @@ For example, the following filter string is acceptable:
 === "Python"
 
     ```python
-    tbl.search([100, 102]) \
-       .where("(item IN ('item 0', 'item 2')) AND (id > 10)") \
-       .to_arrow()
+    # Synchronous client
+    tbl.search([100, 102]).where(
+        "(item IN ('item 0', 'item 2')) AND (id > 10)"
+    ).to_arrow()
+    # Asynchronous client
+    await (
+        async_tbl.where("(item IN ('item 0', 'item 2')) AND (id > 10)")
+        .nearest_to([100, 102])
+        .to_arrow()
+    )
     ```
 
 === "TypeScript"
@@ -168,7 +173,10 @@ You can also filter your data without search.
 === "Python"
 
     ```python
+    # Synchronous client
     tbl.search().where("id = 10").limit(10).to_arrow()
+    # Asynchronous client
+    await async_tbl.query().where("id = 10").limit(10).to_arrow()
     ```
 
 === "TypeScript"
