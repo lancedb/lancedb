@@ -46,6 +46,9 @@ pub fn rank(results: RecordBatch, column: &str, ascending: Option<bool>) -> Resu
     }
 
     let scores: Float32Array = downcast_array(scores);
+
+    // first sort the scores to to indices, this gives us a list  where the values
+    // represent the index of the original scores if the scores were in sorted order
     let score_indices = sort_to_indices(
         &scores,
         Some(SortOptions {
@@ -54,6 +57,17 @@ pub fn rank(results: RecordBatch, column: &str, ascending: Option<bool>) -> Resu
         }),
         None,
     )?;
+
+    // sorting the sort indices to their indices gives us the positions the ranks
+    // should be in the list.
+    let score_indices = sort_to_indices(
+        &score_indices,
+        Some(SortOptions{
+            descending: false,
+            ..Default::default()
+        }),
+        None)?;
+
     let schema = results.schema();
     let ranks = Float32Array::from_iter_values((1..results.num_rows() + 1).map(|i| i as f32));
     let ranks = take(&ranks, &score_indices, None)?;
@@ -195,8 +209,9 @@ mod test {
             Arc::new(Field::new("score", DataType::Float32, false)),
         ]));
 
+
         let names = StringArray::from(vec!["foo", "bar", "baz", "bean", "dog"]);
-        let scores = Float32Array::from(vec![0.2, 0.4, 0.1, 0.6, -0.4]);
+        let scores = Float32Array::from(vec![0.2, 0.4, 0.1, 0.6, 0.45]);
 
         let batch =
             RecordBatch::try_new(schema.clone(), vec![Arc::new(names), Arc::new(scores)]).unwrap();
@@ -209,12 +224,12 @@ mod test {
         let names: StringArray = downcast_array(result.column(0));
         assert_eq!(
             names.iter().map(|e| e.unwrap()).collect::<Vec<_>>(),
-            vec!["bean", "bar", "foo", "baz", "dog"]
+            vec!["foo", "bar", "baz", "bean", "dog"]
         );
         let scores: Float32Array = downcast_array(result.column(1));
         assert_eq!(
             scores.iter().map(|e| e.unwrap()).collect::<Vec<_>>(),
-            vec![1.0, 2.0, 3.0, 4.0, 5.0]
+            vec![4.0, 3.0, 5.0, 1.0, 2.0]
         );
 
         // check sort ascending
@@ -222,12 +237,12 @@ mod test {
         let names: StringArray = downcast_array(result.column(0));
         assert_eq!(
             names.iter().map(|e| e.unwrap()).collect::<Vec<_>>(),
-            vec!["dog", "baz", "foo", "bar", "bean"]
+            vec!["foo", "bar", "baz", "bean", "dog"]
         );
         let scores: Float32Array = downcast_array(result.column(1));
         assert_eq!(
             scores.iter().map(|e| e.unwrap()).collect::<Vec<_>>(),
-            vec![1.0, 2.0, 3.0, 4.0, 5.0]
+            vec![2.0, 3.0, 1.0, 5.0, 4.0]
         );
 
         // ensure default sort is ascending
@@ -235,12 +250,12 @@ mod test {
         let names: StringArray = downcast_array(result.column(0));
         assert_eq!(
             names.iter().map(|e| e.unwrap()).collect::<Vec<_>>(),
-            vec!["dog", "baz", "foo", "bar", "bean"]
+            vec!["foo", "bar", "baz", "bean", "dog"]
         );
         let scores: Float32Array = downcast_array(result.column(1));
         assert_eq!(
             scores.iter().map(|e| e.unwrap()).collect::<Vec<_>>(),
-            vec![1.0, 2.0, 3.0, 4.0, 5.0]
+            vec![2.0, 3.0, 1.0, 5.0, 4.0]
         );
 
         // check it can handle an empty batch
