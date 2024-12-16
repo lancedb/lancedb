@@ -568,4 +568,14 @@ class IvfPq:
     sample_rate: int = 256
 
 
-__all__ = ["BTree", "IvfFlat", "IvfPq", "HnswPq", "HnswSq", "IndexConfig"]
+__all__ = [
+    "BTree",
+    "IvfPq",
+    "IvfFlat",
+    "HnswPq",
+    "HnswSq",
+    "IndexConfig",
+    "FTS",
+    "Bitmap",
+    "LabelList",
+]
