@@ -14,7 +14,7 @@
 
 use arrow::compute::{
     kernels::numeric::{div, sub},
-    max, min, sort_to_indices, take,
+    max, min,
 };
 use arrow_array::{cast::downcast_array, Float32Array, RecordBatch};
 use arrow_schema::{DataType, Field, Schema, SortOptions};
@@ -46,35 +46,22 @@ pub fn rank(results: RecordBatch, column: &str, ascending: Option<bool>) -> Resu
     }
 
     let scores: Float32Array = downcast_array(scores);
-
-    // first sort the scores to to indices, this gives us a list  where the values
-    // represent the index of the original scores if the scores were in sorted order
-    let score_indices = sort_to_indices(
-        &scores,
-        Some(SortOptions {
-            descending: !ascending.unwrap_or(true),
-            ..Default::default()
-        }),
-        None,
-    )?;
-
-    // sorting the sort indices to their indices gives us the positions the ranks
-    // should be in the list.
-    let score_indices = sort_to_indices(
-        &score_indices,
-        Some(SortOptions {
-            descending: false,
-            ..Default::default()
-        }),
-        None,
-    )?;
+    let ranks = Float32Array::from_iter_values(
+        arrow::compute::kernels::rank::rank(
+            &scores,
+            Some(SortOptions {
+                descending: !ascending.unwrap_or(true),
+                ..Default::default()
+            }),
+        )?
+        .iter()
+        .map(|i| *i as f32),
+    );
 
     let schema = results.schema();
-    let ranks = Float32Array::from_iter_values((1..results.num_rows() + 1).map(|i| i as f32));
-    let ranks = take(&ranks, &score_indices, None)?;
     let (column_idx, _) = schema.column_with_name(column).unwrap();
     let mut columns = results.columns().to_vec();
-    columns[column_idx] = ranks;
+    columns[column_idx] = Arc::new(ranks);
 
     let results = RecordBatch::try_new(results.schema(), columns)?;
 
