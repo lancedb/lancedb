@@ -62,11 +62,12 @@ pub fn rank(results: RecordBatch, column: &str, ascending: Option<bool>) -> Resu
     // should be in the list.
     let score_indices = sort_to_indices(
         &score_indices,
-        Some(SortOptions{
+        Some(SortOptions {
             descending: false,
             ..Default::default()
         }),
-        None)?;
+        None,
+    )?;
 
     let schema = results.schema();
     let ranks = Float32Array::from_iter_values((1..results.num_rows() + 1).map(|i| i as f32));
@@ -208,7 +209,6 @@ mod test {
             Arc::new(Field::new("name", DataType::Utf8, false)),
             Arc::new(Field::new("score", DataType::Float32, false)),
         ]));
-
 
         let names = StringArray::from(vec!["foo", "bar", "baz", "bean", "dog"]);
         let scores = Float32Array::from(vec![0.2, 0.4, 0.1, 0.6, 0.45]);
