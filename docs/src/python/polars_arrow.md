@@ -3,7 +3,7 @@
 LanceDB supports [Polars](https://github.com/pola-rs/polars), a blazingly fast DataFrame library for Python written in Rust. Just like in Pandas, the Polars integration is enabled by PyArrow under the hood. A deeper integration between Lance Tables and Polars DataFrames is in progress, but at the moment, you can read a Polars DataFrame into LanceDB and output the search results from a query to a Polars DataFrame.
 
 !!! note
-    Asynchronous `to_polars` is still work-in-progress. Therefore, only the synchonous APIs are used in this example
+    This example uses synchronous APIs as asynchronous `to_polars` support is under development.
 
 ## Create & Query LanceDB Table
 

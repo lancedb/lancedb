@@ -61,9 +61,11 @@ schema=pa.schema([
     pa.field("price", pa.float32()),
 ])
 # Synchronous client
-table = db.create_table("iterable_table", data=make_batches(), schema=schema)
+table = db.create_table("iterable_table", data=make_batches(), schema=schema, mode="overwrite")
 # Asynchronous client
-async_table = await async_db.create_table("iterable_table", data=make_batches(), schema=schema)
+async_table = await async_db.create_table(
+    "iterable_table", data=make_batches(), schema=schema, mode="overwrite"
+)
 ```
 
 You will find detailed instructions of creating a LanceDB dataset in
