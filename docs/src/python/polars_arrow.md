@@ -2,6 +2,9 @@
 
 LanceDB supports [Polars](https://github.com/pola-rs/polars), a blazingly fast DataFrame library for Python written in Rust. Just like in Pandas, the Polars integration is enabled by PyArrow under the hood. A deeper integration between Lance Tables and Polars DataFrames is in progress, but at the moment, you can read a Polars DataFrame into LanceDB and output the search results from a query to a Polars DataFrame.
 
+!!! note
+    Asynchronous `to_polars` is still work-in-progress. Therefore, only the synchonous APIs are used in this example
+
 ## Create & Query LanceDB Table
 
 ### From Polars DataFrame
@@ -14,8 +17,6 @@ import lancedb
 uri = "data/polars-lancedb"
 # Synchronous client
 db = lancedb.connect(uri)
-# Asynchronous client
-async_db = await lancedb.connect_async(uri)
 ```
 
 We can load a Polars `DataFrame` to LanceDB directly.
@@ -30,8 +31,6 @@ data = pl.DataFrame({
 })
 # Synchronous client
 table = db.create_table("pl_table", data=data)
-# Asynchronous client
-async_table = await async_db.create_table("pl_table", data=data)
 ```
 
 We can now perform similarity search via the LanceDB Python API.
@@ -40,12 +39,6 @@ We can now perform similarity search via the LanceDB Python API.
 # Synchronous client
 query = [3.0, 4.0]
 result = table.search(query).limit(1).to_polars()
-print(result)
-print(type(result))
-
-# Asynchronous client
-query = [3.0, 4.0]
-result = await async_table.query().nearest_to(query).limit(1).to_polars()
 print(result)
 print(type(result))
 ```
@@ -93,12 +86,6 @@ table = db.create_table("test_table", schema=Item)
 df = pl.DataFrame(data)
 # Add Polars DataFrame to table
 table.add(df)
-
-# Asynchronous client
-async_table = await async_db.create_table("test_table", schema=Item)
-df = pl.DataFrame(data)
-# Add Polars DataFrame to table
-await async_table.add(df)
 ```
 
 The table can now be queried as usual.
@@ -108,11 +95,6 @@ The table can now be queried as usual.
 result = table.search([3.0, 4.0]).limit(1).to_polars()
 print(result)
 print(type(result))
-
-# Asynchronous client
-# result = await async_table.query().nearest_to([3.0, 4.0]).limit(1).to_polars()
-# print(result)
-# print(type(result))
 ```
 
 ```
@@ -138,10 +120,6 @@ LanceDB tables can also be converted directly into a polars LazyFrame for furthe
 # Synchronous client
 ldf = table.to_polars()
 print(type(ldf))
-
-# Asynchronous client
-# ldf = await async_table.to_polars()
-# print(type(ldf))
 ```
 
 Unlike the search result from a query, we can see that the type of the result is a LazyFrame.

@@ -52,8 +52,13 @@ await async_table.add(data)
 await async_table.create_index("text", config=FTS())
 text_query = "flower moon"
 vector_query = embeddings.compute_query_embeddings(text_query)[0]
-results = await async_table.
 # hybrid search with default re-ranker
+results = await (
+    async_table.query()
+    .nearest_to(vector_query)
+    .nearest_to_text(text_query)
+    .to_pandas()
+)
 ```
 !!! Note
     You can also pass the vector and text query manually. This is useful if you're not using the embedding API or if you're using a separate embedder service.
