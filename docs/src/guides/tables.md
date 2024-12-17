@@ -85,7 +85,7 @@ Initialize a LanceDB connection and create a table
      # Synchronous client
     db.create_table("name", data, mode="overwrite")
     # Asynchronous client
-    await async_db.create_table("name", data, mode="overwrite")
+    await async_db.create_table("name_async", data, mode="overwrite")
     ```
 
 === "Typescript[^1]"
@@ -317,7 +317,7 @@ class NestedSchema(LanceModel):
 # Synchronous client
 tbl = db.create_table("nested_table", schema=NestedSchema, mode="overwrite")
 # Asynchronous client
-async_tbl = await async_db.create_table("nested_table", schema=NestedSchema, mode="overwrite")
+async_tbl = await async_db.create_table("nested_table_async", schema=NestedSchema, mode="overwrite")
 ```
 
 This creates a struct column called "document" that has two subfields
@@ -610,7 +610,7 @@ After a table has been created, you can always add more data to it using the `ad
         models = [Schema(text="hello"), Schema(text="world")]
         tbl.add(models)
         # Asynchronous client
-        async_tbl = await async_db.create_table("my_table", schema=Schema, mode="overwrite")
+        async_tbl = await async_db.create_table("my_table_async", schema=Schema, mode="overwrite")
         models = [Schema(text="hello"), Schema(text="world")]
         await async_tbl.add(models)
         ```

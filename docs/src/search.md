@@ -43,22 +43,17 @@ db.create_table("my_vectors", data=data)
     ```python
     import lancedb
     import numpy as np
-
     uri = "data/sample-lancedb"
     # Synchronous client
     db = lancedb.connect(uri)
-
     tbl = db.open_table("my_vectors")
-
     df = tbl.search(np.random.random((1536))) \
         .limit(10) \
         .to_list()
 
     # Asynchronous client
     async_db = await lancedb.connect_async(uri)
-
     async_tbl = await async_db.open_table("my_vectors")
-
     df = await async_tbl.query() \
         .nearest_to(np.random.random((1536))) \
         .limit(10) \
@@ -134,22 +129,18 @@ Let's create a LanceDB table with a nested schema:
 === "Python"
 
     ```python
-
     from datetime import datetime
     import lancedb
     from lancedb.pydantic import LanceModel, Vector
     import numpy as np
     from pydantic import BaseModel
     uri = "data/sample-lancedb-nested"
-
     class Metadata(BaseModel):
         source: str
         timestamp: datetime
-
     class Document(BaseModel):
         content: str
         meta: Metadata
-
     class LanceSchema(LanceModel):
         id: str
         vector: Vector(1536)
@@ -167,7 +158,7 @@ Let's create a LanceDB table with a nested schema:
     # Synchronous client
     tbl = db.create_table("documents", data=data)
     # Asynchronous client
-    async_tbl = await async_db.create_table("documents", data=data)
+    async_tbl = await async_db.create_table("documents_async", data=data)
     ```
 
     ### As a PyArrow table

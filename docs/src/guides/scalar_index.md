@@ -35,13 +35,11 @@ over scalar columns.
     ```python
     import lancedb
     from lancedb.index import BTree, Bitmap
-
     books = [
       {"book_id": 1, "publisher": "plenty of books", "tags": ["fantasy", "adventure"]},
       {"book_id": 2, "publisher": "book town", "tags": ["non-fiction"]},
       {"book_id": 3, "publisher": "oreilly", "tags": ["textbook"]}
     ]
-
     uri = "data/sample-lancedb"
     # Synchronous client
     db = lancedb.connect(uri)
@@ -51,7 +49,7 @@ over scalar columns.
 
     # Asynchronous client
     async_db = await lancedb.connect_async(uri)
-    async_table = await async_db.create_table("books", books)
+    async_table = await async_db.create_table("books_async", books)
     await async_table.create_index("book_id", config=BTree())  # BTree by default
     await async_table.create_index("publisher", config=Bitmap())
     ```
@@ -74,13 +72,12 @@ The following scan will be faster if the column `book_id` has a scalar index:
 
     ```python
     import lancedb
-
     # Synchronous client
     table = db.open_table("books")
     my_df = table.search().where("book_id = 2").to_pandas()
 
     # Asynchronous client
-    async_table = await async_db.open_table("books")
+    async_table = await async_db.open_table("books_async")
     my_df = await async_table.query().where("book_id = 2").to_pandas()
     ```
 
@@ -105,7 +102,6 @@ Scalar indices can also speed up scans containing a vector search or full text s
 
     ```python
     import lancedb
-
     data = [
       {"book_id": 1, "vector": [1, 2]},
       {"book_id": 2, "vector": [3, 4]},
@@ -117,7 +113,7 @@ Scalar indices can also speed up scans containing a vector search or full text s
     (table.search([1, 2]).where("book_id != 3", prefilter=True).to_pandas())
 
     # Asynchronous client
-    async_table = await async_db.create_table("book_with_embeddings", data)
+    async_table = await async_db.create_table("book_with_embeddings_async", data)
     (await async_table.query().where("book_id != 3").nearest_to([1, 2]).to_pandas())
     ```
 
@@ -143,7 +139,7 @@ Updating the table data (adding, deleting, or modifying records) requires that y
     table.add([{"vector": [7, 8], "book_id": 4}])
     table.optimize()
     # Asynchronous client
-    await table.add([{"vector": [7, 8], "book_id": 4}])
+    await async_table.add([{"vector": [7, 8], "book_id": 4}])
     await async_table.optimize()
     ```
 

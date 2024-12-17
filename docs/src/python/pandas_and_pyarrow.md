@@ -30,9 +30,9 @@ data = pd.DataFrame({
     "price": [10.0, 20.0]
 })
 # Synchronous client
-table = db.create_table("pd_table", data=data, mode="overwrite")
+table = db.create_table("pd_table", data=data)
 # Asynchronous client
-async_table = await async_db.create_table("pd_table", data=data, mode="overwrite")
+async_table = await async_db.create_table("pd_table_async", data=data)
 ```
 
 Similar to the [`pyarrow.write_dataset()`](https://arrow.apache.org/docs/python/generated/pyarrow.dataset.write_dataset.html) method, LanceDB's
@@ -61,10 +61,10 @@ schema=pa.schema([
     pa.field("price", pa.float32()),
 ])
 # Synchronous client
-table = db.create_table("iterable_table", data=make_batches(), schema=schema, mode="overwrite")
+table = db.create_table("iterable_table", data=make_batches(), schema=schema)
 # Asynchronous client
 async_table = await async_db.create_table(
-    "iterable_table", data=make_batches(), schema=schema, mode="overwrite"
+    "iterable_table_async", data=make_batches(), schema=schema
 )
 ```
 
