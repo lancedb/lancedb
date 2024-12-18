@@ -13,6 +13,7 @@ dependencies = [
     "packaging",
     "cachetools",
     "overrides>=0.7",
+    "urllib3==1.26.19"
 ]
 description = "lancedb"
 authors = [{ name = "LanceDB Devs", email = "dev@lancedb.com" }]
