@@ -39,11 +39,6 @@ jobs:
         with:
           fetch-depth: 0
           lfs: true
-      - run: |
-          cargo clean
-          rustc --version
-          cargo --version
-          rustup toolchain list
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust
