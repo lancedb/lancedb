@@ -34,7 +34,7 @@ from lance.dependencies import _check_for_hugging_face
 
 from .common import DATA, VEC, VECTOR_COLUMN_NAME
 from .embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
-from .index import BTree, IvfPq, Bitmap, LabelList, HnswPq, HnswSq, FTS
+from .index import BTree, IvfFlat, IvfPq, Bitmap, LabelList, HnswPq, HnswSq, FTS
 from .merge import LanceMergeInsertBuilder
 from .pydantic import LanceModel, model_to_dict
 from .query import (
@@ -433,7 +433,9 @@ class Table(ABC):
         accelerator: Optional[str] = None,
         index_cache_size: Optional[int] = None,
         *,
-        index_type: Literal["IVF_PQ", "IVF_HNSW_SQ", "IVF_HNSW_PQ"] = "IVF_PQ",
+        index_type: Literal[
+            "IVF_FLAT", "IVF_PQ", "IVF_HNSW_SQ", "IVF_HNSW_PQ"
+        ] = "IVF_PQ",
         num_bits: int = 8,
         max_iterations: int = 50,
         sample_rate: int = 256,
@@ -1394,7 +1396,9 @@ class LanceTable(Table):
         accelerator: Optional[str] = None,
         index_cache_size: Optional[int] = None,
         num_bits: int = 8,
-        index_type: Literal["IVF_PQ", "IVF_HNSW_SQ", "IVF_HNSW_PQ"] = "IVF_PQ",
+        index_type: Literal[
+            "IVF_FLAT", "IVF_PQ", "IVF_HNSW_SQ", "IVF_HNSW_PQ"
+        ] = "IVF_PQ",
         max_iterations: int = 50,
         sample_rate: int = 256,
         m: int = 20,
@@ -1418,6 +1422,13 @@ class LanceTable(Table):
             )
             self.checkout_latest()
             return
+        elif index_type == "IVF_FLAT":
+            config = IvfFlat(
+                distance_type=metric,
+                num_partitions=num_partitions,
+                max_iterations=max_iterations,
+                sample_rate=sample_rate,
+            )
         elif index_type == "IVF_PQ":
             config = IvfPq(
                 distance_type=metric,
@@ -2605,7 +2616,7 @@ class AsyncTable:
         *,
         replace: Optional[bool] = None,
         config: Optional[
-            Union[IvfPq, HnswPq, HnswSq, BTree, Bitmap, LabelList, FTS]
+            Union[IvfFlat, IvfPq, HnswPq, HnswSq, BTree, Bitmap, LabelList, FTS]
         ] = None,
     ):
         """Create an index to speed up queries
@@ -2634,7 +2645,7 @@ class AsyncTable:
         """
         if config is not None:
             if not isinstance(
-                config, (IvfPq, HnswPq, HnswSq, BTree, Bitmap, LabelList, FTS)
+                config, (IvfFlat, IvfPq, HnswPq, HnswSq, BTree, Bitmap, LabelList, FTS)
             ):
                 raise TypeError(
                     "config must be an instance of IvfPq, HnswPq, HnswSq, BTree,"

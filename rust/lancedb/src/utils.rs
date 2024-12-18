@@ -171,7 +171,9 @@ pub fn supported_fts_data_type(dtype: &DataType) -> bool {
 
 pub fn supported_vector_data_type(dtype: &DataType) -> bool {
     match dtype {
-        DataType::FixedSizeList(inner, _) => DataType::is_floating(inner.data_type()),
+        DataType::FixedSizeList(inner, _) => {
+            DataType::is_floating(inner.data_type()) || *inner.data_type() == DataType::UInt8
+        }
         _ => false,
     }
 }

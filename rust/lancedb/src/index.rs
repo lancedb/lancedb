@@ -17,6 +17,7 @@ use std::sync::Arc;
 use scalar::FtsIndexBuilder;
 use serde::Deserialize;
 use serde_with::skip_serializing_none;
+use vector::IvfFlatIndexBuilder;
 
 use crate::{table::TableInternal, DistanceType, Error, Result};
 
@@ -55,6 +56,9 @@ pub enum Index {
 
     /// Full text search index using bm25.
     FTS(FtsIndexBuilder),
+
+    /// IVF index
+    IvfFlat(IvfFlatIndexBuilder),
 
     /// IVF index with Product Quantization
     IvfPq(IvfPqIndexBuilder),
