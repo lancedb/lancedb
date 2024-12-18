@@ -15,14 +15,20 @@ LanceDB OSS supports object stores such as AWS S3 (and compatible stores), Azure
 
     ```python
     import lancedb
+    # Synchronous client
     db = lancedb.connect("s3://bucket/path")
+    # Asynchronous client
+    async_db = await lancedb.connect_async("s3://bucket/path")
     ```
 
     Google Cloud Storage:
 
     ```python
     import lancedb
+    # Synchronous client
     db = lancedb.connect("gs://bucket/path")
+    # Asynchronous client
+    async_db = await lancedb.connect_async("gs://bucket/path")
     ```
 
     Azure Blob Storage:
@@ -30,7 +36,10 @@ LanceDB OSS supports object stores such as AWS S3 (and compatible stores), Azure
     <!-- skip-test -->
     ```python
     import lancedb
+    # Synchronous client
     db = lancedb.connect("az://bucket/path")
+    # Asynchronous client
+    async_db = await lancedb.connect_async("az://bucket/path")
     ```
     Note that for Azure, storage credentials must be configured. See [below](#azure-blob-storage) for more details.
 
@@ -96,7 +105,13 @@ If you only want this to apply to one particular connection, you can pass the `s
 
     ```python
     import lancedb
-    db = await lancedb.connect_async(
+    # Synchronous client
+    db = lancedb.connect(
+        "s3://bucket/path",
+        storage_options={"timeout": "60s"}
+    )
+    # Asynchronous client
+    async_db = await lancedb.connect_async(
         "s3://bucket/path",
         storage_options={"timeout": "60s"}
     )
@@ -130,8 +145,16 @@ Getting even more specific, you can set the `timeout` for only a particular tabl
     <!-- skip-test -->
     ```python
     import lancedb
-    db = await lancedb.connect_async("s3://bucket/path")
-    table = await db.create_table(
+    # Synchronous client
+    db = lancedb.connect("s3://bucket/path")
+    table = db.create_table(
+        "table",
+        [{"a": 1, "b": 2}],
+        storage_options={"timeout": "60s"}
+    )
+    # Asynchronous client
+    async_db = await lancedb.connect_async("s3://bucket/path")
+    async_table = await async_db.create_table(
         "table",
         [{"a": 1, "b": 2}],
         storage_options={"timeout": "60s"}
@@ -196,7 +219,17 @@ These can be set as environment variables or passed in the `storage_options` par
 
     ```python
     import lancedb
-    db = await lancedb.connect_async(
+    # Synchronous client
+    db = lancedb.connect(
+        "s3://bucket/path",
+        storage_options={
+            "aws_access_key_id": "my-access-key",
+            "aws_secret_access_key": "my-secret-key",
+            "aws_session_token": "my-session-token",
+        }
+    )
+    # Asynchronous client
+    async_db = await lancedb.connect_async(
         "s3://bucket/path",
         storage_options={
             "aws_access_key_id": "my-access-key",
@@ -350,7 +383,12 @@ name of the table to use.
 
     ```python
     import lancedb
-    db = await lancedb.connect_async(
+    # Synchronous client
+    db = lancedb.connect(
+        "s3+ddb://bucket/path?ddbTableName=my-dynamodb-table",
+    )
+    # Asynchronous client
+    async_db = await lancedb.connect_async(
         "s3+ddb://bucket/path?ddbTableName=my-dynamodb-table",
     )
     ```
@@ -443,7 +481,16 @@ LanceDB can also connect to S3-compatible stores, such as MinIO. To do so, you m
 
     ```python
     import lancedb
-    db = await lancedb.connect_async(
+    # Synchronous client
+    db = lancedb.connect(
+        "s3://bucket/path",
+        storage_options={
+            "region": "us-east-1",
+            "endpoint": "http://minio:9000",
+        }
+    )
+    # Asynchronous client
+    async_db = await lancedb.connect_async(
         "s3://bucket/path",
         storage_options={
             "region": "us-east-1",
@@ -504,7 +551,16 @@ To configure LanceDB to use an S3 Express endpoint, you must set the storage opt
 
     ```python
     import lancedb
-    db = await lancedb.connect_async(
+    # Synchronous client
+    db = lancedb.connect(
+        "s3://my-bucket--use1-az4--x-s3/path",
+        storage_options={
+            "region": "us-east-1",
+            "s3_express": "true",
+        }
+    )
+    # Asynchronous client
+    async_db = await lancedb.connect_async(
         "s3://my-bucket--use1-az4--x-s3/path",
         storage_options={
             "region": "us-east-1",
@@ -554,7 +610,15 @@ GCS credentials are configured by setting the `GOOGLE_SERVICE_ACCOUNT` environme
     <!-- skip-test -->
     ```python
     import lancedb
-    db = await lancedb.connect_async(
+    # Synchronous client
+    db = lancedb.connect(
+        "gs://my-bucket/my-database",
+        storage_options={
+            "service_account": "path/to/service-account.json",
+        }
+    )
+    # Asynchronous client
+    async_db = await lancedb.connect_async(
         "gs://my-bucket/my-database",
         storage_options={
             "service_account": "path/to/service-account.json",
@@ -614,7 +678,16 @@ Azure Blob Storage credentials can be configured by setting the `AZURE_STORAGE_A
     <!-- skip-test -->
     ```python
     import lancedb
-    db = await lancedb.connect_async(
+    # Synchronous client
+    db = await lancedb.connect(
+        "az://my-container/my-database",
+        storage_options={
+            account_name: "some-account",
+            account_key: "some-key",
+        }
+    )
+    # Asynchronous client
+    async_db = await lancedb.connect_async(
         "az://my-container/my-database",
         storage_options={
             account_name: "some-account",
