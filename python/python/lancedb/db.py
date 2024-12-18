@@ -886,15 +886,23 @@ class AsyncConnection(object):
         """
         await self._inner.rename_table(old_name, new_name)
 
-    async def drop_table(self, name: str):
+    async def drop_table(self, name: str, ignore_missing: bool = False):
         """Drop a table from the database.
 
         Parameters
         ----------
         name: str
             The name of the table.
+        ignore_missing: bool, default False
+            If True, ignore if the table does not exist.
         """
-        await self._inner.drop_table(name)
+        try:
+            await self._inner.drop_table(name)
+        except ValueError as e:
+            if not ignore_missing:
+                raise e
+            if f"Table '{name}' was not found" not in str(e):
+                raise e
 
     async def drop_database(self):
         """
