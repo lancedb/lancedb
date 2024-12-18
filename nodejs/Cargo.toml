@@ -12,7 +12,10 @@ categories.workspace = true
 crate-type = ["cdylib"]
 
 [dependencies]
+async-trait.workspace = true
 arrow-ipc.workspace = true
+arrow-array.workspace = true
+arrow-schema.workspace = true
 env_logger.workspace = true
 futures.workspace = true
 lancedb = { path = "../rust/lancedb", features = ["remote"] }
