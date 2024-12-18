@@ -259,7 +259,6 @@ def retry_adapter(options: Dict[str, Any]) -> HTTPAdapter:
             connect=connect_retries,
             read=read_retries,
             backoff_factor=backoff_factor,
-            backoff_jitter=backoff_jitter,
             status_forcelist=statuses,
             allowed_methods=methods,
         )
