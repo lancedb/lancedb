@@ -35,14 +35,15 @@ jobs:
       CC: clang-18
       CXX: clang++-18
     steps:
-      - run: |
-          rustc --version
-          cargo --version
-          rustup toolchain list
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
           lfs: true
+      - run: |
+          cargo clean
+          rustc --version
+          cargo --version
+          rustup toolchain list
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust
