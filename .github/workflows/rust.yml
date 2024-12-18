@@ -35,6 +35,9 @@ jobs:
       CC: clang-18
       CXX: clang++-18
     steps:
+      - run: |
+          rustc --version
+          rustup toolchain list
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
