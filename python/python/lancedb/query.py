@@ -126,6 +126,9 @@ class Query(pydantic.BaseModel):
 
     ef: Optional[int] = None
 
+    # Default is true. Set to false to enforce a brute force search.
+    use_index: bool = True
+
 
 class LanceQueryBuilder(ABC):
     """An abstract query builder. Subclasses are defined for vector search,
@@ -253,6 +256,7 @@ class LanceQueryBuilder(ABC):
         self._vector = None
         self._text = None
         self._ef = None
+        self._use_index = True
 
     @deprecation.deprecated(
         deprecated_in="0.3.1",
@@ -729,6 +733,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             offset=self._offset,
             fast_search=self._fast_search,
             ef=self._ef,
+            use_index=self._use_index,
         )
         result_set = self._table._execute_query(query, batch_size)
         if self._reranker is not None:
@@ -800,6 +805,24 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         if query_string is not None and not isinstance(query_string, str):
             raise ValueError("Reranking currently only supports string queries")
         self._str_query = query_string if query_string is not None else self._str_query
+        return self
+
+    def bypass_vector_index(self) -> LanceQueryBuilder:
+        """
+        If this is called then any vector index is skipped
+
+        An exhaustive (flat) search will be performed.  The query vector will
+        be compared to every vector in the table.  At high scales this can be
+        expensive.  However, this is often still useful.  For example, skipping
+        the vector index can give you ground truth results which you can use to
+        calculate your recall to select an appropriate value for nprobes.
+
+        Returns
+        -------
+        LanceVectorQueryBuilder
+            The LanceQueryBuilder object.
+        """
+        self._use_index = False
         return self
 
 
