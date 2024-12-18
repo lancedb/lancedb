@@ -18,9 +18,9 @@ use std::path::Path;
 use std::sync::Arc;
 
 use arrow::array::AsArray;
-use arrow::datatypes::Float32Type;
+use arrow::datatypes::{Float32Type, UInt8Type};
 use arrow_array::{RecordBatchIterator, RecordBatchReader};
-use arrow_schema::{Field, Schema, SchemaRef};
+use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use async_trait::async_trait;
 use datafusion_physical_plan::display::DisplayableExecutionPlan;
 use datafusion_physical_plan::projection::ProjectionExec;
@@ -58,8 +58,8 @@ use crate::embeddings::{EmbeddingDefinition, EmbeddingRegistry, MaybeEmbedded, M
 use crate::error::{Error, Result};
 use crate::index::scalar::FtsIndexBuilder;
 use crate::index::vector::{
-    suggested_num_partitions_for_hnsw, IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder,
-    IvfPqIndexBuilder, VectorIndex,
+    suggested_num_partitions_for_hnsw, IvfFlatIndexBuilder, IvfHnswPqIndexBuilder,
+    IvfHnswSqIndexBuilder, IvfPqIndexBuilder, VectorIndex,
 };
 use crate::index::IndexStatistics;
 use crate::index::{
@@ -1306,6 +1306,44 @@ impl NativeTable {
             .collect())
     }
 
+    async fn create_ivf_flat_index(
+        &self,
+        index: IvfFlatIndexBuilder,
+        field: &Field,
+        replace: bool,
+    ) -> Result<()> {
+        if !supported_vector_data_type(field.data_type()) {
+            return Err(Error::InvalidInput {
+                message: format!(
+                    "An IVF Flat index cannot be created on the column `{}` which has data type {}",
+                    field.name(),
+                    field.data_type()
+                ),
+            });
+        }
+
+        let num_partitions = if let Some(n) = index.num_partitions {
+            n
+        } else {
+            suggested_num_partitions(self.count_rows(None).await?)
+        };
+        let mut dataset = self.dataset.get_mut().await?;
+        let lance_idx_params = lance::index::vector::VectorIndexParams::ivf_flat(
+            num_partitions as usize,
+            index.distance_type.into(),
+        );
+        dataset
+            .create_index(
+                &[field.name()],
+                IndexType::Vector,
+                None,
+                &lance_idx_params,
+                replace,
+            )
+            .await?;
+        Ok(())
+    }
+
     async fn create_ivf_pq_index(
         &self,
         index: IvfPqIndexBuilder,
@@ -1778,6 +1816,10 @@ impl TableInternal for NativeTable {
             Index::Bitmap(_) => self.create_bitmap_index(field, opts).await,
             Index::LabelList(_) => self.create_label_list_index(field, opts).await,
             Index::FTS(fts_opts) => self.create_fts_index(field, fts_opts, opts.replace).await,
+            Index::IvfFlat(ivf_flat) => {
+                self.create_ivf_flat_index(ivf_flat, field, opts.replace)
+                    .await
+            }
             Index::IvfPq(ivf_pq) => self.create_ivf_pq_index(ivf_pq, field, opts.replace).await,
             Index::IvfHnswPq(ivf_hnsw_pq) => {
                 self.create_ivf_hnsw_pq_index(ivf_hnsw_pq, field, opts.replace)
@@ -1848,14 +1890,21 @@ impl TableInternal for NativeTable {
                 message: format!("Column {} not found in dataset schema", column),
             })?;
 
-            if let arrow_schema::DataType::FixedSizeList(f, dim) = field.data_type() {
-                if !f.data_type().is_floating() {
-                    return Err(Error::InvalidInput {
-                        message: format!(
-                            "The data type of the vector column '{}' is not a floating point type",
-                            column
-                        ),
-                    });
+            let mut is_binary = false;
+            if let arrow_schema::DataType::FixedSizeList(element, dim) = field.data_type() {
+                match element.data_type() {
+                    e_type if e_type.is_floating() => {}
+                    e_type if *e_type == DataType::UInt8 => {
+                        is_binary = true;
+                    }
+                    _ => {
+                        return Err(Error::InvalidInput {
+                            message: format!(
+                                "The data type of the vector column '{}' is not a floating point type",
+                                column
+                            ),
+                        });
+                    }
                 }
                 if dim != query_vector.len() as i32 {
                     return Err(Error::InvalidInput {
@@ -1870,12 +1919,22 @@ impl TableInternal for NativeTable {
                 }
             }
 
-            let query_vector = query_vector.as_primitive::<Float32Type>();
-            scanner.nearest(
-                &column,
-                query_vector,
-                query.base.limit.unwrap_or(DEFAULT_TOP_K),
-            )?;
+            if is_binary {
+                let query_vector = arrow::compute::cast(&query_vector, &DataType::UInt8)?;
+                let query_vector = query_vector.as_primitive::<UInt8Type>();
+                scanner.nearest(
+                    &column,
+                    query_vector,
+                    query.base.limit.unwrap_or(DEFAULT_TOP_K),
+                )?;
+            } else {
+                let query_vector = query_vector.as_primitive::<Float32Type>();
+                scanner.nearest(
+                    &column,
+                    query_vector,
+                    query.base.limit.unwrap_or(DEFAULT_TOP_K),
+                )?;
+            }
         }
         scanner.limit(
             query.base.limit.map(|limit| limit as i64),
