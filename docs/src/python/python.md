@@ -129,6 +129,8 @@ lists the indices that LanceDb supports.
 
 ::: lancedb.index.LabelList
 
+::: lancedb.index.FTS
+
 ::: lancedb.index.IvfPq
 
 ## Querying (Asynchronous)
