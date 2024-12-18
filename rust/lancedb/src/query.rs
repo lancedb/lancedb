@@ -339,7 +339,7 @@ pub trait QueryBase {
     fn limit(self, limit: usize) -> Self;
 
     /// Set the offset of the query.
-
+    ///
     /// By default, it fetches starting with the first row.
     /// This method can be used to skip the first `offset` rows.
     fn offset(self, offset: usize) -> Self;
