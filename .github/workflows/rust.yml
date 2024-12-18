@@ -37,6 +37,7 @@ jobs:
     steps:
       - run: |
           rustc --version
+          cargo --version
           rustup toolchain list
       - uses: actions/checkout@v4
         with:
@@ -271,9 +272,11 @@ jobs:
           cargo update -p aws-sdk-bedrockruntime --precise 1.64.0
           cargo update -p aws-sdk-dynamodb --precise 1.55.0
           cargo update -p aws-config --precise 1.5.10
+          cargo update -p aws-sdk-kms --precise 1.51.0
+          cargo update -p aws-sdk-s3 --precise 1.65.0
           cargo update -p aws-sdk-sso --precise 1.50.0
           cargo update -p aws-sdk-ssooidc --precise 1.51.0
           cargo update -p aws-sdk-sts --precise 1.51.0
-          cargo update -p home --precise 0.5.11
+          cargo update -p home --precise 0.5.9
       - name: cargo +${{ matrix.msrv }} check
         run: cargo check --workspace --tests --benches --all-features
