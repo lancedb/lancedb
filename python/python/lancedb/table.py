@@ -25,7 +25,6 @@ from urllib.parse import urlparse
 import lance
 from lancedb.background_loop import LOOP
 from .dependencies import _check_for_pandas
-import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.fs as pa_fs
@@ -165,6 +164,8 @@ def _sanitize_data(
     metadata: Optional[dict] = None,  # embedding metadata
     on_bad_vectors: str = "error",
     fill_value: float = 0.0,
+    *,
+    allow_subschema: bool = False,
 ) -> Tuple[pa.Table, pa.Schema]:
     data = _coerce_to_table(data, schema)
 
@@ -173,8 +174,9 @@ def _sanitize_data(
         metadata.update(data.schema.metadata or {})
         data = data.replace_schema_metadata(metadata)
 
-    # TODO improve the logics in _sanitize_schema
-    data = _sanitize_schema(data, schema, on_bad_vectors, fill_value)
+    data = _sanitize_schema(
+        data, schema, on_bad_vectors, fill_value, allow_subschema=allow_subschema
+    )
     if schema is None:
         schema = data.schema
 
@@ -2175,8 +2177,10 @@ def _sanitize_schema(
     schema: pa.Schema = None,
     on_bad_vectors: str = "error",
     fill_value: float = 0.0,
+    *,
+    allow_subschema: bool = False,
 ) -> pa.Table:
-    """Ensure that the table has the expected schema.
+    """Ensure vector columns have the expected data type.
 
     Parameters
     ----------
@@ -2191,9 +2195,13 @@ def _sanitize_schema(
     fill_value: float, default 0.
         The value to use when filling vectors. Only used if on_bad_vectors="fill".
     """
-    if schema is not None:
-        # cast the columns to the expected types
-        data = data.combine_chunks()
+    if schema is None:
+        if VECTOR_COLUMN_NAME in data.column_names:
+            vector_column_names = [VECTOR_COLUMN_NAME]
+        else:
+            vector_column_names = []
+    else:
+        vector_column_names = []
         for field in schema:
             # TODO: we're making an assumption that fixed size list of 10 or more
             # is a vector column. This is definitely a bit hacky.
@@ -2202,28 +2210,16 @@ def _sanitize_schema(
                 and pa.types.is_float32(field.type.value_type)
                 and field.type.list_size >= 10
             )
-            is_default_vector_col = field.name == VECTOR_COLUMN_NAME
-            if field.name in data.column_names and (
-                likely_vector_col or is_default_vector_col
-            ):
-                data = _sanitize_vector_column(
-                    data,
-                    vector_column_name=field.name,
-                    on_bad_vectors=on_bad_vectors,
-                    fill_value=fill_value,
-                    table_schema=schema,
-                )
-        return pa.Table.from_arrays(
-            [data[name] for name in schema.names], schema=schema
-        )
+            if field.name in data.column_names and likely_vector_col:
+                vector_column_names.append(field.name)
 
-    # just check the vector column
-    if VECTOR_COLUMN_NAME in data.column_names:
-        return _sanitize_vector_column(
+    for vector_column_name in vector_column_names:
+        data = _sanitize_vector_column(
             data,
-            vector_column_name=VECTOR_COLUMN_NAME,
+            vector_column_name=vector_column_name,
             on_bad_vectors=on_bad_vectors,
             fill_value=fill_value,
+            table_schema=schema,
         )
 
     return data
@@ -2237,7 +2233,11 @@ def _sanitize_vector_column(
     fill_value: float = 0.0,
 ) -> pa.Table:
     """
-    Ensure that the vector column exists and has type fixed_size_list(float32)
+    Ensure that the vector column exists and has type fixed_size_list(float)
+
+    If the table has a schema, the vector column is created with the data
+    type from the schema. If the schema is not provided, the vector column
+    is cast to fixed_size_list(float32) if necessary.
 
     Parameters
     ----------
@@ -2251,47 +2251,68 @@ def _sanitize_vector_column(
     fill_value: float, default 0.0
         The value to use when filling vectors. Only used if on_bad_vectors="fill".
     """
-    # ChunkedArray is annoying to work with, so we combine chunks here
-    vec_arr = data[vector_column_name].combine_chunks()
+    vec_arr = data[vector_column_name]
+
     if table_schema is not None:
-        field = table_schema.field(vector_column_name)
+        target_type = table_schema.field(vector_column_name).type
+    elif vector_column_name == VECTOR_COLUMN_NAME and len(vec_arr) > 0:
+        inferred_dim = len(vec_arr[0])
+        target_type = pa.list_(pa.float32(), inferred_dim)
     else:
-        field = None
-    typ = data[vector_column_name].type
-    if pa.types.is_list(typ) or pa.types.is_large_list(typ):
-        # if it's a variable size list array,
-        # we make sure the dimensions are all the same
-        has_jagged_ndims = len(vec_arr.values) % len(data) != 0
-        if has_jagged_ndims:
-            data = _sanitize_jagged(
-                data, fill_value, on_bad_vectors, vec_arr, vector_column_name
-            )
-            vec_arr = data[vector_column_name].combine_chunks()
-        vec_arr = ensure_fixed_size_list(vec_arr)
-        data = data.set_column(
-            data.column_names.index(vector_column_name), vector_column_name, vec_arr
-        )
-    elif not pa.types.is_fixed_size_list(vec_arr.type):
+        target_type = vec_arr.type
+
+    if not pa.types.is_fixed_size_list(target_type):
         raise TypeError(f"Unsupported vector column type: {vec_arr.type}")
 
-    if pa.types.is_float16(vec_arr.values.type):
-        # Use numpy to check for NaNs, because as pyarrow does not have `is_nan`
-        # kernel over f16 types yet.
-        values_np = vec_arr.values.to_numpy(zero_copy_only=True)
-        if np.isnan(values_np).any():
-            data = _sanitize_nans(
-                data, fill_value, on_bad_vectors, vec_arr, vector_column_name
+    has_nan = has_nan_values(vec_arr)
+
+    dim = target_type.list_size
+    has_wrong_dim = pc.not_equal(pc.list_value_length(vec_arr), dim)
+
+    has_bad_vectors = pc.any(has_nan).as_py() or pc.any(has_wrong_dim).as_py()
+
+    if has_bad_vectors:
+        is_bad = pc.or_(has_nan, has_wrong_dim)
+        if on_bad_vectors == "error":
+            if pc.any(has_wrong_dim).as_py():
+                raise ValueError(
+                    f"Vector column '{vector_column_name}' has variable length "
+                    "vectors. Set on_bad_vectors='drop' to remove them, "
+                    "set on_bad_vectors='fill' and fill_value=<value> to replace them, "
+                    "or set on_bad_vectors='null' to replace them with null."
+                )
+            else:
+                raise ValueError(
+                    f"Vector column '{vector_column_name}' has NaNs. "
+                    "Set on_bad_vectors='drop' to remove them, "
+                    "set on_bad_vectors='fill' and fill_value=<value> to replace them, "
+                    "or set on_bad_vectors='null' to replace them with null."
+                )
+        elif on_bad_vectors == "null":
+            vec_arr = pc.if_else(
+                is_bad,
+                pa.scalar(None),
+                vec_arr,
             )
-    else:
-        if (
-            field is not None
-            and not field.nullable
-            and pc.any(pc.is_null(vec_arr.values)).as_py()
-        ) or (pc.any(pc.is_nan(vec_arr.values)).as_py()):
-            data = _sanitize_nans(
-                data, fill_value, on_bad_vectors, vec_arr, vector_column_name
+        elif on_bad_vectors == "drop":
+            data = data.filter(pc.invert(is_bad))
+            vec_arr = data[vector_column_name]
+        elif on_bad_vectors == "fill":
+            if fill_value is None:
+                raise ValueError(
+                    "`fill_value` must not be None if `on_bad_vectors` is 'fill'"
+                )
+            vec_arr = pc.if_else(
+                is_bad,
+                pa.scalar([fill_value] * dim),
+                vec_arr,
             )
-    return data
+        else:
+            raise ValueError(f"Invalid value for on_bad_vectors: {on_bad_vectors}")
+
+    position = data.column_names.index(vector_column_name)
+    vec_arr = vec_arr.cast(target_type)
+    return data.set_column(position, vector_column_name, vec_arr)
 
 
 def ensure_fixed_size_list(vec_arr) -> pa.FixedSizeListArray:
@@ -2306,86 +2327,21 @@ def ensure_fixed_size_list(vec_arr) -> pa.FixedSizeListArray:
     return vec_arr
 
 
-def _sanitize_jagged(data, fill_value, on_bad_vectors, vec_arr, vector_column_name):
-    """Sanitize jagged vectors."""
-    if on_bad_vectors == "error":
-        raise ValueError(
-            f"Vector column {vector_column_name} has variable length vectors "
-            "Set on_bad_vectors='drop' to remove them, or "
-            "set on_bad_vectors='fill' and fill_value=<value> to replace them."
-        )
-
-    lst_lengths = pc.list_value_length(vec_arr)
-    ndims = pc.max(lst_lengths).as_py()
-    correct_ndims = pc.equal(lst_lengths, ndims)
-
-    if on_bad_vectors == "fill":
-        if fill_value is None:
-            raise ValueError(
-                "`fill_value` must not be None if `on_bad_vectors` is 'fill'"
-            )
-        fill_arr = pa.scalar([float(fill_value)] * ndims)
-        vec_arr = pc.if_else(correct_ndims, vec_arr, fill_arr)
-        data = data.set_column(
-            data.column_names.index(vector_column_name), vector_column_name, vec_arr
-        )
-    elif on_bad_vectors == "drop":
-        data = data.filter(correct_ndims)
-    elif on_bad_vectors == "null":
-        data = data.set_column(
-            data.column_names.index(vector_column_name),
-            vector_column_name,
-            pc.if_else(correct_ndims, vec_arr, pa.scalar(None)),
-        )
-    return data
-
-
-def _sanitize_nans(
-    data,
-    fill_value,
-    on_bad_vectors,
-    vec_arr: pa.FixedSizeListArray,
-    vector_column_name: str,
-):
-    """Sanitize NaNs in vectors"""
-    assert pa.types.is_fixed_size_list(vec_arr.type)
-    if on_bad_vectors == "error":
-        raise ValueError(
-            f"Vector column {vector_column_name} has NaNs. "
-            "Set on_bad_vectors='drop' to remove them, or "
-            "set on_bad_vectors='fill' and fill_value=<value> to replace them. "
-            "Or set on_bad_vectors='null' to replace them with null."
-        )
-    elif on_bad_vectors == "fill":
-        if fill_value is None:
-            raise ValueError(
-                "`fill_value` must not be None if `on_bad_vectors` is 'fill'"
-            )
-        fill_value = float(fill_value)
-        values = pc.if_else(pc.is_nan(vec_arr.values), fill_value, vec_arr.values)
-        ndims = len(vec_arr[0])
-        vec_arr = pa.FixedSizeListArray.from_arrays(values, ndims)
-        data = data.set_column(
-            data.column_names.index(vector_column_name), vector_column_name, vec_arr
-        )
-    elif on_bad_vectors == "drop":
-        # Drop is very slow to be able to filter out NaNs in a fixed size list array
-        np_arr = np.isnan(vec_arr.values.to_numpy(zero_copy_only=False))
-        np_arr = np_arr.reshape(-1, vec_arr.type.list_size)
-        not_nulls = np.any(np_arr, axis=1)
-        data = data.filter(~not_nulls)
-    elif on_bad_vectors == "null":
-        # null = pa.nulls(len(vec_arr)).cast(vec_arr.type)
-        # values = pc.if_else(pc.is_nan(vec_arr.values), fill_value, vec_arr.values)
-        np_arr = np.isnan(vec_arr.values.to_numpy(zero_copy_only=False))
-        np_arr = np_arr.reshape(-1, vec_arr.type.list_size)
-        no_nans = np.any(np_arr, axis=1)
-        data = data.set_column(
-            data.column_names.index(vector_column_name),
-            vector_column_name,
-            pc.if_else(no_nans, vec_arr, pa.scalar(None)),
-        )
-    return data
+def has_nan_values(arr: Union[pa.ListArray, pa.ChunkedArray]) -> pa.BooleanArray:
+    if isinstance(arr, pa.ChunkedArray):
+        values = pa.chunked_array([chunk.flatten() for chunk in arr.chunks])
+    else:
+        values = arr.flatten()
+    if pa.types.is_float16(values.type):
+        # is_nan isn't yet implemented for f16, so we cast to f32
+        # https://github.com/apache/arrow/issues/45083
+        values_has_nan = pc.is_nan(values).cast(pa.float32)
+    else:
+        values_has_nan = pc.is_nan(values)
+    values_indices = pc.list_parent_indices(arr)
+    has_nan_indices = pc.unique(pc.filter(values_indices, values_has_nan))
+    indices = pa.array(range(len(arr)), type=pa.uint32())
+    return pc.is_in(indices, has_nan_indices)
 
 
 def _validate_schema(schema: pa.Schema):

@@ -233,7 +233,7 @@ def test_add(mem_db: DBConnection):
 def test_add_subschema(mem_db: DBConnection):
     schema = pa.schema(
         [
-            pa.field("vector", pa.list_(pa.float32(), 2), nullable=True),
+            pa.field("vector", pa.list_(pa.float32(), 10), nullable=True),
             pa.field("item", pa.string(), nullable=True),
             pa.field("price", pa.float64(), nullable=False),
         ]
@@ -242,14 +242,14 @@ def test_add_subschema(mem_db: DBConnection):
 
     data = {"price": 10.0, "item": "foo"}
     table.add([data])
-    data = pa.Table.from_pylist([{"price": 2.0, "vector": [3.1, 4.1]}])
+    data = pa.Table.from_pylist([{"price": 2.0, "vector": [3.1] * 10}])
     table.add(data)
-    data = {"price": 3.0, "vector": [5.9, 26.5], "item": "bar"}
+    data = {"price": 3.0, "vector": [5.9] * 10, "item": "bar"}
     table.add([data])
 
     expected = pa.table(
         {
-            "vector": [None, [3.1, 4.1], [5.9, 26.5]],
+            "vector": [None, [3.1] * 10, [5.9] * 10],
             "item": ["foo", None, "bar"],
             "price": [10.0, 2.0, 3.0],
         },
@@ -268,14 +268,14 @@ def test_add_subschema(mem_db: DBConnection):
 
     expected_schema = pa.schema(
         [
-            pa.field("vector", pa.list_(pa.float32(), 2), nullable=True),
+            pa.field("vector", pa.list_(pa.float32(), 10), nullable=True),
             pa.field("item", pa.string(), nullable=True),
             pa.field("price", pa.float64(), nullable=True),
         ]
     )
     expected = pa.table(
         {
-            "vector": [None, [3.1, 4.1], [5.9, 26.5], None],
+            "vector": [None, [3.1] * 10, [5.9] * 10, None],
             "item": ["foo", None, "bar", "foo"],
             "price": [10.0, 2.0, 3.0, None],
         },
@@ -320,7 +320,13 @@ def test_add_nullability(mem_db: DBConnection):
         schema=nullable_schema,
     )
     # We can't add nullable schema if it contains nulls
-    with pytest.raises(Exception, match="Vector column vector has NaNs"):
+    with pytest.raises(
+        Exception,
+        match=(
+            "The field `vector` contained null values even though the field "
+            "is marked non-null in the schema"
+        ),
+    ):
         table.add(data)
 
     # But we can make it nullable
