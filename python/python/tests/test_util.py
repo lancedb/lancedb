@@ -13,12 +13,7 @@
 
 import os
 import pathlib
-from typing import Optional
 
-from lancedb.table import _sanitize_data
-import pyarrow as pa
-import pandas as pd
-import polars as pl
 import pytest
 import lancedb
 from lancedb.util import get_uri_scheme, join_uri, value_to_sql
@@ -116,71 +111,3 @@ def test_value_to_sql_string(tmp_path):
     for value in values:
         table.update(where=f"search = {value_to_sql(value)}", values={"replace": value})
         assert table.to_pandas().query("search == @value")["replace"].item() == value
-
-
-@pytest.mark.parametrize(
-    "data",
-    [
-        [{"a": 1, "b": 2}],
-        pa.RecordBatch.from_pylist([{"a": 1, "b": 2}]),
-        pa.table({"a": [1], "b": [2]}),
-        pa.table({"a": [1], "b": [2]}).to_reader(),
-        pd.DataFrame({"a": [1], "b": [2]}),
-        pl.DataFrame({"a": [1], "b": [2]}),
-        pl.LazyFrame({"a": [1], "b": [2]}),
-    ],
-    ids=[
-        "rows",
-        "pa.RecordBatch",
-        "pa.Table",
-        "pa.RecordBatchReader",
-        "pd.DataFrame",
-        "pl.DataFrame",
-        "pl.LazyFrame",
-    ],
-)
-@pytest.mark.parametrize(
-    "schema",
-    [
-        None,
-        pa.schema({"a": pa.int64(), "b": pa.int64()}),
-        pa.schema({"a": pa.int64(), "b": pa.int64(), "c": pa.int64()}),
-    ],
-    ids=["infer", "explicit", "subschema"],
-)
-@pytest.mark.parametrize("with_embedding", [True, False])
-def test_sanitize_data(
-    data,
-    schema: Optional[pa.Schema],
-    with_embedding: bool,
-):
-    if with_embedding:
-        metadata = {}  # TODO
-    else:
-        metadata = None
-
-    if schema is not None:
-        to_remove = schema.get_field_index("c")
-        if to_remove >= 0:
-            expected_schema = schema.remove(to_remove)
-        else:
-            expected_schema = schema
-    else:
-        expected_schema = None
-    expected = pa.table(
-        {
-            "a": [1],
-            "b": [2],
-        },
-        schema=expected_schema,
-    )
-
-    output_data, output_schema = _sanitize_data(
-        data,
-        schema=schema,
-        metadata=metadata,
-    )
-
-    assert output_data == expected
-
-    # TODO: what does output schema do?

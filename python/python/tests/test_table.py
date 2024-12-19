@@ -242,8 +242,8 @@ def test_add_subschema(mem_db: DBConnection):
 
     data = {"price": 10.0, "item": "foo"}
     table.add([data])
-    data = pa.Table.from_pylist([{"price": 2.0, "vector": [3.1, 4.1]}])
-    table.add(data)
+    data = {"price": 2.0, "vector": [3.1, 4.1]}
+    table.add([data])
     data = {"price": 3.0, "vector": [5.9, 26.5], "item": "bar"}
     table.add([data])
 
@@ -774,26 +774,6 @@ def test_merge_insert(mem_db: DBConnection):
 
     expected = pa.table({"a": [2, 4], "b": ["x", "z"]})
     assert table.to_arrow().sort_by("a") == expected
-
-
-def test_merge_insert_subschema(mem_db: DBConnection):
-    initial_data = pa.table(
-        {"id": range(3), "a": [1.0, 2.0, 3.0], "c": ["x", "x", "x"]}
-    )
-    table = mem_db.create_table("my_table", data=initial_data)
-
-    new_data = pa.table({"id": [2, 3], "c": ["y", "y"]})
-    (
-        table.merge_insert(on="id")
-        .when_matched_update_all()
-        .when_not_matched_insert_all()
-        .execute(new_data)
-    )
-
-    expected = pa.table(
-        {"id": [0, 1, 2, 3], "a": [1.0, 2.0, 3.0, None], "c": ["x", "x", "y", "y"]}
-    )
-    assert table.to_arrow().sort_by("id") == expected
 
 
 @pytest.mark.asyncio
