@@ -917,9 +917,6 @@ class Table(ABC):
         """
         Clean up old versions of the table, freeing disk space.
 
-        Note: This function is not available in LanceDb Cloud (since LanceDb
-        Cloud manages cleanup for you automatically)
-
         Parameters
         ----------
         older_than: timedelta, default None
@@ -936,21 +933,38 @@ class Table(ABC):
         CleanupStats
             The stats of the cleanup operation, including how many bytes were
             freed.
+
+        See Also
+        --------
+        [Table.optimize][lancedb.table.Table.optimize]: A more comprehensive
+            optimization operation that includes cleanup as well as other operations.
+
+        Notes
+        -----
+        This function is not available in LanceDb Cloud (since LanceDB
+        Cloud manages cleanup for you automatically)
         """
 
     @abstractmethod
     def compact_files(self, *args, **kwargs):
         """
         Run the compaction process on the table.
-
-        Note: This function is not available in LanceDb Cloud (since LanceDb
-        Cloud manages compaction for you automatically)
-
         This can be run after making several small appends to optimize the table
         for faster reads.
 
-        Arguments are passed onto :meth:`lance.dataset.DatasetOptimizer.compact_files`.
+        Arguments are passed onto Lance's
+        [compact_files][lance.dataset.DatasetOptimizer.compact_files].
         For most cases, the default should be fine.
+
+        See Also
+        --------
+        [Table.optimize][lancedb.table.Table.optimize]: A more comprehensive
+            optimization operation that includes cleanup as well as other operations.
+
+        Notes
+        -----
+        This function is not available in LanceDB Cloud (since LanceDB
+        Cloud manages compaction for you automatically)
         """
 
     @abstractmethod

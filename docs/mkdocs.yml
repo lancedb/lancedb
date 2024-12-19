@@ -62,6 +62,7 @@ plugins:
             # for cross references
             - https://arrow.apache.org/docs/objects.inv
             - https://pandas.pydata.org/docs/objects.inv
+            - https://lancedb.github.io/lance/objects.inv
   - mkdocs-jupyter
   - render_swagger:
       allow_arbitrary_locations: true
