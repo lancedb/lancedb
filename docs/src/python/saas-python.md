@@ -17,4 +17,8 @@ pip install lancedb
 ## Table
 
 ::: lancedb.remote.table.RemoteTable
-
+    options:
+        filters:
+            - "!cleanup_old_versions"
+            - "!compact_files"
+            - "!optimize"

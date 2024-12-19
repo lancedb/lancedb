@@ -481,15 +481,25 @@ class RemoteTable(Table):
         )
 
     def cleanup_old_versions(self, *_):
-        """cleanup_old_versions() is not supported on the LanceDB cloud"""
+        """
+        cleanup_old_versions() is not supported nor necessary on LanceDB Cloud.
+
+        Tables are automatically cleaned up and optimized.
+        """
         raise NotImplementedError(
-            "cleanup_old_versions() is not supported on the LanceDB cloud"
+            "cleanup_old_versions() is not supported on the LanceDB Cloud. "
+            "Tables are automatically cleaned up and optimized."
         )
 
     def compact_files(self, *_):
-        """compact_files() is not supported on the LanceDB cloud"""
+        """
+        compact_files() is not supported nor necessary on LanceDB Cloud.
+
+        Tables are automatically compacted and optimized.
+        """
         raise NotImplementedError(
-            "compact_files() is not supported on the LanceDB cloud"
+            "compact_files() is not supported on the LanceDB Cloud. "
+            "Tables are automatically compacted and optimized."
         )
 
     def optimize(
