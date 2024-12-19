@@ -2,6 +2,9 @@
 
 LanceDB supports [Polars](https://github.com/pola-rs/polars), a blazingly fast DataFrame library for Python written in Rust. Just like in Pandas, the Polars integration is enabled by PyArrow under the hood. A deeper integration between Lance Tables and Polars DataFrames is in progress, but at the moment, you can read a Polars DataFrame into LanceDB and output the search results from a query to a Polars DataFrame.
 
+!!! note
+    This example uses synchronous APIs as asynchronous `to_polars` support is under development.
+
 ## Create & Query LanceDB Table
 
 ### From Polars DataFrame
@@ -11,7 +14,9 @@ First, we connect to a LanceDB database.
 ```py
 import lancedb
 
-db = lancedb.connect("data/polars-lancedb")
+uri = "data/polars-lancedb"
+# Synchronous client
+db = lancedb.connect(uri)
 ```
 
 We can load a Polars `DataFrame` to LanceDB directly.
@@ -24,12 +29,14 @@ data = pl.DataFrame({
     "item": ["foo", "bar"],
     "price": [10.0, 20.0]
 })
+# Synchronous client
 table = db.create_table("pl_table", data=data)
 ```
 
 We can now perform similarity search via the LanceDB Python API.
 
 ```py
+# Synchronous client
 query = [3.0, 4.0]
 result = table.search(query).limit(1).to_polars()
 print(result)
@@ -74,6 +81,7 @@ data = {
     "price": 10.0,
 }
 
+# Synchronous client
 table = db.create_table("test_table", schema=Item)
 df = pl.DataFrame(data)
 # Add Polars DataFrame to table
@@ -83,6 +91,7 @@ table.add(df)
 The table can now be queried as usual.
 
 ```py
+# Synchronous client
 result = table.search([3.0, 4.0]).limit(1).to_polars()
 print(result)
 print(type(result))
@@ -108,6 +117,7 @@ As you iterate on your application, you'll likely need to work with the whole ta
 LanceDB tables can also be converted directly into a polars LazyFrame for further processing.
 
 ```python
+# Synchronous client
 ldf = table.to_polars()
 print(type(ldf))
 ```
