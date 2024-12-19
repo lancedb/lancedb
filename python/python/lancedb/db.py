@@ -886,7 +886,7 @@ class AsyncConnection(object):
         """
         await self._inner.rename_table(old_name, new_name)
 
-    async def drop_table(self, name: str, ignore_missing: bool = False):
+    async def drop_table(self, name: str, *, ignore_missing: bool = False):
         """Drop a table from the database.
 
         Parameters
