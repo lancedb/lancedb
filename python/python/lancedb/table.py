@@ -143,6 +143,11 @@ def _coerce_to_table(data, schema: Optional[pa.Schema] = None) -> pa.Table:
         and data.__class__.__name__ == "DataFrame"
     ):
         return data.to_arrow()
+    elif (
+        type(data).__module__.startswith("polars")
+        and data.__class__.__name__ == "LazyFrame"
+    ):
+        return data.collect().to_arrow()
     elif isinstance(data, Iterable):
         return _process_iterator(data, schema)
     else:
@@ -160,7 +165,7 @@ def _sanitize_data(
     metadata: Optional[dict] = None,  # embedding metadata
     on_bad_vectors: str = "error",
     fill_value: float = 0.0,
-):
+) -> Tuple[pa.Table, pa.Schema]:
     data = _coerce_to_table(data, schema)
 
     if metadata:
