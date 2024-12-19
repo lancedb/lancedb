@@ -27,7 +27,7 @@ import polars as pl
 import pytest
 import lancedb
 from lancedb.util import get_uri_scheme, join_uri, value_to_sql
-from tests.utils import exception_output
+from utils import exception_output
 
 
 def test_normalize_uri():
