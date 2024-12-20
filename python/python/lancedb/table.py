@@ -2702,6 +2702,19 @@ class AsyncTable:
         """
         return await self._inner.schema()
 
+    async def embedding_functions(self) -> Dict[str, EmbeddingFunctionConfig]:
+        """
+        Get the embedding functions for the table
+
+        Returns
+        -------
+        funcs: Dict[str, EmbeddingFunctionConfig]
+            A mapping of the vector column to the embedding function
+            or empty dict if not configured.
+        """
+        schema = await self.schema()
+        return EmbeddingFunctionRegistry.get_instance().parse_functions(schema.metadata)
+
     async def count_rows(self, filter: Optional[str] = None) -> int:
         """
         Count the number of rows in the table.
@@ -2930,6 +2943,100 @@ class AsyncTable:
         on = [on] if isinstance(on, str) else list(iter(on))
 
         return LanceMergeInsertBuilder(self, on)
+
+    def search(
+        self,
+        query: Optional[Union[VEC, str, "PIL.Image.Image", Tuple]] = None,
+        vector_column_name: Optional[str] = None,
+        query_type: QueryType = "auto",
+        ordering_field_name: Optional[str] = None,
+        fts_columns: Optional[Union[str, List[str]]] = None,
+    ) -> AsyncQuery:
+        """Create a search query to find the nearest neighbors
+        of the given query vector. We currently support [vector search][search]
+        and [full-text search][experimental-full-text-search].
+
+        All query options are defined in [AsyncQuery][lancedb.query.AsyncQuery].
+
+        Parameters
+        ----------
+        query: list/np.ndarray/str/PIL.Image.Image, default None
+            The targetted vector to search for.
+
+            - *default None*.
+            Acceptable types are: list, np.ndarray, PIL.Image.Image
+
+            - If None then the select/where/limit clauses are applied to filter
+            the table
+        vector_column_name: str, optional
+            The name of the vector column to search.
+
+            The vector column needs to be a pyarrow fixed size list type
+
+            - If not specified then the vector column is inferred from
+            the table schema
+
+            - If the table has multiple vector columns then the *vector_column_name*
+            needs to be specified. Otherwise, an error is raised.
+        query_type: str
+            *default "auto"*.
+            Acceptable types are: "vector", "fts", "hybrid", or "auto"
+
+            - If "auto" then the query type is inferred from the query;
+
+                - If `query` is a list/np.ndarray then the query type is
+                "vector";
+
+                - If `query` is a PIL.Image.Image then either do vector search,
+                or raise an error if no corresponding embedding function is found.
+
+            - If `query` is a string, then the query type is "vector" if the
+            table has embedding functions else the query type is "fts"
+
+        Returns
+        -------
+        LanceQueryBuilder
+            A query builder object representing the query.
+            Once executed, the query returns
+
+            - selected columns
+
+            - the vector
+
+            - and also the "_distance" column which is the distance between the query
+            vector and the returned vector.
+        """
+
+        def is_embedding(query):
+            return isinstance(query, (list, np.ndarray, pa.array, pa.ChunkedArray))
+
+        if query_type == "auto":
+            # Infer the query type.
+            if is_embedding(query):
+                query_type = "vector"
+            elif isinstance(query, str):
+                # We assume hybrid for now. Later, if we find there's no embedding
+                # function for the table, we'll switch to fts.
+                query_type = "hybrid"
+            else:
+                # it's an image or something else embeddable.
+                query_type = "vector"
+
+        if query_type == "vector":
+            query = self.query().nearest_to(query)
+            if vector_column_name:
+                query = query.column(vector_column_name)
+            return query
+        elif query_type == "fts":
+            return self.query().nearest_to_text(query, columns=fts_columns or [])
+        elif query_type == "hybrid":
+            query = self.query().nearest_to_text(query)
+            if vector_column_name:
+                query = query.column(vector_column_name)
+            # TODO: how do we provide the vector query?
+            # TODO: How do we provide the reranker?
+            # Likely need to return a custom deferred builder.
+            raise NotImplementedError("Hybrid search is not yet supported.")
 
     def vector_search(
         self,
