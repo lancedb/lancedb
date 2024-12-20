@@ -2335,7 +2335,7 @@ def has_nan_values(arr: Union[pa.ListArray, pa.ChunkedArray]) -> pa.BooleanArray
     if pa.types.is_float16(values.type):
         # is_nan isn't yet implemented for f16, so we cast to f32
         # https://github.com/apache/arrow/issues/45083
-        values_has_nan = pc.is_nan(values).cast(pa.float32)
+        values_has_nan = pc.is_nan(values.cast(pa.float32()))
     else:
         values_has_nan = pc.is_nan(values)
     values_indices = pc.list_parent_indices(arr)
