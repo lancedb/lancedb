@@ -22,6 +22,7 @@ from lance import json_to_schema
 
 from lancedb.common import DATA, VEC, VECTOR_COLUMN_NAME
 from lancedb.merge import LanceMergeInsertBuilder
+from lancedb.query import LanceQueryBuilder
 
 from ..query import LanceVectorQueryBuilder
 from ..table import Query, Table, _sanitize_data
@@ -228,10 +229,21 @@ class RemoteTable(Table):
             content_type=ARROW_STREAM_CONTENT_TYPE,
         )
 
+    def query(
+        self,
+        query: Union[VEC, str] = None,
+        query_type: str = "vector",
+        vector_column_name: Optional[str] = None,
+        fast_search: bool = False,
+    ) -> LanceVectorQueryBuilder:
+        return self.search(query, query_type, vector_column_name, fast_search)
+
     def search(
         self,
-        query: Union[VEC, str],
+        query: Union[VEC, str] = None,
+        query_type: str = "vector",
         vector_column_name: Optional[str] = None,
+        fast_search: bool = False,
     ) -> LanceVectorQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support [vector search][search]
@@ -278,6 +290,11 @@ class RemoteTable(Table):
             - If the table has multiple vector columns then the *vector_column_name*
             needs to be specified. Otherwise, an error is raised.
 
+        fast_search: bool, optional
+            Skip a flat search of unindexed data. This may improve
+            search performance but search results will not include unindexed data.
+
+            - *default False*.
         Returns
         -------
         LanceQueryBuilder
@@ -293,7 +310,14 @@ class RemoteTable(Table):
         """
         if vector_column_name is None:
             vector_column_name = inf_vector_column_query(self.schema)
-        return LanceVectorQueryBuilder(self, query, vector_column_name)
+
+        return LanceQueryBuilder.create(
+            self,
+            query,
+            query_type,
+            vector_column_name=vector_column_name,
+            fast_search=fast_search,
+        )
 
     def _execute_query(
         self, query: Query, batch_size: Optional[int] = None
