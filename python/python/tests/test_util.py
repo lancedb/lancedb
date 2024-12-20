@@ -249,24 +249,6 @@ def test_sanitize_vectors_noop():
 
 
 def test_sanitize_schema():
-    # Reorders fields
-    schema = pa.schema({"b": pa.int32(), "a": pa.int64()})
-    data = pa.table(
-        {
-            "a": [1],
-            "b": [2],
-        }
-    )
-    expected = pa.table(
-        {
-            "b": [2],
-            "a": [1],
-        },
-        schema=schema,
-    )
-    output = _sanitize_schema(data, schema=schema)
-    assert output == expected
-
     # Converts default vector column
     data = pa.Table.from_pylist(
         [{"vector": [0.0] * 10}],
@@ -284,7 +266,7 @@ def test_sanitize_schema():
         {
             "vec1": [[0.0] * 10],
             "vec2": [[0.0] * 10],
-            "vec3": [[0.0] * 10],
+            "vec3": pa.array([[0.0] * 10]).cast(pa.list_(pa.float16())),
         },
         schema=pa.schema(
             {
@@ -305,7 +287,7 @@ def test_sanitize_schema():
         {
             "vec1": [[0.0] * 10],
             "vec2": [[0.0] * 10],
-            "vec3": [[0.0] * 10],
+            "vec3": pa.array([[0.0] * 10]).cast(pa.list_(pa.float16(), 10)),
         },
         schema=schema,
     )
@@ -315,23 +297,22 @@ def test_sanitize_schema():
     # Can sanitize to subschema
     schema = pa.schema(
         {
-            "a": pa.int64(),
-            "b": pa.int32(),
+            "vec1": pa.list_(pa.float64(), 10),
+            "vec2": pa.list_(pa.float32(), 10),
+            "vec3": pa.list_(pa.float16(), 10),
         }
     )
     data = pa.table(
         {
-            "a": pa.array([1], type=pa.int32()),
+            "vec2": pa.array([[0.0] * 10]),
         }
     )
     expected = pa.table(
         {
-            "a": pa.array([1], type=pa.int64()),
+            "vec2": pa.array([[0.0] * 10]).cast(pa.list_(pa.float32(), 10)),
         }
     )
-    with pytest.raises(ValueError, matches="Field 'b' not found in data"):
-        _sanitize_schema(data, schema)
-    output = _sanitize_schema(data, schema, allow_subschema=True)
+    output = _sanitize_schema(data, schema)
 
 
 # TODO: add dataset, scanner, RecordBatchReader, iterable of batches,
@@ -369,6 +350,16 @@ def test_coerce_to_table(data):
 
 
 @pytest.mark.parametrize(
+    "data",
+    [
+        [{"a": 1, "b": 2}],
+        pa.RecordBatch.from_pylist([{"a": 1, "b": 2}]),
+        pd.DataFrame({"a": [1], "b": [2]}),
+        pl.DataFrame({"a": [1], "b": [2]}),
+    ],
+    ids=["rows", "pa.RecordBatch", "pd.DataFrame", "pl.DataFrame"],
+)
+@pytest.mark.parametrize(
     "schema",
     [
         None,
@@ -379,10 +370,10 @@ def test_coerce_to_table(data):
 )
 @pytest.mark.parametrize("with_embedding", [True, False])
 def test_sanitize_data(
+    data,
     schema: Optional[pa.Schema],
     with_embedding: bool,
 ):
-    data = pa.table({"a": [1], "b": [2]})
     if with_embedding:
         metadata = {}  # TODO
     else:

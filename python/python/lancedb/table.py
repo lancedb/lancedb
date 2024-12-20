@@ -167,16 +167,15 @@ def _sanitize_data(
     *,
     allow_subschema: bool = False,
 ) -> Tuple[pa.Table, pa.Schema]:
-    data = _coerce_to_table(data, schema)
+    # If we are allowing subschemas, we don't need to force a schema
+    data = _coerce_to_table(data, None if allow_subschema else schema)
 
     if metadata:
         data = _append_vector_col(data, metadata, schema)
         metadata.update(data.schema.metadata or {})
         data = data.replace_schema_metadata(metadata)
 
-    data = _sanitize_schema(
-        data, schema, on_bad_vectors, fill_value, allow_subschema=allow_subschema
-    )
+    data = _sanitize_schema(data, schema, on_bad_vectors, fill_value)
     if schema is None:
         schema = data.schema
 
@@ -2177,8 +2176,6 @@ def _sanitize_schema(
     schema: pa.Schema = None,
     on_bad_vectors: str = "error",
     fill_value: float = 0.0,
-    *,
-    allow_subschema: bool = False,
 ) -> pa.Table:
     """Ensure vector columns have the expected data type.
 
@@ -2207,7 +2204,7 @@ def _sanitize_schema(
             # is a vector column. This is definitely a bit hacky.
             likely_vector_col = (
                 pa.types.is_fixed_size_list(field.type)
-                and pa.types.is_float32(field.type.value_type)
+                and pa.types.is_floating(field.type.value_type)
                 and field.type.list_size >= 10
             )
             if field.name in data.column_names and likely_vector_col:
@@ -2645,6 +2642,7 @@ class AsyncTable:
             metadata=schema.metadata,
             on_bad_vectors=on_bad_vectors,
             fill_value=fill_value,
+            allow_subschema=True,
         )
         tbl, schema = table_and_schema
         if isinstance(tbl, pa.Table):
@@ -2789,6 +2787,7 @@ class AsyncTable:
             metadata=schema.metadata,
             on_bad_vectors=on_bad_vectors,
             fill_value=fill_value,
+            allow_subschema=True,
         )
         if isinstance(data, pa.Table):
             data = pa.RecordBatchReader.from_batches(data.schema, data.to_batches())
