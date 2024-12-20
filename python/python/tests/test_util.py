@@ -227,7 +227,6 @@ def test_sanitize_vectors_nan(on_bad_vectors):
     if on_bad_vectors == "drop":
         expected = pa.array([[3.0, 4.0]], type=output_type)
     elif on_bad_vectors == "fill":
-        # TODO: is this correct fill behavior?
         expected = pa.array([[42.0, 42.0], [3.0, 4.0]], type=output_type)
     elif on_bad_vectors == "null":
         expected = pa.array([None, [3.0, 4.0]], type=output_type)

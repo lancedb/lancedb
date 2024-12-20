@@ -228,6 +228,8 @@ def sanitize_create_table(
 
     if metadata:
         schema = schema.with_metadata(metadata)
+        # Need to apply metadata to the data as well
+        data = data.replace_schema_metadata(metadata)
 
     return data, schema
 
@@ -2394,6 +2396,9 @@ def _process_iterator(data: Iterable, schema: Optional[pa.Schema] = None) -> pa.
                         f"does not match the expected schema.\nExpected:\n{schema}\n"
                         f"Got:\n{batch_table.schema}"
                     )
+        else:
+            # Use the first schema for the remainder of the batches
+            schema = batch_table.schema
         batches.append(batch_table)
 
     if batches:
