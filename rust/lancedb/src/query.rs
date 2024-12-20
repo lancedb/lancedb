@@ -912,8 +912,10 @@ impl VectorQuery {
         vector_query.base.full_text_search = None;
         let (fts_results, vec_results) = try_join!(fts_query.execute(), vector_query.execute())?;
 
-        let fts_results = fts_results.try_collect::<Vec<_>>().await?;
-        let vec_results = vec_results.try_collect::<Vec<_>>().await?;
+        let (fts_results, vec_results) = try_join!(
+            fts_results.try_collect::<Vec<_>>(),
+            vec_results.try_collect::<Vec<_>>()
+        )?;
 
         // try to get the schema to use when combining batches.
         // if either
@@ -957,10 +959,7 @@ impl VectorQuery {
         }
 
         Ok(SendableRecordBatchStream::from(
-            RecordBatchStreamAdapter::new(
-                results.schema(),
-                stream::iter(vec![results].into_iter().map(Ok)),
-            ),
+            RecordBatchStreamAdapter::new(results.schema(), stream::iter([Ok(results)])),
         ))
     }
 }
