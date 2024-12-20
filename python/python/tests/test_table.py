@@ -233,7 +233,7 @@ def test_add(mem_db: DBConnection):
 def test_add_subschema(mem_db: DBConnection):
     schema = pa.schema(
         [
-            pa.field("vector", pa.list_(pa.float32(), 10), nullable=True),
+            pa.field("vector", pa.list_(pa.float32(), 2), nullable=True),
             pa.field("item", pa.string(), nullable=True),
             pa.field("price", pa.float64(), nullable=False),
         ]
@@ -242,14 +242,14 @@ def test_add_subschema(mem_db: DBConnection):
 
     data = {"price": 10.0, "item": "foo"}
     table.add([data])
-    data = pd.DataFrame({"price": [2.0], "vector": [[3.1] * 10]})
+    data = pd.DataFrame({"price": [2.0], "vector": [[3.1, 4.1]]})
     table.add(data)
-    data = {"price": 3.0, "vector": [5.9] * 10, "item": "bar"}
+    data = {"price": 3.0, "vector": [5.9, 26.5], "item": "bar"}
     table.add([data])
 
     expected = pa.table(
         {
-            "vector": [None, [3.1] * 10, [5.9] * 10],
+            "vector": [None, [3.1, 4.1], [5.9, 26.5]],
             "item": ["foo", None, "bar"],
             "price": [10.0, 2.0, 3.0],
         },
@@ -268,14 +268,14 @@ def test_add_subschema(mem_db: DBConnection):
 
     expected_schema = pa.schema(
         [
-            pa.field("vector", pa.list_(pa.float32(), 10), nullable=True),
+            pa.field("vector", pa.list_(pa.float32(), 2), nullable=True),
             pa.field("item", pa.string(), nullable=True),
             pa.field("price", pa.float64(), nullable=True),
         ]
     )
     expected = pa.table(
         {
-            "vector": [None, [3.1] * 10, [5.9] * 10, None],
+            "vector": [None, [3.1, 4.1], [5.9, 26.5], None],
             "item": ["foo", None, "bar", "foo"],
             "price": [10.0, 2.0, 3.0, None],
         },

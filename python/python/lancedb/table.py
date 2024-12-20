@@ -170,6 +170,17 @@ def _sanitize_data(
     # If we are allowing subschemas, we don't need to force a schema
     data = _coerce_to_table(data, None if allow_subschema else schema)
 
+    if schema is not None and allow_subschema:
+        fields = []
+        for field in data.schema:
+            schema_field_idx = schema.get_field_index(field.name)
+            if schema_field_idx == -1:
+                continue
+            schema_field = schema.field(schema_field_idx)
+            fields.append(schema_field)
+        data_schema = pa.schema(fields, metadata=schema.metadata)
+        data = data.cast(data_schema)
+
     if metadata:
         data = _append_vector_col(data, metadata, schema)
         metadata.update(data.schema.metadata or {})
@@ -2207,6 +2218,7 @@ def _sanitize_schema(
                 and pa.types.is_floating(field.type.value_type)
                 and field.type.list_size >= 10
             )
+            likely_vector_col = likely_vector_col or field.name == VECTOR_COLUMN_NAME
             if field.name in data.column_names and likely_vector_col:
                 vector_column_names.append(field.name)
 
