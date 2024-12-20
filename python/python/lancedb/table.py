@@ -448,8 +448,9 @@ class Table(ABC):
         ----------
         metric: str, default "L2"
             The distance metric to use when creating the index.
-            Valid values are "L2", "cosine", or "dot".
+            Valid values are "L2", "cosine", "dot", or "hamming".
             L2 is euclidean distance.
+            Hamming is available only for binary vectors.
         num_partitions: int, default 256
             The number of IVF partitions to use when creating the index.
             Default is 256.

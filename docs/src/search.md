@@ -13,11 +13,15 @@ A vector search finds the approximate or exact nearest neighbors to a given quer
 Distance metrics are a measure of the similarity between a pair of vectors.
 Currently, LanceDB supports the following metrics:
 
-| Metric   | Description                                                                 |
-| -------- | --------------------------------------------------------------------------- |
-| `l2`     | [Euclidean / L2 distance](https://en.wikipedia.org/wiki/Euclidean_distance) |
-| `cosine` | [Cosine Similarity](https://en.wikipedia.org/wiki/Cosine_similarity)        |
-| `dot`    | [Dot Production](https://en.wikipedia.org/wiki/Dot_product)                 |
+| Metric    | Description                                                                 |
+| --------- | --------------------------------------------------------------------------- |
+| `l2`      | [Euclidean / L2 distance](https://en.wikipedia.org/wiki/Euclidean_distance) |
+| `cosine`  | [Cosine Similarity](https://en.wikipedia.org/wiki/Cosine_similarity)        |
+| `dot`     | [Dot Production](https://en.wikipedia.org/wiki/Dot_product)                 |
+| `hamming` | [Hamming Distance](https://en.wikipedia.org/wiki/Hamming_distance)          |
+
+!!! note
+    The `hamming` metric is only available for binary vectors.
 
 ## Exhaustive search (kNN)
 
@@ -106,6 +110,33 @@ an ANN search means that using an index often involves a trade-off between recal
 
 See the [IVF_PQ index](./concepts/index_ivfpq.md) for a deeper description of how `IVF_PQ`
 indexes work in LanceDB.
+
+## Binary vector
+
+LanceDB supports binary vectors as a data type, and has the ability to search binary vectors with hamming distance. The binary vectors are stored as uint8 arrays:
+
+=== "Python"
+
+    ```python
+    import lancedb
+    import numpy as np
+
+    db = lancedb.connect("data/sample-lancedb")
+
+    data = [
+        {
+            "id": i,
+            "vector": np.random.randint(0, 256, size=128),
+        }
+        for i in range(1024)
+    ]
+
+    tbl = db.create_table("my_binary_vectors", data=data)
+
+    query = np.random.randint(0, 256, size=128)
+    results = tbl.search(query).to_arrow()
+    ```
+
 
 ## Output search results
 
