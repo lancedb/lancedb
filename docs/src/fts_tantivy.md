@@ -2,7 +2,7 @@
 
 LanceDB also provides support for full-text search via [Tantivy](https://github.com/quickwit-oss/tantivy), allowing you to incorporate keyword-based search (based on BM25) in your retrieval solutions.
 
-The tantivy-based FTS is only available in Python and does not support building indexes on object storage or incremental indexing. If you need these features, try native FTS [native FTS](fts.md).
+The tantivy-based FTS is only available in Python synchronous APIs and does not support building indexes on object storage or incremental indexing. If you need these features, try native FTS [native FTS](fts.md).
 
 ## Installation
 
