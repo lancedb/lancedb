@@ -172,6 +172,37 @@ def safe_import_polars():
         return pl
     except ImportError:
         return None
+    
+def flatten_columns(tbl: pa.Table, flatten: Optional[Union[int, bool]] = None):
+    """
+        Flatten all struct columns in a table.
+
+        Parameters
+        ----------
+        flatten: Optional[Union[int, bool]]
+            If flatten is True, flatten all nested columns.
+            If flatten is an integer, flatten the nested columns up to the
+            specified depth.
+            If unspecified, do not flatten the nested columns.
+    """
+    if flatten is True:
+        while True:
+            tbl = tbl.flatten()
+            # loop through all columns to check if there is any struct column
+            if any(pa.types.is_struct(col.type) for col in tbl.schema):
+                continue
+            else:
+                break
+    elif isinstance(flatten, int):
+        if flatten <= 0:
+            raise ValueError(
+                "Please specify a positive integer for flatten or the boolean "
+                "value `True`"
+            )
+        while flatten > 0:
+            tbl = tbl.flatten()
+            flatten -= 1
+    return tbl
 
 
 def inf_vector_column_query(schema: pa.Schema) -> str:
