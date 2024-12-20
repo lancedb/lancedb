@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::sync::Arc;
+
 use lancedb::index::scalar::FullTextSearchQuery;
 use lancedb::query::ExecutableQuery;
 use lancedb::query::Query as LanceDbQuery;
@@ -25,6 +27,8 @@ use napi_derive::napi;
 use crate::error::convert_error;
 use crate::error::NapiErrorExt;
 use crate::iterator::RecordBatchIterator;
+use crate::rerankers::Reranker;
+use crate::rerankers::RerankerCallbacks;
 use crate::util::parse_distance_type;
 
 #[napi]
@@ -216,6 +220,14 @@ impl VectorQuery {
     #[napi]
     pub fn with_row_id(&mut self) {
         self.inner = self.inner.clone().with_row_id();
+    }
+
+    #[napi]
+    pub fn rerank(&mut self, callbacks: RerankerCallbacks) {
+        self.inner = self
+            .inner
+            .clone()
+            .rerank(Arc::new(Reranker::new(callbacks)));
     }
 
     #[napi(catch_unwind)]
