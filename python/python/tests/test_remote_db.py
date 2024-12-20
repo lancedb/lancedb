@@ -21,6 +21,7 @@ class FakeLanceDBClient:
         pass
 
     def query(self, table_name: str, query: VectorQuery) -> VectorQueryResult:
+        print(f"{query=}")
         assert table_name == "test"
         t = pa.schema([]).empty_table()
         return VectorQueryResult(t)
@@ -48,3 +49,12 @@ def test_empty_query_with_filter():
     table = conn["test"]
     table.schema = pa.schema([pa.field("vector", pa.list_(pa.float32(), 2))])
     print(table.query().select(["vector"]).where("foo == bar").to_arrow())
+
+
+def test_fast_search_query_with_filter():
+    conn = lancedb.connect("db://client-will-be-injected", api_key="fake")
+    setattr(conn, "_client", FakeLanceDBClient())
+
+    table = conn["test"]
+    table.schema = pa.schema([pa.field("vector", pa.list_(pa.float32(), 2))])
+    print(table.query([0, 0], fast_search=True).select(["vector"]).where("foo == bar").to_arrow())

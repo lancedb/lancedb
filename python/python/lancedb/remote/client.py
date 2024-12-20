@@ -172,6 +172,7 @@ class RestfulLanceDBClient:
             headers["content-type"] = content_type
         if request_id is not None:
             headers["x-request-id"] = request_id
+
         with self.session.post(
             urljoin(self.url, uri),
             headers=headers,

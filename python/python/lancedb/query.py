@@ -117,6 +117,8 @@ class Query(pydantic.BaseModel):
 
     with_row_id: bool = False
 
+    fast_search: bool = False
+
 
 class LanceQueryBuilder(ABC):
     """An abstract query builder. Subclasses are defined for vector search,
