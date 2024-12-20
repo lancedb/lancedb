@@ -363,8 +363,8 @@ def test_coerce_to_table(data):
     "schema",
     [
         None,
-        pa.schema({"a": pa.int64(), "b": pa.int64()}),
-        pa.schema({"a": pa.int64(), "b": pa.int64(), "c": pa.int64()}),
+        pa.schema({"a": pa.int64(), "b": pa.int32()}),
+        pa.schema({"a": pa.int64(), "b": pa.int32(), "c": pa.int64()}),
     ],
     ids=["infer", "explicit", "subschema"],
 )
