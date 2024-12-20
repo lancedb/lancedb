@@ -242,7 +242,7 @@ def test_add_subschema(mem_db: DBConnection):
 
     data = {"price": 10.0, "item": "foo"}
     table.add([data])
-    data = pa.Table.from_pylist([{"price": 2.0, "vector": [3.1] * 10}])
+    data = pd.DataFrame({"price": [2.0], "vector": [[3.1] * 10]})
     table.add(data)
     data = {"price": 3.0, "vector": [5.9] * 10, "item": "bar"}
     table.add([data])
@@ -259,7 +259,7 @@ def test_add_subschema(mem_db: DBConnection):
 
     data = {"item": "foo"}
     # We can't omit a column if it's not nullable
-    with pytest.raises(RuntimeError, match="Invalid user input"):
+    with pytest.raises(RuntimeError, match="Append with different schema"):
         table.add([data])
 
     # We can add it if we make the column nullable
@@ -782,13 +782,25 @@ def test_merge_insert(mem_db: DBConnection):
     assert table.to_arrow().sort_by("a") == expected
 
 
-def test_merge_insert_subschema(mem_db: DBConnection):
+# We vary the data format because there are slight differences in how
+# subschemas are handled in different formats
+@pytest.mark.parametrize(
+    "data_format",
+    [
+        lambda table: table,
+        lambda table: table.to_pandas(),
+        lambda table: table.to_pylist(),
+    ],
+    ids=["pa.Table", "pd.DataFrame", "rows"],
+)
+def test_merge_insert_subschema(mem_db: DBConnection, data_format):
     initial_data = pa.table(
         {"id": range(3), "a": [1.0, 2.0, 3.0], "c": ["x", "x", "x"]}
     )
     table = mem_db.create_table("my_table", data=initial_data)
 
     new_data = pa.table({"id": [2, 3], "c": ["y", "y"]})
+    new_data = data_format(new_data)
     (
         table.merge_insert(on="id")
         .when_matched_update_all()
