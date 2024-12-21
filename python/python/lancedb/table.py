@@ -73,34 +73,17 @@ pl = safe_import_polars()
 QueryType = Literal["vector", "fts", "hybrid", "auto"]
 
 
-def _pd_schema_without_embedding_funcs(
-    schema: Optional[pa.Schema], columns: List[str]
-) -> Optional[pa.Schema]:
-    """Return a schema without any embedding function columns"""
-    if schema is None:
-        return None
-    embedding_functions = EmbeddingFunctionRegistry.get_instance().parse_functions(
-        schema.metadata
-    )
-    if not embedding_functions:
-        return schema
-    return pa.schema([field for field in schema if field.name in columns])
-
-
-def _coerce_to_table(data, schema: Optional[pa.Schema] = None) -> pa.Table:
+def _into_pyarrow_table(data) -> pa.Table:
     if _check_for_hugging_face(data):
         # Huggingface datasets
         from lance.dependencies import datasets
 
         if isinstance(data, datasets.Dataset):
-            if schema is None:
-                schema = data.features.arrow_schema
+            schema = data.features.arrow_schema
             return pa.Table.from_batches(data.data.to_batches(), schema=schema)
         elif isinstance(data, datasets.dataset_dict.DatasetDict):
-            if schema is None:
-                schema = _schema_from_hf(data, schema)
+            schema = _schema_from_hf(data, schema)
             return pa.Table.from_batches(_to_batches_with_split(data), schema=schema)
-
     if isinstance(data, LanceModel):
         raise ValueError("Cannot add a single LanceModel to a table. Use a list.")
 
@@ -115,12 +98,11 @@ def _coerce_to_table(data, schema: Optional[pa.Schema] = None) -> pa.Table:
             data = [model_to_dict(d) for d in data]
             return pa.Table.from_pylist(data, schema=schema)
         elif isinstance(data[0], pa.RecordBatch):
-            return pa.Table.from_batches(data, schema=schema)
+            return pa.Table.from_batches(data)
         else:
-            return pa.Table.from_pylist(data, schema=schema)
-    elif _check_for_pandas(data) and isinstance(data, pd.DataFrame):  # type: ignore
-        raw_schema = _pd_schema_without_embedding_funcs(schema, data.columns.to_list())
-        table = pa.Table.from_pandas(data, preserve_index=False, schema=raw_schema)
+            return pa.Table.from_pylist(data)
+    elif _check_for_pandas(data) and isinstance(data, pd.DataFrame):
+        table = pa.Table.from_pandas(data, preserve_index=False)
         # Do not serialize Pandas metadata
         meta = table.schema.metadata if table.schema.metadata is not None else {}
         meta = {k: v for k, v in meta.items() if k != b"pandas"}
@@ -158,40 +140,109 @@ def _coerce_to_table(data, schema: Optional[pa.Schema] = None) -> pa.Table:
         )
 
 
+def _process_iterator(data: Iterable, schema: Optional[pa.Schema] = None) -> pa.Table:
+    batches = []
+    for batch in data:
+        batch_table = _into_pyarrow_table(batch, schema)
+        if schema is not None:
+            if batch_table.schema != schema:
+                try:
+                    batch_table = batch_table.cast(schema)
+                except pa.lib.ArrowInvalid:
+                    raise ValueError(
+                        f"Input iterator yielded a batch with schema that "
+                        f"does not match the expected schema.\nExpected:\n{schema}\n"
+                        f"Got:\n{batch_table.schema}"
+                    )
+        else:
+            # Use the first schema for the remainder of the batches
+            schema = batch_table.schema
+        batches.append(batch_table)
+
+    if batches:
+        return pa.concat_tables(batches)
+    else:
+        raise ValueError("Input iterable is empty")
+
+
 def _sanitize_data(
-    data: Any,
-    schema: Optional[pa.Schema] = None,
+    data: "DATA",
+    target_schema: Optional[pa.Schema] = None,
     metadata: Optional[dict] = None,  # embedding metadata
-    on_bad_vectors: str = "error",
+    on_bad_vectors: Literal["error", "drop", "fill", "null"] = "error",
     fill_value: float = 0.0,
     *,
     allow_subschema: bool = False,
-) -> Tuple[pa.Table, pa.Schema]:
-    # If we are allowing subschemas, we don't need to force a schema
-    data = _coerce_to_table(data, None if allow_subschema else schema)
+) -> pa.Table:
+    """
+    Handle input data, applying all standard transformations.
 
-    if schema is not None and allow_subschema:
-        fields = []
-        for field in data.schema:
-            schema_field_idx = schema.get_field_index(field.name)
-            if schema_field_idx == -1:
-                continue
-            schema_field = schema.field(schema_field_idx)
-            fields.append(schema_field)
-        data_schema = pa.schema(fields, metadata=schema.metadata)
-        data = data.cast(data_schema)
+    This includes:
+
+     * Converting the data to a PyArrow Table
+     * Adding vector columns defined in the metadata
+     * Adding embedding metadata into the schema
+     * Casting the table to the target schema
+     * Handling bad vectors
+
+    Parameters
+    ----------
+    target_schema : Optional[pa.Schema], default None
+        The schema to cast the table to. This is typically the schema of the table
+        if it already exists. Otherwise it might be a user-requested schema.
+    allow_subschema : bool, default False
+        If True, the input table is allowed to omit columns from the target schema.
+        The target schema will be filtered to only include columns that are present
+        in the input table before casting.
+    metadata : Optional[dict], default None
+        The embedding metadata to add to the schema.
+    on_bad_vectors : Literal["error", "drop", "fill", "null"], default "error"
+        What to do if any of the vectors are not the same size or contains NaNs.
+    fill_value : float, default 0.0
+        The value to use when filling vectors. Only used if on_bad_vectors="fill".
+        All entries in the vector will be set to this value.
+    """
+    # At this point, the table might not match the schema we are targeting:
+    # 1. There might be embedding columns missing that will be added
+    #    in the add_embeddings step.
+    # 2. If `allow_subschemas` is True, there might be columns missing.
+    # TODO: What about empty list?
+    table = _into_pyarrow_table(data)
+
+    if target_schema is None:
+        target_schema = _infer_target_schema(table)
 
     if metadata:
-        data = _append_vector_col(data, metadata, schema)
-        metadata.update(data.schema.metadata or {})
-        data = data.replace_schema_metadata(metadata)
+        new_metadata = target_schema.metadata.update(metadata)
+        target_schema = target_schema.with_metadata(new_metadata)
 
-    data = _sanitize_schema(data, schema, on_bad_vectors, fill_value)
-    if schema is None:
-        schema = data.schema
+    _validate_schema(target_schema)
 
-    _validate_schema(schema)
-    return data, schema
+    table = _append_vector_columns(table, target_schema)
+
+    table = _cast_to_target_schema(table, target_schema, allow_subschema)
+
+    table = _handle_bad_vectors(
+        table,
+        on_bad_vectors=on_bad_vectors,
+        fill_value=fill_value,
+    )
+
+    return table
+
+
+def _cast_to_target_schema(
+    table: pa.Table,
+    target_schema: pa.Schema,
+    allow_subschema: bool = False,
+) -> pa.Table:
+    # TODO: support omitting nested fields.
+    if allow_subschema:
+        fields = [field for field in target_schema if field.name in table.schema.names]
+        subschema = pa.schema(fields, metadata=target_schema.metadata)
+        return table.cast(subschema)
+    else:
+        return table.cast(target_schema)
 
 
 def sanitize_create_table(
@@ -210,13 +261,14 @@ def sanitize_create_table(
     if data is not None:
         if metadata is None and schema is not None:
             metadata = schema.metadata
-        data, schema = _sanitize_data(
+        data = _sanitize_data(
             data,
             schema,
             metadata=metadata,
             on_bad_vectors=on_bad_vectors,
             fill_value=fill_value,
         )
+        schema = data.schema
     else:
         if schema is not None:
             data = pa.Table.from_pylist([], schema)
@@ -265,12 +317,14 @@ def _to_batches_with_split(data):
                 yield b
 
 
-def _append_vector_col(data: pa.Table, metadata: dict, schema: Optional[pa.Schema]):
+def _append_vector_columns(data: pa.Table, schema: Optional[pa.Schema]):
     """
-    Use the embedding function to automatically embed the source column and add the
-    vector column to the table.
+    Use the embedding function to automatically embed the source columns and add the
+    vector columns to the table.
     """
-    functions = EmbeddingFunctionRegistry.get_instance().parse_functions(metadata)
+    functions = EmbeddingFunctionRegistry.get_instance().parse_functions(
+        schema.metadata
+    )
     for vector_column, conf in functions.items():
         func = conf.function
         no_vector_column = vector_column not in data.column_names
@@ -2184,62 +2238,34 @@ class LanceTable(Table):
         LOOP.run(self._table.migrate_v2_manifest_paths())
 
 
-def _sanitize_schema(
-    data: pa.Table,
-    schema: pa.Schema = None,
-    on_bad_vectors: str = "error",
+def _handle_bad_vectors(
+    table: pa.Table,
+    on_bad_vectors: Literal["error", "drop", "fill", "null"] = "error",
     fill_value: float = 0.0,
 ) -> pa.Table:
-    """Ensure vector columns have the expected data type.
-
-    Parameters
-    ----------
-    data: pa.Table
-        The table to sanitize.
-    schema: pa.Schema; optional
-        The expected schema. If not provided, this just converts the
-        vector column to fixed_size_list(float32) if necessary.
-    on_bad_vectors: str, default "error"
-        What to do if any of the vectors are not the same size or contains NaNs.
-        One of "error", "drop", "fill", "null".
-    fill_value: float, default 0.
-        The value to use when filling vectors. Only used if on_bad_vectors="fill".
-    """
-    if schema is None:
-        if VECTOR_COLUMN_NAME in data.column_names:
-            vector_column_names = [VECTOR_COLUMN_NAME]
-        else:
-            vector_column_names = []
-    else:
-        vector_column_names = []
-        for field in schema:
-            # TODO: we're making an assumption that fixed size list of 10 or more
-            # is a vector column. This is definitely a bit hacky.
-            likely_vector_col = (
-                pa.types.is_fixed_size_list(field.type)
-                and pa.types.is_floating(field.type.value_type)
-                and field.type.list_size >= 10
-            )
-            likely_vector_col = likely_vector_col or field.name == VECTOR_COLUMN_NAME
-            if field.name in data.column_names and likely_vector_col:
-                vector_column_names.append(field.name)
-
-    for vector_column_name in vector_column_names:
-        data = _sanitize_vector_column(
-            data,
-            vector_column_name=vector_column_name,
-            on_bad_vectors=on_bad_vectors,
-            fill_value=fill_value,
-            table_schema=schema,
+    for field in table.schema:
+        # TODO: we're making an assumption that fixed size list of 10 or more
+        # is a vector column. This is definitely a bit hacky.
+        likely_vector_col = (
+            pa.types.is_fixed_size_list(field.type)
+            and pa.types.is_floating(field.type.value_type)
+            and (field.type.list_size >= 10 or field.name == VECTOR_COLUMN_NAME)
         )
 
-    return data
+        if likely_vector_col:
+            table = _handle_bad_vector_column(
+                table,
+                vector_column_name=field.name,
+                on_bad_vectors=on_bad_vectors,
+                fill_value=fill_value,
+            )
+
+    return table
 
 
-def _sanitize_vector_column(
+def _handle_bad_vector_column(
     data: pa.Table,
     vector_column_name: str,
-    table_schema: Optional[pa.Schema] = None,
     on_bad_vectors: str = "error",
     fill_value: float = 0.0,
 ) -> pa.Table:
@@ -2264,13 +2290,7 @@ def _sanitize_vector_column(
     """
     vec_arr = data[vector_column_name]
 
-    if table_schema is not None:
-        target_type = table_schema.field(vector_column_name).type
-    elif vector_column_name == VECTOR_COLUMN_NAME and len(vec_arr) > 0:
-        inferred_dim = len(vec_arr[0])
-        target_type = pa.list_(pa.float32(), inferred_dim)
-    else:
-        target_type = vec_arr.type
+    target_type = data.schema.field(vector_column_name).type
 
     if not pa.types.is_fixed_size_list(target_type):
         raise TypeError(f"Unsupported vector column type: {vec_arr.type}")
@@ -2322,20 +2342,7 @@ def _sanitize_vector_column(
             raise ValueError(f"Invalid value for on_bad_vectors: {on_bad_vectors}")
 
     position = data.column_names.index(vector_column_name)
-    vec_arr = vec_arr.cast(target_type)
     return data.set_column(position, vector_column_name, vec_arr)
-
-
-def ensure_fixed_size_list(vec_arr) -> pa.FixedSizeListArray:
-    values = vec_arr.values
-    if not (pa.types.is_float16(values.type) or pa.types.is_float32(values.type)):
-        values = values.cast(pa.float32())
-    if pa.types.is_fixed_size_list(vec_arr.type):
-        list_size = vec_arr.type.list_size
-    else:
-        list_size = len(values) / len(vec_arr)
-    vec_arr = pa.FixedSizeListArray.from_arrays(values, list_size)
-    return vec_arr
 
 
 def has_nan_values(arr: Union[pa.ListArray, pa.ChunkedArray]) -> pa.BooleanArray:
@@ -2353,6 +2360,31 @@ def has_nan_values(arr: Union[pa.ListArray, pa.ChunkedArray]) -> pa.BooleanArray
     has_nan_indices = pc.unique(pc.filter(values_indices, values_has_nan))
     indices = pa.array(range(len(arr)), type=pa.uint32())
     return pc.is_in(indices, has_nan_indices)
+
+
+def _infer_target_schema(table: pa.Table) -> pa.Schema:
+    schema = table.schema
+
+    for i, field in enumerate(schema):
+        if (
+            field.name == VECTOR_COLUMN_NAME
+            and pa.types.is_list(field.type)
+            and pa.types.is_floating(field.type.value_type)
+        ):
+            # Use the most common length of the list as the dimensions
+            dim_counts = pc.value_counts(pc.list_value_length(table.column(i)))
+            dim_counts = ((value[1], count[1]) for value, count in dim_counts)
+            dim = max(dim_counts, key=lambda x: x[1])[0]
+
+            new_field = pa.field(
+                VECTOR_COLUMN_NAME,
+                pa.list_(pa.float32(), dim),
+                nullable=field.nullable,
+            )
+
+            schema.set(i, new_field)
+
+    return schema
 
 
 def _validate_schema(schema: pa.Schema):
@@ -2380,31 +2412,6 @@ def _validate_metadata(metadata: dict):
                 )
         elif isinstance(v, dict):
             _validate_metadata(v)
-
-
-def _process_iterator(data: Iterable, schema: Optional[pa.Schema] = None) -> pa.Table:
-    batches = []
-    for batch in data:
-        batch_table = _coerce_to_table(batch, schema)
-        if schema is not None:
-            if batch_table.schema != schema:
-                try:
-                    batch_table = batch_table.cast(schema)
-                except pa.lib.ArrowInvalid:  # type: ignore
-                    raise ValueError(
-                        f"Input iterator yielded a batch with schema that "
-                        f"does not match the expected schema.\nExpected:\n{schema}\n"
-                        f"Got:\n{batch_table.schema}"
-                    )
-        else:
-            # Use the first schema for the remainder of the batches
-            schema = batch_table.schema
-        batches.append(batch_table)
-
-    if batches:
-        return pa.concat_tables(batches)
-    else:
-        raise ValueError("Input iterable is empty")
 
 
 class AsyncTable:
@@ -2653,7 +2660,7 @@ class AsyncTable:
             on_bad_vectors = "error"
         if fill_value is None:
             fill_value = 0.0
-        table_and_schema: Tuple[pa.Table, pa.Schema] = _sanitize_data(
+        data = _sanitize_data(
             data,
             schema,
             metadata=schema.metadata,
@@ -2661,9 +2668,8 @@ class AsyncTable:
             fill_value=fill_value,
             allow_subschema=True,
         )
-        tbl, schema = table_and_schema
-        if isinstance(tbl, pa.Table):
-            data = pa.RecordBatchReader.from_batches(schema, tbl.to_batches())
+        if isinstance(data, pa.Table):
+            data = pa.RecordBatchReader.from_batches(schema, data.to_batches())
         await self._inner.add(data, mode or "append")
 
     def merge_insert(self, on: Union[str, Iterable[str]]) -> LanceMergeInsertBuilder:
@@ -2798,7 +2804,7 @@ class AsyncTable:
             on_bad_vectors = "error"
         if fill_value is None:
             fill_value = 0.0
-        data, _ = _sanitize_data(
+        data = _sanitize_data(
             new_data,
             schema,
             metadata=schema.metadata,
