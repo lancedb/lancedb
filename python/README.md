@@ -28,3 +28,7 @@ table = db.open_table('my_table')
 results = table.search([0.1, 0.3]).limit(20).to_list()
 print(results)
 ```
+
+### Development
+
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for information on how to contribute to LanceDB.
