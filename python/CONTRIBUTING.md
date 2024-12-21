@@ -3,79 +3,64 @@
 This documents outlines the process for contributing to LanceDB Python.
 For general contribution guidelines, see [CONTRIBUTING.md](../CONTRIBUTING.md).
 
-## Development
+## Project layout
 
-LanceDb is based on the rust crate `lancedb` and is built with maturin.  In order to build with maturin
-you will either need a conda environment or a virtual environment (venv).
+The Python package is a wrapper around the Rust library, `lancedb`.
+
+* `src/`: Rust bindings source code
+* `python/lancedb`: Python package source code
+* `python/tests`: Unit tests
+
+## Development environment
+
+To set up your development environment, you will need to install the following:
+
+1. Python 3.9 or later
+2. Cargo (Rust's package manager). Use [rustup](https://rustup.rs/) to install.
+3. protoc (Protocol Buffers compiler)
+
+Create a virtual environment to work in:
 
 ```bash
 python -m venv venv
-. ./venv/bin/activate
+source venv/bin/activate
+pip install maturin
 ```
 
-Install the necessary packages:
+### Commit Hooks
+
+It is **highly recommended** to install the pre-commit hooks to ensure that your
+code is formatted correctly and passes basic checks before committing:
 
 ```bash
-export PIP_EXTRA_INDEX_URL=https://pypi.fury.io/lancedb/
-python -m pip install .[tests,dev]
+pre-commit install
 ```
 
-Our repo often references preview releases of `pylance`, which is hosted on `fury.io`.
+## Development
 
-To build the python package you can use maturin:
+Most common development commands can be run using the Makefile.
 
-```bash
-# This will build the rust bindings and place them in the appropriate place
-# in your venv or conda environment
-maturin develop
+Build the package
+
+```shell
+make develop
 ```
 
-To run the unit tests:
+Format:
 
-```bash
-pytest
+```shell
+make format
 ```
 
-To run the doc tests:
+Run tests:
 
-```bash
-pytest --doctest-modules python/lancedb
+```shell
+make test
+make doctest
 ```
 
-To run linter and automatically fix all errors:
+To see all commands, run:
 
-```bash
-ruff format python
-ruff --fix python
-```
-
-If any packages are missing, install them with:
-
-```bash
-pip install <PACKAGE_NAME>
-```
-
-___
-For **Windows** users, there may be errors when installing packages, so these commands may be helpful:
-
-Activate the virtual environment:
-
-```bash
-. .\venv\Scripts\activate
-```
-
-You may need to run the installs separately:
-
-```bash
-pip install -e .[tests]
-pip install -e .[dev]
-```
-
-`tantivy` requires `rust` to be installed, so install it with `conda`, as it doesn't support windows installation:
-
-```bash
-pip install wheel
-pip install cargo
-conda install rust
-pip install tantivy
+```shell
+make help
 ```
