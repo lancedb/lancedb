@@ -373,6 +373,7 @@ def test_sanitize_data(
     schema: Optional[pa.Schema],
     with_embedding: bool,
 ):
+    # TODO: embeddings
     if with_embedding:
         metadata = {}  # TODO
     else:
