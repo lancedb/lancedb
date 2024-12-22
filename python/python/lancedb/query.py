@@ -1731,6 +1731,14 @@ class AsyncFTSQuery(AsyncQueryBase):
     def get_query(self):
         self._inner.get_query()
 
+    def rerank(
+        self,
+        reranker: Reranker = RRFReranker(),
+    ) -> AsyncHybridQuery:
+        return AsyncHybridQuery(
+            self._inner.rerank(reranker)
+        )
+
     def nearest_to(
         self,
         query_vector: Union[VEC, Tuple, List[VEC]],
