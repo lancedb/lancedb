@@ -18,12 +18,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Dict, Iterable, List, Literal, Optional, Union
 
 from lancedb.embeddings.registry import EmbeddingFunctionRegistry
-from overrides import EnforceOverrides, override
+from overrides import EnforceOverrides, override # type: ignore
 
 from lancedb.common import data_to_reader, sanitize_uri, validate_schema
 from lancedb.background_loop import LOOP
 
-from ._lancedb import connect as lancedb_connect
+from ._lancedb import connect as lancedb_connect # type: ignore
 from .table import (
     AsyncTable,
     LanceTable,
@@ -504,7 +504,7 @@ class LanceDBConnection(DBConnection):
             If True, ignore if the table does not exist.
         """
         try:
-            LOOP.run(self._conn.drop_table(name))
+            LOOP.run(self._conn.drop_table(name, ignore_missing=ignore_missing))
         except ValueError as e:
             if not ignore_missing:
                 raise e
