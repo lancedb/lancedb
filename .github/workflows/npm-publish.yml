@@ -1,9 +1,9 @@
 name: NPM Publish
 
 on:
-  pull_request:
-    paths:
-      - .github/workflows/npm-publish.yml
+  push:
+    tags:
+      - "v*"
 
 jobs:
   node:
@@ -146,7 +146,7 @@ jobs:
     runs-on: ubuntu-latest
     container: alpine:edge
     # Only runs on tags that matches the make-release action
-    # if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v')
     strategy:
       fail-fast: false
       matrix:
@@ -249,7 +249,7 @@ jobs:
     runs-on: ubuntu-latest
     container: alpine:edge
     # Only runs on tags that matches the make-release action
-    # if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v')
     strategy:
       fail-fast: false
       matrix:
@@ -334,136 +334,138 @@ jobs:
           path: |
             node/dist/lancedb-vectordb-win32*.tgz
 
-  node-windows-arm64:
-    name: vectordb ${{ matrix.config.arch }}-pc-windows-msvc
-    # if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    container: alpine:edge
-    strategy:
-      fail-fast: false
-      matrix:
-        config:
-          # - arch: x86_64
-          - arch: aarch64
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Install dependencies
-        run: |
-          apk add protobuf-dev curl clang lld llvm19 grep npm bash msitools sed
-          curl --proto '=https' --tlsv1.3 -sSf https://raw.githubusercontent.com/rust-lang/rustup/refs/heads/master/rustup-init.sh | sh -s -- -y
-          echo "source $HOME/.cargo/env" >> saved_env
-          echo "export CC=clang" >> saved_env
-          echo "export AR=llvm-ar" >> saved_env
-          source "$HOME/.cargo/env"
-          rustup target add ${{ matrix.config.arch }}-pc-windows-msvc
-          (mkdir -p sysroot && cd sysroot && sh ../ci/sysroot-${{ matrix.config.arch }}-pc-windows-msvc.sh)
-          echo "export C_INCLUDE_PATH=/usr/${{ matrix.config.arch }}-pc-windows-msvc/usr/include" >> saved_env
-          echo "export CARGO_BUILD_TARGET=${{ matrix.config.arch }}-pc-windows-msvc" >> saved_env
-      - name: Configure x86_64 build
-        if: ${{ matrix.config.arch == 'x86_64' }}
-        run: |
-          echo "export RUSTFLAGS='-Ctarget-cpu=haswell -Ctarget-feature=+crt-static,+avx2,+fma,+f16c -Clinker=lld -Clink-arg=/LIBPATH:/usr/x86_64-pc-windows-msvc/usr/lib'" >> saved_env
-      - name: Configure aarch64 build
-        if: ${{ matrix.config.arch == 'aarch64' }}
-        run: |
-          echo "export RUSTFLAGS='-Ctarget-feature=+crt-static,+neon,+fp16,+fhm,+dotprod -Clinker=lld -Clink-arg=/LIBPATH:/usr/aarch64-pc-windows-msvc/usr/lib -Clink-arg=arm64rt.lib'" >> saved_env
-      - name: Build Windows Artifacts
-        run: |
-          source ./saved_env
-          bash ci/manylinux_node/build_vectordb.sh ${{ matrix.config.arch }} ${{ matrix.config.arch }}-pc-windows-msvc
-      - name: Upload Windows Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: node-native-windows-${{ matrix.config.arch }}
-          path: |
-            node/dist/lancedb-vectordb-win32*.tgz
+  # TODO: https://github.com/lancedb/lancedb/issues/1975
+  # node-windows-arm64:
+  #   name: vectordb ${{ matrix.config.arch }}-pc-windows-msvc
+  #   # if: startsWith(github.ref, 'refs/tags/v')
+  #   runs-on: ubuntu-latest
+  #   container: alpine:edge
+  #   strategy:
+  #     fail-fast: false
+  #     matrix:
+  #       config:
+  #         # - arch: x86_64
+  #         - arch: aarch64
+  #   steps:
+  #     - name: Checkout
+  #       uses: actions/checkout@v4
+  #     - name: Install dependencies
+  #       run: |
+  #         apk add protobuf-dev curl clang lld llvm19 grep npm bash msitools sed
+  #         curl --proto '=https' --tlsv1.3 -sSf https://raw.githubusercontent.com/rust-lang/rustup/refs/heads/master/rustup-init.sh | sh -s -- -y
+  #         echo "source $HOME/.cargo/env" >> saved_env
+  #         echo "export CC=clang" >> saved_env
+  #         echo "export AR=llvm-ar" >> saved_env
+  #         source "$HOME/.cargo/env"
+  #         rustup target add ${{ matrix.config.arch }}-pc-windows-msvc
+  #         (mkdir -p sysroot && cd sysroot && sh ../ci/sysroot-${{ matrix.config.arch }}-pc-windows-msvc.sh)
+  #         echo "export C_INCLUDE_PATH=/usr/${{ matrix.config.arch }}-pc-windows-msvc/usr/include" >> saved_env
+  #         echo "export CARGO_BUILD_TARGET=${{ matrix.config.arch }}-pc-windows-msvc" >> saved_env
+  #     - name: Configure x86_64 build
+  #       if: ${{ matrix.config.arch == 'x86_64' }}
+  #       run: |
+  #         echo "export RUSTFLAGS='-Ctarget-cpu=haswell -Ctarget-feature=+crt-static,+avx2,+fma,+f16c -Clinker=lld -Clink-arg=/LIBPATH:/usr/x86_64-pc-windows-msvc/usr/lib'" >> saved_env
+  #     - name: Configure aarch64 build
+  #       if: ${{ matrix.config.arch == 'aarch64' }}
+  #       run: |
+  #         echo "export RUSTFLAGS='-Ctarget-feature=+crt-static,+neon,+fp16,+fhm,+dotprod -Clinker=lld -Clink-arg=/LIBPATH:/usr/aarch64-pc-windows-msvc/usr/lib -Clink-arg=arm64rt.lib'" >> saved_env
+  #     - name: Build Windows Artifacts
+  #       run: |
+  #         source ./saved_env
+  #         bash ci/manylinux_node/build_vectordb.sh ${{ matrix.config.arch }} ${{ matrix.config.arch }}-pc-windows-msvc
+  #     - name: Upload Windows Artifacts
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: node-native-windows-${{ matrix.config.arch }}
+  #         path: |
+  #           node/dist/lancedb-vectordb-win32*.tgz
 
-  nodejs-windows:
-    name: lancedb ${{ matrix.target }}
-    runs-on: windows-2022
-    # Only runs on tags that matches the make-release action
-    if: startsWith(github.ref, 'refs/tags/v')
-    strategy:
-      fail-fast: false
-      matrix:
-        target: [x86_64-pc-windows-msvc]
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Install Protoc v21.12
-        working-directory: C:\
-        run: |
-          New-Item -Path 'C:\protoc' -ItemType Directory
-          Set-Location C:\protoc
-          Invoke-WebRequest https://github.com/protocolbuffers/protobuf/releases/download/v21.12/protoc-21.12-win64.zip -OutFile C:\protoc\protoc.zip
-          7z x protoc.zip
-          Add-Content $env:GITHUB_PATH "C:\protoc\bin"
-        shell: powershell
-      - name: Install npm dependencies
-        run: |
-          cd nodejs
-          npm ci
-      - name: Build Windows native node modules
-        run: .\ci\build_windows_artifacts_nodejs.ps1 ${{ matrix.target }}
-      - name: Upload Windows Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: nodejs-native-windows
-          path: |
-            nodejs/dist/*.node
+  # nodejs-windows:
+  #   name: lancedb ${{ matrix.target }}
+  #   runs-on: windows-2022
+  #   # Only runs on tags that matches the make-release action
+  #   if: startsWith(github.ref, 'refs/tags/v')
+  #   strategy:
+  #     fail-fast: false
+  #     matrix:
+  #       target: [x86_64-pc-windows-msvc]
+  #   steps:
+  #     - name: Checkout
+  #       uses: actions/checkout@v4
+  #     - name: Install Protoc v21.12
+  #       working-directory: C:\
+  #       run: |
+  #         New-Item -Path 'C:\protoc' -ItemType Directory
+  #         Set-Location C:\protoc
+  #         Invoke-WebRequest https://github.com/protocolbuffers/protobuf/releases/download/v21.12/protoc-21.12-win64.zip -OutFile C:\protoc\protoc.zip
+  #         7z x protoc.zip
+  #         Add-Content $env:GITHUB_PATH "C:\protoc\bin"
+  #       shell: powershell
+  #     - name: Install npm dependencies
+  #       run: |
+  #         cd nodejs
+  #         npm ci
+  #     - name: Build Windows native node modules
+  #       run: .\ci\build_windows_artifacts_nodejs.ps1 ${{ matrix.target }}
+  #     - name: Upload Windows Artifacts
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: nodejs-native-windows
+  #         path: |
+  #           nodejs/dist/*.node
 
-  nodejs-windows-arm64:
-    name: lancedb ${{ matrix.config.arch }}-pc-windows-msvc
-    # Only runs on tags that matches the make-release action
-    # if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    container: alpine:edge
-    strategy:
-      fail-fast: false
-      matrix:
-        config:
-          # - arch: x86_64
-          - arch: aarch64
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Install dependencies
-        run: |
-          apk add protobuf-dev curl clang lld llvm19 grep npm bash msitools sed
-          curl --proto '=https' --tlsv1.3 -sSf https://raw.githubusercontent.com/rust-lang/rustup/refs/heads/master/rustup-init.sh | sh -s -- -y
-          echo "source $HOME/.cargo/env" >> saved_env
-          echo "export CC=clang" >> saved_env
-          echo "export AR=llvm-ar" >> saved_env
-          source "$HOME/.cargo/env"
-          rustup target add ${{ matrix.config.arch }}-pc-windows-msvc
-          (mkdir -p sysroot && cd sysroot && sh ../ci/sysroot-${{ matrix.config.arch }}-pc-windows-msvc.sh)
-          echo "export C_INCLUDE_PATH=/usr/${{ matrix.config.arch }}-pc-windows-msvc/usr/include" >> saved_env
-          echo "export CARGO_BUILD_TARGET=${{ matrix.config.arch }}-pc-windows-msvc" >> saved_env
-          printf '#!/bin/sh\ncargo "$@"' > $HOME/.cargo/bin/cargo-xwin
-          chmod u+x $HOME/.cargo/bin/cargo-xwin
-      - name: Configure x86_64 build
-        if: ${{ matrix.config.arch == 'x86_64' }}
-        run: |
-          echo "export RUSTFLAGS='-Ctarget-cpu=haswell -Ctarget-feature=+crt-static,+avx2,+fma,+f16c -Clinker=lld -Clink-arg=/LIBPATH:/usr/x86_64-pc-windows-msvc/usr/lib'" >> saved_env
-      - name: Configure aarch64 build
-        if: ${{ matrix.config.arch == 'aarch64' }}
-        run: |
-          echo "export RUSTFLAGS='-Ctarget-feature=+crt-static,+neon,+fp16,+fhm,+dotprod -Clinker=lld -Clink-arg=/LIBPATH:/usr/aarch64-pc-windows-msvc/usr/lib -Clink-arg=arm64rt.lib'" >> saved_env
-      - name: Build Windows Artifacts
-        run: |
-          source ./saved_env
-          bash ci/manylinux_node/build_lancedb.sh ${{ matrix.config.arch }}
-      - name: Upload Windows Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: nodejs-native-windows-${{ matrix.config.arch }}
-          path: |
-            nodejs/dist/*.node
+  # TODO: https://github.com/lancedb/lancedb/issues/1975
+  # nodejs-windows-arm64:
+  #   name: lancedb ${{ matrix.config.arch }}-pc-windows-msvc
+  #   # Only runs on tags that matches the make-release action
+  #   # if: startsWith(github.ref, 'refs/tags/v')
+  #   runs-on: ubuntu-latest
+  #   container: alpine:edge
+  #   strategy:
+  #     fail-fast: false
+  #     matrix:
+  #       config:
+  #         # - arch: x86_64
+  #         - arch: aarch64
+  #   steps:
+  #     - name: Checkout
+  #       uses: actions/checkout@v4
+  #     - name: Install dependencies
+  #       run: |
+  #         apk add protobuf-dev curl clang lld llvm19 grep npm bash msitools sed
+  #         curl --proto '=https' --tlsv1.3 -sSf https://raw.githubusercontent.com/rust-lang/rustup/refs/heads/master/rustup-init.sh | sh -s -- -y
+  #         echo "source $HOME/.cargo/env" >> saved_env
+  #         echo "export CC=clang" >> saved_env
+  #         echo "export AR=llvm-ar" >> saved_env
+  #         source "$HOME/.cargo/env"
+  #         rustup target add ${{ matrix.config.arch }}-pc-windows-msvc
+  #         (mkdir -p sysroot && cd sysroot && sh ../ci/sysroot-${{ matrix.config.arch }}-pc-windows-msvc.sh)
+  #         echo "export C_INCLUDE_PATH=/usr/${{ matrix.config.arch }}-pc-windows-msvc/usr/include" >> saved_env
+  #         echo "export CARGO_BUILD_TARGET=${{ matrix.config.arch }}-pc-windows-msvc" >> saved_env
+  #         printf '#!/bin/sh\ncargo "$@"' > $HOME/.cargo/bin/cargo-xwin
+  #         chmod u+x $HOME/.cargo/bin/cargo-xwin
+  #     - name: Configure x86_64 build
+  #       if: ${{ matrix.config.arch == 'x86_64' }}
+  #       run: |
+  #         echo "export RUSTFLAGS='-Ctarget-cpu=haswell -Ctarget-feature=+crt-static,+avx2,+fma,+f16c -Clinker=lld -Clink-arg=/LIBPATH:/usr/x86_64-pc-windows-msvc/usr/lib'" >> saved_env
+  #     - name: Configure aarch64 build
+  #       if: ${{ matrix.config.arch == 'aarch64' }}
+  #       run: |
+  #         echo "export RUSTFLAGS='-Ctarget-feature=+crt-static,+neon,+fp16,+fhm,+dotprod -Clinker=lld -Clink-arg=/LIBPATH:/usr/aarch64-pc-windows-msvc/usr/lib -Clink-arg=arm64rt.lib'" >> saved_env
+  #     - name: Build Windows Artifacts
+  #       run: |
+  #         source ./saved_env
+  #         bash ci/manylinux_node/build_lancedb.sh ${{ matrix.config.arch }}
+  #     - name: Upload Windows Artifacts
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: nodejs-native-windows-${{ matrix.config.arch }}
+  #         path: |
+  #           nodejs/dist/*.node
 
   # release:
   #   name: vectordb NPM Publish
-  #   needs: [node, node-macos, node-linux-gnu, node-linux-musl, node-windows, node-windows-arm64]
+  #   needs: [node, node-macos, node-linux-gnu, node-linux-musl, node-windows]
   #   runs-on: ubuntu-latest
   #   # Only runs on tags that matches the make-release action
   #   if: startsWith(github.ref, 'refs/tags/v')
@@ -501,164 +503,164 @@ jobs:
   #       env:
   #         SLACK_WEBHOOK_URL: ${{ secrets.ACTION_MONITORING_SLACK }}
 
-  # release-nodejs:
-  #   name: lancedb NPM Publish
-  #   needs: [nodejs-macos, nodejs-linux-gnu, nodejs-linux-musl, nodejs-windows, nodejs-windows-arm64]
-  #   runs-on: ubuntu-latest
-  #   # Only runs on tags that matches the make-release action
-  #   if: startsWith(github.ref, 'refs/tags/v')
-  #   defaults:
-  #     run:
-  #       shell: bash
-  #       working-directory: nodejs
-  #   steps:
-  #     - name: Checkout
-  #       uses: actions/checkout@v4
-  #     - uses: actions/download-artifact@v4
-  #       with:
-  #         name: nodejs-dist
-  #         path: nodejs/dist
-  #     - uses: actions/download-artifact@v4
-  #       name: Download arch-specific binaries
-  #       with:
-  #         pattern: nodejs-*
-  #         path: nodejs/nodejs-artifacts
-  #         merge-multiple: true
-  #     - name: Display structure of downloaded files
-  #       run: find .
-  #     - uses: actions/setup-node@v3
-  #       with:
-  #         node-version: 20
-  #         registry-url: "https://registry.npmjs.org"
-  #     - name: Install napi-rs
-  #       run: npm install -g @napi-rs/cli
-  #     - name: Prepare artifacts
-  #       run: npx napi artifacts -d nodejs-artifacts
-  #     - name: Display structure of staged files
-  #       run: find npm
-  #     - name: Publish to NPM
-  #       env:
-  #         NODE_AUTH_TOKEN: ${{ secrets.LANCEDB_NPM_REGISTRY_TOKEN }}
-  #       # By default, things are published to the latest tag. This is what is
-  #       # installed by default if the user does not specify a version. This is
-  #       # good for stable releases, but for pre-releases, we want to publish to
-  #       # the "preview" tag so they can install with `npm install lancedb@preview`.
-  #       # See: https://medium.com/@mbostock/prereleases-and-npm-e778fc5e2420
-  #       run: |
-  #         if [[ $GITHUB_REF =~ refs/tags/v(.*)-beta.* ]]; then
-  #           npm publish --access public --tag preview
-  #         else
-  #           npm publish --access public
-  #         fi
-  #     - name: Notify Slack Action
-  #       uses: ravsamhq/notify-slack-action@2.3.0
-  #       if: ${{ always() }}
-  #       with:
-  #         status: ${{ job.status }}
-  #         notify_when: "failure"
-  #         notification_title: "{workflow} is failing"
-  #       env:
-  #         SLACK_WEBHOOK_URL: ${{ secrets.ACTION_MONITORING_SLACK }}
+  release-nodejs:
+    name: lancedb NPM Publish
+    needs: [nodejs-macos, nodejs-linux-gnu, nodejs-linux-musl, nodejs-windows]
+    runs-on: ubuntu-latest
+    # Only runs on tags that matches the make-release action
+    if: startsWith(github.ref, 'refs/tags/v')
+    defaults:
+      run:
+        shell: bash
+        working-directory: nodejs
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: nodejs-dist
+          path: nodejs/dist
+      - uses: actions/download-artifact@v4
+        name: Download arch-specific binaries
+        with:
+          pattern: nodejs-*
+          path: nodejs/nodejs-artifacts
+          merge-multiple: true
+      - name: Display structure of downloaded files
+        run: find .
+      - uses: actions/setup-node@v3
+        with:
+          node-version: 20
+          registry-url: "https://registry.npmjs.org"
+      - name: Install napi-rs
+        run: npm install -g @napi-rs/cli
+      - name: Prepare artifacts
+        run: npx napi artifacts -d nodejs-artifacts
+      - name: Display structure of staged files
+        run: find npm
+      - name: Publish to NPM
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.LANCEDB_NPM_REGISTRY_TOKEN }}
+        # By default, things are published to the latest tag. This is what is
+        # installed by default if the user does not specify a version. This is
+        # good for stable releases, but for pre-releases, we want to publish to
+        # the "preview" tag so they can install with `npm install lancedb@preview`.
+        # See: https://medium.com/@mbostock/prereleases-and-npm-e778fc5e2420
+        run: |
+          if [[ $GITHUB_REF =~ refs/tags/v(.*)-beta.* ]]; then
+            npm publish --access public --tag preview
+          else
+            npm publish --access public
+          fi
+      - name: Notify Slack Action
+        uses: ravsamhq/notify-slack-action@2.3.0
+        if: ${{ always() }}
+        with:
+          status: ${{ job.status }}
+          notify_when: "failure"
+          notification_title: "{workflow} is failing"
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.ACTION_MONITORING_SLACK }}
 
-  # update-package-lock:
-  #   if: startsWith(github.ref, 'refs/tags/v')
-  #   needs: [release]
-  #   runs-on: ubuntu-latest
-  #   permissions:
-  #     contents: write
-  #   steps:
-  #     - name: Checkout
-  #       uses: actions/checkout@v4
-  #       with:
-  #         ref: main
-  #         token: ${{ secrets.LANCEDB_RELEASE_TOKEN }}
-  #         fetch-depth: 0
-  #         lfs: true
-  #     - uses: ./.github/workflows/update_package_lock
-  #       with:
-  #         github_token: ${{ secrets.GITHUB_TOKEN }}
+  update-package-lock:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          token: ${{ secrets.LANCEDB_RELEASE_TOKEN }}
+          fetch-depth: 0
+          lfs: true
+      - uses: ./.github/workflows/update_package_lock
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
 
-  # update-package-lock-nodejs:
-  #   if: startsWith(github.ref, 'refs/tags/v')
-  #   needs: [release-nodejs]
-  #   runs-on: ubuntu-latest
-  #   permissions:
-  #     contents: write
-  #   steps:
-  #     - name: Checkout
-  #       uses: actions/checkout@v4
-  #       with:
-  #         ref: main
-  #         token: ${{ secrets.LANCEDB_RELEASE_TOKEN }}
-  #         fetch-depth: 0
-  #         lfs: true
-  #     - uses: ./.github/workflows/update_package_lock_nodejs
-  #       with:
-  #         github_token: ${{ secrets.GITHUB_TOKEN }}
+  update-package-lock-nodejs:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [release-nodejs]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          token: ${{ secrets.LANCEDB_RELEASE_TOKEN }}
+          fetch-depth: 0
+          lfs: true
+      - uses: ./.github/workflows/update_package_lock_nodejs
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
 
-  # gh-release:
-  #   if: startsWith(github.ref, 'refs/tags/v')
-  #   runs-on: ubuntu-latest
-  #   permissions:
-  #     contents: write
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #       with:
-  #         fetch-depth: 0
-  #         lfs: true
-  #     - name: Extract version
-  #       id: extract_version
-  #       env:
-  #         GITHUB_REF: ${{ github.ref }}
-  #       run: |
-  #         set -e
-  #         echo "Extracting tag and version from $GITHUB_REF"
-  #         if [[ $GITHUB_REF =~ refs/tags/v(.*) ]]; then
-  #           VERSION=${BASH_REMATCH[1]}
-  #           TAG=v$VERSION
-  #           echo "tag=$TAG" >> $GITHUB_OUTPUT
-  #           echo "version=$VERSION" >> $GITHUB_OUTPUT
-  #         else
-  #           echo "Failed to extract version from $GITHUB_REF"
-  #           exit 1
-  #         fi
-  #         echo "Extracted version $VERSION from $GITHUB_REF"
-  #         if [[ $VERSION =~ beta ]]; then
-  #           echo "This is a beta release"
+  gh-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: true
+      - name: Extract version
+        id: extract_version
+        env:
+          GITHUB_REF: ${{ github.ref }}
+        run: |
+          set -e
+          echo "Extracting tag and version from $GITHUB_REF"
+          if [[ $GITHUB_REF =~ refs/tags/v(.*) ]]; then
+            VERSION=${BASH_REMATCH[1]}
+            TAG=v$VERSION
+            echo "tag=$TAG" >> $GITHUB_OUTPUT
+            echo "version=$VERSION" >> $GITHUB_OUTPUT
+          else
+            echo "Failed to extract version from $GITHUB_REF"
+            exit 1
+          fi
+          echo "Extracted version $VERSION from $GITHUB_REF"
+          if [[ $VERSION =~ beta ]]; then
+            echo "This is a beta release"
 
-  #           # Get last release (that is not this one)
-  #           FROM_TAG=$(git tag --sort='version:refname' \
-  #             | grep ^v \
-  #             | grep -vF "$TAG" \
-  #             | python ci/semver_sort.py v \
-  #             | tail -n 1)
-  #         else
-  #           echo "This is a stable release"
-  #           # Get last stable tag (ignore betas)
-  #           FROM_TAG=$(git tag --sort='version:refname' \
-  #             | grep ^v \
-  #             | grep -vF "$TAG" \
-  #             | grep -v beta \
-  #             | python ci/semver_sort.py v \
-  #             | tail -n 1)
-  #         fi
-  #         echo "Found from tag $FROM_TAG"
-  #         echo "from_tag=$FROM_TAG" >> $GITHUB_OUTPUT
-  #     - name: Create Release Notes
-  #       id: release_notes
-  #       uses: mikepenz/release-changelog-builder-action@v4
-  #       with:
-  #         configuration: .github/release_notes.json
-  #         toTag: ${{ steps.extract_version.outputs.tag }}
-  #         fromTag: ${{ steps.extract_version.outputs.from_tag }}
-  #       env:
-  #         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-  #     - name: Create GH release
-  #       uses: softprops/action-gh-release@v2
-  #       with:
-  #         prerelease: ${{ contains('beta', github.ref) }}
-  #         tag_name: ${{ steps.extract_version.outputs.tag }}
-  #         token: ${{ secrets.GITHUB_TOKEN }}
-  #         generate_release_notes: false
-  #         name: Node/Rust LanceDB v${{ steps.extract_version.outputs.version }}
-  #         body: ${{ steps.release_notes.outputs.changelog }}
+            # Get last release (that is not this one)
+            FROM_TAG=$(git tag --sort='version:refname' \
+              | grep ^v \
+              | grep -vF "$TAG" \
+              | python ci/semver_sort.py v \
+              | tail -n 1)
+          else
+            echo "This is a stable release"
+            # Get last stable tag (ignore betas)
+            FROM_TAG=$(git tag --sort='version:refname' \
+              | grep ^v \
+              | grep -vF "$TAG" \
+              | grep -v beta \
+              | python ci/semver_sort.py v \
+              | tail -n 1)
+          fi
+          echo "Found from tag $FROM_TAG"
+          echo "from_tag=$FROM_TAG" >> $GITHUB_OUTPUT
+      - name: Create Release Notes
+        id: release_notes
+        uses: mikepenz/release-changelog-builder-action@v4
+        with:
+          configuration: .github/release_notes.json
+          toTag: ${{ steps.extract_version.outputs.tag }}
+          fromTag: ${{ steps.extract_version.outputs.from_tag }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create GH release
+        uses: softprops/action-gh-release@v2
+        with:
+          prerelease: ${{ contains('beta', github.ref) }}
+          tag_name: ${{ steps.extract_version.outputs.tag }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          generate_release_notes: false
+          name: Node/Rust LanceDB v${{ steps.extract_version.outputs.version }}
+          body: ${{ steps.release_notes.outputs.changelog }}
