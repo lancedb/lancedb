@@ -13,11 +13,15 @@ A vector search finds the approximate or exact nearest neighbors to a given quer
 Distance metrics are a measure of the similarity between a pair of vectors.
 Currently, LanceDB supports the following metrics:
 
-| Metric   | Description                                                                 |
-| -------- | --------------------------------------------------------------------------- |
-| `l2`     | [Euclidean / L2 distance](https://en.wikipedia.org/wiki/Euclidean_distance) |
-| `cosine` | [Cosine Similarity](https://en.wikipedia.org/wiki/Cosine_similarity)        |
-| `dot`    | [Dot Production](https://en.wikipedia.org/wiki/Dot_product)                 |
+| Metric    | Description                                                                 |
+| --------- | --------------------------------------------------------------------------- |
+| `l2`      | [Euclidean / L2 distance](https://en.wikipedia.org/wiki/Euclidean_distance) |
+| `cosine`  | [Cosine Similarity](https://en.wikipedia.org/wiki/Cosine_similarity)        |
+| `dot`     | [Dot Production](https://en.wikipedia.org/wiki/Dot_product)                 |
+| `hamming` | [Hamming Distance](https://en.wikipedia.org/wiki/Hamming_distance)          |
+
+!!! note
+    The `hamming` metric is only available for binary vectors.
 
 ## Exhaustive search (kNN)
 
@@ -106,6 +110,31 @@ an ANN search means that using an index often involves a trade-off between recal
 
 See the [IVF_PQ index](./concepts/index_ivfpq.md) for a deeper description of how `IVF_PQ`
 indexes work in LanceDB.
+
+## Binary vector
+
+LanceDB supports binary vectors as a data type, and has the ability to search binary vectors with hamming distance. The binary vectors are stored as uint8 arrays (every 8 bits are stored as a byte):
+
+!!! note
+    The dim of the binary vector must be a multiple of 8. A vector of dim 128 will be stored as a uint8 array of size 16.
+
+=== "Python"
+
+    === "sync API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_binary_vector.py:imports"
+
+        --8<-- "python/python/tests/docs/test_binary_vector.py:sync_binary_vector"
+        ```
+
+    === "async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_binary_vector.py:imports"
+
+        --8<-- "python/python/tests/docs/test_binary_vector.py:async_binary_vector"
+        ```
 
 ## Output search results
 
