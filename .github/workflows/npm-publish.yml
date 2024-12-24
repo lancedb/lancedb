@@ -571,7 +571,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: main
-          persist-credentials: false
+          token: ${{ secrets.LANCEDB_RELEASE_TOKEN }}
           fetch-depth: 0
           lfs: true
       - uses: ./.github/workflows/update_package_lock
@@ -589,7 +589,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: main
-          persist-credentials: false
+          token: ${{ secrets.LANCEDB_RELEASE_TOKEN }}
           fetch-depth: 0
           lfs: true
       - uses: ./.github/workflows/update_package_lock_nodejs

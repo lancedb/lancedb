@@ -97,3 +97,7 @@ jobs:
         if: ${{ !inputs.dry_run && inputs.other }}
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: ./.github/workflows/update_package_lock_nodejs
+        if: ${{ !inputs.dry_run && inputs.other }}
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
