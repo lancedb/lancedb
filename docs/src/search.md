@@ -128,6 +128,14 @@ LanceDB supports binary vectors as a data type, and has the ability to search bi
         --8<-- "python/python/tests/docs/test_binary_vector.py:sync_binary_vector"
         ```
 
+    === "async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_binary_vector.py:imports"
+
+        --8<-- "python/python/tests/docs/test_binary_vector.py:async_binary_vector"
+        ```
+
 ## Output search results
 
 LanceDB returns vector search results via different formats commonly used in python.
