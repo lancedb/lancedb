@@ -5,7 +5,8 @@ For general contribution guidelines, see [CONTRIBUTING.md](../CONTRIBUTING.md).
 
 ## Project layout
 
-The Python package is a wrapper around the Rust library, `lancedb`.
+The Python package is a wrapper around the Rust library, `lancedb`. We use
+[pyo3](https://pyo3.rs/) to create the bindings between Rust and Python.
 
 * `src/`: Rust bindings source code
 * `python/lancedb`: Python package source code

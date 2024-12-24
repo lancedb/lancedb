@@ -82,6 +82,7 @@ The typescript API documentation is generated from the typescript source code us
 When new APIs are added, you must manually re-run the typedoc command to update the API documentation.
 
 ```shell
-cd nodejs
-npm run typedoc
+pushd nodejs
+npm run docs
+popd
 ```
