@@ -51,7 +51,7 @@ For the best chance of having your pull request accepted, please follow these gu
    one problem at a time, when possible.
 1. Before marking a pull request ready-for-review, do a self review of your code.
    Is it clear why you are making the changes? Are the changes easy to understand?
-1. Use [conventional commit messages]() as pull request titles. Examples:
+1. Use [conventional commit messages](https://www.conventionalcommits.org/en/) as pull request titles. Examples:
     * New feature: `feat: adding foo API`
     * Bug fix: `fix: issue with foo API`
     * Documentation change: `docs: adding foo API documentation`
