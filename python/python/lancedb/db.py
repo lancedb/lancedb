@@ -18,12 +18,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Dict, Iterable, List, Literal, Optional, Union
 
 from lancedb.embeddings.registry import EmbeddingFunctionRegistry
-from overrides import EnforceOverrides, override # type: ignore
+from overrides import EnforceOverrides, override  # type: ignore
 
 from lancedb.common import data_to_reader, sanitize_uri, validate_schema
 from lancedb.background_loop import LOOP
 
-from ._lancedb import connect as lancedb_connect # type: ignore
+from ._lancedb import connect as lancedb_connect  # type: ignore
 from .table import (
     AsyncTable,
     LanceTable,
