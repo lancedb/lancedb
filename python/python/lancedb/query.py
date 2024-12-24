@@ -515,6 +515,7 @@ class LanceQueryBuilder(ABC):
                 "metric": self._metric,
                 "nprobes": self._nprobes,
                 "refine_factor": self._refine_factor,
+                "use_index": self._use_index,
             },
             prefilter=self._prefilter,
             filter=self._str_query,
@@ -807,7 +808,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         self._str_query = query_string if query_string is not None else self._str_query
         return self
 
-    def bypass_vector_index(self) -> LanceQueryBuilder:
+    def bypass_vector_index(self) -> LanceVectorQueryBuilder:
         """
         If this is called then any vector index is skipped
 
@@ -820,7 +821,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         Returns
         -------
         LanceVectorQueryBuilder
-            The LanceQueryBuilder object.
+            The LanceVectorQueryBuilder object.
         """
         self._use_index = False
         return self
@@ -1131,6 +1132,8 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             self._vector_query.refine_factor(self._refine_factor)
         if self._ef:
             self._vector_query.ef(self._ef)
+        if not self._use_index:
+            self._vector_query.bypass_vector_index()
 
         with ThreadPoolExecutor() as executor:
             fts_future = executor.submit(self._fts_query.with_row_id(True).to_arrow)
@@ -1344,6 +1347,24 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
 
     def text(self, text: str) -> LanceHybridQueryBuilder:
         self._text = text
+        return self
+
+    def bypass_vector_index(self) -> LanceHybridQueryBuilder:
+        """
+        If this is called then any vector index is skipped
+
+        An exhaustive (flat) search will be performed.  The query vector will
+        be compared to every vector in the table.  At high scales this can be
+        expensive.  However, this is often still useful.  For example, skipping
+        the vector index can give you ground truth results which you can use to
+        calculate your recall to select an appropriate value for nprobes.
+
+        Returns
+        -------
+        LanceHybridQueryBuilder
+            The LanceHybridQueryBuilder object.
+        """
+        self._use_index = False
         return self
 
 
