@@ -110,7 +110,7 @@ pub(crate) fn default_vector_column(schema: &Schema, dim: Option<i32>) -> Result
         .iter()
         .filter_map(|field| match field.data_type() {
             arrow_schema::DataType::FixedSizeList(f, d)
-                if f.data_type().is_floating()
+                if (f.data_type().is_floating() || f.data_type() == &DataType::UInt8)
                     && dim.map(|expect| *d == expect).unwrap_or(true) =>
             {
                 Some(field.name())

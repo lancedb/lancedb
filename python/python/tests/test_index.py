@@ -47,7 +47,7 @@ async def binary_table(db_async):
     data = [
         {
             "id": i,
-            "vector": [random.randint(0, 255) for _ in range(128)],
+            "vector": [i] * 128,
         }
         for i in range(NROWS)
     ]
@@ -183,3 +183,8 @@ async def test_create_index_with_binary_vectors(binary_table: AsyncTable):
     assert stats.num_indexed_rows == await binary_table.count_rows()
     assert stats.num_unindexed_rows == 0
     assert stats.num_indices == 1
+
+    # the dataset contains vectors with all values from 0 to 255
+    for v in range(256):
+        res = await binary_table.query().nearest_to([v] * 128).to_arrow()
+        assert res["id"][0].as_py() == v
