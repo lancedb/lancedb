@@ -122,11 +122,11 @@ LanceDB supports binary vectors as a data type, and has the ability to search bi
 
     === "sync API"
 
-    ```python
-    --8<-- "python/python/tests/docs/test_binary_vector.py:imports"
+        ```python
+        --8<-- "python/python/tests/docs/test_binary_vector.py:imports"
 
-    --8<-- "python/python/tests/docs/test_binary_vector.py:sync_binary_vector"
-    ```
+        --8<-- "python/python/tests/docs/test_binary_vector.py:sync_binary_vector"
+        ```
 
 ## Output search results
 

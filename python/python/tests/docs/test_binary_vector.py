@@ -1,7 +1,10 @@
 import shutil
+
+# --8<-- [start:imports]
 import lancedb
 import numpy as np
 import pytest
+# --8<-- [end:imports]
 
 shutil.rmtree("data/binary_lancedb", ignore_errors=True)
 
