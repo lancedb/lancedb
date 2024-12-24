@@ -108,9 +108,13 @@ class EmbeddingFunctionRegistry:
             An empty dict is returned if input is None or does not
             contain b"embedding_functions".
         """
-        if metadata is None or b"embedding_functions" not in metadata:
+        if metadata is None:
             return {}
-        serialized = metadata[b"embedding_functions"]
+        serialized = metadata.get(
+            b"embedding_functions", metadata.get("embedding_functions")
+        )
+        if serialized is None:
+            return {}
         raw_list = json.loads(serialized.decode("utf-8"))
         return {
             obj["vector_column"]: EmbeddingFunctionConfig(
