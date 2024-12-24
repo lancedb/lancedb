@@ -2812,6 +2812,8 @@ class AsyncTable:
                 async_query = async_query.column(query.vector_column)
             if query.ef:
                 async_query = async_query.ef(query.ef)
+            if not query.use_index:
+                async_query = async_query.bypass_vector_index()
 
         if not query.prefilter:
             async_query = async_query.postfilter()
