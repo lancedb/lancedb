@@ -3,12 +3,12 @@ import lancedb
 import numpy as np
 import pytest
 
-shutil.rmtree("data/binary-lancedb", ignore_errors=True)
+shutil.rmtree("data/binary_lancedb", ignore_errors=True)
 
 
 def test_binary_vector():
     # --8<-- [start:sync_binary_vector]
-    db = lancedb.connect("data/binary-lancedb")
+    db = lancedb.connect("data/binary_lancedb")
     data = [
         {
             "id": i,
@@ -26,7 +26,7 @@ def test_binary_vector():
 @pytest.mark.asyncio
 async def test_binary_vector_async():
     # --8<-- [start:async_binary_vector]
-    db = await lancedb.connect_async("data/binary-lancedb")
+    db = await lancedb.connect_async("data/binary_lancedb")
     data = [
         {
             "id": i,
