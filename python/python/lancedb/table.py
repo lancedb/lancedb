@@ -93,8 +93,7 @@ def _into_pyarrow_table(data) -> pa.Table:
     if isinstance(data, list):
         # convert to list of dict if data is a bunch of LanceModels
         if isinstance(data[0], LanceModel):
-            if schema is None:
-                schema = data[0].__class__.to_arrow_schema()
+            schema = data[0].__class__.to_arrow_schema()
             data = [model_to_dict(d) for d in data]
             return pa.Table.from_pylist(data, schema=schema)
         elif isinstance(data[0], pa.RecordBatch):
@@ -130,7 +129,7 @@ def _into_pyarrow_table(data) -> pa.Table:
     ):
         return data.collect().to_arrow()
     elif isinstance(data, Iterable):
-        return _process_iterator(data, schema)
+        return _process_iterator(data)
     else:
         raise TypeError(
             f"Unknown data type {type(data)}. "
@@ -140,10 +139,11 @@ def _into_pyarrow_table(data) -> pa.Table:
         )
 
 
-def _process_iterator(data: Iterable, schema: Optional[pa.Schema] = None) -> pa.Table:
+def _process_iterator(data: Iterable) -> pa.Table:
     batches = []
+    schema = None  # Will get schema from first batch
     for batch in data:
-        batch_table = _into_pyarrow_table(batch, schema)
+        batch_table = _into_pyarrow_table(batch)
         if schema is not None:
             if batch_table.schema != schema:
                 try:
@@ -209,24 +209,27 @@ def _sanitize_data(
     # TODO: What about empty list?
     table = _into_pyarrow_table(data)
 
-    if target_schema is None:
-        target_schema = _infer_target_schema(table)
+    table = _append_vector_columns(table, target_schema, metadata=metadata)
 
-    if metadata:
-        new_metadata = target_schema.metadata.update(metadata)
-        target_schema = target_schema.with_metadata(new_metadata)
-
-    _validate_schema(target_schema)
-
-    table = _append_vector_columns(table, target_schema)
-
-    table = _cast_to_target_schema(table, target_schema, allow_subschema)
-
+    # This happens before the cast so we can fix vector columns with
+    # incorrect lengths before they are cast to FSL.
     table = _handle_bad_vectors(
         table,
         on_bad_vectors=on_bad_vectors,
         fill_value=fill_value,
     )
+
+    if target_schema is None:
+        target_schema = _infer_target_schema(table)
+
+    if metadata:
+        new_metadata = target_schema.metadata or {}
+        new_metadata = new_metadata.update(metadata)
+        target_schema = target_schema.with_metadata(new_metadata)
+
+    _validate_schema(target_schema)
+
+    table = _cast_to_target_schema(table, target_schema, allow_subschema)
 
     return table
 
@@ -317,14 +320,22 @@ def _to_batches_with_split(data):
                 yield b
 
 
-def _append_vector_columns(data: pa.Table, schema: Optional[pa.Schema]):
+def _append_vector_columns(
+    data: pa.Table,
+    schema: Optional[pa.Schema] = None,
+    *,
+    metadata: Optional[dict] = None,
+) -> pa.Table:
     """
     Use the embedding function to automatically embed the source columns and add the
     vector columns to the table.
     """
-    functions = EmbeddingFunctionRegistry.get_instance().parse_functions(
-        schema.metadata
-    )
+    if schema is None:
+        metadata = metadata or {}
+    else:
+        metadata = schema.metadata or metadata or {}
+    functions = EmbeddingFunctionRegistry.get_instance().parse_functions(metadata)
+
     for vector_column, conf in functions.items():
         func = conf.function
         no_vector_column = vector_column not in data.column_names
@@ -2244,15 +2255,25 @@ def _handle_bad_vectors(
     fill_value: float = 0.0,
 ) -> pa.Table:
     for field in table.schema:
+        # They can provide a 'vector' column that isn't yet a FSL
+        named_vector_col = (
+            (
+                pa.types.is_list(field.type)
+                or pa.types.is_large_list(field.type)
+                or pa.types.is_fixed_size_list(field.type)
+            )
+            and pa.types.is_floating(field.type.value_type)
+            and field.name == VECTOR_COLUMN_NAME
+        )
         # TODO: we're making an assumption that fixed size list of 10 or more
         # is a vector column. This is definitely a bit hacky.
         likely_vector_col = (
             pa.types.is_fixed_size_list(field.type)
             and pa.types.is_floating(field.type.value_type)
-            and (field.type.list_size >= 10 or field.name == VECTOR_COLUMN_NAME)
+            and (field.type.list_size >= 10)
         )
 
-        if likely_vector_col:
+        if named_vector_col or likely_vector_col:
             table = _handle_bad_vector_column(
                 table,
                 vector_column_name=field.name,
@@ -2290,14 +2311,12 @@ def _handle_bad_vector_column(
     """
     vec_arr = data[vector_column_name]
 
-    target_type = data.schema.field(vector_column_name).type
-
-    if not pa.types.is_fixed_size_list(target_type):
-        raise TypeError(f"Unsupported vector column type: {vec_arr.type}")
-
     has_nan = has_nan_values(vec_arr)
 
-    dim = target_type.list_size
+    if pa.types.is_fixed_size_list(vec_arr.type):
+        dim = vec_arr.type.list_size
+    else:
+        dim = _modal_list_size(vec_arr)
     has_wrong_dim = pc.not_equal(pc.list_value_length(vec_arr), dim)
 
     has_bad_vectors = pc.any(has_nan).as_py() or pc.any(has_wrong_dim).as_py()
@@ -2368,13 +2387,11 @@ def _infer_target_schema(table: pa.Table) -> pa.Schema:
     for i, field in enumerate(schema):
         if (
             field.name == VECTOR_COLUMN_NAME
-            and pa.types.is_list(field.type)
+            and (pa.types.is_list(field.type) or pa.types.is_large_list(field.type))
             and pa.types.is_floating(field.type.value_type)
         ):
             # Use the most common length of the list as the dimensions
-            dim_counts = pc.value_counts(pc.list_value_length(table.column(i)))
-            dim_counts = ((value[1], count[1]) for value, count in dim_counts)
-            dim = max(dim_counts, key=lambda x: x[1])[0]
+            dim = _modal_list_size(table.column(i))
 
             new_field = pa.field(
                 VECTOR_COLUMN_NAME,
@@ -2382,9 +2399,14 @@ def _infer_target_schema(table: pa.Table) -> pa.Schema:
                 nullable=field.nullable,
             )
 
-            schema.set(i, new_field)
+            schema = schema.set(i, new_field)
 
     return schema
+
+
+def _modal_list_size(arr: Union[pa.ListArray, pa.ChunkedArray]) -> int:
+    # Use the most common length of the list as the dimensions
+    return pc.mode(pc.list_value_length(arr))[0].as_py()["mode"]
 
 
 def _validate_schema(schema: pa.Schema):
