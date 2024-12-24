@@ -113,28 +113,17 @@ indexes work in LanceDB.
 
 ## Binary vector
 
-LanceDB supports binary vectors as a data type, and has the ability to search binary vectors with hamming distance. The binary vectors are stored as uint8 arrays:
+LanceDB supports binary vectors as a data type, and has the ability to search binary vectors with hamming distance. The binary vectors are stored as uint8 arrays (every 8 bits are stored as a byte).:
+
+!!! note
+    The dim of the binary vector must be a multiple of 8. A vector of dim 128 will be stored as a uint8 array of size 16.
 
 === "Python"
 
     ```python
-    import lancedb
-    import numpy as np
+    --8<-- "python/python/tests/docs/test_binary_vector.py:sync_binary_vector"
 
-    db = lancedb.connect("data/sample-lancedb")
-
-    data = [
-        {
-            "id": i,
-            "vector": np.random.randint(0, 256, size=128),
-        }
-        for i in range(1024)
-    ]
-
-    tbl = db.create_table("my_binary_vectors", data=data)
-
-    query = np.random.randint(0, 256, size=128)
-    results = tbl.search(query).to_arrow()
+    --8<-- "python/python/tests/docs/test_binary_vector.py:async_binary_vector"
     ```
 
 
