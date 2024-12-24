@@ -508,6 +508,32 @@ def test_delete_table(tmp_db: lancedb.DBConnection):
     tmp_db.drop_table("does_not_exist", ignore_missing=True)
 
 
+@pytest.mark.asyncio
+async def test_delete_table_async(tmp_db: lancedb.DBConnection):
+    data = pd.DataFrame(
+        {
+            "vector": [[3.1, 4.1], [5.9, 26.5]],
+            "item": ["foo", "bar"],
+            "price": [10.0, 20.0],
+        }
+    )
+
+    tmp_db.create_table("test", data=data)
+
+    with pytest.raises(Exception):
+        tmp_db.create_table("test", data=data)
+
+    assert tmp_db.table_names() == ["test"]
+
+    tmp_db.drop_table("test")
+    assert tmp_db.table_names() == []
+
+    tmp_db.create_table("test", data=data)
+    assert tmp_db.table_names() == ["test"]
+
+    tmp_db.drop_table("does_not_exist", ignore_missing=True)
+
+
 def test_drop_database(tmp_db: lancedb.DBConnection):
     data = pd.DataFrame(
         {
