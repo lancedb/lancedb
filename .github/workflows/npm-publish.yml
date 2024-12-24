@@ -1,9 +1,9 @@
 name: NPM Publish
 
 on:
-  push:
-    tags:
-      - "v*"
+  pull_request:
+    paths:
+      - .github/workflows/npm-publish.yml
 
 jobs:
   node:
@@ -146,7 +146,7 @@ jobs:
     runs-on: ubuntu-latest
     container: alpine:edge
     # Only runs on tags that matches the make-release action
-    if: startsWith(github.ref, 'refs/tags/v')
+    # if: startsWith(github.ref, 'refs/tags/v')
     strategy:
       fail-fast: false
       matrix:
@@ -167,7 +167,7 @@ jobs:
         if: ${{ matrix.config.arch == 'aarch64' }}
         run: |
           source "$HOME/.cargo/env"
-          rustup target add aarch64-unknown-linux-musl --toolchain 1.80.0
+          rustup target add aarch64-unknown-linux-musl --toolchain 1.83.0
           crt=$(realpath $(dirname $(rustup which rustc))/../lib/rustlib/aarch64-unknown-linux-musl/lib/self-contained)
           sysroot_lib=/usr/aarch64-unknown-linux-musl/usr/lib
           apk_url=https://dl-cdn.alpinelinux.org/alpine/latest-stable/main/aarch64/
@@ -249,7 +249,7 @@ jobs:
     runs-on: ubuntu-latest
     container: alpine:edge
     # Only runs on tags that matches the make-release action
-    if: startsWith(github.ref, 'refs/tags/v')
+    # if: startsWith(github.ref, 'refs/tags/v')
     strategy:
       fail-fast: false
       matrix:
@@ -272,7 +272,7 @@ jobs:
         if: ${{ matrix.config.arch == 'aarch64' }}
         run: |
           source "$HOME/.cargo/env"
-          rustup target add aarch64-unknown-linux-musl --toolchain 1.80.0
+          rustup target add aarch64-unknown-linux-musl --toolchain 1.83.0
           crt=$(realpath $(dirname $(rustup which rustc))/../lib/rustlib/aarch64-unknown-linux-musl/lib/self-contained)
           sysroot_lib=/usr/aarch64-unknown-linux-musl/usr/lib
           apk_url=https://dl-cdn.alpinelinux.org/alpine/latest-stable/main/aarch64/
@@ -336,7 +336,7 @@ jobs:
 
   node-windows-arm64:
     name: vectordb ${{ matrix.config.arch }}-pc-windows-msvc
-    if: startsWith(github.ref, 'refs/tags/v')
+    # if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     container: alpine:edge
     strategy:
@@ -356,7 +356,7 @@ jobs:
           echo "export CC=clang" >> saved_env
           echo "export AR=llvm-ar" >> saved_env
           source "$HOME/.cargo/env"
-          rustup target add ${{ matrix.config.arch }}-pc-windows-msvc --toolchain 1.80.0
+          rustup target add ${{ matrix.config.arch }}-pc-windows-msvc --toolchain 1.83.0
           (mkdir -p sysroot && cd sysroot && sh ../ci/sysroot-${{ matrix.config.arch }}-pc-windows-msvc.sh)
           echo "export C_INCLUDE_PATH=/usr/${{ matrix.config.arch }}-pc-windows-msvc/usr/include" >> saved_env
           echo "export CARGO_BUILD_TARGET=${{ matrix.config.arch }}-pc-windows-msvc" >> saved_env
@@ -416,7 +416,7 @@ jobs:
   nodejs-windows-arm64:
     name: lancedb ${{ matrix.config.arch }}-pc-windows-msvc
     # Only runs on tags that matches the make-release action
-    if: startsWith(github.ref, 'refs/tags/v')
+    # if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     container: alpine:edge
     strategy:
@@ -436,7 +436,7 @@ jobs:
           echo "export CC=clang" >> saved_env
           echo "export AR=llvm-ar" >> saved_env
           source "$HOME/.cargo/env"
-          rustup target add ${{ matrix.config.arch }}-pc-windows-msvc --toolchain 1.80.0
+          rustup target add ${{ matrix.config.arch }}-pc-windows-msvc --toolchain 1.83.0
           (mkdir -p sysroot && cd sysroot && sh ../ci/sysroot-${{ matrix.config.arch }}-pc-windows-msvc.sh)
           echo "export C_INCLUDE_PATH=/usr/${{ matrix.config.arch }}-pc-windows-msvc/usr/include" >> saved_env
           echo "export CARGO_BUILD_TARGET=${{ matrix.config.arch }}-pc-windows-msvc" >> saved_env
@@ -461,204 +461,204 @@ jobs:
           path: |
             nodejs/dist/*.node
 
-  release:
-    name: vectordb NPM Publish
-    needs: [node, node-macos, node-linux-gnu, node-linux-musl, node-windows, node-windows-arm64]
-    runs-on: ubuntu-latest
-    # Only runs on tags that matches the make-release action
-    if: startsWith(github.ref, 'refs/tags/v')
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: node-*
-      - name: Display structure of downloaded files
-        run: ls -R
-      - uses: actions/setup-node@v3
-        with:
-          node-version: 20
-          registry-url: "https://registry.npmjs.org"
-      - name: Publish to NPM
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.LANCEDB_NPM_REGISTRY_TOKEN }}
-        run: |
-          # Tag beta as "preview" instead of default "latest". See lancedb
-          # npm publish step for more info.
-          if [[ $GITHUB_REF =~ refs/tags/v(.*)-beta.* ]]; then
-            PUBLISH_ARGS="--tag preview"
-          fi
+  # release:
+  #   name: vectordb NPM Publish
+  #   needs: [node, node-macos, node-linux-gnu, node-linux-musl, node-windows, node-windows-arm64]
+  #   runs-on: ubuntu-latest
+  #   # Only runs on tags that matches the make-release action
+  #   if: startsWith(github.ref, 'refs/tags/v')
+  #   steps:
+  #     - uses: actions/download-artifact@v4
+  #       with:
+  #         pattern: node-*
+  #     - name: Display structure of downloaded files
+  #       run: ls -R
+  #     - uses: actions/setup-node@v3
+  #       with:
+  #         node-version: 20
+  #         registry-url: "https://registry.npmjs.org"
+  #     - name: Publish to NPM
+  #       env:
+  #         NODE_AUTH_TOKEN: ${{ secrets.LANCEDB_NPM_REGISTRY_TOKEN }}
+  #       run: |
+  #         # Tag beta as "preview" instead of default "latest". See lancedb
+  #         # npm publish step for more info.
+  #         if [[ $GITHUB_REF =~ refs/tags/v(.*)-beta.* ]]; then
+  #           PUBLISH_ARGS="--tag preview"
+  #         fi
 
-          mv */*.tgz .
-          for filename in *.tgz; do
-            npm publish $PUBLISH_ARGS $filename
-          done
-      - name: Notify Slack Action
-        uses: ravsamhq/notify-slack-action@2.3.0
-        if: ${{ always() }}
-        with:
-          status: ${{ job.status }}
-          notify_when: "failure"
-          notification_title: "{workflow} is failing"
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.ACTION_MONITORING_SLACK }}
+  #         mv */*.tgz .
+  #         for filename in *.tgz; do
+  #           npm publish $PUBLISH_ARGS $filename
+  #         done
+  #     - name: Notify Slack Action
+  #       uses: ravsamhq/notify-slack-action@2.3.0
+  #       if: ${{ always() }}
+  #       with:
+  #         status: ${{ job.status }}
+  #         notify_when: "failure"
+  #         notification_title: "{workflow} is failing"
+  #       env:
+  #         SLACK_WEBHOOK_URL: ${{ secrets.ACTION_MONITORING_SLACK }}
 
-  release-nodejs:
-    name: lancedb NPM Publish
-    needs: [nodejs-macos, nodejs-linux-gnu, nodejs-linux-musl, nodejs-windows, nodejs-windows-arm64]
-    runs-on: ubuntu-latest
-    # Only runs on tags that matches the make-release action
-    if: startsWith(github.ref, 'refs/tags/v')
-    defaults:
-      run:
-        shell: bash
-        working-directory: nodejs
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: nodejs-dist
-          path: nodejs/dist
-      - uses: actions/download-artifact@v4
-        name: Download arch-specific binaries
-        with:
-          pattern: nodejs-*
-          path: nodejs/nodejs-artifacts
-          merge-multiple: true
-      - name: Display structure of downloaded files
-        run: find .
-      - uses: actions/setup-node@v3
-        with:
-          node-version: 20
-          registry-url: "https://registry.npmjs.org"
-      - name: Install napi-rs
-        run: npm install -g @napi-rs/cli
-      - name: Prepare artifacts
-        run: npx napi artifacts -d nodejs-artifacts
-      - name: Display structure of staged files
-        run: find npm
-      - name: Publish to NPM
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.LANCEDB_NPM_REGISTRY_TOKEN }}
-        # By default, things are published to the latest tag. This is what is
-        # installed by default if the user does not specify a version. This is
-        # good for stable releases, but for pre-releases, we want to publish to
-        # the "preview" tag so they can install with `npm install lancedb@preview`.
-        # See: https://medium.com/@mbostock/prereleases-and-npm-e778fc5e2420
-        run: |
-          if [[ $GITHUB_REF =~ refs/tags/v(.*)-beta.* ]]; then
-            npm publish --access public --tag preview
-          else
-            npm publish --access public
-          fi
-      - name: Notify Slack Action
-        uses: ravsamhq/notify-slack-action@2.3.0
-        if: ${{ always() }}
-        with:
-          status: ${{ job.status }}
-          notify_when: "failure"
-          notification_title: "{workflow} is failing"
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.ACTION_MONITORING_SLACK }}
+  # release-nodejs:
+  #   name: lancedb NPM Publish
+  #   needs: [nodejs-macos, nodejs-linux-gnu, nodejs-linux-musl, nodejs-windows, nodejs-windows-arm64]
+  #   runs-on: ubuntu-latest
+  #   # Only runs on tags that matches the make-release action
+  #   if: startsWith(github.ref, 'refs/tags/v')
+  #   defaults:
+  #     run:
+  #       shell: bash
+  #       working-directory: nodejs
+  #   steps:
+  #     - name: Checkout
+  #       uses: actions/checkout@v4
+  #     - uses: actions/download-artifact@v4
+  #       with:
+  #         name: nodejs-dist
+  #         path: nodejs/dist
+  #     - uses: actions/download-artifact@v4
+  #       name: Download arch-specific binaries
+  #       with:
+  #         pattern: nodejs-*
+  #         path: nodejs/nodejs-artifacts
+  #         merge-multiple: true
+  #     - name: Display structure of downloaded files
+  #       run: find .
+  #     - uses: actions/setup-node@v3
+  #       with:
+  #         node-version: 20
+  #         registry-url: "https://registry.npmjs.org"
+  #     - name: Install napi-rs
+  #       run: npm install -g @napi-rs/cli
+  #     - name: Prepare artifacts
+  #       run: npx napi artifacts -d nodejs-artifacts
+  #     - name: Display structure of staged files
+  #       run: find npm
+  #     - name: Publish to NPM
+  #       env:
+  #         NODE_AUTH_TOKEN: ${{ secrets.LANCEDB_NPM_REGISTRY_TOKEN }}
+  #       # By default, things are published to the latest tag. This is what is
+  #       # installed by default if the user does not specify a version. This is
+  #       # good for stable releases, but for pre-releases, we want to publish to
+  #       # the "preview" tag so they can install with `npm install lancedb@preview`.
+  #       # See: https://medium.com/@mbostock/prereleases-and-npm-e778fc5e2420
+  #       run: |
+  #         if [[ $GITHUB_REF =~ refs/tags/v(.*)-beta.* ]]; then
+  #           npm publish --access public --tag preview
+  #         else
+  #           npm publish --access public
+  #         fi
+  #     - name: Notify Slack Action
+  #       uses: ravsamhq/notify-slack-action@2.3.0
+  #       if: ${{ always() }}
+  #       with:
+  #         status: ${{ job.status }}
+  #         notify_when: "failure"
+  #         notification_title: "{workflow} is failing"
+  #       env:
+  #         SLACK_WEBHOOK_URL: ${{ secrets.ACTION_MONITORING_SLACK }}
 
-  update-package-lock:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [release]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          ref: main
-          token: ${{ secrets.LANCEDB_RELEASE_TOKEN }}
-          fetch-depth: 0
-          lfs: true
-      - uses: ./.github/workflows/update_package_lock
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+  # update-package-lock:
+  #   if: startsWith(github.ref, 'refs/tags/v')
+  #   needs: [release]
+  #   runs-on: ubuntu-latest
+  #   permissions:
+  #     contents: write
+  #   steps:
+  #     - name: Checkout
+  #       uses: actions/checkout@v4
+  #       with:
+  #         ref: main
+  #         token: ${{ secrets.LANCEDB_RELEASE_TOKEN }}
+  #         fetch-depth: 0
+  #         lfs: true
+  #     - uses: ./.github/workflows/update_package_lock
+  #       with:
+  #         github_token: ${{ secrets.GITHUB_TOKEN }}
 
-  update-package-lock-nodejs:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [release-nodejs]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          ref: main
-          token: ${{ secrets.LANCEDB_RELEASE_TOKEN }}
-          fetch-depth: 0
-          lfs: true
-      - uses: ./.github/workflows/update_package_lock_nodejs
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+  # update-package-lock-nodejs:
+  #   if: startsWith(github.ref, 'refs/tags/v')
+  #   needs: [release-nodejs]
+  #   runs-on: ubuntu-latest
+  #   permissions:
+  #     contents: write
+  #   steps:
+  #     - name: Checkout
+  #       uses: actions/checkout@v4
+  #       with:
+  #         ref: main
+  #         token: ${{ secrets.LANCEDB_RELEASE_TOKEN }}
+  #         fetch-depth: 0
+  #         lfs: true
+  #     - uses: ./.github/workflows/update_package_lock_nodejs
+  #       with:
+  #         github_token: ${{ secrets.GITHUB_TOKEN }}
 
-  gh-release:
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          lfs: true
-      - name: Extract version
-        id: extract_version
-        env:
-          GITHUB_REF: ${{ github.ref }}
-        run: |
-          set -e
-          echo "Extracting tag and version from $GITHUB_REF"
-          if [[ $GITHUB_REF =~ refs/tags/v(.*) ]]; then
-            VERSION=${BASH_REMATCH[1]}
-            TAG=v$VERSION
-            echo "tag=$TAG" >> $GITHUB_OUTPUT
-            echo "version=$VERSION" >> $GITHUB_OUTPUT
-          else
-            echo "Failed to extract version from $GITHUB_REF"
-            exit 1
-          fi
-          echo "Extracted version $VERSION from $GITHUB_REF"
-          if [[ $VERSION =~ beta ]]; then
-            echo "This is a beta release"
+  # gh-release:
+  #   if: startsWith(github.ref, 'refs/tags/v')
+  #   runs-on: ubuntu-latest
+  #   permissions:
+  #     contents: write
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #       with:
+  #         fetch-depth: 0
+  #         lfs: true
+  #     - name: Extract version
+  #       id: extract_version
+  #       env:
+  #         GITHUB_REF: ${{ github.ref }}
+  #       run: |
+  #         set -e
+  #         echo "Extracting tag and version from $GITHUB_REF"
+  #         if [[ $GITHUB_REF =~ refs/tags/v(.*) ]]; then
+  #           VERSION=${BASH_REMATCH[1]}
+  #           TAG=v$VERSION
+  #           echo "tag=$TAG" >> $GITHUB_OUTPUT
+  #           echo "version=$VERSION" >> $GITHUB_OUTPUT
+  #         else
+  #           echo "Failed to extract version from $GITHUB_REF"
+  #           exit 1
+  #         fi
+  #         echo "Extracted version $VERSION from $GITHUB_REF"
+  #         if [[ $VERSION =~ beta ]]; then
+  #           echo "This is a beta release"
 
-            # Get last release (that is not this one)
-            FROM_TAG=$(git tag --sort='version:refname' \
-              | grep ^v \
-              | grep -vF "$TAG" \
-              | python ci/semver_sort.py v \
-              | tail -n 1)
-          else
-            echo "This is a stable release"
-            # Get last stable tag (ignore betas)
-            FROM_TAG=$(git tag --sort='version:refname' \
-              | grep ^v \
-              | grep -vF "$TAG" \
-              | grep -v beta \
-              | python ci/semver_sort.py v \
-              | tail -n 1)
-          fi
-          echo "Found from tag $FROM_TAG"
-          echo "from_tag=$FROM_TAG" >> $GITHUB_OUTPUT
-      - name: Create Release Notes
-        id: release_notes
-        uses: mikepenz/release-changelog-builder-action@v4
-        with:
-          configuration: .github/release_notes.json
-          toTag: ${{ steps.extract_version.outputs.tag }}
-          fromTag: ${{ steps.extract_version.outputs.from_tag }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Create GH release
-        uses: softprops/action-gh-release@v2
-        with:
-          prerelease: ${{ contains('beta', github.ref) }}
-          tag_name: ${{ steps.extract_version.outputs.tag }}
-          token: ${{ secrets.GITHUB_TOKEN }}
-          generate_release_notes: false
-          name: Node/Rust LanceDB v${{ steps.extract_version.outputs.version }}
-          body: ${{ steps.release_notes.outputs.changelog }}
+  #           # Get last release (that is not this one)
+  #           FROM_TAG=$(git tag --sort='version:refname' \
+  #             | grep ^v \
+  #             | grep -vF "$TAG" \
+  #             | python ci/semver_sort.py v \
+  #             | tail -n 1)
+  #         else
+  #           echo "This is a stable release"
+  #           # Get last stable tag (ignore betas)
+  #           FROM_TAG=$(git tag --sort='version:refname' \
+  #             | grep ^v \
+  #             | grep -vF "$TAG" \
+  #             | grep -v beta \
+  #             | python ci/semver_sort.py v \
+  #             | tail -n 1)
+  #         fi
+  #         echo "Found from tag $FROM_TAG"
+  #         echo "from_tag=$FROM_TAG" >> $GITHUB_OUTPUT
+  #     - name: Create Release Notes
+  #       id: release_notes
+  #       uses: mikepenz/release-changelog-builder-action@v4
+  #       with:
+  #         configuration: .github/release_notes.json
+  #         toTag: ${{ steps.extract_version.outputs.tag }}
+  #         fromTag: ${{ steps.extract_version.outputs.from_tag }}
+  #       env:
+  #         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  #     - name: Create GH release
+  #       uses: softprops/action-gh-release@v2
+  #       with:
+  #         prerelease: ${{ contains('beta', github.ref) }}
+  #         tag_name: ${{ steps.extract_version.outputs.tag }}
+  #         token: ${{ secrets.GITHUB_TOKEN }}
+  #         generate_release_notes: false
+  #         name: Node/Rust LanceDB v${{ steps.extract_version.outputs.version }}
+  #         body: ${{ steps.release_notes.outputs.changelog }}
