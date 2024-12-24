@@ -159,7 +159,7 @@ jobs:
       - name: Install common dependencies
         run: |
           apk add protobuf-dev curl clang mold grep npm bash
-          curl --proto '=https' --tlsv1.3 -sSf https://raw.githubusercontent.com/rust-lang/rustup/refs/heads/master/rustup-init.sh | sh -s -- -y --default-toolchain 1.80.0
+          curl --proto '=https' --tlsv1.3 -sSf https://raw.githubusercontent.com/rust-lang/rustup/refs/heads/master/rustup-init.sh | sh -s -- -y
           echo "source $HOME/.cargo/env" >> saved_env
           echo "export CC=clang" >> saved_env
           echo "export RUSTFLAGS='-Ctarget-cpu=haswell -Ctarget-feature=-crt-static,+avx2,+fma,+f16c -Clinker=clang -Clink-arg=-fuse-ld=mold'" >> saved_env
@@ -167,7 +167,7 @@ jobs:
         if: ${{ matrix.config.arch == 'aarch64' }}
         run: |
           source "$HOME/.cargo/env"
-          rustup target add aarch64-unknown-linux-musl --toolchain 1.83.0
+          rustup target add aarch64-unknown-linux-musl
           crt=$(realpath $(dirname $(rustup which rustc))/../lib/rustlib/aarch64-unknown-linux-musl/lib/self-contained)
           sysroot_lib=/usr/aarch64-unknown-linux-musl/usr/lib
           apk_url=https://dl-cdn.alpinelinux.org/alpine/latest-stable/main/aarch64/
@@ -262,7 +262,7 @@ jobs:
       - name: Install common dependencies
         run: |
           apk add protobuf-dev curl clang mold grep npm bash openssl-dev openssl-libs-static
-          curl --proto '=https' --tlsv1.3 -sSf https://raw.githubusercontent.com/rust-lang/rustup/refs/heads/master/rustup-init.sh | sh -s -- -y --default-toolchain 1.80.0
+          curl --proto '=https' --tlsv1.3 -sSf https://raw.githubusercontent.com/rust-lang/rustup/refs/heads/master/rustup-init.sh | sh -s -- -y
           echo "source $HOME/.cargo/env" >> saved_env
           echo "export CC=clang" >> saved_env
           echo "export RUSTFLAGS='-Ctarget-cpu=haswell -Ctarget-feature=-crt-static,+avx2,+fma,+f16c -Clinker=clang -Clink-arg=-fuse-ld=mold'" >> saved_env
@@ -272,7 +272,7 @@ jobs:
         if: ${{ matrix.config.arch == 'aarch64' }}
         run: |
           source "$HOME/.cargo/env"
-          rustup target add aarch64-unknown-linux-musl --toolchain 1.83.0
+          rustup target add aarch64-unknown-linux-musl
           crt=$(realpath $(dirname $(rustup which rustc))/../lib/rustlib/aarch64-unknown-linux-musl/lib/self-contained)
           sysroot_lib=/usr/aarch64-unknown-linux-musl/usr/lib
           apk_url=https://dl-cdn.alpinelinux.org/alpine/latest-stable/main/aarch64/
@@ -351,12 +351,12 @@ jobs:
       - name: Install dependencies
         run: |
           apk add protobuf-dev curl clang lld llvm19 grep npm bash msitools sed
-          curl --proto '=https' --tlsv1.3 -sSf https://raw.githubusercontent.com/rust-lang/rustup/refs/heads/master/rustup-init.sh | sh -s -- -y --default-toolchain 1.80.0
+          curl --proto '=https' --tlsv1.3 -sSf https://raw.githubusercontent.com/rust-lang/rustup/refs/heads/master/rustup-init.sh | sh -s -- -y
           echo "source $HOME/.cargo/env" >> saved_env
           echo "export CC=clang" >> saved_env
           echo "export AR=llvm-ar" >> saved_env
           source "$HOME/.cargo/env"
-          rustup target add ${{ matrix.config.arch }}-pc-windows-msvc --toolchain 1.83.0
+          rustup target add ${{ matrix.config.arch }}-pc-windows-msvc
           (mkdir -p sysroot && cd sysroot && sh ../ci/sysroot-${{ matrix.config.arch }}-pc-windows-msvc.sh)
           echo "export C_INCLUDE_PATH=/usr/${{ matrix.config.arch }}-pc-windows-msvc/usr/include" >> saved_env
           echo "export CARGO_BUILD_TARGET=${{ matrix.config.arch }}-pc-windows-msvc" >> saved_env
@@ -431,12 +431,12 @@ jobs:
       - name: Install dependencies
         run: |
           apk add protobuf-dev curl clang lld llvm19 grep npm bash msitools sed
-          curl --proto '=https' --tlsv1.3 -sSf https://raw.githubusercontent.com/rust-lang/rustup/refs/heads/master/rustup-init.sh | sh -s -- -y --default-toolchain 1.80.0
+          curl --proto '=https' --tlsv1.3 -sSf https://raw.githubusercontent.com/rust-lang/rustup/refs/heads/master/rustup-init.sh | sh -s -- -y
           echo "source $HOME/.cargo/env" >> saved_env
           echo "export CC=clang" >> saved_env
           echo "export AR=llvm-ar" >> saved_env
           source "$HOME/.cargo/env"
-          rustup target add ${{ matrix.config.arch }}-pc-windows-msvc --toolchain 1.83.0
+          rustup target add ${{ matrix.config.arch }}-pc-windows-msvc
           (mkdir -p sysroot && cd sysroot && sh ../ci/sysroot-${{ matrix.config.arch }}-pc-windows-msvc.sh)
           echo "export C_INCLUDE_PATH=/usr/${{ matrix.config.arch }}-pc-windows-msvc/usr/include" >> saved_env
           echo "export CARGO_BUILD_TARGET=${{ matrix.config.arch }}-pc-windows-msvc" >> saved_env
