@@ -1478,7 +1478,9 @@ class AsyncQueryBase(object):
         """
         return (await self.to_arrow()).to_pylist()
 
-    async def to_pandas(self, flatten: Optional[Union[int, bool]] = None) -> "pd.DataFrame":
+    async def to_pandas(
+        self, flatten: Optional[Union[int, bool]] = None
+    ) -> "pd.DataFrame":
         """
         Execute the query and collect the results into a pandas DataFrame.
 
@@ -1498,11 +1500,6 @@ class AsyncQueryBase(object):
         ...     async for batch in await table.query().to_batches():
         ...         batch_df = batch.to_pandas()
         >>> asyncio.run(doctest_example())
-        """
-        return (flatten_columns(await self.to_arrow(), flatten)).to_pandas()
-
-    async def explain_plan(self, verbose: Optional[bool] = False):
-        """Return the execution plan for this query.
 
         Parameters
         ----------
@@ -1511,6 +1508,11 @@ class AsyncQueryBase(object):
             If flatten is an integer, flatten the nested columns up to the
             specified depth.
             If unspecified, do not flatten the nested columns.
+        """
+        return (flatten_columns(await self.to_arrow(), flatten)).to_pandas()
+
+    async def explain_plan(self, verbose: Optional[bool] = False):
+        """Return the execution plan for this query.
 
         Examples
         --------

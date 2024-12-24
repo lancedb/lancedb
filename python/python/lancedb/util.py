@@ -172,18 +172,19 @@ def safe_import_polars():
         return pl
     except ImportError:
         return None
-    
+
+
 def flatten_columns(tbl: pa.Table, flatten: Optional[Union[int, bool]] = None):
     """
-        Flatten all struct columns in a table.
+    Flatten all struct columns in a table.
 
-        Parameters
-        ----------
-        flatten: Optional[Union[int, bool]]
-            If flatten is True, flatten all nested columns.
-            If flatten is an integer, flatten the nested columns up to the
-            specified depth.
-            If unspecified, do not flatten the nested columns.
+    Parameters
+    ----------
+    flatten: Optional[Union[int, bool]]
+        If flatten is True, flatten all nested columns.
+        If flatten is an integer, flatten the nested columns up to the
+        specified depth.
+        If unspecified, do not flatten the nested columns.
     """
     if flatten is True:
         while True:
