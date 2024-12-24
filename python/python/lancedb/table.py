@@ -241,11 +241,34 @@ def _cast_to_target_schema(
 ) -> pa.Table:
     # TODO: support omitting nested fields.
     if allow_subschema:
-        fields = [field for field in target_schema if field.name in table.schema.names]
+        fields = _infer_subschema(list(iter(target_schema)), list(iter(table.schema)))
         subschema = pa.schema(fields, metadata=target_schema.metadata)
         return table.cast(subschema)
     else:
         return table.cast(target_schema)
+
+
+def _infer_subschema(
+    superschema: List[pa.Field], subschema: List[pa.Field]
+) -> List[pa.Field]:
+    fields = []
+    names = {field.name for field in subschema}
+    for field in superschema:
+        if field.name in names:
+            if pa.types.is_struct(field.type):
+                subschema_field = next(f for f in subschema if f.name == field.name)
+                new_type = pa.struct(
+                    _infer_subschema(field.type.fields, subschema_field.type.fields)
+                )
+                field = pa.field(
+                    field.name,
+                    new_type,
+                    field.nullable,
+                )
+
+            fields.append(field)
+
+    return fields
 
 
 def sanitize_create_table(

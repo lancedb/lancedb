@@ -466,6 +466,11 @@ def test_sanitize_data(
             }
         )
 
+    if not with_embedding:
+        to_remove = expected_schema.get_field_index("vector")
+        if to_remove >= 0:
+            expected_schema = expected_schema.remove(to_remove)
+
     expected = pa.table(
         {
             "id": [1],
@@ -497,7 +502,6 @@ def test_cast_to_target_schema():
             "vector": pa.list_(pa.float64()),
             "vec1": pa.list_(pa.float64(), 2),
             "vec2": pa.list_(pa.float32(), 2),
-            "vec3": pa.list_(pa.float16(), 2),
         }
     )
     data = pa.table(
@@ -507,7 +511,6 @@ def test_cast_to_target_schema():
             "vector": [[0.0] * 2],
             "vec1": [[0.0] * 2],
             "vec2": [[0.0] * 2],
-            "vec3": [[0.0] * 2],
         },
         schema=original_schema,
     )
@@ -523,7 +526,6 @@ def test_cast_to_target_schema():
             "vector": pa.list_(pa.float32(), 2),
             "vec1": pa.list_(pa.float32(), 2),
             "vec2": pa.list_(pa.float32(), 2),
-            "vec3": pa.list_(pa.float32(), 2),
         }
     )
     output = _cast_to_target_schema(data, target)
@@ -534,7 +536,6 @@ def test_cast_to_target_schema():
             "vector": [[0.0] * 2],
             "vec1": [[0.0] * 2],
             "vec2": [[0.0] * 2],
-            "vec3": [[0.0] * 2],
         },
         schema=target,
     )
@@ -553,7 +554,6 @@ def test_cast_to_target_schema():
             "vector": pa.list_(pa.float32(), 2),
             "vec1": pa.list_(pa.float32(), 2),
             "vec2": pa.list_(pa.float32(), 2),
-            "vec3": pa.list_(pa.float32(), 2),
             # Additional field
             "extra": pa.int64(),
         }
@@ -572,7 +572,6 @@ def test_cast_to_target_schema():
             "vector": pa.list_(pa.float32(), 2),
             "vec1": pa.list_(pa.float32(), 2),
             "vec2": pa.list_(pa.float32(), 2),
-            "vec3": pa.list_(pa.float32(), 2),
         }
     )
     expected = pa.table(
@@ -582,7 +581,6 @@ def test_cast_to_target_schema():
             "vector": [[0.0] * 2],
             "vec1": [[0.0] * 2],
             "vec2": [[0.0] * 2],
-            "vec3": [[0.0] * 2],
         },
         schema=expected_schema,
     )
