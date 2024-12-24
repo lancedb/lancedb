@@ -239,34 +239,60 @@ def _cast_to_target_schema(
     target_schema: pa.Schema,
     allow_subschema: bool = False,
 ) -> pa.Table:
-    # TODO: support omitting nested fields.
+    # pa.Table.cast expects field order not to be changed.
+    # Lance doesn't care about field order, so we don't need to rearrange fields
+    # to match the target schema. We just need to correctly cast the fields.
+    if table.schema == target_schema:
+        # Fast path when the schemas are already the same
+        return table
+    
+    new_schema = pass
+
     if allow_subschema:
-        fields = _infer_subschema(list(iter(target_schema)), list(iter(table.schema)))
+        fields = _infer_subschema(list(iter(table.schema)), list(iter(target_schema)))
         subschema = pa.schema(fields, metadata=target_schema.metadata)
         return table.cast(subschema)
     else:
         return table.cast(target_schema)
 
 
-def _infer_subschema(
-    superschema: List[pa.Field], subschema: List[pa.Field]
-) -> List[pa.Field]:
-    fields = []
-    names = {field.name for field in subschema}
-    for field in superschema:
-        if field.name in names:
-            if pa.types.is_struct(field.type):
-                subschema_field = next(f for f in subschema if f.name == field.name)
-                new_type = pa.struct(
-                    _infer_subschema(field.type.fields, subschema_field.type.fields)
-                )
-                field = pa.field(
-                    field.name,
-                    new_type,
-                    field.nullable,
-                )
 
-            fields.append(field)
+def _infer_subschema(
+    schema: List[pa.Field],
+    reference_fields: List[pa.Field],
+) -> List[pa.Field]:
+    """
+    Transform the list of fields so the types match the reference_fields.
+
+    The order of the fields is preserved.
+
+    ``schema`` may have fewer fields than `reference_fields`, but it may not have
+    more fields.
+    
+    """
+    fields = []
+    lookup = {f.name: f for f in reference_fields}
+    for field in schema:
+        reference = lookup.get(field.name)
+        if reference is None:
+            raise ValueError("Unexpected field in schema: {}".format(field))
+
+        if pa.types.is_struct(reference.type):
+            new_type = pa.struct(
+                _infer_subschema(
+                    field.type.fields,
+                    reference.type.fields,
+                )
+            )
+            new_field = pa.field(
+                field.name,
+                new_type,
+                reference.nullable,
+            )
+        else:
+            new_field = reference
+
+        fields.append(new_field)
 
     return fields
 
