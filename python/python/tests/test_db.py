@@ -684,10 +684,7 @@ def test_create_table_with_invalid_names(tmp_db: lancedb.DBConnection):
 
 
 def test_bypass_vector_index_sync(tmp_db: lancedb.DBConnection):
-    data = [
-        {"vector": np.random.rand(32)}
-        for _ in range(512)
-    ]
+    data = [{"vector": np.random.rand(32)} for _ in range(512)]
     sample_key = data[100]["vector"]
     table = tmp_db.create_table(
         "test",
@@ -699,17 +696,10 @@ def test_bypass_vector_index_sync(tmp_db: lancedb.DBConnection):
         num_sub_vectors=2,
     )
 
-    plan_with_index = (
-        table
-        .search(sample_key)
-        .explain_plan(verbose=True)
-    )
+    plan_with_index = table.search(sample_key).explain_plan(verbose=True)
     assert "ANN" in plan_with_index
 
     plan_without_index = (
-        table
-        .search(sample_key)
-        .bypass_vector_index()
-        .explain_plan(verbose=True)
+        table.search(sample_key).bypass_vector_index().explain_plan(verbose=True)
     )
     assert "KNN" in plan_without_index
