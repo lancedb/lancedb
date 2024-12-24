@@ -517,20 +517,20 @@ async def test_delete_table_async(tmp_db: lancedb.DBConnection):
         }
     )
     
-    await tmp_db.create_table("test", data=data)
+    tmp_db.create_table("test", data=data)
 
     with pytest.raises(Exception):
-        await tmp_db.create_table("test", data=data)
+        tmp_db.create_table("test", data=data)
 
-    assert await tmp_db.table_names() == ["test"]
+    assert tmp_db.table_names() == ["test"]
 
-    await tmp_db.drop_table("test")
-    assert await tmp_db.table_names() == []
+    tmp_db.drop_table("test")
+    assert tmp_db.table_names() == []
 
-    await tmp_db.create_table("test", data=data)
-    assert await tmp_db.table_names() == ["test"]
+    tmp_db.create_table("test", data=data)
+    assert tmp_db.table_names() == ["test"]
 
-    await tmp_db.drop_table("does_not_exist", ignore_missing=True)
+    tmp_db.drop_table("does_not_exist", ignore_missing=True)
 
 def test_drop_database(tmp_db: lancedb.DBConnection):
     data = pd.DataFrame(
