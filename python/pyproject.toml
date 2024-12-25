@@ -1,6 +1,7 @@
 [project]
 name = "lancedb"
 # version in Cargo.toml
+dynamic = ["version"]
 dependencies = [
     "deprecation",
     "pylance==0.21.0b5",
