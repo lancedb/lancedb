@@ -19,7 +19,7 @@ import warnings
 
 from lancedb._lancedb import IndexConfig
 from lancedb.embeddings.base import EmbeddingFunctionConfig
-from lancedb.index import FTS, BTree, Bitmap, HnswPq, HnswSq, IvfPq, LabelList
+from lancedb.index import FTS, BTree, Bitmap, HnswPq, HnswSq, IvfFlat, IvfPq, LabelList
 from lancedb.remote.db import LOOP
 import pyarrow as pa
 
@@ -235,10 +235,12 @@ class RemoteTable(Table):
             config = HnswPq(distance_type=metric)
         elif index_type == "IVF_HNSW_SQ":
             config = HnswSq(distance_type=metric)
+        elif index_type == "IVF_FLAT":
+            config = IvfFlat(distance_type=metric)
         else:
             raise ValueError(
                 f"Unknown vector index type: {index_type}. Valid options are"
-                " 'IVF_PQ', 'IVF_HNSW_PQ', 'IVF_HNSW_SQ'"
+                " 'IVF_FLAT', 'IVF_PQ', 'IVF_HNSW_PQ', 'IVF_HNSW_SQ'"
             )
 
         LOOP.run(self._table.create_index(vector_column_name, config=config))
