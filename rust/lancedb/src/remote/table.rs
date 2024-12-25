@@ -563,6 +563,7 @@ impl<S: HttpSend> TableInternal for RemoteTable<S> {
         let (index_type, distance_type) = match index.index {
             // TODO: Should we pass the actual index parameters? SaaS does not
             // yet support them.
+            Index::IvfFlat(index) => ("IVF_FLAT", Some(index.distance_type)),
             Index::IvfPq(index) => ("IVF_PQ", Some(index.distance_type)),
             Index::IvfHnswSq(index) => ("IVF_HNSW_SQ", Some(index.distance_type)),
             Index::BTree(_) => ("BTREE", None),
@@ -873,6 +874,7 @@ mod tests {
     use lance_index::scalar::FullTextSearchQuery;
     use reqwest::Body;
 
+    use crate::index::vector::IvfFlatIndexBuilder;
     use crate::{
         index::{vector::IvfPqIndexBuilder, Index, IndexStatistics, IndexType},
         query::{ExecutableQuery, QueryBase},
@@ -1489,6 +1491,11 @@ mod tests {
     #[tokio::test]
     async fn test_create_index() {
         let cases = [
+            (
+                "IVF_FLAT",
+                Some("hamming"),
+                Index::IvfFlat(IvfFlatIndexBuilder::default().distance_type(DistanceType::Hamming)),
+            ),
             ("IVF_PQ", Some("l2"), Index::IvfPq(Default::default())),
             (
                 "IVF_PQ",
