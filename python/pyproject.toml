@@ -1,5 +1,6 @@
 [project]
 name = "lancedb"
+dynamic = ["version"]
 # version in Cargo.toml
 dependencies = [
     "deprecation",
