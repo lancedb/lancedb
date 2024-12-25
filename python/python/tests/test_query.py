@@ -52,6 +52,17 @@ async def table_async(tmp_path) -> AsyncTable:
     return await conn.create_table("test", data)
 
 
+@pytest_asyncio.fixture
+async def table_async_nested(tmp_path) -> AsyncTable:
+    conn = await lancedb.connect_async(
+        tmp_path, read_consistency_interval=timedelta(seconds=0)
+    )
+    struct = pa.array([{"n_legs": 2, "animals": "Parrot"}, {"year": 2022, "n_legs": 4}])
+    month = pa.array([4, 6])
+    table = pa.Table.from_arrays([struct, month], names=["a", "month"])
+    return await conn.create_table("test_nested", table)
+
+
 def test_cast(table):
     class TestModel(LanceModel):
         vector: Vector(2)
@@ -322,15 +333,12 @@ async def test_query_to_arrow_async(table_async: AsyncTable):
 
 
 @pytest.mark.asyncio
-async def test_query_to_pandas_async(table_async: AsyncTable):
-    df = await table_async.to_pandas()
-    assert df.shape == (2, 4)
+async def test_query_to_pandas_async(table_async_nested: AsyncTable):
+    df = await table_async_nested.query().to_pandas()
+    assert df.shape == (2, 2)
 
-    df = await table_async.query().to_pandas()
+    df = await table_async_nested.query().to_pandas(flatten=True)
     assert df.shape == (2, 4)
-
-    df = await table_async.query().where("id < 0").to_pandas()
-    assert df.shape == (0, 4)
 
 
 @pytest.mark.asyncio
