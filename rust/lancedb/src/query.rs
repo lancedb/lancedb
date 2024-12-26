@@ -1279,7 +1279,7 @@ mod tests {
     async fn test_query_no_limit() {
         let tmp_dir = tempdir().unwrap();
         let table = make_test_table(&tmp_dir).await;
-        // plan query does not default to any limit
+        // plain query does not default to any limit
         let results = table
             .query()
             .execute()
