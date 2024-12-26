@@ -606,7 +606,7 @@ impl Query {
     pub(crate) fn new(parent: Arc<dyn TableInternal>) -> Self {
         Self {
             parent,
-            limit: Some(DEFAULT_TOP_K),
+            limit: None,
             offset: None,
             filter: None,
             full_text_search: None,
