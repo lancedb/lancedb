@@ -1279,6 +1279,7 @@ mod tests {
     async fn test_query_no_limit() {
         let tmp_dir = tempdir().unwrap();
         let table = make_test_table(&tmp_dir).await;
+        // plan query does not default to any limit
         let results = table
             .query()
             .execute()
@@ -1289,6 +1290,7 @@ mod tests {
             .unwrap();
         let results = concat_batches(&results[0].schema(), &results).unwrap();
         assert!(results.num_rows() > DEFAULT_TOP_K);
+        // vector query should default to `DEFAULT_TOP_K` as limit
         let results = table
             .query()
             .nearest_to(&[0.1, 0.2, 0.3, 0.4])
