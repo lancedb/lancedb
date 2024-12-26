@@ -1274,4 +1274,32 @@ mod tests {
         assert!(query_index.values().contains(&0));
         assert!(query_index.values().contains(&1));
     }
+
+    #[tokio::test]
+    async fn test_query_no_limit() {
+        let tmp_dir = tempdir().unwrap();
+        let table = make_test_table(&tmp_dir).await;
+        let results = table
+            .query()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let results = concat_batches(&results[0].schema(), &results).unwrap();
+        assert!(results.num_rows() > DEFAULT_TOP_K);
+        let results = table
+            .query()
+            .nearest_to(&[0.1, 0.2, 0.3, 0.4])
+            .unwrap()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let results = concat_batches(&results[0].schema(), &results).unwrap();
+        assert!(results.num_rows() == DEFAULT_TOP_K);
+    }
 }
