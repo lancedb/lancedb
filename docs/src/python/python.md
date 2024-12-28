@@ -133,6 +133,10 @@ lists the indices that LanceDb supports.
 
 ::: lancedb.index.IvfPq
 
+::: lancedb.index.HnswPq
+
+::: lancedb.index.HnswSq
+
 ::: lancedb.index.IvfFlat
 
 ## Querying (Asynchronous)
