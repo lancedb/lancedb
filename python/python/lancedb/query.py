@@ -1727,6 +1727,7 @@ class AsyncFTSQuery(AsyncQueryBase):
     def __init__(self, inner: LanceFTSQuery):
         super().__init__(inner)
         self._inner = inner
+        self._reranker = RRFReranker()
 
     def get_query(self):
         self._inner.get_query()
@@ -1735,9 +1736,12 @@ class AsyncFTSQuery(AsyncQueryBase):
         self,
         reranker: Reranker = RRFReranker(),
     ) -> AsyncHybridQuery:
-        return AsyncHybridQuery(
-            self._inner.rerank(reranker)
-        )
+        if reranker and not isinstance(reranker, Reranker):
+            raise ValueError("reranker must be an instance of Reranker class.")
+
+        self._reranker = reranker
+
+        return AsyncHybridQuery(self._inner.rerank(reranker))
 
     def nearest_to(
         self,
@@ -1823,6 +1827,7 @@ class AsyncVectorQuery(AsyncQueryBase):
         """
         super().__init__(inner)
         self._inner = inner
+        self._reranker = RRFReranker()
 
     def column(self, column: str) -> AsyncVectorQuery:
         """
@@ -1944,6 +1949,16 @@ class AsyncVectorQuery(AsyncQueryBase):
         """
         self._inner.bypass_vector_index()
         return self
+
+    def rerank(
+        self, reranker: Reranker = RRFReranker(), query_string: Optional[str] = None
+    ) -> AsyncHybridQuery:
+        if reranker and not isinstance(reranker, Reranker):
+            raise ValueError("reranker must be an instance of Reranker class.")
+
+        self._reranker = reranker
+
+        return AsyncHybridQuery(self._inner.rerank(reranker, query_string))
 
     def nearest_to_text(
         self, query: str, columns: Union[str, List[str]] = []

@@ -47,7 +47,7 @@ async def table_async(tmp_path) -> AsyncTable:
             "id": pa.array([1, 2]),
             "str_field": pa.array(["a", "b"]),
             "float_field": pa.array([1.0, 2.0]),
-            "text": pa.array(["a", "b", "cat", "dog"]),
+            "text": pa.array(["a", "dog"]),
         }
     )
     return await conn.create_table("test", data)
@@ -237,7 +237,7 @@ async def test_query_async(table_async: AsyncTable):
     await check_query(
         table_async.query(),
         expected_num_rows=2,
-        expected_columns=["vector", "id", "str_field", "float_field"],
+        expected_columns=["vector", "id", "str_field", "float_field", "text"],
     )
     await check_query(table_async.query().where("id = 2"), expected_num_rows=1)
     await check_query(
@@ -308,8 +308,7 @@ async def test_query_async(table_async: AsyncTable):
 
     # Also check default rerank
     await check_query(
-        table_async.query().nearest_to_text("dog").rerank(),
-        expected_num_rows=0
+        table_async.query().nearest_to_text("dog").rerank(), expected_num_rows=1
     )
 
 
