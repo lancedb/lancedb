@@ -1026,7 +1026,8 @@ class LanceEmptyQueryBuilder(LanceQueryBuilder):
         LanceEmptyQueryBuilder
             The LanceQueryBuilder object.
         """
-        raise NotImplementedError("Reranking is not yet supported.")
+        self._reranker = reranker
+        return self
 
 
 class LanceHybridQueryBuilder(LanceQueryBuilder):
@@ -1378,6 +1379,10 @@ class AsyncQueryBase(object):
         """
         self._inner = inner
 
+    def rerank(self, reranker=Reranker) -> AsyncQuery:
+        self._reranker = reranker
+        return self._inner.rerank(reranker)
+
     def where(self, predicate: str) -> AsyncQuery:
         """
         Only return rows matching the given predicate
@@ -1605,6 +1610,7 @@ class AsyncQuery(AsyncQueryBase):
         """
         super().__init__(inner)
         self._inner = inner
+        self._reranker = RRFReranker()
 
     @classmethod
     def _query_vec_to_array(self, vec: Union[VEC, Tuple]):
@@ -1691,6 +1697,17 @@ class AsyncQuery(AsyncQueryBase):
                 self._inner.nearest_to(AsyncQuery._query_vec_to_array(query_vector))
             )
 
+    def rerank(
+        self,
+        reranker: Reranker = RRFReranker(),
+    ) -> AsyncFTSQuery:
+        if reranker and not isinstance(reranker, Reranker):
+            raise ValueError("reranker must be an instance of Reranker class.")
+
+        self._reranker = reranker
+
+        return AsyncFTSQuery(self._inner.rerank(reranker))
+
     def nearest_to_text(
         self, query: str, columns: Union[str, List[str]] = []
     ) -> AsyncFTSQuery:
@@ -1735,13 +1752,13 @@ class AsyncFTSQuery(AsyncQueryBase):
     def rerank(
         self,
         reranker: Reranker = RRFReranker(),
-    ) -> AsyncHybridQuery:
+    ) -> AsyncFTSQuery:
         if reranker and not isinstance(reranker, Reranker):
             raise ValueError("reranker must be an instance of Reranker class.")
 
         self._reranker = reranker
 
-        return AsyncHybridQuery(self._inner.rerank(reranker))
+        return AsyncFTSQuery(self._inner.rerank(reranker))
 
     def nearest_to(
         self,

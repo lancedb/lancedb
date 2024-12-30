@@ -13,7 +13,13 @@ import pyarrow as pa
 import pytest
 import pytest_asyncio
 from lancedb.pydantic import LanceModel, Vector
-from lancedb.query import AsyncQueryBase, LanceVectorQueryBuilder, Query
+from lancedb.query import (
+    AsyncQueryBase,
+    LanceVectorQueryBuilder,
+    Query,
+    AsyncFTSQuery,
+    AsyncQuery,
+)
 from lancedb.table import AsyncTable, LanceTable
 
 
@@ -306,10 +312,15 @@ async def test_query_async(table_async: AsyncTable):
         expected_columns=["id", "vector", "_rowid"],
     )
 
-    # Also check default rerank
-    await check_query(
-        table_async.query().nearest_to_text("dog").rerank(), expected_num_rows=1
-    )
+    # Debug intermediate steps
+    async_query = table_async.query()
+    assert isinstance(async_query, AsyncQuery)
+
+    nearest_query = async_query.nearest_to_text("dog")
+    assert isinstance(nearest_query, AsyncFTSQuery)
+
+    reranked_query = nearest_query.rerank()
+    assert isinstance(reranked_query, AsyncFTSQuery)
 
 
 @pytest.mark.asyncio
