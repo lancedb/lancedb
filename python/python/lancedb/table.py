@@ -1092,7 +1092,7 @@ class Table(ABC):
         """
 
     @abstractmethod
-    def checkout(self):
+    def checkout(self, version: int):
         """
         Checks out a specific version of the Table
 
@@ -3049,7 +3049,7 @@ class AsyncTable:
 
         return versions
 
-    async def checkout(self, version):
+    async def checkout(self, version: int):
         """
         Checks out a specific version of the Table
 
