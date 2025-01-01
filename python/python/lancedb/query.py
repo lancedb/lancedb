@@ -1379,10 +1379,6 @@ class AsyncQueryBase(object):
         """
         self._inner = inner
 
-    def rerank(self, reranker=Reranker) -> AsyncQuery:
-        self._reranker = reranker
-        return self._inner.rerank(reranker)
-
     def where(self, predicate: str) -> AsyncQuery:
         """
         Only return rows matching the given predicate
@@ -1744,7 +1740,7 @@ class AsyncFTSQuery(AsyncQueryBase):
     def __init__(self, inner: LanceFTSQuery):
         super().__init__(inner)
         self._inner = inner
-        self._reranker = RRFReranker()
+        self._reranker = None
 
     def get_query(self):
         self._inner.get_query()
@@ -1758,7 +1754,7 @@ class AsyncFTSQuery(AsyncQueryBase):
 
         self._reranker = reranker
 
-        return AsyncFTSQuery(self._inner.rerank(reranker))
+        return self
 
     def nearest_to(
         self,
@@ -1844,7 +1840,7 @@ class AsyncVectorQuery(AsyncQueryBase):
         """
         super().__init__(inner)
         self._inner = inner
-        self._reranker = RRFReranker()
+        self._reranker = None
 
     def column(self, column: str) -> AsyncVectorQuery:
         """
@@ -1975,7 +1971,7 @@ class AsyncVectorQuery(AsyncQueryBase):
 
         self._reranker = reranker
 
-        return AsyncHybridQuery(self._inner.rerank(reranker, query_string))
+        return self
 
     def nearest_to_text(
         self, query: str, columns: Union[str, List[str]] = []

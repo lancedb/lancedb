@@ -6,7 +6,7 @@ from datetime import timedelta
 from pathlib import Path
 
 import lancedb
-from lancedb.index import IvfPq
+from lancedb.index import IvfPq, FTS
 import numpy as np
 import pandas.testing as tm
 import pyarrow as pa
@@ -17,8 +17,6 @@ from lancedb.query import (
     AsyncQueryBase,
     LanceVectorQueryBuilder,
     Query,
-    AsyncFTSQuery,
-    AsyncQuery,
 )
 from lancedb.table import AsyncTable, LanceTable
 
@@ -312,15 +310,15 @@ async def test_query_async(table_async: AsyncTable):
         expected_columns=["id", "vector", "_rowid"],
     )
 
-    # Debug intermediate steps
-    async_query = table_async.query()
-    assert isinstance(async_query, AsyncQuery)
+    # FTS with rerank
+    await table_async.create_index("text", config=FTS(with_position=False))
+    await check_query(
+        table_async.query().nearest_to_text("dog").rerank(),
+        expected_num_rows=1,
+    )
 
-    nearest_query = async_query.nearest_to_text("dog")
-    assert isinstance(nearest_query, AsyncFTSQuery)
-
-    reranked_query = nearest_query.rerank()
-    assert isinstance(reranked_query, AsyncFTSQuery)
+    # Vector query with rerank
+    await check_query(table_async.vector_search([1, 2]).rerank(), expected_num_rows=2)
 
 
 @pytest.mark.asyncio
