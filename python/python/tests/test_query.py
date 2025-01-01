@@ -325,27 +325,27 @@ async def test_query_async(table_async: AsyncTable):
 async def test_query_to_arrow_async(table_async: AsyncTable):
     table = await table_async.to_arrow()
     assert table.num_rows == 2
-    assert table.num_columns == 4
+    assert table.num_columns == 5
 
     table = await table_async.query().to_arrow()
     assert table.num_rows == 2
-    assert table.num_columns == 4
+    assert table.num_columns == 5
 
     table = await table_async.query().where("id < 0").to_arrow()
     assert table.num_rows == 0
-    assert table.num_columns == 4
+    assert table.num_columns == 5
 
 
 @pytest.mark.asyncio
 async def test_query_to_pandas_async(table_async: AsyncTable):
     df = await table_async.to_pandas()
-    assert df.shape == (2, 4)
+    assert df.shape == (2, 5)
 
     df = await table_async.query().to_pandas()
-    assert df.shape == (2, 4)
+    assert df.shape == (2, 5)
 
     df = await table_async.query().where("id < 0").to_pandas()
-    assert df.shape == (0, 4)
+    assert df.shape == (0, 5)
 
 
 @pytest.mark.asyncio
