@@ -1026,8 +1026,7 @@ class LanceEmptyQueryBuilder(LanceQueryBuilder):
         LanceEmptyQueryBuilder
             The LanceQueryBuilder object.
         """
-        self._reranker = reranker
-        return self
+        raise NotImplementedError("Reranking is not yet supported.")
 
 
 class LanceHybridQueryBuilder(LanceQueryBuilder):
