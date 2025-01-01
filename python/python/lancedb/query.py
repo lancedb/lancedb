@@ -1605,7 +1605,6 @@ class AsyncQuery(AsyncQueryBase):
         """
         super().__init__(inner)
         self._inner = inner
-        self._reranker = RRFReranker()
 
     @classmethod
     def _query_vec_to_array(self, vec: Union[VEC, Tuple]):
