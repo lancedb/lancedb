@@ -1693,17 +1693,6 @@ class AsyncQuery(AsyncQueryBase):
                 self._inner.nearest_to(AsyncQuery._query_vec_to_array(query_vector))
             )
 
-    def rerank(
-        self,
-        reranker: Reranker = RRFReranker(),
-    ) -> AsyncFTSQuery:
-        if reranker and not isinstance(reranker, Reranker):
-            raise ValueError("reranker must be an instance of Reranker class.")
-
-        self._reranker = reranker
-
-        return AsyncFTSQuery(self._inner.rerank(reranker))
-
     def nearest_to_text(
         self, query: str, columns: Union[str, List[str]] = []
     ) -> AsyncFTSQuery:
