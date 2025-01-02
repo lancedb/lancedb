@@ -44,6 +44,7 @@ repository = "https://github.com/lancedb/lancedb"
 tests = [
     "aiohttp",
     "boto3",
+    "openai",
     "pandas>=1.4",
     "pytest",
     "pytest-mock",
