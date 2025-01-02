@@ -183,7 +183,12 @@ def test_fts_native():
     # --8<-- [end:fts_config_stem]
     # --8<-- [start:fts_config_folding]
     table.create_fts_index(
-        "text", use_tantivy=False, language="French", stem=True, ascii_folding=True, replace=True
+        "text",
+        use_tantivy=False,
+        language="French",
+        stem=True,
+        ascii_folding=True,
+        replace=True,
     )
     # --8<-- [end:fts_config_folding]
     # --8<-- [start:fts_prefiltering]
@@ -267,6 +272,7 @@ if "OPENAI_API_KEY" not in os.environ:
     # OR set the key here as a variable
     openai.api_key = "sk-..."
 embeddings = get_registry().get("openai").create()
+
 
 # --8<-- [end:openai-embeddings]
 # --8<-- [start:class-Documents]

@@ -16,14 +16,12 @@ LanceDB OSS supports object stores such as AWS S3 (and compatible stores), Azure
 
         ```python
         import lancedb
-
         db = lancedb.connect("s3://bucket/path")
         ```
     === "Async API"
 
         ```python
         import lancedb
-    
         async_db = await lancedb.connect_async("s3://bucket/path")
         ```
 
@@ -33,14 +31,12 @@ LanceDB OSS supports object stores such as AWS S3 (and compatible stores), Azure
 
         ```python
         import lancedb
-
         db = lancedb.connect("gs://bucket/path")
         ```
     === "Async API"
 
         ```python
         import lancedb
-    
         async_db = await lancedb.connect_async("gs://bucket/path")
         ```
 
@@ -51,14 +47,13 @@ LanceDB OSS supports object stores such as AWS S3 (and compatible stores), Azure
 
         ```python
         import lancedb
-
         db = lancedb.connect("az://bucket/path")
         ```
+    <!-- skip-test -->
     === "Async API"
 
         ```python
         import lancedb
-    
         async_db = await lancedb.connect_async("az://bucket/path")
         ```
     Note that for Azure, storage credentials must be configured. See [below](#azure-blob-storage) for more details.
@@ -127,7 +122,6 @@ If you only want this to apply to one particular connection, you can pass the `s
 
         ```python
         import lancedb
-
         db = lancedb.connect(
             "s3://bucket/path",
             storage_options={"timeout": "60s"}
@@ -137,7 +131,6 @@ If you only want this to apply to one particular connection, you can pass the `s
 
         ```python
         import lancedb
-    
         async_db = await lancedb.connect_async(
             "s3://bucket/path",
             storage_options={"timeout": "60s"}
@@ -174,7 +167,6 @@ Getting even more specific, you can set the `timeout` for only a particular tabl
 
         ```python
         import lancedb
-
         db = lancedb.connect("s3://bucket/path")
         table = db.create_table(
             "table",
@@ -182,11 +174,11 @@ Getting even more specific, you can set the `timeout` for only a particular tabl
             storage_options={"timeout": "60s"}
         )
         ```
+    <!-- skip-test -->
     === "Async API"
 
         ```python
         import lancedb
-    
         async_db = await lancedb.connect_async("s3://bucket/path")
         async_table = await async_db.create_table(
             "table",
@@ -255,7 +247,6 @@ These can be set as environment variables or passed in the `storage_options` par
 
         ```python
         import lancedb
-
         db = lancedb.connect(
             "s3://bucket/path",
             storage_options={
@@ -269,7 +260,6 @@ These can be set as environment variables or passed in the `storage_options` par
 
         ```python
         import lancedb
-    
         async_db = await lancedb.connect_async(
             "s3://bucket/path",
             storage_options={
@@ -426,7 +416,6 @@ name of the table to use.
 
         ```python
         import lancedb
-
         db = lancedb.connect(
             "s3+ddb://bucket/path?ddbTableName=my-dynamodb-table",
         )
@@ -435,7 +424,6 @@ name of the table to use.
 
         ```python
         import lancedb
-    
         async_db = await lancedb.connect_async(
             "s3+ddb://bucket/path?ddbTableName=my-dynamodb-table",
         )    
@@ -531,7 +519,6 @@ LanceDB can also connect to S3-compatible stores, such as MinIO. To do so, you m
 
         ```python
         import lancedb
-
         db = lancedb.connect(
             "s3://bucket/path",
             storage_options={
@@ -544,7 +531,6 @@ LanceDB can also connect to S3-compatible stores, such as MinIO. To do so, you m
 
         ```python
         import lancedb
-    
         async_db = await lancedb.connect_async(
             "s3://bucket/path",
             storage_options={
@@ -608,7 +594,6 @@ To configure LanceDB to use an S3 Express endpoint, you must set the storage opt
 
         ```python
         import lancedb
-
         db = lancedb.connect(
             "s3://my-bucket--use1-az4--x-s3/path",
             storage_options={
@@ -621,7 +606,6 @@ To configure LanceDB to use an S3 Express endpoint, you must set the storage opt
 
         ```python
         import lancedb
-    
         async_db = await lancedb.connect_async(
             "s3://my-bucket--use1-az4--x-s3/path",
             storage_options={
@@ -674,7 +658,6 @@ GCS credentials are configured by setting the `GOOGLE_SERVICE_ACCOUNT` environme
 
         ```python
         import lancedb
-
         db = lancedb.connect(
             "gs://my-bucket/my-database",
             storage_options={
@@ -682,11 +665,11 @@ GCS credentials are configured by setting the `GOOGLE_SERVICE_ACCOUNT` environme
             }
         )
         ```
+    <!-- skip-test -->
     === "Async API"
 
         ```python
         import lancedb
-    
         async_db = await lancedb.connect_async(
             "gs://my-bucket/my-database",
             storage_options={
@@ -749,7 +732,6 @@ Azure Blob Storage credentials can be configured by setting the `AZURE_STORAGE_A
 
         ```python
         import lancedb
-
         db = await lancedb.connect(
             "az://my-container/my-database",
             storage_options={
@@ -758,11 +740,11 @@ Azure Blob Storage credentials can be configured by setting the `AZURE_STORAGE_A
             }
         )
         ```
+    <!-- skip-test -->
     === "Async API"
 
         ```python
         import lancedb
-    
         async_db = await lancedb.connect_async(
             "az://my-container/my-database",
             storage_options={
