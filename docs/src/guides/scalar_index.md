@@ -32,27 +32,20 @@ over scalar columns.
 ### Create a scalar index
 === "Python"
 
-    ```python
-    import lancedb
-    from lancedb.index import BTree, Bitmap
-    books = [
-      {"book_id": 1, "publisher": "plenty of books", "tags": ["fantasy", "adventure"]},
-      {"book_id": 2, "publisher": "book town", "tags": ["non-fiction"]},
-      {"book_id": 3, "publisher": "oreilly", "tags": ["textbook"]}
-    ]
-    uri = "data/sample-lancedb"
-    # Synchronous client
-    db = lancedb.connect(uri)
-    table = db.create_table("books", books)
-    table.create_scalar_index("book_id")  # BTree by default
-    table.create_scalar_index("publisher", index_type="BITMAP")
+    === "Sync API"
 
-    # Asynchronous client
-    async_db = await lancedb.connect_async(uri)
-    async_table = await async_db.create_table("books_async", books)
-    await async_table.create_index("book_id", config=BTree())  # BTree by default
-    await async_table.create_index("publisher", config=Bitmap())
-    ```
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_index.py:import-lancedb"
+        --8<-- "python/python/tests/docs/test_guide_index.py:import-lancedb-btree-bitmap"
+        --8<-- "python/python/tests/docs/test_guide_index.py:basic_scalar_index"
+        ```
+    === "Async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_index.py:import-lancedb"
+        --8<-- "python/python/tests/docs/test_guide_index.py:import-lancedb-btree-bitmap"
+        --8<-- "python/python/tests/docs/test_guide_index.py:basic_scalar_index_async"
+        ```
 
 === "Typescript"
 
@@ -70,16 +63,18 @@ The following scan will be faster if the column `book_id` has a scalar index:
 
 === "Python"
 
-    ```python
-    import lancedb
-    # Synchronous client
-    table = db.open_table("books")
-    my_df = table.search().where("book_id = 2").to_pandas()
+    === "Sync API"
 
-    # Asynchronous client
-    async_table = await async_db.open_table("books_async")
-    my_df = await async_table.query().where("book_id = 2").to_pandas()
-    ```
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_index.py:import-lancedb"
+        --8<-- "python/python/tests/docs/test_guide_index.py:search_with_scalar_index"
+        ```
+    === "Async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_index.py:import-lancedb"
+        --8<-- "python/python/tests/docs/test_guide_index.py:search_with_scalar_index_async"
+        ```
 
 === "Typescript"
 
@@ -100,22 +95,18 @@ Scalar indices can also speed up scans containing a vector search or full text s
 
 === "Python"
 
-    ```python
-    import lancedb
-    data = [
-      {"book_id": 1, "vector": [1, 2]},
-      {"book_id": 2, "vector": [3, 4]},
-      {"book_id": 3, "vector": [5, 6]}
-    ]
+    === "Sync API"
 
-    # Synchronous client
-    table = db.create_table("book_with_embeddings", data)
-    (table.search([1, 2]).where("book_id != 3", prefilter=True).to_pandas())
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_index.py:import-lancedb"
+        --8<-- "python/python/tests/docs/test_guide_index.py:vector_search_with_scalar_index"
+        ```
+    === "Async API"
 
-    # Asynchronous client
-    async_table = await async_db.create_table("book_with_embeddings_async", data)
-    (await async_table.query().where("book_id != 3").nearest_to([1, 2]).to_pandas())
-    ```
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_index.py:import-lancedb"
+        --8<-- "python/python/tests/docs/test_guide_index.py:vector_search_with_scalar_index_async"
+        ```
 
 === "Typescript"
 
@@ -134,14 +125,16 @@ Scalar indices can also speed up scans containing a vector search or full text s
 Updating the table data (adding, deleting, or modifying records) requires that you also update the scalar index. This can be done by calling `optimize`, which will trigger an update to the existing scalar index.
 === "Python"
 
-    ```python
-    # Synchronous client
-    table.add([{"vector": [7, 8], "book_id": 4}])
-    table.optimize()
-    # Asynchronous client
-    await async_table.add([{"vector": [7, 8], "book_id": 4}])
-    await async_table.optimize()
-    ```
+    === "Sync API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_index.py:update_scalar_index"
+        ```
+    === "Async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_index.py:update_scalar_index_async"
+        ```
 
 === "TypeScript"
 

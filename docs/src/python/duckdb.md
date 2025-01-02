@@ -4,9 +4,6 @@ In Python, LanceDB tables can also be queried with [DuckDB](https://duckdb.org/)
 
 This integration is done via [Apache Arrow](https://duckdb.org/docs/guides/python/sql_on_arrow), which provides zero-copy data sharing between LanceDB and DuckDB. DuckDB is capable of passing down column selections and basic filters to LanceDB, reducing the amount of data that needs to be scanned to perform your query. Finally, the integration allows streaming data from LanceDB tables, allowing you to aggregate tables that won't fit into memory. All of this uses the same mechanism described in DuckDB's blog post *[DuckDB quacks Arrow](https://duckdb.org/2021/12/03/duck-arrow.html)*.
 
-!!! note
-    Asynchronous `to_lance` support is coming soon. We'll provide examples once it's ready.
-
 
 We can demonstrate this by first installing `duckdb` and `lancedb`.
 

@@ -5,86 +5,46 @@ LanceDB supports both semantic and keyword-based search (also termed full-text s
 ## Hybrid search in LanceDB
 You can perform hybrid search in LanceDB by combining the results of semantic and full-text search via a reranking algorithm of your choice. LanceDB provides multiple rerankers out of the box. However, you can always write a custom reranker if your use case need more sophisticated logic .
 
-```python
-import os
+=== "Sync API"
 
-import lancedb
-import openai
-from lancedb.embeddings import get_registry
-from lancedb.pydantic import LanceModel, Vector
-from lancedb.index import FTS
+    ```python
+    --8<-- "python/python/tests/docs/test_search.py:import-os"
+    --8<-- "python/python/tests/docs/test_search.py:import-openai"
+    --8<-- "python/python/tests/docs/test_search.py:import-lancedb"
+    --8<-- "python/python/tests/docs/test_search.py:import-embeddings"
+    --8<-- "python/python/tests/docs/test_search.py:import-pydantic"
+    --8<-- "python/python/tests/docs/test_search.py:import-lancedb-fts"
+    --8<-- "python/python/tests/docs/test_search.py:import-openai-embeddings"
+    --8<-- "python/python/tests/docs/test_search.py:class-Documents"
+    --8<-- "python/python/tests/docs/test_search.py:basic_hybrid_search"
+    ```
+=== "Async API"
 
-# Ingest embedding function in LanceDB table
-# Configuring the environment variable OPENAI_API_KEY
-if "OPENAI_API_KEY" not in os.environ:
-# OR set the key here as a variable
-    openai.api_key = "sk-..."
-embeddings = get_registry().get("openai").create()
-
-class Documents(LanceModel):
-    vector: Vector(embeddings.ndims()) = embeddings.VectorField()
-    text: str = embeddings.SourceField()
-
-table = db.create_table("documents", schema=Documents)
-
-data = [
-    { "text": "rebel spaceships striking from a hidden base"},
-    { "text": "have won their first victory against the evil Galactic Empire"},
-    { "text": "during the battle rebel spies managed to steal secret plans"},
-    { "text": "to the Empire's ultimate weapon the Death Star"}
-]
-uri = "data/sample-lancedb"
-# Synchronous client
-db = lancedb.connect(uri)
-# ingest docs with auto-vectorization
-table.add(data)
-# Create a fts index before the hybrid search
-table.create_fts_index("text")
-# hybrid search with default re-ranker
-results = table.search("flower moon", query_type="hybrid").to_pandas()
-
-# Asynchronous client
-async_db = await lancedb.connect_async(uri)
-async_table = await async_db.create_table("documents", schema=Documents)
-# ingest docs with auto-vectorization
-await async_table.add(data)
-# Create a fts index before the hybrid search
-await async_table.create_index("text", config=FTS())
-text_query = "flower moon"
-vector_query = embeddings.compute_query_embeddings(text_query)[0]
-# hybrid search with default re-ranker
-results = await (
-    async_table.query()
-    .nearest_to(vector_query)
-    .nearest_to_text(text_query)
-    .to_pandas()
-)
-```
+    ```python
+    --8<-- "python/python/tests/docs/test_search.py:import-os"
+    --8<-- "python/python/tests/docs/test_search.py:import-openai"
+    --8<-- "python/python/tests/docs/test_search.py:import-lancedb"
+    --8<-- "python/python/tests/docs/test_search.py:import-embeddings"
+    --8<-- "python/python/tests/docs/test_search.py:import-pydantic"
+    --8<-- "python/python/tests/docs/test_search.py:import-lancedb-fts"
+    --8<-- "python/python/tests/docs/test_search.py:import-openai-embeddings"
+    --8<-- "python/python/tests/docs/test_search.py:class-Documents"
+    --8<-- "python/python/tests/docs/test_search.py:basic_hybrid_search_async"
+    ```
+    
 !!! Note
     You can also pass the vector and text query manually. This is useful if you're not using the embedding API or if you're using a separate embedder service.
 ### Explicitly passing the vector and text query
-```python
-# Synchronous client
-vector_query = [0.1, 0.2, 0.3, 0.4, 0.5]
-text_query = "flower moon"
-results = (
-    table.search(query_type="hybrid")
-    .vector(vector_query)
-    .text(text_query)
-    .limit(5)
-    .to_pandas()
-)
-# Asynchronous client
-vector_query = [0.1, 0.2, 0.3, 0.4, 0.5]
-text_query = "flower moon"
-results = await (
-    async_table.query()
-    .nearest_to(vector_query)
-    .nearest_to_text(text_query)
-    .limit(5)
-    .to_pandas()
-)
-```
+=== "Sync API"
+
+    ```python
+    --8<-- "python/python/tests/docs/test_search.py:hybrid_search_pass_vector_text"
+    ```
+=== "Async API"
+
+    ```python
+    --8<-- "python/python/tests/docs/test_search.py:hybrid_search_pass_vector_text_async"
+    ```
 
 By default, LanceDB uses `RRFReranker()`, which uses reciprocal rank fusion score, to combine and rerank the results of semantic and full-text search. You can customize the hyperparameters as needed or write your own custom reranker. Here's how you can use any of the available rerankers:
 

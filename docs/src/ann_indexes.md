@@ -18,34 +18,24 @@ See the [indexing](concepts/index_ivfpq.md) concepts guide for more information 
 Lance supports `IVF_PQ` index type by default.
 
 === "Python"
+    === "Sync API"
 
-    Creating indexes is done via the [create_index](https://lancedb.github.io/lancedb/python/#lancedb.table.LanceTable.create_index) method.
+        Creating indexes is done via the [create_index](https://lancedb.github.io/lancedb/python/#lancedb.table.LanceTable.create_index) method.
 
-    ```python
-    import lancedb
-    import numpy as np
-    from lancedb.index import IvfPq
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_index.py:import-lancedb"
+        --8<-- "python/python/tests/docs/test_guide_index.py:import-numpy"
+        --8<-- "python/python/tests/docs/test_guide_index.py:create_ann_index"
+        ```
+    === "Async API"
+        Creating indexes is done via the [create_index](https://lancedb.github.io/lancedb/python/#lancedb.table.LanceTable.create_index) method.
 
-    uri = "data/sample-lancedb"
-
-    # Create 10,000 sample vectors
-    data = [{"vector": row, "item": f"item {i}"}
-        for i, row in enumerate(np.random.random((10_000, 1536)).astype('float32'))]
-    
-    # Synchronous client
-    db = lancedb.connect(uri)
-    # Add the vectors to a table
-    tbl = db.create_table("my_vectors", data=data)
-    # Create and train the index - you need to have enough data in the table for an effective training step
-    tbl.create_index(num_partitions=256, num_sub_vectors=96)
-
-    # Asynchronous client
-    async_db = await lancedb.connect_async(uri)
-    # Add the vectors to a table
-    async_tbl = await async_db.create_table("my_vectors", data=data)
-    # Create and train the index - you need to have enough data in the table for an effective training step
-    await async_tbl.create_index("vector", config=IvfPq(num_partitions=256, num_sub_vectors=96))
-    ```
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_index.py:import-lancedb"
+        --8<-- "python/python/tests/docs/test_guide_index.py:import-numpy"
+        --8<-- "python/python/tests/docs/test_guide_index.py:import-lancedb-ivfpq"
+        --8<-- "python/python/tests/docs/test_guide_index.py:create_ann_index_async"
+        ```
 
 === "TypeScript"
 
@@ -163,22 +153,16 @@ There are a couple of parameters that can be used to fine-tune the search:
 
 
 === "Python"
+    === "Sync API"
 
-    ```python
-    # Synchronous client
-    tbl.search(np.random.random((1536))) \
-        .limit(2) \
-        .nprobes(20) \
-        .refine_factor(10) \
-        .to_pandas()
-    # Asynchronous client
-    await async_tbl.query() \
-        .(np.random.random((1536))) \
-        .limit(2) \
-        .nprobes(20) \
-        .refine_factor(10) \
-        .to_pandas()
-    ```
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_index.py:vector_search"
+        ```
+    === "Async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_index.py:vector_search_async"
+        ```
 
     ```text
                                               vector       item       _distance
@@ -215,18 +199,16 @@ The search will return the data requested in addition to the distance of each it
 You can further filter the elements returned by a search using a where clause.
 
 === "Python"
+    === "Sync API"
 
-    ```python
-    # Synchronous client
-    tbl.search(np.random.random((1536))) \
-        .where("item != 'item 1141'") \
-        .to_pandas()
-    # Asynchronous client
-    await async_tbl.query() \
-        .nearest_to(np.random.random((1536))) \
-        .where("item != 'item 1141'") \
-        .to_pandas()
-    ```
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_index.py:vector_search_with_filter"
+        ```
+    === "Async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_index.py:vector_search_async_with_filter"
+        ```
 
 === "TypeScript"
 
@@ -248,18 +230,16 @@ You can select the columns returned by the query using a select clause.
 
 === "Python"
 
-    ```python
-    # Synchronous client
-    tbl.search(np.random.random((1536))) \
-        .select(["vector"]) \
-        .to_pandas()
-    # Asynchronous client
-    await async_tbl.query() \
-        .nearest_to(np.random.random((1536))) \
-        .select(["vector"]) \
-        .to_pandas()
-    ```
+    === "Sync API"
 
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_index.py:vector_search_with_select"
+        ```
+    === "Async API"
+
+        ```python
+        --8<-- "python/python/tests/docs/test_guide_index.py:vector_search_async_with_select"
+        ```
 
     ```text
                                                 vector _distance
