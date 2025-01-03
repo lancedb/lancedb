@@ -26,10 +26,6 @@ from lancedb.index import FTS
 import os
 
 # --8<-- [end:import-os]
-# --8<-- [start:import-openai]
-import openai
-
-# --8<-- [end:import-openai]
 # --8<-- [start:import-embeddings]
 from lancedb.embeddings import get_registry
 
@@ -261,27 +257,27 @@ async def test_fts_native_async():
     # --8<-- [end:fts_incremental_index_async]
 
 
-# --8<-- [start:openai-embeddings]
-# Ingest embedding function in LanceDB table
-# Configuring the environment variable OPENAI_API_KEY
-if "OPENAI_API_KEY" not in os.environ:
-    # OR set the key here as a variable
-    openai.api_key = "sk-..."
-embeddings = get_registry().get("openai").create()
-
-
-# --8<-- [end:openai-embeddings]
-# --8<-- [start:class-Documents]
-class Documents(LanceModel):
-    vector: Vector(embeddings.ndims()) = embeddings.VectorField()
-    text: str = embeddings.SourceField()
-
-
-# --8<-- [end:class-Documents]
-
-
 @pytest.mark.skip()
 def test_hybrid_search():
+    # --8<-- [start:import-openai]
+    import openai
+
+    # --8<-- [end:import-openai]
+    # --8<-- [start:openai-embeddings]
+    # Ingest embedding function in LanceDB table
+    # Configuring the environment variable OPENAI_API_KEY
+    if "OPENAI_API_KEY" not in os.environ:
+        # OR set the key here as a variable
+        openai.api_key = "sk-..."
+    embeddings = get_registry().get("openai").create()
+
+    # --8<-- [end:openai-embeddings]
+    # --8<-- [start:class-Documents]
+    class Documents(LanceModel):
+        vector: Vector(embeddings.ndims()) = embeddings.VectorField()
+        text: str = embeddings.SourceField()
+
+    # --8<-- [end:class-Documents]
     # --8<-- [start:basic_hybrid_search]
     data = [
         {"text": "rebel spaceships striking from a hidden base"},
@@ -314,6 +310,23 @@ def test_hybrid_search():
 
 @pytest.mark.skip
 async def test_hybrid_search_async():
+    import openai
+
+    # --8<-- [start:openai-embeddings]
+    # Ingest embedding function in LanceDB table
+    # Configuring the environment variable OPENAI_API_KEY
+    if "OPENAI_API_KEY" not in os.environ:
+        # OR set the key here as a variable
+        openai.api_key = "sk-..."
+    embeddings = get_registry().get("openai").create()
+
+    # --8<-- [end:openai-embeddings]
+    # --8<-- [start:class-Documents]
+    class Documents(LanceModel):
+        vector: Vector(embeddings.ndims()) = embeddings.VectorField()
+        text: str = embeddings.SourceField()
+
+    # --8<-- [end:class-Documents]
     # --8<-- [start:basic_hybrid_search_async]
     uri = "data/sample-lancedb"
     async_db = await lancedb.connect_async(uri)

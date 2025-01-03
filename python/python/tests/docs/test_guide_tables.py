@@ -320,6 +320,11 @@ def test_table():
     # Check for updates
     tbl.checkout_latest()
     # --8<-- [end:table_checkout_latest]
+
+
+@pytest.mark.skip
+def test_table_with_embedding():
+    db = lancedb.connect("data/sample-lancedb")
     # --8<-- [start:create_table_with_embedding]
     embed_fcn = get_registry().get("huggingface").create(name="BAAI/bge-small-en-v1.5")
 
@@ -331,6 +336,24 @@ def test_table():
     models = [Schema(text="hello"), Schema(text="world")]
     tbl.add(models)
     # --8<-- [end:create_table_with_embedding]
+
+
+@pytest.mark.skip
+async def test_table_with_embedding_async():
+    async_db = await lancedb.connect_async("data/sample-lancedb")
+    # --8<-- [start:create_table_async_with_embedding]
+    embed_fcn = get_registry().get("huggingface").create(name="BAAI/bge-small-en-v1.5")
+
+    class Schema(LanceModel):
+        text: str = embed_fcn.SourceField()
+        vector: Vector(embed_fcn.ndims()) = embed_fcn.VectorField(default=None)
+
+    async_tbl = await async_db.create_table(
+        "my_table_async_with_embedding", schema=Schema, mode="overwrite"
+    )
+    models = [Schema(text="hello"), Schema(text="world")]
+    await async_tbl.add(models)
+    # --8<-- [end:create_table_async_with_embedding]
 
 
 @pytest.mark.asyncio
@@ -551,17 +574,3 @@ async def test_table_async():
     # Check for updates
     await async_tbl.checkout_latest()
     # --8<-- [end:table_async_checkout_latest]
-
-    # --8<-- [start:create_table_async_with_embedding]
-    embed_fcn = get_registry().get("huggingface").create(name="BAAI/bge-small-en-v1.5")
-
-    class Schema(LanceModel):
-        text: str = embed_fcn.SourceField()
-        vector: Vector(embed_fcn.ndims()) = embed_fcn.VectorField(default=None)
-
-    async_tbl = await async_db.create_table(
-        "my_table_async_with_embedding", schema=Schema, mode="overwrite"
-    )
-    models = [Schema(text="hello"), Schema(text="world")]
-    await async_tbl.add(models)
-    # --8<-- [end:create_table_async_with_embedding]
