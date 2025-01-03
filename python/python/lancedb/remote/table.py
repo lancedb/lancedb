@@ -1,24 +1,15 @@
-#  Copyright 2023 LanceDB Developers
-#
-#  Licensed under the Apache License, Version 2.0 (the "License");
-#  you may not use this file except in compliance with the License.
-#  You may obtain a copy of the License at
-#      http://www.apache.org/licenses/LICENSE-2.0
-#
-#  Unless required by applicable law or agreed to in writing, software
-#  distributed under the License is distributed on an "AS IS" BASIS,
-#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-#  See the License for the specific language governing permissions and
-#  limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 from datetime import timedelta
 import logging
 from functools import cached_property
 from typing import Dict, Iterable, List, Optional, Union, Literal
+import warnings
 
 from lancedb._lancedb import IndexConfig
 from lancedb.embeddings.base import EmbeddingFunctionConfig
-from lancedb.index import FTS, BTree, Bitmap, HnswPq, HnswSq, IvfPq, LabelList
+from lancedb.index import FTS, BTree, Bitmap, HnswPq, HnswSq, IvfFlat, IvfPq, LabelList
 from lancedb.remote.db import LOOP
 import pyarrow as pa
 
@@ -90,7 +81,7 @@ class RemoteTable(Table):
         """to_pandas() is not yet supported on LanceDB cloud."""
         return NotImplementedError("to_pandas() is not yet supported on LanceDB cloud.")
 
-    def checkout(self, version):
+    def checkout(self, version: int):
         return LOOP.run(self._table.checkout(version))
 
     def checkout_latest(self):
@@ -234,10 +225,12 @@ class RemoteTable(Table):
             config = HnswPq(distance_type=metric)
         elif index_type == "IVF_HNSW_SQ":
             config = HnswSq(distance_type=metric)
+        elif index_type == "IVF_FLAT":
+            config = IvfFlat(distance_type=metric)
         else:
             raise ValueError(
                 f"Unknown vector index type: {index_type}. Valid options are"
-                " 'IVF_PQ', 'IVF_HNSW_PQ', 'IVF_HNSW_SQ'"
+                " 'IVF_FLAT', 'IVF_PQ', 'IVF_HNSW_PQ', 'IVF_HNSW_SQ'"
             )
 
         LOOP.run(self._table.create_index(vector_column_name, config=config))
@@ -481,16 +474,28 @@ class RemoteTable(Table):
         )
 
     def cleanup_old_versions(self, *_):
-        """cleanup_old_versions() is not supported on the LanceDB cloud"""
-        raise NotImplementedError(
-            "cleanup_old_versions() is not supported on the LanceDB cloud"
+        """
+        cleanup_old_versions() is a no-op on LanceDB Cloud.
+
+        Tables are automatically cleaned up and optimized.
+        """
+        warnings.warn(
+            "cleanup_old_versions() is a no-op on LanceDB Cloud. "
+            "Tables are automatically cleaned up and optimized."
         )
+        pass
 
     def compact_files(self, *_):
-        """compact_files() is not supported on the LanceDB cloud"""
-        raise NotImplementedError(
-            "compact_files() is not supported on the LanceDB cloud"
+        """
+        compact_files() is a no-op on LanceDB Cloud.
+
+        Tables are automatically compacted and optimized.
+        """
+        warnings.warn(
+            "compact_files() is a no-op on LanceDB Cloud. "
+            "Tables are automatically compacted and optimized."
         )
+        pass
 
     def optimize(
         self,
@@ -498,12 +503,16 @@ class RemoteTable(Table):
         cleanup_older_than: Optional[timedelta] = None,
         delete_unverified: bool = False,
     ):
-        """optimize() is not supported on the LanceDB cloud.
-        Indices are optimized automatically."""
-        raise NotImplementedError(
-            "optimize() is not supported on the LanceDB cloud. "
+        """
+        optimize() is a no-op on LanceDB Cloud.
+
+        Indices are optimized automatically.
+        """
+        warnings.warn(
+            "optimize() is a no-op on LanceDB Cloud. "
             "Indices are optimized automatically."
         )
+        pass
 
     def count_rows(self, filter: Optional[str] = None) -> int:
         return LOOP.run(self._table.count_rows(filter))

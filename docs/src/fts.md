@@ -42,7 +42,7 @@ Consider that we have a LanceDB table named `my_table`, whose string column `tex
     });
 
     await tbl
-        .search("puppy", queryType="fts")
+        .search("puppy", "fts")
         .select(["text"])
         .limit(10)
         .toArray();

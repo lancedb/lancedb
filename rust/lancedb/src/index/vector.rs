@@ -162,6 +162,43 @@ macro_rules! impl_hnsw_params_setter {
     };
 }
 
+/// Builder for an IVF Flat index.
+///
+/// This index stores raw vectors. These vectors are grouped into partitions of similar vectors.
+/// Each partition keeps track of a centroid which is the average value of all vectors in the group.
+///
+/// During a query the centroids are compared with the query vector to find the closest partitions.
+/// The raw vectors in these partitions are then searched to find the closest vectors.
+///
+/// The partitioning process is called IVF and the `num_partitions` parameter controls how many groups to create.
+///
+/// Note that training an IVF Flat index on a large dataset is a slow operation and currently is also a memory intensive operation.
+#[derive(Debug, Clone)]
+pub struct IvfFlatIndexBuilder {
+    pub(crate) distance_type: DistanceType,
+
+    // IVF
+    pub(crate) num_partitions: Option<u32>,
+    pub(crate) sample_rate: u32,
+    pub(crate) max_iterations: u32,
+}
+
+impl Default for IvfFlatIndexBuilder {
+    fn default() -> Self {
+        Self {
+            distance_type: DistanceType::L2,
+            num_partitions: None,
+            sample_rate: 256,
+            max_iterations: 50,
+        }
+    }
+}
+
+impl IvfFlatIndexBuilder {
+    impl_distance_type_setter!();
+    impl_ivf_params_setter!();
+}
+
 /// Builder for an IVF PQ index.
 ///
 /// This index stores a compressed (quantized) copy of every vector.  These vectors

@@ -34,7 +34,7 @@ from lance.dependencies import _check_for_hugging_face
 
 from .common import DATA, VEC, VECTOR_COLUMN_NAME
 from .embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
-from .index import BTree, IvfPq, Bitmap, LabelList, HnswPq, HnswSq, FTS
+from .index import BTree, IvfFlat, IvfPq, Bitmap, LabelList, HnswPq, HnswSq, FTS
 from .merge import LanceMergeInsertBuilder
 from .pydantic import LanceModel, model_to_dict
 from .query import (
@@ -433,7 +433,9 @@ class Table(ABC):
         accelerator: Optional[str] = None,
         index_cache_size: Optional[int] = None,
         *,
-        index_type: Literal["IVF_PQ", "IVF_HNSW_SQ", "IVF_HNSW_PQ"] = "IVF_PQ",
+        index_type: Literal[
+            "IVF_FLAT", "IVF_PQ", "IVF_HNSW_SQ", "IVF_HNSW_PQ"
+        ] = "IVF_PQ",
         num_bits: int = 8,
         max_iterations: int = 50,
         sample_rate: int = 256,
@@ -446,8 +448,9 @@ class Table(ABC):
         ----------
         metric: str, default "L2"
             The distance metric to use when creating the index.
-            Valid values are "L2", "cosine", or "dot".
+            Valid values are "L2", "cosine", "dot", or "hamming".
             L2 is euclidean distance.
+            Hamming is available only for binary vectors.
         num_partitions: int, default 256
             The number of IVF partitions to use when creating the index.
             Default is 256.
@@ -917,9 +920,6 @@ class Table(ABC):
         """
         Clean up old versions of the table, freeing disk space.
 
-        Note: This function is not available in LanceDb Cloud (since LanceDb
-        Cloud manages cleanup for you automatically)
-
         Parameters
         ----------
         older_than: timedelta, default None
@@ -936,21 +936,38 @@ class Table(ABC):
         CleanupStats
             The stats of the cleanup operation, including how many bytes were
             freed.
+
+        See Also
+        --------
+        [Table.optimize][lancedb.table.Table.optimize]: A more comprehensive
+            optimization operation that includes cleanup as well as other operations.
+
+        Notes
+        -----
+        This function is not available in LanceDb Cloud (since LanceDB
+        Cloud manages cleanup for you automatically)
         """
 
     @abstractmethod
     def compact_files(self, *args, **kwargs):
         """
         Run the compaction process on the table.
-
-        Note: This function is not available in LanceDb Cloud (since LanceDb
-        Cloud manages compaction for you automatically)
-
         This can be run after making several small appends to optimize the table
         for faster reads.
 
-        Arguments are passed onto :meth:`lance.dataset.DatasetOptimizer.compact_files`.
+        Arguments are passed onto Lance's
+        [compact_files][lance.dataset.DatasetOptimizer.compact_files].
         For most cases, the default should be fine.
+
+        See Also
+        --------
+        [Table.optimize][lancedb.table.Table.optimize]: A more comprehensive
+            optimization operation that includes cleanup as well as other operations.
+
+        Notes
+        -----
+        This function is not available in LanceDB Cloud (since LanceDB
+        Cloud manages compaction for you automatically)
         """
 
     @abstractmethod
@@ -1075,7 +1092,7 @@ class Table(ABC):
         """
 
     @abstractmethod
-    def checkout(self):
+    def checkout(self, version: int):
         """
         Checks out a specific version of the Table
 
@@ -1394,7 +1411,9 @@ class LanceTable(Table):
         accelerator: Optional[str] = None,
         index_cache_size: Optional[int] = None,
         num_bits: int = 8,
-        index_type: Literal["IVF_PQ", "IVF_HNSW_SQ", "IVF_HNSW_PQ"] = "IVF_PQ",
+        index_type: Literal[
+            "IVF_FLAT", "IVF_PQ", "IVF_HNSW_SQ", "IVF_HNSW_PQ"
+        ] = "IVF_PQ",
         max_iterations: int = 50,
         sample_rate: int = 256,
         m: int = 20,
@@ -1418,6 +1437,13 @@ class LanceTable(Table):
             )
             self.checkout_latest()
             return
+        elif index_type == "IVF_FLAT":
+            config = IvfFlat(
+                distance_type=metric,
+                num_partitions=num_partitions,
+                max_iterations=max_iterations,
+                sample_rate=sample_rate,
+            )
         elif index_type == "IVF_PQ":
             config = IvfPq(
                 distance_type=metric,
@@ -2605,7 +2631,7 @@ class AsyncTable:
         *,
         replace: Optional[bool] = None,
         config: Optional[
-            Union[IvfPq, HnswPq, HnswSq, BTree, Bitmap, LabelList, FTS]
+            Union[IvfFlat, IvfPq, HnswPq, HnswSq, BTree, Bitmap, LabelList, FTS]
         ] = None,
     ):
         """Create an index to speed up queries
@@ -2634,7 +2660,7 @@ class AsyncTable:
         """
         if config is not None:
             if not isinstance(
-                config, (IvfPq, HnswPq, HnswSq, BTree, Bitmap, LabelList, FTS)
+                config, (IvfFlat, IvfPq, HnswPq, HnswSq, BTree, Bitmap, LabelList, FTS)
             ):
                 raise TypeError(
                     "config must be an instance of IvfPq, HnswPq, HnswSq, BTree,"
@@ -2798,6 +2824,8 @@ class AsyncTable:
                 async_query = async_query.column(query.vector_column)
             if query.ef:
                 async_query = async_query.ef(query.ef)
+            if not query.use_index:
+                async_query = async_query.bypass_vector_index()
 
         if not query.prefilter:
             async_query = async_query.postfilter()
@@ -3021,7 +3049,7 @@ class AsyncTable:
 
         return versions
 
-    async def checkout(self, version):
+    async def checkout(self, version: int):
         """
         Checks out a specific version of the Table
 

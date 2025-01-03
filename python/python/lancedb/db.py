@@ -18,12 +18,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Dict, Iterable, List, Literal, Optional, Union
 
 from lancedb.embeddings.registry import EmbeddingFunctionRegistry
-from overrides import EnforceOverrides, override
+from overrides import EnforceOverrides, override  # type: ignore
 
 from lancedb.common import data_to_reader, sanitize_uri, validate_schema
 from lancedb.background_loop import LOOP
 
-from ._lancedb import connect as lancedb_connect
+from ._lancedb import connect as lancedb_connect  # type: ignore
 from .table import (
     AsyncTable,
     LanceTable,
@@ -503,13 +503,7 @@ class LanceDBConnection(DBConnection):
         ignore_missing: bool, default False
             If True, ignore if the table does not exist.
         """
-        try:
-            LOOP.run(self._conn.drop_table(name))
-        except ValueError as e:
-            if not ignore_missing:
-                raise e
-            if f"Table '{name}' was not found" not in str(e):
-                raise e
+        LOOP.run(self._conn.drop_table(name, ignore_missing=ignore_missing))
 
     @override
     def drop_database(self):
@@ -886,15 +880,23 @@ class AsyncConnection(object):
         """
         await self._inner.rename_table(old_name, new_name)
 
-    async def drop_table(self, name: str):
+    async def drop_table(self, name: str, *, ignore_missing: bool = False):
         """Drop a table from the database.
 
         Parameters
         ----------
         name: str
             The name of the table.
+        ignore_missing: bool, default False
+            If True, ignore if the table does not exist.
         """
-        await self._inner.drop_table(name)
+        try:
+            await self._inner.drop_table(name)
+        except ValueError as e:
+            if not ignore_missing:
+                raise e
+            if f"Table '{name}' was not found" not in str(e):
+                raise e
 
     async def drop_database(self):
         """

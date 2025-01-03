@@ -1,9 +1,10 @@
 [project]
 name = "lancedb"
 # version in Cargo.toml
+dynamic = ["version"]
 dependencies = [
     "deprecation",
-    "pylance==0.21.0b5",
+    "pylance==0.21.1b1",
     "tqdm>=4.27.0",
     "pydantic>=1.10",
     "packaging",

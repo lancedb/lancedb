@@ -18,6 +18,7 @@ excluded_globs = [
     "../src/concepts/*.md",
     "../src/ann_indexes.md",
     "../src/basic.md",
+    "../src/search.md",
     "../src/hybrid_search/hybrid_search.md",
     "../src/reranking/*.md",
     "../src/guides/tuning_retrievers/*.md",
