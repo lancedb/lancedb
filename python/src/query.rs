@@ -152,6 +152,10 @@ impl FTSQuery {
         self.inner = self.inner.clone().select(Select::dynamic(&columns));
     }
 
+    pub fn select_columns(&mut self, columns: Vec<String>) {
+        self.inner = self.inner.clone().select(Select::columns(&columns));
+    }
+
     pub fn limit(&mut self, limit: u32) {
         self.inner = self.inner.clone().limit(limit as usize);
     }
@@ -339,6 +343,11 @@ impl HybridQuery {
     pub fn select(&mut self, columns: Vec<(String, String)>) {
         self.inner_vec.select(columns.clone());
         self.inner_fts.select(columns);
+    }
+
+    pub fn select_columns(&mut self, columns: Vec<String>) {
+        self.inner_vec.select_columns(columns.clone());
+        self.inner_fts.select_columns(columns);
     }
 
     pub fn limit(&mut self, limit: u32) {
