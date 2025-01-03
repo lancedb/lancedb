@@ -210,6 +210,8 @@ impl<S: HttpSend> RemoteTable<S> {
         body["prefilter"] = query.base.prefilter.into();
         body["distance_type"] = serde_json::json!(query.distance_type.unwrap_or_default());
         body["nprobes"] = query.nprobes.into();
+        body["lower_bound"] = query.lower_bound.into();
+        body["upper_bound"] = query.upper_bound.into();
         body["ef"] = query.ef.into();
         body["refine_factor"] = query.refine_factor.into();
         if let Some(vector_column) = query.column.as_ref() {

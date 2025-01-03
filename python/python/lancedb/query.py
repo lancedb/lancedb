@@ -115,6 +115,9 @@ class Query(pydantic.BaseModel):
     # e.g. `{"nprobes": "10", "refine_factor": "10"}`
     nprobes: int = 10
 
+    lower_bound: Optional[float] = None
+    upper_bound: Optional[float] = None
+
     # Refine factor.
     refine_factor: Optional[int] = None
 
@@ -604,6 +607,8 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         self._query = query
         self._metric = "L2"
         self._nprobes = 20
+        self._lower_bound = None
+        self._upper_bound = None
         self._refine_factor = None
         self._vector_column = vector_column
         self._prefilter = False
@@ -647,6 +652,30 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             The LanceQueryBuilder object.
         """
         self._nprobes = nprobes
+        return self
+
+    def distance_range(
+        self, lower_bound: Optional[float] = None, upper_bound: Optional[float] = None
+    ) -> LanceVectorQueryBuilder:
+        """Set the distance range to use.
+
+        Only rows with distances within range [lower_bound, upper_bound)
+        will be returned.
+
+        Parameters
+        ----------
+        lower: Optional[float]
+            The lower bound of the distance range.
+        upper_bound: Optional[float]
+            The upper bound of the distance range.
+
+        Returns
+        -------
+        LanceVectorQueryBuilder
+            The LanceQueryBuilder object.
+        """
+        self._lower_bound = lower_bound
+        self._upper_bound = upper_bound
         return self
 
     def ef(self, ef: int) -> LanceVectorQueryBuilder:
@@ -728,6 +757,8 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             metric=self._metric,
             columns=self._columns,
             nprobes=self._nprobes,
+            lower_bound=self._lower_bound,
+            upper_bound=self._upper_bound,
             refine_factor=self._refine_factor,
             vector_column=self._vector_column,
             with_row_id=self._with_row_id,
@@ -1282,6 +1313,31 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             The LanceHybridQueryBuilder object.
         """
         self._nprobes = nprobes
+        return self
+
+    def distance_range(
+        self, lower_bound: Optional[float] = None, upper_bound: Optional[float] = None
+    ) -> LanceHybridQueryBuilder:
+        """
+        Set the distance range to use.
+
+        Only rows with distances within range [lower_bound, upper_bound)
+        will be returned.
+
+        Parameters
+        ----------
+        lower: Optional[float]
+            The lower bound of the distance range.
+        upper_bound: Optional[float]
+            The upper bound of the distance range.
+
+        Returns
+        -------
+        LanceHybridQueryBuilder
+            The LanceHybridQueryBuilder object.
+        """
+        self._lower_bound = lower_bound
+        self._upper_bound = upper_bound
         return self
 
     def ef(self, ef: int) -> LanceHybridQueryBuilder:
@@ -1853,6 +1909,29 @@ class AsyncVectorQuery(AsyncQueryBase):
         you the desired recall.
         """
         self._inner.nprobes(nprobes)
+        return self
+
+    def distance_range(
+        self, lower_bound: Optional[float] = None, upper_bound: Optional[float] = None
+    ) -> AsyncVectorQuery:
+        """Set the distance range to use.
+
+        Only rows with distances within range [lower_bound, upper_bound)
+        will be returned.
+
+        Parameters
+        ----------
+        lower: Optional[float]
+            The lower bound of the distance range.
+        upper_bound: Optional[float]
+            The upper bound of the distance range.
+
+        Returns
+        -------
+        AsyncVectorQuery
+            The AsyncVectorQuery object.
+        """
+        self._inner.distance_range(lower_bound, upper_bound)
         return self
 
     def ef(self, ef: int) -> AsyncVectorQuery:

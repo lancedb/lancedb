@@ -1944,6 +1944,7 @@ impl TableInternal for NativeTable {
         if let Some(ef) = query.ef {
             scanner.ef(ef);
         }
+        scanner.distance_range(query.lower_bound, query.upper_bound);
         scanner.use_index(query.use_index);
         scanner.prefilter(query.base.prefilter);
         match query.base.select {
