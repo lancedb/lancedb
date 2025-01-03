@@ -167,8 +167,24 @@ def test_search_index(tmp_path, table):
 @pytest.mark.parametrize("use_tantivy", [True, False])
 def test_search_fts(table, use_tantivy):
     table.create_fts_index("text", use_tantivy=use_tantivy)
-    results = table.search("puppy").limit(5).to_list()
+    results = table.search("puppy").select(["id", "text"]).limit(5).to_list()
     assert len(results) == 5
+    assert len(results[0]) == 3  # id, text, _score
+
+
+@pytest.mark.asyncio
+async def test_fts_select_async(async_table):
+    tbl = await async_table
+    await tbl.create_index("text", config=FTS())
+    results = (
+        await tbl.query()
+        .nearest_to_text("puppy")
+        .select(["id", "text"])
+        .limit(5)
+        .to_list()
+    )
+    assert len(results) == 5
+    assert len(results[0]) == 3  # id, text, _score
 
 
 def test_search_fts_phrase_query(table):
