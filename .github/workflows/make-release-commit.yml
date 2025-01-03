@@ -43,7 +43,7 @@ on:
 jobs:
   make-release:
     # Creates tag and GH release. The GH release will trigger the build and release jobs.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
@@ -57,15 +57,14 @@ jobs:
           # trigger any workflows watching for new tags. See:
           # https://docs.github.com/en/actions/using-workflows/triggering-a-workflow#triggering-a-workflow-from-a-workflow
           token: ${{ secrets.LANCEDB_RELEASE_TOKEN }}
+      - name: Validate Lance dependency is at stable version
+        if: ${{ inputs.type == 'stable' }}
+        run: python ci/validate_stable_lance.py
       - name: Set git configs for bumpversion
         shell: bash
         run: |
           git config user.name 'Lance Release'
           git config user.email 'lance-dev@lancedb.com'
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
       - name: Bump Python version
         if: ${{ inputs.python }}
         working-directory: python
