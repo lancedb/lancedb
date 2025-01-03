@@ -1383,7 +1383,7 @@ mod tests {
             let distances = batch["_distance"].as_primitive::<Float32Type>();
             assert!(distances.iter().all(|d| {
                 let d = d.unwrap();
-                d >= 0.0 && d < 1.0
+                (0.0..1.0).contains(&d)
             }));
         }
     }
