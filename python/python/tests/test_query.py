@@ -334,6 +334,15 @@ async def test_query_to_pandas_async(table_async: AsyncTable):
 
 
 @pytest.mark.asyncio
+async def test_query_to_polars_async(table_async: AsyncTable):
+    df = await table_async.query().to_polars()
+    assert df.shape == (2, 4)
+
+    df = await table_async.query().where("id < 0").to_polars()
+    assert df.shape == (0, 4)
+
+
+@pytest.mark.asyncio
 async def test_none_query(table_async: AsyncTable):
     with pytest.raises(ValueError):
         await table_async.query().nearest_to(None).to_arrow()

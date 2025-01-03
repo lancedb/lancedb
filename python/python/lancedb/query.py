@@ -1562,6 +1562,32 @@ class AsyncQueryBase(object):
         """
         return (await self.to_arrow()).to_pandas()
 
+    async def to_polars(self) -> "pl.DataFrame":
+        """
+        Execute the query and collect the results into a Polars DataFrame.
+
+        This method will collect all results into memory before returning.  If you
+        expect a large number of results, you may want to use
+        [to_batches][lancedb.query.AsyncQueryBase.to_batches] and convert each batch to
+        polars separately.
+
+        Examples
+        --------
+
+        >>> import asyncio
+        >>> import polars as pl
+        >>> from lancedb import connect_async
+        >>> async def doctest_example():
+        ...     conn = await connect_async("./.lancedb")
+        ...     table = await conn.create_table("my_table", data=[{"a": 1, "b": 2}])
+        ...     async for batch in await table.query().to_batches():
+        ...         batch_df = pl.from_arrow(batch)
+        >>> asyncio.run(doctest_example())
+        """
+        import polars as pl
+
+        return pl.from_arrow(await self.to_arrow())
+
     async def explain_plan(self, verbose: Optional[bool] = False):
         """Return the execution plan for this query.
 
