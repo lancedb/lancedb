@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::index::Index;
 use crate::index::IndexStatistics;
-use crate::query::Select;
+use crate::query::{Select, DEFAULT_TOP_K};
 use crate::table::AddDataMode;
 use crate::utils::{supported_btree_data_type, supported_vector_data_type};
 use crate::{Error, Table};
@@ -205,6 +205,11 @@ impl<S: HttpSend> RemoteTable<S> {
         query: &VectorQuery,
     ) -> Result<Vec<serde_json::Value>> {
         Self::apply_query_params(&mut body, &query.base)?;
+
+        // Fill default top_k for vector queries
+        if query.base.limit.is_none() {
+            body["k"] = serde_json::Value::Number(serde_json::Number::from(DEFAULT_TOP_K));
+        }
 
         // Apply general parameters, before we dispatch based on number of query vectors.
         body["prefilter"] = query.base.prefilter.into();
@@ -1304,7 +1309,7 @@ mod tests {
                 "prefilter": true,
                 "distance_type": "l2",
                 "nprobes": 20,
-                "k": 10,
+                "k": DEFAULT_TOP_K,
                 "ef": Option::<usize>::None,
                 "refine_factor": null,
                 "version": null,
