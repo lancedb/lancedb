@@ -350,6 +350,8 @@ def test_query_sync_maximal():
             "refine_factor": 10,
             "vector": [1.0, 2.0, 3.0],
             "nprobes": 5,
+            "lower_bound": None,
+            "upper_bound": None,
             "ef": None,
             "filter": "id > 0",
             "columns": ["id", "name"],
