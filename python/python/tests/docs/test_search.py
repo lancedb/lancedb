@@ -118,9 +118,7 @@ async def test_vector_search_async():
         for i, row in enumerate(np.random.random((10_000, 1536)).astype("float32"))
     ]
     async_tbl = await async_db.create_table("vector_search_async", data=data)
-    (
-        await async_tbl.query().nearest_to(np.random.random((1536))).limit(10).to_list()
-    )
+    (await async_tbl.query().nearest_to(np.random.random((1536))).limit(10).to_list())
     # --8<-- [end:exhaustive_search_async]
     # --8<-- [start:exhaustive_search_async_cosine]
     (
