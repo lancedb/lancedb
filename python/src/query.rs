@@ -284,6 +284,11 @@ impl VectorQuery {
         self.inner = self.inner.clone().nprobes(nprobe as usize);
     }
 
+    #[pyo3(signature = (lower_bound=None, upper_bound=None))]
+    pub fn distance_range(&mut self, lower_bound: Option<f32>, upper_bound: Option<f32>) {
+        self.inner = self.inner.clone().distance_range(lower_bound, upper_bound);
+    }
+
     pub fn ef(&mut self, ef: u32) {
         self.inner = self.inner.clone().ef(ef as usize);
     }
