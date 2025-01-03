@@ -321,7 +321,6 @@ def test_table():
     tbl.checkout_latest()
     # --8<-- [end:table_checkout_latest]
     # --8<-- [start:create_table_with_embedding]
-    db = lancedb.connect("~/tmp")
     embed_fcn = get_registry().get("huggingface").create(name="BAAI/bge-small-en-v1.5")
 
     class Schema(LanceModel):
@@ -349,10 +348,10 @@ async def test_table_async():
     await async_tbl.head()
     # --8<-- [end:create_table_async]
     # --8<-- [start:create_table_async_exist_ok]
-    async_db.create_table("test_table_async", data, exist_ok=True)
+    await async_db.create_table("test_table_async", data, exist_ok=True)
     # --8<-- [end:create_table_async_exist_ok]
     # --8<-- [start:create_table_async_overwrite]
-    async_db.create_table("test_table_async", data, mode="overwrite")
+    await async_db.create_table("test_table_async", data, mode="overwrite")
     # --8<-- [end:create_table_async_overwrite]
     # --8<-- [start:create_table_async_from_pandas]
     data = pd.DataFrame(
@@ -554,7 +553,6 @@ async def test_table_async():
     # --8<-- [end:table_async_checkout_latest]
 
     # --8<-- [start:create_table_async_with_embedding]
-    db = lancedb.connect("~/tmp")
     embed_fcn = get_registry().get("huggingface").create(name="BAAI/bge-small-en-v1.5")
 
     class Schema(LanceModel):

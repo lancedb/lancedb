@@ -66,10 +66,10 @@ def test_vector_search():
         for i, row in enumerate(np.random.random((10_000, 1536)).astype("float32"))
     ]
     tbl = db.create_table("vector_search", data=data)
-    df = tbl.search(np.random.random((1536))).limit(10).to_list()
+    tbl.search(np.random.random((1536))).limit(10).to_list()
     # --8<-- [end:exhaustive_search]
     # --8<-- [start:exhaustive_search_cosine]
-    df = tbl.search(np.random.random((1536))).metric("cosine").limit(10).to_list()
+    tbl.search(np.random.random((1536))).metric("cosine").limit(10).to_list()
     # --8<-- [end:exhaustive_search_cosine]
     # --8<-- [start:create_table_with_nested_schema]
     # Let's add 100 sample rows to our dataset
@@ -118,12 +118,12 @@ async def test_vector_search_async():
         for i, row in enumerate(np.random.random((10_000, 1536)).astype("float32"))
     ]
     async_tbl = await async_db.create_table("vector_search_async", data=data)
-    df = (
+    (
         await async_tbl.query().nearest_to(np.random.random((1536))).limit(10).to_list()
     )
     # --8<-- [end:exhaustive_search_async]
     # --8<-- [start:exhaustive_search_async_cosine]
-    df = (
+    (
         await async_tbl.query()
         .nearest_to(np.random.random((1536)))
         .distance_type("cosine")
@@ -287,8 +287,6 @@ class Documents(LanceModel):
 @pytest.mark.skip()
 def test_hybrid_search():
     # --8<-- [start:basic_hybrid_search]
-    table = db.create_table("documents", schema=Documents)
-
     data = [
         {"text": "rebel spaceships striking from a hidden base"},
         {"text": "have won their first victory against the evil Galactic Empire"},
@@ -297,17 +295,18 @@ def test_hybrid_search():
     ]
     uri = "data/sample-lancedb"
     db = lancedb.connect(uri)
+    table = db.create_table("documents", schema=Documents)
     # ingest docs with auto-vectorization
     table.add(data)
     # Create a fts index before the hybrid search
     table.create_fts_index("text")
     # hybrid search with default re-ranker
-    results = table.search("flower moon", query_type="hybrid").to_pandas()
+    table.search("flower moon", query_type="hybrid").to_pandas()
     # --8<-- [end:basic_hybrid_search]
     # --8<-- [start:hybrid_search_pass_vector_text]
     vector_query = [0.1, 0.2, 0.3, 0.4, 0.5]
     text_query = "flower moon"
-    results = (
+    (
         table.search(query_type="hybrid")
         .vector(vector_query)
         .text(text_query)
@@ -336,7 +335,7 @@ async def test_hybrid_search_async():
     text_query = "flower moon"
     vector_query = embeddings.compute_query_embeddings(text_query)[0]
     # hybrid search with default re-ranker
-    results = await (
+    await (
         async_tbl.query()
         .nearest_to(vector_query)
         .nearest_to_text(text_query)
@@ -346,7 +345,7 @@ async def test_hybrid_search_async():
     # --8<-- [start:hybrid_search_pass_vector_text_async]
     vector_query = [0.1, 0.2, 0.3, 0.4, 0.5]
     text_query = "flower moon"
-    results = await (
+    await (
         async_tbl.query()
         .nearest_to(vector_query)
         .nearest_to_text(text_query)

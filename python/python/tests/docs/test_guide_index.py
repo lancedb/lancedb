@@ -30,7 +30,8 @@ def test_ann_index():
     db = lancedb.connect(uri)
     # Add the vectors to a table
     tbl = db.create_table("my_vectors", data=data)
-    # Create and train the index - you need to have enough data in the table for an effective training step
+    # Create and train the index - you need to have enough data in the table
+    # for an effective training step
     tbl.create_index(num_partitions=256, num_sub_vectors=96)
     # --8<-- [end:create_ann_index]
     # --8<-- [start:vector_search]
@@ -60,7 +61,8 @@ async def test_ann_index_async():
     async_db = await lancedb.connect_async(uri)
     # Add the vectors to a table
     async_tbl = await async_db.create_table("my_vectors_async", data=data)
-    # Create and train the index - you need to have enough data in the table for an effective training step
+    # Create and train the index - you need to have enough data in the table
+    # for an effective training step
     await async_tbl.create_index(
         "vector", config=IvfPq(num_partitions=256, num_sub_vectors=96)
     )
@@ -112,7 +114,7 @@ def test_scalar_index():
     # --8<-- [end:basic_scalar_index]
     # --8<-- [start:search_with_scalar_index]
     table = db.open_table("books")
-    my_df = table.search().where("book_id = 2").to_pandas()
+    table.search().where("book_id = 2").to_pandas()
     # --8<-- [end:search_with_scalar_index]
     # --8<-- [start:vector_search_with_scalar_index]
     data = [
@@ -150,7 +152,7 @@ async def test_scalar_index_async():
     # --8<-- [end:basic_scalar_index_async]
     # --8<-- [start:search_with_scalar_index_async]
     async_tbl = await async_db.open_table("books_async")
-    my_df = await async_tbl.query().where("book_id = 2").to_pandas()
+    await async_tbl.query().where("book_id = 2").to_pandas()
     # --8<-- [end:search_with_scalar_index_async]
     # --8<-- [start:vector_search_with_scalar_index_async]
     data = [
