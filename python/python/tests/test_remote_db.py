@@ -453,6 +453,8 @@ def test_query_sync_hybrid():
                 "refine_factor": None,
                 "vector": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
                 "nprobes": 20,
+                "lower_bound": None,
+                "upper_bound": None,
                 "ef": None,
                 "with_row_id": True,
                 "version": None,
