@@ -1727,9 +1727,21 @@ class AsyncFTSQuery(AsyncQueryBase):
     def __init__(self, inner: LanceFTSQuery):
         super().__init__(inner)
         self._inner = inner
+        self._reranker = None
 
     def get_query(self):
         self._inner.get_query()
+
+    def rerank(
+        self,
+        reranker: Reranker = RRFReranker(),
+    ) -> AsyncFTSQuery:
+        if reranker and not isinstance(reranker, Reranker):
+            raise ValueError("reranker must be an instance of Reranker class.")
+
+        self._reranker = reranker
+
+        return self
 
     def nearest_to(
         self,
@@ -1815,6 +1827,7 @@ class AsyncVectorQuery(AsyncQueryBase):
         """
         super().__init__(inner)
         self._inner = inner
+        self._reranker = None
 
     def column(self, column: str) -> AsyncVectorQuery:
         """
@@ -1935,6 +1948,16 @@ class AsyncVectorQuery(AsyncQueryBase):
         calculate your recall to select an appropriate value for nprobes.
         """
         self._inner.bypass_vector_index()
+        return self
+
+    def rerank(
+        self, reranker: Reranker = RRFReranker(), query_string: Optional[str] = None
+    ) -> AsyncHybridQuery:
+        if reranker and not isinstance(reranker, Reranker):
+            raise ValueError("reranker must be an instance of Reranker class.")
+
+        self._reranker = reranker
+
         return self
 
     def nearest_to_text(
