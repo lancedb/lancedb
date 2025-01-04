@@ -2959,7 +2959,7 @@ class AsyncTable:
         """
         await self._inner.add_columns(list(transforms.items()))
 
-    async def alter_columns(self, *alterations: Iterable[Dict[str, str]]):
+    async def alter_columns(self, *alterations: Iterable[dict[str, Any]]):
         """
         Alter column names and nullability.
 
