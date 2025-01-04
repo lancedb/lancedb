@@ -216,7 +216,9 @@ async def test_fts_native_async():
 
     # async API uses our native FTS algorithm
     await async_tbl.create_index("text", config=FTS())
-    await async_tbl.query().nearest_to_text("puppy").limit(10).to_list()
+    await (
+        async_tbl.query().nearest_to_text("puppy").select(["text"]).limit(10).to_list()
+    )
     # [{'text': 'Frodo was a happy puppy', '_score': 0.6931471824645996}]
     # ...
     # --8<-- [end:basic_fts_async]
