@@ -146,7 +146,9 @@ nav:
               - Building Custom Rerankers: reranking/custom_reranker.md
               - Example: notebooks/lancedb_reranking.ipynb
           - Filtering: sql.md
-          - Versioning & Reproducibility: notebooks/reproducibility.ipynb
+          - Versioning & Reproducibility: 
+              - sync API: notebooks/reproducibility.ipynb
+              - async API: notebooks/reproducibility_async.ipynb
           - Configuring Storage: guides/storage.md
           - Migration Guide: migration.md
           - Tuning retrieval performance:
@@ -278,7 +280,9 @@ nav:
           - Building Custom Rerankers: reranking/custom_reranker.md
           - Example: notebooks/lancedb_reranking.ipynb
       - Filtering: sql.md
-      - Versioning & Reproducibility: notebooks/reproducibility.ipynb
+      - Versioning & Reproducibility: 
+          - sync API: notebooks/reproducibility.ipynb
+          - async API: notebooks/reproducibility_async.ipynb
       - Configuring Storage: guides/storage.md
       - Migration Guide: migration.md
       - Tuning retrieval performance:

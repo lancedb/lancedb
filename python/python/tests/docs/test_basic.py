@@ -125,7 +125,7 @@ async def test_quickstart_async():
 
     # --8<-- [start:create_table_async]
     # Asynchronous client
-    async_tbl = await async_db.create_table("my_table2", data=data)
+    async_tbl = await async_db.create_table("my_table_async", data=data)
     # --8<-- [end:create_table_async]
 
     df = pd.DataFrame(
@@ -137,17 +137,17 @@ async def test_quickstart_async():
 
     # --8<-- [start:create_table_async_pandas]
     # Asynchronous client
-    async_tbl = await async_db.create_table("table_from_df2", df)
+    async_tbl = await async_db.create_table("table_from_df_async", df)
     # --8<-- [end:create_table_async_pandas]
 
     schema = pa.schema([pa.field("vector", pa.list_(pa.float32(), list_size=2))])
     # --8<-- [start:create_empty_table_async]
     # Asynchronous client
-    async_tbl = await async_db.create_table("empty_table2", schema=schema)
+    async_tbl = await async_db.create_table("empty_table_async", schema=schema)
     # --8<-- [end:create_empty_table_async]
     # --8<-- [start:open_table_async]
     # Asynchronous client
-    async_tbl = await async_db.open_table("my_table2")
+    async_tbl = await async_db.open_table("my_table_async")
     # --8<-- [end:open_table_async]
     # --8<-- [start:table_names_async]
     # Asynchronous client
@@ -161,6 +161,22 @@ async def test_quickstart_async():
     data = [{"vector": [x, x], "item": "filler", "price": x * x} for x in range(1000)]
     await async_tbl.add(data)
     # --8<-- [start:vector_search_async]
+    # --8<-- [start:add_columns_async]
+    await async_tbl.add_columns({"double_price": "cast((price * 2) as float)"})
+    # --8<-- [end:add_columns_async]
+    # --8<-- [start:alter_columns_async]
+    await async_tbl.alter_columns(
+        {
+            "path": "double_price",
+            "rename": "dbl_price",
+            "data_type": pa.float64(),
+            "nullable": True,
+        }
+    )
+    # --8<-- [end:alter_columns_async]
+    # --8<-- [start:drop_columns_async]
+    await async_tbl.drop_columns(["dbl_price"])
+    # --8<-- [end:drop_columns_async]
     # Asynchronous client
     await async_tbl.vector_search([100, 100]).limit(2).to_pandas()
     # --8<-- [end:vector_search_async]
@@ -174,5 +190,5 @@ async def test_quickstart_async():
     # --8<-- [end:delete_rows_async]
     # --8<-- [start:drop_table_async]
     # Asynchronous client
-    await async_db.drop_table("my_table2")
+    await async_db.drop_table("my_table_async")
     # --8<-- [end:drop_table_async]
