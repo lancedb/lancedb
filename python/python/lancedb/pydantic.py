@@ -318,12 +318,13 @@ class LanceModel(pydantic.BaseModel):
 
     Examples
     --------
+    >>> from typing import Annotated
     >>> import lancedb
-    >>> from lancedb.pydantic import LanceModel, Vector
+    >>> from lancedb.pydantic import LanceModel, Vector, FixedSizeList
     >>>
     >>> class TestModel(LanceModel):
     ...     name: str
-    ...     vector: Vector(2)
+    ...     vector: Annotated[FixedSizeList, Vector(2)]
     ...
     >>> db = lancedb.connect("./example")
     >>> table = db.create_table("test", schema=TestModel.to_arrow_schema())
