@@ -12,9 +12,11 @@ from abc import ABC, abstractmethod
 from datetime import date, datetime
 from typing import (
     TYPE_CHECKING,
+    Annotated,  # needed for evaluation of ForwardRef Annotation fields
     Any,
     Callable,
     Dict,
+    ForwardRef,
     Generator,
     List,
     Type,
@@ -206,6 +208,13 @@ else:
 def _pydantic_to_arrow_type(field: FieldInfo) -> pa.DataType:
     """Convert a Pydantic FieldInfo to Arrow DataType"""
 
+    # NOTE: In doctests, Annotated fields are stored as ForwardRef,
+    # So it needs evaluation to get the actual type.
+    if isinstance(field.annotation, ForwardRef):
+        namespaces = [globals(), locals()]
+        if sys.version_info >= (3, 9):
+            namespaces.append(frozenset())
+        field = field.annotation._evaluate(*namespaces)
     if isinstance(field.annotation, (_GenericAlias, GenericAlias)):
         origin = field.annotation.__origin__
         args = field.annotation.__args__
@@ -241,6 +250,14 @@ def _pydantic_to_arrow_type(field: FieldInfo) -> pa.DataType:
 
 def is_nullable(field: FieldInfo) -> bool:
     """Check if a Pydantic FieldInfo is nullable."""
+
+    # NOTE: In doctests, Annotated fields are stored as ForwardRef,
+    # So it needs evaluation to get the actual type.
+    if isinstance(field.annotation, ForwardRef):
+        namespaces = [globals(), locals()]
+        if sys.version_info >= (3, 9):
+            namespaces.append(frozenset())
+        field = field.annotation._evaluate(*namespaces)
     if isinstance(field.annotation, (_GenericAlias, GenericAlias)):
         origin = field.annotation.__origin__
         args = field.annotation.__args__
